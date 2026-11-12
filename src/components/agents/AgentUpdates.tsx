@@ -59,7 +59,9 @@ export function AgentVersionTag({
   const cli = updates.cli.get(app);
   const desktop = updates.desktop?.[app];
   const cliVersion =
-    cli?.version ?? (desktop?.source === "cli" ? desktop.version : null);
+    cli?.version ??
+    (app === "cursor" ? updates.desktop?.["cursor-cli"]?.version : null) ??
+    (desktop?.source === "cli" ? desktop.version : null);
   const appVersion =
     app !== "codex" && desktop?.source === "desktop" ? desktop.version : null;
   if (!cliVersion && !appVersion) return null;
@@ -68,7 +70,10 @@ export function AgentVersionTag({
     <div className="mp-agent-cli">
       {cliVersion && (
         <span className="mp-agent-version">
-          {app === "codex" || appVersion || desktop?.source === "cli"
+          {app === "codex" ||
+          app === "cursor" ||
+          appVersion ||
+          desktop?.source === "cli"
             ? `CLI ${cliVersion}`
             : cliVersion}
         </span>

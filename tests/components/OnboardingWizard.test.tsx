@@ -238,6 +238,7 @@ it("previews account and import sources as named brand icons", () => {
     name: "onboarding.importTitle",
   });
   const accountNames = [
+    "Cursor",
     "Claude",
     "ChatGPT / Codex",
     "GitHub Copilot",

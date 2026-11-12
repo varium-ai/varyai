@@ -3842,7 +3842,7 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
         "deepseek-harness" => &["DeepSeek Harness.app"],
-        "cursor" => &["Cursor Private Inference.app", "Cursor.app"],
+        "cursor" | "cursor-private-inference" => &["Cursor Private Inference.app", "Cursor.app"],
         "t3code" => &["T3 Code.app", "T3 Code (Alpha).app"],
         _ => &[],
     }
@@ -3856,7 +3856,7 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
         "claude" | "codex" | "gemini" | "workbuddy" | "kimi" | "qwen" | "opencode" | "pi"
         | "openclaw" | "hermes" => app,
         "grokbuild" => "grok",
-        "cursor-cli" => "cursor-agent",
+        "cursor" | "cursor-cli" => "cursor-agent",
         _ => return false,
     };
     cli_dirs.iter().any(|dir| {
@@ -3879,16 +3879,50 @@ pub(crate) fn is_agent_installed(app: &str) -> bool {
             .is_ok();
     }
     #[cfg(target_os = "windows")]
-    if matches!(app, "cursor" | "t3code") {
-        return desktop_apps::windows_executable(app).is_some();
+    if matches!(app, "cursor" | "cursor-private-inference" | "t3code")
+        && desktop_apps::windows_executable(app).is_some()
+    {
+        return true;
     }
     let tool = match app {
         "grokbuild" => "grok",
-        "cursor-cli" => "cursor-agent",
+        "cursor" | "cursor-cli" => "cursor-agent",
         _ => app,
     };
     desktop_apps::find(app).is_some()
         || agent_installed_in(app, &[], &build_tool_search_paths(tool))
+}
+
+#[derive(serde::Serialize)]
+pub struct CursorInstallation {
+    desktop: Option<&'static str>,
+    cli: bool,
+}
+
+pub(crate) fn cursor_installation() -> CursorInstallation {
+    CursorInstallation {
+        desktop: if is_agent_installed("cursor-private-inference") {
+            Some("private-inference")
+        } else {
+            #[cfg(target_os = "windows")]
+            let desktop = desktop_apps::windows_executable("cursor").is_some();
+            #[cfg(not(target_os = "windows"))]
+            let desktop = desktop_apps::find("cursor").is_some();
+            desktop.then_some("standard")
+        },
+        cli: is_agent_installed("cursor-cli"),
+    }
+}
+
+pub(crate) fn cursor_local_available() -> bool {
+    cursor_installation().desktop == Some("private-inference")
+}
+
+#[tauri::command]
+pub async fn get_cursor_installation() -> Result<CursorInstallation, String> {
+    tokio::task::spawn_blocking(cursor_installation)
+        .await
+        .map_err(|_| "Agent installation check failed".to_owned())
 }
 
 /// Presence-only checks: do not run clients, create configs, or prompt for certificates.
@@ -3930,6 +3964,11 @@ mod agent_installation_tests {
         std::fs::write(binary, "synthetic presence fixture")?;
         assert!(agent_installed_in(
             "cursor-cli",
+            &[],
+            &[dir.path().to_path_buf()]
+        ));
+        assert!(agent_installed_in(
+            "cursor",
             &[],
             &[dir.path().to_path_buf()]
         ));

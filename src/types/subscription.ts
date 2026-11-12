@@ -5,6 +5,7 @@ export type CredentialStatus =
   | "parse_error";
 
 export interface QuotaTier {
+  display?: string | null;
   name: string;
   utilization: number; // 0-100
   resetsAt: string | null;

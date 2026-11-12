@@ -68,6 +68,7 @@ fn parse_sub2api(body: &Value) -> Option<Allowance> {
                     continue;
                 };
                 tiers.push(QuotaTier {
+                    display: None,
                     name: name.into(),
                     utilization: (used / limit * 100.0).clamp(0.0, 100.0),
                     resets_at: reset(row.get("reset_at")),

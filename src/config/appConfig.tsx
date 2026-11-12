@@ -62,7 +62,6 @@ export const APP_IDS: AppId[] = [
   "zcode",
   "deepseek-harness",
   "cursor",
-  "cursor-cli",
   "t3code",
 ];
 
@@ -243,10 +242,8 @@ export function isMcpAppId(appId: string): appId is McpAppId {
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   cursor: {
-    label: "Cursor Private Inference",
-    icon: (
-      <ProviderIcon icon="cursor" name="Cursor Private Inference" size={14} />
-    ),
+    label: "Cursor",
+    icon: <ProviderIcon icon="cursor" name="Cursor" size={14} />,
     activeClass: "bg-sky-500/10 text-sky-600",
     badgeClass: "bg-sky-500/10 text-sky-700",
   },

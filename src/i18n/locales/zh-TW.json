@@ -1318,7 +1318,7 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
-    "cursor": "Cursor Private Inference",
+    "cursor": "Cursor",
     "cursor-cli": "Cursor CLI",
     "t3code": "T3 Code"
   },
@@ -4998,6 +4998,8 @@
     "sameAsHint": "自動探索群組及補全缺少的模型資訊時，將此模型視為填寫的模型。傳給供應商的模型 ID 保持原樣。"
   },
   "agentConnections": {
+    "cursorCloudHint": "統一管理 Cursor 桌面版與 CLI。一般 Cursor 使用 Cursor 雲端服務；使用 VaryAI 模型需要公網可達的 HTTPS 閘道。CLI Auto 只修改 cursor-agent。",
+    "cursorCliAuto": "Cursor CLI：設為 Auto",
     "cursorLocalHint": "需要 Cursor Private Inference。連線後請完全退出並重新開啟；Cursor 內已儲存的閘道設定優先於此處的環境預設值。",
     "cursorCliHint": "管理 Cursor 原生模型選擇，CLI 請求仍透過 Cursor 服務。",
     "cursorAuto": "Auto · Cursor 原生",
@@ -5843,6 +5845,9 @@
     "openLogin": "開啟登入頁面"
   },
   "nativeSubscription": {
+    "hint_cursor": "使用 Cursor 訂閱及其帳號可用模型。支援瀏覽器登入、匯入本機 Cursor CLI 登入或帳號 JSON。需要 Node.js 20.19 或更新版本。",
+    "cursorRuntime": "請安裝 Node.js 20.19 或更新版本並重新啟動 VaryAI，以使用 Cursor 訂閱。",
+    "cursorProxyUnsupported": "Cursor 訂閱登入暫不支援自訂代理。",
     "callbackInvalid": "回呼 URL 與本次登入不符，請從瀏覽器複製完整的最終網址。",
     "proxyInvalid": "請輸入 HTTP、HTTPS 或 SOCKS 代理網址。",
     "authorizationUrl": "授權網址",

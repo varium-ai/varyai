@@ -20,6 +20,7 @@ const FAILED: &str = "nativeSubscription.failed";
 const EXPIRED: &str = "nativeSubscription.expired";
 const PROJECT: &str = "nativeSubscription.projectRequired";
 mod antigravity_quota;
+pub(crate) mod cursor;
 pub(crate) mod provider_import;
 
 #[cfg(test)]
@@ -141,6 +142,7 @@ fn supported(provider: SubscriptionProvider) -> Result<(), String> {
     matches!(
         provider,
         SubscriptionProvider::Claude
+            | SubscriptionProvider::Cursor
             | SubscriptionProvider::ChatgptApi
             | SubscriptionProvider::GeminiCli
             | SubscriptionProvider::Antigravity
@@ -270,6 +272,13 @@ pub(crate) async fn remove(provider: SubscriptionProvider, id: &str) -> Result<(
         .cloned();
     accounts.retain(|a| a.id != id || a.provider != provider);
     write(accounts).await?;
+    drop(_guard);
+    if let Some(account) = removed
+        .as_ref()
+        .filter(|a| a.provider == SubscriptionProvider::Cursor)
+    {
+        cursor::forget(account).await;
+    }
     if let Some(account) = removed.filter(|a| a.provider == SubscriptionProvider::Claude) {
         let dir = account.claude_dir();
         tokio::task::spawn_blocking(move || {
@@ -419,6 +428,13 @@ pub(crate) async fn resolve(provider: SubscriptionProvider, id: &str) -> Result<
         .ok_or(EXPIRED)?;
     if account.reauth_required {
         return Err(EXPIRED.into());
+    }
+    if provider == SubscriptionProvider::Cursor {
+        if cursor::auth(&account).is_err() {
+            observe_rejection(&account).await;
+            return Err(EXPIRED.into());
+        }
+        return Ok(account);
     }
     if provider == SubscriptionProvider::Claude
         || account.expires > chrono::Utc::now().timestamp() + 180
@@ -594,6 +610,11 @@ pub(crate) async fn start(
     target_id: Option<String>,
     proxy: Option<String>,
 ) -> Result<Flow, String> {
+    if provider == SubscriptionProvider::Cursor
+        && proxy.as_deref().is_some_and(|p| !p.trim().is_empty())
+    {
+        return Err("nativeSubscription.cursorProxyUnsupported".into());
+    }
     let login_client = crate::proxy::providers::codex_oauth_auth::sign_in_client(proxy.as_deref())
         .map_err(|error| {
             if error == "codexBrowser.proxyInvalid" {
@@ -614,6 +635,9 @@ pub(crate) async fn start(
         None
     };
     supported(provider)?;
+    if provider == SubscriptionProvider::Cursor {
+        return cursor::start(target).await;
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let mut registry = flows().lock().await;
     registry.retain(|_, flow| flow.state == "waiting");
@@ -1212,6 +1236,9 @@ pub(crate) async fn import(
     provider: SubscriptionProvider,
     path: Option<String>,
 ) -> Result<AccountSummary, String> {
+    if provider == SubscriptionProvider::Cursor {
+        return cursor::import(path).await;
+    }
     if !matches!(
         provider,
         SubscriptionProvider::Claude
@@ -1560,6 +1587,10 @@ fn subscription_model(row: &Value) -> Option<Value> {
 
 pub(crate) async fn models(provider: SubscriptionProvider, id: &str) -> Result<Vec<Value>, String> {
     let account = resolve(provider, id).await?;
+    if provider == SubscriptionProvider::Cursor {
+        return serde_json::from_value(cursor::call(&account, "/models").await?)
+            .map_err(|_| FAILED.into());
+    }
     if provider == SubscriptionProvider::Claude {
         if let Err(error) = claude_identity(&account).await {
             if error == EXPIRED {
@@ -1689,6 +1720,7 @@ fn quota_tier(name: &str, value: &Value) -> Option<super::subscription::QuotaTie
         .filter(|v| v.is_finite())?
         .clamp(0.0, 1.0);
     Some(super::subscription::QuotaTier {
+        display: None,
         name: name.into(),
         utilization: (1.0 - remaining) * 100.0,
         resets_at: value["resetTime"].as_str().map(str::to_owned),
@@ -1707,6 +1739,7 @@ fn quota_group_tier(name: &str, value: &Value) -> Option<super::subscription::Qu
         .unwrap_or(0.0)
         .clamp(0.0, 1.0);
     Some(super::subscription::QuotaTier {
+        display: None,
         name: name.into(),
         utilization: (1.0 - remaining) * 100.0,
         resets_at: value["resetTime"].as_str().map(str::to_owned),
@@ -1791,6 +1824,9 @@ pub(crate) async fn quota(
         Err(_) => return Err(FAILED.into()),
     };
     let result = async {
+        if provider == SubscriptionProvider::Cursor {
+            return cursor::quota(&cursor::call(&account, "/quota").await?);
+        }
         if google(provider) {
             observe_google_plan(&account).await;
             let project = google_project(&account).await?;
@@ -1946,6 +1982,7 @@ fn parse_claude_cli_usage(value: &Value) -> Option<super::subscription::Subscrip
                 }
             };
             Some(super::subscription::QuotaTier {
+                display: None,
                 name,
                 utilization: used,
                 resets_at: None,

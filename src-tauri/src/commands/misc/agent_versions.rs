@@ -53,8 +53,8 @@ fn detect_in(
     } else {
         agent_desktop_bundles(app)
     };
-    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen" | "cursor-cli");
-    let tool = if app == "cursor-cli" {
+    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen" | "cursor" | "cursor-cli");
+    let tool = if matches!(app, "cursor" | "cursor-cli") {
         "cursor-agent"
     } else {
         app
@@ -141,7 +141,7 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
             let info = detect_in(
                 app,
                 &roots,
-                &build_tool_search_paths(if app == "cursor-cli" {
+                &build_tool_search_paths(if matches!(app, "cursor" | "cursor-cli") {
                     "cursor-agent"
                 } else {
                     app
@@ -155,8 +155,10 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
                     || matches!(app, "cursor" | "t3code")
                 {
                     info.supported = true;
-                    info.installed = is_agent_installed(app);
-                    info.source = info.installed.then_some("desktop");
+                    if app != "cursor" || desktop_apps::windows_executable(app).is_some() {
+                        info.installed = is_agent_installed(app);
+                        info.source = info.installed.then_some("desktop");
+                    }
                 }
                 info
             };
@@ -182,6 +184,22 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unified_cursor_finds_a_cli_only_installation() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let bin = dir.path().join(if cfg!(windows) {
+            "cursor-agent.exe"
+        } else {
+            "cursor-agent"
+        });
+        std::fs::write(bin, b"synthetic presence fixture")?;
+        let info = detect_in("cursor", &[], &[dir.path().to_path_buf()], false);
+        assert!(info.supported && info.installed);
+        assert_eq!(info.source, Some("cli"));
+        assert!(info.version.is_none());
+        Ok(())
+    }
 
     #[test]
     #[cfg(target_os = "macos")]

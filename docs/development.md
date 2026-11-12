@@ -34,6 +34,7 @@ pnpm test:unit
 pnpm test:dev
 pnpm test:macos-dmg
 pnpm test:trae-bridge
+pnpm test:cursor-subscription
 pnpm test:model-default
 pnpm test:workbuddy-checkin-auth
 pnpm test:doubao-checkin

@@ -509,11 +509,23 @@ pub(crate) async fn restart_agent_connection(
     .await
     .map_err(|_| FAILED)?
 }
+async fn require_cursor_local(app: &str) -> Result<(), String> {
+    if app == "cursor"
+        && !tokio::task::spawn_blocking(super::misc::cursor_local_available)
+            .await
+            .map_err(|_| FAILED)?
+    {
+        return Err("agentConnections.cursorCloudHint".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn reapply_agent_connection(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<(), String> {
+    require_cursor_local(&app).await?;
     if app == "trae-intl" {
         let edition = Edition::International;
         if state
@@ -637,6 +649,9 @@ pub(crate) async fn set_agent_connection(
     enabled: bool,
     model: Option<String>,
 ) -> Result<(), String> {
+    if enabled {
+        require_cursor_local(&app).await?;
+    }
     if app == "cursor-cli" {
         if !enabled {
             return Err(FAILED.into());

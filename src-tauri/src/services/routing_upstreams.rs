@@ -183,11 +183,13 @@ pub(crate) enum SubscriptionProvider {
     ChatgptApi,
     GeminiCli,
     Antigravity,
+    Cursor,
 }
 impl SubscriptionProvider {
     pub(crate) fn endpoint(self) -> &'static str {
         match self {
             Self::GithubCopilot => "https://api.githubcopilot.com",
+            Self::Cursor => "https://agentn.global.api5.cursor.sh",
             Self::XaiOauth => super::grok_subscription::BASE,
             Self::Claude => "https://api.anthropic.com",
             Self::ChatgptApi => "https://api.openai.com/v1",
@@ -197,7 +199,7 @@ impl SubscriptionProvider {
     }
     pub(crate) fn format(self) -> &'static str {
         match self {
-            Self::GithubCopilot => "openai_chat",
+            Self::GithubCopilot | Self::Cursor => "openai_chat",
             Self::XaiOauth | Self::ChatgptApi => "openai_responses",
             Self::Claude => "anthropic",
             Self::GeminiCli | Self::Antigravity => "gemini_native",

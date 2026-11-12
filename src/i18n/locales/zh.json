@@ -1391,7 +1391,7 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
-    "cursor": "Cursor Private Inference",
+    "cursor": "Cursor",
     "cursor-cli": "Cursor CLI",
     "t3code": "T3 Code"
   },
@@ -5071,6 +5071,8 @@
     "sameAsHint": "自动发现分组及补全缺失模型信息时，将此模型视为填写的模型。发给供应商的模型 ID 保持原样。"
   },
   "agentConnections": {
+    "cursorCloudHint": "统一管理 Cursor 桌面版与 CLI。普通 Cursor 使用 Cursor 云端服务；使用 VaryAI 模型需要公网可达的 HTTPS 网关。CLI Auto 只修改 cursor-agent。",
+    "cursorCliAuto": "Cursor CLI：设为 Auto",
     "cursorLocalHint": "需要 Cursor Private Inference。连接后请完全退出并重新打开；Cursor 内已保存的网关配置优先于此处的环境默认值。",
     "cursorCliHint": "管理 Cursor 原生模型选择，CLI 请求仍通过 Cursor 服务。",
     "cursorAuto": "Auto · Cursor 原生",
@@ -5916,6 +5918,9 @@
     "openLogin": "打开登录页面"
   },
   "nativeSubscription": {
+    "hint_cursor": "使用 Cursor 订阅及其账号可用模型。支持浏览器登录、导入本地 Cursor CLI 登录或账号 JSON。需要 Node.js 20.19 或更高版本。",
+    "cursorRuntime": "请安装 Node.js 20.19 或更高版本并重启 VaryAI，以使用 Cursor 订阅。",
+    "cursorProxyUnsupported": "Cursor 订阅登录暂不支持自定义代理。",
     "callbackInvalid": "回调 URL 与本次登录不匹配，请从浏览器复制完整的最终地址。",
     "proxyInvalid": "请输入 HTTP、HTTPS 或 SOCKS 代理地址。",
     "authorizationUrl": "授权地址",

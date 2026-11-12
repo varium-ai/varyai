@@ -1,13 +1,13 @@
 # Subscription providers
 
 The global provider picker offers Claude, ChatGPT / Codex, ChatGPT API,
-GitHub Copilot, Gemini CLI, Antigravity, and Grok. Subscription accounts are
+GitHub Copilot, Gemini CLI, Antigravity, Grok, and Cursor. Subscription accounts are
 separate from API-key vendors. Each saved provider binds an explicit account;
 changing another application's default account does not change that binding.
 
 ## Account setup
 
-Clicking any of the seven subscription tiles starts sign-in directly below
+Clicking any subscription tile starts sign-in directly below
 the subscription grid. The tile stays selected while its panel shows progress,
 the authorization link when available, copy/reopen and cancellation controls.
 Codex can switch between browser authorization, device codes and file import;
@@ -18,6 +18,11 @@ the pending flow. A completed account opens its provider editor with that accoun
 selected. An existing subscription tile adds an account to its existing provider;
 it does not open the editor before authentication or create another provider.
 
+- **Cursor** uses the pinned Magpie community plugin protocol core. Browser PKCE
+  login, local CLI sign-in snapshots and account JSON imports bind an explicit
+  Cursor account. Node.js 20.19 or later is required. See the
+  [Cursor subscription guide](cursor-subscription.md) for model discovery,
+  tool execution and usage behavior.
 - **Claude** uses an installed `claude` executable. Browser sign-in runs
   `claude auth login --claudeai` in an isolated configuration directory. Local
   credential import copies the original sign-in without editing its source.
@@ -53,7 +58,7 @@ it does not open the editor before authentication or create another provider.
   Model discovery uses `fetchAvailableModels` for the selected account. Account
   JSON imports accept Google OAuth fields, optionally nested under `token`.
 
-The four additional account types keep credentials under
+These additional account types keep credentials under
 `~/.varyai/subscription-accounts`, outside portable routing data. JSON writes
 are atomic and owner-only on Unix. The renderer receives account summaries;
 the routing registry stores account IDs and model preferences, never tokens.

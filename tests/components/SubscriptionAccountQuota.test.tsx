@@ -28,6 +28,7 @@ beforeEach(() => {
 });
 function mount(
   provider:
+    | "cursor"
     | "claude"
     | "gemini_cli"
     | "antigravity"
@@ -161,4 +162,21 @@ it("keeps an exhausted enterprise shared pool visible without inventing unknown 
   } as never);
   mount("github_copilot");
   expect(await screen.findAllByText("codexProvider.remaining")).toHaveLength(1);
+});
+it("shows Cursor monetary usage without inventing a remaining percentage for an unlimited budget", async () => {
+  vi.mocked(nativeSubscriptionApi.quota).mockResolvedValue({
+    credentialStatus: "valid",
+    success: true,
+    tiers: [
+      {
+        name: "On-demand",
+        utilization: 0,
+        display: "$3.25 used",
+        resetsAt: null,
+      },
+    ],
+  } as never);
+  mount("cursor");
+  expect(await screen.findByText("$3.25 used")).toBeVisible();
+  expect(screen.queryByText("codexProvider.remaining")).toBeNull();
 });

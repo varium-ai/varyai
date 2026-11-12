@@ -13,6 +13,8 @@ const safeError = (cause: unknown) =>
     "nativeSubscription.expired",
     "nativeSubscription.clientRequired",
     "nativeSubscription.claudeMissing",
+    "nativeSubscription.cursorRuntime",
+    "nativeSubscription.cursorProxyUnsupported",
     "nativeSubscription.identityMismatch",
     "nativeSubscription.callbackInvalid",
     "nativeSubscription.proxyInvalid",

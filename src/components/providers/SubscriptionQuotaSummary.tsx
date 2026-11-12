@@ -27,12 +27,13 @@ export function SubscriptionQuotaSummary({
         <span className="pv-quota-window" key={`${tier.name}-${index}`}>
           {label}{" "}
           <b>
-            {t("codexProvider.remaining", {
-              n: Math.max(
-                0,
-                Math.min(100, Math.round((100 - tier.utilization) * 10) / 10),
-              ),
-            })}
+            {tier.display ??
+              t("codexProvider.remaining", {
+                n: Math.max(
+                  0,
+                  Math.min(100, Math.round((100 - tier.utilization) * 10) / 10),
+                ),
+              })}
           </b>
         </span>
       ))}

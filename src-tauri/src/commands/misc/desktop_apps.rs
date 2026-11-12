@@ -12,7 +12,7 @@ fn ids(app: &str) -> &'static [&'static str] {
         "qoder" => &["com.qodercn.app"],
         "doubaowork" => &["com.work.pc.doubao"],
         "deepseek-harness" => &["com.deepseek.dsh"],
-        "cursor" => &["com.todesktop.230313mzl4w4u92"],
+        "cursor" | "cursor-private-inference" => &["com.todesktop.230313mzl4w4u92"],
         "t3code" => &["com.t3tools.t3code"],
         _ => &[],
     }
@@ -69,7 +69,9 @@ pub(super) fn find_in(app: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn matches(app: &str, path: &Path, named: bool) -> bool {
-    if app == "cursor" && !cursor_local_product(&path.join("Contents/Resources/app/product.json")) {
+    if app == "cursor-private-inference"
+        && !cursor_local_product(&path.join("Contents/Resources/app/product.json"))
+    {
         return false;
     }
     let Ok(resolved) = path.canonicalize() else {
@@ -447,9 +449,14 @@ pub(super) fn windows_executable(app: &str) -> Option<PathBuf> {
         std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("Programs")),
         std::env::var_os("ProgramFiles").map(PathBuf::from),
     ];
-    for root in roots.into_iter().flatten() {
+    windows_executable_in(app, &roots.into_iter().flatten().collect::<Vec<_>>())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_executable_in(app: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    for root in roots {
         let entries: &[(&str, &str)] = match app {
-            "cursor" => &[
+            "cursor" | "cursor-private-inference" => &[
                 ("cursor", "Cursor.exe"),
                 ("cursor-private-inference", "Cursor.exe"),
                 ("cursor-private", "Cursor.exe"),
@@ -466,7 +473,7 @@ pub(super) fn windows_executable(app: &str) -> Option<PathBuf> {
             let directory = root.join(folder);
             let path = directory.join(executable);
             if path.is_file()
-                && (app != "cursor"
+                && (app != "cursor-private-inference"
                     || cursor_local_product(&directory.join("resources/app/product.json")))
             {
                 return Some(path);
@@ -480,18 +487,44 @@ pub(super) fn windows_executable(app: &str) -> Option<PathBuf> {
 mod additional_agent_tests {
     use super::*;
     #[test]
+    fn windows_cursor_detection_keeps_ordinary_and_private_capabilities_distinct(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let installed = dir.path().join("cursor");
+        let resources = installed.join("resources/app");
+        std::fs::create_dir_all(&resources)?;
+        std::fs::write(installed.join("Cursor.exe"), b"synthetic presence fixture")?;
+        std::fs::write(resources.join("product.json"), r#"{"nameShort":"Cursor"}"#)?;
+        let roots = [dir.path().to_path_buf()];
+        assert!(windows_executable_in("cursor", &roots).is_some());
+        assert!(windows_executable_in("cursor-private-inference", &roots).is_none());
+        std::fs::write(
+            resources.join("product.json"),
+            r#"{"nameShort":"Cursor Private Inference"}"#,
+        )?;
+        assert!(windows_executable_in("cursor", &roots).is_some());
+        assert!(windows_executable_in("cursor-private-inference", &roots).is_some());
+        std::fs::write(resources.join("product.json"), b"invalid fixture")?;
+        assert!(windows_executable_in("cursor", &roots).is_some());
+        assert!(windows_executable_in("cursor-private-inference", &roots).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn cursor_private_inference_requires_product_identity_not_the_regular_bundle(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("Cursor.app/Contents/Resources/app");
         std::fs::create_dir_all(&root)?;
         std::fs::write(root.join("product.json"), r#"{"nameShort":"Cursor"}"#)?;
-        assert!(find_in("cursor", &[dir.path().to_path_buf()]).is_none());
+        assert!(find_in("cursor", &[dir.path().to_path_buf()]).is_some());
+        assert!(find_in("cursor-private-inference", &[dir.path().to_path_buf()]).is_none());
         std::fs::write(
             root.join("product.json"),
             r#"{"nameShort":"Cursor Private Inference"}"#,
         )?;
         assert!(find_in("cursor", &[dir.path().to_path_buf()]).is_some());
+        assert!(find_in("cursor-private-inference", &[dir.path().to_path_buf()]).is_some());
         Ok(())
     }
 }

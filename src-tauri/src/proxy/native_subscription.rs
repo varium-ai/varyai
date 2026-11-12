@@ -79,6 +79,7 @@ pub(crate) fn specialized(provider: &Provider) -> bool {
         matches!(
             binding.provider,
             SubscriptionProvider::Claude
+                | SubscriptionProvider::Cursor
                 | SubscriptionProvider::XaiOauth
                 | SubscriptionProvider::ChatgptApi
                 | SubscriptionProvider::GeminiCli
@@ -167,6 +168,7 @@ pub(crate) async fn forward(
     let streaming = request.stream;
     let source_protocol = match binding.provider {
         SubscriptionProvider::Claude => Protocol::Anthropic,
+        SubscriptionProvider::Cursor => Protocol::Chat,
         SubscriptionProvider::ChatgptApi | SubscriptionProvider::XaiOauth => Protocol::Responses,
         _ => Protocol::Gemini,
     };
@@ -222,6 +224,9 @@ pub(crate) async fn forward(
         Box::pin(response.bytes_stream().map(|chunk| {
             chunk.map_err(|_| std::io::Error::other("Subscription stream interrupted"))
         })) as ByteStream
+    } else if binding.provider == SubscriptionProvider::Cursor {
+        let body = ir::build::request(&request, Protocol::Chat)?;
+        accounts::cursor::chat(account.as_ref().ok_or_else(invalid)?, body, session).await?
     } else if binding.provider == SubscriptionProvider::Claude {
         claude(account.as_ref().ok_or_else(invalid)?, &request).await?
     } else if binding.provider == SubscriptionProvider::ChatgptApi {
@@ -603,6 +608,73 @@ async fn claude_with_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn cursor_tool_usage_survives_every_client_protocol_without_inflating_context() {
+        use crate::proxy::usage::parser::TokenUsage;
+        for (prompt, output, cached, written) in [(10, 3, 2, 1), (0, 0, 0, 0)] {
+            let usage = json!({"prompt_tokens":prompt,"completion_tokens":output,"prompt_tokens_details":{"cached_tokens":cached,"cache_write_tokens":written},"magpie_deferred":{"prompt_tokens":20,"completion_tokens":7,"cached_tokens":5,"cache_write_tokens":1}});
+            let frame = json!({"id":"synthetic-cursor-reply","model":"fixture","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_cursor_fixture","function":{"name":"fixture","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":usage});
+            for protocol in [
+                Protocol::Chat,
+                Protocol::Responses,
+                Protocol::Anthropic,
+                Protocol::Gemini,
+            ] {
+                let source = || {
+                    Box::pin(futures::stream::iter(vec![Ok(Bytes::from(format!(
+                        "data: {frame}\n\ndata: [DONE]\n\n"
+                    )))]))
+                };
+                let reply = ir::stream::collect(source(), Protocol::Chat)
+                    .await
+                    .expect("Cursor fixture");
+                let wire = ir::reply::render(protocol, &reply).expect("client wire");
+                let counts = match protocol {
+                    Protocol::Chat => TokenUsage::from_openai_response(&wire),
+                    Protocol::Responses => TokenUsage::from_codex_response(&wire),
+                    Protocol::Anthropic => TokenUsage::from_claude_response(&wire),
+                    Protocol::Gemini => TokenUsage::from_gemini_response(&wire),
+                }
+                .expect("accounted usage");
+                let expected_input = if protocol == Protocol::Anthropic {
+                    prompt - cached - written + 14
+                } else {
+                    prompt + 20
+                };
+                assert_eq!(counts.input_tokens, expected_input);
+                assert_eq!(counts.output_tokens, output + 7);
+                assert_eq!(counts.cache_read_tokens, cached + 5);
+                assert_eq!(counts.cache_creation_tokens, written + 1);
+                if protocol == Protocol::Chat {
+                    assert_eq!(wire["usage"]["prompt_tokens"], prompt);
+                }
+                assert!(reply.parts.iter().any(|p| matches!(p, ir::Part::ToolCall { id, name, .. } if id == "call_cursor_fixture" && name == "fixture")));
+                let bytes = ir::stream::transcode(source(), Protocol::Chat, protocol)
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .map(|b| b.expect("stream fixture"))
+                    .collect::<Vec<_>>()
+                    .concat();
+                let events: Vec<Value> = String::from_utf8(bytes)
+                    .expect("UTF8")
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter_map(|data| serde_json::from_str(data).ok())
+                    .collect();
+                let streamed = match protocol {
+                    Protocol::Chat => TokenUsage::from_openai_stream_events(&events),
+                    Protocol::Responses => TokenUsage::from_codex_stream_events_auto(&events),
+                    Protocol::Anthropic => TokenUsage::from_claude_stream_events(&events),
+                    Protocol::Gemini => TokenUsage::from_gemini_stream_chunks(&events),
+                }
+                .expect("streamed accounting");
+                assert_eq!(streamed.input_tokens, expected_input);
+                assert_eq!(streamed.output_tokens, counts.output_tokens);
+                assert_eq!(streamed.cache_creation_tokens, counts.cache_creation_tokens);
+            }
+        }
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_claude_resumes_typed_history_and_returns_the_following_turn(

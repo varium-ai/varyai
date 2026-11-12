@@ -33,6 +33,10 @@ export interface AgentConnection {
   nativeCompatibility?: RoutingClientStatus["nativeCompatibility"] | null;
   configurationIssue?: RoutingClientStatus["configurationIssue"];
 }
+export interface CursorInstallation {
+  desktop: "standard" | "private-inference" | null;
+  cli: boolean;
+}
 export interface CodexProxyIssue {
   target: string;
   proxy: string;
@@ -65,6 +69,8 @@ export interface AgentModelControl {
   pending: boolean;
 }
 export const agentConnectionsApi = {
+  cursorInstallation: () =>
+    invoke<CursorInstallation>("get_cursor_installation"),
   get: (app: string) =>
     invoke<AgentConnection>("get_agent_connection", { app }),
   nativeModel: (app: string) =>

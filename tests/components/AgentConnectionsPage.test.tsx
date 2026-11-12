@@ -47,6 +47,7 @@ vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
     list: vi.fn(),
     get: vi.fn(),
+    cursorInstallation: vi.fn(async () => ({ desktop: "standard", cli: true })),
     diagnoseCodexProxy: vi.fn(),
     nativeModel: vi.fn(),
     modelControl: vi.fn(async () => ({
@@ -404,6 +405,10 @@ it("keeps version updates inside tray details instead of the quick summary", asy
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(agentConnectionsApi.cursorInstallation).mockResolvedValue({
+    desktop: "standard",
+    cli: true,
+  });
   vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
     accounts: [],
     nativeStatus: {
@@ -3407,21 +3412,25 @@ describe("Agent connections", () => {
       }),
     ).toBeEnabled();
   });
-  it("keeps Cursor CLI on its native model choices without a gateway switch", async () => {
+  it("groups Cursor CLI native choices under Cursor without a gateway switch", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      cursor: true,
       "cursor-cli": true,
     });
     vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValue([
       { app: "cursor-cli", available: true, model: "native-example" },
     ]);
     mount();
-    const row = await screen.findByRole("article", { name: "apps.cursor-cli" });
+    const row = await screen.findByRole("article", { name: "apps.cursor" });
+    expect(
+      screen.queryByRole("article", { name: "apps.cursor-cli" }),
+    ).not.toBeInTheDocument();
     expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
     expect(
-      within(row).getByText("agentConnections.cursorCliHint"),
+      within(row).getByText("agentConnections.cursorCloudHint"),
     ).toBeInTheDocument();
     const picker = within(row).getByRole("button", {
-      name: "agentConnections.model apps.cursor-cli",
+      name: "agentConnections.model apps.cursor",
     });
     await waitFor(() => expect(picker).toBeEnabled());
     fireEvent.click(picker);
@@ -3439,12 +3448,131 @@ describe("Agent connections", () => {
       ),
     );
   });
+  it("shows an ordinary Cursor IDE without offering a loopback gateway or CLI model picker", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      cursor: true,
+    });
+    vi.mocked(agentConnectionsApi.cursorInstallation).mockResolvedValue({
+      desktop: "standard",
+      cli: false,
+    });
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.cursor" });
+    expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", {
+        name: "agentConnections.model apps.cursor",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).getByText("agentConnections.cursorCloudHint"),
+    ).toBeInTheDocument();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+  it("keeps CLI-only installations in the single Cursor row", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      cursor: true,
+      "cursor-cli": true,
+    });
+    vi.mocked(agentConnectionsApi.cursorInstallation).mockResolvedValue({
+      desktop: null,
+      cli: true,
+    });
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.cursor" });
+    expect(
+      screen.queryByRole("article", { name: "apps.cursor-cli" }),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(row).getByRole("button", {
+          name: "agentConnections.model apps.cursor",
+        }),
+      ).toBeEnabled(),
+    );
+    expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
+  });
+  it("keeps CLI Auto separate from desktop routing within the same Cursor row", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      cursor: true,
+      "cursor-cli": true,
+    });
+    vi.mocked(agentConnectionsApi.cursorInstallation).mockResolvedValue({
+      desktop: "private-inference",
+      cli: true,
+    });
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.cursor" });
+    const auto = await within(row).findByRole("button", {
+      name: "agentConnections.cursorCliAuto",
+    });
+    fireEvent.click(auto);
+    await waitFor(() =>
+      expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+        "cursor-cli",
+        true,
+        "auto",
+      ),
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalledWith(
+      "cursor",
+      true,
+      "auto",
+    );
+    expect(within(row).getByRole("switch")).toBeInTheDocument();
+  });
+  it("withholds Cursor gateway controls when edition detection fails", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      cursor: true,
+    });
+    vi.mocked(agentConnectionsApi.cursorInstallation).mockRejectedValue(
+      new Error("synthetic-detection-failure"),
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.cursor" });
+    await waitFor(() =>
+      expect(agentConnectionsApi.cursorInstallation).toHaveBeenCalled(),
+    );
+    expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+  it("withholds stale Cursor local capability after a failed edition rescan", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      cursor: true,
+    });
+    vi.mocked(agentConnectionsApi.cursorInstallation).mockResolvedValue({
+      desktop: "private-inference",
+      cli: false,
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mount(false, client);
+    const row = await screen.findByRole("article", { name: "apps.cursor" });
+    await within(row).findByRole("switch");
+    vi.mocked(agentConnectionsApi.cursorInstallation).mockRejectedValue(
+      new Error("synthetic-rescan-failure"),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["cursor-installation"] });
+    });
+    await waitFor(() =>
+      expect(within(row).queryByRole("switch")).not.toBeInTheDocument(),
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
   it.each(["cursor", "t3code"])(
     "connects %s to a shared model with its setup boundary visible",
     async (app) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
         [app]: true,
       });
+      if (app === "cursor") {
+        vi.mocked(agentConnectionsApi.cursorInstallation).mockResolvedValue({
+          desktop: "private-inference",
+          cli: false,
+        });
+      }
       mount();
       const row = await screen.findByRole("article", { name: `apps.${app}` });
       expect(

@@ -181,6 +181,8 @@ pub(crate) struct Usage {
     pub cache_read: u64,
     pub cache_write: u64,
     pub reasoning: u64,
+    /// Prior tool steps billed now, separate from the current context size.
+    pub deferred: Option<Box<Usage>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

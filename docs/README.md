@@ -7,6 +7,7 @@
 - [Agent updates and background progress](guides/agent-updates.md)
 - [Default models for Agents](guides/agent-default-models.md)
 - [Cursor and T3 Code integration](guides/cursor-t3code.md)
+- [Cursor subscription provider](guides/cursor-subscription.md)
 - [Provider setup and local routing](guides/provider-routing.md)
 - [Subscription accounts and provider execution](guides/subscription-providers.md)
 - [Global upstreams and routing groups](guides/intent-routing.md)

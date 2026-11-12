@@ -41,6 +41,17 @@ pub(super) fn prompt(usage: &Usage) -> u64 {
         .saturating_add(usage.cache_write)
 }
 pub(super) fn usage(protocol: Protocol, value: &Value) -> Usage {
+    let mut current = usage_counts(protocol, value);
+    if let Some(deferred) = value
+        .get("varyai_deferred")
+        .or_else(|| value.get("magpie_deferred"))
+        .filter(|v| v.is_object())
+    {
+        current.deferred = Some(Box::new(usage_counts(Protocol::Chat, deferred)));
+    }
+    current
+}
+fn usage_counts(protocol: Protocol, value: &Value) -> Usage {
     let (whole, output, read, write, reasoning) = match protocol {
         Protocol::Anthropic => (
             count(&value["input_tokens"]),
@@ -57,7 +68,8 @@ pub(super) fn usage(protocol: Protocol, value: &Value) -> Usage {
                 .max(count(&value["cached_tokens"]))
                 .max(count(&value["cache_read_input_tokens"])),
             count(&value["prompt_tokens_details"]["cache_write_tokens"])
-                .max(count(&value["cache_creation_input_tokens"])),
+                .max(count(&value["cache_creation_input_tokens"]))
+                .max(count(&value["cache_write_tokens"])),
             count(&value["completion_tokens_details"]["reasoning_tokens"]),
         ),
         Protocol::Responses => (
@@ -72,7 +84,7 @@ pub(super) fn usage(protocol: Protocol, value: &Value) -> Usage {
             count(&value["candidatesTokenCount"])
                 .saturating_add(count(&value["thoughtsTokenCount"])),
             count(&value["cachedContentTokenCount"]),
-            0,
+            count(&value["varyai_cache_write_tokens"]),
             count(&value["thoughtsTokenCount"]),
         ),
     };
@@ -86,11 +98,12 @@ pub(super) fn usage(protocol: Protocol, value: &Value) -> Usage {
         cache_read: read,
         cache_write: write,
         reasoning,
+        deferred: None,
     }
 }
 pub(super) fn render_usage(protocol: Protocol, u: &Usage) -> Value {
     let p = prompt(u);
-    match protocol {
+    let mut rendered = match protocol {
         Protocol::Anthropic => {
             json!({"input_tokens":u.input,"output_tokens":u.output,"cache_read_input_tokens":u.cache_read,"cache_creation_input_tokens":u.cache_write})
         }
@@ -103,7 +116,16 @@ pub(super) fn render_usage(protocol: Protocol, u: &Usage) -> Value {
         Protocol::Gemini => {
             json!({"promptTokenCount":p,"candidatesTokenCount":u.output.saturating_sub(u.reasoning),"thoughtsTokenCount":u.reasoning,"totalTokenCount":p.saturating_add(u.output),"cachedContentTokenCount":u.cache_read})
         }
+    };
+    if protocol == Protocol::Gemini && u.cache_write > 0 {
+        rendered["varyai_cache_write_tokens"] = json!(u.cache_write);
     }
+    if let Some(deferred) = &u.deferred {
+        let mut deferred = deferred.as_ref().clone();
+        deferred.deferred = None;
+        rendered["varyai_deferred"] = render_usage(Protocol::Chat, &deferred);
+    }
+    rendered
 }
 pub(super) fn stop(protocol: Protocol, value: &str) -> String {
     match protocol {
@@ -905,6 +927,7 @@ mod tests {
                 cache_read: 3,
                 cache_write: 2,
                 reasoning: 1,
+                deferred: None,
             },
         }
     }
@@ -928,23 +951,9 @@ mod tests {
                 assert_eq!(actual.id, parsed.id);
                 assert_eq!(actual.model, parsed.model);
                 assert_eq!(actual.stop, "tool");
-                assert_eq!(
-                    actual.usage.input,
-                    if source == Protocol::Gemini || target == Protocol::Gemini {
-                        9
-                    } else {
-                        7
-                    }
-                );
+                assert_eq!(actual.usage.input, 7);
                 assert_eq!(actual.usage.cache_read, 3);
-                assert_eq!(
-                    actual.usage.cache_write,
-                    if source == Protocol::Gemini || target == Protocol::Gemini {
-                        0
-                    } else {
-                        2
-                    }
-                );
+                assert_eq!(actual.usage.cache_write, 2);
                 assert!(actual
                     .parts
                     .iter()

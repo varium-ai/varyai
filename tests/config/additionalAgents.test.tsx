@@ -8,7 +8,7 @@ import {
 } from "@/config/appConfig";
 
 describe("additional agent entries", () => {
-  it.each(["cursor", "cursor-cli", "t3code"])(
+  it.each(["cursor", "t3code"])(
     "registers %s without advertising unsupported legacy integrations",
     (app) => {
       expect(APP_IDS).toContain(app);
@@ -20,4 +20,9 @@ describe("additional agent entries", () => {
       expect(SKILLS_APP_IDS).not.toContain(app);
     },
   );
+  it("groups Cursor desktop and CLI under one public entry", () => {
+    expect(APP_IDS).toContain("cursor");
+    expect(APP_IDS).not.toContain("cursor-cli");
+    expect(APP_ICON_MAP.cursor.label).toBe("Cursor");
+  });
 });

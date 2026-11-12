@@ -326,7 +326,9 @@ export function NativeSubscriptionAccounts({
                       : t("subscriptionProvider.addAccount"),
                   onClick: () => void run(() => startLogin(), false),
                 },
-                ...(provider === "claude" || provider === "gemini_cli"
+                ...(provider === "claude" ||
+                provider === "gemini_cli" ||
+                provider === "cursor"
                   ? [
                       {
                         key: "local",

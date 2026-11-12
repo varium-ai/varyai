@@ -656,6 +656,7 @@ pub(crate) async fn query_grok_quota(
     };
 
     let tier = QuotaTier {
+        display: None,
         name: tier_name_for_reset(snapshot.resets_at, now_secs).to_string(),
         utilization: snapshot.used_percent.clamp(0.0, 100.0),
         resets_at: snapshot

@@ -25,6 +25,7 @@ fn tier(name: String, value: &Value) -> Option<QuotaTier> {
     }
     let remaining = remaining(value)?;
     Some(QuotaTier {
+        display: None,
         name,
         utilization: (1.0 - remaining) * 100.0,
         resets_at: value["resetTime"]

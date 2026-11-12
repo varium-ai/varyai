@@ -75,7 +75,13 @@ it("lists each provider separately and requires explicit account selection", asy
   fireEvent.click(account);
   expect(onSelect).toHaveBeenCalledWith("fixture-account");
 });
-it.each(["claude", "chatgpt_api", "gemini_cli", "antigravity"] as const)(
+it.each([
+  "claude",
+  "chatgpt_api",
+  "gemini_cli",
+  "antigravity",
+  "cursor",
+] as const)(
   "keeps %s account actions inside the same account frame",
   async (provider) => {
     mount(provider);
@@ -95,7 +101,11 @@ it.each(["claude", "chatgpt_api", "gemini_cli", "antigravity"] as const)(
         }),
       );
     }
-    if (provider === "claude" || provider === "gemini_cli") {
+    if (
+      provider === "claude" ||
+      provider === "gemini_cli" ||
+      provider === "cursor"
+    ) {
       expect(frame).toContainElement(
         screen.getByRole("button", {
           name: "nativeSubscription.importLocal",
@@ -162,7 +172,13 @@ it("imports local Claude credentials and selects the returned account", async ()
   expect(api.import).toHaveBeenCalledWith("claude", undefined);
 });
 
-it.each(["claude", "chatgpt_api", "gemini_cli", "antigravity"] as const)(
+it.each([
+  "claude",
+  "chatgpt_api",
+  "gemini_cli",
+  "antigravity",
+  "cursor",
+] as const)(
   "offers re-login and a cached plan for rejected %s credentials",
   async (provider) => {
     vi.mocked(api.accounts).mockResolvedValue([

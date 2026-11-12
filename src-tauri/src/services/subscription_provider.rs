@@ -51,8 +51,11 @@ pub(crate) async fn resolve(
         }
         service => {
             let account = super::native_subscription::resolve(service, &binding.account_id).await?;
-            // Claude is executed by its CLI; this placeholder is never sent.
-            let token = if service == SubscriptionProvider::Claude {
+            // Specialized execution owns these credentials; this placeholder is never sent.
+            let token = if matches!(
+                service,
+                SubscriptionProvider::Claude | SubscriptionProvider::Cursor
+            ) {
                 "subscription-cli".to_owned()
             } else {
                 account.token().to_string()
@@ -163,6 +166,7 @@ mod tests {
             "chatgpt_api",
             "gemini_cli",
             "antigravity",
+            "cursor",
         ] {
             let draft = serde_json::from_value(json!({
                 "schemaVersion":1,"id":"","name":service,"revision":0,
