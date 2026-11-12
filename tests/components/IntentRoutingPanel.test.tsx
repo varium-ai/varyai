@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -16,11 +17,13 @@ import {
   vi,
 } from "vitest";
 import { IntentRoutingPanel } from "@/components/routing/IntentRoutingPanel";
-import { intentRoutingApi } from "@/lib/api/intentRouting";
+import { intentRoutingApi, type RoutingGroup } from "@/lib/api/intentRouting";
 import userEvent from "@testing-library/user-event";
 import { copyText } from "@/lib/clipboard";
+import { toast } from "sonner";
 import { routingTemplates } from "@/lib/routingGroupTransfer";
 vi.mock("@/lib/clipboard", () => ({ copyText: vi.fn() }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
 
 vi.mock("@/components/routing/RoutingClient", () => ({
   RoutingClient: () => null,
@@ -45,7 +48,9 @@ vi.mock("@/lib/api/intentRouting", () => ({
   },
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string) => key,
+  }),
 }));
 
 const group = {
@@ -86,7 +91,410 @@ function mount(
   );
 }
 
+async function openManagement() {
+  const manage = await screen.findByRole("button", {
+    name: "routingPage.manage",
+  });
+  await waitFor(() => expect(manage).toBeEnabled());
+  fireEvent.click(manage);
+}
+
 describe("IntentRoutingPanel", () => {
+  it.each([false, true])(
+    "keeps independent rows usable and does not release another row's operation (first fails: %s)",
+    async (firstFails) => {
+      const second = { ...group, id: "second-group", name: "Second group" };
+      const saved = new Map<string, RoutingGroup>([
+        [group.id, structuredClone(group)],
+        [second.id, second],
+      ]);
+      const finishes = new Map<
+        string,
+        { succeed: () => void; fail: () => void }
+      >();
+      vi.mocked(intentRoutingApi.list).mockImplementation(async () => ({
+        groups: [...saved.values()],
+        autoCreate: false,
+        omittedGroups: 0,
+      }));
+      vi.mocked(intentRoutingApi.save).mockImplementation(
+        (value) =>
+          new Promise((resolve, reject) => {
+            finishes.set(value.id, {
+              succeed: () => {
+                const next = { ...value, revision: value.revision + 1 };
+                saved.set(value.id, next);
+                resolve(next);
+              },
+              fail: () => reject("intentRouting.conflict"),
+            });
+          }),
+      );
+      const { container } = mount();
+      await screen.findByText("Second group");
+      const row = (id: string) =>
+        container.querySelector<HTMLElement>(`[data-routing-group="${id}"]`)!;
+      const toggle = (id: string) => within(row(id)).getByRole("switch");
+      fireEvent.click(toggle(group.id));
+      expect(row(group.id)).toHaveAttribute("aria-busy", "true");
+      expect(toggle(group.id)).toBeDisabled();
+      expect(toggle(second.id)).toBeEnabled();
+      expect(within(row(second.id)).getByRole("combobox")).toBeEnabled();
+      expect(
+        within(row(second.id)).getByRole("button", { name: "common.edit" }),
+      ).toBeEnabled();
+      for (const name of [
+        "routingPage.import",
+        "routingPage.refresh",
+        "routingPage.manage",
+        "intentRouting.create",
+      ])
+        expect(screen.getByRole("button", { name })).toBeEnabled();
+      fireEvent.click(toggle(group.id));
+      expect(intentRoutingApi.save).toHaveBeenCalledTimes(1);
+      fireEvent.click(toggle(second.id));
+      expect(intentRoutingApi.save).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        if (firstFails) finishes.get(group.id)!.fail();
+        else finishes.get(group.id)!.succeed();
+      });
+      await waitFor(() =>
+        expect(row(group.id)).toHaveAttribute("aria-busy", "false"),
+      );
+      expect(toggle(group.id)).toBeEnabled();
+      expect(row(second.id)).toHaveAttribute("aria-busy", "true");
+      expect(toggle(second.id)).toBeDisabled();
+      await act(async () => finishes.get(second.id)!.succeed());
+      await waitFor(() => expect(toggle(second.id)).toBeEnabled());
+      expect(row(second.id)).toHaveAttribute("aria-busy", "false");
+      expect(toggle(second.id)).toHaveAttribute("aria-checked", "true");
+    },
+  );
+
+  it("keeps other rows and page controls usable while a strategy save is pending", async () => {
+    const second = { ...group, id: "second-group", name: "Second group" };
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [group, second],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    let finish!: (value: RoutingGroup) => void;
+    vi.mocked(intentRoutingApi.save).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { container } = mount();
+    await screen.findByText("Second group");
+    const firstRow = container.querySelector<HTMLElement>(
+      '[data-routing-group="fixture"]',
+    )!;
+    const secondRow = container.querySelector<HTMLElement>(
+      '[data-routing-group="second-group"]',
+    )!;
+    const user = userEvent.setup();
+    await user.click(within(firstRow).getByRole("combobox"));
+    await user.click(
+      screen.getByRole("option", { name: "intentRouting.routingSmart" }),
+    );
+    expect(within(firstRow).getByRole("switch")).toBeDisabled();
+    expect(within(secondRow).getByRole("switch")).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "routingPage.import" }),
+    ).toBeEnabled();
+    await act(async () => finish({ ...group, routing: "smart", revision: 2 }));
+    await waitFor(() =>
+      expect(within(firstRow).getByRole("switch")).toBeEnabled(),
+    );
+  });
+
+  it("keeps a copy operation scoped to its source row", async () => {
+    const second = { ...group, id: "second-group", name: "Second group" };
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [group, second],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    let finish!: (value: RoutingGroup) => void;
+    vi.mocked(intentRoutingApi.save).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { container } = mount();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", {
+        name: "routingPage.more Fixture group",
+      }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: "routingPage.duplicate" }),
+    );
+    const firstRow = container.querySelector<HTMLElement>(
+      '[data-routing-group="fixture"]',
+    )!;
+    const secondRow = container.querySelector<HTMLElement>(
+      '[data-routing-group="second-group"]',
+    )!;
+    expect(firstRow).toHaveAttribute("aria-busy", "true");
+    expect(within(secondRow).getByRole("switch")).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "routingPage.import" }),
+    ).toBeEnabled();
+    const duplicate = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    await act(async () => finish({ ...duplicate, revision: 1 }));
+    await waitFor(() => expect(firstRow).toHaveAttribute("aria-busy", "false"));
+  });
+
+  it.each([false, true])(
+    "queues concurrent copies without losing groups (first fails: %s)",
+    async (firstFails) => {
+      const second = { ...group, id: "second-group", name: "Second group" };
+      let catalog: RoutingGroup[] = [group, second];
+      const finishes: Array<() => void> = [];
+      vi.mocked(intentRoutingApi.list).mockImplementation(async () => ({
+        groups: catalog,
+        autoCreate: false,
+        omittedGroups: 0,
+      }));
+      vi.mocked(intentRoutingApi.save).mockImplementation(
+        (value) =>
+          new Promise((resolve, reject) => {
+            const first = finishes.length === 0;
+            finishes.push(() => {
+              if (first && firstFails) reject("intentRouting.conflict");
+              else {
+                const saved = { ...value, revision: 1 };
+                catalog = [...catalog, saved];
+                resolve(saved);
+              }
+            });
+          }),
+      );
+      vi.mocked(intentRoutingApi.arrange).mockImplementation(async (ids) => {
+        expect(new Set(ids)).toEqual(new Set(catalog.map((entry) => entry.id)));
+        catalog = ids.map((id) => catalog.find((entry) => entry.id === id)!);
+      });
+      const { container } = mount();
+      const user = userEvent.setup();
+      for (const name of [group.name, second.name]) {
+        await user.click(
+          await screen.findByRole("button", {
+            name: `routingPage.more ${name}`,
+          }),
+        );
+        await user.click(
+          screen.getByRole("menuitem", { name: "routingPage.duplicate" }),
+        );
+      }
+      const secondRow = container.querySelector<HTMLElement>(
+        '[data-routing-group="second-group"]',
+      )!;
+      expect(secondRow).toHaveAttribute("aria-busy", "true");
+      expect(intentRoutingApi.save).toHaveBeenCalledTimes(1);
+      await act(async () => finishes[0]());
+      await waitFor(() =>
+        expect(intentRoutingApi.save).toHaveBeenCalledTimes(2),
+      );
+      expect(within(secondRow).getByRole("switch")).toBeDisabled();
+      await act(async () => finishes[1]());
+      await waitFor(() =>
+        expect(within(secondRow).getByRole("switch")).toBeEnabled(),
+      );
+      const copies = vi
+        .mocked(intentRoutingApi.save)
+        .mock.calls.map(([value]) => value);
+      expect(catalog.map((entry) => entry.id)).toEqual(
+        firstFails
+          ? [group.id, second.id, copies[1].id]
+          : [group.id, copies[0].id, second.id, copies[1].id],
+      );
+    },
+  );
+
+  it("keeps other rows available while deletion refreshes the list", async () => {
+    const second = { ...group, id: "second-group", name: "Second group" };
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [group, second],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    let finishRefresh!: () => void;
+    vi.mocked(intentRoutingApi.remove).mockImplementation(async () => {
+      vi.mocked(intentRoutingApi.list).mockReturnValue(
+        new Promise((resolve) => {
+          finishRefresh = () =>
+            resolve({ groups: [second], autoCreate: false, omittedGroups: 0 });
+        }),
+      );
+    });
+    const { container } = mount();
+    await screen.findByText("Second group");
+    const row = container.querySelector<HTMLElement>(
+      '[data-routing-group="fixture"]',
+    )!;
+    fireEvent.click(within(row).getByRole("button", { name: "common.delete" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "intentRouting.confirmDelete" }),
+    );
+    await waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const secondRow = container.querySelector<HTMLElement>(
+      '[data-routing-group="second-group"]',
+    )!;
+    expect(within(secondRow).getByRole("switch")).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "routingPage.refresh" }),
+    ).toBeEnabled();
+    await act(async () => finishRefresh());
+  });
+
+  it("keeps template cards visible while Manage only changes batch selection", async () => {
+    mount();
+    await screen.findByText("Fixture group");
+    const table = screen.getByRole("table", { name: "intentRouting.title" });
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((cell) => cell.textContent),
+    ).toEqual([
+      "routingPage.groupName",
+      "routingPage.upstreamCount",
+      "routingPage.requestCount",
+      "routingPage.switchCount",
+      "routingPage.agentErrorCount",
+      "routingPage.actions",
+    ]);
+    expect(
+      screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "routingPage.manage" }));
+    expect(
+      screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("routingPage.templateSmart")).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "routingPage.templates" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("checkbox", { name: "Fixture group" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "routingPage.removeSelected" }),
+    ).toBeDisabled();
+    const row = within(table).getAllByRole("row")[1];
+    expect(
+      within(row).getAllByTitle("routingPage.groupStatsUnavailable"),
+    ).toHaveLength(3);
+  });
+
+  it("keeps strategy, publication and editing together in Actions without showing IDs", async () => {
+    mount();
+    const heading = await screen.findByRole("heading", {
+      name: "Fixture group",
+    });
+    const row = heading.closest("tr")!;
+    const cells = within(row).getAllByRole("cell");
+    expect(cells).toHaveLength(6);
+    expect(
+      within(row).queryByText("vary-auto/fixture"),
+    ).not.toBeInTheDocument();
+    expect(within(cells[0]).queryByRole("combobox")).not.toBeInTheDocument();
+    expect(within(cells[0]).queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      within(cells[5]).getByRole("combobox", {
+        name: "intentRouting.routingStrategy",
+      }),
+    ).toBeInTheDocument();
+    const publication = within(cells[5]).getByRole("switch", {
+      name: "intentRouting.publishGateway Fixture group",
+    });
+    expect(publication).not.toBeChecked();
+    expect(publication).toHaveAttribute("data-state", "unchecked");
+    expect(publication).toHaveTextContent(/^$/);
+    const edit = within(cells[5]).getByRole("button", { name: "common.edit" });
+    expect(edit).toHaveTextContent(/^$/);
+    expect(edit).toHaveAttribute("title", "common.edit");
+    fireEvent.click(publication);
+    await waitFor(() =>
+      expect(intentRoutingApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "fixture",
+          enabled: true,
+          members: group.members,
+        }),
+      ),
+    );
+  });
+
+  it("combines status and text filters without saving or showing a group count", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [
+        group,
+        { ...group, id: "enabled", name: "Enabled group", enabled: true },
+      ],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount();
+    await screen.findByText("Fixture group");
+    const status = screen.getByRole("combobox", {
+      name: "routingPage.groupStatus",
+    });
+    fireEvent.change(status, { target: { value: "enabled" } });
+    expect(screen.queryByText("Fixture group")).not.toBeInTheDocument();
+    expect(screen.getByText("Enabled group")).toBeInTheDocument();
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "intentRouting.filter" }),
+      { target: { value: "missing" } },
+    );
+    expect(screen.getByText("intentRouting.noMatches")).toBeInTheDocument();
+    expect(screen.queryByTestId("routing-group-count")).not.toBeInTheDocument();
+    fireEvent.change(status, { target: { value: "disabled" } });
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "intentRouting.filter" }),
+      { target: { value: "fixture-model" } },
+    );
+    expect(screen.getByText("Fixture group")).toBeInTheDocument();
+    expect(screen.queryByText("Enabled group")).not.toBeInTheDocument();
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+  });
+
+  it("counts distinct configured and matched upstreams in each table row", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [
+        {
+          ...group,
+          members: [
+            ...group.members,
+            { id: "second-model", providerId: "provider", modelId: "second" },
+          ],
+        },
+      ],
+      matchedMembers: {
+        fixture: [
+          {
+            id: "matched",
+            providerId: "other-provider",
+            modelId: "matched-model",
+          },
+          {
+            id: "same-provider",
+            providerId: "provider",
+            modelId: "third-model",
+          },
+        ],
+      },
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount();
+    await screen.findByText("Fixture group");
+    const row = screen.getByText("Fixture group").closest("tr")!;
+    expect(within(row).getAllByRole("cell")[1]).toHaveTextContent("2");
+  });
+
   it("places routing directly below the name and keeps state-specific rate-limit help", async () => {
     mount();
     await screen.findByText("Fixture group");
@@ -218,6 +626,26 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
+  it("passes the provider's saved image through to the group row", async () => {
+    const icon = "data:image/png;base64,c3ludGhldGlj";
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "provider",
+        name: "Synthetic provider",
+        icon,
+        taskEligible: true,
+        classifierEligible: false,
+      },
+    ]);
+    mount();
+    const heading = await screen.findByRole("heading", {
+      name: "Fixture group",
+    });
+    const row = heading.closest("tr")!;
+    expect(row.querySelector(".mp-icon-disc img")).toHaveAttribute("src", icon);
+    expect(row.querySelector(".mp-icon-stack")).not.toHaveTextContent("SP");
+  });
+
   it("masks account addresses without renaming vendors or replacing their icons", async () => {
     const options = [
       {
@@ -262,23 +690,14 @@ describe("IntentRoutingPanel", () => {
     expect(
       summary?.querySelector("[title]")?.getAttribute("title"),
     ).not.toContain("fixture.account@example.test");
-    expect(document.querySelector(".mp-icon-stack")).toHaveTextContent("FP");
-    expect(document.querySelectorAll(".mp-icon-disc svg")).toHaveLength(1);
+    expect(document.querySelector(".mp-icon-stack")).not.toHaveTextContent(
+      "FP",
+    );
+    expect(document.querySelectorAll(".mp-icon-disc svg")).toHaveLength(2);
     expect(view.container.innerHTML).not.toContain(
       "fixture.account@example.test",
     );
     expect(view.container.innerHTML).not.toContain("routingPage.maskedAccount");
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "intentRouting.skipProviders" }),
-    );
-    expect(await screen.findByText("Fixture provider")).toBeVisible();
-    expect(document.body.innerHTML).not.toContain(
-      "fixture.account@example.test",
-    );
-    fireEvent.keyDown(document.activeElement ?? document.body, {
-      key: "Escape",
-    });
 
     await userEvent.click(screen.getByRole("button", { name: "common.edit" }));
     expect(document.body.innerHTML).not.toContain(
@@ -324,38 +743,35 @@ describe("IntentRoutingPanel", () => {
     expect(intentRoutingApi.discoverCatalogs).toHaveBeenCalledOnce();
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
   });
-  it("excludes providers only from automatically found groups", async () => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [group],
-      autoCreate: true,
-      omittedGroups: 0,
-    });
-    vi.mocked(intentRoutingApi.setAutoGroupSkip).mockResolvedValue();
-    mount();
-    await userEvent.click(
-      await screen.findByRole("button", {
-        name: "intentRouting.skipProviders",
-      }),
-    );
-    await userEvent.click(
-      screen.getByRole("checkbox", { name: "Fixture provider" }),
-    );
-    await waitFor(() =>
-      expect(intentRoutingApi.setAutoGroupSkip).toHaveBeenCalledWith([
-        "provider",
-      ]),
-    );
-    expect(screen.getByText("Fixture group")).toBeInTheDocument();
-    expect(intentRoutingApi.save).not.toHaveBeenCalled();
-  });
-  it("shows automatic group discovery beside the groups rather than inside advanced settings", async () => {
-    mount();
-    const toggle = await screen.findByRole("switch", {
-      name: "intentRouting.autoCreate",
-    });
-    expect(toggle.closest("details")).toBeNull();
-    expect(toggle.closest(".rt-gfound")).toBeInTheDocument();
-  });
+
+  it.each([true, false])(
+    "hides discovery controls without changing the saved preference %s",
+    async (autoCreate) => {
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [group],
+        autoCreate,
+        omittedGroups: 0,
+      });
+      mount();
+      await openManagement();
+      expect(
+        screen.queryByText("intentRouting.autoCreate"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "intentRouting.skipProviders" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("routingPage.templateSmart")).toBeInTheDocument();
+      expect(
+        screen.getByRole("checkbox", { name: "Fixture group" }),
+      ).toBeInTheDocument();
+      expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
+      expect(intentRoutingApi.setAutoGroupSkip).not.toHaveBeenCalled();
+    },
+  );
+
   it("restores a removed discovered group without saving a manual definition", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [group],
@@ -574,7 +990,7 @@ describe("IntentRoutingPanel", () => {
     ).not.toBeInTheDocument();
   });
   it.each(["templateSmart", "templateThrifty", "templateSteady"] as const)(
-    "opens %s from its single Add action with all template fields ready for review",
+    "opens %s from its always-visible card with fields ready for review",
     async (key) => {
       vi.mocked(intentRoutingApi.list).mockResolvedValue({
         groups: [],
@@ -634,18 +1050,19 @@ describe("IntentRoutingPanel", () => {
       vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
       mount();
       const user = userEvent.setup();
-      await screen.findAllByRole("button", { name: "routingPage.addTemplate" });
-      expect(
-        screen.getAllByRole("button", { name: "routingPage.addTemplate" }),
-      ).toHaveLength(3);
-      expect(
-        screen.queryByRole("button", { name: "routingPage.editTemplate" }),
-      ).toBeNull();
       const open = async () => {
-        const card = screen.getByText(`routingPage.${key}`).closest("div")!;
+        const card = (await screen.findByText(`routingPage.${key}`)).closest(
+          "div",
+        )!;
+        expect(
+          screen.getAllByRole("button", { name: "routingPage.addTemplate" }),
+        ).toHaveLength(3);
         await user.click(
           within(card).getByRole("button", { name: "routingPage.addTemplate" }),
         );
+        expect(
+          screen.queryByRole("dialog", { name: "intentRouting.discardTitle" }),
+        ).not.toBeInTheDocument();
         const dialog = screen.getByRole("dialog", {
           name: `routingPage.${key}`,
         });
@@ -719,7 +1136,7 @@ describe("IntentRoutingPanel", () => {
     const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", {
-        name: "routingPage.arrangeGroup Fixture group",
+        name: "routingPage.more Fixture group",
       }),
     );
     await user.click(
@@ -752,7 +1169,7 @@ describe("IntentRoutingPanel", () => {
     const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", {
-        name: "routingPage.arrangeGroup Fixture group",
+        name: "routingPage.more Fixture group",
       }),
     );
     await user.click(
@@ -769,6 +1186,7 @@ describe("IntentRoutingPanel", () => {
       magpie: "routing-group",
       version: 1,
     });
+    expect(toast.success).not.toHaveBeenCalled();
   });
   it("retains manual classifier entry for legacy catalogs without model listings", async () => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
@@ -808,30 +1226,52 @@ describe("IntentRoutingPanel", () => {
     );
     expect(intentRoutingApi.trial).not.toHaveBeenCalled();
   });
-  it("opens the handle menu from a row context click without opening its editor", async () => {
+  it("shows only Duplicate and Copy to share in the Actions More menu", async () => {
     mount();
-    const title = await screen.findByRole("heading", { name: "Fixture group" });
-    fireEvent.contextMenu(title);
+    const user = userEvent.setup();
+    const heading = await screen.findByRole("heading", {
+      name: "Fixture group",
+    });
+    const row = heading.closest("tr")!;
+    fireEvent.contextMenu(heading);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    await user.click(
+      within(row).getByRole("button", {
+        name: "routingPage.arrangeGroup Fixture group",
+      }),
+    );
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    const actions = within(row).getAllByRole("cell").at(-1)!;
+    const more = within(actions).getByRole("button", {
+      name: "routingPage.more Fixture group",
+    });
+    expect(within(row).getAllByRole("cell")[0]).not.toContainElement(more);
+    await user.click(more);
     expect(
-      await screen.findByRole("menuitem", { name: /routingPage.copyShare/ }),
-    ).toBeInTheDocument();
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["routingPage.duplicate", "routingPage.copyShare"]);
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.manage" }),
+    );
+    expect(more).toBeDisabled();
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+    expect(intentRoutingApi.arrange).not.toHaveBeenCalled();
   });
-  it("moves groups using their handle menu without opening an editor", async () => {
+
+  it("retains keyboard group ordering without menu entries", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [group, { ...group, id: "next", name: "Next group" }],
       autoCreate: false,
       omittedGroups: 0,
     });
     mount();
-    const user = userEvent.setup();
-    await user.click(
+    fireEvent.keyDown(
       await screen.findByRole("button", {
         name: "routingPage.arrangeGroup Fixture group",
       }),
-    );
-    await user.click(
-      screen.getByRole("menuitem", { name: /intentRouting.moveDown/ }),
+      { key: "ArrowDown", altKey: true },
     );
     await waitFor(() =>
       expect(intentRoutingApi.arrange).toHaveBeenCalledWith([
@@ -840,7 +1280,47 @@ describe("IntentRoutingPanel", () => {
       ]),
     );
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
+
+  it("shows a success toast only after copying without inserting a status into the row", async () => {
+    let finish!: () => void;
+    vi.mocked(copyText).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [{ ...group, rules: [] }],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", {
+        name: "routingPage.more Fixture group",
+      }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: "routingPage.copyShare" }),
+    );
+    expect(copyText).toHaveBeenCalledOnce();
+    expect(toast.success).not.toHaveBeenCalled();
+    await act(async () => {
+      finish();
+    });
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("routingPage.copied"),
+    );
+    expect(screen.queryByText("routingPage.copied")).not.toBeInTheDocument();
+    expect(screen.queryByRole("form")).not.toBeInTheDocument();
+    expect(JSON.parse(vi.mocked(copyText).mock.calls[0][0])).toMatchObject({
+      magpie: "routing-group",
+      version: 1,
+    });
+  });
+
   it("changes a rule to an agent-scoped pause without retaining routing-only conditions", async () => {
     mount();
     const user = userEvent.setup();
@@ -1078,6 +1558,101 @@ describe("IntentRoutingPanel", () => {
       ),
     );
   });
+  it.each(["cancel", "escape"] as const)(
+    "opens import in a focused dialog and resets it after %s",
+    async (dismiss) => {
+      const user = userEvent.setup();
+      mount();
+      await screen.findByText("Fixture group");
+      const table = screen.getByRole("table", { name: "intentRouting.title" });
+      const trigger = screen.getByRole("button", {
+        name: "routingPage.import",
+      });
+      await user.click(trigger);
+      const dialog = screen.getByRole("dialog", { name: "routingPage.import" });
+      const input = within(dialog).getByRole("textbox", {
+        name: "routingPage.importLabel",
+      });
+      expect(input).toHaveFocus();
+      expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+      expect(table.closest(".rt-group-panel")).not.toContainElement(dialog);
+      fireEvent.change(input, { target: { value: "synthetic import draft" } });
+      if (dismiss === "cancel")
+        await user.click(
+          within(dialog).getByRole("button", { name: "common.cancel" }),
+        );
+      else await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(trigger).toHaveFocus();
+      await user.click(trigger);
+      expect(
+        screen.getByRole("textbox", { name: "routingPage.importLabel" }),
+      ).toHaveValue("");
+      expect(intentRoutingApi.save).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the import dialog open during saving and returns focus after completion", async () => {
+    let finishSave!: () => void;
+    vi.mocked(intentRoutingApi.save).mockImplementation(
+      (value) =>
+        new Promise((resolve) => {
+          finishSave = () =>
+            resolve({ ...value, revision: value.revision + 1 });
+        }),
+    );
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "provider",
+        name: "Fixture provider",
+        taskEligible: true,
+        classifierEligible: true,
+        models: [{ id: "fixture-model", name: "Fixture model" }],
+      },
+    ]);
+    const user = userEvent.setup();
+    mount();
+    await screen.findByText("Fixture group");
+    const trigger = screen.getByRole("button", { name: "routingPage.import" });
+    await user.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "routingPage.import" });
+    const input = within(dialog).getByRole("textbox", {
+      name: "routingPage.importLabel",
+    });
+    fireEvent.change(input, {
+      target: {
+        value: JSON.stringify({
+          name: "Imported fixture",
+          members: ["provider/fixture-model"],
+        }),
+      },
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "routingPage.reviewImport" }),
+    );
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    expect(input).toBeDisabled();
+    expect(
+      within(dialog).getByRole("button", { name: "common.cancel" }),
+    ).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "routingPage.import" })).toBe(
+      dialog,
+    );
+    finishSave();
+    await screen.findByRole("status", { name: "routingPage.importComplete" });
+    const done = screen.getByRole("button", { name: "common.done" });
+    await waitFor(() => expect(done).toBeEnabled());
+    await user.click(done);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveFocus();
+    expect(intentRoutingApi.save).toHaveBeenCalledOnce();
+  });
+
   it("imports immediately and displays a completion result without opening the editor", async () => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
       {
@@ -1195,13 +1770,20 @@ describe("IntentRoutingPanel", () => {
       });
       await waitFor(() =>
         expect(
-          screen.getByRole("button", { name: "intentRouting.reload" }),
+          screen.getByRole("button", { name: "routingPage.refresh" }),
         ).toBeEnabled(),
       );
       if (!count) {
         expect(manage).toBeDisabled();
+        expect(
+          screen.queryByText("intentRouting.autoCreate"),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByText("routingPage.templateSmart"),
+        ).toBeInTheDocument();
         return;
       }
+      expect(manage).toBeEnabled();
       fireEvent.click(manage);
       expect(
         screen.getByRole("checkbox", { name: "Fixture group" }),
@@ -1717,7 +2299,7 @@ describe("IntentRoutingPanel", () => {
       ),
     );
   });
-  it("keeps empty group guidance in the templates without a trailing empty-state message", async () => {
+  it("keeps empty group guidance independent of batch management", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [],
       autoCreate: true,
@@ -1725,23 +2307,19 @@ describe("IntentRoutingPanel", () => {
       contextSettings: { fullWindow: false },
     });
     mount();
+    expect(await screen.findByText("routingPage.noGroups")).toBeInTheDocument();
     expect(
-      await screen.findByText("routingPage.templateHint"),
-    ).toBeInTheDocument();
+      screen.getByRole("button", { name: "routingPage.manage" }),
+    ).toBeDisabled();
     expect(
-      screen.getByRole("switch", { name: "intentRouting.autoCreate" }),
-    ).toHaveAttribute("aria-checked", "true");
-    expect(
-      screen.queryByText("intentRouting.emptyAuto"),
+      screen.queryByText("intentRouting.autoCreate"),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("intentRouting.empty")).not.toBeInTheDocument();
+    expect(screen.getByText("routingPage.templateHint")).toBeInTheDocument();
     expect(
       screen.queryByLabelText("intentRouting.fullWindow"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByLabelText("intentRouting.compactAt"),
-    ).not.toBeInTheDocument();
   });
+
   const scrollDescriptor = Object.getOwnPropertyDescriptor(
     Element.prototype,
     "scrollIntoView",
@@ -1782,7 +2360,7 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    const list = await screen.findByRole("list", {
+    const list = await screen.findByRole("rowgroup", {
       name: "intentRouting.title",
     });
     expect(list.children).toHaveLength(2);
@@ -1813,7 +2391,7 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    const list = await screen.findByRole("list", {
+    const list = await screen.findByRole("rowgroup", {
       name: "intentRouting.title",
     });
     fireEvent.click(
@@ -1863,7 +2441,7 @@ describe("IntentRoutingPanel", () => {
     ]);
     mount();
     await screen.findByText("Fixture group");
-    const list = screen.getByRole("list", { name: "intentRouting.title" });
+    const list = screen.getByRole("rowgroup", { name: "intentRouting.title" });
     fireEvent.click(
       screen.getByRole("button", { name: "intentRouting.create" }),
     );
@@ -1958,7 +2536,7 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    const list = await screen.findByRole("list", {
+    const list = await screen.findByRole("rowgroup", {
       name: "intentRouting.title",
     });
     const filter = screen.getByRole("searchbox", {
@@ -1996,7 +2574,7 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    const list = await screen.findByRole("list", {
+    const list = await screen.findByRole("rowgroup", {
       name: "intentRouting.title",
     });
     fireEvent.click(
@@ -2076,7 +2654,7 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
-  it.each(["name", "alias", "summary", "blank"] as const)(
+  it.each(["name", "summary", "blank"] as const)(
     "opens from the row's %s inside the focusable settings tab",
     async (area) => {
       mount();
@@ -2086,7 +2664,6 @@ describe("IntentRoutingPanel", () => {
       const row = heading.closest("[data-routing-group]") as HTMLElement;
       const targets = {
         name: heading,
-        alias: within(row).getByText("vary-auto/fixture"),
         summary: within(row).getByText("Fixture provider · fixture-model"),
         icon: within(row).getByLabelText("intentRouting.globalResource"),
         blank: row,
@@ -2099,36 +2676,89 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
-  it("keeps removal inside the editor rather than a permanent row action", async () => {
+  it("opens removal from Actions and keeps only Cancel/Save in the editor footer", async () => {
     mount();
     const user = userEvent.setup();
-    const strategy = await screen.findByRole("combobox", {
-      name: "intentRouting.routingStrategy",
+    const heading = await screen.findByRole("heading", {
+      name: "Fixture group",
     });
-    await user.click(strategy);
+    const actions = within(heading.closest("tr")!).getAllByRole("cell").at(-1)!;
+    const remove = within(actions).getByRole("button", {
+      name: "common.delete",
+    });
+    expect(remove).toHaveTextContent(/^$/);
+    expect(remove).toHaveAttribute("title", "common.delete");
+    await user.click(remove);
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
-    await user.keyboard("{Escape}");
-    expect(
-      screen.queryByRole("button", { name: "common.delete" }),
-    ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "common.edit" }));
-    await user.click(
-      within(screen.getByRole("dialog", { name: "Fixture group" }))
-        .getAllByRole("button", { name: "common.delete" })
-        .at(-1)!,
-    );
-    expect(screen.getByText("intentRouting.deletePrompt")).toBeInTheDocument();
     const confirmation = screen.getByRole("dialog", { name: "common.delete" });
+    expect(confirmation).toHaveTextContent("intentRouting.deletePrompt");
+    expect(intentRoutingApi.remove).not.toHaveBeenCalled();
     await user.click(
       within(confirmation).getByRole("button", { name: "common.cancel" }),
     );
-    expect(
-      screen.getByRole("dialog", { name: "Fixture group" }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
-      "Fixture group",
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+    expect(remove).toHaveFocus();
+    await user.click(
+      within(actions).getByRole("button", { name: "common.edit" }),
+    );
+    const editor = screen.getByRole("dialog", { name: "Fixture group" });
+    const footer = within(
+      editor.querySelector(".vary-dialog-footer")! as HTMLElement,
+    );
+    expect(
+      footer.queryByRole("button", { name: "common.delete" }),
+    ).not.toBeInTheDocument();
+    expect(
+      footer.getAllByRole("button").map((button) => button.textContent),
+    ).toEqual(["common.cancel", "common.save"]);
     expect(intentRoutingApi.remove).not.toHaveBeenCalled();
+  });
+
+  it("confirms row deletion with the saved revision and prevents dismissal while pending", async () => {
+    let finish!: () => void;
+    vi.mocked(intentRoutingApi.remove).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mount();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "common.delete" }),
+    );
+    const confirmation = screen.getByRole("dialog", { name: "common.delete" });
+    await user.click(
+      within(confirmation).getByRole("button", {
+        name: "intentRouting.confirmDelete",
+      }),
+    );
+    expect(intentRoutingApi.remove).toHaveBeenCalledWith("fixture", 1);
+    expect(
+      within(confirmation).getByRole("button", { name: "common.cancel" }),
+    ).toBeDisabled();
+    expect(
+      within(confirmation).getByRole("button", {
+        name: "intentRouting.confirmDelete",
+      }),
+    ).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(confirmation).toBeInTheDocument();
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    await act(async () => {
+      finish();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "Fixture group" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("offers all nine strategies and saves a manual member from the compact row", async () => {
@@ -2347,7 +2977,7 @@ describe("IntentRoutingPanel", () => {
     ).toBeEnabled();
   });
 
-  it("closes the saved dialog and restores focus after the list refresh finishes", async () => {
+  it("closes the saved dialog without locking other rows during its refresh", async () => {
     const other = { ...group, id: "other", name: "Other group" };
     let finishRefresh!: () => void;
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
@@ -2370,7 +3000,7 @@ describe("IntentRoutingPanel", () => {
       return saved;
     });
     mount();
-    const list = await screen.findByRole("list", {
+    const list = await screen.findByRole("rowgroup", {
       name: "intentRouting.title",
     });
     const otherStrategy = within(list.children[1] as HTMLElement).getByRole(
@@ -2397,7 +3027,14 @@ describe("IntentRoutingPanel", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     await waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
-    expect(otherStrategy).toBeDisabled();
+    expect(otherStrategy).toBeEnabled();
+    expect(otherArrange).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "routingPage.refresh" }),
+    ).toBeEnabled();
+    expect(
+      within(list.children[0] as HTMLElement).getByRole("switch"),
+    ).toBeDisabled();
     finishRefresh();
     await screen.findByText("Saved group");
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
@@ -2433,7 +3070,7 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    const list = await screen.findByRole("list", {
+    const list = await screen.findByRole("rowgroup", {
       name: "intentRouting.title",
     });
     fireEvent.click(
@@ -2470,7 +3107,7 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
-  it("shows a readable alias and persists the selected scheduling strategy", async () => {
+  it("hides aliases while keeping alias search and strategy saves intact", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
         {
@@ -2484,7 +3121,8 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    expect(await screen.findByText("auto/fixture-model")).toBeInTheDocument();
+    await screen.findByText("Fixture group");
+    expect(screen.queryByText("auto/fixture-model")).not.toBeInTheDocument();
     fireEvent.change(
       screen.getByRole("searchbox", { name: "intentRouting.filter" }),
       { target: { value: "auto/fixture-model" } },
@@ -2525,8 +3163,146 @@ describe("IntentRoutingPanel", () => {
       ).not.toBeInTheDocument();
     }
     expect(
-      screen.getByRole("list", { name: "intentRouting.title" }),
+      screen.getByRole("rowgroup", { name: "intentRouting.title" }),
     ).toBeInTheDocument();
+  });
+
+  it.each([true, false])(
+    "keeps controls and new drafts available during refresh (empty list: %s)",
+    async (empty) => {
+      const snapshot = {
+        groups: empty ? [] : [structuredClone(group)],
+        autoCreate: false,
+        omittedGroups: 0,
+      };
+      vi.mocked(intentRoutingApi.list).mockResolvedValue(snapshot);
+      let finishCatalog!: (value: []) => void;
+      let finishList!: (value: typeof snapshot) => void;
+      vi.mocked(intentRoutingApi.refreshCatalogs).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishCatalog = resolve;
+        }),
+      );
+      mount();
+      const reload = await screen.findByRole("button", {
+        name: "routingPage.refresh",
+      });
+      await waitFor(() => expect(reload).toBeEnabled());
+      vi.mocked(intentRoutingApi.list).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishList = resolve;
+        }),
+      );
+      fireEvent.click(reload);
+      expect(reload).toHaveAttribute("aria-busy", "true");
+      expect(reload.querySelector(".rt-refresh-icon")).toHaveClass(
+        "animate-spin",
+      );
+      expect(reload.querySelector(".lucide-loader-circle")).toBeInTheDocument();
+      expect(reload.querySelector(".lucide-refresh-cw")).toBeNull();
+      expect(reload).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "routingPage.import" }),
+      ).toBeEnabled();
+      expect(
+        screen
+          .getByRole("button", { name: "routingPage.manage" })
+          .hasAttribute("disabled"),
+      ).toBe(empty);
+      const create = screen.getByRole("button", {
+        name: "intentRouting.create",
+      });
+      expect(create).toBeEnabled();
+      fireEvent.click(reload);
+      expect(intentRoutingApi.refreshCatalogs).toHaveBeenCalledOnce();
+      fireEvent.click(create);
+      const name = screen.getByLabelText("intentRouting.name");
+      expect(name).toBeEnabled();
+      fireEvent.change(name, { target: { value: "Draft during refresh" } });
+      await act(async () => finishCatalog([]));
+      expect(reload).toHaveAttribute("aria-busy", "true");
+      expect(name).toBeEnabled();
+      await act(async () => finishList(snapshot));
+      await waitFor(() => expect(reload).toHaveAttribute("aria-busy", "false"));
+      expect(reload.querySelector(".rt-refresh-icon")).not.toHaveClass(
+        "animate-spin",
+      );
+      expect(reload.querySelector(".lucide-loader-circle")).toBeNull();
+      expect(reload.querySelector(".lucide-refresh-cw")).toBeInTheDocument();
+      expect(name).toHaveValue("Draft during refresh");
+    },
+  );
+
+  it("ends refresh loading after a safe error and allows retry", async () => {
+    vi.mocked(intentRoutingApi.refreshCatalogs)
+      .mockRejectedValueOnce("synthetic-private-refresh-error")
+      .mockResolvedValue([]);
+    mount();
+    const reload = await screen.findByRole("button", {
+      name: "routingPage.refresh",
+    });
+    await waitFor(() => expect(reload).toBeEnabled());
+    fireEvent.click(reload);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "intentRouting.failed",
+    );
+    await waitFor(() => expect(reload).toHaveAttribute("aria-busy", "false"));
+    expect(reload).toBeEnabled();
+    expect(screen.queryByText("synthetic-private-refresh-error")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "routingPage.import" }),
+    ).toBeEnabled();
+    fireEvent.click(reload);
+    await waitFor(() =>
+      expect(intentRoutingApi.refreshCatalogs).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() => expect(reload).toBeEnabled());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not unlock an active save when a concurrent refresh finishes", async () => {
+    let finishCatalog!: (value: []) => void;
+    let failSave!: (reason: string) => void;
+    vi.mocked(intentRoutingApi.refreshCatalogs).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishCatalog = resolve;
+      }),
+    );
+    vi.mocked(intentRoutingApi.save).mockReturnValueOnce(
+      new Promise((_, reject) => {
+        failSave = reject;
+      }),
+    );
+    mount();
+    const reload = await screen.findByRole("button", {
+      name: "routingPage.refresh",
+    });
+    await waitFor(() => expect(reload).toBeEnabled());
+    fireEvent.click(reload);
+    const edit = screen.getByRole("button", { name: "common.edit" });
+    expect(edit).toBeEnabled();
+    fireEvent.click(edit);
+    fireEvent.change(screen.getByLabelText("intentRouting.name"), {
+      target: { value: "Concurrent edit" },
+    });
+    const dialog = screen.getByRole("dialog", { name: "Fixture group" });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "common.save" }),
+    );
+    await waitFor(() => expect(dialog).toHaveAttribute("aria-busy", "true"));
+    await act(async () => finishCatalog([]));
+    await waitFor(() => expect(reload).toHaveAttribute("aria-busy", "false"));
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    expect(
+      within(dialog).getByRole("button", { name: "common.cancel" }),
+    ).toBeDisabled();
+    await act(async () => failSave("intentRouting.conflict"));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "intentRouting.conflict",
+    );
+    expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
+      "Concurrent edit",
+    );
   });
 
   it.each([true, false])(
@@ -2542,7 +3318,7 @@ describe("IntentRoutingPanel", () => {
       ]);
       mount();
       const reload = await screen.findByRole("button", {
-        name: "intentRouting.reload",
+        name: "routingPage.refresh",
       });
       await waitFor(() => expect(reload).toBeEnabled());
       fireEvent.click(reload);
@@ -2560,29 +3336,29 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
-  it("keeps persisted discovery enabled when catalog refresh fails", async () => {
-    vi.mocked(intentRoutingApi.setAutoCreate).mockImplementation(async () => {
-      vi.mocked(intentRoutingApi.list).mockResolvedValue({
-        groups: [],
-        autoCreate: true,
-        omittedGroups: 0,
-      });
+  it("retains saved discovery when a manual catalog refresh fails", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [group],
+      autoCreate: true,
+      omittedGroups: 0,
     });
     vi.mocked(intentRoutingApi.refreshCatalogs).mockRejectedValue(
       "synthetic-private-error",
     );
     mount();
-    const toggle = await screen.findByRole("switch", {
-      name: "intentRouting.autoCreate",
-    });
-    await waitFor(() => expect(toggle).toBeEnabled());
-    fireEvent.click(toggle);
+    await screen.findByText("Fixture group");
+    fireEvent.click(
+      screen.getByRole("button", { name: "routingPage.refresh" }),
+    );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "intentRouting.failed",
     );
-    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     expect(
       screen.queryByText("synthetic-private-error"),
+    ).not.toBeInTheDocument();
+    expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
     ).not.toBeInTheDocument();
   });
 
@@ -2603,7 +3379,7 @@ describe("IntentRoutingPanel", () => {
     );
     const panel = mount();
     const reload = await screen.findByRole("button", {
-      name: "intentRouting.reload",
+      name: "routingPage.refresh",
     });
     await waitFor(() => expect(reload).toBeEnabled());
     fireEvent.click(reload);
@@ -2613,7 +3389,7 @@ describe("IntentRoutingPanel", () => {
     panel.unmount();
     mount();
     finish([{ providerId: "provider", status: "updated", modelCount: 1 }]);
-    await screen.findByText("intentRouting.reload");
+    await screen.findByText("routingPage.refresh");
     expect(
       screen.queryByText(/intentRouting.catalogStatus.updated/),
     ).not.toBeInTheDocument();
@@ -2668,6 +3444,8 @@ describe("IntentRoutingPanel", () => {
     const sections = screen.getAllByRole("group", { name: "Shared fixture" });
     expect(sections[0]).toHaveTextContent("codex");
     expect(sections[1]).toHaveTextContent("claude");
+    expect(sections[0]).toHaveTextContent("· provider");
+    expect(sections[1]).toHaveTextContent("· claude-provider");
     fireEvent.click(
       within(sections[0]).getByRole("checkbox", { name: "Shared model" }),
     );
@@ -2757,8 +3535,8 @@ describe("IntentRoutingPanel", () => {
     ).not.toBeInTheDocument();
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("switch", { name: "intentRouting.autoCreate" }),
-    ).not.toBeChecked();
+      screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "common.edit" }));
     fireEvent.change(screen.getByLabelText("intentRouting.name"), {
       target: { value: "Updated" },
@@ -2971,7 +3749,12 @@ describe("IntentRoutingPanel", () => {
     expect(screen.getByText("intentRouting.offlineNotice")).toBeInTheDocument();
   });
 
-  it("persists automatic discovery and refreshes generated groups", async () => {
+  it("refreshes generated groups without changing the saved discovery preference", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [group],
+      autoCreate: true,
+      omittedGroups: 0,
+    });
     mount();
     await screen.findByText("Fixture group");
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
@@ -2989,16 +3772,14 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     fireEvent.click(
-      screen.getByRole("switch", { name: "intentRouting.autoCreate" }),
-    );
-    await waitFor(() =>
-      expect(intentRoutingApi.setAutoCreate).toHaveBeenCalledWith(true),
+      screen.getByRole("button", { name: "routingPage.refresh" }),
     );
     expect(await screen.findByText("shared-model")).toBeInTheDocument();
     expect(screen.getByText("intentRouting.autoGenerated")).toBeInTheDocument();
+    expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("switch", { name: "intentRouting.autoCreate" }),
-    ).toBeChecked();
+      screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps account members editable while showing their transport limitation", async () => {
@@ -3037,21 +3818,17 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
-  it("keeps the switch unchanged and offers retry when persistence fails", async () => {
+  it("does not enable discovery when entering and leaving batch management", async () => {
     mount();
-    await screen.findByText("Fixture group");
-    vi.mocked(intentRoutingApi.setAutoCreate).mockRejectedValue(
-      "private failure",
-    );
-    fireEvent.click(
-      screen.getByRole("switch", { name: "intentRouting.autoCreate" }),
-    );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "intentRouting.failed",
-    );
+    await openManagement();
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    await openManagement();
+    expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
+    expect(intentRoutingApi.refreshCatalogs).not.toHaveBeenCalled();
+    expect(intentRoutingApi.discoverCatalogs).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("switch", { name: "intentRouting.autoCreate" }),
-    ).not.toBeChecked();
+      screen.queryByText("intentRouting.autoCreate"),
+    ).not.toBeInTheDocument();
   });
 
   it("requires confirmation to delete and never displays raw backend errors", async () => {
@@ -3059,11 +3836,8 @@ describe("IntentRoutingPanel", () => {
       "synthetic-private-error",
     );
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
     fireEvent.click(
-      within(screen.getByRole("dialog", { name: "Fixture group" }))
-        .getAllByRole("button", { name: "common.delete" })
-        .at(-1)!,
+      await screen.findByRole("button", { name: "common.delete" }),
     );
     expect(intentRoutingApi.remove).not.toHaveBeenCalled();
     fireEvent.click(

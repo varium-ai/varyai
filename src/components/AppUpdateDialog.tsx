@@ -9,7 +9,9 @@ import { settingsApi } from "@/lib/api";
 import { RELEASES_LATEST_URL } from "@/config/brand";
 import {
   fetchReleaseNotes,
+  fetchReleaseHistory,
   meaningfulReleaseNotes,
+  localizedReleaseNotes,
   releaseNotesPageUrl,
 } from "@/lib/releaseNotes";
 import { Button } from "@/components/ui/button";
@@ -17,7 +19,7 @@ import { AppDialog } from "@/components/ui/app-dialog";
 import "./app-update-dialog.css";
 
 export function AppUpdateDialog() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const {
     hasUpdate,
     updateInfo,
@@ -54,8 +56,51 @@ export function AppUpdateDialog() {
     retry: false,
     refetchOnWindowFocus: false,
   });
+  const history = useQuery({
+    queryKey: [
+      "app-release-history",
+      updateInfo?.currentVersion,
+      updateInfo?.availableVersion,
+    ],
+    queryFn: ({ signal }) =>
+      fetchReleaseHistory(
+        updateInfo?.currentVersion ?? "",
+        updateInfo?.availableVersion ?? "",
+        signal,
+      ),
+    enabled:
+      isOpen && isPortable !== null && Boolean(updateInfo?.currentVersion),
+    staleTime: 15 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
   if (isPortable === null || !updateInfo) return null;
-  const notes = manifestNotes || release.data || "";
+  const targetVersion = updateInfo.availableVersion.replace(/^v/, "");
+  const versionKey = (version: string) =>
+    version.replace(/^v/, "").split("+")[0];
+  const targetNotes =
+    manifestNotes ||
+    release.data ||
+    history.data?.releases.find(
+      (entry) => versionKey(entry.version) === versionKey(targetVersion),
+    )?.notes ||
+    "";
+  const versions = [
+    { version: targetVersion, notes: targetNotes },
+    ...(history.data?.releases ?? []).filter(
+      (entry) => versionKey(entry.version) !== versionKey(targetVersion),
+    ),
+  ];
+  const displayed = versions.slice(0, 40).map((entry) => ({
+    ...entry,
+    notes: localizedReleaseNotes(
+      entry.notes,
+      i18n.resolvedLanguage || i18n.language,
+    ),
+  }));
+  const historyIncomplete =
+    history.isError || history.data?.complete === false || versions.length > 40;
+  const hasNotes = displayed.some((entry) => entry.notes);
   const releaseUrl = releaseNotesPageUrl(updateInfo.availableVersion);
 
   const handleInstall = async () => {
@@ -138,49 +183,91 @@ export function AppUpdateDialog() {
         aria-label={t("settings.releaseNotes")}
       >
         <div className="vary-update-notes-toolbar">
-          <span>{t("settings.releaseNotes")}</span>
+          <span>
+            {updateInfo.currentVersion
+              ? t("settings.releaseHistoryRange", {
+                  from: updateInfo.currentVersion.replace(/^v/, ""),
+                  to: targetVersion,
+                })
+              : t("settings.releaseNotes")}
+          </span>
           <button type="button" onClick={() => void openExternal(releaseUrl)}>
             {t("settings.viewReleaseNotes")}
             <ArrowUpRight size={12} aria-hidden />
           </button>
         </div>
-        {notes ? (
-          <article className="vary-update-markdown">
-            <ReactMarkdown
-              skipHtml
-              disallowedElements={["img"]}
-              components={{
-                h1: ({ children }) => <h3>{children}</h3>,
-                h2: ({ children }) => <h3>{children}</h3>,
-                h3: ({ children }) => <h4>{children}</h4>,
-                a: ({ href, children, title }) => {
-                  if (!href) return <span>{children}</span>;
-                  let url: URL;
-                  try {
-                    url = new URL(href, releaseUrl);
-                  } catch {
-                    return <span>{children}</span>;
-                  }
-                  if (url.protocol !== "https:" && url.protocol !== "http:")
-                    return <span>{children}</span>;
-                  return (
-                    <a
-                      href={url.href}
-                      title={title}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        void openExternal(url.href);
-                      }}
-                    >
-                      {children}
-                    </a>
-                  );
-                },
-              }}
+        {(history.isFetching || historyIncomplete) && (
+          <p className="vary-update-history-status" role="status">
+            {t(
+              history.isFetching
+                ? "settings.releaseHistoryLoading"
+                : "settings.releaseHistoryIncomplete",
+            )}
+          </p>
+        )}
+        {hasNotes ? (
+          displayed.map(({ version, notes }) => (
+            <article
+              className="vary-update-release"
+              key={version}
+              aria-label={`v${version}`}
             >
-              {notes}
-            </ReactMarkdown>
-          </article>
+              <h3 className="vary-update-release-version">v{version}</h3>
+              {notes ? (
+                <div className="vary-update-markdown">
+                  <ReactMarkdown
+                    skipHtml
+                    disallowedElements={["img"]}
+                    components={{
+                      h1: ({ children }) => <h4>{children}</h4>,
+                      h2: ({ children }) => <h4>{children}</h4>,
+                      h3: ({ children }) => <h5>{children}</h5>,
+                      li: ({ children }) => (
+                        <li>
+                          {children}{" "}
+                          <span className="vary-update-item-version">
+                            v{version}
+                          </span>
+                        </li>
+                      ),
+                      a: ({ href, children, title }) => {
+                        if (!href) return <span>{children}</span>;
+                        let url: URL;
+                        try {
+                          url = new URL(href, releaseNotesPageUrl(version));
+                        } catch {
+                          return <span>{children}</span>;
+                        }
+                        if (
+                          url.protocol !== "https:" &&
+                          url.protocol !== "http:"
+                        )
+                          return <span>{children}</span>;
+                        return (
+                          <a
+                            href={url.href}
+                            title={title}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              void openExternal(url.href);
+                            }}
+                          >
+                            {children}
+                          </a>
+                        );
+                      },
+                    }}
+                  >
+                    {notes}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="vary-update-history-status">
+                  {t("settings.releaseNotesUnavailable")}
+                </p>
+              )}
+            </article>
+          ))
         ) : (
           <p className="vary-update-empty" role="status">
             {t(

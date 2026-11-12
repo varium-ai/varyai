@@ -1246,6 +1246,9 @@
     "portableMode": "Portable mode: updates require manual download.",
     "updateAvailable": "New version available: {{version}}",
     "updateCurrentVersion": "Installed version v{{version}}",
+    "releaseHistoryRange": "Updates from v{{from}} to v{{to}}",
+    "releaseHistoryLoading": "Loading earlier release notes…",
+    "releaseHistoryIncomplete": "Some release notes could not be loaded or exceed the latest 40 versions. Showing the available notes; you can still update.",
     "restartToUpdate": "Restart to update",
     "updateRestartHint": "The app will restart after installing the update.",
     "releaseNotesUnavailable": "Release notes are not available yet. You can open the release page to see the details.",
@@ -3350,6 +3353,23 @@
       "cloud": "Cloud Platforms",
       "tool": "Dev Tools",
       "other": "Other"
+    },
+    "icons": {
+      "generic-model-y": "Model Y",
+      "generic-model-meta": "Model Meta",
+      "generic-model-cube": "Model Cube",
+      "generic-component": "Component",
+      "generic-code": "Code",
+      "generic-knowledge": "Knowledge Base",
+      "generic-api": "API",
+      "generic-model": "Model",
+      "generic-output": "Output",
+      "generic-tools": "Tools",
+      "generic-text": "Text Processing",
+      "generic-http": "HTTP",
+      "generic-model-network": "Model Network",
+      "generic-intent": "Intent Recognition",
+      "generic-memory": "Memory"
     }
   },
   "providerIcon": {
@@ -4777,7 +4797,7 @@
     "details": "Details",
     "ruleCount": "{{count}} rules",
     "autoCreateCompact": "A model two or more of your providers serve becomes a group (auto/…). Switch this off to list and serve only groups you created or edited.",
-    "title": "Global routing groups",
+    "title": "Routing groups",
     "create": "Create group",
     "foldHint": "Click the heading to fold this group",
     "saveOrCancel": "Save or cancel your changes before collapsing this group.",
@@ -5091,6 +5111,10 @@
     "sameAsHint": "Treat this model as the specified model when finding groups and filling missing catalog facts. The upstream model ID stays unchanged."
   },
   "agentConnections": {
+    "cursorLocalHint": "Requires Cursor Private Inference. Quit and reopen after connecting. A gateway saved in Cursor takes priority over these environment defaults.",
+    "cursorCliHint": "Manages Cursor’s native model selection. CLI requests continue through Cursor’s service.",
+    "cursorAuto": "Auto · Cursor native",
+    "t3codeHint": "Uses a separate VaryAI Codex instance. Start new threads with this instance in T3 Code.",
     "desktopStartingModelHint": "Used for new Desktop chats and tasks after the client reloads its configuration. Choose a visible model; existing conversations keep their own choices.",
     "modelControlHint": "Save a default for new local chats, then restart the client through Vary AI to apply it. Existing conversations and remote runtime profiles retain their choices.",
     "modelControlTitle": "Allow default-model control for {{app}}?",
@@ -5119,7 +5143,7 @@
       "manualChanges": "Apply proxy or environment changes yourself; Vary does not edit shell profiles or system proxy settings. Got it keeps Codex connected. Disconnect and restore opens a separate confirmation for restoring Vary’s saved connection fields.",
       "unavailable": "The proxy check is unavailable. No current proxy issue is confirmed. Try checking again."
     },
-    "viaVary": "via Vary",
+    "viaVary": "via magpie",
     "nativeConfiguration": "Native settings",
     "sorting": {
       "role": "Sortable tool",
@@ -5261,7 +5285,7 @@
     "china": "China",
     "sheet": "Add a provider",
     "first": "Add your first provider",
-    "findVendor": "Search vendors or API relays",
+    "findVendor": "Search subscriptions or vendors",
     "import": "Import",
     "importHint": "Import an existing configuration into the shared catalog. No Agent selection is changed.",
     "vendor": "Vendors",
@@ -5272,7 +5296,12 @@
     "discardTitle": "Discard changes?",
     "discardHint": "Your unsaved changes will be lost.",
     "discard": "Discard changes",
-    "plan": "Plan"
+    "plan": "Plan",
+    "chooseMethod": "Choose how to connect to a model service.",
+    "commonProviders": "Popular providers",
+    "subscriptionDescription": "Sign in with an existing subscription. No API key required.",
+    "vendorDescription": "Connect to official services from OpenAI, Anthropic, DeepSeek and more.",
+    "importDescription": "Import providers from existing tools or configuration files."
   },
   "modelPicker": {
     "search": "Search models or providers",
@@ -5296,6 +5325,24 @@
     "groupSettings": "Group settings"
   },
   "routingPage": {
+    "more": "More",
+    "groupCount": "{{count}} groups",
+    "groupCount_one": "{{count}} group",
+    "groupCount_other": "{{count}} groups",
+    "groupName": "Group name",
+    "groupStatus": "Status",
+    "upstreamCount": "Upstreams",
+    "requestCount": "Requests",
+    "switchCount": "Switches",
+    "agentErrorCount": "Agent errors",
+    "actions": "Actions",
+    "allStatuses": "All statuses",
+    "groupEnabled": "Enabled",
+    "groupDisabled": "Disabled",
+    "refresh": "Refresh",
+    "groupStatsUnavailable": "Group totals are not available yet.",
+    "noGroups": "No routing groups yet. Create a group or import one to get started.",
+
     "apiKey": "API key",
     "oneKey": "One key",
     "accountQuotaLeft": "Allowance remaining",
@@ -5548,6 +5595,8 @@
     "manage": "Manage"
   },
   "providerEditor": {
+    "getApiKey": "Get key",
+    "endpoints": "Endpoints",
     "holdsTokens": "holds {{n}} tokens",
     "idReference": "Agents pick its models as {{id}}/…",
     "idMovesReferences": "Agents and routing groups on {{id}} move to it.",
@@ -5584,6 +5633,7 @@
     "streamVerified": "stream verified",
     "streamUnverified": "stream not verified",
     "accounts": "Account",
+    "keyLimits": "Limits",
     "inUse": "In use",
     "keyPlaceholder": "Paste an API key",
     "keyModels": "{{count}} models",

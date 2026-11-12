@@ -126,9 +126,12 @@ function mount(
   );
 }
 it.each(subscriptionProviders)(
-  "starts $name inline in the subscription picker without opening an editor",
+  "starts $name inside the subscription dialog without opening an editor",
   async (provider) => {
     mount();
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerParity.subscription" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: provider.name }));
     await waitFor(() =>
       expect(
@@ -140,9 +143,11 @@ it.each(subscriptionProviders)(
         }),
       ).toBeVisible(),
     );
-    const sheet = screen.getByRole("region", { name: "providerFlow.sheet" });
-    expect(sheet.querySelector(".pv-vendors .cx-signing")).not.toBeNull();
-    expect(screen.queryByRole("dialog")).toBeNull();
+    const picker = screen.getByRole("dialog", {
+      name: "providerParity.subscription",
+    });
+    expect(picker.querySelector(".cx-signing")).not.toBeNull();
+    expect(screen.getAllByRole("dialog")).toEqual([picker]);
     expect(routing.createCodex).not.toHaveBeenCalled();
     expect(routing.save).not.toHaveBeenCalled();
     expect(
@@ -155,29 +160,41 @@ it.each(subscriptionProviders)(
     else await waitFor(() => expect(native.start).toHaveBeenCalled());
   },
 );
-it("opens a selected native account's unsaved editor only after sign-in completes", async () => {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  const reset = vi.spyOn(client, "resetQueries");
-  const invalidate = vi.spyOn(client, "invalidateQueries");
-  mount(client);
-  fireEvent.click(screen.getByRole("button", { name: "Antigravity" }));
-  expect(screen.queryByRole("dialog")).toBeNull();
-  await waitFor(() => expect(native.poll).toHaveBeenCalled(), {
-    timeout: 2500,
-  });
-  await act(async () => finishNative({ ...pending, state: "done", account }));
-  const dialog = await screen.findByRole("dialog", { name: "Antigravity" });
-  expect(
-    within(dialog).getByRole("radio", { name: account.login }),
-  ).toBeChecked();
-  expect(routing.save).not.toHaveBeenCalled();
-  expect(reset).toHaveBeenCalledWith({
-    queryKey: ["subscription-account-quota", "antigravity", account.id],
-  });
-  expect(invalidate).toHaveBeenCalledWith({ queryKey: ["routing-upstreams"] });
-});
+it.each(["shortcut", "picker"])(
+  "opens a selected native account's unsaved editor after sign-in from the %s",
+  async (entry) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const reset = vi.spyOn(client, "resetQueries");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    mount(client);
+    if (entry === "picker")
+      fireEvent.click(
+        screen.getByRole("button", { name: "providerParity.subscription" }),
+      );
+    fireEvent.click(screen.getByRole("button", { name: "Antigravity" }));
+    expect(screen.queryByRole("dialog", { name: "Antigravity" })).toBeNull();
+    await waitFor(() => expect(native.poll).toHaveBeenCalled(), {
+      timeout: 2500,
+    });
+    await act(async () => finishNative({ ...pending, state: "done", account }));
+    const dialog = await screen.findByRole("dialog", { name: "Antigravity" });
+    expect(
+      screen.queryByRole("dialog", { name: "providerParity.subscription" }),
+    ).toBeNull();
+    expect(
+      within(dialog).getByRole("radio", { name: account.login }),
+    ).toBeChecked();
+    expect(routing.save).not.toHaveBeenCalled();
+    expect(reset).toHaveBeenCalledWith({
+      queryKey: ["subscription-account-quota", "antigravity", account.id],
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["routing-upstreams"],
+    });
+  },
+);
 it("cancels a late native start after switching subscriptions and never opens the stale URL", async () => {
   let finish!: (value: typeof pending) => void;
   vi.mocked(native.start).mockReturnValueOnce(
@@ -375,3 +392,140 @@ it("keeps existing model preferences when sign-in renews the already bound accou
     ),
   );
 });
+
+it("cancels subscription authorization and ignores late completion after closing its picker", async () => {
+  mount();
+  const trigger = screen.getByRole("button", {
+    name: "providerParity.subscription",
+  });
+  fireEvent.click(trigger);
+  const picker = screen.getByRole("dialog", {
+    name: "providerParity.subscription",
+  });
+  fireEvent.click(within(picker).getByRole("button", { name: "Antigravity" }));
+  await waitFor(() => expect(native.poll).toHaveBeenCalled(), {
+    timeout: 2500,
+  });
+  fireEvent.click(within(picker).getByRole("button", { name: "common.close" }));
+  await waitFor(() => expect(native.cancel).toHaveBeenCalledWith(pending.id));
+  await act(async () => finishNative({ ...pending, state: "done", account }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(trigger).toHaveFocus();
+  expect(routing.save).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "loads models for the confirmed Codex alias when an existing provider is %s",
+  async (existing) => {
+    const draft = {
+      schemaVersion: 1,
+      id: existing ? "existing-codex" : "draft-codex",
+      revision: existing ? 2 : 0,
+      name: "ChatGPT / Codex",
+      hasApiKey: false,
+      source: { kind: "codex" },
+      codex: {
+        settings: {
+          accounts: existing ? ["native", "other"] : ["native"],
+          mode: existing ? "picked" : "vendor",
+          models: existing
+            ? [
+                {
+                  model: "manual-fixture",
+                  modelPreferences: { name: "My fixture" },
+                },
+              ]
+            : [],
+          groupsOnly: false,
+        },
+        accounts: [
+          {
+            id: "native",
+            login: account.login,
+            native: true,
+            ready: false,
+            aliases: [account.id],
+          },
+          ...(existing
+            ? [
+                {
+                  id: "other",
+                  login: "other@example.test",
+                  native: false,
+                  ready: true,
+                },
+              ]
+            : []),
+        ],
+        models: [],
+      },
+    };
+    vi.mocked(routing.list).mockResolvedValue(
+      existing ? ([draft] as never) : [],
+    );
+    vi.mocked(routing.createCodex).mockResolvedValue(draft as never);
+    vi.mocked(routing.editor).mockResolvedValue(draft as never);
+    vi.mocked(routing.saveCodex).mockResolvedValue(draft as never);
+    vi.mocked(routing.codexModels).mockResolvedValue([
+      { model: "confirmed-model" },
+    ]);
+    vi.mocked(routing.codexQuota).mockResolvedValue({
+      success: true,
+      credentialStatus: "valid",
+      tiers: [],
+    } as never);
+    vi.mocked(authApi.authGetStatus).mockResolvedValue({
+      accounts: [{ ...account, reauth_required: false }],
+      authenticated: true,
+    } as never);
+    mount();
+    await waitFor(() => expect(routing.list).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "ChatGPT / Codex" }));
+    await waitFor(() => expect(browser.poll).toHaveBeenCalled(), {
+      timeout: 2500,
+    });
+    await act(async () =>
+      finishBrowser({ id: pending.id, url, status: "done", account }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "ChatGPT / Codex",
+    });
+    expect(
+      within(dialog).getAllByRole("checkbox", { name: account.login }),
+    ).toHaveLength(1);
+    expect(
+      within(dialog).getByRole("checkbox", { name: account.login }),
+    ).toBeChecked();
+    await waitFor(() =>
+      expect(routing.codexModels).toHaveBeenCalledWith(
+        draft.id,
+        draft.revision,
+        account.id,
+      ),
+    );
+    expect(
+      await within(dialog).findByRole("button", { name: "confirmed-model" }),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", {
+          name: existing ? "common.save" : "common.add",
+        }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: existing ? "common.save" : "common.add",
+      }),
+    );
+    await waitFor(() =>
+      expect(routing.saveCodex).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          accounts: existing ? [account.id, "other"] : [account.id],
+          models: draft.codex.settings.models,
+        }),
+      ),
+    );
+  },
+);

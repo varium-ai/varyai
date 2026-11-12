@@ -1,10 +1,12 @@
 import {
   Search,
   Info,
-  ChevronUp,
   ChevronDown,
   Download,
-  Copy,
+  Settings,
+  Pencil,
+  Trash2,
+  Ellipsis,
 } from "lucide-react";
 import {
   blankRoutingGroup,
@@ -18,6 +20,7 @@ import {
   validRoutingRule,
 } from "@/lib/routingGroupTransfer";
 import { useRoutingDialogHeight } from "@/components/routing/useRoutingDialogHeight";
+import { RoutingRefreshIcon } from "./RoutingRefreshIcon";
 import { RoutingMemberPicker } from "@/components/routing/RoutingMemberPicker";
 import {
   catalogRoutingMembers,
@@ -27,10 +30,10 @@ import { SharedModelPicker } from "@/components/models/SharedModelPicker";
 import { AccountLabel, AccountMask } from "@/components/AccountLabel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { RoutingGroupIcon } from "@/components/routing/RoutingGroupIcon";
+import { RoutingEmptyIllustration } from "@/components/routing/RoutingEmptyIllustration";
 import { RoutingRulesEditor } from "@/components/routing/RoutingRulesEditor";
 import { RoutingSegments } from "@/components/routing/RoutingSegments";
 import { RoutingExecutionSettings } from "@/components/routing/RoutingExecutionSettings";
-import { AutoGroupProviders } from "@/components/routing/AutoGroupProviders";
 import { copyText } from "@/lib/clipboard";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
 import { globalProviderPresets } from "@/config/globalProviderPresets";
@@ -39,7 +42,6 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
   DropdownMenuItem,
-  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AppDialog } from "@/components/ui/app-dialog";
@@ -49,6 +51,7 @@ import {
 } from "@/hooks/useWorkspaceEditing";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -68,6 +71,7 @@ import {
 import {
   intentRoutingApi,
   type ClassificationTrial,
+  type RoutingCatalog,
   type RoutingGroup,
   type RoutingPlanPreview,
   type RoutingProviderOption,
@@ -142,11 +146,11 @@ export function IntentRoutingPanel({
     [providers.data],
   );
   const [filter, setFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState(false);
   const [imported, setImported] = useState<RoutingImportResult | null>(null);
-  const [shared, setShared] = useState<string | null>(null);
   const [groupMenu, setGroupMenu] = useState<string | null>(null);
   const groupDrag = useRoutingRowDrag("data-routing-group", (from, to) => {
     void arrangeGroup(from, to);
@@ -189,6 +193,9 @@ export function IntentRoutingPanel({
       : (groups.data?.matchedMembers?.[draft.id] ?? [])
     : [];
   const [nextDraft, setNextDraft] = useState<RoutingGroup | null>(null);
+  const importFormId = useId();
+  const importInput = useRef<HTMLTextAreaElement>(null);
+  const importButton = useRef<HTMLButtonElement>(null);
   const editorId = useId();
   const editorRef = useRoutingDialogHeight();
   const initialDraft = useRef<RoutingGroup | null>(null);
@@ -196,14 +203,61 @@ export function IntentRoutingPanel({
   const createButton = useRef<HTMLButtonElement>(null);
   const editButtons = useRef(new Map<string, HTMLButtonElement>());
   const [deleting, setDeleting] = useState<RoutingGroup | null>(null);
+  const tableScroll = useRef<HTMLDivElement>(null);
+  const [tableScrollEdges, setTableScrollEdges] = useState({
+    left: false,
+    right: false,
+  });
+  useEffect(() => {
+    const viewport = tableScroll.current;
+    if (!viewport) return;
+    const update = () => {
+      const next = {
+        left: viewport.scrollLeft > 1,
+        right:
+          viewport.scrollWidth - viewport.clientWidth - viewport.scrollLeft > 1,
+      };
+      setTableScrollEdges((previous) =>
+        previous.left === next.left && previous.right === next.right
+          ? previous
+          : next,
+      );
+    };
+    update();
+    viewport.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(viewport);
+    if (viewport.firstElementChild)
+      observer?.observe(viewport.firstElementChild);
+    return () => {
+      viewport.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      observer?.disconnect();
+    };
+  }, [groups.data]);
   const [pending, setPending] = useState(false);
+  const [pendingGroups, setPendingGroups] = useState<Set<string>>(new Set());
+  const activeGroups = useRef(new Set<string>());
+  const catalogMutations = useRef<Promise<void> | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const reorderRequest = useRef(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const reloadRequest = useRef<object | null>(null);
+  useEffect(
+    () => () => {
+      reloadRequest.current = null;
+    },
+    [],
+  );
   const [deferredFocus, setDeferredFocus] = useState<string | null>(null);
   useEffect(() => {
-    if (!pending && deferredFocus) {
+    if (!pending && deferredFocus && !pendingGroups.has(deferredFocus)) {
       editButtons.current.get(deferredFocus)?.focus({ preventScroll: true });
       setDeferredFocus(null);
     }
-  }, [pending, deferredFocus]);
+  }, [pending, pendingGroups, deferredFocus]);
   const draftDirty =
     !!draft &&
     (JSON.stringify(draft) !== JSON.stringify(initialDraft.current) ||
@@ -262,6 +316,78 @@ export function IntentRoutingPanel({
     setPreviewPending(false);
     setError(null);
   }
+  function isGroupPending(id?: string) {
+    return !!id && pendingGroups.has(id);
+  }
+  async function groupOperation(id: string, action: () => Promise<void>) {
+    if (pending || activeGroups.current.has(id)) return;
+    activeGroups.current.add(id);
+    setPendingGroups(new Set(activeGroups.current));
+    setError(null);
+    try {
+      await action();
+    } catch (cause) {
+      report(cause);
+    } finally {
+      activeGroups.current.delete(id);
+      setPendingGroups(new Set(activeGroups.current));
+    }
+  }
+  function mutateCatalog<T>(action: () => Promise<T>): Promise<T> {
+    // Catalog membership/order writes require the complete current group list.
+    const next = catalogMutations.current
+      ? catalogMutations.current.then(action, action)
+      : action();
+    const settled = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    catalogMutations.current = settled;
+    void settled.then(() => {
+      if (catalogMutations.current === settled) catalogMutations.current = null;
+    });
+    return next;
+  }
+  function currentGroups() {
+    return (
+      client.getQueryData<RoutingCatalog>(["intent-routing-groups"])?.groups ??
+      groups.data?.groups ??
+      []
+    );
+  }
+  async function saveGroup(value: RoutingGroup) {
+    const saved = await intentRoutingApi.save(value);
+    client.setQueryData<RoutingCatalog>(
+      ["intent-routing-groups"],
+      (current) => {
+        if (!current) return current;
+        const previous = current.groups.find((group) => group.id === saved.id);
+        if (previous && previous.revision > saved.revision) return current;
+        return {
+          ...current,
+          groups: previous
+            ? current.groups.map((group) =>
+                group.id === saved.id ? saved : group,
+              )
+            : [...current.groups, saved],
+        };
+      },
+    );
+    return saved;
+  }
+  async function removeGroup(id: string, revision: number) {
+    await intentRoutingApi.remove(id, revision);
+    client.setQueryData<RoutingCatalog>(["intent-routing-groups"], (current) =>
+      current
+        ? {
+            ...current,
+            groups: current.groups.filter(
+              (group) => group.id !== id || group.revision > revision,
+            ),
+          }
+        : current,
+    );
+  }
   function edit(value: RoutingGroup | null) {
     invalidatePreview();
     setTrialConsent(false);
@@ -307,27 +433,36 @@ export function IntentRoutingPanel({
       name: draftName,
     });
   }
+
   function templateNeed(template: ReturnType<typeof routingTemplates>[number]) {
     return template.need
       ? t(`routingPage.templateNeed_${template.need}`, { name: template.of })
       : "";
   }
   async function removeSelected() {
-    if (pending || !selectedGroups?.size || !groups.data) return;
+    if (
+      pending ||
+      !selectedGroups?.size ||
+      !groups.data ||
+      [...selectedGroups].some((id) => activeGroups.current.has(id))
+    )
+      return;
     setPending(true);
     setError(null);
     let removedAll = false;
     try {
-      for (const group of groups.data.groups.filter((group) =>
-        selectedGroups.has(group.id),
-      )) {
-        await intentRoutingApi.remove(group.id, group.revision);
-        setSelectedGroups((previous) => {
-          const next = new Set(previous);
-          next.delete(group.id);
-          return next;
-        });
-      }
+      await mutateCatalog(async () => {
+        for (const group of currentGroups().filter((group) =>
+          selectedGroups.has(group.id),
+        )) {
+          await removeGroup(group.id, group.revision);
+          setSelectedGroups((previous) => {
+            const next = new Set(previous);
+            next.delete(group.id);
+            return next;
+          });
+        }
+      });
       removedAll = true;
     } catch (cause) {
       report(cause);
@@ -344,30 +479,19 @@ export function IntentRoutingPanel({
       setPending(false);
     }
   }
-  function exportGroup(group: RoutingGroup) {
-    let text: string;
-    try {
-      text = shareRoutingGroup(group);
-    } catch {
-      report(null);
-      return;
-    }
-    const blob = new Blob([text], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `vary-routing-group-${group.id}.json`;
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
   async function shareGroup(group: RoutingGroup) {
-    setError(null);
-    try {
+    await groupOperation(group.id, async () => {
       await copyText(shareRoutingGroup(group));
-      setShared(group.id);
-    } catch {
-      report(null);
-    }
+      toast.success(t("routingPage.copied"));
+    });
+  }
+  function closeImport() {
+    if (pending) return;
+    setImportOpen(false);
+    setImportText("");
+    setImported(null);
+    setImportError(false);
+    setError(null);
   }
   async function importGroup() {
     if (pending || !providers.data) return;
@@ -380,21 +504,23 @@ export function IntentRoutingPanel({
       setImportError(true);
       return;
     }
-    const names = new Set(
-      groups.data?.groups.map((group) => group.name.toLocaleLowerCase()),
-    );
-    const base = result.group.name;
-    let number = 1;
-    while (names.has(result.group.name.toLocaleLowerCase())) {
-      const suffix = ` ${++number}`;
-      result.group.name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
-    }
     setPending(true);
     try {
-      result.group = await intentRoutingApi.save(result.group);
-      setImported(result);
-      setImportText("");
-      await refreshRoutingStatus();
+      await mutateCatalog(async () => {
+        const names = new Set(
+          currentGroups().map((group) => group.name.toLocaleLowerCase()),
+        );
+        const base = result.group.name;
+        let number = 1;
+        while (names.has(result.group.name.toLocaleLowerCase())) {
+          const suffix = ` ${++number}`;
+          result.group.name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
+        }
+        result.group = await saveGroup(result.group);
+        setImported(result);
+        setImportText("");
+        await refreshRoutingStatus();
+      });
     } catch (cause) {
       report(cause);
     } finally {
@@ -402,8 +528,8 @@ export function IntentRoutingPanel({
     }
   }
   async function moveGroup(group: RoutingGroup, offset: number) {
-    if (pending || draft) return;
-    const all = groups.data?.groups ?? [];
+    if (pending || draft || reorderRequest.current) return;
+    const all = currentGroups();
     const visible = all.filter((candidate) =>
       visibleGroups?.some((entry) => entry.id === candidate.id),
     );
@@ -413,103 +539,111 @@ export function IntentRoutingPanel({
     await arrangeGroup(group.id, next.id);
   }
   async function arrangeGroup(id: string, target: string) {
-    if (pending || draft) return;
-    const all = groups.data?.groups ?? [];
-    const order = all.map((entry) => entry.id);
-    const from = order.indexOf(id);
-    const to = order.indexOf(target);
-    if (from < 0 || to < 0 || from === to) return;
-    order.splice(to, 0, ...order.splice(from, 1));
-    setPending(true);
+    if (pending || draft || reorderRequest.current) return;
+    reorderRequest.current = true;
+    setReordering(true);
     setError(null);
     try {
-      await intentRoutingApi.arrange(order);
-      await refreshRoutingStatus();
+      await mutateCatalog(async () => {
+        const order = currentGroups().map((entry) => entry.id);
+        const from = order.indexOf(id);
+        const to = order.indexOf(target);
+        if (from < 0 || to < 0 || from === to) return;
+        order.splice(to, 0, ...order.splice(from, 1));
+        await intentRoutingApi.arrange(order);
+        await refreshRoutingStatus();
+      });
     } catch (cause) {
       report(cause);
     } finally {
-      setPending(false);
+      reorderRequest.current = false;
+      setReordering(false);
     }
   }
   async function duplicateGroup(group: RoutingGroup) {
-    if (pending || draft || !providers.data) return;
-    setPending(true);
-    setError(null);
-    try {
-      // A local copy retains unavailable seats and machine-local rules.
-      const duplicate = importRoutingGroup(
-        JSON.stringify(group),
-        [
-          ...providers.data,
-          ...[
-            ...new Set(
-              [
-                ...group.members,
-                ...(group.classifierTarget ? [group.classifierTarget] : []),
-              ].map((member) => member.providerId),
-            ),
-          ]
-            .filter(
-              (id) => !providers.data?.some((provider) => provider.id === id),
-            )
-            .map(
-              (id): RoutingProviderOption => ({
-                id,
-                name: id,
-                taskEligible: false,
-                classifierEligible: false,
-              }),
-            ),
-        ].map((provider) => ({
-          ...provider,
-          models: [
-            ...(provider.models ?? []),
-            ...[
-              ...group.members,
-              ...(group.classifierTarget ? [group.classifierTarget] : []),
-            ]
-              .filter((member) => member.providerId === provider.id)
-              .map((member) => ({ id: member.modelId, name: member.modelId })),
-          ],
-        })),
-      );
-      duplicate.enabled = true;
-      duplicate.name = t("routingPage.copyName", { name: group.name }).slice(
-        0,
-        80,
-      );
-      const base = duplicate.name;
-      const names = new Set(
-        groups.data?.groups.map((entry) => entry.name.toLocaleLowerCase()),
-      );
-      let number = 1;
-      while (names.has(duplicate.name.toLocaleLowerCase())) {
-        const suffix = ` ${++number}`;
-        duplicate.name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
-      }
-      const saved = await intentRoutingApi.save(duplicate);
-      const order = (groups.data?.groups ?? []).map((entry) => entry.id);
-      order.splice(order.indexOf(group.id) + 1, 0, saved.id);
-      await intentRoutingApi.arrange(order);
-      await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-      await refreshRoutingStatus();
-    } finally {
-      setPending(false);
-    }
+    const availableProviders = providers.data;
+    if (draft || !availableProviders) return;
+    await groupOperation(group.id, () =>
+      mutateCatalog(async () => {
+        try {
+          // A local copy retains unavailable seats and machine-local rules.
+          const duplicate = importRoutingGroup(
+            JSON.stringify(group),
+            [
+              ...availableProviders,
+              ...[
+                ...new Set(
+                  [
+                    ...group.members,
+                    ...(group.classifierTarget ? [group.classifierTarget] : []),
+                  ].map((member) => member.providerId),
+                ),
+              ]
+                .filter(
+                  (id) =>
+                    !availableProviders.some((provider) => provider.id === id),
+                )
+                .map(
+                  (id): RoutingProviderOption => ({
+                    id,
+                    name: id,
+                    taskEligible: false,
+                    classifierEligible: false,
+                  }),
+                ),
+            ].map((provider) => ({
+              ...provider,
+              models: [
+                ...(provider.models ?? []),
+                ...[
+                  ...group.members,
+                  ...(group.classifierTarget ? [group.classifierTarget] : []),
+                ]
+                  .filter((member) => member.providerId === provider.id)
+                  .map((member) => ({
+                    id: member.modelId,
+                    name: member.modelId,
+                  })),
+              ],
+            })),
+          );
+          duplicate.enabled = true;
+          duplicate.name = t("routingPage.copyName", {
+            name: group.name,
+          }).slice(0, 80);
+          const base = duplicate.name;
+          const names = new Set(
+            currentGroups().map((entry) => entry.name.toLocaleLowerCase()),
+          );
+          let number = 1;
+          while (names.has(duplicate.name.toLocaleLowerCase())) {
+            const suffix = ` ${++number}`;
+            duplicate.name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
+          }
+          const saved = await saveGroup(duplicate);
+          const order = currentGroups()
+            .map((entry) => entry.id)
+            .filter((id) => id !== saved.id);
+          const sourceIndex = order.indexOf(group.id);
+          order.splice(
+            sourceIndex < 0 ? order.length : sourceIndex + 1,
+            0,
+            saved.id,
+          );
+          await intentRoutingApi.arrange(order);
+          await refreshRoutingStatus();
+        } catch (cause) {
+          report(cause);
+          await refreshRoutingStatus();
+        }
+      }),
+    );
   }
   async function publishGroup(group: RoutingGroup, enabled: boolean) {
-    setPending(true);
-    setError(null);
-    try {
-      await intentRoutingApi.save({ ...group, enabled });
+    await groupOperation(group.id, async () => {
+      await saveGroup({ ...group, enabled });
       await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setPending(false);
-    }
+    });
   }
   function report(cause: unknown) {
     const key =
@@ -549,34 +683,39 @@ export function IntentRoutingPanel({
       setError("intentRouting.invalidPattern");
       return;
     }
+    if (activeGroups.current.has(draft.id)) return;
     setPending(true);
     setError(null);
-    try {
-      await intentRoutingApi.save({
-        ...draft,
-        name: draft.name.trim(),
-        sink: !!draft.sink && sinkable(draft.routing),
-        ...(pattern
-          ? { match: [...new Set([...(draft.match ?? []), pattern])] }
-          : {}),
-      });
+    const submit = async () => {
+      try {
+        await saveGroup({
+          ...draft,
+          name: draft.name.trim(),
+          sink: !!draft.sink && sinkable(draft.routing),
+          ...(pattern
+            ? { match: [...new Set([...(draft.match ?? []), pattern])] }
+            : {}),
+        });
+      } catch (cause) {
+        setPending(false);
+        throw cause;
+      }
       setPatternInput("");
+      setPending(false);
       edit(null);
       await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setPending(false);
-    }
+    };
+    await groupOperation(draft.id, () =>
+      draft.revision === 0 ? mutateCatalog(submit) : submit(),
+    );
   }
+
   async function changeRouting(
     group: RoutingGroup,
     routing: NonNullable<RoutingGroup["routing"]>,
   ) {
-    setPending(true);
-    setError(null);
-    try {
-      await intentRoutingApi.save({
+    await groupOperation(group.id, async () => {
+      await saveGroup({
         ...group,
         routing,
         sink: !!group.sink && sinkable(routing),
@@ -585,11 +724,7 @@ export function IntentRoutingPanel({
           : {}),
       });
       await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setPending(false);
-    }
+    });
   }
   function routingSelect(
     group: RoutingGroup,
@@ -598,7 +733,9 @@ export function IntentRoutingPanel({
     return (
       <Select
         value={group.routing ?? "ordered"}
-        disabled={pending || (!!draft && group !== draft)}
+        disabled={
+          pending || isGroupPending(group.id) || (!!draft && group !== draft)
+        }
         onValueChange={(value) =>
           update(value as NonNullable<RoutingGroup["routing"]>)
         }
@@ -606,6 +743,7 @@ export function IntentRoutingPanel({
         <SelectTrigger
           className="h-8 w-auto min-w-24 gap-2 rounded-full text-xs"
           aria-label={t("intentRouting.routingStrategy")}
+          title={`${t("intentRouting.routingStrategy")}: ${t(`routingPage.strategy.${group.routing ?? "ordered"}`)}`}
         >
           <SelectValue />
         </SelectTrigger>
@@ -623,7 +761,9 @@ export function IntentRoutingPanel({
     return (
       <Select
         value={group.manualMemberId ?? group.defaultMemberId}
-        disabled={pending || (!!draft && group !== draft)}
+        disabled={
+          pending || isGroupPending(group.id) || (!!draft && group !== draft)
+        }
         onValueChange={update}
       >
         <SelectTrigger
@@ -660,73 +800,64 @@ export function IntentRoutingPanel({
     group: RoutingGroup,
     manualMemberId: string,
   ) {
-    setPending(true);
-    setError(null);
-    try {
-      await intentRoutingApi.save({ ...group, manualMemberId });
+    await groupOperation(group.id, async () => {
+      await saveGroup({ ...group, manualMemberId });
       await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setPending(false);
-    }
+    });
   }
   async function restoreGroup(id: string) {
-    setPending(true);
-    setError(null);
-    try {
-      await intentRoutingApi.restore(id);
-      await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setPending(false);
-    }
-  }
-  async function toggleAutoCreate(enabled: boolean) {
-    setPending(true);
-    setError(null);
-    try {
-      await intentRoutingApi.setAutoCreate(enabled);
-      if (enabled) await intentRoutingApi.refreshCatalogs();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      await refreshRoutingStatus();
-      setPending(false);
-    }
+    await groupOperation(id, () =>
+      mutateCatalog(async () => {
+        await intentRoutingApi.restore(id);
+        await refreshRoutingStatus();
+      }),
+    );
   }
   async function reload() {
-    setPending(true);
+    if (reloadRequest.current) return;
+    const request = {};
+    reloadRequest.current = request;
+    setRefreshing(true);
     setError(null);
     try {
       await intentRoutingApi.refreshCatalogs();
     } catch (cause) {
-      report(cause);
+      if (reloadRequest.current === request) report(cause);
     } finally {
-      await Promise.all([
-        groups.refetch(),
-        providers.refetch(),
-        client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
-      ]);
-      setPending(false);
+      if (reloadRequest.current === request) {
+        try {
+          await Promise.all([
+            groups.refetch(),
+            providers.refetch(),
+            client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
+          ]);
+        } catch (cause) {
+          if (reloadRequest.current === request) report(cause);
+        } finally {
+          if (reloadRequest.current === request) {
+            reloadRequest.current = null;
+            setRefreshing(false);
+          }
+        }
+      }
     }
   }
   async function remove() {
     if (!deleting) return;
-    setPending(true);
-    setError(null);
-    try {
-      await intentRoutingApi.remove(deleting.id, deleting.revision);
-      if (draft?.id === deleting.id) edit(null);
-      setDeleting(null);
-      await refreshRoutingStatus();
-    } catch (cause) {
-      report(cause);
-      setDeleting(null);
-    } finally {
-      setPending(false);
-    }
+    const target = deleting;
+    await groupOperation(target.id, () =>
+      mutateCatalog(async () => {
+        try {
+          await removeGroup(target.id, target.revision);
+          if (draft?.id === target.id) edit(null);
+        } finally {
+          setDeleting((current) =>
+            current?.id === target.id ? null : current,
+          );
+        }
+        await refreshRoutingStatus();
+      }),
+    );
   }
   async function inspectPlan() {
     if (!draft) return;
@@ -782,15 +913,17 @@ export function IntentRoutingPanel({
   const visibleGroups = groups.data?.groups.filter(
     (group) =>
       group.id === draft?.id ||
-      [
-        group.name,
-        group.modelAlias ?? `vary-auto/${group.id}`,
-        ...group.members.flatMap((member) => [
-          member.modelId,
-          providers.data?.find((p) => p.id === member.providerId)?.name ||
-            member.providerId,
-        ]),
-      ].some((value) => value.toLocaleLowerCase().includes(query)),
+      ((statusFilter === "all" ||
+        group.enabled === (statusFilter === "enabled")) &&
+        [
+          group.name,
+          group.modelAlias ?? `vary-auto/${group.id}`,
+          ...group.members.flatMap((member) => [
+            member.modelId,
+            providers.data?.find((p) => p.id === member.providerId)?.name ||
+              member.providerId,
+          ]),
+        ].some((value) => value.toLocaleLowerCase().includes(query))),
   );
   const valid =
     draft &&
@@ -835,8 +968,6 @@ export function IntentRoutingPanel({
       (draft.classifierTarget.providerId &&
         draft.classifierTarget.modelId.trim()));
 
-  const existingDraft =
-    !!draft && !!groups.data?.groups.some((group) => group.id === draft.id);
   const classifierModels =
     providers.data
       ?.filter((provider) => provider.classifierEligible)
@@ -844,6 +975,7 @@ export function IntentRoutingPanel({
         (provider.models ?? []).map((model) => ({
           ...model,
           id: JSON.stringify([provider.id, model.id]),
+          reference: `${provider.id}/${model.id}`,
           modelId: model.id,
           name: model.name || model.id,
           group: provider.name,
@@ -862,19 +994,6 @@ export function IntentRoutingPanel({
   );
   const editorActions = (
     <div className="rt-editor-bar flex gap-2">
-      {existingDraft && (
-        <button
-          type="button"
-          className="rg-text rt-remove"
-          disabled={pending}
-          onClick={() => {
-            setError(null);
-            setDeleting(initialDraft.current);
-          }}
-        >
-          {t("common.delete")}
-        </button>
-      )}
       <span className="grow" />
       <button
         type="button"
@@ -1668,7 +1787,9 @@ export function IntentRoutingPanel({
   return (
     <AccountMask as="section" masked={maskAccounts} className="rt-group-panel">
       <div className="rt-group-heading">
-        <h3 className="label">{t("intentRouting.title")}</h3>
+        <div className="rt-group-title">
+          <h3>{t("intentRouting.title")}</h3>
+        </div>
         <div className="rt-group-tools">
           <div className="rt-group-search">
             <Search
@@ -1684,62 +1805,55 @@ export function IntentRoutingPanel({
               className="h-9 pl-9"
             />
           </div>
-          {!selectedGroups &&
-            groups.data?.groups.some((group) => !group.autoGenerated) && (
-              <details className="rt-template-menu">
-                <summary className="cursor-pointer text-xs text-muted-foreground">
-                  {t("routingPage.templates")}
-                </summary>
-                <div>
-                  {templates.map((template) => (
-                    <button
-                      key={template.key}
-                      type="button"
-                      disabled={
-                        pending || !!deleting || importOpen || !!template.need
-                      }
-                      title={
-                        templateNeed(template) ||
-                        t(`routingPage.${template.key}Hint`)
-                      }
-                      onClick={(event) => {
-                        useTemplate(template);
-                        event.currentTarget
-                          .closest("details")
-                          ?.removeAttribute("open");
-                      }}
-                    >
-                      {t(`routingPage.${template.key}`)}
-                    </button>
-                  ))}
-                </div>
-              </details>
-            )}
+          <div className="rt-group-status-filter">
+            <select
+              aria-label={t("routingPage.groupStatus")}
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="all">{t("routingPage.allStatuses")}</option>
+              <option value="enabled">{t("routingPage.groupEnabled")}</option>
+              <option value="disabled">{t("routingPage.groupDisabled")}</option>
+            </select>
+          </div>
           <Button
             variant="ghost"
             size="sm"
+            ref={importButton}
+            aria-label={t("routingPage.import")}
+            title={t("routingPage.import")}
+            aria-haspopup="dialog"
             aria-expanded={importOpen}
             disabled={pending || !!draft || !!deleting || !!selectedGroups}
             onClick={() => {
-              setImportOpen(!importOpen);
+              setImportOpen(true);
               setImported(null);
               setError(null);
               setImportError(false);
             }}
           >
-            {t("routingPage.import")}
+            <Download size={12} strokeWidth={1.75} aria-hidden="true" />
+            <span>{t("routingPage.import")}</span>
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            disabled={pending || groups.isFetching || !!deleting}
+            aria-label={t("routingPage.refresh")}
+            title={t("routingPage.refresh")}
+            aria-busy={refreshing}
+            disabled={pending || refreshing || groups.isPending || !!deleting}
             onClick={() => void reload()}
           >
-            {t("intentRouting.reload")}
+            <RoutingRefreshIcon refreshing={refreshing} />
+            <span>{t("routingPage.refresh")}</span>
           </Button>
           <Button
             variant="ghost"
             size="sm"
+            aria-label={t(
+              selectedGroups ? "common.cancel" : "routingPage.manage",
+            )}
+            title={t(selectedGroups ? "common.cancel" : "routingPage.manage")}
             aria-pressed={!!selectedGroups}
             disabled={
               pending ||
@@ -1753,7 +1867,10 @@ export function IntentRoutingPanel({
             }
             onClick={() => setSelectedGroups(selectedGroups ? null : new Set())}
           >
-            {t(selectedGroups ? "common.cancel" : "routingPage.manage")}
+            <Settings size={12} strokeWidth={1.75} aria-hidden="true" />
+            <span>
+              {t(selectedGroups ? "common.cancel" : "routingPage.manage")}
+            </span>
           </Button>
           {showCreateButton && (
             <Button
@@ -1777,184 +1894,50 @@ export function IntentRoutingPanel({
           )}
         </div>
       </div>
-      {importOpen && (
-        <form
-          className="space-y-3 rounded-lg border border-border bg-background p-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void importGroup();
-          }}
+      {groups.data && (
+        <section
+          className="rt-template-cards"
+          aria-label={t("routingPage.templates")}
         >
-          {imported ? (
-            <>
-              <div
-                role="status"
-                aria-label={t("routingPage.importComplete")}
-                className="rt-import-result"
-              >
-                <p>
-                  {t("routingPage.imported", { name: imported.group.name })}
-                </p>
-                {!!imported.missing.length && (
-                  <p>
-                    {t("routingPage.importMissing", {
-                      models: imported.missing.join(", "),
-                    })}
-                  </p>
-                )}
-                {!!imported.instead.length && (
-                  <p>
-                    {t("routingPage.importInstead", {
-                      models: imported.instead.join(", "),
-                    })}
-                  </p>
-                )}
-                {!!imported.omittedRules && (
-                  <p>
-                    {t("routingPage.importRules", {
-                      count: imported.omittedRules,
-                    })}
-                  </p>
-                )}
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setImportOpen(false);
-                  setImported(null);
-                }}
-              >
-                {t("common.done")}
-              </Button>
-            </>
-          ) : (
-            <>
-              <p className="text-xs text-muted-foreground">
-                {t("routingPage.importHint")}
-              </p>
-              <label className="block space-y-2 text-xs">
-                {t("routingPage.importLabel")}
-                <Textarea
-                  disabled={pending}
-                  value={importText}
-                  maxLength={65536}
-                  rows={6}
-                  onChange={(event) => {
-                    setImportText(event.target.value);
-                    setImportError(false);
-                  }}
-                />
-              </label>
-              {importError && (
-                <p role="alert" className="text-sm text-destructive">
-                  {t("routingPage.invalidImport")}
-                </p>
-              )}
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  type="submit"
-                  disabled={!importText.trim() || pending || !providers.data}
-                >
-                  {t("routingPage.reviewImport")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  type="button"
-                  disabled={pending}
-                  onClick={() => {
-                    setImportOpen(false);
-                    setImportText("");
-                  }}
-                >
-                  {t("common.cancel")}
-                </Button>
-              </div>
-            </>
-          )}
-        </form>
-      )}
-      <div className="rt-gfound">
-        <div className="txt">
-          <label htmlFor="intent-routing-auto-create">
-            {t("intentRouting.autoCreate")}
-          </label>
-          <small id="intent-routing-auto-description">
-            {t(
-              groups.data?.autoCreate
-                ? "intentRouting.autoCreateCompact"
-                : "intentRouting.autoCreateOff",
-            )}
-          </small>
-          {groups.data?.autoCreate && (
-            <AutoGroupProviders
-              providers={providers.data ?? []}
-              disabled={
-                pending ||
-                !!draft ||
-                !!deleting ||
-                providers.isPending ||
-                providers.isError
-              }
-            />
-          )}
-        </div>
-        <Switch
-          className="mp-switch"
-          id="intent-routing-auto-create"
-          aria-describedby="intent-routing-auto-description"
-          checked={groups.data?.autoCreate ?? false}
-          disabled={
-            groups.isPending ||
-            groups.isError ||
-            pending ||
-            !!draft ||
-            !!deleting
-          }
-          onCheckedChange={(enabled) => void toggleAutoCreate(enabled)}
-        />
-      </div>
-      {!draft &&
-        !selectedGroups &&
-        !importOpen &&
-        groups.data &&
-        !groups.data.groups.some((group) => !group.autoGenerated) && (
-          <div className="rt-template-cards">
-            <p className="rt-template-intro">{t("routingPage.templateHint")}</p>
-            {templates.map((template) => (
-              <div
-                key={template.key}
-                className={template.need ? "off" : undefined}
-              >
-                <b>{t(`routingPage.${template.key}`)}</b>
-                <p>{t(`routingPage.${template.key}Hint`)}</p>
-                <span title={templateNeed(template)}>
+          <p className="rt-template-intro">{t("routingPage.templateHint")}</p>
+          {templates.map((template) => (
+            <div
+              key={template.key}
+              className={template.need ? "off" : undefined}
+            >
+              <b>{t(`routingPage.${template.key}`)}</b>
+              <p>{t(`routingPage.${template.key}Hint`)}</p>
+              <span>
+                <AccountLabel title>
                   {template.need
                     ? templateNeed(template)
                     : template.group.members
                         .map((member) => member.modelId)
-                        .join(" \u2192 ")}
-                </span>
-                {!template.need && (
-                  <div className="rt-template-actions">
-                    <button
-                      type="button"
-                      className="text primary"
-                      disabled={pending || !!deleting}
-                      onClick={() => useTemplate(template)}
-                    >
-                      {t("routingPage.addTemplate")}
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      {selectedGroups && (
+                        .join(" → ")}
+                </AccountLabel>
+              </span>
+              {!template.need && (
+                <div className="rt-template-actions">
+                  <button
+                    type="button"
+                    className="text primary"
+                    disabled={
+                      pending ||
+                      !!deleting ||
+                      providers.isPending ||
+                      providers.isError
+                    }
+                    onClick={() => useTemplate(template)}
+                  >
+                    {t("routingPage.addTemplate")}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+      {selectedGroups && !!groups.data?.groups.length && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-3 text-xs">
           <label className="flex items-center gap-2">
             <input
@@ -1977,7 +1960,11 @@ export function IntentRoutingPanel({
           <Button
             size="sm"
             variant="destructive"
-            disabled={!selectedGroups.size || pending}
+            disabled={
+              !selectedGroups.size ||
+              pending ||
+              [...selectedGroups].some(isGroupPending)
+            }
             onClick={() => {
               setError(null);
               setConfirmBulk(true);
@@ -2002,330 +1989,436 @@ export function IntentRoutingPanel({
           {t("intentRouting.autoOmitted", { count: groups.data.omittedGroups })}
         </p>
       )}
-      {!draft && (error || groups.isError || providers.isError) && (
-        <div role="alert" className="text-sm text-destructive">
-          {t(error || "intentRouting.failed")}{" "}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pending}
-            onClick={() => void reload()}
-          >
-            {t("intentRouting.reload")}
-          </Button>
-        </div>
-      )}
+      {!draft &&
+        !importOpen &&
+        (error || groups.isError || providers.isError) && (
+          <div role="alert" className="text-sm text-destructive">
+            {t(error || "intentRouting.failed")}{" "}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() => void reload()}
+            >
+              {t("intentRouting.reload")}
+            </Button>
+          </div>
+        )}
       {groups.isPending && <p role="status">{t("common.loading")}</p>}
-      {(existingDraft || !!groups.data?.groups.length) && (
-        <ul
-          aria-label={t("intentRouting.title")}
-          className="rt-group-list"
-          data-routing-list
+      {groups.data && (
+        <div
+          className="rt-group-table-frame"
+          data-scroll-left={tableScrollEdges.left || undefined}
+          data-scroll-right={tableScrollEdges.right || undefined}
         >
-          {visibleGroups?.map((group) => {
-            const notReady =
-              providers.data &&
-              group.members.some(
-                (member) =>
-                  !group.off?.includes(member.id) &&
-                  (group.routing !== "manual" ||
-                    member.id ===
-                      (group.manualMemberId ?? group.defaultMemberId)) &&
-                  !providers.data?.some(
-                    (p) => p.id === member.providerId && p.taskEligible,
-                  ),
-              );
-            const summary = memberSummary(group);
-            return (
-              <li key={group.id} className="relative min-w-0">
-                <div
-                  className="rt-group-row"
-                  data-routing-group={group.id}
-                  data-dragging={groupDrag.drag?.from === group.id || undefined}
-                  data-drag-target={
-                    (groupDrag.drag?.to === group.id &&
-                      groupDrag.drag.from !== group.id) ||
-                    undefined
-                  }
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    if (!pending && !draft && !deleting) setGroupMenu(group.id);
-                  }}
-                  onClick={(event) => {
-                    if (
-                      pending ||
-                      deleting ||
-                      providers.isPending ||
-                      providers.isError
-                    )
-                      return;
-                    const control = (event.target as Element).closest(
-                      "button, input, select, textarea, a, label, [role='combobox'], [tabindex]",
+          <div
+            ref={tableScroll}
+            className="rt-group-table-scroll"
+            role="region"
+            aria-label={t("intentRouting.title")}
+            tabIndex={0}
+          >
+            <table
+              className="rt-group-table"
+              aria-label={t("intentRouting.title")}
+            >
+              <thead>
+                <tr>
+                  {[
+                    "groupName",
+                    "upstreamCount",
+                    "requestCount",
+                    "switchCount",
+                    "agentErrorCount",
+                    "actions",
+                  ].map((key) => (
+                    <th key={key} scope="col">
+                      {t(`routingPage.${key}`)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody
+                aria-label={t("intentRouting.title")}
+                className="rt-group-list"
+                data-routing-list
+              >
+                {visibleGroups?.map((group) => {
+                  const notReady =
+                    providers.data &&
+                    group.members.some(
+                      (member) =>
+                        !group.off?.includes(member.id) &&
+                        (group.routing !== "manual" ||
+                          member.id ===
+                            (group.manualMemberId ?? group.defaultMemberId)) &&
+                        !providers.data?.some(
+                          (p) => p.id === member.providerId && p.taskEligible,
+                        ),
                     );
-                    if (control && event.currentTarget.contains(control))
-                      return;
-                    if (selectedGroups) {
-                      setSelectedGroups((previous) => {
-                        const next = new Set(previous);
-                        if (next.has(group.id)) next.delete(group.id);
-                        else next.add(group.id);
-                        return next;
-                      });
-                    } else requestEditor(group);
-                  }}
-                >
-                  {selectedGroups && (
-                    <input
-                      type="checkbox"
-                      disabled={pending}
-                      aria-label={group.name}
-                      checked={selectedGroups.has(group.id)}
-                      onChange={(event) =>
-                        setSelectedGroups((previous) => {
-                          const next = new Set(previous);
-                          if (event.target.checked) next.add(group.id);
-                          else next.delete(group.id);
-                          return next;
-                        })
+                  const summary = memberSummary(group);
+                  return (
+                    <tr
+                      key={group.id}
+                      className="rt-group-row"
+                      data-routing-group={group.id}
+                      aria-busy={isGroupPending(group.id)}
+                      data-dragging={
+                        groupDrag.drag?.from === group.id || undefined
                       }
-                    />
-                  )}
-                  <DropdownMenu
-                    open={groupMenu === group.id}
-                    onOpenChange={(open) =>
-                      setGroupMenu(open ? group.id : null)
-                    }
-                  >
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="rt-ghandle"
-                        disabled={pending || !!draft || !!deleting}
-                        aria-label={`${t("routingPage.arrangeGroup")} ${group.name}`}
-                        title={t("routingPage.dragHint")}
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          setGroupMenu(null);
-                          groupDrag.start(event, group.id);
-                        }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (!groupDrag.consumeClick(group.id))
-                            setGroupMenu(
-                              groupMenu === group.id ? null : group.id,
-                            );
-                        }}
-                        onKeyDown={(event) => {
-                          if (
-                            event.altKey &&
-                            ["ArrowUp", "ArrowDown"].includes(event.key)
-                          ) {
-                            event.preventDefault();
-                            void moveGroup(
-                              group,
-                              event.key === "ArrowUp" ? -1 : 1,
-                            );
-                          }
-                        }}
-                      >
-                        <span
-                          role="img"
-                          aria-label={t("intentRouting.globalResource")}
-                        >
-                          <RoutingGroupIcon
-                            client="global"
-                            icons={group.members.map((member) => {
-                              const provider = providers.data?.find(
-                                (provider) => provider.id === member.providerId,
-                              );
-                              return {
-                                icon:
-                                  globalProviderPresets.find(
-                                    (preset) => preset.id === provider?.icon,
-                                  )?.icon ??
-                                  provider?.icon ??
-                                  (provider?.appType === "codex"
-                                    ? "openai"
-                                    : undefined),
-                                name: provider?.name ?? member.providerId,
-                              };
-                            })}
-                          />
-                        </span>
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      className="mp-row-menu"
-                      align="start"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <DropdownMenuItem
-                        disabled={visibleGroups?.[0]?.id === group.id}
-                        onSelect={() => void moveGroup(group, -1)}
-                      >
-                        <ChevronUp size={13} />
-                        {t("intentRouting.moveUp")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={visibleGroups?.at(-1)?.id === group.id}
-                        onSelect={() => void moveGroup(group, 1)}
-                      >
-                        <ChevronDown size={13} />
-                        {t("intentRouting.moveDown")}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onSelect={() => void duplicateGroup(group)}
-                      >
-                        <Copy size={13} />
-                        {t("routingPage.duplicate")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => void shareGroup(group)}>
-                        <Copy size={13} />
-                        {t("routingPage.copyShare")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => exportGroup(group)}>
-                        <Download size={13} />
-                        {t("routingPage.export")}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <div className="min-w-0 flex-1">
-                    <div className="rt-group-name">
-                      <h4 className="truncate font-medium" title={group.name}>
-                        {group.name}
-                      </h4>
-                      <code
-                        className="max-w-64 truncate rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                        title={group.modelAlias ?? `vary-auto/${group.id}`}
-                      >
-                        {group.modelAlias ?? `vary-auto/${group.id}`}
-                      </code>
-                      {group.autoGenerated && (
-                        <span className="text-xs text-muted-foreground">
-                          {t("intentRouting.autoGenerated")}
-                        </span>
-                      )}
-                      {notReady && (
-                        <span
-                          tabIndex={0}
-                          title={t("intentRouting.memberNotReady")}
-                          aria-label={t("intentRouting.memberNotReady")}
-                          className="text-muted-foreground"
-                        >
-                          <Info aria-hidden="true" className="h-3.5 w-3.5" />
-                        </span>
-                      )}
-                    </div>
-                    {group.routing === "manual" ? (
-                      <div
-                        className="rt-picks"
-                        role="radiogroup"
-                        aria-label={t("intentRouting.manualMember")}
-                      >
-                        {[
-                          ...group.members,
-                          ...(groups.data?.matchedMembers?.[group.id] ?? []),
-                        ].map((member) => (
-                          <button
-                            type="button"
-                            key={member.id}
-                            role="radio"
-                            className="rt-pick"
-                            aria-checked={
-                              member.id ===
-                              (group.manualMemberId ?? group.defaultMemberId)
-                            }
-                            disabled={
-                              pending ||
-                              !!draft ||
-                              !!deleting ||
-                              group.off?.includes(member.id) ||
-                              !providers.data?.some(
-                                (provider) =>
-                                  provider.id === member.providerId &&
-                                  provider.taskEligible,
-                              )
-                            }
-                            onClick={() => {
-                              if (
-                                member.id !==
-                                (group.manualMemberId ?? group.defaultMemberId)
-                              )
-                                void changeManualMember(group, member.id);
-                            }}
-                          >
-                            <span className="rt-pick-dot" aria-hidden />
-                            {member.modelId}
-                            {member.effort ? ` :${member.effort}` : ""}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="rt-group-summary">
-                        <AccountLabel title>{summary}</AccountLabel>
-                      </p>
-                    )}
-                  </div>
-                  {!selectedGroups && (
-                    <div className="rt-group-actions">
-                      {routingSelect(
-                        group,
-                        (routing) => void changeRouting(group, routing),
-                      )}
-                      {!!group.rules.length && (
-                        <span className="hidden rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground sm:inline-flex">
-                          {t("intentRouting.ruleCount", {
-                            count: group.rules.length,
-                          })}
-                        </span>
-                      )}
-                      <Switch
-                        className="mp-switch"
-                        aria-label={`${t("intentRouting.publishGateway")} ${group.name}`}
-                        checked={group.enabled}
-                        disabled={pending || !!draft || !!deleting}
-                        onCheckedChange={(enabled) => {
-                          if (group.autoGenerated && !enabled)
-                            setDeleting(group);
-                          else void publishGroup(group, enabled);
-                        }}
-                      />
-                      {shared === group.id && (
-                        <span role="status" className="rt-shared">
-                          {t("routingPage.copied")}
-                        </span>
-                      )}
-                      <Button
-                        ref={(button) => {
-                          if (button) editButtons.current.set(group.id, button);
-                          else editButtons.current.delete(group.id);
-                        }}
-                        variant="ghost"
-                        size="sm"
-                        aria-haspopup="dialog"
-                        disabled={
+                      data-drag-target={
+                        (groupDrag.drag?.to === group.id &&
+                          groupDrag.drag.from !== group.id) ||
+                        undefined
+                      }
+                      onClick={(event) => {
+                        if (
                           pending ||
-                          !!deleting ||
+                          isGroupPending(group.id) ||
+                          deleting ||
                           providers.isPending ||
                           providers.isError
+                        )
+                          return;
+                        const control = (event.target as Element).closest(
+                          "button, input, select, textarea, a, label, [role='combobox'], [tabindex]",
+                        );
+                        if (control && event.currentTarget.contains(control))
+                          return;
+                        if (selectedGroups) {
+                          setSelectedGroups((previous) => {
+                            const next = new Set(previous);
+                            if (next.has(group.id)) next.delete(group.id);
+                            else next.add(group.id);
+                            return next;
+                          });
+                        } else requestEditor(group);
+                      }}
+                    >
+                      <td className="rt-group-name-cell">
+                        <div className="rt-group-identity">
+                          {selectedGroups && (
+                            <input
+                              type="checkbox"
+                              disabled={pending || isGroupPending(group.id)}
+                              aria-label={group.name}
+                              checked={selectedGroups.has(group.id)}
+                              onChange={(event) =>
+                                setSelectedGroups((previous) => {
+                                  const next = new Set(previous);
+                                  if (event.target.checked) next.add(group.id);
+                                  else next.delete(group.id);
+                                  return next;
+                                })
+                              }
+                            />
+                          )}
+                          <button
+                            type="button"
+                            className="rt-ghandle"
+                            disabled={
+                              pending ||
+                              isGroupPending(group.id) ||
+                              reordering ||
+                              !!draft ||
+                              !!deleting
+                            }
+                            aria-label={`${t("routingPage.arrangeGroup")} ${group.name}`}
+                            title={t("routingPage.dragHint")}
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              setGroupMenu(null);
+                              groupDrag.start(event, group.id);
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              groupDrag.consumeClick(group.id);
+                            }}
+                            onKeyDown={(event) => {
+                              if (
+                                event.altKey &&
+                                ["ArrowUp", "ArrowDown"].includes(event.key)
+                              ) {
+                                event.preventDefault();
+                                void moveGroup(
+                                  group,
+                                  event.key === "ArrowUp" ? -1 : 1,
+                                );
+                              }
+                            }}
+                          >
+                            <span
+                              role="img"
+                              aria-label={t("intentRouting.globalResource")}
+                            >
+                              <RoutingGroupIcon
+                                client="global"
+                                icons={group.members.map((member) => {
+                                  const provider = providers.data?.find(
+                                    (provider) =>
+                                      provider.id === member.providerId,
+                                  );
+                                  return {
+                                    icon:
+                                      globalProviderPresets.find(
+                                        (preset) =>
+                                          preset.id === provider?.icon,
+                                      )?.icon ??
+                                      provider?.icon ??
+                                      (provider?.appType === "codex"
+                                        ? "openai"
+                                        : undefined),
+                                    name: provider?.name ?? member.providerId,
+                                  };
+                                })}
+                              />
+                            </span>
+                          </button>
+                          <div className="min-w-0 flex-1">
+                            <div className="rt-group-name">
+                              <h4 className="font-medium" title={group.name}>
+                                {group.name}
+                              </h4>
+                              {group.autoGenerated && (
+                                <span className="text-xs text-muted-foreground">
+                                  {t("intentRouting.autoGenerated")}
+                                </span>
+                              )}
+                              {notReady && (
+                                <span
+                                  tabIndex={0}
+                                  title={t("intentRouting.memberNotReady")}
+                                  aria-label={t("intentRouting.memberNotReady")}
+                                  className="text-muted-foreground"
+                                >
+                                  <Info
+                                    aria-hidden="true"
+                                    className="h-3.5 w-3.5"
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            {group.routing === "manual" ? (
+                              <div
+                                className="rt-picks"
+                                role="radiogroup"
+                                aria-label={t("intentRouting.manualMember")}
+                              >
+                                {[
+                                  ...group.members,
+                                  ...(groups.data?.matchedMembers?.[group.id] ??
+                                    []),
+                                ].map((member) => (
+                                  <button
+                                    type="button"
+                                    key={member.id}
+                                    role="radio"
+                                    className="rt-pick"
+                                    aria-checked={
+                                      member.id ===
+                                      (group.manualMemberId ??
+                                        group.defaultMemberId)
+                                    }
+                                    disabled={
+                                      pending ||
+                                      isGroupPending(group.id) ||
+                                      !!draft ||
+                                      !!deleting ||
+                                      group.off?.includes(member.id) ||
+                                      !providers.data?.some(
+                                        (provider) =>
+                                          provider.id === member.providerId &&
+                                          provider.taskEligible,
+                                      )
+                                    }
+                                    onClick={() => {
+                                      if (
+                                        member.id !==
+                                        (group.manualMemberId ??
+                                          group.defaultMemberId)
+                                      )
+                                        void changeManualMember(
+                                          group,
+                                          member.id,
+                                        );
+                                    }}
+                                  >
+                                    <span className="rt-pick-dot" aria-hidden />
+                                    {member.modelId}
+                                    {member.effort ? ` :${member.effort}` : ""}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="rt-group-summary">
+                                <AccountLabel title>{summary}</AccountLabel>
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="rt-group-number">
+                        {
+                          new Set(
+                            [
+                              ...group.members,
+                              ...(groups.data?.matchedMembers?.[group.id] ??
+                                []),
+                            ].map((member) => member.providerId),
+                          ).size
                         }
-                        onClick={() => requestEditor(group)}
-                      >
-                        {t("common.edit")}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-          {!draft && visibleGroups?.length === 0 && (
-            <li className="px-4 py-6 text-center text-sm text-muted-foreground">
-              {t("intentRouting.noMatches")}
-            </li>
-          )}
-        </ul>
+                      </td>
+                      {["requests", "switches", "errors"].map((metric) => (
+                        <td
+                          key={metric}
+                          className="rt-group-number rt-group-no-stat"
+                          title={t("routingPage.groupStatsUnavailable")}
+                        >
+                          <span
+                            aria-label={t("routingPage.groupStatsUnavailable")}
+                          >
+                            —
+                          </span>
+                        </td>
+                      ))}
+                      <td>
+                        <div className="rt-group-actions">
+                          {routingSelect(
+                            group,
+                            (routing) => void changeRouting(group, routing),
+                          )}
+                          <Switch
+                            className="rt-group-toggle"
+                            aria-label={`${t("intentRouting.publishGateway")} ${group.name}`}
+                            checked={group.enabled}
+                            disabled={
+                              pending ||
+                              isGroupPending(group.id) ||
+                              !!draft ||
+                              !!deleting ||
+                              !!selectedGroups
+                            }
+                            title={t("intentRouting.publishGatewayHelp")}
+                            onCheckedChange={(enabled) => {
+                              if (group.autoGenerated && group.enabled)
+                                setDeleting(group);
+                              else void publishGroup(group, enabled);
+                            }}
+                          />
+                          <Button
+                            ref={(button) => {
+                              if (button)
+                                editButtons.current.set(group.id, button);
+                              else editButtons.current.delete(group.id);
+                            }}
+                            variant="ghost"
+                            size="sm"
+                            className="rt-group-edit"
+                            aria-label={t("common.edit")}
+                            title={t("common.edit")}
+                            aria-haspopup="dialog"
+                            disabled={
+                              pending ||
+                              isGroupPending(group.id) ||
+                              !!deleting ||
+                              providers.isPending ||
+                              providers.isError
+                            }
+                            onClick={() => requestEditor(group)}
+                          >
+                            <Pencil size={13} aria-hidden="true" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="rt-group-delete"
+                            aria-label={t("common.delete")}
+                            title={t("common.delete")}
+                            aria-haspopup="dialog"
+                            disabled={
+                              pending ||
+                              isGroupPending(group.id) ||
+                              !!draft ||
+                              !!deleting ||
+                              !!selectedGroups
+                            }
+                            onClick={() => {
+                              setError(null);
+                              setDeleting(group);
+                            }}
+                          >
+                            <Trash2 size={13} aria-hidden="true" />
+                          </Button>
+                          <DropdownMenu
+                            open={groupMenu === group.id}
+                            onOpenChange={(open) =>
+                              setGroupMenu(open ? group.id : null)
+                            }
+                          >
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="rt-group-more"
+                                aria-label={`${t("routingPage.more")} ${group.name}`}
+                                title={t("routingPage.more")}
+                                disabled={
+                                  pending ||
+                                  isGroupPending(group.id) ||
+                                  !!draft ||
+                                  !!deleting ||
+                                  !!selectedGroups
+                                }
+                              >
+                                <Ellipsis size={13} aria-hidden="true" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                              className="mp-row-menu"
+                              align="end"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <DropdownMenuItem
+                                disabled={isGroupPending(group.id)}
+                                onSelect={() => void duplicateGroup(group)}
+                              >
+                                {t("routingPage.duplicate")}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={isGroupPending(group.id)}
+                                onSelect={() => void shareGroup(group)}
+                              >
+                                {t("routingPage.copyShare")}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!draft && visibleGroups?.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="rt-group-empty">
+                      <div className="rt-group-empty-content">
+                        {!groups.data.groups.length && (
+                          <RoutingEmptyIllustration />
+                        )}
+                        <p>
+                          {t(
+                            groups.data.groups.length
+                              ? "intentRouting.noMatches"
+                              : "routingPage.noGroups",
+                          )}
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
       {!!groups.data?.removedGroups?.length && groups.data.autoCreate && (
         <div className="rt-ghidden">
@@ -2345,6 +2438,7 @@ export function IntentRoutingPanel({
               {groups.data.removedGroups.map((group) => (
                 <DropdownMenuItem
                   key={group.id}
+                  disabled={isGroupPending(group.id)}
                   onSelect={() => void restoreGroup(group.id)}
                 >
                   {group.name} · {t("intentRouting.restoreGroup")}
@@ -2359,10 +2453,135 @@ export function IntentRoutingPanel({
         title={t("common.delete")}
         message={t("intentRouting.deletePrompt", { name: deleting?.name })}
         confirmText={t("intentRouting.confirmDelete")}
-        pending={pending}
+        pending={isGroupPending(deleting?.id)}
         onConfirm={() => void remove()}
         onCancel={() => setDeleting(null)}
       />
+
+      <AppDialog
+        open={importOpen}
+        onOpenChange={(open) => {
+          if (!open) closeImport();
+        }}
+        title={t(
+          imported ? "routingPage.importComplete" : "routingPage.import",
+        )}
+        description={imported ? undefined : t("routingPage.importHint")}
+        size="md"
+        className="rt-import-dialog"
+        pending={pending}
+        initialFocusRef={importInput}
+        onCloseAutoFocus={(event) => {
+          if (importButton.current?.isConnected) {
+            event.preventDefault();
+            importButton.current.focus({ preventScroll: true });
+          }
+        }}
+        footer={
+          imported ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending}
+              onClick={closeImport}
+            >
+              {t("common.done")}
+            </Button>
+          ) : (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pending}
+                onClick={closeImport}
+              >
+                {t("common.cancel")}
+              </Button>
+              <Button
+                type="submit"
+                form={importFormId}
+                size="sm"
+                disabled={!importText.trim() || pending || !providers.data}
+              >
+                {t("routingPage.reviewImport")}
+              </Button>
+            </>
+          )
+        }
+      >
+        {imported ? (
+          <div
+            role="status"
+            aria-label={t("routingPage.importComplete")}
+            className="rt-import-result"
+          >
+            <p>{t("routingPage.imported", { name: imported.group.name })}</p>
+            {!!imported.missing.length && (
+              <p>
+                {t("routingPage.importMissing", {
+                  models: imported.missing.join(", "),
+                })}
+              </p>
+            )}
+            {!!imported.instead.length && (
+              <p>
+                {t("routingPage.importInstead", {
+                  models: imported.instead.join(", "),
+                })}
+              </p>
+            )}
+            {!!imported.omittedRules && (
+              <p>
+                {t("routingPage.importRules", { count: imported.omittedRules })}
+              </p>
+            )}
+          </div>
+        ) : (
+          <form
+            id={importFormId}
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void importGroup();
+            }}
+          >
+            <label className="block space-y-2 text-xs">
+              <span>{t("routingPage.importLabel")}</span>
+              <Textarea
+                ref={importInput}
+                disabled={pending}
+                value={importText}
+                maxLength={65536}
+                rows={7}
+                onChange={(event) => {
+                  setImportText(event.target.value);
+                  setImportError(false);
+                }}
+              />
+            </label>
+            {importError && (
+              <p role="alert" className="text-xs text-destructive">
+                {t("routingPage.invalidImport")}
+              </p>
+            )}
+            {(error || providers.isError) && (
+              <div role="alert" className="text-xs text-destructive">
+                <p>{t(error || "intentRouting.failed")}</p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => void reload()}
+                >
+                  {t("intentRouting.reload")}
+                </Button>
+              </div>
+            )}
+          </form>
+        )}
+      </AppDialog>
 
       <AppDialog
         open={!!draft}
@@ -2377,7 +2596,11 @@ export function IntentRoutingPanel({
             : null;
           if (trigger?.isConnected) {
             event.preventDefault();
-            if (pending) setDeferredFocus(initialDraft.current?.id ?? null);
+            if (
+              pending ||
+              activeGroups.current.has(initialDraft.current?.id ?? "")
+            )
+              setDeferredFocus(initialDraft.current?.id ?? null);
             else trigger.focus({ preventScroll: true });
           }
         }}

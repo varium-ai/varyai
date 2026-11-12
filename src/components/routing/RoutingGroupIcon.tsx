@@ -1,8 +1,7 @@
 import { cloneElement, isValidElement } from "react";
 import { Box } from "lucide-react";
 import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
-import { ProviderIcon } from "@/components/ProviderIcon";
-import { hasIcon, isUrlIcon } from "@/icons/extracted";
+import { UpstreamIcon } from "@/components/providers/UpstreamIcon";
 import { useAccountText } from "@/components/AccountLabel";
 
 export function RoutingGroupIcon({
@@ -23,12 +22,8 @@ export function RoutingGroupIcon({
       <span className="mp-icon-stack" aria-hidden="true">
         {unique.slice(0, 3).map((entry) => (
           <span className="mp-icon-disc" key={entry.icon || entry.name}>
-            <ProviderIcon
-              icon={
-                entry.icon && hasIcon(entry.icon) && !isUrlIcon(entry.icon)
-                  ? entry.icon
-                  : undefined
-              }
+            <UpstreamIcon
+              icon={entry.icon ?? undefined}
               name={accountText(entry.name)}
               size={unique.length === 1 ? 20 : 13}
             />

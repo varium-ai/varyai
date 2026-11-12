@@ -7791,7 +7791,7 @@ mod tests {
         assert_eq!(refreshed.model, direct);
         codex.activate_menu_with_selection(off.clone(), origin, None, false, None)?;
         let projection = std::fs::read_to_string(&config)?.parse::<toml::Value>()?;
-        assert_eq!(projection["model"].as_str(), Some("shared-model-First"));
+        assert_eq!(projection["model"].as_str(), Some("first/shared-model"));
         assert_eq!(codex.selected_model()?.as_deref(), Some(direct));
         service.agent_connections.disconnect("claude")?;
         codex.restore()?;

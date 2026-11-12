@@ -12,6 +12,41 @@ const CONFLICT: &str = "routingUpstreams.conflict";
 const LIMIT: &str = "routingUpstreams.limit";
 #[path = "routing_upstreams_identity.rs"]
 mod identity;
+
+fn provider_id_slug(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn new_provider_id(record: &RoutingUpstream) -> String {
+    let slug = provider_id_slug(&record.name);
+    if !slug.is_empty() {
+        return slug;
+    }
+    if let UpstreamSource::Api { base_url, .. } = &record.source {
+        if let Ok(url) = url::Url::parse(base_url) {
+            if let Some(url::Host::Domain(host)) = url.host() {
+                let mut labels: Vec<_> = host.split('.').collect();
+                if labels.len() > 1 {
+                    labels.pop();
+                }
+                while labels.len() > 1 && matches!(labels[0], "api" | "www") {
+                    labels.remove(0);
+                }
+                let slug = provider_id_slug(&labels.join("-"));
+                if !slug.is_empty() {
+                    return slug;
+                }
+            }
+        }
+    }
+    "custom".into()
+}
+
 fn read_records(conn: &Connection) -> Result<Vec<RoutingUpstream>, String> {
     let mut stmt = conn
         .prepare("SELECT id,revision,config FROM routing_upstreams ORDER BY rowid LIMIT 257")
@@ -299,18 +334,21 @@ impl Database {
             return Err(INVALID.into());
         }
         if record.id.is_empty() {
-            let base: String = record
-                .name
-                .to_lowercase()
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '-' })
-                .collect();
-            let base = base.trim_matches('-');
-            let base = if base.is_empty() { "provider" } else { base };
+            let base = new_provider_id(&record);
             record.id = base.chars().take(100).collect();
             let mut suffix = 2;
             while records.iter().any(|r| r.id == record.id) {
                 record.id = format!("{base}-{suffix}");
+                suffix += 1;
+            }
+            let name = record.name.trim().to_string();
+            record.name = name.clone();
+            let mut suffix = 2;
+            while records
+                .iter()
+                .any(|r| r.name.to_lowercase() == record.name.to_lowercase())
+            {
+                record.name = format!("{name} {suffix}");
                 suffix += 1;
             }
         }

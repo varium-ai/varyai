@@ -115,6 +115,26 @@ the desktop picker. This replaces overlapping independent priorities and does
 not introduce a separate native/managed grouping feature.
 Use the corrected backend and refresh model discovery.
 
+## Codex shows numbered provider names or interleaves provider models
+
+Older VaryAI catalogs derived request model IDs from display labels. Removing
+Chinese characters could make different providers collide and add numeric
+suffixes to otherwise distinct labels. Model or provider renames could allocate
+another ID. The corrected Codex publication follows Magpie's default labels:
+`Model · Provider`, with a provider ID or full entry ID appended only when full
+labels match without regard to case. Request IDs use `provider/model`, saved
+groups use `group/id`, and discovered groups keep `auto/model`. Previously
+published IDs remain hidden compatibility entries for saved conversations.
+
+Provider models stay consecutive in the saved provider order and retain the
+vendor or selected model list order. Selecting a default does not reorder the
+picker. Names are displayed as configured, without account-source abbreviations
+or numbered personal sources. Native model merging continues to follow the
+ordering rules above. There are no additional provider section headings.
+Load a build containing the backend fix and refresh the connection's model list.
+The behavior reference and its scope are recorded in
+[the routing reference notice](../third_party/routing-reference/NOTICE.md).
+
 ## Claude Desktop repeatedly retries an official Codex model
 
 A `502 routing_upstream_rejected` can hide an upstream HTTP 400 when Claude

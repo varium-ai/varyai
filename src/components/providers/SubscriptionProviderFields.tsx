@@ -18,6 +18,8 @@ import { NativeSubscriptionAccounts } from "./NativeSubscriptionAccounts";
 import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
 import type { ProviderErrorHandler } from "./providerErrorToast";
 import { SubscriptionModelChip } from "./SubscriptionModelChip";
+import { ProviderCheckbox } from "./ProviderCheckbox";
+import { RefreshCw } from "lucide-react";
 import {
   nativeSubscriptionApi,
   type NativeSubscriptionProvider,
@@ -171,7 +173,6 @@ function SubscriptionFields({
       .toLocaleLowerCase()
       .includes(term),
   );
-  const imagePicks = source.models.filter(isImageGenerationModel);
   function toggleImage(id: string) {
     onChange({
       ...draft,
@@ -187,6 +188,15 @@ function SubscriptionFields({
   }
   const selected = new Set(
     source.models.map((row) => String((row as Record<string, unknown>).model)),
+  );
+  const filteredIds = new Set(
+    filtered.map((row) => String(row.model ?? row.id)),
+  );
+  const allFilteredSelected =
+    filtered.length > 0 &&
+    filtered.every((row) => selected.has(String(row.model ?? row.id)));
+  const someFilteredSelected = filtered.some((row) =>
+    selected.has(String(row.model ?? row.id)),
   );
   const latest = useRef({ draft, onChange, onError, editorOpen });
   latest.current = { draft, onChange, onError, editorOpen };
@@ -476,60 +486,76 @@ function SubscriptionFields({
           {!models.length && (
             <p className="pv-hint">{t("subscriptionProvider.fetchHint")}</p>
           )}
-          {!!models.length && (
-            <div className="pv-model-actions">
-              {models.length > 24 && (
-                <Input
-                  type="search"
-                  className="pv-model-search"
-                  value={filter}
-                  aria-label={t("providerEditor.filterModels", {
-                    count: models.length,
-                  })}
-                  placeholder={t("providerEditor.filterModels", {
-                    count: models.length,
-                  })}
-                  disabled={locked}
-                  onChange={(event) => setFilter(event.target.value)}
-                />
-              )}
-              <button
-                type="button"
-                disabled={locked}
-                onClick={() =>
+          <div className="pv-model-actions">
+            <label className="pv-model-select-all">
+              <ProviderCheckbox
+                checked={
+                  allFilteredSelected
+                    ? true
+                    : someFilteredSelected
+                      ? "indeterminate"
+                      : false
+                }
+                disabled={locked || !filtered.length}
+                onCheckedChange={(checked) =>
                   onChange({
                     ...draft,
                     source: {
                       ...source,
                       mode: "picked",
-                      models: [
-                        ...imagePicks,
-                        ...models.filter(
-                          (row) =>
-                            selected.has(String(row.model ?? row.id)) ||
-                            filtered.includes(row),
-                        ),
-                      ].slice(0, 256),
+                      models: checked
+                        ? [
+                            ...source.models,
+                            ...filtered.filter(
+                              (row) =>
+                                !selected.has(String(row.model ?? row.id)),
+                            ),
+                          ].slice(0, 256)
+                        : source.models.filter(
+                            (row) =>
+                              !filteredIds.has(
+                                String((row as Record<string, unknown>).model),
+                              ),
+                          ),
                     },
                   })
                 }
-              >
-                {t("providerEditor.selectAll")}
-              </button>
-              <button
-                type="button"
+              />
+              <span>{t("providerEditor.selectAll")}</span>
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label={t("codexProvider.fetchModels")}
+              aria-busy={fetching}
+              disabled={locked || !source.accountId}
+              onClick={() => void discover()}
+            >
+              {fetching && (
+                <RefreshCw
+                  size={12}
+                  className="animate-spin motion-reduce:animate-none"
+                  aria-hidden
+                />
+              )}
+              {t(fetching ? "common.loading" : "codexProvider.fetchModels")}
+            </Button>
+            {models.length > 24 && (
+              <Input
+                type="search"
+                className="pv-model-search"
+                value={filter}
+                aria-label={t("providerEditor.filterModels", {
+                  count: models.length,
+                })}
+                placeholder={t("providerEditor.filterModels", {
+                  count: models.length,
+                })}
                 disabled={locked}
-                onClick={() =>
-                  onChange({
-                    ...draft,
-                    source: { ...source, mode: "picked", models: imagePicks },
-                  })
-                }
-              >
-                {t("providerEditor.selectNone")}
-              </button>
-            </div>
-          )}
+                onChange={(event) => setFilter(event.target.value)}
+              />
+            )}
+          </div>
           <div
             className="pv-model-chips"
             role="group"
@@ -568,20 +594,6 @@ function SubscriptionFields({
                 </SubscriptionModelChip>
               );
             })}
-          </div>
-          <div className="pv-model-footer">
-            <div className="pv-add-model">
-              <button
-                type="button"
-                aria-label={t("codexProvider.fetchModels")}
-                disabled={locked || !source.accountId}
-                onClick={() => void discover()}
-              >
-                {fetching
-                  ? t("common.loading")
-                  : t("codexProvider.fetchModels")}
-              </button>
-            </div>
           </div>
           <p className="pv-hint">{t(`providerParity.hint_${source.mode}`)}</p>
         </div>

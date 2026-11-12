@@ -1328,8 +1328,13 @@ async fn provider_backup_imports_saved_reasoning_preferences_into_shared_agent_c
     let models = crate::services::agent_connections::models(&menu);
     let exact = models
         .iter()
-        .find(|model| model.name == "Custom · Synthetic")
+        .find(|model| model.name == "Custom" && model.group == "Synthetic")
         .ok_or("missing imported model")?;
+    let session = menu.groups.get(&exact.id).ok_or("missing imported route")?;
+    assert!(session
+        .targets
+        .iter()
+        .any(|target| target.provider_id == saved.id && target.model == "vendor/exact"));
     assert_eq!(
         crate::services::agent_connections::pi_model(exact)["thinkingLevelMap"]["max"],
         "max"

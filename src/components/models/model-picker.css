@@ -377,6 +377,13 @@ button.mp-am-row:hover,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.mp-am-tell {
+  flex: none;
+  margin-left: -4px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .mp-am-logo {
   display: inline-flex;
   flex: none;

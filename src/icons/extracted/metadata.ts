@@ -1,7 +1,9 @@
 // Icon metadata for search and categorization
 import { IconMetadata } from "@/types/icon";
+import { builtinIconMetadata } from "../builtin";
 
 export const iconMetadata: Record<string, IconMetadata> = {
+  ...builtinIconMetadata,
   "9527code": {
     name: "9527code",
     displayName: "9527CODE",

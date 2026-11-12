@@ -42,17 +42,34 @@
 }
 .vary-providers .pv-add-heading {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 4px;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 20px;
 }
 .vary-providers .pv-back {
   flex: none;
-  height: 28px;
-  gap: 5px;
-  padding: 0 6px;
-  color: var(--mp-muted);
-  font-size: 12px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--mp-line);
+  border-radius: 10px;
+  background: var(--mp-card);
+  color: var(--mp-fg-2);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+}
+.vary-providers .pv-add-copy h1 {
+  margin: 0;
+  color: var(--mp-fg);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+}
+.vary-providers .pv-add-copy p {
+  margin-top: 6px;
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  line-height: 1.6;
 }
 .vary-providers .pv-head {
   display: flex;
@@ -337,6 +354,35 @@
   background: var(--mp-hover);
   color: var(--mp-accent);
 }
+.vary-providers .pv-row-copy,
+.vary-providers .pv-row-delete {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mp-control);
+  cursor: pointer;
+}
+.vary-providers .pv-row-copy:hover:not(:disabled) {
+  background: var(--mp-pill);
+  color: var(--mp-accent);
+}
+.vary-providers .pv-row-delete {
+  color: var(--mp-red);
+}
+.vary-providers .pv-row-delete:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mp-red) 9%, transparent);
+}
+.vary-providers .pv-row-copy:disabled,
+.vary-providers .pv-row-delete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .vary-providers .pv-chevron {
   flex: none;
   color: var(--mp-faint);
@@ -375,79 +421,257 @@
   color: var(--mp-faint);
   font-size: 11px;
 }
-.vary-providers .pv-sheet-head > button {
-  flex: none;
-  height: 24px;
-  padding: 0 4px;
-  gap: 4px;
-  border-radius: 5px;
-  color: var(--mp-muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-.vary-providers .pv-sheet-head > button:hover {
-  background: var(--mp-hover);
-  color: var(--mp-fg);
-}
-.vary-providers .pv-sheet-head > button.pv-custom-action {
-  color: var(--mp-accent);
-}
 .vary-providers .pv-sheet {
-  padding: 0 0 8px;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 8px 0 24px;
 }
-.vary-providers .pv-sheet-head {
+.pv-picker-dialog.vary-dialog-surface[role="dialog"] {
+  width: calc(100vw - 40px);
+  max-width: 560px;
+  max-height: min(80dvh, calc(100dvh - 48px));
+  margin: auto;
+  padding: 0;
+}
+.pv-picker-dialog .pv-picker-head {
+  position: relative;
+  padding: 20px 20px 14px;
+  gap: 8px;
+}
+.pv-picker-dialog .vary-dialog-title {
+  padding-right: 32px;
+}
+.pv-picker-dialog .pv-picker-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  color: var(--mp-muted);
+}
+.pv-picker-dialog .pv-picker-head .pv-vendor-search {
+  width: 100%;
+  margin-top: 4px;
+}
+.pv-picker-dialog .pv-picker-body {
+  min-height: 0;
+  padding: 0 20px 20px;
+  overflow-y: auto;
+}
+.pv-picker-dialog .pv-picker-body .pv-vendor-options {
+  padding: 0;
+}
+.vary-providers .pv-add-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.vary-providers .pv-add-method {
   display: flex;
   align-items: center;
-  flex: 0 1 424px;
+  gap: 14px;
   min-width: 0;
-  margin-left: auto;
-  gap: 10px;
+  min-height: 84px;
+  padding: 14px 16px;
+  border: 1px solid var(--mp-line);
+  border-radius: 12px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 3%);
+  text-align: left;
+  transition:
+    border-color 150ms,
+    background-color 150ms;
+}
+.vary-providers .pv-add-method:hover:not(:disabled) {
+  border-color: var(--mp-accent);
+  background: color-mix(in srgb, var(--mp-accent) 5%, var(--mp-card));
+}
+.vary-providers .pv-method-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--mp-accent) 10%, var(--mp-card));
+  color: var(--mp-accent);
+}
+.vary-providers .pv-method-copy {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.vary-providers .pv-method-copy strong {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.vary-providers .pv-method-copy > span {
+  color: var(--mp-fg-2);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.vary-providers .pv-add-method > svg {
+  flex: none;
+  color: var(--mp-fg-2);
+}
+.vary-providers .pv-common-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 24px 0 12px;
+}
+.vary-providers .pv-common-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  font-size: 17px;
+  font-weight: 650;
+}
+.vary-providers .pv-common-heading h2::before {
+  content: "";
+  width: 5px;
+  height: 20px;
+  border-radius: 3px;
+  background: var(--mp-accent);
 }
 .vary-providers .pv-vendor-search {
   position: relative;
-  flex: 1;
   min-width: 0;
   width: 240px;
   max-width: 100%;
 }
 .vary-providers .pv-vendor-search > svg {
   position: absolute;
-  left: 7px;
-  top: 6px;
+  left: 9px;
+  top: 9px;
   color: var(--mp-muted);
 }
 .vary-providers .pv-vendor-search > input {
-  height: 24px;
-  padding: 0 7px 0 25px;
+  height: 32px;
+  padding: 0 9px 0 30px;
   border: 1px solid var(--mp-line);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--mp-card);
   color: var(--mp-fg);
   box-shadow: none;
-  font-size: 11.5px;
+  font-size: 12px;
+}
+.vary-providers .pv-common-providers {
+  overflow: hidden;
+  border: 1px solid var(--mp-line);
+  border-radius: 12px;
+  background: var(--mp-card);
+}
+.vary-providers .pv-vendors {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+}
+.vary-providers .pv-vendors + .pv-vendors {
+  border-top: 1px solid var(--mp-line);
 }
 .vary-providers .pv-vendors h3 {
-  padding: 22px 8px 6px;
+  display: flex;
+  align-items: center;
+  padding: 14px;
+  background: var(--mp-card-2);
+  color: var(--mp-fg);
   font-size: 13px;
   font-weight: 600;
 }
+.vary-providers .pv-vendor-options {
+  min-width: 0;
+  padding: 12px;
+}
 .vary-providers .pv-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
-  gap: 1px 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
+  gap: 8px;
 }
 .vary-providers .pv-tile {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 34px;
-  padding: 0 8px;
-  border-radius: 8px;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--mp-line);
+  border-radius: 9px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
   text-align: left;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.4;
 }
-.vary-providers .pv-tile:hover {
+.vary-providers .pv-directory {
+  grid-template-columns: minmax(0, 1fr);
+}
+.vary-providers .pv-popular-tiles {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.vary-providers .pv-popular-tiles .pv-tile > span[title] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.vary-providers .pv-method-icon > svg {
+  width: 23px;
+  height: 23px;
+}
+.vary-providers .pv-tile > span {
+  overflow-wrap: anywhere;
+}
+.vary-providers .pv-tile:hover:not(:disabled) {
+  border-color: var(--mp-accent);
   background: var(--mp-hover);
+}
+.vary-providers
+  :is(.pv-add-method, .pv-tile, .pv-common-heading h2):focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: -3px;
+}
+.vary-providers :is(.pv-add-method, .pv-tile):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (max-width: 680px) {
+  .vary-providers .pv-add-methods {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .vary-providers .pv-add-method {
+    min-height: 76px;
+    padding: 12px;
+    gap: 14px;
+  }
+  .vary-providers .pv-method-copy strong {
+    font-size: 16px;
+  }
+  .vary-providers .pv-vendors {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vary-providers .pv-vendors h3 {
+    padding: 12px 16px;
+  }
+  .vary-providers .pv-add-copy h1 {
+    font-size: 23px;
+  }
+}
+@media (max-width: 420px) {
+  .vary-providers .pv-popular-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vary-providers .pv-add-method {
+    transition: none;
+  }
 }
 .vary-providers .pv-import p {
   color: var(--mp-muted);
@@ -609,6 +833,11 @@
   color: var(--mp-fg-2);
   font-size: 11.5px;
   font-weight: 400;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 120ms ease;
 }
 .pv-editor .pv-model-chip > span {
   min-width: 0;
@@ -623,6 +852,43 @@
 .pv-editor .pv-model-chip:hover {
   border-color: var(--mp-faint);
   background: var(--mp-pill);
+}
+.pv-editor .pv-model-chip > .pv-model-check {
+  opacity: 0;
+  transform: scale(0.65);
+  transition:
+    opacity 150ms ease,
+    transform 180ms ease,
+    color 180ms ease;
+}
+.pv-editor .pv-model-check path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 180ms ease;
+}
+.pv-editor .pv-model-chip.selected > .pv-model-check {
+  opacity: 1;
+  transform: scale(1);
+}
+.pv-editor .pv-model-chip.selected > .pv-model-check path {
+  stroke-dashoffset: 0;
+}
+.pv-editor .pv-model-chip:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.pv-editor .pv-model-chip:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pv-editor button.pv-model-chip,
+  .pv-editor .pv-model-chip > .pv-model-check,
+  .pv-editor .pv-model-check path {
+    transition: none;
+  }
+  .pv-editor .pv-model-chip:active:not(:disabled) {
+    transform: none;
+  }
 }
 .pv-editor .pv-model-actions {
   display: flex;
@@ -643,6 +909,17 @@
 .pv-editor .pv-model-actions > span {
   color: var(--mp-muted);
   font-size: 11px;
+}
+.pv-editor .pv-model-select-all {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 27px;
+  color: var(--mp-fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
 }
 .pv-editor summary {
   color: var(--mp-muted);
@@ -713,11 +990,6 @@
   border-color: var(--mp-line);
   box-shadow: none;
   font-weight: 400;
-}
-.pv-editor button.pv-delete {
-  margin-right: auto;
-  padding-inline: 0;
-  color: var(--mp-red);
 }
 .pv-editor .pv-discovered {
   margin: 0 0 10px;
@@ -820,13 +1092,7 @@
     gap: 3px 5px;
   }
   .vary-providers .pv-add-heading {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .vary-providers .pv-sheet-head {
-    flex-grow: 1;
-    min-width: min(100%, 292px);
-    gap: 6px;
+    gap: 14px;
   }
   .pv-editor {
     width: 100%;
@@ -948,29 +1214,31 @@
   }
 }
 
-/* The reference implementation's framed provider modal: only the fields scroll between both bars. */
-.pv-provider-dialog[role="dialog"] {
+/* Keep provider sizing above shared dialog rules regardless of CSS load order. */
+.pv-provider-dialog.vary-dialog-surface[role="dialog"] {
   --mp-card: #fff;
   --mp-card-2: #f9f9fb;
   --mp-pill: #f1f1f4;
   --mp-pill-hover: #e9e9ee;
-  --mp-line: #e3e3e8;
-  --mp-line-2: #ececf0;
-  --mp-fg: #1c1c21;
-  --mp-fg-2: #4b4b53;
-  --mp-muted: #85858d;
+  --mp-line: #d4d8e0;
+  --mp-line-2: #e4e7ed;
+  --mp-fg: #202938;
+  --mp-fg-2: #4b5565;
+  --mp-muted: #737d8d;
   --mp-faint: #b9b9c2;
   --mp-control: #63636b;
   --mp-accent-soft: color-mix(in srgb, var(--mp-accent) 10%, var(--mp-card));
-  width: min(max(600px, 56vw), 880px, calc(100vw - 48px));
-  max-width: none;
-  max-height: calc(100dvh - 56px);
+  width: min(560px, calc(100vw - 64px));
+  max-width: 560px;
+  max-height: calc(100dvh - 80px);
   padding: 0;
   border: 1px solid var(--mp-line);
   border-radius: 12px;
-  box-shadow: 0 8px 32px rgb(15 23 42 / 4%);
+  box-shadow:
+    0 24px 64px rgb(15 23 42 / 16%),
+    0 4px 16px rgb(15 23 42 / 8%);
 }
-.dark .pv-provider-dialog[role="dialog"] {
+.dark .pv-provider-dialog.vary-dialog-surface[role="dialog"] {
   --mp-card: #232327;
   --mp-card-2: #1f1f23;
   --mp-pill: #2d2d33;
@@ -988,25 +1256,38 @@
   min-height: 0;
   overflow: hidden;
 }
-.pv-provider-dialog .pv-editor-head,
-.pv-provider-dialog .pv-editor-foot {
-  min-height: 48px;
-  padding: 0 18px;
-}
 .pv-provider-dialog .pv-editor-head {
-  border-bottom: 1px solid var(--mp-line-2);
+  min-height: 60px;
+  padding: 16px 24px;
+  gap: 10px;
+  border-bottom: 0;
 }
 .pv-provider-dialog .pv-editor-head h2 {
   flex: 1;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
 }
 .pv-provider-dialog .pv-editor-head .mp-switch {
   flex: none;
+}
+.pv-provider-dialog .pv-editor button.pv-editor-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-left: 0;
+  border-radius: 6px;
+  color: var(--mp-muted);
+}
+.pv-provider-dialog .pv-editor button.pv-editor-close:hover:not(:disabled) {
+  background: var(--mp-pill);
+  color: var(--mp-fg);
 }
 .pv-provider-dialog .pv-site {
   display: flex;
   align-items: center;
   gap: 4px;
-  max-width: 42%;
+  max-width: 28%;
   overflow: hidden;
   color: var(--mp-accent);
   font-size: 12px;
@@ -1021,11 +1302,11 @@
 }
 .pv-provider-dialog .pv-editor-body {
   display: grid;
-  grid-template-columns: fit-content(132px) minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
   grid-auto-rows: max-content;
   align-content: start;
   align-items: start;
-  gap: 10px 14px;
+  gap: 12px 16px;
   flex: 1 1 auto;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1035,6 +1316,24 @@
 }
 .pv-provider-dialog .pv-editor-body > .pv-field > :nth-child(2) {
   min-width: 0;
+}
+.pv-provider-dialog .pv-field > label,
+.pv-provider-dialog .pv-field-label {
+  padding-top: 5px;
+  color: var(--mp-fg);
+  text-align: right;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.pv-provider-dialog .pv-field:has(> input:required) > label::before,
+.pv-provider-dialog .pv-field:has(> .pv-stack > input:required) > label::before,
+.pv-provider-dialog
+  .pv-field:has(> .pv-stack > .pv-url-control > input:required)
+  > label::before {
+  content: "*";
+  margin-right: 6px;
+  color: var(--mp-red);
 }
 .pv-provider-dialog .pv-editor-body > .pv-advanced,
 .pv-provider-dialog .pv-editor-body > .pv-hint,
@@ -1055,11 +1354,21 @@
 .pv-provider-dialog .pv-model-chips:empty {
   display: none;
 }
-.pv-provider-dialog .pv-editor input,
+.pv-provider-dialog .pv-editor input:not([type="checkbox"], [type="radio"]),
 .pv-provider-dialog .pv-editor select {
-  height: 27px;
+  height: 28px;
+  padding-inline-start: 9px;
   border-radius: 7px;
   font-size: 12.5px;
+}
+.pv-provider-dialog .pv-editor input:not([type="checkbox"], [type="radio"]) {
+  padding-inline-end: 9px;
+}
+.pv-provider-dialog .pv-editor input:focus-visible,
+.pv-provider-dialog .pv-editor select:focus-visible {
+  outline: none;
+  border-color: var(--mp-accent);
+  box-shadow: 0 0 0 3px var(--mp-accent-soft);
 }
 .pv-provider-dialog .pv-editor input::placeholder {
   color: var(--mp-faint);
@@ -1068,17 +1377,18 @@
   color: var(--mp-muted);
 }
 .pv-provider-dialog .pv-protocols {
-  gap: 0;
-  padding: 2px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
 }
 .pv-provider-dialog .pv-protocols > button {
-  height: 23px;
-  padding: 0 9px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
 }
 .pv-provider-dialog .pv-stack > .pv-protocols > button {
   padding-inline: 7px;
 }
-.pv-provider-dialog .pv-probe-actions,
 .pv-provider-dialog .pv-new-key,
 .pv-provider-dialog .pv-add-model {
   display: flex;
@@ -1087,11 +1397,71 @@
   gap: 6px;
 }
 .pv-provider-dialog .pv-new-key {
+  position: relative;
   flex-wrap: nowrap;
 }
-.pv-provider-dialog .pv-new-key input {
+.pv-provider-dialog .pv-key-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pv-provider-dialog .pv-key-entry > .pv-new-key {
   flex: 1;
   min-width: 0;
+}
+.pv-provider-dialog .pv-editor .pv-get-key {
+  flex: none;
+  height: 28px;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mp-accent);
+  box-shadow: none;
+  font-size: 11.5px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-get-key:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.pv-provider-dialog .pv-preset-endpoints {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding-top: 5px;
+  color: var(--mp-muted);
+  font-size: 11.5px;
+}
+.pv-provider-dialog .pv-preset-endpoints > div {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+.pv-provider-dialog .pv-preset-endpoints dt,
+.pv-provider-dialog .pv-preset-endpoints dd {
+  min-width: 0;
+  margin: 0;
+}
+.pv-provider-dialog .pv-preset-endpoints code {
+  overflow-wrap: anywhere;
+}
+.pv-provider-dialog .pv-editor .pv-new-key input {
+  flex: 1;
+  min-width: 0;
+  padding-inline-end: 34px;
+}
+.pv-provider-dialog .pv-new-key .pv-key-visibility {
+  position: absolute;
+  right: 2px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--mp-muted);
 }
 .pv-provider-dialog .pv-models {
   display: flex;
@@ -1163,9 +1533,8 @@
 .pv-provider-dialog .pv-model-create .pv-add-model input {
   max-width: none;
 }
-.pv-provider-dialog .pv-create-model-actions .pv-model-search {
-  order: -1;
-  flex-basis: 100%;
+.pv-provider-dialog .pv-model-actions .pv-model-search {
+  flex: 1 1 100%;
   max-width: none;
 }
 .pv-provider-dialog .pv-model-footer .mnames,
@@ -1181,21 +1550,61 @@
 .pv-provider-dialog .pv-add-model input {
   max-width: 200px;
 }
-.pv-provider-dialog .pv-probe-actions input,
 .pv-provider-dialog .pv-add-model input {
   flex: 1;
   width: 100px;
 }
-.pv-provider-dialog .pv-probe-actions button,
 .pv-provider-dialog .pv-add-model button {
-  height: 27px;
+  height: 28px;
   padding: 0 9px;
   border-color: var(--mp-line);
   background: var(--mp-card);
   color: var(--mp-fg-2);
   font-weight: 400;
   font-size: 11.5px;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  box-shadow: none;
+}
+.pv-provider-dialog .pv-url-control {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--mp-line);
+  border-radius: 8px;
+  background: var(--mp-card);
+}
+.pv-provider-dialog .pv-url-control:focus-within {
+  border-color: var(--mp-accent);
+  box-shadow: 0 0 0 3px var(--mp-accent-soft);
+}
+.pv-provider-dialog .pv-editor .pv-url-control > input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  height: 26px;
+  padding-inline-end: 8px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+}
+.pv-provider-dialog .pv-editor .pv-url-control > .pv-probe-button {
+  flex: none;
+  height: 24px;
+  margin-inline-end: 3px;
+  padding: 0 7px;
+  border: 0;
+  background: transparent;
+  color: var(--mp-accent);
+  box-shadow: none;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pv-provider-dialog
+  .pv-editor
+  .pv-url-control
+  > .pv-probe-button:hover:not(:disabled) {
+  background: var(--mp-accent-soft);
 }
 .pv-provider-dialog .pv-probe-results {
   display: grid;
@@ -1241,27 +1650,141 @@
   color: var(--mp-muted);
   font-size: 10px;
 }
-.pv-provider-dialog .pv-saved-keys {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.pv-provider-dialog .pv-key-table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
-.pv-provider-dialog .pv-saved-keys .pv-account + .pv-account {
-  border-top: 1px solid var(--mp-line);
+.pv-provider-dialog .pv-key-table {
+  width: 100%;
+  min-width: 400px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 11px;
 }
-.pv-provider-dialog .pv-saved-keys .pv-account > span:first-of-type {
+.pv-provider-dialog .pv-key-column {
+  width: 35%;
+}
+.pv-provider-dialog .pv-key-model-column {
+  width: 19%;
+}
+.pv-provider-dialog .pv-key-limits-column {
+  width: auto;
+}
+.pv-provider-dialog .pv-key-actions-column {
+  width: 56px;
+}
+.pv-provider-dialog .pv-key-table th {
+  height: 30px;
+  padding: 6px;
+  background: var(--mp-card-2);
+  color: var(--mp-muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+}
+.pv-provider-dialog .pv-key-table td {
+  height: 54px;
+  padding: 8px 6px;
+  border-top: 1px solid var(--mp-line-2);
+  vertical-align: middle;
+}
+.pv-provider-dialog .pv-key-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
-  overflow-wrap: anywhere;
+}
+.pv-provider-dialog .pv-key-main .pv-key-copy {
+  transition: color 120ms ease;
+}
+.pv-provider-dialog .pv-key-main .pv-key-copy.copied {
+  color: var(--mp-green);
+}
+.pv-provider-dialog .pv-key-copy-confirm {
+  transform-origin: center;
+  animation: pv-key-copy-confirm 240ms ease-out;
+}
+@keyframes pv-key-copy-confirm {
+  0% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.16);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pv-provider-dialog .pv-key-copy-confirm {
+    animation: none;
+  }
+  .pv-provider-dialog .pv-key-main .pv-key-copy {
+    transition: none;
+  }
+}
+.pv-provider-dialog .pv-key-table .pv-key-main .pv-key-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+}
+.pv-provider-dialog .pv-key-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pv-provider-dialog .pv-key-table .pv-key-row .pv-key-models {
+  max-width: 100%;
+  padding-inline: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+.pv-provider-dialog .pv-key-all-models {
+  color: var(--mp-muted);
+}
+.pv-provider-dialog .pv-key-table .pv-key-acts {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px 3px;
+  margin: 0;
+}
+.pv-provider-dialog .pv-key-table .pv-key-acts > button {
+  font-size: 11px;
+}
+.pv-provider-dialog .pv-key-table .pv-key-acts > .pv-key-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 24px;
+  padding: 0;
+}
+.pv-provider-dialog .pv-key-table .pv-key-acts > .pv-key-delete {
+  color: var(--mp-red);
+}
+.pv-provider-dialog .pv-key-table .pv-key-detail-row td {
+  height: auto;
+  padding: 10px;
+  background: var(--mp-card-2);
+}
+.pv-provider-dialog .pv-key-table .pv-key-model-picker {
+  padding: 8px 0 0;
+  border-top: 0;
+}
+.pv-provider-dialog .pv-key-table .pv-key-details {
+  padding: 0;
+}
+.pv-provider-dialog .pv-key-table .pv-key-edit + .pv-key-details {
+  margin-top: 8px;
 }
 .pv-provider-dialog .pv-key-input {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.pv-provider-dialog .pv-key-pool .pv-key-row {
-  flex-wrap: wrap;
-  gap: 9px;
-  min-height: 39px;
 }
 .pv-provider-dialog .pv-key-row .pv-key-label {
   flex: 0 1 auto;
@@ -1319,6 +1842,11 @@
   font-weight: 400;
   white-space: nowrap;
 }
+.pv-provider-dialog .pv-key-table .pv-key-acts > button:not(.pv-key-action) {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
 .pv-provider-dialog .pv-key-acts > small {
   margin: 0;
   font-size: 10px;
@@ -1342,21 +1870,105 @@
   padding: 0 8px;
   font-size: 12px;
 }
-.pv-provider-dialog .pv-key-check {
-  display: grid;
-  place-items: center;
+.pv-editor .pv-checkbox {
+  position: relative;
+  display: inline-grid;
   flex: none;
   width: 18px;
   height: 18px;
-  border: 1px solid var(--mp-line);
-  border-radius: 50%;
-  background: var(--mp-card);
-  color: transparent;
+  vertical-align: middle;
 }
-.pv-provider-dialog .pv-key-check[aria-checked="true"] {
+.pv-editor .pv-checkbox .pv-checkbox-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.pv-editor .pv-checkbox-box {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--mp-line);
+  border-radius: 4px;
+  background: var(--mp-card);
+  color: #fff;
+  pointer-events: none;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 120ms ease,
+    opacity 160ms ease;
+}
+.pv-editor .pv-checkbox-input:checked + .pv-checkbox-box,
+.pv-editor .pv-checkbox-input:indeterminate + .pv-checkbox-box {
   background: var(--mp-accent);
   border-color: var(--mp-accent);
-  color: var(--mp-card);
+}
+.pv-editor .pv-checkbox-box svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pv-editor .pv-checkbox-tick {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 180ms ease,
+    opacity 120ms ease;
+}
+.pv-editor .pv-checkbox-input:checked + .pv-checkbox-box .pv-checkbox-tick {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+.pv-editor .pv-checkbox-mixed {
+  opacity: 0;
+  transform: scaleX(0.5);
+  transform-origin: center;
+  transition:
+    transform 160ms ease,
+    opacity 120ms ease;
+}
+.pv-editor
+  .pv-checkbox-input:indeterminate
+  + .pv-checkbox-box
+  .pv-checkbox-mixed {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.pv-editor .pv-checkbox-input:hover:not(:disabled) + .pv-checkbox-box {
+  border-color: var(--mp-accent);
+}
+.pv-editor .pv-checkbox-input:active:not(:disabled) + .pv-checkbox-box {
+  transform: scale(0.9);
+}
+.pv-editor .pv-checkbox-input:focus-visible + .pv-checkbox-box {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 3px;
+}
+.pv-editor .pv-checkbox-input:disabled {
+  cursor: not-allowed;
+}
+.pv-editor .pv-checkbox-input:disabled + .pv-checkbox-box {
+  opacity: 0.45;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pv-editor .pv-checkbox-box,
+  .pv-editor .pv-checkbox-tick,
+  .pv-editor .pv-checkbox-mixed {
+    transition: none;
+  }
+  .pv-editor .pv-checkbox-input:active:not(:disabled) + .pv-checkbox-box {
+    transform: none;
+  }
 }
 .pv-provider-dialog .pv-key-action {
   flex: none;
@@ -1375,7 +1987,7 @@
   background: var(--mp-pill);
   font-size: 11px;
 }
-.pv-provider-dialog .pv-key-add {
+.pv-provider-dialog .pv-editor .pv-key-add {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1383,6 +1995,7 @@
   min-height: 38px;
   padding: 7px 11px;
   border-top: 1px solid var(--mp-line);
+  border-radius: 0;
   color: var(--mp-muted);
   font-size: 12px;
   text-align: left;
@@ -1425,25 +2038,53 @@
   font-size: 10px;
 }
 .pv-provider-dialog .pv-editor-foot {
-  gap: 6px;
+  min-height: 60px;
+  margin-inline: 24px;
+  padding: 14px 0 16px;
+  gap: 8px;
   border-top: 1px solid var(--mp-line-2);
 }
-.pv-provider-dialog .pv-editor button.pv-delete {
-  margin: 0;
-  color: var(--mp-muted);
+.pv-provider-dialog .pv-editor-foot > button {
+  height: 30px;
+  padding-inline: 14px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
 }
-.pv-provider-dialog .pv-foot-space {
-  flex: 1;
+.pv-provider-dialog .pv-editor-foot > .pv-cancel {
+  border: 1px solid var(--mp-line);
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+}
+.pv-provider-dialog .pv-editor-foot > .pv-cancel:hover:not(:disabled) {
+  background: var(--mp-pill);
 }
 @media (max-width: 520px) {
-  .pv-provider-dialog[role="dialog"] {
-    width: calc(100vw - 24px);
+  .pv-provider-dialog.vary-dialog-surface[role="dialog"] {
+    width: calc(100vw - 40px);
     max-height: calc(100dvh - 32px);
   }
   .pv-provider-dialog .pv-editor-body {
     grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
-    padding: 14px;
+    gap: 8px;
+  }
+  .pv-provider-dialog .pv-editor-head {
+    min-height: 56px;
+    padding: 14px 20px;
+    gap: 8px;
+  }
+  .pv-provider-dialog .pv-editor-head h2 {
+    font-size: 15px;
+  }
+  .pv-provider-dialog .pv-editor-foot {
+    flex-wrap: wrap;
+    margin-inline: 20px;
+    padding-bottom: 20px;
+    gap: 8px;
+  }
+  .pv-provider-dialog .pv-editor-foot > button {
+    padding-inline: 12px;
   }
   .pv-provider-dialog .pv-field > label,
   .pv-provider-dialog .pv-field-label {
@@ -1452,12 +2093,8 @@
     text-align: left;
   }
   .pv-provider-dialog .pv-site {
-    max-width: 38%;
+    max-width: 25%;
     font-size: 11px;
-  }
-  .pv-provider-dialog .pv-probe-actions input {
-    order: 1;
-    flex-basis: 100%;
   }
 }
 .pv-editor .msame {
@@ -1477,9 +2114,6 @@
 }
 
 /* Subscription providers use the reference account/model field columns. */
-.pv-codex-dialog[role="dialog"] {
-  width: min(680px, calc(100vw - 48px));
-}
 .pv-provider-dialog .cx-account-name input,
 .pv-provider-dialog .cx-check input {
   width: 15px;
@@ -1686,7 +2320,12 @@
 }
 
 .pv-provider-dialog .pv-editor-body {
-  padding: 14px 18px;
+  padding: 6px 24px 20px;
+}
+@media (max-width: 520px) {
+  .pv-provider-dialog .pv-editor-body {
+    padding: 6px 20px 18px;
+  }
 }
 .pv-provider-dialog .pv-model-chip.served {
   border-style: dashed;
@@ -1703,9 +2342,9 @@
 }
 
 /* Read-only app importer, following the reference implementation's flat source list. */
-.pv-import-dialog[role="dialog"] {
-  width: min(660px, calc(100vw - 40px));
-  max-width: none;
+.pv-import-dialog.vary-dialog-surface[role="dialog"] {
+  width: min(620px, calc(100vw - 64px));
+  max-width: 620px;
   max-height: min(800px, calc(100dvh - 48px));
   padding: 0;
   gap: 0;
@@ -1746,7 +2385,7 @@
   justify-content: center;
   align-items: center;
   gap: 6px;
-  padding: 6px 9px;
+  padding: 6px 6px;
   border-radius: 7px;
   color: var(--mp-muted);
   white-space: nowrap;
@@ -1931,8 +2570,8 @@
   outline-offset: 2px;
 }
 @media (max-width: 480px) {
-  .pv-import-dialog[role="dialog"] {
-    width: calc(100vw - 20px);
+  .pv-import-dialog.vary-dialog-surface[role="dialog"] {
+    width: calc(100vw - 32px);
     max-height: calc(100dvh - 24px);
   }
   .pv-import-tabs {

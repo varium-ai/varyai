@@ -1394,3 +1394,141 @@ it.each([
     expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
   },
 );
+
+it.each([true, false])(
+  "selects the confirmed managed alias and auto-loads its catalog when native readiness is %s",
+  async (nativeReady) => {
+    managedAccounts.rows = [
+      { id: "managed", login: "person@example.test", reauth_required: false },
+    ];
+    vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+      ...upstream,
+      codex: {
+        ...codex,
+        models: [],
+        settings: {
+          ...codex.settings,
+          accounts: ["managed"],
+          models: [],
+          mode: "vendor",
+        },
+        accounts: [
+          { ...codex.accounts[0], ready: nativeReady, aliases: ["managed"] },
+        ],
+      },
+    } as never);
+    vi.mocked(routingUpstreamsApi.codexModels).mockResolvedValue([
+      { model: "confirmed-model" },
+    ]);
+    await open();
+    expect(
+      screen.getAllByRole("checkbox", { name: "person@example.test" }),
+    ).toHaveLength(1);
+    expect(
+      screen.getByRole("checkbox", { name: "person@example.test" }),
+    ).toBeChecked();
+    await waitFor(() =>
+      expect(routingUpstreamsApi.codexModels).toHaveBeenCalledWith(
+        "fixture",
+        2,
+        "managed",
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: "confirmed-model" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("codexProvider.catalogLoginRequired"),
+    ).not.toBeInTheDocument();
+    expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("managed");
+    expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
+  },
+);
+
+it("uses the new form's mixed select-all checkbox and inline model refresh", async () => {
+  await open();
+  const all = screen.getByRole("checkbox", {
+    name: "providerEditor.selectAll",
+  });
+  expect(all).toHaveAttribute("aria-checked", "mixed");
+  expect(
+    screen.queryByRole("button", { name: "providerEditor.selectNone" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen
+      .getByRole("button", { name: "codexProvider.fetchModels" })
+      .closest(".pv-model-actions"),
+  ).toContainElement(all);
+  fireEvent.click(all);
+  expect(all).toBeChecked();
+  expect(screen.getByRole("button", { name: "model-b" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  fireEvent.click(all);
+  expect(all).not.toBeChecked();
+  for (const name of ["model-a", "model-b"])
+    expect(screen.getByRole("button", { name })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+});
+
+it("toggles only filtered subscription models while preserving hidden and image selections", async () => {
+  const models = Array.from({ length: 26 }, (_, i) => ({
+    model: i < 2 ? `visible-${i}` : `hidden-${i}`,
+  }));
+  const hidden = models[25];
+  const image = { model: "gpt-image-2" };
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      models: [...models, image],
+      settings: { ...codex.settings, models: [hidden, image] },
+    },
+  } as never);
+  vi.mocked(routingUpstreamsApi.saveCodex).mockResolvedValue(upstream);
+  await open();
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "providerEditor.filterModels" }),
+    { target: { value: "visible-" } },
+  );
+  const all = screen.getByRole("checkbox", {
+    name: "providerEditor.selectAll",
+  });
+  fireEvent.click(all);
+  expect(all).toBeChecked();
+  fireEvent.click(all);
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ models: [hidden, image], mode: "picked" }),
+    ),
+  );
+});
+
+it("never treats a ready native alias as proof that the selected managed credential is ready", async () => {
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: true },
+  ];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      models: [],
+      settings: { ...codex.settings, accounts: ["managed"], models: [] },
+      accounts: [{ ...codex.accounts[0], aliases: ["managed"] }],
+    },
+  } as never);
+  await open();
+  expect(
+    screen.getByRole("checkbox", { name: "person@example.test" }),
+  ).toBeChecked();
+  expect(screen.getByText("codexProvider.catalogLoginRequired")).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "codexProvider.fetchModels" }),
+  ).toBeDisabled();
+  expect(routingUpstreamsApi.codexModels).not.toHaveBeenCalled();
+});

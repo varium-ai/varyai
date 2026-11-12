@@ -140,9 +140,11 @@ it("keeps manual model entry removed and selects exact discovered model IDs with
     within(dialog).getByRole("button", { name: "providerForm.fetchModels" }),
   );
   fireEvent.click(await within(dialog).findByRole("button", { name: "first" }));
-  fireEvent.click(within(dialog).getByRole("button", { name: "second" }));
+  expect(
+    within(dialog).getByRole("button", { name: "second" }),
+  ).toHaveAttribute("aria-pressed", "false");
   fireEvent.click(
-    within(dialog).getByRole("button", { name: "providerEditor.selectAll" }),
+    within(dialog).getByRole("checkbox", { name: "providerEditor.selectAll" }),
   );
   fireEvent.submit(dialog.querySelector("form")!);
   await waitFor(() => expect(routingUpstreamsApi.save).toHaveBeenCalled());

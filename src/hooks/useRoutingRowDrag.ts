@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { createRoutingTableDragPreview } from "@/lib/routingTableDragPreview";
 
 // The reference implementation's transform-only row sorter, adapted for nested React slots (MIT).
-// See third_party/routing-reference/LICENSE. A short handle click still opens its menu.
+// See third_party/routing-reference/LICENSE. Table previews preserve sticky column layout.
 export function useRoutingRowDrag(
   attribute:
     | "data-routing-group"
@@ -36,7 +37,11 @@ export function useRoutingRowDrag(
       return slot;
     });
     let scroll = list.parentElement;
-    while (scroll && !/(auto|scroll)/.test(getComputedStyle(scroll).overflowY))
+    while (
+      scroll &&
+      (!/(auto|scroll)/.test(getComputedStyle(scroll).overflowY) ||
+        scroll.scrollHeight <= scroll.clientHeight)
+    )
       scroll = scroll.parentElement;
     scroll ??= document.scrollingElement as HTMLElement | null;
     const scrollBox = scroll?.getBoundingClientRect();
@@ -49,7 +54,16 @@ export function useRoutingRowDrag(
     let to = from;
     let frame = 0;
     let lastTime = 0;
+    let tablePreview: ReturnType<typeof createRoutingTableDragPreview> = null;
     const styles = slots.map((slot) => slot.style.transform);
+    const cells = rows.map((candidate) =>
+      candidate instanceof HTMLTableRowElement
+        ? Array.from(candidate.cells)
+        : [],
+    );
+    const cellStyles = cells.map((rowCells) =>
+      rowCells.map((cell) => cell.style.transform),
+    );
     function paint(time: number) {
       frame = 0;
       if (ended) return;
@@ -96,7 +110,19 @@ export function useRoutingRowDrag(
               : index < from && index >= to
                 ? height
                 : 0;
-        slot.style.transform = shift ? `translateY(${shift}px)` : styles[index];
+        if (tablePreview) {
+          if (index === from)
+            tablePreview.move(dy - ((scroll?.scrollTop ?? 0) - scroll0));
+          else
+            cells[index].forEach((cell, cellIndex) => {
+              cell.style.transform = shift
+                ? `translateY(${shift}px)`
+                : cellStyles[index][cellIndex];
+            });
+        } else
+          slot.style.transform = shift
+            ? `translateY(${shift}px)`
+            : styles[index];
       });
       setDrag((previous) =>
         previous?.from === id &&
@@ -120,7 +146,11 @@ export function useRoutingRowDrag(
       slots[from].classList.remove("rt-drag-lift");
       slots.forEach((slot, index) => {
         slot.style.transform = styles[index];
+        cells[index].forEach((cell, cellIndex) => {
+          cell.style.transform = cellStyles[index][cellIndex];
+        });
       });
+      tablePreview?.remove();
       if (handle.hasPointerCapture?.(pointer))
         handle.releasePointerCapture(pointer);
       setDrag(null);
@@ -130,11 +160,13 @@ export function useRoutingRowDrag(
       if (next.pointerId !== pointer) return;
       y = next.clientY;
       if (!moving && Math.abs(y - y0) < 4) return;
+      if (!moving && row instanceof HTMLTableRowElement)
+        tablePreview = createRoutingTableDragPreview(row);
       moving = true;
       suppress.current = id;
       next.preventDefault();
       list?.classList.add("rt-sorting");
-      slots[from].classList.add("rt-drag-lift");
+      if (!tablePreview) slots[from].classList.add("rt-drag-lift");
       handle.setPointerCapture?.(pointer);
       if (!frame) frame = requestAnimationFrame(paint);
     }

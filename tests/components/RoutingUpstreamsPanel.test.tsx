@@ -65,7 +65,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("provider setup-help shortcut", () => {
-  it("copies the onboarding prompt from the header before the import action", async () => {
+  it("copies the onboarding prompt from the header before the add action", async () => {
     mount();
     const button = screen.getByRole("button", {
       name: "onboarding.copyForAgent",
@@ -73,7 +73,6 @@ describe("provider setup-help shortcut", () => {
     const actions = within(button.parentElement!);
     expect(actions.getAllByRole("button")).toEqual([
       button,
-      actions.getByRole("button", { name: "routingUpstreams.import" }),
       actions.getByRole("button", { name: "modelProviders.add" }),
     ]);
     await act(async () => fireEvent.click(button));
@@ -152,6 +151,68 @@ describe("global upstream editor", () => {
       ],
     },
   };
+  it.each([
+    [0, "generic-model-y"],
+    [0.999, "generic-memory"],
+  ] as const)(
+    "assigns a stable built-in icon when creating a custom provider (random %s)",
+    async (randomValue, icon) => {
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      const random = vi.spyOn(Math, "random").mockReturnValue(randomValue);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      const preview = () =>
+        screen.getByRole("dialog").querySelector(".pv-icon-preview svg")
+          ?.outerHTML;
+      const selected = preview();
+      expect(selected).toBeTruthy();
+      random.mockReturnValue(0.5);
+      fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+        target: { value: "Synthetic new provider" },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.baseUrl"), {
+        target: { value: "https://new.example/v1" },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
+        target: { value: "synthetic-key" },
+      });
+      expect(preview()).toBe(selected);
+      fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+      await waitFor(() =>
+        expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+          expect.objectContaining({ icon, name: "Synthetic new provider" }),
+        ),
+      );
+    },
+  );
+
+  it("retains an existing provider's saved icon while editing and saving", async () => {
+    const saved = { ...primary, icon: "generic-api" };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([saved]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    vi.spyOn(Math, "random").mockReturnValue(0.999);
+    fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+      target: { value: "Synthetic renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({ icon: saved.icon }),
+      ),
+    );
+  });
+
   it("edits the provider ID like Magpie while preserving the saved credential identity", async () => {
     const saved = { ...primary, notes: "Synthetic original note" };
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([saved]);
@@ -209,7 +270,7 @@ describe("global upstream editor", () => {
       screen.queryByRole("button", { name: "providerEditor.addModel" }),
     ).toBeNull();
     fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.selectNone" }),
+      screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
     );
     fireEvent.click(screen.getByRole("button", { name: "small-model" }));
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
@@ -224,6 +285,303 @@ describe("global upstream editor", () => {
       ),
     );
   });
+  it("loads models only on the fetch button and preserves edits made while fetching", async () => {
+    let resolve!: (rows: Array<{ id: string; ownedBy: string }>) => void;
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.discover).mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const fetch = screen.getByRole("button", {
+      name: "providerForm.fetchModels",
+    });
+    fireEvent.click(fetch);
+    expect(fetch).toHaveAttribute("aria-busy", "true");
+    expect(fetch).toBeDisabled();
+    const name = screen.getByLabelText("modelProviders.name");
+    expect(name).toBeEnabled();
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "common.cancel" })).toBeEnabled();
+    const small = screen.getByRole("button", { name: "small-model" });
+    expect(small).toBeEnabled();
+    fireEvent.change(name, { target: { value: "Renamed during discovery" } });
+    fireEvent.click(small);
+    fireEvent.click(fetch);
+    expect(routingUpstreamsApi.discover).toHaveBeenCalledTimes(1);
+    await act(async () => resolve([{ id: "fresh-model", ownedBy: "" }]));
+    expect(fetch).toBeEnabled();
+    expect(fetch).toHaveAttribute("aria-busy", "false");
+    expect(name).toHaveValue("Renamed during discovery");
+    expect(screen.getByRole("button", { name: "small-model" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(
+      screen.getByRole("button", { name: "fresh-model" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "Renamed during discovery",
+          source: expect.objectContaining({ mode: "picked" }),
+        }),
+      ),
+    );
+  });
+
+  it("ignores discovery results after the endpoint changes and allows a fresh request", async () => {
+    let resolve!: (rows: Array<{ id: string; ownedBy: string }>) => void;
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.discover).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const fetch = screen.getByRole("button", {
+      name: "providerForm.fetchModels",
+    });
+    fireEvent.click(fetch);
+    const endpoint = screen.getByLabelText("modelProviders.baseUrl");
+    expect(endpoint).toBeEnabled();
+    fireEvent.change(endpoint, {
+      target: { value: "https://changed.example/v1" },
+    });
+    await act(async () => resolve([{ id: "stale-model", ownedBy: "" }]));
+    expect(
+      screen.queryByRole("button", { name: "stale-model" }),
+    ).not.toBeInTheDocument();
+    expect(endpoint).toHaveValue("https://changed.example/v1");
+    expect(fetch).toBeEnabled();
+    fireEvent.change(endpoint, { target: { value: primary.source.baseUrl } });
+    vi.mocked(routingUpstreamsApi.discover).mockResolvedValueOnce([
+      { id: "current-model", ownedBy: "" },
+    ]);
+    fireEvent.click(fetch);
+    expect(
+      await screen.findByRole("button", { name: "current-model" }),
+    ).toBeInTheDocument();
+  });
+
+  it("can save during discovery and isolates a reopened editor from the previous request", async () => {
+    let first!: (rows: Array<{ id: string; ownedBy: string }>) => void;
+    let second!: (rows: Array<{ id: string; ownedBy: string }>) => void;
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.discover)
+      .mockReturnValueOnce(
+        new Promise((done) => {
+          first = done;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((done) => {
+          second = done;
+        }),
+      );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    const save = screen.getByRole("button", { name: "common.save" });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "common.edit Synthetic primary" }),
+    );
+    const fetch = screen.getByRole("button", {
+      name: "providerForm.fetchModels",
+    });
+    expect(fetch).toBeEnabled();
+    fireEvent.click(fetch);
+    await act(async () => first([{ id: "old-session-model", ownedBy: "" }]));
+    expect(
+      screen.queryByRole("button", { name: "old-session-model" }),
+    ).not.toBeInTheDocument();
+    expect(fetch).toHaveAttribute("aria-busy", "true");
+    await act(async () => second([{ id: "new-session-model", ownedBy: "" }]));
+    expect(
+      await screen.findByRole("button", { name: "new-session-model" }),
+    ).toBeInTheDocument();
+    expect(fetch).toBeEnabled();
+  });
+
+  it("clears only the discovery loading state after failure and allows retry", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.discover)
+      .mockRejectedValueOnce(new Error("Synthetic discovery failure"))
+      .mockResolvedValueOnce([{ id: "retry-model", ownedBy: "" }]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const fetch = screen.getByRole("button", {
+      name: "providerForm.fetchModels",
+    });
+    fireEvent.click(fetch);
+    await waitFor(() => expect(fetch).toHaveAttribute("aria-busy", "false"));
+    expect(fetch).toBeEnabled();
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+    fireEvent.click(fetch);
+    expect(
+      await screen.findByRole("button", { name: "retry-model" }),
+    ).toBeInTheDocument();
+    expect(routingUpstreamsApi.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses a tri-state select-all checkbox beside model discovery", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.discover).mockResolvedValue([]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const all = screen.getByRole("checkbox", {
+      name: "providerEditor.selectAll",
+    });
+    const fetch = screen.getByRole("button", {
+      name: "providerForm.fetchModels",
+    });
+    expect(all).toBeChecked();
+    expect(all.closest("label")?.nextElementSibling).toBe(fetch);
+    expect(
+      screen.queryByRole("button", { name: "providerEditor.selectAll" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "providerEditor.selectNone" }),
+    ).toBeNull();
+    fireEvent.click(all);
+    expect(all).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "small-model" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "small-model" }));
+    expect(all).toHaveAttribute("aria-checked", "mixed");
+    fireEvent.click(all);
+    expect(all).toBeChecked();
+    expect(all).not.toHaveAttribute("aria-checked", "mixed");
+    expect(screen.getByRole("button", { name: "large-model" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(fetch);
+    await waitFor(() =>
+      expect(routingUpstreamsApi.discover).toHaveBeenCalled(),
+    );
+  });
+
+  it("preserves image models when clearing the chat model selection", async () => {
+    const image = { model: "synthetic-image", kind: "image" };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      {
+        ...primary,
+        source: {
+          ...primary.source,
+          models: [...primary.source.models, image],
+        },
+      },
+    ]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: expect.objectContaining({ models: [image], mode: "picked" }),
+        }),
+      ),
+    );
+  });
+
+  it("applies select-all to the filtered models while retaining hidden selections", async () => {
+    const catalog = Array.from({ length: 26 }, (_, index) => ({
+      model: `synthetic-${index}`,
+    }));
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      { ...primary, source: { ...primary.source, models: catalog } },
+    ]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "providerEditor.filterModels" }),
+      { target: { value: "synthetic-25" } },
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "synthetic-25" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: expect.objectContaining({ models: catalog.slice(0, 25) }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps model discovery beside disabled select-all before a new provider has a catalog", async () => {
+    mount();
+    const add = await screen.findByRole("button", {
+      name: "modelProviders.add",
+    });
+    await waitFor(() => expect(add).toBeEnabled());
+    fireEvent.click(add);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "providerFlow.custom" }),
+    );
+    const all = screen.getByRole("checkbox", {
+      name: "providerEditor.selectAll",
+    });
+    const fetch = screen.getByRole("button", {
+      name: "providerForm.fetchModels",
+    });
+    expect(all).toBeDisabled();
+    expect(all.closest("label")?.nextElementSibling).toBe(fetch);
+    expect(fetch).toBeDisabled();
+  });
+
   it("shows subscription allowance beneath the provider name without opening the form", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       {
@@ -314,6 +672,126 @@ describe("global upstream editor", () => {
     expect(row.querySelector(".pv-key")).not.toHaveClass("imported");
     expect(within(row).queryByText("ChatGPT Plus")).toBeNull();
   });
+  it.each(["api", "disabled", "subscription"])(
+    "opens row deletion confirmation without editing the %s provider",
+    async (kind) => {
+      const record =
+        kind === "subscription"
+          ? {
+              ...primary,
+              source: {
+                kind: "subscription" as const,
+                provider: "antigravity" as const,
+                accountId: "fixture-account",
+                models: [],
+                catalog: [],
+                mode: "picked" as const,
+                groupsOnly: false,
+              },
+            }
+          : { ...primary, enabled: kind !== "disabled" };
+      vi.mocked(routingUpstreamsApi.list).mockResolvedValue([record]);
+      mount();
+      if (kind === "disabled")
+        fireEvent.click(
+          await screen.findByRole("button", {
+            name: "modelProviders.turnedOff",
+          }),
+        );
+      const row = await screen.findByRole("article", { name: record.name });
+      const remove = within(row).getByRole("button", {
+        name: `common.delete ${record.name}`,
+      });
+      const copy = within(row).getByRole("button", {
+        name: `providerEditor.duplicate ${record.name}`,
+      });
+      expect(within(row).getByRole("switch").nextElementSibling).toBe(copy);
+      expect(copy.nextElementSibling).toBe(remove);
+      if (kind === "subscription") expect(copy).toBeDisabled();
+      else expect(copy).toBeEnabled();
+      expect(remove.nextElementSibling).toHaveClass("pv-chevron");
+      fireEvent.click(remove);
+      expect(routingUpstreamsApi.editor).not.toHaveBeenCalled();
+      expect(screen.queryByLabelText("modelProviders.name")).toBeNull();
+      const confirm = screen.getByRole("dialog", {
+        name: "modelProviders.delete",
+      });
+      expect(
+        within(confirm).getByText(record.name, { exact: false }),
+      ).toBeInTheDocument();
+      expect(routingUpstreamsApi.remove).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(confirm).getByRole("button", { name: "common.cancel" }),
+      );
+      expect(routingUpstreamsApi.remove).not.toHaveBeenCalled();
+      expect(row).toBeInTheDocument();
+    },
+  );
+
+  it.each([false, true])(
+    "deletes the confirmed row with its revision and handles failure (failure: %s)",
+    async (failure) => {
+      const secondary = {
+        ...primary,
+        id: "secondary",
+        name: "Synthetic secondary",
+        revision: 7,
+      };
+      vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+        primary,
+        secondary,
+      ]);
+      let finish!: () => void;
+      vi.mocked(routingUpstreamsApi.remove).mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            finish = () =>
+              failure ? reject("routingUpstreams.referenced") : resolve();
+          }),
+      );
+      mount();
+      const row = await screen.findByRole("article", { name: secondary.name });
+      fireEvent.click(
+        within(row).getByRole("button", {
+          name: `common.delete ${secondary.name}`,
+        }),
+      );
+      const confirm = within(
+        screen.getByRole("dialog", { name: "modelProviders.delete" }),
+      ).getByRole("button", { name: "common.confirm" });
+      fireEvent.click(confirm);
+      expect(confirm).toBeDisabled();
+      fireEvent.click(confirm);
+      expect(routingUpstreamsApi.remove).toHaveBeenCalledExactlyOnceWith(
+        "secondary",
+        7,
+      );
+      if (!failure)
+        vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+      await act(async () => finish());
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("article", { name: primary.name }),
+      ).toBeInTheDocument();
+      if (failure) {
+        expect(
+          screen.getByRole("article", { name: secondary.name }),
+        ).toBeInTheDocument();
+        expect(toast.error).toHaveBeenCalledWith(
+          "modelProviders.errors.remove",
+          expect.objectContaining({ description: "modelProviders.referenced" }),
+        );
+      } else
+        expect(
+          screen.queryByRole("article", { name: secondary.name }),
+        ).not.toBeInTheDocument();
+      expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+      expect(routingUpstreamsApi.editor).not.toHaveBeenCalled();
+    },
+  );
+
   it("supports batch deleting providers from the manage action next to search", async () => {
     const secondary = {
       ...primary,
@@ -560,14 +1038,14 @@ describe("global upstream editor", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.builtinIcons" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
+    fireEvent.click(screen.getByRole("button", { name: "API" }));
     expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
       primary.name,
     );
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
-        expect.objectContaining({ icon: "deepseek" }),
+        expect.objectContaining({ icon: "generic-api" }),
       ),
     );
   });
@@ -600,7 +1078,7 @@ describe("global upstream editor", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.builtinIcons" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
+    fireEvent.click(screen.getByRole("button", { name: "API" }));
     expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
       "Synthetic custom",
     );
@@ -730,7 +1208,7 @@ describe("global upstream editor", () => {
     const keys = screen.getByRole("group", {
       name: "providerEditor.savedKeys",
     });
-    const rows = within(keys).getAllByRole("listitem");
+    const rows = within(keys).getByRole("table").querySelectorAll("tbody");
     expect(rows).toHaveLength(3);
     expect(
       within(rows[0]).getByText("providerEditor.primaryKey"),
@@ -780,9 +1258,9 @@ describe("global upstream editor", () => {
       }),
     );
     expect(
-      within(
-        screen.getByRole("group", { name: "providerEditor.savedKeys" }),
-      ).getAllByRole("listitem"),
+      within(screen.getByRole("group", { name: "providerEditor.savedKeys" }))
+        .getByRole("table")
+        .querySelectorAll("tbody"),
     ).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
     await waitFor(() =>
@@ -936,11 +1414,8 @@ describe("global upstream editor", () => {
     mount();
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "common.edit Synthetic primary",
+        name: "providerEditor.duplicate Synthetic primary",
       }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.duplicate" }),
     );
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -974,14 +1449,8 @@ describe("global upstream editor", () => {
     mount();
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "common.edit Synthetic primary",
+        name: "providerEditor.duplicate Synthetic primary",
       }),
-    );
-    fireEvent.change(screen.getByLabelText("modelProviders.name"), {
-      target: { value: "Unsaved changes" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.duplicate" }),
     );
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1008,11 +1477,8 @@ describe("global upstream editor", () => {
     mount();
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "common.edit Synthetic primary",
+        name: "providerEditor.duplicate Synthetic primary",
       }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.duplicate" }),
     );
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1162,7 +1628,7 @@ describe("global upstream editor", () => {
       ),
     );
   });
-  it("uses an explicitly entered key to test a draft and keeps the form locked during the test", async () => {
+  it("detects with an entered key using only the inline button loading state", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     let finish!: (
       result: Awaited<ReturnType<typeof detectProviderProtocols>>,
@@ -1185,9 +1651,15 @@ describe("global upstream editor", () => {
     fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
       target: { value: "synthetic-probe-key" },
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.detect" }),
-    );
+    const detect = screen.getByRole("button", {
+      name: "providerEditor.detect",
+    });
+    const endpoint = screen.getByLabelText("modelProviders.baseUrl");
+    expect(endpoint.parentElement).toHaveClass("pv-url-control");
+    expect(endpoint.parentElement).toContainElement(detect);
+    expect(detect).toHaveClass("pv-probe-button");
+    expect(screen.queryByLabelText("providerEditor.probeModel")).toBeNull();
+    fireEvent.click(detect);
     expect(detectProviderProtocols).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: (
@@ -1196,13 +1668,197 @@ describe("global upstream editor", () => {
         model: "large-model",
       }),
     );
-    expect(screen.getByRole("button", { name: "common.save" })).toBeDisabled();
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    finish([]);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled(),
+    expect(detect).toHaveAttribute("aria-busy", "true");
+    expect(detect).toBeDisabled();
+    expect(endpoint).toBeEnabled();
+    expect(screen.getByLabelText("modelProviders.name")).toBeEnabled();
+    expect(screen.getByLabelText("modelProviders.apiKey")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "common.cancel" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "large-model" })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: "Anthropic" })).toBeEnabled();
+    fireEvent.click(detect);
+    expect(detectProviderProtocols).toHaveBeenCalledOnce();
+    await act(async () => finish([]));
+    expect(detect).toHaveAttribute("aria-busy", "false");
+    expect(detect).toBeEnabled();
+  });
+
+  it("keeps edits and model selection made during protocol detection", async () => {
+    let finish!: (
+      value: Awaited<ReturnType<typeof routingUpstreamsApi.probe>>,
+    ) => void;
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.probe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
     );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const detect = screen.getByRole("button", {
+      name: "providerEditor.detect",
+    });
+    fireEvent.click(detect);
+    const name = screen.getByLabelText("modelProviders.name");
+    expect(name).toBeEnabled();
+    fireEvent.change(name, { target: { value: "Edited during detection" } });
+    fireEvent.click(screen.getByRole("button", { name: "small-model" }));
+    await act(async () =>
+      finish([
+        { format: "openai_chat", text: { status: "verified" }, stream: null },
+      ]),
+    );
+    expect(name).toHaveValue("Edited during detection");
+    expect(screen.getByRole("button", { name: "small-model" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(
+      await screen.findByText(/providerEditor.verified/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "Edited during detection",
+          source: expect.objectContaining({
+            models: [primary.source.models[0]],
+          }),
+        }),
+      ),
+    );
+  });
+
+  it.each(["endpoint", "protocol", "credential"])(
+    "ignores detection results after changing the %s",
+    async (field) => {
+      let finish!: (
+        value: Awaited<ReturnType<typeof routingUpstreamsApi.probe>>,
+      ) => void;
+      vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+      vi.mocked(routingUpstreamsApi.probe).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      mount();
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "common.edit Synthetic primary",
+        }),
+      );
+      const detect = screen.getByRole("button", {
+        name: "providerEditor.detect",
+      });
+      fireEvent.click(detect);
+      expect(screen.getByLabelText("modelProviders.baseUrl")).toBeEnabled();
+      if (field === "endpoint")
+        fireEvent.change(screen.getByLabelText("modelProviders.baseUrl"), {
+          target: { value: "https://changed.example/v1" },
+        });
+      else if (field === "protocol")
+        fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
+      else {
+        fireEvent.click(
+          screen.getByRole("button", { name: "providerEditor.editKey" }),
+        );
+        fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
+          target: { value: "synthetic-new-probe-key" },
+        });
+      }
+      await act(async () =>
+        finish([
+          { format: "openai_chat", text: { status: "verified" }, stream: null },
+        ]),
+      );
+      expect(document.querySelector(".pv-probe-results")).toBeNull();
+      expect(detect).toHaveAttribute("aria-busy", "false");
+      expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+    },
+  );
+
+  it("does not start a stale probe when its model discovery finishes after an endpoint edit", async () => {
+    let finish!: (
+      value: Awaited<ReturnType<typeof routingUpstreamsApi.discover>>,
+    ) => void;
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      { ...primary, source: { ...primary.source, models: [] } },
+    ]);
+    vi.mocked(routingUpstreamsApi.discover).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    const endpoint = screen.getByLabelText("modelProviders.baseUrl");
+    expect(endpoint).toBeEnabled();
+    fireEvent.change(endpoint, {
+      target: { value: "https://changed.example/v1" },
+    });
+    await act(async () => finish([{ id: "stale-probe-model", ownedBy: null }]));
+    expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
+    expect(document.querySelector(".pv-probe-results")).toBeNull();
+  });
+
+  it("allows closing during detection and ignores an old failure in a reopened editor", async () => {
+    let failOld!: (reason: Error) => void;
+    let finishNew!: (
+      value: Awaited<ReturnType<typeof routingUpstreamsApi.probe>>,
+    ) => void;
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.probe)
+      .mockReturnValueOnce(
+        new Promise((_, reject) => {
+          failOld = reject;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishNew = resolve;
+        }),
+      );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    const cancel = screen.getByRole("button", { name: "common.cancel" });
+    expect(cancel).toBeEnabled();
+    fireEvent.click(cancel);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "common.edit Synthetic primary" }),
+    );
+    const detect = screen.getByRole("button", {
+      name: "providerEditor.detect",
+    });
+    fireEvent.click(detect);
+    await act(async () =>
+      failOld(new Error("synthetic-private-probe-failure")),
+    );
+    expect(detect).toHaveAttribute("aria-busy", "true");
+    expect(toast.error).not.toHaveBeenCalled();
+    await act(async () => finishNew([]));
+    expect(detect).toHaveAttribute("aria-busy", "false");
   });
   it("recovers a saved preset's regional controls when editing it again", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
@@ -1407,23 +2063,44 @@ describe("global upstream editor", () => {
       ),
     );
   });
-  it("keeps the editor and its draft on delete cancellation or failure, closing it only after a successful removal", async () => {
+  it("keeps only Save and Cancel in the editor footer and preserves a dirty draft", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
-    vi.mocked(routingUpstreamsApi.remove)
-      .mockRejectedValueOnce("routingUpstreams.referenced")
-      .mockResolvedValueOnce();
     mount();
+    const row = await screen.findByRole("article", { name: primary.name });
+    const copy = within(row).getByRole("button", {
+      name: `providerEditor.duplicate ${primary.name}`,
+    });
+    const remove = within(row).getByRole("button", {
+      name: `common.delete ${primary.name}`,
+    });
     fireEvent.click(
-      await screen.findByRole("button", {
-        name: "common.edit Synthetic primary",
-      }),
+      within(row).getByRole("button", { name: `common.edit ${primary.name}` }),
     );
+    const dialog = screen.getByRole("dialog");
+    const footer = dialog.querySelector("footer")!;
+    expect(
+      within(footer)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["common.cancel", "common.save"]);
+    expect(
+      within(dialog).queryByRole("button", { name: "common.delete" }),
+    ).toBeNull();
+    expect(
+      within(dialog).queryByRole("button", {
+        name: "providerEditor.duplicate",
+      }),
+    ).toBeNull();
+    expect(copy).toBeDisabled();
+    expect(remove).toBeDisabled();
     fireEvent.change(screen.getByLabelText("modelProviders.name"), {
       target: { value: "Unsaved name" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "common.delete" }));
-    const confirmation = await screen.findByRole("dialog", {
-      name: "modelProviders.delete",
+    fireEvent.click(
+      within(footer).getByRole("button", { name: "common.cancel" }),
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "providerFlow.discardTitle",
     });
     fireEvent.click(
       within(confirmation).getByRole("button", { name: "common.cancel" }),
@@ -1432,32 +2109,7 @@ describe("global upstream editor", () => {
       "Unsaved name",
     );
     expect(routingUpstreamsApi.remove).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "common.delete" }));
-    fireEvent.click(
-      within(
-        screen.getByRole("dialog", { name: "modelProviders.delete" }),
-      ).getByRole("button", { name: "common.confirm" }),
-    );
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "modelProviders.errors.remove",
-        expect.objectContaining({ description: "modelProviders.referenced" }),
-      ),
-    );
-    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
-    expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
-      "Unsaved name",
-    );
-    expect(routingUpstreamsApi.remove).toHaveBeenCalledWith("primary", 4);
-    fireEvent.click(screen.getByRole("button", { name: "common.delete" }));
-    fireEvent.click(
-      within(
-        screen.getByRole("dialog", { name: "modelProviders.delete" }),
-      ).getByRole("button", { name: "common.confirm" }),
-    );
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
   });
   it("shows only the endpoint host in the list", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([

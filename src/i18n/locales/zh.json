@@ -1246,6 +1246,9 @@
     "portableMode": "当前为便携版，更新需手动下载。",
     "updateAvailable": "检测到新版本：{{version}}",
     "updateCurrentVersion": "当前版本 v{{version}}",
+    "releaseHistoryRange": "v{{from}} 至 v{{to}} 的更新内容",
+    "releaseHistoryLoading": "正在加载期间版本的更新日志…",
+    "releaseHistoryIncomplete": "部分版本的日志未能加载或超出最近 40 个版本，当前展示已获取的内容，不影响更新。",
     "restartToUpdate": "重启以更新",
     "updateRestartHint": "更新完成后，应用将自动重新启动。",
     "releaseNotesUnavailable": "暂未提供更新内容，可前往该版本发布页面查看详情。",
@@ -3350,6 +3353,23 @@
       "cloud": "云平台",
       "tool": "开发工具",
       "other": "其他"
+    },
+    "icons": {
+      "generic-model-y": "模型 Y",
+      "generic-model-meta": "模型 Meta",
+      "generic-model-cube": "立方体模型",
+      "generic-component": "组件",
+      "generic-code": "代码",
+      "generic-knowledge": "知识库",
+      "generic-api": "API",
+      "generic-model": "大模型",
+      "generic-output": "输出",
+      "generic-tools": "工具",
+      "generic-text": "文本处理",
+      "generic-http": "HTTP",
+      "generic-model-network": "网络模型",
+      "generic-intent": "意图识别",
+      "generic-memory": "记忆变量"
     }
   },
   "providerIcon": {
@@ -4777,7 +4797,7 @@
     "details": "查看说明",
     "ruleCount": "{{count}} 条规则",
     "autoCreateCompact": "两个及以上供应商提供的同一模型会自动成组（auto/…）。关闭后只展示和使用你创建或编辑过的组。",
-    "title": "全局路由组",
+    "title": "路由组",
     "create": "新建路由组",
     "foldHint": "点击标题收起此路由组",
     "saveOrCancel": "请先保存或取消修改，再收起当前路由组。",
@@ -5089,6 +5109,10 @@
     "sameAsHint": "自动发现分组及补全缺失模型信息时，将此模型视为填写的模型。发给供应商的模型 ID 保持原样。"
   },
   "agentConnections": {
+    "cursorLocalHint": "需要 Cursor Private Inference。连接后请完全退出并重新打开；Cursor 内已保存的网关配置优先于此处的环境默认值。",
+    "cursorCliHint": "管理 Cursor 原生模型选择，CLI 请求仍通过 Cursor 服务。",
+    "cursorAuto": "Auto · Cursor 原生",
+    "t3codeHint": "使用独立的 VaryAI Codex 实例，请在 T3 Code 中使用该实例开始新会话。",
     "desktopStartingModelHint": "客户端重新加载配置后，用于新聊天和新任务。请选择可见模型；已有会话保留各自的模型选择。",
     "modelControlHint": "保存本机新会话的默认模型后，需通过 Vary AI 重启客户端才能应用。已有会话和远程运行配置保留各自的选择。",
     "modelControlTitle": "允许管理 {{app}} 的默认模型？",
@@ -5117,7 +5141,7 @@
       "manualChanges": "请自行修改代理或环境变量；Vary 不会修改 shell 配置文件或系统代理设置。“知道了”会保留 Codex 连接；“断开并恢复”会打开单独的确认框，用于恢复 Vary 保存的连接字段。",
       "unavailable": "代理检查暂不可用，目前未确认代理问题。请重新检查。"
     },
-    "viaVary": "经 Vary",
+    "viaVary": "经 magpie",
     "nativeConfiguration": "原生配置",
     "sorting": {
       "role": "可排序工具",
@@ -5259,7 +5283,7 @@
     "china": "中国",
     "sheet": "添加供应商",
     "first": "添加第一个供应商",
-    "findVendor": "搜索厂商或 API 中转",
+    "findVendor": "搜索订阅账号或模型厂商",
     "import": "导入",
     "importHint": "将已有配置导入共享目录，不改变任何工具的选择。",
     "vendor": "模型厂商",
@@ -5270,7 +5294,12 @@
     "discardTitle": "放弃修改？",
     "discardHint": "未保存的修改将会丢失。",
     "discard": "放弃修改",
-    "plan": "套餐"
+    "plan": "套餐",
+    "chooseMethod": "选择一种方式接入模型服务。",
+    "commonProviders": "常用供应商",
+    "subscriptionDescription": "登录已有订阅账号，无需 API 密钥。",
+    "vendorDescription": "接入 OpenAI、Anthropic、DeepSeek 等官方服务。",
+    "importDescription": "从已有工具或配置文件中导入供应商。"
   },
   "modelPicker": {
     "search": "搜索模型或供应商",
@@ -5294,6 +5323,22 @@
     "groupSettings": "路由组设置"
   },
   "routingPage": {
+    "more": "更多",
+    "groupCount": "{{count}} 个路由组",
+    "groupName": "路由组名称",
+    "groupStatus": "状态",
+    "upstreamCount": "上游数量",
+    "requestCount": "请求数",
+    "switchCount": "切换次数",
+    "agentErrorCount": "Agent 错误数",
+    "actions": "操作",
+    "allStatuses": "全部状态",
+    "groupEnabled": "已启用",
+    "groupDisabled": "已停用",
+    "refresh": "刷新",
+    "groupStatsUnavailable": "暂未提供路由组累计统计。",
+    "noGroups": "暂无路由组。新建或导入路由组即可开始使用。",
+
     "apiKey": "API 密钥",
     "oneKey": "单个密钥",
     "accountQuotaLeft": "剩余额度",
@@ -5546,6 +5591,8 @@
     "manage": "管理"
   },
   "providerEditor": {
+    "getApiKey": "获取密钥",
+    "endpoints": "端点",
     "holdsTokens": "上下文 {{n}} tokens",
     "idReference": "Agent 以 {{id}}/… 选择它的模型",
     "idMovesReferences": "使用 {{id}} 的 Agent 和路由分组会迁移到新 ID。",
@@ -5582,6 +5629,7 @@
     "streamVerified": "流式已验证",
     "streamUnverified": "流式未验证",
     "accounts": "账号",
+    "keyLimits": "限制",
     "inUse": "使用中",
     "keyPlaceholder": "粘贴 API 密钥",
     "keyModels": "{{count}} 个模型",
