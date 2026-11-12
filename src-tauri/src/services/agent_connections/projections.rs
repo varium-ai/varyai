@@ -76,7 +76,7 @@ pub(super) fn build(
                 .insert(wire_id(&model.id), model.id.clone());
         }
         let mut projection = json!({"models":catalog.iter().map(|model| json!({"slug":model.id,"display_name":model.name})).collect::<Vec<_>>()});
-        let visible = crate::services::intent_routing::client::aliases::project(
+        let visible = crate::services::intent_routing::client::aliases::project_readable(
             &mut projection,
             &mut receipt.model_map,
         )?;

@@ -41,7 +41,7 @@ pub(super) fn project(
                 return Err(CONFLICT.into());
             }
         }
-        let visible = crate::services::intent_routing::client::aliases::project(
+        let visible = crate::services::intent_routing::client::aliases::project_readable(
             &mut catalog,
             &mut receipt.model_map,
         )?;
