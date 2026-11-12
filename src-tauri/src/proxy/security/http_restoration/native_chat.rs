@@ -682,18 +682,19 @@ pub(super) fn capture_original(
     let stream = async_stream::try_stream! {
         let source = response.bytes_stream();
         futures::pin_mut!(source);
-        while let Some(chunk) = {
+        // The test build reports backpressure to the fixture before each poll; the
+        // release build only awaits the next chunk. Both bind the same local so the
+        // scrutinee is never a block, whose temporary lifetime differs by edition.
+        loop {
             #[cfg(test)]
-            {
-                futures::future::poll_fn(|cx| {
-                    let next = source.as_mut().poll_next(cx);
-                    if next.is_pending() { capture_test_support::pending(bytes.len()); }
-                    next
-                }).await
-            }
+            let next = futures::future::poll_fn(|cx| {
+                let next = source.as_mut().poll_next(cx);
+                if next.is_pending() { capture_test_support::pending(bytes.len()); }
+                next
+            }).await;
             #[cfg(not(test))]
-            { source.next().await }
-        } {
+            let next = source.next().await;
+            let Some(chunk) = next else { break };
             let chunk = chunk.map_err(|_| io::Error::other("Response stream failed."))?;
             bytes.append(&chunk).map_err(|_| io::Error::other("Response stream failed."))?;
             yield chunk;
