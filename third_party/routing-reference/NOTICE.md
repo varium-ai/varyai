@@ -263,3 +263,12 @@ behavior in Rust and React with four runtime languages, bounded gateway health
 probes, sanitized diagnostic addresses, and its existing ownership-checked
 configuration recovery. The diagnostic does not copy the reference's claim that
 every turn returns HTTP 502. The Magpie MIT notice and license listed above apply.
+
+Provider duplicate-form behavior was additionally reviewed at Magpie revision
+`6d15f63d52146fcadccef30c9777e45051bcd11c`, in
+`internal/gui/assets/app.js` (`duplicateProvider`, `drawEditor` and the model
+picker selection path). Vary opens the saved provider's copy directly in its Add
+form and closes a single-model picker when its current value is clicked without
+rewriting that value. The existing Vary storage identity and revision checks are
+preserved. User-requested removal of manual model entry, bulk testing, model
+preferences and the groups-only checkbox remains in effect.

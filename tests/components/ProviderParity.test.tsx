@@ -111,30 +111,45 @@ it("saves an empty selection without a blocking discovery and follows the vendor
   expect(fetchModelsForConfig).not.toHaveBeenCalled();
 });
 
-it("keeps image-only picks from switching a new provider's chat list to picked mode", async () => {
+it("keeps image-only catalog picks from switching a new provider's chat list to picked mode", async () => {
+  vi.mocked(fetchModelsForConfig).mockResolvedValue([
+    { id: "gpt-image-2", ownedBy: "" },
+  ]);
   const dialog = await custom();
-  fireEvent.change(within(dialog).getByLabelText("providerEditor.addModelId"), {
-    target: { value: "gpt-image-2" },
-  });
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "providerForm.fetchModels" }),
+  );
+  fireEvent.click(
+    await within(dialog).findByRole("button", { name: "gpt-image-2" }),
+  );
   fireEvent.submit(dialog.querySelector("form")!);
   await waitFor(() => expect(routingUpstreamsApi.save).toHaveBeenCalled());
   expect(
     vi.mocked(routingUpstreamsApi.save).mock.calls[0][0].source,
-  ).toMatchObject({
-    mode: "vendor",
-    models: [{ model: "gpt-image-2" }],
-  });
+  ).toMatchObject({ mode: "vendor", models: [{ model: "gpt-image-2" }] });
 });
-it("accepts comma-separated manual model IDs", async () => {
+it("keeps manual model entry removed and selects exact discovered model IDs without duplicates", async () => {
   const dialog = await custom();
-  const ids = within(dialog).getByLabelText("providerEditor.addModelId");
-  fireEvent.change(ids, { target: { value: "alpha, beta, alpha" } });
+  expect(
+    within(dialog).queryByLabelText("providerEditor.addModelId"),
+  ).toBeNull();
+  expect(
+    within(dialog).queryByRole("button", { name: "providerEditor.addModel" }),
+  ).toBeNull();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "providerForm.fetchModels" }),
+  );
+  fireEvent.click(await within(dialog).findByRole("button", { name: "first" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "second" }));
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "providerEditor.selectAll" }),
+  );
   fireEvent.submit(dialog.querySelector("form")!);
   await waitFor(() => expect(routingUpstreamsApi.save).toHaveBeenCalled());
   expect(
     vi.mocked(routingUpstreamsApi.save).mock.calls[0][0].source,
   ).toMatchObject({
     mode: "picked",
-    models: [{ model: "alpha" }, { model: "beta" }],
+    models: [{ model: "first" }, { model: "second" }],
   });
 });

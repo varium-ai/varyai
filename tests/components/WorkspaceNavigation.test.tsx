@@ -8,7 +8,44 @@ import zh from "@/i18n/locales/zh.json";
 import ja from "@/i18n/locales/ja.json";
 import zhTW from "@/i18n/locales/zh-TW.json";
 
+const updateState = vi.hoisted(() => ({
+  hasUpdate: true,
+  updateInfo: { availableVersion: "0.3.1" },
+  resetDismiss: vi.fn(),
+  isInstalling: false,
+}));
+
+vi.mock("@/contexts/UpdateContext", () => ({
+  useUpdate: () => updateState,
+}));
+
 describe("WorkspaceNavigation", () => {
+  it("reopens the update dialog beside Settings and disables installation in progress", () => {
+    updateState.resetDismiss.mockClear();
+    const { container, rerender } = render(
+      <WorkspaceNavigation view="agents" onSelect={vi.fn()} />,
+    );
+    const row = container.querySelector(".workspace-settings-row");
+    const update = screen.getByRole("button", {
+      name: "settings.updateAvailable",
+    });
+    expect(row).toContainElement(update);
+    expect(row).toContainElement(
+      screen.getByRole("button", { name: "workspaceNav.settings" }),
+    );
+    fireEvent.click(update);
+    expect(updateState.resetDismiss).toHaveBeenCalledOnce();
+    try {
+      updateState.isInstalling = true;
+      rerender(<WorkspaceNavigation view="agents" onSelect={vi.fn()} />);
+      expect(update).toBeDisabled();
+      fireEvent.click(update);
+      expect(updateState.resetDismiss).toHaveBeenCalledOnce();
+    } finally {
+      updateState.isInstalling = false;
+    }
+  });
+
   it("moves one decorative selection only after navigation is accepted", () => {
     const position = { top: 92, width: 160, height: 28 };
     const top = vi
@@ -99,10 +136,10 @@ describe("WorkspaceNavigation", () => {
   });
 
   it.each([
-    ["en", en, ["Tools/Agent", "Plans/Routing", "Models/Providers"]],
-    ["zh", zh, ["工具/Agent", "切换方案/路由", "模型/供应商"]],
-    ["ja", ja, ["ツール/Agent", "プラン/ルート", "モデル/提供元"]],
-    ["zh-TW", zhTW, ["工具/Agent", "切換方案/路由", "模型/供應商"]],
+    ["en", en, ["Tools/Agent", "Smart switching/Routing", "Models/Providers"]],
+    ["zh", zh, ["工具/Agent", "智能切换/路由", "模型/供应商"]],
+    ["ja", ja, ["ツール/Agent", "スマート切替/ルート", "モデル/提供元"]],
+    ["zh-TW", zhTW, ["工具/Agent", "智慧切換/路由", "模型/供應商"]],
   ] as const)(
     "uses paired resource labels in %s without changing navigation",
     async (language, locale, labels) => {

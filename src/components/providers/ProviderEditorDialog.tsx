@@ -30,7 +30,7 @@ import {
   type GlobalProviderPreset,
 } from "@/config/globalProviderPresets";
 import { ProviderImageModels } from "./ProviderImageModels";
-import { ProviderModelPreferences } from "./ProviderModelPreferences";
+import type { ProviderErrorHandler } from "./providerErrorToast";
 import { CodexProviderFields } from "./CodexProviderFields";
 import { ProviderKeysField } from "./ProviderKeysField";
 import { SubscriptionProviderFields } from "./SubscriptionProviderFields";
@@ -69,11 +69,11 @@ export function ProviderEditorDialog({
   draft,
   originalId = draft.id,
   another = false,
+  copySourceName,
   models,
   discovered,
   apiKey,
   busy,
-  error,
   icon,
   region,
   regions,
@@ -86,7 +86,7 @@ export function ProviderEditorDialog({
   onKeyChange,
   onProtocolChange,
   onRegionChange,
-  onDiscover,
+  onDiscover: _onDiscover,
   onFetchProbeModels,
   onProbe,
   onSave,
@@ -105,11 +105,11 @@ export function ProviderEditorDialog({
   draft: RoutingUpstream;
   originalId?: string;
   another?: boolean;
+  copySourceName?: string;
   models: string;
   discovered: FetchedModel[];
   apiKey: string;
   busy: boolean;
-  error: string | null;
   icon?: string;
   region: string;
   regions: Array<{ id: string; name: string }>;
@@ -130,7 +130,7 @@ export function ProviderEditorDialog({
   onDelete: () => void;
   onDuplicate: () => void;
   onReturnFocus: () => void;
-  onError: () => void;
+  onError: ProviderErrorHandler;
   nestedOpen: boolean;
   onProbingChange: (value: boolean) => void;
   canSave?: boolean;
@@ -150,14 +150,6 @@ export function ProviderEditorDialog({
     wasLoading.current = loading;
   }, [loading]);
   const [showAll, setShowAll] = useState(false);
-  const [typedModel, setTypedModel] = useState(() => {
-    if (draft.revision) return "";
-    try {
-      return (JSON.parse(models) as unknown[]).map(providerModelId).join(", ");
-    } catch {
-      return "";
-    }
-  });
   const [modelSearch, setModelSearch] = useState("");
   const [probeModel, setProbeModel] = useState("");
   const [probing, setProbing] = useState(false);
@@ -265,7 +257,6 @@ export function ProviderEditorDialog({
   function choose(rows: unknown[]) {
     setRetained([...available.values()]);
     onModelsChange(JSON.stringify(rows, null, 2));
-    if (!draft.revision) setTypedModel(rows.map(providerModelId).join(", "));
   }
   function toggle(model: string) {
     if (draft.source.kind === "api" && draft.revision)
@@ -277,30 +268,6 @@ export function ProviderEditorDialog({
           ? [...selected, available.get(model)]
           : selected,
     );
-  }
-  function modelsWithTyped() {
-    const ids = typedModel
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const next = [...selected];
-    for (const model of ids) {
-      if (
-        !model ||
-        selected.some((value) => providerModelId(value) === model) ||
-        selected.length >= 256
-      )
-        continue;
-      if (!next.some((row) => providerModelId(row) === model))
-        next.push(available.get(model) ?? { model });
-    }
-    return next.slice(0, 256);
-  }
-  function addModel() {
-    choose(modelsWithTyped());
-    if (draft.source.kind === "api" && draft.revision)
-      onDraftChange({ ...draft, source: { ...draft.source, mode: "picked" } });
-    setTypedModel("");
   }
   const chatSelected = selected.filter((row) => !isImageGenerationModel(row));
   async function probe(all: boolean) {
@@ -318,6 +285,7 @@ export function ProviderEditorDialog({
         ids = chat ? [chat.id] : [];
       }
       ids = ids.filter(Boolean).slice(0, 30);
+      let failed = false;
       for (let at = 0; at < ids.length; at += 3) {
         const outcomes = await Promise.allSettled(
           ids.slice(at, at + 3).map(async (model) => ({
@@ -332,10 +300,11 @@ export function ProviderEditorDialog({
           ),
         ]);
         if (outcomes.some((outcome) => outcome.status === "rejected"))
-          onError();
+          failed = true;
       }
-    } catch {
-      onError();
+      if (failed) onError("testModels");
+    } catch (cause) {
+      onError("testModels", cause);
     } finally {
       setProbing(false);
       onProbingChange(false);
@@ -405,93 +374,15 @@ export function ProviderEditorDialog({
       </div>
     </div>
   );
-  const manualControls = source && (
-    <div
-      className={`pv-model-footer${draft.revision ? "" : " pv-model-create"}`}
+  const fetchModelsControl = source && (
+    <Button
+      type="button"
+      variant="ghost"
+      disabled={disabled || !source.baseUrl || (!apiKey && !draft.hasApiKey)}
+      onClick={() => void _onDiscover()}
     >
-      <div className="pv-add-model">
-        <Input
-          id={`${id}-model-ids`}
-          aria-label={t("providerEditor.addModelId")}
-          placeholder={t(
-            draft.revision
-              ? "providerEditor.addModelId"
-              : "providerParity.optionalModels",
-          )}
-          disabled={disabled}
-          value={typedModel}
-          onChange={(event) => {
-            if (draft.revision) setTypedModel(event.target.value);
-            else {
-              const ids = [
-                ...new Set(
-                  event.target.value
-                    .split(",")
-                    .map((id) => id.trim())
-                    .filter(Boolean),
-                ),
-              ];
-              setTypedModel(event.target.value);
-              onModelsChange(
-                JSON.stringify(
-                  ids.map((model) => available.get(model) ?? { model }),
-                ),
-              );
-            }
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              if (draft.revision) addModel();
-            }
-          }}
-        />
-        {!!draft.revision && (
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={disabled || !typedModel.trim()}
-            onClick={addModel}
-          >
-            {t("providerEditor.addModel")}
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={
-            disabled || !source.baseUrl || (!apiKey && !draft.hasApiKey)
-          }
-          onClick={() => void onDiscover()}
-        >
-          {t("providerForm.fetchModels")}
-        </Button>
-        {!!draft.revision && (
-          <Button
-            type="button"
-            variant="outline"
-            title={t("providerEditor.testHint", {
-              count: 30,
-            })}
-            disabled={
-              disabled || !chatSelected.length || (!apiKey && !draft.hasApiKey)
-            }
-            onClick={() => void probe(true)}
-          >
-            {t("codexProvider.testModels")}
-          </Button>
-        )}
-      </div>
-      {!!draft.revision && !!chatSelected.length && (
-        <ProviderModelPreferences
-          models={chatSelected}
-          disabled={disabled}
-          onChange={(rows) =>
-            choose([...rows, ...selected.filter(isImageGenerationModel)])
-          }
-        />
-      )}
-    </div>
+      {t("providerForm.fetchModels")}
+    </Button>
   );
   return (
     <Dialog
@@ -541,17 +432,21 @@ export function ProviderEditorDialog({
             <DialogTitle>
               {draft.revision
                 ? openedName.current || t("providerFlow.custom")
-                : ((region === "china"
-                    ? (preset?.china?.name ?? preset?.name)
-                    : preset?.name) ??
-                  (source ? t("providerFlow.custom") : draft.name))}
+                : copySourceName
+                  ? t("providerEditor.copyTitle", { name: copySourceName })
+                  : ((region === "china"
+                      ? (preset?.china?.name ?? preset?.name)
+                      : preset?.name) ??
+                    (source ? t("providerFlow.custom") : draft.name))}
             </DialogTitle>
             {site && (
               <button
                 type="button"
                 className="pv-site"
                 onClick={() =>
-                  void settingsApi.openExternal(site).catch(onError)
+                  void settingsApi
+                    .openExternal(site)
+                    .catch((cause) => onError("openWebsite", cause))
                 }
               >
                 {new URL(site).host}
@@ -574,13 +469,7 @@ export function ProviderEditorDialog({
           <form
             onSubmit={(event) => {
               if (disabled) event.preventDefault();
-              else
-                void onSave(
-                  event,
-                  source && draft.revision && typedModel.trim()
-                    ? modelsWithTyped()
-                    : undefined,
-                );
+              else void onSave(event);
             }}
             className="pv-editor-form"
           >
@@ -667,8 +556,7 @@ export function ProviderEditorDialog({
               {!source &&
                 draft.source.kind !== "subscription" &&
                 !draft.codex &&
-                !loading &&
-                !error && (
+                !loading && (
                   <p className="pv-hint" role="status">
                     {t("providerEditor.importedAccountHint")}
                   </p>
@@ -781,19 +669,6 @@ export function ProviderEditorDialog({
                               setProbeModel(event.target.value)
                             }
                           />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            title={t("providerEditor.testHint", { count: 30 })}
-                            disabled={
-                              disabled ||
-                              !chatSelected.length ||
-                              (!apiKey && !draft.hasApiKey)
-                            }
-                            onClick={() => void probe(true)}
-                          >
-                            {t("providerEditor.testSelected")}
-                          </Button>
                         </div>
                         {!!results.length && (
                           <div className="pv-probe-results" role="status">
@@ -850,7 +725,13 @@ export function ProviderEditorDialog({
                         {t("modelPicker.models")}
                       </label>
                       <div className="pv-models">
-                        {!draft.revision && manualControls}
+                        {!draft.revision && (
+                          <div className="pv-model-footer pv-model-create">
+                            <div className="pv-add-model">
+                              {fetchModelsControl}
+                            </div>
+                          </div>
+                        )}
                         <>
                           {!!chatModels.length && (
                             <div
@@ -1008,31 +889,18 @@ export function ProviderEditorDialog({
                               {t("providerEditor.noModels")}
                             </p>
                           )}
-                          {!!draft.revision && manualControls}
                         </>
+                        {!!draft.revision && (
+                          <div className="pv-model-footer">
+                            <div className="pv-add-model">
+                              {fetchModelsControl}
+                            </div>
+                          </div>
+                        )}
                         {!draft.revision && (
                           <p className="pv-hint">
                             {t("providerParity.optionalHint")}
                           </p>
-                        )}
-                        {!!draft.revision && (
-                          <label className="cx-check pv-groups-only">
-                            <input
-                              type="checkbox"
-                              checked={source.groupsOnly}
-                              disabled={disabled}
-                              onChange={(event) =>
-                                onDraftChange({
-                                  ...draft,
-                                  source: {
-                                    ...source,
-                                    groupsOnly: event.target.checked,
-                                  },
-                                })
-                              }
-                            />
-                            {t("codexProvider.groupsOnly")}
-                          </label>
                         )}
                         {!!draft.revision && (
                           <p className="pv-hint">
@@ -1062,11 +930,6 @@ export function ProviderEditorDialog({
                     />
                   )}
                 </>
-              )}
-              {error && (
-                <p role="alert" className="pv-error">
-                  {t(error)}
-                </p>
               )}
             </div>
             <footer className="pv-editor-foot">

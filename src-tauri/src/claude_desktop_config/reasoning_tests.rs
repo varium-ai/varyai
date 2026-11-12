@@ -19,6 +19,8 @@ fn shared_desktop_profile_exposes_native_effort_controls_and_caps() -> Result<()
     let home = tempfile::tempdir().map_err(|_| "fixture")?;
     let paths = paths_from_dirs(home.path().join("Claude"), home.path().join("Claude-3p"));
     let model = Model {
+        api: "openai-completions",
+        native_model: None,
         output_tokens: None,
         cost: None,
         id: "synthetic/first".into(),
@@ -73,6 +75,8 @@ fn desktop_profile_refresh_preserves_user_effort_and_unknown_models_remain_plain
     write_json_file(&paths.profile_path, &json!({"defaultModelEffort":"high"}))
         .map_err(|_| "fixture")?;
     let mut model = Model {
+        api: "openai-completions",
+        native_model: None,
         output_tokens: None,
         cost: None,
         id: "synthetic/first".into(),

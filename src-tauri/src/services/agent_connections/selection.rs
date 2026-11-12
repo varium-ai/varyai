@@ -13,7 +13,7 @@ fn paths(app: &str) -> &'static [&'static [&'static str]] {
             &["agents", "defaults", "model"],
             &["agents", "defaults", "model", "primary"],
         ],
-        "hermes" => &[&["model", "default"]],
+        "hermes" => &[&["model", "provider"], &["model", "default"]],
         "qoder" => &[&["providers", "varyai", "model"]],
         "kimi" => &[&["default_model"]],
         "qwen" => &[&["model", "name"]],
@@ -251,6 +251,49 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             }
             let renamed = renamed_choice(old, names, visible, prior, choice);
             let choice = renamed.as_ref().unwrap_or(choice);
+            if old.app == "hermes" && path == ["model", "provider"] && managed(choice, old) {
+                continue;
+            }
+            if old.app == "deepseek-harness"
+                && choice
+                    .pointer("/0/config/provider")
+                    .and_then(Value::as_str)
+                    .is_some_and(|provider| {
+                        matches!(
+                            provider,
+                            "varyai-shared-catalog"
+                                | "varyai-shared-catalog-responses"
+                                | "varyai-shared-catalog-anthropic"
+                        )
+                    })
+            {
+                if let Some(model) = choice.pointer("/0/config/model").and_then(Value::as_str) {
+                    let route = file.installed["providers"]
+                        .as_object()
+                        .into_iter()
+                        .flat_map(|entries| entries.values())
+                        .flat_map(|entry| {
+                            entry["config"]["providers"]
+                                .as_object()
+                                .into_iter()
+                                .flat_map(|routes| routes.iter())
+                        })
+                        .find(|(_, route)| {
+                            route["models"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .any(|row| row["id"] == model)
+                        })
+                        .map(|(id, _)| id.clone());
+                    if let Some(route) = route {
+                        let mut routed = choice.clone();
+                        routed[0]["config"]["provider"] = Value::String(route);
+                        put(&mut file.installed, &path, Some(routed))?;
+                        continue;
+                    }
+                }
+            }
             // Retain native choices and surviving shared models. Deleted shared models
             // use the newly projected default instead of a dangling model reference.
             let model = choice

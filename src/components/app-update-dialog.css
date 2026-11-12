@@ -1,0 +1,152 @@
+.vary-update-dialog.vary-app-dialog[role="dialog"] {
+  max-height: min(78dvh, calc(100dvh - 64px));
+}
+.vary-update-dialog > .vary-dialog-header {
+  flex-direction: row;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  border-bottom: 1px solid var(--mp-line);
+}
+.vary-update-dialog > .vary-dialog-body {
+  flex: 1 1 auto;
+  padding-top: 16px;
+  padding-bottom: 24px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mp-line) transparent;
+}
+.vary-update-dialog > .vary-dialog-footer {
+  align-items: center;
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-top: 1px solid var(--mp-line);
+}
+.vary-update-footer-hint {
+  flex: 1 1 200px;
+  margin-right: auto;
+  color: var(--mp-fg-2);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.vary-update-notes-toolbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 18px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.vary-update-notes-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--mp-fg-2);
+  text-align: left;
+}
+.vary-update-notes-toolbar button:hover {
+  color: var(--mp-accent);
+}
+.vary-update-notes-toolbar button:focus-visible,
+.vary-update-markdown a:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 3px;
+}
+.vary-update-markdown {
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+.vary-update-markdown :is(h3, h4, h5, h6) {
+  margin: 22px 0 7px;
+  color: var(--mp-fg);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.vary-update-markdown > :first-child {
+  margin-top: 0;
+}
+.vary-update-markdown p {
+  margin: 6px 0;
+}
+.vary-update-markdown :is(ul, ol) {
+  margin: 6px 0 14px;
+  padding-left: 19px;
+}
+.vary-update-markdown ul {
+  list-style-type: disc;
+}
+.vary-update-markdown ol {
+  list-style-type: decimal;
+}
+.vary-update-markdown li {
+  margin: 5px 0;
+  padding-left: 1px;
+}
+.vary-update-markdown li::marker {
+  color: var(--mp-muted);
+}
+.vary-update-markdown li > p {
+  margin: 0;
+}
+.vary-update-markdown li > :is(ul, ol) {
+  margin: 4px 0;
+}
+.vary-update-markdown strong {
+  color: var(--mp-fg);
+  font-weight: 600;
+}
+.vary-update-markdown code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--mp-card-2);
+  color: var(--mp-fg);
+  font-size: 0.9em;
+}
+.vary-update-markdown pre {
+  margin: 12px 0;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--mp-card-2);
+  line-height: 1.6;
+}
+.vary-update-markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+.vary-update-markdown a {
+  color: var(--mp-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.vary-update-markdown blockquote {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--mp-line);
+  color: var(--mp-muted);
+}
+.vary-update-markdown hr {
+  margin: 20px 0;
+  border-color: var(--mp-line);
+}
+.vary-update-empty {
+  padding: 28px 0 44px;
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  line-height: 1.8;
+}
+@media (max-width: 480px) {
+  .vary-update-dialog.vary-app-dialog[role="dialog"] {
+    max-height: calc(100dvh - 32px);
+  }
+  .vary-update-footer-hint {
+    flex-basis: 100%;
+    margin-bottom: 2px;
+  }
+}

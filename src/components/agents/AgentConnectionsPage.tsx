@@ -1,6 +1,7 @@
 import { Fragment, useId, useRef, useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
   closestCenter,
   DndContext,
@@ -284,15 +285,20 @@ export function AgentConnectionsPage({
       return next;
     });
   }
-  function rescanInstallations() {
-    void Promise.all(
-      [
-        "agent-installations",
-        "agent-cli-version",
-        "agent-native-models",
-        "agent-desktop-versions",
-      ].map((key) => client.invalidateQueries({ queryKey: [key] })),
-    );
+  async function rescanInstallations() {
+    try {
+      await Promise.all(
+        [
+          "agent-installations",
+          "agent-cli-version",
+          "agent-native-models",
+          "agent-desktop-versions",
+        ].map((key) => client.invalidateQueries({ queryKey: [key] })),
+      );
+      toast.success(t("agentConnections.rescanSuccess"));
+    } catch {
+      toast.error(t("agentConnections.rescanFailed"));
+    }
   }
   function browseTools() {
     const details = moreTools.current;
@@ -1089,6 +1095,7 @@ export function AgentConnectionsPage({
                             : []
                       }
                       onPick={(model) => void pickModel(app, model)}
+                      onDismiss={() => setPicking(null)}
                       onDisconnect={
                         enabled || orphaned || inactiveCodexIntent
                           ? () => {

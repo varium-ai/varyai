@@ -17,6 +17,11 @@ without changing the selected model. Old execution identities and retained alias
 remain accepted for existing conversations while their models remain available. They are not added as duplicate picker
 rows. Refresh and disconnect continue to preserve unrelated native settings.
 
+Background catalog refreshes and startup recovery retain the saved Agent model
+while its public alias remains listed, even when that alias differs from the
+catalog's internal key. Removing the selected model allows the connection to
+fall back to the catalog default.
+
 Claude Desktop publishes the chosen visible model first in `inferenceModels` and enables `alwaysStartWithDefaultModel`. The remaining visible models retain their saved order. Hiding the default falls back to the first visible model. Hiding every model leaves no starting model. Disconnect restores the original profile settings. Native observations read the active profile identified by `_meta.json`, rather than a dormant Vary profile.
 
 WorkBuddy, WorkBuddy AI and Qoder CN save new-chat choices in native renderer storage. Their model files alone do not set the desktop composer's selection. Choosing a default in Vary requests device-local control permission the first time. Saving a model leaves a pending restart button on the Agent row; restart confirmation opens only when that button is clicked. An installed Node.js runtime is required. Permission, a model-only plan and readback records are kept under the local `agent-connections/model-control` directory and are excluded from profile exports.

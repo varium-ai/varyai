@@ -1,5 +1,8 @@
 # Readable managed Agent model IDs
 
+This record covers the local naming change before remote integration.
+The final merged tree is covered by [merge and push verification](2026-11-12-agent-models-merge-push.md).
+
 ## Scope
 
 Managed OpenCode, OpenClaw, Qoder, DeepSeek Harness, Gemini CLI and T3 Code
@@ -39,7 +42,7 @@ Rust test processes append only numeric loopback addresses and localhost to
 temporary client homes, in-memory databases, synthetic credentials and dynamic
 ports. No installed application was launched or replaced.
 
-## Verification
+## Pre-merge verification
 
 The initial regression reproduced Gemini's missing readable name. Final tests
 cover all six newly named adapters, repeated refresh, Unicode labels, duplicate

@@ -144,6 +144,7 @@ fn edit(
         "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
         "deepseek-harness" => Format::Cordis,
+        "qwen" => Format::Jsonc,
         "openclaw" => Format::Json5,
         _ => Format::Json,
     };
@@ -167,7 +168,12 @@ fn edit(
                         token,
                         "api_key",
                     )?;
-                    let mut row = json!({"model":m.id,"name":m.name,"base_url":format!("{base}/v1"),"api_key":token,"api_backend":"responses"});
+                    let backend = match m.api {
+                        "openai-responses" => "responses",
+                        "anthropic-messages" => "messages",
+                        _ => "chat_completions",
+                    };
+                    let mut row = json!({"model":m.id,"name":m.name,"base_url":format!("{base}/v1"),"api_key":token,"api_backend":backend});
                     if !m.reasoning_levels.is_empty() {
                         row["reasoning_efforts"] = json!(m.reasoning_levels);
                     }
@@ -190,6 +196,7 @@ fn edit(
                     .map(|m| m.name.as_str())
                     .unwrap_or(selected);
                 set(value, &["models", "default"], json!(profile))?;
+                set(value, &["features", "campaigns"], json!(false))?;
             }
             "openclaw" => {
                 owned(value.pointer("/models/providers/varyai"), token, "apiKey")?;
@@ -250,42 +257,93 @@ fn edit(
                 }
             }
             "hermes" => {
-                let mut rows = match value.get("custom_providers") {
-                    Some(v) => v.as_array().cloned().ok_or(FAILED)?,
-                    None => vec![],
-                };
-                for row in rows.iter().filter(|r| r["name"] == "varyai") {
-                    owned(Some(row), token, "api_key")?;
+                // Current Hermes reads named entries under providers, not custom_providers.
+                if let Some(rows) = value.get_mut("custom_providers") {
+                    let rows = rows.as_array_mut().ok_or(FAILED)?;
+                    for row in rows.iter().filter(|row| row["name"] == "varyai") {
+                        owned(Some(row), token, "api_key")?;
+                    }
+                    rows.retain(|row| row["name"] != "varyai");
+                    if rows.is_empty() {
+                        value
+                            .as_object_mut()
+                            .ok_or(FAILED)?
+                            .remove("custom_providers");
+                    }
                 }
-                rows.retain(|r| r["name"] != "varyai");
-                let models = catalog
-                    .iter()
-                    .map(|m| {
-                        (
-                            m.id.clone(),
-                            m.context_window
-                                .map_or(json!({}), |w| json!({"context_length":w})),
-                        )
-                    })
-                    .collect::<serde_json::Map<_, _>>();
-                rows.push(json!({"name":"varyai","base_url":format!("{base}/v1"),"api_key":token,"model":selected,"models":models}));
-                value["custom_providers"] = json!(rows);
-                for (key, next) in [
-                    ("default", json!(selected)),
-                    ("provider", json!("varyai")),
-                    ("base_url", json!(format!("{base}/v1"))),
+                let split = !value
+                    .pointer("/providers/varyai/api_mode")
+                    .is_some_and(|mode| mode != "chat_completions")
+                    && catalog
+                        .iter()
+                        .any(|model| model.api == "anthropic-messages");
+                for (id, mode) in [
+                    ("varyai", "chat_completions"),
+                    ("varyai-anthropic", "anthropic_messages"),
                 ] {
-                    set(value, &["model", key], next)?;
+                    owned(
+                        value
+                            .get("providers")
+                            .and_then(|providers| providers.get(id)),
+                        token,
+                        "api_key",
+                    )?;
+                    if id == "varyai-anthropic" && !split {
+                        if let Some(providers) =
+                            value.get_mut("providers").and_then(Value::as_object_mut)
+                        {
+                            providers.remove(id);
+                        }
+                        continue;
+                    }
+                    let mut row = value
+                        .get("providers")
+                        .and_then(|providers| providers.get(id))
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    let mode = row["api_mode"]
+                        .as_str()
+                        .filter(|mode| {
+                            matches!(
+                                *mode,
+                                "chat_completions" | "anthropic_messages" | "responses"
+                            )
+                        })
+                        .unwrap_or(mode)
+                        .to_owned();
+                    row["name"] = json!(id);
+                    row["base_url"] = json!(if mode == "anthropic_messages" {
+                        base.to_owned()
+                    } else {
+                        format!("{base}/v1")
+                    });
+                    row["api_key"] = json!(token);
+                    row["api_mode"] = json!(mode);
+                    if row.get("extra_headers").is_none() {
+                        row["extra_headers"] = json!({});
+                    }
+                    row["extra_headers"]["User-Agent"] = json!("hermes-agent");
+                    row["models"] = json!(catalog
+                        .iter()
+                        .filter(|model| !split
+                            || (id == "varyai-anthropic") == (model.api == "anthropic-messages"))
+                        .map(|model| model.id.clone())
+                        .collect::<Vec<_>>());
+                    set(value, &["providers", id], row)?;
                 }
-                if let Some(window) = catalog
-                    .iter()
-                    .find(|model| model.id == selected)
-                    .and_then(|model| model.context_window)
+                let provider = if split
+                    && catalog
+                        .iter()
+                        .any(|model| model.id == selected && model.api == "anthropic-messages")
                 {
-                    set(value, &["model", "context_length"], json!(window))?;
+                    "varyai-anthropic"
                 } else {
-                    super::put(value, &["model".into(), "context_length".into()], None)?;
-                }
+                    "varyai"
+                };
+                set(value, &["model", "default"], json!(selected))?;
+                set(value, &["model", "provider"], json!(provider))?;
+                // Hermes resolves the endpoint from the selected provider entry.
+                super::put(value, &["model".into(), "base_url".into()], None)?;
             }
             "qoder" => {
                 owned(value.pointer("/providers/varyai"), token, "apiKey")?;
@@ -329,55 +387,19 @@ fn edit(
                     _ => {}
                 }
                 if app == "deepseek-harness" {
-                    if let Some(provider) = value.pointer("/providers/varyai-provider-shared-catalog/config/providers/varyai-shared-catalog") {
-                        if provider["headers"]["Authorization"] != format!("Bearer {token}") {
-                            return Err(CONFLICT.into());
-                        }
-                    }
+                    crate::services::deepseek_harness::project(
+                        value, catalog, base, token, selected,
+                    )?;
+                    return Ok(());
                 }
-                let source = if app == "deepseek-harness" {
-                    crate::services::deepseek_harness::encode("", value)?
-                } else if app == "kimi" {
+                let source = if app == "kimi" {
                     toml::to_string(value).map_err(|_| FAILED)?
                 } else {
                     value.to_string()
                 };
                 let mut doc = crate::services::agent_clients::Document::parse(app, &source)
                     .map_err(|_| FAILED)?;
-                let mut config = client_config(catalog, base, token, selected);
-                if app == "deepseek-harness" {
-                    for row in config["models"].as_array_mut().ok_or(FAILED)? {
-                        let model = catalog
-                            .iter()
-                            .find(|model| row["model"] == model.id)
-                            .ok_or(FAILED)?;
-                        row["input"] = if model.images {
-                            json!(["text", "image"])
-                        } else {
-                            json!(["text"])
-                        };
-                        if !model.reasoning_levels.is_empty() {
-                            let levels = model
-                                .reasoning_levels
-                                .iter()
-                                .filter_map(|level| {
-                                    match level.as_str() {
-                                        "none" => Some(("off".to_owned(), Value::Null)),
-                                        // Harness has a fixed selector enum; its wire values
-                                        // can still request the upstream's strongest effort.
-                                        "ultra" => Some(("max".to_owned(), json!(level))),
-                                        "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
-                                        | "max" => Some((level.clone(), json!(level))),
-                                        _ => None,
-                                    }
-                                })
-                                .collect::<serde_json::Map<_, _>>();
-                            if !levels.is_empty() {
-                                row["reasoningEfforts"] = json!(levels);
-                            }
-                        }
-                    }
-                }
+                let config = client_config(catalog, base, token, selected);
                 doc.apply(app, "shared-catalog", "Vary AI", &config)
                     .map_err(|_| FAILED)?;
                 *value = doc.value;
@@ -404,7 +426,7 @@ fn edit(
                 for m in catalog.iter().filter(|m| m.context_window.is_none()) {
                     if app == "kimi" {
                         if let Some(row) = value["models"][m.id.clone()].as_object_mut() {
-                            row.insert("max_context_size".into(), json!(32_000));
+                            row.insert("max_context_size".into(), json!(128_000));
                         }
                     } else if app == "zcode" {
                         for row in value
@@ -436,6 +458,9 @@ pub(super) fn client_config(catalog: &[Model], base: &str, token: &str, selected
             if let Some(w) = m.context_window {
                 row["contextWindow"] = json!(w);
             }
+            if let Some(tokens) = super::output_limit(m) {
+                row["maxOutputTokens"] = json!(tokens);
+            }
             row
         })
         .collect::<Vec<_>>();
@@ -448,8 +473,286 @@ mod tests {
     use super::*;
 
     #[test]
+    fn harness_legacy_receipts_survive_unmarked_client_saves_and_disconnect() -> Result<(), String>
+    {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = root.path().join("cordis.patch.yml");
+        let source = "# Native profile\n- id: llm-pi-ai\n  config:\n    providers:\n      native:\n        baseURL: https://synthetic.invalid/v1\n        models: [{id: native-model}]\n- id: agent-default-model\n  config: {provider: native, model: native-model}\n";
+        std::fs::write(&path, source).map_err(|_| FAILED)?;
+        let mut doc = crate::services::deepseek_harness::parse(source)?;
+        crate::services::deepseek_harness::apply(
+            &mut doc,
+            "shared-catalog",
+            "Vary AI",
+            &json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model"}]}),
+        )?;
+        let mut file = FileEdit::prepare_format(path.clone(), Format::Cordis, |value| {
+            *value = doc.clone();
+            Ok(())
+        })?;
+        let native: Value = serde_yaml::from_str(source).map_err(|_| FAILED)?;
+        let mut legacy = doc.clone();
+        legacy["patches"] = native.clone();
+        file.installed = legacy;
+        let mut rows = native.as_array().cloned().ok_or(FAILED)?;
+        let mut route = rows[0].clone();
+        route["name"] = json!("@deepseek-ai/dsh-llm-pi-ai");
+        route["config"]["providers"]["varyai-shared-catalog"] = doc["providers"]
+            ["varyai-provider-shared-catalog"]["config"]["providers"]["varyai-shared-catalog"]
+            .clone();
+        rows.push(route);
+        rows.push(doc["selection"][0].clone());
+        let unmarked = format!(
+            "{}# END VaryAI model providers\n",
+            serde_yaml::to_string(&rows).map_err(|_| FAILED)?
+        );
+        std::fs::write(&path, unmarked).map_err(|_| FAILED)?;
+        let manager = super::super::Manager {
+            root: root.path().join("receipts"),
+        };
+        std::fs::create_dir_all(&manager.root).map_err(|_| FAILED)?;
+        let receipt = Receipt {
+            app: "deepseek-harness".into(),
+            token: "synthetic-only".into(),
+            model: "shared-model".into(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: None,
+        };
+        std::fs::write(
+            manager.root.join("deepseek-harness.json"),
+            serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(manager.status("deepseek-harness")?.configured);
+        manager.disconnect("deepseek-harness")?;
+        assert_eq!(std::fs::read_to_string(path).map_err(|_| FAILED)?, source);
+        Ok(())
+    }
+
+    #[test]
+    fn qwen_jsonc_provider_edits_retain_comments_and_context() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = root.path().join("settings.json");
+        let source = "{\n // Native preference\n \"theme\":\"synthetic\",\n}\n";
+        std::fs::write(&path, source).map_err(|_| FAILED)?;
+        let config = json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model","contextWindow":128000}]});
+        let mut doc =
+            crate::services::agent_clients::Document::parse("qwen", source).map_err(|_| FAILED)?;
+        doc.apply("qwen", "shared-catalog", "Vary AI", &config)
+            .map_err(|_| FAILED)?;
+        let encoded = doc.encode().map_err(|_| FAILED)?;
+        assert!(encoded.contains("// Native preference"));
+        assert_eq!(
+            super::super::jsonc::parse(&encoded)?["modelProviders"]["openai"][0]
+                ["generationConfig"]["contextWindowSize"],
+            128000
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn magpie_harness_protocol_routes_limits_and_native_provider_schema() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let catalog = [
+            "openai-completions",
+            "openai-responses",
+            "anthropic-messages",
+        ]
+        .map(|api| Model {
+            api,
+            native_model: if api == "anthropic-messages" {
+                Some("claude-opus-5-5".into())
+            } else {
+                None
+            },
+            output_tokens: Some(393216),
+            cost: None,
+            id: api.into(),
+            name: api.into(),
+            context_window: Some(500000),
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec!["none".into(), "high".into()],
+            reasoning: true,
+            default_reasoning_level: None,
+            images: true,
+            icon: None,
+        });
+        let path = root.path().join("cordis.patch.yml");
+        let file = edit(
+            "deepseek-harness",
+            path.clone(),
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            "anthropic-messages",
+        )?;
+        file.write()?;
+        let doc = crate::services::deepseek_harness::parse(
+            &std::fs::read_to_string(&path).map_err(|_| FAILED)?,
+        )?;
+        assert_eq!(
+            crate::services::deepseek_harness::selection(&doc)["provider"],
+            "varyai-shared-catalog-anthropic"
+        );
+        for (suffix, api) in [
+            ("", "openai-completions"),
+            ("-responses", "openai-responses"),
+            ("-anthropic", "anthropic-messages"),
+        ] {
+            let profile = &doc["providers"][format!("varyai-provider-shared-catalog{suffix}")]
+                ["config"]["providers"][format!("varyai-shared-catalog{suffix}")];
+            assert_eq!(profile["api"], api);
+            assert_eq!(profile["streamIdleTimeoutMs"], 600000);
+            assert_eq!(profile["models"][0]["maxTokens"], 184464);
+            if api == "anthropic-messages" {
+                assert_eq!(
+                    profile["models"][0]["compat"]["forceAdaptiveThinking"],
+                    true
+                );
+            }
+            assert_eq!(
+                profile["baseURL"],
+                if api == "anthropic-messages" {
+                    "http://127.0.0.1:1"
+                } else {
+                    "http://127.0.0.1:1/v1"
+                }
+            );
+        }
+        assert_eq!(
+            super::super::pi_model(&catalog[2])["compat"]["forceAdaptiveThinking"],
+            true
+        );
+        let mut saved = doc.clone();
+        let profile = &mut saved["providers"]["varyai-provider-shared-catalog"]["config"]
+            ["providers"]["varyai-shared-catalog"];
+        profile["api"] = json!("openai-responses");
+        profile["streamIdleTimeoutMs"] = json!(120000);
+        profile["headers"]["User-Agent"] = json!("synthetic-client");
+        profile["models"][0]["compat"] = json!({"supportsStore":false});
+        let mut adopted = crate::services::deepseek_harness::adopt(&doc, &saved);
+        assert_eq!(adopted, saved);
+        crate::services::deepseek_harness::project(
+            &mut adopted,
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            "anthropic-messages",
+        )?;
+        let profile = &adopted["providers"]["varyai-provider-shared-catalog"]["config"]
+            ["providers"]["varyai-shared-catalog"];
+        assert_eq!(profile["api"], "openai-responses");
+        assert_eq!(profile["streamIdleTimeoutMs"], 120000);
+        assert_eq!(profile["models"][0]["compat"]["supportsStore"], false);
+        assert_eq!(profile["models"][0]["compat"]["supportsStrictMode"], true);
+        for field in ["baseURL", "credential", "catalog"] {
+            let mut changed = saved.clone();
+            let profile = &mut changed["providers"]["varyai-provider-shared-catalog"]["config"]
+                ["providers"]["varyai-shared-catalog"];
+            match field {
+                "baseURL" => profile["baseURL"] = json!("https://synthetic.invalid/v1"),
+                "credential" => {
+                    profile["headers"]["Authorization"] = json!("Bearer synthetic-foreign")
+                }
+                _ => profile["models"][0]["id"] = json!("synthetic-foreign-model"),
+            }
+            assert_ne!(
+                crate::services::deepseek_harness::adopt(&doc, &changed),
+                changed
+            );
+        }
+        let hermes = edit(
+            "hermes",
+            root.path().join("hermes.yaml"),
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            "anthropic-messages",
+        )?;
+        assert_eq!(
+            hermes.installed["providers"]["varyai"]["api_mode"],
+            "chat_completions"
+        );
+        assert_eq!(
+            hermes.installed["providers"]["varyai-anthropic"]["api_mode"],
+            "anthropic_messages"
+        );
+        assert_eq!(hermes.installed["model"]["provider"], "varyai-anthropic");
+        assert!(hermes.installed.get("custom_providers").is_none());
+        let kimi = edit(
+            "kimi",
+            root.path().join("kimi.toml"),
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            "openai-completions",
+        )?;
+        assert_eq!(kimi.installed["providers"]["Vary AI"]["type"], "kimi");
+        let qwen = edit(
+            "qwen",
+            root.path().join("qwen.json"),
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            "openai-completions",
+        )?;
+        assert_eq!(
+            qwen.installed["modelProviders"]["openai"][0]["generationConfig"]["contextWindowSize"],
+            500000
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn magpie_grok_native_protocol_and_campaign_contract() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = root.path().join("config.toml");
+        let original = "[features]\ncampaigns = true\n[models]\ndefault = 'native'\n";
+        std::fs::write(&path, original).map_err(|_| FAILED)?;
+        let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            context_window: None,
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+            icon: None,
+        };
+        let file = edit(
+            "grokbuild",
+            path.clone(),
+            &[model],
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            "synthetic",
+        )?;
+        assert_eq!(file.installed["features"]["campaigns"], false);
+        assert_eq!(
+            file.installed["model"]["Synthetic"]["api_backend"],
+            "chat_completions"
+        );
+        file.write()?;
+        file.restore()?;
+        assert_eq!(std::fs::read_to_string(path).map_err(|_| FAILED)?, original);
+        Ok(())
+    }
+
+    #[test]
     fn readable_names_are_stable_with_duplicates_reserved_names_and_legacy_maps() {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             id: "vary-provider/a".into(),
             name: "Zeta".into(),
             output_tokens: None,
@@ -492,6 +795,8 @@ mod tests {
     #[test]
     fn parity_readable_ids_survive_renames_and_are_never_reassigned() {
         let mut first = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             id: "vary-provider/a".into(),
@@ -524,6 +829,8 @@ mod tests {
         let original = json!({"agents":{"defaults":{"model":"synthetic/native","modelPolicy":{"allow":["synthetic/*"]}}}}).to_string();
         std::fs::write(&path, &original).map_err(|_| FAILED)?;
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             id: "vary-provider/test".into(),
@@ -571,6 +878,8 @@ mod tests {
             "# Desktop customization\n- id: another-plugin\n  config:\n    enabled: true\n";
         std::fs::write(&path, original).map_err(|_| FAILED)?;
         let catalog = vec![Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             id: "vary-provider/synthetic-route".into(),
@@ -610,7 +919,7 @@ mod tests {
         assert_eq!(provider["models"][0]["input"], json!(["text", "image"]));
         assert_eq!(
             provider["models"][0]["reasoningEfforts"],
-            json!({"off":null,"high":"high","max":"ultra"})
+            json!({"off":"none","high":"high","max":"ultra"})
         );
         assert!(projection
             .intact()
@@ -752,6 +1061,8 @@ mod tests {
     {
         let catalog = vec![
             Model {
+                api: "openai-completions",
+                native_model: None,
                 output_tokens: None,
                 cost: None,
                 icon: None,
@@ -766,6 +1077,8 @@ mod tests {
                 images: true,
             },
             Model {
+                api: "openai-completions",
+                native_model: None,
                 output_tokens: None,
                 cost: None,
                 icon: None,
@@ -842,7 +1155,7 @@ mod tests {
                         .all(|row| row["max_context_size"].as_u64().is_some_and(|n| n > 0)));
                     assert_eq!(
                         installed["models"][format!("{} (2)", catalog[1].name)]["max_context_size"],
-                        json!(32_000)
+                        json!(128_000)
                     );
                     assert_eq!(catalog[1].context_window, None);
                     assert_eq!(installed["models"][selected]["model"], catalog[0].name);
@@ -883,6 +1196,8 @@ mod tests {
     ) -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
         let mut catalog = vec![Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             icon: None,
@@ -926,6 +1241,8 @@ mod tests {
     #[test]
     fn eight_native_projections_are_private_reversible_and_refreshable() -> Result<(), String> {
         let catalog = vec![Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             icon: None,
@@ -1025,7 +1342,7 @@ mod tests {
                     .is_some_and(|rows| rows
                         .values()
                         .filter(|row| row["provider"] == "Vary AI")
-                        .all(|row| row["max_context_size"] == json!(32_000))));
+                        .all(|row| row["max_context_size"] == json!(128_000))));
             }
             if app == "zcode" {
                 assert!(refreshed

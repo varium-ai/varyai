@@ -150,7 +150,7 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         "codex" | "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
         "deepseek-harness" => Format::Cordis,
-        "opencode" => Format::Jsonc,
+        "opencode" | "qwen" => Format::Jsonc,
         "openclaw" | "pi" => Format::Json5,
         _ => Format::Json,
     };

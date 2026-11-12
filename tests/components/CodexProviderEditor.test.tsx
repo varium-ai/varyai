@@ -10,6 +10,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
+import { toast } from "sonner";
+import { open as openFile } from "@tauri-apps/plugin-dialog";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), dismiss: vi.fn() } }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const managedAccounts = vi.hoisted(() => ({
   browser: null as Record<string, unknown> | null,
@@ -32,6 +37,7 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
     codexModels: vi.fn(),
     codexQuota: vi.fn(),
     testCodexModel: vi.fn(),
+    importCodexAccount: vi.fn(),
     save: vi.fn(),
     remove: vi.fn(),
   },
@@ -218,9 +224,13 @@ it("reports a failed editor load on the provider list without opening a partial 
       name: "common.edit Synthetic Codex",
     }),
   );
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "modelProviders.failed",
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "modelProviders.errors.load",
+      expect.any(Object),
+    ),
   );
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
@@ -289,7 +299,17 @@ it("keeps official catalog failures safe and offers an explicit retry", async ()
     "synthetic-private-error",
   );
   await open();
-  expect(await screen.findByText("codexProvider.catalogFailed")).toBeVisible();
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "modelProviders.errors.fetchModels",
+      expect.any(Object),
+    ),
+  );
+  expect(screen.queryByText("codexProvider.catalogFailed")).toBeNull();
+  expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
+  expect(JSON.stringify(vi.mocked(toast.error).mock.calls)).not.toContain(
+    "synthetic-private-error",
+  );
   expect(screen.queryByText("synthetic-private-error")).not.toBeInTheDocument();
   vi.mocked(routingUpstreamsApi.codexModels).mockResolvedValue([
     { model: "retry-model" },
@@ -362,15 +382,15 @@ it("keeps model discovery explicit and stages a newly chosen model with its meta
     ),
   );
   fireEvent.click(await screen.findByRole("button", { name: /^model-c$/ }));
-  fireEvent.click(
-    screen.getByRole("checkbox", { name: "codexProvider.groupsOnly" }),
-  );
+  expect(
+    screen.queryByRole("checkbox", { name: "codexProvider.groupsOnly" }),
+  ).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "common.save" }));
   await waitFor(() =>
     expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        groupsOnly: true,
+        groupsOnly: false,
         models: expect.arrayContaining([
           expect.objectContaining({
             model: "model-c",
@@ -729,26 +749,19 @@ it("blocks saving and account changes while discovery is in flight", async () =>
   );
 });
 
-it("tests models only on explicit action using the selected account", async () => {
-  vi.mocked(routingUpstreamsApi.testCodexModel).mockResolvedValue({
-    ok: true,
-    elapsedMs: 12,
-  });
+it("keeps the removed test-model control absent and never probes selected models", async () => {
   await open();
   await screen.findByText("person@example.test");
+  expect(
+    screen.queryByRole("button", { name: "codexProvider.testModels" }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /^model-b$/ }));
+  expect(screen.getByRole("button", { name: /^model-b$/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   expect(routingUpstreamsApi.testCodexModel).not.toHaveBeenCalled();
-  fireEvent.click(
-    screen.getByRole("button", { name: "codexProvider.testModels" }),
-  );
-  await waitFor(() =>
-    expect(routingUpstreamsApi.testCodexModel).toHaveBeenCalledWith(
-      "fixture",
-      2,
-      "native",
-      "model-a",
-    ),
-  );
-  expect(await screen.findByText("codexProvider.testPassed")).toBeVisible();
+  expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
 });
 
 it("never labels a different account's catalog as the newly selected account's list", async () => {
@@ -870,6 +883,9 @@ it("refreshes repaired credentials and model observations without discarding uns
     },
   };
   vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(draftEditor as never);
+  vi.mocked(routingUpstreamsApi.codexModels).mockResolvedValue([
+    { model: "repaired-model" },
+  ]);
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -895,6 +911,13 @@ it("refreshes repaired credentials and model observations without discarding uns
   );
   await waitFor(() =>
     expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("managed"),
+  );
+  await waitFor(() =>
+    expect(routingUpstreamsApi.codexModels).toHaveBeenCalledWith(
+      "fixture",
+      2,
+      "managed",
+    ),
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["routing-upstreams"] });
   expect(screen.queryByText("codexOauth.reauthBadge")).not.toBeInTheDocument();
@@ -1343,3 +1366,31 @@ it("keeps the empty-window status when account metadata contains no displayed qu
   expect(await screen.findByText("codexProvider.quotaEmpty")).toBeVisible();
   expect(screen.queryByText("codexProvider.quotaHeld")).not.toBeInTheDocument();
 });
+
+it.each([
+  ["codexProvider.fetchModels", "fetchModels", "codexModels"],
+  ["codexProvider.importAccount", "importAccount", "importCodexAccount"],
+  ["common.save", "save", "saveCodex"],
+] as const)(
+  "reports %s failures with a specific toast instead of a form error",
+  async (button, operation, method) => {
+    vi.mocked(openFile).mockResolvedValue("/synthetic/account.json");
+    vi.mocked(routingUpstreamsApi[method]).mockRejectedValueOnce(
+      new Error("synthetic-private-credential"),
+    );
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        `modelProviders.errors.${operation}`,
+        expect.any(Object),
+      ),
+    );
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("modelProviders.failed")).toBeNull();
+    expect(JSON.stringify(vi.mocked(toast.error).mock.calls)).not.toContain(
+      "synthetic-private-credential",
+    );
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+  },
+);

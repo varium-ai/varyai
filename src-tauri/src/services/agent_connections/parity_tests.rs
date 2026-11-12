@@ -1,6 +1,106 @@
 use super::*;
 use std::sync::Arc;
 
+#[tokio::test]
+#[serial_test::serial]
+async fn catalog_refresh_retains_selected_alias_across_reload_and_resume(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let provider = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({
+            "apiFormat":"openai_responses",
+            "auth":{"OPENAI_API_KEY":"synthetic-only"},
+            "config":"model_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'",
+            "modelCatalog":{"models":[{"model":"first"},{"model":"second"},{"model":"third"}]}
+        }),
+        None,
+    );
+    let menu = crate::services::intent_routing::menu::prepare(
+        Arc::new(
+            crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                dir.path().join("accounts"),
+            ),
+        ),
+        vec![provider],
+        vec![],
+        None,
+    )
+    .await?;
+    let catalog = models(&menu);
+    assert_eq!(catalog.len(), 3);
+    let default = menu.default_model.as_deref().ok_or("fixture default")?;
+    let selected = &catalog
+        .iter()
+        .find(|model| model.id != default)
+        .ok_or("second model")?
+        .id;
+    assert!(!menu.models.contains_key(selected));
+    for app in ["kimi", "qwen"] {
+        let path = dir.path().join(format!("{app}.config"));
+        let manager = Manager {
+            root: dir.path().join(format!("{app}-receipts")),
+        };
+        crate::services::agent_clients::with_test_config(&path, || -> Result<(), String> {
+            manager.install(manager.build(app, &menu, "http://127.0.0.1:1", default)?)?;
+            manager
+                .update(app, &menu, "http://127.0.0.1:1", Some(selected))?
+                .ok_or(FAILED)?;
+            let selected_files = fs::read(&path).map_err(|_| FAILED)?;
+            for _ in 0..3 {
+                let reopened = Manager {
+                    root: manager.root.clone(),
+                };
+                let refreshed = reopened
+                    .refresh(app, &menu, "http://127.0.0.1:1")?
+                    .ok_or(FAILED)?;
+                assert_eq!(&refreshed.model, selected, "{app} refresh");
+                assert_eq!(
+                    reopened.status(app)?.model.as_ref(),
+                    Some(selected),
+                    "{app} status"
+                );
+                assert!(
+                    fs::read(&path).map_err(|_| FAILED)? == selected_files,
+                    "{app} native selection"
+                );
+            }
+            manager.suspend(app)?;
+            let resumed = manager
+                .refresh(app, &menu, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?;
+            assert_eq!(&resumed.model, selected, "{app} resume");
+            let format = resumed.files[0].format;
+            let previous = std::str::from_utf8(&selected_files).map_err(|_| FAILED)?;
+            assert!(
+                format.parse(read(&path)?.as_deref())? == format.parse(Some(previous))?,
+                "{app} resumed native configuration"
+            );
+
+            let mut removed = menu.clone();
+            removed.models.retain(|_, model| &model.alias != selected);
+            removed.groups.remove(selected);
+            let fallback = manager
+                .refresh(app, &removed, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?;
+            assert_eq!(fallback.model, default, "{app} removed model fallback");
+            manager
+                .update(app, &menu, "http://127.0.0.1:1", Some(selected))?
+                .ok_or(FAILED)?;
+            removed.default_model = None;
+            let fallback = manager
+                .refresh(app, &removed, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?;
+            assert!(models(&removed)
+                .iter()
+                .any(|model| model.id == fallback.model));
+            manager.disconnect(app)
+        })?;
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires installed OpenCode CLI"]
 fn installed_opencode_accepts_generated_jsonc() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,6 +111,8 @@ fn installed_opencode_accepts_generated_jsonc() -> Result<(), Box<dyn std::error
         "{ // retained\n \"$schema\":\"https://opencode.ai/config.json\",\n}",
     )?;
     let model = Model {
+        api: "openai-completions",
+        native_model: None,
         id: "synthetic".into(),
         name: "Synthetic".into(),
         context_window: Some(272000),
@@ -89,6 +191,39 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
         None,
     )
     .await?;
+    let fixture = menu
+        .groups
+        .values()
+        .next()
+        .and_then(|session| session.targets.first())
+        .ok_or("fixture target")?;
+    let mut chat = fixture.clone();
+    chat.upstream
+        .as_mut()
+        .ok_or("fixture provider")?
+        .meta
+        .get_or_insert_with(Default::default)
+        .api_format = Some("openai_chat".into());
+    let mut responses = chat.clone();
+    responses
+        .upstream
+        .as_mut()
+        .ok_or("fixture provider")?
+        .meta
+        .as_mut()
+        .ok_or("fixture metadata")?
+        .api_format = Some("openai_responses".into());
+    assert_eq!(
+        preferred_api([&responses, &responses].into_iter()),
+        "openai-responses"
+    );
+    assert_eq!(
+        preferred_api([&chat, &responses].into_iter()),
+        "openai-completions"
+    );
+    let mut official = chat.clone();
+    official.official = true;
+    assert_eq!(preferred_api([&official].into_iter()), "openai-responses");
     let selected = menu.default_model.as_deref().ok_or("fixture default")?;
     let claude_path = crate::config::get_claude_settings_path();
     fs::create_dir_all(claude_path.parent().ok_or("parent")?)?;

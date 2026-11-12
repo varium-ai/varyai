@@ -13,6 +13,9 @@ import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 import i18n from "i18next";
 import { copyText } from "@/lib/clipboard";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), dismiss: vi.fn() } }));
 
 vi.mock("@/lib/clipboard", () => ({ copyText: vi.fn() }));
 import {
@@ -90,7 +93,10 @@ describe("provider setup-help shortcut", () => {
       name: "onboarding.copyForAgent",
     });
     await act(async () => fireEvent.click(button));
-    expect(screen.getByText("onboarding.copyFailed")).toBeVisible();
+    expect(toast.error).toHaveBeenCalledWith(
+      "onboarding.copyFailed",
+      expect.any(Object),
+    );
     expect(
       screen.queryByText("Synthetic private detail"),
     ).not.toBeInTheDocument();
@@ -190,7 +196,7 @@ describe("global upstream editor", () => {
       ),
     );
   });
-  it("saves a manually typed model ID as part of the provider draft without requiring Add", async () => {
+  it("saves selected catalog models without exposing removed manual-entry controls", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     mount();
     fireEvent.click(
@@ -198,17 +204,21 @@ describe("global upstream editor", () => {
         name: "common.edit Synthetic primary",
       }),
     );
-    const input = await screen.findByLabelText("providerEditor.addModelId");
-    fireEvent.change(input, { target: { value: "manual-exact-model" } });
+    expect(screen.queryByLabelText("providerEditor.addModelId")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "providerEditor.addModel" }),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.selectNone" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "small-model" }));
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
           source: expect.objectContaining({
             mode: "picked",
-            models: expect.arrayContaining([
-              expect.objectContaining({ model: "manual-exact-model" }),
-            ]),
+            models: [primary.source.models[1]],
           }),
         }),
       ),
@@ -444,8 +454,11 @@ describe("global upstream editor", () => {
           expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
         );
         if (failSecond) {
-          expect(await screen.findByRole("alert")).toHaveTextContent(
-            "modelProviders.referenced",
+          expect(toast.error).toHaveBeenCalledWith(
+            "modelProviders.errors.remove",
+            expect.objectContaining({
+              description: "modelProviders.referenced",
+            }),
           );
           expect(
             screen.getByRole("checkbox", { name: "Synthetic secondary" }),
@@ -780,23 +793,22 @@ describe("global upstream editor", () => {
     );
     expect(screen.getByLabelText("modelProviders.apiKey")).toBeRequired();
   });
-  it("stages model names, reasoning levels and image overrides until the provider is saved", async () => {
-    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
-      {
-        ...primary,
-        source: {
-          ...primary.source,
-          models: [
-            {
-              model: "large-model",
-              displayName: "Vendor name",
-              reasoningLevels: ["low", "high"],
-              inputModalities: ["text", "image"],
-              contextWindow: 1000000,
-            },
-          ],
-        },
+  it("preserves stored model names, reasoning levels and image overrides in the simplified form", async () => {
+    const model = {
+      model: "large-model",
+      displayName: "Vendor name",
+      reasoningLevels: ["low", "high"],
+      inputModalities: ["text", "image"],
+      contextWindow: 1000000,
+      modelPreferences: {
+        sameAs: "vendor/canonical-model",
+        name: "My model",
+        reasoningLevels: ["high"],
+        images: false,
       },
+    };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      { ...primary, source: { ...primary.source, models: [model] } },
     ]);
     mount();
     fireEvent.click(
@@ -804,78 +816,30 @@ describe("global upstream editor", () => {
         name: "common.edit Synthetic primary",
       }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "modelProviders.namesAndLevels" }),
-    );
-    const preferences = screen.getByRole("region", {
-      name: "modelProviders.namesAndLevels",
-    });
-    fireEvent.change(
-      within(preferences).getByRole("textbox", {
-        name: "modelProviders.modelName large-model",
-      }),
-      { target: { value: "My model" } },
-    );
-    fireEvent.click(within(preferences).getByRole("checkbox", { name: "low" }));
-    fireEvent.change(
-      within(preferences).getByRole("textbox", {
-        name: "modelProviders.sameAs large-model",
-      }),
-      { target: { value: "vendor/canonical-model" } },
-    );
-    fireEvent.click(
-      within(preferences).getByRole("checkbox", {
-        name: "modelProviders.acceptsImages",
-      }),
-    );
+    expect(
+      screen.queryByRole("button", { name: "modelProviders.namesAndLevels" }),
+    ).toBeNull();
     expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
-          source: expect.objectContaining({
-            models: [
-              {
-                model: "large-model",
-                displayName: "Vendor name",
-                reasoningLevels: ["low", "high"],
-                inputModalities: ["text", "image"],
-                contextWindow: 1000000,
-                modelPreferences: {
-                  sameAs: "vendor/canonical-model",
-                  name: "My model",
-                  reasoningLevels: ["high"],
-                  images: false,
-                },
-              },
-            ],
-          }),
+          source: expect.objectContaining({ models: [model] }),
         }),
       ),
     );
   });
-  it("restores a model's vendor defaults without losing its exact ID or context metadata", async () => {
+  it("keeps existing empty reasoning overrides and context metadata when saving", async () => {
+    const model = {
+      model: "large-model",
+      displayName: "Vendor name",
+      reasoningLevels: ["low", "high"],
+      inputModalities: ["text", "image"],
+      contextWindow: 1000000,
+      modelPreferences: { name: "Custom", reasoningLevels: [], images: false },
+    };
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
-      {
-        ...primary,
-        source: {
-          ...primary.source,
-          models: [
-            {
-              model: "large-model",
-              displayName: "Vendor name",
-              reasoningLevels: ["low", "high"],
-              inputModalities: ["text", "image"],
-              contextWindow: 1000000,
-              modelPreferences: {
-                name: "Custom",
-                reasoningLevels: [],
-                images: false,
-              },
-            },
-          ],
-        },
-      },
+      { ...primary, source: { ...primary.source, models: [model] } },
     ]);
     mount();
     fireEvent.click(
@@ -883,44 +847,21 @@ describe("global upstream editor", () => {
         name: "common.edit Synthetic primary",
       }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "modelProviders.namesAndLevels" }),
-    );
-    expect(screen.getByText("modelProviders.noReasoning")).toBeVisible();
-    fireEvent.click(
-      screen.getByRole("button", {
+    expect(
+      screen.queryByRole("button", {
         name: "modelProviders.restoreModelDefaults large-model",
       }),
-    );
-    expect(
-      screen.getByRole("textbox", {
-        name: "modelProviders.modelName large-model",
-      }),
-    ).toHaveValue("");
-    expect(screen.getByRole("checkbox", { name: "low" })).toBeChecked();
-    expect(
-      screen.getByRole("checkbox", { name: "modelProviders.acceptsImages" }),
-    ).toBeChecked();
+    ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
-          source: expect.objectContaining({
-            models: [
-              {
-                model: "large-model",
-                displayName: "Vendor name",
-                reasoningLevels: ["low", "high"],
-                inputModalities: ["text", "image"],
-                contextWindow: 1000000,
-              },
-            ],
-          }),
+          source: expect.objectContaining({ models: [model] }),
         }),
       ),
     );
   });
-  it("returns focus when folding model preferences and drops them on confirmed cancellation", async () => {
+  it("discards cancelled model selection edits without changing the saved models", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     mount();
     fireEvent.click(
@@ -928,40 +869,34 @@ describe("global upstream editor", () => {
         name: "common.edit Synthetic primary",
       }),
     );
-    const toggle = screen.getByRole("button", {
-      name: "modelProviders.namesAndLevels",
-    });
-    fireEvent.click(toggle);
-    fireEvent.change(
-      screen.getByRole("textbox", {
-        name: "modelProviders.modelName large-model",
-      }),
-      { target: { value: "Unsaved" } },
+    fireEvent.click(screen.getByRole("button", { name: "large-model" }));
+    expect(screen.getByRole("button", { name: "large-model" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "modelProviders.foldNames" }),
-    );
-    expect(toggle).toHaveFocus();
-    expect(
-      screen.queryByRole("region", { name: "modelProviders.namesAndLevels" }),
-    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "providerFlow.discard" }),
+      within(
+        screen.getByRole("dialog", { name: "providerFlow.discardTitle" }),
+      ).getByRole("button", { name: "providerFlow.discard" }),
     );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.click(
       await screen.findByRole("button", {
         name: "common.edit Synthetic primary",
       }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "modelProviders.namesAndLevels" }),
+    expect(screen.getByRole("button", { name: "large-model" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "small-model" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
     expect(
-      screen.getByRole("textbox", {
-        name: "modelProviders.modelName large-model",
-      }),
-    ).toHaveValue("");
+      screen.queryByRole("button", { name: "modelProviders.namesAndLevels" }),
+    ).toBeNull();
     expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
   });
   it("keeps the draft in its modal while background filtering and folding are locked", async () => {
@@ -1007,6 +942,13 @@ describe("global upstream editor", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.duplicate" }),
     );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      screen.getByRole("heading", { name: "providerEditor.copyTitle" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "common.add" })).toBeVisible();
     expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
     expect(screen.getByLabelText("modelProviders.apiKey")).toHaveValue("");
     fireEvent.change(screen.getByLabelText("modelProviders.name"), {
@@ -1027,7 +969,7 @@ describe("global upstream editor", () => {
       primary.id,
     );
   });
-  it("protects unsaved changes before duplicating and keeps them when the confirmation is cancelled", async () => {
+  it("duplicates the saved configuration directly like Magpie and allows cancelling the copy", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     mount();
     fireEvent.click(
@@ -1036,19 +978,89 @@ describe("global upstream editor", () => {
       }),
     );
     fireEvent.change(screen.getByLabelText("modelProviders.name"), {
-      target: { value: "Unsaved" },
+      target: { value: "Unsaved changes" },
     });
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.duplicate" }),
     );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "providerFlow.discardTitle" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("heading", { name: "providerEditor.copyTitle" }),
+    ).toBeVisible();
+    expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
+      i18n.t("providerEditor.copyName", { name: primary.name }),
+    );
+    expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
+      primary.source.baseUrl,
+    );
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+  });
+  it("retains edits to the copy when its cancellation is declined", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.duplicate" }),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+      target: { value: "Unsaved copy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
     const confirmation = screen.getByRole("dialog", {
       name: "providerFlow.discardTitle",
     });
     fireEvent.click(
       within(confirmation).getByRole("button", { name: "common.cancel" }),
     );
-    expect(screen.getByLabelText("modelProviders.name")).toHaveValue("Unsaved");
+    expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
+      "Unsaved copy",
+    );
     expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+  });
+  it("reports a failed save in a toast and preserves the editable draft", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.save).mockRejectedValueOnce(
+      new Error("synthetic-private-credential"),
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+      target: { value: "Unsaved draft" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "modelProviders.errors.save",
+        expect.any(Object),
+      ),
+    );
+    expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
+      "Unsaved draft",
+    );
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
+    expect(JSON.stringify(vi.mocked(toast.error).mock.calls)).not.toContain(
+      "synthetic-private-credential",
+    );
   });
   it("does not probe a changed endpoint with a stored key and never displays raw failures", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
@@ -1064,9 +1076,13 @@ describe("global upstream editor", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.detect" }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "modelProviders.failed",
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "modelProviders.errors.testModels",
+        expect.any(Object),
+      ),
     );
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
     expect(detectProviderProtocols).not.toHaveBeenCalled();
   });
@@ -1422,9 +1438,13 @@ describe("global upstream editor", () => {
         screen.getByRole("dialog", { name: "modelProviders.delete" }),
       ).getByRole("button", { name: "common.confirm" }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "modelProviders.referenced",
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "modelProviders.errors.remove",
+        expect.objectContaining({ description: "modelProviders.referenced" }),
+      ),
     );
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
     expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
       "Unsaved name",
     );
@@ -1468,9 +1488,13 @@ describe("global upstream editor", () => {
       new Error("private-config-synthetic"),
     );
     mount();
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "modelProviders.failed",
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "modelProviders.errors.loadProviders",
+        expect.any(Object),
+      ),
     );
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(
       screen.queryByText(/private-config-synthetic/),
     ).not.toBeInTheDocument();

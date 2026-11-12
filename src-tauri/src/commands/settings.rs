@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use std::path::Path;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -8,6 +9,18 @@ use tauri_plugin_updater::UpdaterExt;
 struct UpdateDownloadProgress {
     downloaded: u64,
     total: Option<u64>,
+}
+
+fn updater_installation_kind(executable: &Path) -> &'static str {
+    let components: Vec<_> = executable.components().collect();
+    if components
+        .windows(2)
+        .any(|pair| pair[0].as_os_str() == "Contents" && pair[1].as_os_str() == "MacOS")
+    {
+        "macos-bundle"
+    } else {
+        "non-bundle"
+    }
 }
 
 fn merge_settings_for_save(
@@ -200,16 +213,38 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
 /// 这里把退出清理、安装和重启串在同一个后端流程中，避免依赖旧前端继续执行。
 #[tauri::command]
 pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> {
-    let updater = app
-        .updater_builder()
-        .build()
-        .map_err(|e| format!("初始化更新器失败: {e}"))?;
+    let executable = std::env::current_exe().map_err(|e| {
+        log::error!("应用更新失败 [path]: 无法确定当前可执行文件: {e}");
+        format!("无法确定当前应用路径: {e}")
+    })?;
+    let installation_kind = updater_installation_kind(&executable);
+    log::info!(
+        "应用更新目标: executable={}, kind={installation_kind}",
+        executable.display()
+    );
+    #[cfg(target_os = "macos")]
+    if installation_kind != "macos-bundle" {
+        log::error!(
+            "应用更新失败 [path]: 当前进程不是 macOS .app bundle，拒绝在开发路径执行替换: {}",
+            executable.display()
+        );
+        return Err(
+            "当前是开发环境进程，不能执行应用内更新；请从 /Applications/Vary AI.app 启动正式安装包。"
+                .into(),
+        );
+    }
 
-    let Some(update) = updater
-        .check()
-        .await
-        .map_err(|e| format!("检查更新失败: {e}"))?
+    let updater = app.updater_builder().build().map_err(|e| {
+        log::error!("应用更新失败 [initialize]: {e}");
+        format!("初始化更新器失败: {e}")
+    })?;
+
+    let Some(update) = updater.check().await.map_err(|e| {
+        log::error!("应用更新失败 [check]: {e}");
+        format!("检查更新失败: {e}")
+    })?
     else {
+        log::info!("应用更新结束 [check]: 没有可用更新");
         return Ok(false);
     };
 
@@ -231,7 +266,10 @@ pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> 
             || {},
         )
         .await
-        .map_err(|e| format!("下载更新失败: {e}"))?;
+        .map_err(|e| {
+            log::error!("应用更新失败 [download]: {e}");
+            format!("下载更新失败: {e}")
+        })?;
 
     log::info!("开始安装应用更新: {}", update.version);
 
@@ -247,6 +285,7 @@ pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> 
         crate::destroy_single_instance_lock(&app);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         update.install(bytes).map_err(|e| {
+            log::error!("应用更新失败 [install/windows]: {e}");
             format!(
                 "Windows 更新安装失败: {e}。已执行退出前清理，代理或 Live 接管可能已暂停；请重启应用或重新开启代理后再试。"
             )
@@ -257,9 +296,10 @@ pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> 
     #[cfg(not(target_os = "windows"))]
     {
         // macOS/Linux install() 会返回；先安装，避免安装失败时误停代理/撤回接管。
-        update
-            .install(bytes)
-            .map_err(|e| format!("安装更新失败: {e}"))?;
+        update.install(bytes).map_err(|e| {
+            log::error!("应用更新失败 [install/unix]: {e}");
+            format!("安装更新失败: {e}")
+        })?;
 
         crate::save_window_state_before_exit(&app);
         crate::cleanup_before_exit(&app).await;
@@ -323,6 +363,23 @@ mod tests {
         CodexThirdPartyHistoryProviderBucketMigration, LocalMigrations, S3SyncSettings,
         WebDavSyncSettings,
     };
+    use std::path::Path;
+
+    #[test]
+    fn updater_installation_kind_distinguishes_dev_binary_from_macos_bundle() {
+        assert_eq!(
+            super::updater_installation_kind(
+                Path::new("/workspace/src-tauri/target/debug/varyai",)
+            ),
+            "non-bundle"
+        );
+        assert_eq!(
+            super::updater_installation_kind(Path::new(
+                "/Applications/Vary AI.app/Contents/MacOS/varyai",
+            )),
+            "macos-bundle"
+        );
+    }
 
     #[test]
     fn save_settings_should_preserve_existing_webdav_when_payload_omits_it() {

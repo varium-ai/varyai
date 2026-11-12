@@ -77,7 +77,6 @@ function Editor({
         }))}
         apiKey=""
         busy={false}
-        error={null}
         region="global"
         regions={[]}
         onDraftChange={setDraft}
@@ -125,11 +124,8 @@ it.each([0, 1])(
         "fixture",
       );
     expect(
-      screen.getByRole("textbox", { name: "providerEditor.addModelId" }),
-    ).toHaveAttribute(
-      "placeholder",
-      revision ? "providerEditor.addModelId" : "providerParity.optionalModels",
-    );
+      screen.queryByRole("textbox", { name: "providerEditor.addModelId" }),
+    ).toBeNull();
   },
 );
 
@@ -165,20 +161,21 @@ it.each([0, 1])(
   },
 );
 
-it("keeps the filter above the list and manual entry below it, without a custom counter", () => {
+it("keeps the filter above the saved model list and its fetch action below", () => {
   render(<Editor />);
   const filter = screen.getByRole("searchbox");
   const list = screen.getByRole("group", { name: "modelPicker.models" });
-  const manual = screen.getByLabelText("providerEditor.addModelId");
+  const fetch = screen.getByRole("button", {
+    name: "providerForm.fetchModels",
+  });
   expect(
     filter.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(
-    list.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING,
+    list.compareDocumentPosition(fetch) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  expect(
-    screen.queryByText("providerParity.pickedCount"),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("providerEditor.addModelId")).toBeNull();
+  expect(screen.queryByText("providerParity.pickedCount")).toBeNull();
 });
 
 it("shows the supplier catalog without model-view modes", () => {
@@ -192,13 +189,14 @@ it("shows the supplier catalog without model-view modes", () => {
   expect(within(list).getByRole("button", { name: "chat-24" })).toBeVisible();
 });
 
-it("does not probe selected image models as chat models", () => {
-  const onProbe = vi.fn().mockResolvedValue([]);
+it("keeps bulk model testing removed when an image model is selected", () => {
+  const onProbe = vi.fn();
   render(<Editor onProbe={onProbe} />);
   fireEvent.click(screen.getByRole("button", { name: "gpt-image-2" }));
   expect(
-    screen.getByRole("button", { name: "codexProvider.testModels" }),
-  ).toBeDisabled();
+    screen.queryByRole("button", { name: "codexProvider.testModels" }),
+  ).toBeNull();
+  expect(onProbe).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -295,26 +293,26 @@ it("can select none from a vendor-served list even when there are no explicit pi
   expect(none).toBeDisabled();
 });
 
-it("keeps Magpie's new-provider ID input before discovery controls and its saved-provider entry below chips", () => {
+it("keeps Magpie's new-provider fetch action above models and its saved-provider action below", () => {
   const { unmount } = render(<Editor revision={0} />);
-  const manual = screen.getByLabelText("providerEditor.addModelId");
   expect(
-    manual.compareDocumentPosition(screen.getByRole("searchbox")) &
-      Node.DOCUMENT_POSITION_FOLLOWING,
+    screen
+      .getByRole("button", { name: "providerForm.fetchModels" })
+      .compareDocumentPosition(
+        screen.getByRole("group", { name: "modelPicker.models" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  expect(screen.getByText("providerParity.pickedCount")).toBeInTheDocument();
+  expect(screen.queryByLabelText("providerEditor.addModelId")).toBeNull();
   unmount();
   render(<Editor revision={1} />);
   expect(
     screen
       .getByRole("group", { name: "modelPicker.models" })
       .compareDocumentPosition(
-        screen.getByLabelText("providerEditor.addModelId"),
+        screen.getByRole("button", { name: "providerForm.fetchModels" }),
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  expect(
-    screen.queryByText("providerParity.pickedCount"),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText("providerParity.pickedCount")).toBeNull();
 });
 
 it.each(globalProviderPresets)(

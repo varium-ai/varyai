@@ -32,7 +32,7 @@ export function UpdateBadge({ className = "", onClick }: UpdateBadgeProps) {
       aria-label={title}
       onClick={onClick ?? resetDismiss}
       disabled={isInstalling}
-      className={cn("h-8 w-8 shrink-0 rounded-lg", className)}
+      className={cn("h-8 w-8 shrink-0 rounded-full", className)}
     >
       {isInstalling ? (
         <Loader2 className="h-4 w-4 animate-spin" />

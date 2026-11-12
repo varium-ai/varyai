@@ -11,12 +11,12 @@ import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { isImageGenerationModel } from "@/lib/providerModelKind";
 import { ProviderImageModels } from "./ProviderImageModels";
-import { ProviderModelPreferences } from "./ProviderModelPreferences";
 
 import { Input } from "@/components/ui/input";
 import { SubscriptionAccountQuota } from "./SubscriptionAccountQuota";
 import { NativeSubscriptionAccounts } from "./NativeSubscriptionAccounts";
 import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
+import type { ProviderErrorHandler } from "./providerErrorToast";
 import { SubscriptionModelChip } from "./SubscriptionModelChip";
 import {
   nativeSubscriptionApi,
@@ -30,7 +30,7 @@ type Props = {
   startReauth?: boolean;
   onReauthStarted?: () => void;
   onChange: (value: RoutingUpstream) => void;
-  onError: () => void;
+  onError: ProviderErrorHandler;
   onBusyChange: (value: boolean) => void;
 };
 export function SubscriptionProviderFields(props: Props) {
@@ -72,9 +72,7 @@ function SubscriptionFields({
     [],
   );
   const [fetching, setFetching] = useState(false);
-  const [typed, setTyped] = useState("");
   const [filter, setFilter] = useState("");
-  const [catalogFailed, setCatalogFailed] = useState(false);
   const working = fetching || nativeBusy || !!auth?.isRemovingAccount;
   useEffect(() => {
     onBusyChange(working);
@@ -142,7 +140,7 @@ function SubscriptionFields({
     if (!loginTarget.current) return;
     if (completion.accountId !== loginTarget.current) {
       // A different identity must be explicitly selected; never redirect an existing binding.
-      onError();
+      onError("signIn");
     }
     const repaired = completion.accountId === loginTarget.current;
     loginTarget.current = undefined;
@@ -214,7 +212,6 @@ function SubscriptionFields({
       );
     };
     setFetching(true);
-    setCatalogFailed(false);
     try {
       const models = await client.fetchQuery({
         queryKey: [
@@ -250,9 +247,8 @@ function SubscriptionFields({
             source: { ...next.source, catalog: models },
           });
       }
-    } catch {
+    } catch (cause) {
       if (current()) {
-        setCatalogFailed(true);
         void client.invalidateQueries({
           queryKey: ["managed-auth-status", source.provider],
         });
@@ -260,7 +256,7 @@ function SubscriptionFields({
           queryKey: ["native-subscription-accounts", source.provider],
         });
         void client.invalidateQueries({ queryKey: ["routing-upstreams"] });
-        latest.current.onError();
+        latest.current.onError("fetchModels", cause);
       }
     } finally {
       if (generation === discoveryGeneration.current) setFetching(false);
@@ -278,12 +274,11 @@ function SubscriptionFields({
           startReauth={startReauth}
           onReauthStarted={onReauthStarted}
           onBusyChange={nativeBusyChange}
-          onError={onError}
+          onError={() => onError("account")}
           onReauthenticated={(id) => {
             if (id === source.accountId) void discover();
           }}
           onSelect={(accountId) => {
-            setCatalogFailed(false);
             onChange({
               ...draft,
               source:
@@ -340,7 +335,6 @@ function SubscriptionFields({
                           account.reauth_required
                         }
                         onChange={() => {
-                          setCatalogFailed(false);
                           onChange({
                             ...draft,
                             source: {
@@ -443,7 +437,9 @@ function SubscriptionFields({
                   variant="ghost"
                   aria-label={t("common.copy")}
                   onClick={() =>
-                    void copyText(auth.deviceCode!.user_code).catch(onError)
+                    void copyText(auth.deviceCode!.user_code).catch((cause) =>
+                      onError("copy", cause),
+                    )
                   }
                 >
                   <Copy size={13} />
@@ -455,7 +451,7 @@ function SubscriptionFields({
                   onClick={() =>
                     void settingsApi
                       .openExternal(auth.deviceCode!.verification_uri)
-                      .catch(onError)
+                      .catch((cause) => onError("openWebsite", cause))
                   }
                 >
                   <ExternalLink size={13} />
@@ -477,11 +473,6 @@ function SubscriptionFields({
       <div className="pv-field">
         <span className="pv-field-label">{t("codexProvider.models")}</span>
         <div className="pv-models">
-          {catalogFailed && (
-            <p role="status" className="pv-error">
-              {t("codexProvider.catalogFailed")}
-            </p>
-          )}
           {!models.length && (
             <p className="pv-hint">{t("subscriptionProvider.fetchHint")}</p>
           )}
@@ -580,38 +571,6 @@ function SubscriptionFields({
           </div>
           <div className="pv-model-footer">
             <div className="pv-add-model">
-              <Input
-                value={typed}
-                disabled={locked}
-                onChange={(event) => setTyped(event.target.value)}
-                placeholder={t("providerEditor.addModelId")}
-                aria-label={t("providerEditor.addModelId")}
-              />
-              <button
-                type="button"
-                disabled={locked || !typed.trim() || selected.size >= 256}
-                onClick={() => {
-                  const model = typed.trim();
-                  if (
-                    !model ||
-                    model.length > 200 ||
-                    /[\x00-\x1f\x7f]/.test(model)
-                  )
-                    return;
-                  if (!selected.has(model))
-                    onChange({
-                      ...draft,
-                      source: {
-                        ...source,
-                        mode: "picked",
-                        models: [...source.models, { model }],
-                      },
-                    });
-                  setTyped("");
-                }}
-              >
-                {t("providerEditor.addModel")}
-              </button>
               <button
                 type="button"
                 aria-label={t("codexProvider.fetchModels")}
@@ -623,35 +582,7 @@ function SubscriptionFields({
                   : t("codexProvider.fetchModels")}
               </button>
             </div>
-            {!!source.models.length && (
-              <ProviderModelPreferences
-                models={source.models.filter(
-                  (row) => !isImageGenerationModel(row),
-                )}
-                disabled={locked}
-                onChange={(models) =>
-                  onChange({
-                    ...draft,
-                    source: { ...source, models: [...models, ...imagePicks] },
-                  })
-                }
-              />
-            )}
           </div>
-          <label className="cx-check pv-groups-only">
-            <input
-              type="checkbox"
-              checked={source.groupsOnly}
-              disabled={locked}
-              onChange={(event) =>
-                onChange({
-                  ...draft,
-                  source: { ...source, groupsOnly: event.target.checked },
-                })
-              }
-            />
-            {t("codexProvider.groupsOnly")}
-          </label>
           <p className="pv-hint">{t(`providerParity.hint_${source.mode}`)}</p>
         </div>
       </div>

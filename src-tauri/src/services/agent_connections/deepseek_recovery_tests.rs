@@ -1,8 +1,5 @@
 use super::*;
 
-const START: &str = "# BEGIN VaryAI model providers\n";
-const END: &str = "# END VaryAI model providers\n";
-
 fn install(manager: &Manager, path: &Path) -> Result<(), String> {
     let file = FileEdit::prepare_format(path.into(), Format::Cordis, |value| {
         crate::services::deepseek_harness::apply(
@@ -26,20 +23,35 @@ fn install(manager: &Manager, path: &Path) -> Result<(), String> {
 
 fn damage(path: &Path, change: impl FnOnce(&mut Value)) -> Result<String, String> {
     let source = read(path)?.ok_or(FAILED)?;
-    let (before, managed) = source.split_once(START).ok_or(FAILED)?;
-    let mut entries: Value = serde_yaml::from_str(managed).map_err(|_| FAILED)?;
-    change(&mut entries);
+    let mut entries: Vec<Value> = serde_yaml::from_str(&source).map_err(|_| FAILED)?;
+    let adapter = entries
+        .iter()
+        .position(|row| row["id"] == "llm-pi-ai")
+        .ok_or(FAILED)?;
+    let adapter = entries.remove(adapter);
+    let selection = entries
+        .iter()
+        .position(|row| row["id"] == "agent-default-model")
+        .ok_or(FAILED)?;
+    let selection = entries.remove(selection);
+    let mut managed = json!([adapter, selection]);
+    change(&mut managed);
+    let mut saved = managed.as_array().cloned().ok_or(FAILED)?;
+    saved.extend(entries);
     let text = format!(
-        "{}{}{END}",
-        before.replacen("enabled: true", "enabled: false", 1),
-        serde_yaml::to_string(&entries).map_err(|_| FAILED)?,
+        "# Native customization\n{}",
+        serde_yaml::to_string(&saved).map_err(|_| FAILED)?.replacen(
+            "enabled: true",
+            "enabled: false",
+            1
+        )
     );
     fs::write(path, &text).map_err(|_| FAILED)?;
     Ok(text)
 }
 
 #[test]
-fn explicit_reapply_recovers_a_missing_marker_and_keeps_the_other_managers_disconnect(
+fn explicit_reapply_keeps_structural_client_saves_and_the_other_managers_disconnect(
 ) -> Result<(), String> {
     let root = tempfile::tempdir().map_err(|_| FAILED)?;
     let manager = Manager {
@@ -54,7 +66,7 @@ fn explicit_reapply_recovers_a_missing_marker_and_keeps_the_other_managers_disco
             .unwrap()
             .remove("native");
     })?;
-    assert!(manager.status("deepseek-harness")?.recovery_pending);
+    assert!(manager.status("deepseek-harness")?.configured);
     assert_eq!(
         read(&path)?.as_deref(),
         Some(damaged.as_str()),
@@ -66,14 +78,9 @@ fn explicit_reapply_recovers_a_missing_marker_and_keeps_the_other_managers_disco
     assert!(clean.contains("enabled: false"));
     let parsed = crate::services::deepseek_harness::parse(&clean)?;
     assert_eq!(parsed["providers"], json!({}));
-    assert_eq!(
-        parsed["patches"]
-            .as_array()
-            .ok_or(FAILED)?
-            .last()
-            .ok_or(FAILED)?["config"]["providers"],
-        json!({}),
-        "a stale earlier native snapshot must not undo the other manager's disconnect"
+    assert!(
+        !clean.contains("https://native.invalid/"),
+        "a removed native provider must not return"
     );
     let backups = fs::read_dir(&manager.root)
         .map_err(|_| FAILED)?
@@ -105,6 +112,8 @@ fn explicit_reapply_rewrites_changed_owned_fields() -> Result<(), String> {
         assert_eq!(read(&path)?.as_deref(), Some(damaged.as_str()));
         manager.release_for_reapply("deepseek-harness")?;
         assert_eq!(fs::read_dir(&manager.root).map_err(|_| FAILED)?.count(), 1);
+        let clean = crate::services::deepseek_harness::parse(&read(&path)?.ok_or(FAILED)?)?;
+        assert_eq!(clean["providers"], json!({}));
         install(&manager, &path)?;
         assert!(manager.status("deepseek-harness")?.configured);
     }
@@ -114,8 +123,7 @@ fn explicit_reapply_rewrites_changed_owned_fields() -> Result<(), String> {
 #[test]
 fn recovery_rejects_ambiguous_boundaries_and_invalid_documents() -> Result<(), String> {
     for case in [
-        "duplicate_end",
-        "extra_entry",
+        "duplicate_route",
         "invalid_yaml",
         "foreign_plugin",
         "foreign_provider",
@@ -136,15 +144,18 @@ fn recovery_rejects_ambiguous_boundaries_and_invalid_documents() -> Result<(), S
             }
         })?;
         let damaged = match case {
-            "duplicate_end" => format!("{damaged}{END}"),
-            "extra_entry" => damaged.replace(END, &format!("- id: another-plugin\n{END}")),
+            "duplicate_route" => {
+                let mut entries: Vec<Value> = serde_yaml::from_str(&damaged).map_err(|_| FAILED)?;
+                entries.push(entries[0].clone());
+                serde_yaml::to_string(&entries).map_err(|_| FAILED)?
+            }
             "invalid_yaml" => format!("invalid: [\n{damaged}"),
             _ => damaged,
         };
         fs::write(&path, &damaged).map_err(|_| FAILED)?;
         assert!(manager.release_for_reapply("deepseek-harness").is_err());
         assert_eq!(read(&path)?.as_deref(), Some(damaged.as_str()));
-        assert!(manager.load("deepseek-harness")?.is_some());
+        assert!(manager.path("deepseek-harness")?.is_file());
         assert_eq!(fs::read_dir(&manager.root).map_err(|_| FAILED)?.count(), 1);
     }
     Ok(())
@@ -174,34 +185,5 @@ fn explicit_reapply_keeps_a_native_choice_for_later_disconnect() -> Result<(), S
         crate::services::deepseek_harness::selection(&restored),
         crate::services::deepseek_harness::selection(&native)
     );
-    Ok(())
-}
-
-#[test]
-fn explicit_reapply_recovers_native_config_drift_with_intact_markers() -> Result<(), String> {
-    let root = tempfile::tempdir().map_err(|_| FAILED)?;
-    let manager = Manager {
-        root: root.path().join("receipts"),
-    };
-    let path = root.path().join("cordis.patch.yml");
-    fs::write(
-        &path,
-        "- id: llm-pi-ai\n  config: {providers: {native: {baseURL: https://native.invalid/v1}}}\n",
-    )
-    .map_err(|_| FAILED)?;
-    install(&manager, &path)?;
-    let mut damaged = damage(&path, |entries| {
-        entries[0]["config"]["providers"]
-            .as_object_mut()
-            .unwrap()
-            .remove("native");
-    })?;
-    let start = damaged.rfind("- id: llm-pi-ai\n").ok_or(FAILED)?;
-    damaged.insert_str(start, START);
-    fs::write(&path, damaged).map_err(|_| FAILED)?;
-    assert!(manager.status("deepseek-harness")?.recovery_pending);
-    manager.release_for_reapply("deepseek-harness")?;
-    install(&manager, &path)?;
-    assert!(manager.status("deepseek-harness")?.configured);
     Ok(())
 }

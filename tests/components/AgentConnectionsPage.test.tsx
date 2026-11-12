@@ -651,6 +651,11 @@ describe("Agent connections", () => {
           name: "Shared group",
           contextWindow: 1000000,
         },
+        {
+          id: "relay/alternative",
+          name: "Alternative model",
+          contextWindow: 128000,
+        },
       ]);
       mount();
       const row = await screen.findByRole("article", { name: `apps.${app}` });
@@ -658,6 +663,14 @@ describe("Agent connections", () => {
         name: `agentConnections.model apps.${app}`,
       });
       await waitFor(() => expect(trigger).toBeEnabled());
+      fireEvent.click(trigger);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Previous group/ }),
+      );
+      await waitFor(() =>
+        expect(trigger).toHaveAttribute("aria-expanded", "false"),
+      );
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
       fireEvent.click(trigger);
       fireEvent.click(
         await screen.findByRole("radio", { name: /Shared group/ }),
