@@ -1548,7 +1548,7 @@ mod revision_tests {
         let expected = fingerprint_revision(&profile, &[first]).unwrap();
         assert_eq!(
             expected,
-            fingerprint_revision(&profile, &[reordered.clone()]).unwrap()
+            fingerprint_revision(&profile, std::slice::from_ref(&reordered)).unwrap()
         );
         let mut changed = reordered.clone();
         changed["providers"][0]["meta"]["routes"]["b"] = json!("model-c");

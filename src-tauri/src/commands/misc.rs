@@ -3971,8 +3971,8 @@ mod agent_installation_tests {
         std::fs::create_dir_all(&config).expect("config");
         assert!(!agent_installed_in(
             "qoder",
-            &[apps.clone()],
-            &[bin.clone()]
+            std::slice::from_ref(&apps),
+            std::slice::from_ref(&bin)
         ));
         assert!(!apps.exists() && !bin.exists());
         std::fs::create_dir_all(apps.join("Qoder CN.app")).expect("app");

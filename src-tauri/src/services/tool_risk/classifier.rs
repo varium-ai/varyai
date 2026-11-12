@@ -831,7 +831,13 @@ mod custom_whitelist_effect_tests {
             }
         }
         let entry = white(CommandMatchKind::Program, "project-query");
-        assert!(classify_command("project-query --all | head; ls", &[entry.clone()]).complete);
+        assert!(
+            classify_command(
+                "project-query --all | head; ls",
+                std::slice::from_ref(&entry)
+            )
+            .complete
+        );
         for command in [
             "project-query; other-cli",
             "project-query | sh",
@@ -839,7 +845,7 @@ mod custom_whitelist_effect_tests {
             "project-query $(evil)",
         ] {
             assert!(
-                !classify_command(command, &[entry.clone()]).complete,
+                !classify_command(command, std::slice::from_ref(&entry)).complete,
                 "{command}"
             );
         }
@@ -910,7 +916,7 @@ mod phase1_regressions {
             "project-query; echo $UNKNOWN",
         ] {
             assert!(
-                !classify_command(command, &[white.clone()]).complete,
+                !classify_command(command, std::slice::from_ref(&white)).complete,
                 "{command}"
             );
         }
@@ -1050,7 +1056,7 @@ mod phase2_basename_tests {
             "ls; /usr/bin/whoami; echo $UNKNOWN",
         ] {
             assert_eq!(
-                classify_command(command, &[black.clone()])
+                classify_command(command, std::slice::from_ref(&black))
                     .blacklist_hits
                     .len(),
                 1,
@@ -1066,7 +1072,7 @@ mod phase2_basename_tests {
             "/usr/bin/whoami/",
         ] {
             assert!(
-                classify_command(command, &[black.clone()])
+                classify_command(command, std::slice::from_ref(&black))
                     .blacklist_hits
                     .is_empty(),
                 "{command}"
@@ -1077,10 +1083,10 @@ mod phase2_basename_tests {
             CommandMatchKind::Program,
             "hostinfo",
         );
-        assert!(classify_command("hostinfo", &[white.clone()]).complete);
+        assert!(classify_command("hostinfo", std::slice::from_ref(&white)).complete);
         for command in ["/usr/bin/hostinfo", "./hostinfo", "/tmp/hostinfo"] {
             assert!(
-                !classify_command(command, &[white.clone()]).complete,
+                !classify_command(command, std::slice::from_ref(&white)).complete,
                 "{command}"
             );
         }
@@ -1142,7 +1148,7 @@ mod phase2_quoted_assignment_tests {
             "F\\=1 whoami",
         ] {
             assert!(
-                classify_command(command, &[black.clone()])
+                classify_command(command, std::slice::from_ref(&black))
                     .blacklist_hits
                     .is_empty(),
                 "{command}"
@@ -1150,7 +1156,7 @@ mod phase2_quoted_assignment_tests {
         }
         for command in ["F=1 /usr/bin/whoami", "F='one two' /usr/bin/whoami"] {
             assert_eq!(
-                classify_command(command, &[black.clone()])
+                classify_command(command, std::slice::from_ref(&black))
                     .blacklist_hits
                     .len(),
                 1,

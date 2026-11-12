@@ -218,7 +218,7 @@ fn alias_integration_legacy_receipts_keep_exact_canonical_history_support(
     let (dir, manager) = tests::setup();
     fs::write(&manager.config, "model_provider='fixture-source'\n")?;
     let group = tests::group();
-    publish(&manager, &[group.clone()], false)?;
+    publish(&manager, std::slice::from_ref(&group), false)?;
     let mut receipt = manager.load()?.ok_or("missing receipt")?;
     let canonical = group.alias();
     receipt.model_map.clear();
@@ -253,7 +253,7 @@ fn provider_migration_preserves_history_when_runtime_credentials_rotate(
     let (dir, manager) = tests::setup();
     fs::write(&manager.config, "model_provider='fixture-source'\n")?;
     let group = tests::group();
-    publish(&manager, &[group.clone()], true)?;
+    publish(&manager, std::slice::from_ref(&group), true)?;
     let receipt = manager.load()?.ok_or("missing receipt")?;
     let mut menu = (*manager.runtime.menu_snapshot()?.ok_or("menu")?).clone();
     menu.token = "different-fixture-token".into();
@@ -310,7 +310,7 @@ fn alias_integration_catalog_repair_rejects_stale_or_unpublished_mapping(
     for tamper in ["token", "mapping", "visible", "menu", "owner"] {
         let (_dir, manager) = tests::setup();
         let group = tests::group();
-        publish(&manager, &[group.clone()], true)?;
+        publish(&manager, std::slice::from_ref(&group), true)?;
         let mut receipt = manager.load()?.ok_or("missing receipt")?;
         let path = receipt.catalogs.last().ok_or("missing catalog")?.clone();
         match tamper {

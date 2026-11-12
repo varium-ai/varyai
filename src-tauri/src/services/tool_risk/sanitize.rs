@@ -450,8 +450,10 @@ mod tests {
             ("keyword", "SYNTHETIC_ORG_MARKER"),
             ("regex", "SYNTHETIC_[A-Z]+_MARKER"),
         ] {
-            let mut policy = SecurityRuntimeConfig::default();
-            policy.enabled = false;
+            let mut policy = SecurityRuntimeConfig {
+                enabled: false,
+                ..Default::default()
+            };
             policy.custom_rules.push(CompiledCustomRule {
                 id: "synthetic-rule".into(),
                 name: "Synthetic rule".into(),

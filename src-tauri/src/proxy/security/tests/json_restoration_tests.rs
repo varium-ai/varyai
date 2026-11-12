@@ -39,7 +39,9 @@ fn fixture(budget: &PayloadBudget, raw: &str) -> (DlpTokenStore, DlpPreparedAtte
         budget: budget.clone(),
         endpoint_is_compact: false,
         upstream_json_protocol: Some(JsonCompletionProtocol::NativeResponses),
-        json_completion: std::sync::atomic::AtomicU8::new(0),
+        provenance: super::super::restoration_core::AttemptProvenance::new(budget)
+            .expect("attempt provenance"),
+        json_completion: completion_verifier::JsonCompletionVerifier::new(),
         audit_state: std::sync::Arc::new(
             RequestAuditState::new(&AppType::Codex, Some("json-owner-session"), budget.clone())
                 .expect("audit state"),
@@ -50,6 +52,11 @@ fn fixture(budget: &PayloadBudget, raw: &str) -> (DlpTokenStore, DlpPreparedAtte
         pending_audit: PendingRequestAudit::empty(budget.clone()).expect("pending audit"),
         upstream_payload_owner: None,
         history_mapping: None,
+        native_history_digest: None,
+        native_protocol: None,
+        native_original: None,
+        native_error_safety: None,
+        sse_evidence: std::sync::Mutex::new(None),
     };
     (store, attempt, token)
 }

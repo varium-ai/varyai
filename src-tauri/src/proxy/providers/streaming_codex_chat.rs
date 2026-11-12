@@ -1196,8 +1196,10 @@ mod tests {
     fn long_thinking_protocol_sse_preserves_incomplete_blocks_at_other_boundaries() {
         let text = " \n<thinking>Synthetic 思考🧪. ";
         for finish in ["length", "tool_calls"] {
-            let mut state = ChatToResponsesState::default();
-            state.allow_long_thinking_tags = true;
+            let mut state = ChatToResponsesState {
+                allow_long_thinking_tags: true,
+                ..Default::default()
+            };
             for ch in text.chars() {
                 state.handle_chat_chunk(&json!({"choices":[{"delta":{"content":ch.to_string()}}]}));
             }
@@ -1223,8 +1225,10 @@ mod tests {
                 "literal fallback must preserve the actual finish reason"
             );
         }
-        let mut short = ChatToResponsesState::default();
-        short.allow_long_thinking_tags = true;
+        let mut short = ChatToResponsesState {
+            allow_long_thinking_tags: true,
+            ..Default::default()
+        };
         short.handle_chat_chunk(&json!({"choices":[{"delta":{"content":"<think>Synthetic legacy thought. "},"finish_reason":"stop"}]}));
         short.finalize();
         assert!(

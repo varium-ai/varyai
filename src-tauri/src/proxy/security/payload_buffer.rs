@@ -123,7 +123,7 @@ impl PayloadBuffer {
             requested,
             0,
         ))?
-        .map_or(actual, |capacity| capacity);
+        .unwrap_or(actual);
         #[cfg(not(test))]
         let observed = actual;
         // Vec may report more than requested. Never copy into uncharged capacity;

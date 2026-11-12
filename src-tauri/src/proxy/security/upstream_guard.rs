@@ -372,6 +372,40 @@ fn decode_one_with_limit(
     }
 }
 
+/// Decode captured native JSON only after its transport has reached real EOF.
+/// This owns no completion authority; every decoding layer has its own charged buffer.
+pub(super) struct NativeJsonDecoder {
+    codings: [Coding; MAX_ENCODING_LAYERS],
+    count: usize,
+}
+
+impl NativeJsonDecoder {
+    pub(super) fn new(headers: &HeaderMap) -> Result<Self, DlpForwardError> {
+        let (codings, count) = content_codings(headers)?;
+        Ok(Self { codings, count })
+    }
+
+    pub(super) fn decode(
+        self,
+        mut body: PayloadBuffer,
+        budget: &PayloadBudget,
+        limit: usize,
+    ) -> Result<PayloadBuffer, DlpForwardError> {
+        if body.len() > limit {
+            return Err(DlpForwardError::CapacityExceeded);
+        }
+        if self.count != 0 {
+            let owner = UpstreamPayloadOwner::new(budget)?;
+            owner.cover_input(body.len())?;
+            for coding in self.codings[..self.count].iter().rev() {
+                body =
+                    decode_one_with_limit(*coding, body.as_slice(), budget, &owner, Some(limit))?;
+            }
+        }
+        Ok(body)
+    }
+}
+
 pub(super) async fn guard_upstream_response(
     response: ProxyResponse,
     budget: &PayloadBudget,

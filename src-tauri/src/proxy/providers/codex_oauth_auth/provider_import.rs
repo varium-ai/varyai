@@ -86,196 +86,6 @@ pub(super) fn retained_imported_access(account: &CodexAccountData) -> Option<Cac
     })
 }
 
-#[cfg(test)]
-mod editor_identity_tests {
-    use super::*;
-
-    fn fixture_access(user: &str, workspace: &str, expires: i64) -> String {
-        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(
-            serde_json::json!({"sub":user,"exp":expires,"iat":chrono::Utc::now().timestamp()-60,
-                "https://api.openai.com/auth":{"chatgpt_account_id":workspace}})
-            .to_string(),
-        );
-        format!("{header}.{payload}.")
-    }
-
-    fn fixture_auth(user: &str, workspace: &str) -> serde_json::Value {
-        let id_token = fixture_access(user, workspace, chrono::Utc::now().timestamp() - 10);
-        serde_json::json!({"auth_mode":"chatgpt","last_refresh":"2026-10-01T00:00:00Z",
-            "tokens":{"id_token":id_token,"refresh_token":"synthetic-refresh",
-            "account_id":workspace,"access_token":fixture_access(user,workspace,chrono::Utc::now().timestamp()+3600)}})
-    }
-
-    #[tokio::test]
-    async fn imported_access_survives_restart_without_refreshing_or_exposing_it(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let manager = CodexOAuthManager::new(dir.path().to_owned());
-        let auth = fixture_auth("user-a", "workspace-a");
-        let ids = manager
-            .import_provider_accounts(vec![auth.clone()], Ok)
-            .await?;
-        let id = ids.first().ok_or("missing account")?;
-        assert!(manager.access_tokens.read().await.contains_key(id));
-        assert!(manager.accounts.read().await[id].token_updated_at_ms > 0);
-        let reloaded = CodexOAuthManager::new(dir.path().to_owned());
-        assert!(reloaded.access_tokens.read().await.contains_key(id));
-        let actual = reloaded.get_valid_token_for_account(id).await?;
-        assert!(Some(actual.as_str()) == auth["tokens"]["access_token"].as_str());
-        let public = serde_json::to_string(&reloaded.list_accounts().await)?;
-        assert!(!public.contains("access_token"));
-        assert!(!public.contains(auth["tokens"]["refresh_token"].as_str().ok_or("refresh")?));
-        Ok(())
-    }
-
-    #[test]
-    fn imported_access_requires_exact_user_workspace_and_a_known_future_expiry() {
-        let auth = fixture_auth("user-a", "workspace-a");
-        assert!(imported_access_token(&auth).is_some());
-        for token in [
-            fixture_access(
-                "user-b",
-                "workspace-a",
-                chrono::Utc::now().timestamp() + 3600,
-            ),
-            fixture_access(
-                "user-a",
-                "workspace-b",
-                chrono::Utc::now().timestamp() + 3600,
-            ),
-            fixture_access("user-a", "workspace-a", chrono::Utc::now().timestamp() - 1),
-            "unknown-expiry".into(),
-        ] {
-            let mut invalid = auth.clone();
-            invalid["tokens"]["access_token"] = token.into();
-            assert!(imported_access_token(&invalid).is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn failed_import_never_seeds_access_cache_or_persistent_credentials(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let manager = CodexOAuthManager::new(dir.path().to_owned());
-        let result = manager
-            .import_provider_accounts(vec![fixture_auth("user-a", "workspace-a")], |_| {
-                Err::<(), _>("synthetic failure".into())
-            })
-            .await;
-        assert!(result.is_err());
-        assert!(manager.access_tokens.read().await.is_empty());
-        assert!(CodexOAuthManager::new(dir.path().to_owned())
-            .access_tokens
-            .read()
-            .await
-            .is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn legacy_import_recovery_only_reuses_the_exact_same_credential_generation(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let manager = CodexOAuthManager::new(dir.path().to_owned());
-        let auth = fixture_auth("user-a", "workspace-a");
-        let mut old = auth.clone();
-        old["tokens"]
-            .as_object_mut()
-            .ok_or("tokens")?
-            .remove("access_token");
-        old.as_object_mut().ok_or("auth")?.remove("last_refresh");
-        let ids = manager.import_provider_accounts(vec![old], Ok).await?;
-        let id = ids.first().ok_or("account")?;
-        for mut wrong in [
-            fixture_auth("user-b", "workspace-a"),
-            fixture_auth("user-a", "workspace-b"),
-            auth.clone(),
-        ] {
-            wrong["tokens"]["refresh_token"] = "different-generation".into();
-            manager.restore_legacy_imported_access(id, &wrong).await;
-            assert!(manager.access_tokens.read().await.is_empty());
-        }
-        manager.restore_legacy_imported_access(id, &auth).await;
-        assert!(manager.access_tokens.read().await.contains_key(id));
-        let actual = manager.get_valid_token_for_account(id).await?;
-        assert!(Some(actual.as_str()) == auth["tokens"]["access_token"].as_str());
-        let reloaded = CodexOAuthManager::new(dir.path().to_owned());
-        assert!(reloaded.access_tokens.read().await.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn explicit_reimport_can_repair_missing_access_without_replacing_a_newer_generation(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let manager = CodexOAuthManager::new(dir.path().to_owned());
-        let auth = fixture_auth("user-a", "workspace-a");
-        let mut old = auth.clone();
-        old["tokens"]
-            .as_object_mut()
-            .ok_or("tokens")?
-            .remove("access_token");
-        let ids = manager.import_provider_accounts(vec![old], Ok).await?;
-        let id = ids.first().ok_or("account")?;
-        manager
-            .import_provider_accounts(vec![auth.clone()], Ok)
-            .await?;
-        assert!(manager.access_tokens.read().await.contains_key(id));
-        let before = manager.access_tokens.read().await[id].token.clone();
-        let mut outdated = auth.clone();
-        outdated["tokens"]["refresh_token"] = "different-refresh".into();
-        manager.import_provider_accounts(vec![outdated], Ok).await?;
-        assert!(manager.access_tokens.read().await[id].token == before);
-        assert!(
-            Some(manager.accounts.read().await[id].refresh_token.as_str())
-                == auth["tokens"]["refresh_token"].as_str()
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn native_editor_matching_requires_both_user_and_workspace_without_refresh(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let manager = CodexOAuthManager::new(dir.path().to_owned());
-        let token = crate::codex_config::test_codex_id_token("user-a");
-        manager
-            .add_test_account_with_workspace_and_access_token(
-                "managed-a",
-                "workspace-a",
-                "synthetic-access",
-                Some(&token),
-            )
-            .await?;
-        assert_eq!(
-            manager
-                .account_for_editor_identity("sub:user-a", "workspace-a")
-                .await
-                .as_deref(),
-            Some("managed-a")
-        );
-        assert!(manager
-            .account_for_editor_identity("sub:user-b", "workspace-a")
-            .await
-            .is_none());
-        assert!(manager
-            .account_for_editor_identity("sub:user-a", "workspace-b")
-            .await
-            .is_none());
-        assert!(manager
-            .account_for_editor_identity("", "workspace-a")
-            .await
-            .is_none());
-        let before = manager.continuation_identity("managed-a").await;
-        let _ = manager
-            .account_for_editor_identity("sub:user-a", "workspace-a")
-            .await;
-        assert_eq!(manager.continuation_identity("managed-a").await, before);
-        Ok(())
-    }
-}
-
 impl CodexOAuthManager {
     async fn restore_legacy_imported_access(&self, id: &str, value: &serde_json::Value) {
         let Some(cached) = imported_access_token(value) else {
@@ -509,5 +319,195 @@ impl CodexOAuthManager {
         }
         *self.default_account_id.write().await = default;
         result
+    }
+}
+
+#[cfg(test)]
+mod editor_identity_tests {
+    use super::*;
+
+    fn fixture_access(user: &str, workspace: &str, expires: i64) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"sub":user,"exp":expires,"iat":chrono::Utc::now().timestamp()-60,
+                "https://api.openai.com/auth":{"chatgpt_account_id":workspace}})
+            .to_string(),
+        );
+        format!("{header}.{payload}.")
+    }
+
+    fn fixture_auth(user: &str, workspace: &str) -> serde_json::Value {
+        let id_token = fixture_access(user, workspace, chrono::Utc::now().timestamp() - 10);
+        serde_json::json!({"auth_mode":"chatgpt","last_refresh":"2026-10-01T00:00:00Z",
+            "tokens":{"id_token":id_token,"refresh_token":"synthetic-refresh",
+            "account_id":workspace,"access_token":fixture_access(user,workspace,chrono::Utc::now().timestamp()+3600)}})
+    }
+
+    #[tokio::test]
+    async fn imported_access_survives_restart_without_refreshing_or_exposing_it(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        let auth = fixture_auth("user-a", "workspace-a");
+        let ids = manager
+            .import_provider_accounts(vec![auth.clone()], Ok)
+            .await?;
+        let id = ids.first().ok_or("missing account")?;
+        assert!(manager.access_tokens.read().await.contains_key(id));
+        assert!(manager.accounts.read().await[id].token_updated_at_ms > 0);
+        let reloaded = CodexOAuthManager::new(dir.path().to_owned());
+        assert!(reloaded.access_tokens.read().await.contains_key(id));
+        let actual = reloaded.get_valid_token_for_account(id).await?;
+        assert!(Some(actual.as_str()) == auth["tokens"]["access_token"].as_str());
+        let public = serde_json::to_string(&reloaded.list_accounts().await)?;
+        assert!(!public.contains("access_token"));
+        assert!(!public.contains(auth["tokens"]["refresh_token"].as_str().ok_or("refresh")?));
+        Ok(())
+    }
+
+    #[test]
+    fn imported_access_requires_exact_user_workspace_and_a_known_future_expiry() {
+        let auth = fixture_auth("user-a", "workspace-a");
+        assert!(imported_access_token(&auth).is_some());
+        for token in [
+            fixture_access(
+                "user-b",
+                "workspace-a",
+                chrono::Utc::now().timestamp() + 3600,
+            ),
+            fixture_access(
+                "user-a",
+                "workspace-b",
+                chrono::Utc::now().timestamp() + 3600,
+            ),
+            fixture_access("user-a", "workspace-a", chrono::Utc::now().timestamp() - 1),
+            "unknown-expiry".into(),
+        ] {
+            let mut invalid = auth.clone();
+            invalid["tokens"]["access_token"] = token.into();
+            assert!(imported_access_token(&invalid).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_import_never_seeds_access_cache_or_persistent_credentials(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        let result = manager
+            .import_provider_accounts(vec![fixture_auth("user-a", "workspace-a")], |_| {
+                Err::<(), _>("synthetic failure".into())
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(manager.access_tokens.read().await.is_empty());
+        assert!(CodexOAuthManager::new(dir.path().to_owned())
+            .access_tokens
+            .read()
+            .await
+            .is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_import_recovery_only_reuses_the_exact_same_credential_generation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        let auth = fixture_auth("user-a", "workspace-a");
+        let mut old = auth.clone();
+        old["tokens"]
+            .as_object_mut()
+            .ok_or("tokens")?
+            .remove("access_token");
+        old.as_object_mut().ok_or("auth")?.remove("last_refresh");
+        let ids = manager.import_provider_accounts(vec![old], Ok).await?;
+        let id = ids.first().ok_or("account")?;
+        for mut wrong in [
+            fixture_auth("user-b", "workspace-a"),
+            fixture_auth("user-a", "workspace-b"),
+            auth.clone(),
+        ] {
+            wrong["tokens"]["refresh_token"] = "different-generation".into();
+            manager.restore_legacy_imported_access(id, &wrong).await;
+            assert!(manager.access_tokens.read().await.is_empty());
+        }
+        manager.restore_legacy_imported_access(id, &auth).await;
+        assert!(manager.access_tokens.read().await.contains_key(id));
+        let actual = manager.get_valid_token_for_account(id).await?;
+        assert!(Some(actual.as_str()) == auth["tokens"]["access_token"].as_str());
+        let reloaded = CodexOAuthManager::new(dir.path().to_owned());
+        assert!(reloaded.access_tokens.read().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_reimport_can_repair_missing_access_without_replacing_a_newer_generation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        let auth = fixture_auth("user-a", "workspace-a");
+        let mut old = auth.clone();
+        old["tokens"]
+            .as_object_mut()
+            .ok_or("tokens")?
+            .remove("access_token");
+        let ids = manager.import_provider_accounts(vec![old], Ok).await?;
+        let id = ids.first().ok_or("account")?;
+        manager
+            .import_provider_accounts(vec![auth.clone()], Ok)
+            .await?;
+        assert!(manager.access_tokens.read().await.contains_key(id));
+        let before = manager.access_tokens.read().await[id].token.clone();
+        let mut outdated = auth.clone();
+        outdated["tokens"]["refresh_token"] = "different-refresh".into();
+        manager.import_provider_accounts(vec![outdated], Ok).await?;
+        assert!(manager.access_tokens.read().await[id].token == before);
+        assert!(
+            Some(manager.accounts.read().await[id].refresh_token.as_str())
+                == auth["tokens"]["refresh_token"].as_str()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_editor_matching_requires_both_user_and_workspace_without_refresh(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        let token = crate::codex_config::test_codex_id_token("user-a");
+        manager
+            .add_test_account_with_workspace_and_access_token(
+                "managed-a",
+                "workspace-a",
+                "synthetic-access",
+                Some(&token),
+            )
+            .await?;
+        assert_eq!(
+            manager
+                .account_for_editor_identity("sub:user-a", "workspace-a")
+                .await
+                .as_deref(),
+            Some("managed-a")
+        );
+        assert!(manager
+            .account_for_editor_identity("sub:user-b", "workspace-a")
+            .await
+            .is_none());
+        assert!(manager
+            .account_for_editor_identity("sub:user-a", "workspace-b")
+            .await
+            .is_none());
+        assert!(manager
+            .account_for_editor_identity("", "workspace-a")
+            .await
+            .is_none());
+        let before = manager.continuation_identity("managed-a").await;
+        let _ = manager
+            .account_for_editor_identity("sub:user-a", "workspace-a")
+            .await;
+        assert_eq!(manager.continuation_identity("managed-a").await, before);
+        Ok(())
     }
 }

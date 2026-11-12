@@ -14,6 +14,139 @@ use crate::proxy::{
 use axum::http::HeaderMap;
 use std::time::Instant;
 
+/// Internal call-site classification; request headers never select ingress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestIngress {
+    Direct,
+    Gateway,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestorationOperation {
+    Responses,
+    ResponsesCompact,
+    ChatCompletions,
+    Messages,
+    GenerateContent,
+    StreamGenerateContent,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestorationFraming {
+    Json,
+    Sse,
+    Unsupported,
+}
+
+/// Trusted handler-owned scope, separate from application and actual upstream identity.
+#[derive(Clone, Copy)]
+pub(crate) struct RestorationRouteScope {
+    pub(crate) client: super::protocol_bridge::Protocol,
+    pub(crate) ingress: RequestIngress,
+    pub(crate) operation: RestorationOperation,
+    pub(crate) framing: RestorationFraming,
+}
+
+impl RestorationRouteScope {
+    pub(crate) fn new(
+        client: super::protocol_bridge::Protocol,
+        ingress: RequestIngress,
+        operation: RestorationOperation,
+        framing: RestorationFraming,
+    ) -> Self {
+        Self {
+            client,
+            ingress,
+            operation,
+            framing,
+        }
+    }
+
+    pub(crate) fn json_endpoint(
+        client: super::protocol_bridge::Protocol,
+        ingress: RequestIngress,
+        operation: RestorationOperation,
+        body: &serde_json::Value,
+    ) -> Self {
+        Self::new(
+            client,
+            ingress,
+            operation,
+            if body.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+                RestorationFraming::Sse
+            } else {
+                RestorationFraming::Json
+            },
+        )
+    }
+
+    pub(crate) fn gemini_endpoint(
+        ingress: RequestIngress,
+        method: &axum::http::Method,
+        uri: &axum::http::Uri,
+    ) -> Self {
+        let unsupported = Self::new(
+            super::protocol_bridge::Protocol::Gemini,
+            ingress,
+            RestorationOperation::Unsupported,
+            RestorationFraming::Unsupported,
+        );
+        if method != axum::http::Method::POST {
+            return unsupported;
+        }
+        let model_and_operation = [
+            "/v1beta/models/",
+            "/gemini/v1beta/models/",
+            "/gemini/v1/models/",
+        ]
+        .into_iter()
+        .find_map(|prefix| uri.path().strip_prefix(prefix));
+        let Some((model, operation)) = model_and_operation.and_then(|path| path.split_once(':'))
+        else {
+            return unsupported;
+        };
+        if model.is_empty() || model.contains('/') {
+            return unsupported;
+        }
+        // Keep bare alt keys visible so malformed duplicates cannot select SSE.
+        let mut alt = uri
+            .query()
+            .into_iter()
+            .flat_map(|query| query.split('&'))
+            .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
+            .filter(|(key, _)| *key == "alt")
+            .map(|(_, value)| value);
+        let alt_value = alt.next();
+        let single_alt = alt.next().is_none();
+        let (operation, framing) = match operation {
+            "generateContent" => (
+                RestorationOperation::GenerateContent,
+                if single_alt && matches!(alt_value, None | Some("json")) {
+                    RestorationFraming::Json
+                } else {
+                    RestorationFraming::Unsupported
+                },
+            ),
+            "streamGenerateContent" => (
+                RestorationOperation::StreamGenerateContent,
+                if single_alt && alt_value == Some("sse") {
+                    RestorationFraming::Sse
+                } else {
+                    RestorationFraming::Unsupported
+                },
+            ),
+            _ => return unsupported,
+        };
+        Self::new(
+            super::protocol_bridge::Protocol::Gemini,
+            ingress,
+            operation,
+            framing,
+        )
+    }
+}
+
 /// 流式超时配置
 #[derive(Debug, Clone, Copy)]
 pub struct StreamingTimeoutConfig {

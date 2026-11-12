@@ -1929,10 +1929,11 @@ fn reversible_completion_json_and_compact_require_strict_envelopes_and_reject_re
 
     let check_json = |protocol: P, raw: &str| -> bool {
         let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
-        let mut validator = JsonCompletion::new(protocol);
-        validator.observe_raw_json(raw, &budget);
-        let ok = validator.permits_completion();
-        drop(validator);
+        let ok = {
+            let mut validator = JsonCompletion::new(protocol);
+            validator.observe_raw_json(raw, &budget);
+            validator.permits_completion()
+        };
         assert_eq!(budget.used(), 0);
         ok
     };
@@ -3014,6 +3015,7 @@ async fn closure_anthropic_witness_sequence(mode: &str) -> Result<(), Box<dyn st
         &crate::app_config::AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &http::HeaderMap::new(),
     )? {
@@ -3578,6 +3580,7 @@ async fn reversible_completion_chat_sse_and_json_permit_null_optional_delta_and_
             &crate::app_config::AppType::Codex,
             true,
             false,
+            false,
             &mut req_body,
             &http::HeaderMap::new(),
         )
@@ -3699,6 +3702,7 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                 &gateway,
                 &crate::app_config::AppType::Codex,
                 true,
+                false,
                 false,
                 &mut body,
                 &headers,
@@ -3868,6 +3872,7 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                     &gateway,
                     &crate::app_config::AppType::Codex,
                     true,
+                    false,
                     false,
                     &mut followup,
                     &headers,
@@ -4071,9 +4076,7 @@ fn history_provenance_client_error_assertion_failure_is_content_free() {
         let panic = std::panic::catch_unwind(|| {
             assert_fixed_restore_client_error(&invalid, expected);
         });
-        let payload = panic
-            .err()
-            .expect("mutated envelope must fail its assertion");
+        let payload = panic.expect_err("mutated envelope must fail its assertion");
         let fixed = payload
             .downcast_ref::<&str>()
             .copied()
@@ -4118,7 +4121,8 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
         "token_format",
         RestoreError::FailedBecause(super::restore_diagnostics::RestoreReason::TokenFormat),
     ));
-    for (text, reason) in [(token.repeat(4097), "restore_capacity")] {
+    {
+        let (text, reason) = (token.repeat(4097), "restore_capacity");
         let err =
             restore_text_with_lease(&text, &lease, &budget, &mut references, &mut occurrences)
                 .err()
@@ -4378,7 +4382,11 @@ mod text_fallback_stream_tests {
         ]
     }
 
-    fn fixture() -> (DlpTokenStore, TextProjectionStream, PayloadBudget) {
+    fn prepared_fixture() -> (
+        DlpTokenStore,
+        super::super::tokenization::DlpRequestLease,
+        PayloadBudget,
+    ) {
         let store = DlpTokenStore::new();
         let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
         let mut lease = store
@@ -4395,8 +4403,210 @@ mod text_fallback_stream_tests {
                 |_| Ok(()),
             )
             .expect("fixture preparation");
+        (store, lease, budget)
+    }
+
+    fn fixture() -> (DlpTokenStore, TextProjectionStream, PayloadBudget) {
+        let (store, lease, budget) = prepared_fixture();
         let stream = TextProjectionStream::new(lease, budget.clone()).expect("stream init");
         (store, stream, budget)
+    }
+
+    #[test]
+    fn text_fallback_lazy_construct_drop_has_no_mechanics_owner() {
+        let (store, lease, budget) = prepared_fixture();
+        let foreign = budget.reserve(43).expect("synthetic foreign reservation");
+        let baseline = budget.used();
+        let begins = super::super::restoration_core::ResponseLifecycle::begin_count_for_test();
+        let stream = TextProjectionStream::new(lease, budget.clone()).expect("lazy construction");
+        assert_eq!(
+            budget.used(),
+            baseline,
+            "unused projection allocated mechanics"
+        );
+        assert_eq!(
+            super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+            begins
+        );
+        drop(stream);
+        assert_eq!(budget.used(), baseline);
+        let counts =
+            super::super::tokenization::publication_test_support::counts(&store).expect("counts");
+        assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+        drop(foreign);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn text_fallback_lazy_first_frame_owns_one_charged_lifecycle_until_drop() {
+        let (store, mut stream, budget) = fixture();
+        let begins = super::super::restoration_core::ResponseLifecycle::begin_count_for_test();
+        assert_eq!(budget.used(), 0, "construction must remain lazy");
+        let input = events("rredact-custom-damaged");
+        assert!(push(&mut stream, &input[0]));
+        assert!(
+            budget.used() > 0,
+            "first frame did not retain charged mechanics"
+        );
+        assert_eq!(
+            super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+            begins + 1
+        );
+        assert!(push(&mut stream, &input[1]));
+        assert_eq!(
+            super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+            begins + 1
+        );
+        let counts =
+            super::super::tokenization::publication_test_support::counts(&store).expect("counts");
+        assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn text_fallback_lazy_capacity_refusal_is_sticky_without_parse_or_publication() {
+        use super::super::{
+            payload_buffer::test_support::{self, Action},
+            response_restoration::RestoreError,
+            restore_diagnostics::RestoreReason,
+        };
+        use std::{cell::Cell, rc::Rc};
+        let (store, lease, _) = prepared_fixture();
+        let budget = PayloadBudget::with_limit(1);
+        let mut stream = TextProjectionStream::new(lease, budget.clone())
+            .expect("lazy construction must not reserve");
+        assert_eq!(budget.used(), 0);
+        let seen = Rc::new(Cell::new(0));
+        let observed = seen.clone();
+        let hook = test_support::install(move |_| {
+            observed.set(observed.get() + 1);
+            Action::Continue
+        });
+        let raw = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"synthetic\"}\n\n";
+        assert!(matches!(
+            stream.push_frame(raw),
+            Err(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))
+        ));
+        assert_eq!(
+            seen.get(),
+            0,
+            "failed initialization reached frame allocation"
+        );
+        assert!(stream.push_frame(raw).is_err());
+        assert!(stream.finish(true).is_err());
+        drop(hook);
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+        let counts =
+            super::super::tokenization::publication_test_support::counts(&store).expect("counts");
+        assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+    }
+
+    #[test]
+    fn text_fallback_lazy_empty_finish_never_initializes_or_publishes() {
+        for reached_eof in [false, true] {
+            let (store, mut stream, budget) = fixture();
+            let begins = super::super::restoration_core::ResponseLifecycle::begin_count_for_test();
+            assert_eq!(budget.used(), 0, "empty projection was initialized eagerly");
+            assert!(stream.finish(reached_eof).is_err());
+            assert!(stream.finish(true).is_err());
+            assert!(stream.push_frame("data: {}\n\n").is_err());
+            assert_eq!(
+                super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+                begins
+            );
+            drop(stream);
+            assert_eq!(budget.used(), 0);
+            let counts = super::super::tokenization::publication_test_support::counts(&store)
+                .expect("counts");
+            assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn text_fallback_lazy_explicit_initialization_is_idempotent_and_charged() {
+        let (store, mut stream, budget) = fixture();
+        let begins = super::super::restoration_core::ResponseLifecycle::begin_count_for_test();
+        assert_eq!(budget.used(), 0);
+        stream.initialize().expect("explicit initialization");
+        let held = budget.used();
+        assert!(held > 0);
+        stream.initialize().expect("repeat initialization");
+        assert_eq!(
+            budget.used(),
+            held,
+            "repeat initialization duplicated owner charge"
+        );
+        assert_eq!(
+            super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+            begins + 1
+        );
+        assert!(push(&mut stream, &events("rredact-custom-damaged")[0]));
+        assert_eq!(
+            super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+            begins + 1
+        );
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+        let counts =
+            super::super::tokenization::publication_test_support::counts(&store).expect("counts");
+        assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+    }
+
+    #[test]
+    fn text_fallback_lazy_partial_initialization_refunds_and_cannot_retry() {
+        use super::super::{
+            response_restoration::RestoreError, restore_diagnostics::RestoreReason,
+        };
+        for limit in [1, 32, 64, 95] {
+            let (store, lease, _) = prepared_fixture();
+            let budget = PayloadBudget::with_limit(limit);
+            let mut stream =
+                TextProjectionStream::new(lease, budget.clone()).expect("lazy construction");
+            assert_eq!(budget.used(), 0);
+            assert!(matches!(
+                stream.initialize(),
+                Err(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))
+            ));
+            assert_eq!(
+                budget.used(),
+                0,
+                "partial initialization stranded identity; capacity={limit}"
+            );
+            assert!(
+                stream.initialize().is_err(),
+                "failed initialization retried"
+            );
+            assert!(stream.push_frame("data: {}\n\n").is_err());
+            assert!(stream.finish(true).is_err());
+            drop(stream);
+            assert_eq!(budget.used(), 0);
+            let counts = super::super::tokenization::publication_test_support::counts(&store)
+                .expect("counts");
+            assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn text_fallback_review_stream_identity_budget_returns_to_preconstruction_baseline() {
+        let (_store, lease, budget) = prepared_fixture();
+        let before_stream = budget.used();
+        assert_eq!(before_stream, 0, "synthetic preparation retains no payload");
+        let mut stream = TextProjectionStream::new(lease, budget.clone()).expect("stream init");
+        assert_eq!(budget.used(), before_stream, "construction remains lazy");
+        stream.initialize().expect("charged stream initialization");
+        let live_stream = budget.used();
+        assert!(
+            live_stream > before_stream,
+            "stream-owned identities must carry a live reservation"
+        );
+        drop(stream);
+        assert_eq!(
+            budget.used(),
+            before_stream,
+            "stream-owned identity reservations must release with the stream"
+        );
     }
 
     fn push(stream: &mut TextProjectionStream, value: &Value) -> bool {
@@ -4986,7 +5196,11 @@ mod text_fallback_stream_tests {
     fn text_fallback_review_transient_kind_copy_is_reserved_before_parse() {
         use super::super::payload_buffer::test_support::{self, Action, Phase};
         use std::{cell::Cell, rc::Rc};
-        let (_store, mut stream, budget) = fixture();
+        let (_store, lease, budget) = prepared_fixture();
+        let before_stream = budget.used();
+        assert_eq!(before_stream, 0, "synthetic preparation retains no payload");
+        let mut stream = TextProjectionStream::new(lease, budget.clone()).expect("stream init");
+        stream.initialize().expect("charged stream initialization");
         let raw = format!("data: {}\n\n", json!({"type":"x".repeat(16 * 1024)}));
         let baseline = budget.used();
         let seen = Rc::new(Cell::new(false));
@@ -5005,7 +5219,7 @@ mod text_fallback_stream_tests {
         drop(hook);
         assert!(seen.get());
         drop(stream);
-        assert_eq!(budget.used(), baseline);
+        assert_eq!(budget.used(), before_stream);
     }
 }
 
@@ -5913,6 +6127,8 @@ async fn agent_internal_dlp_errors_use_generic_protocol_envelopes() {
     use axum::{body::to_bytes, http::StatusCode};
 
     const MESSAGE: &str = "The local proxy could not process the request. Please retry.";
+    // The generic family keeps its historical projection; a caused rejection is a
+    // separate, caller-actionable contract asserted below.
     let internal_errors = [
         DlpForwardError::ContextUnavailable,
         DlpForwardError::PolicyConflict,
@@ -5935,15 +6151,18 @@ async fn agent_internal_dlp_errors_use_generic_protocol_envelopes() {
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
             let text = std::str::from_utf8(&bytes).unwrap();
-            assert!(!text.contains("DLP") && !text.contains("dlp_"), "{text}");
+            assert!(
+                !text.contains("dlp_") && !text.contains("checkpoint"),
+                "{text}"
+            );
             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             match app_type {
                 AppType::Gemini => {
                     assert_eq!(body["error"]["code"], 500);
-                    assert_eq!(body["error"]["message"], "proxy_processing_failed");
+                    assert_eq!(body["error"]["message"], MESSAGE);
                 }
                 AppType::Claude | AppType::ClaudeDesktop => {
-                    assert_eq!(body["error"]["message"], "proxy_processing_failed");
+                    assert_eq!(body["error"]["message"], MESSAGE);
                     assert_eq!(body["error"]["code"], "proxy_processing_failed");
                 }
                 _ => {

@@ -333,6 +333,23 @@ Check the upstream error and the models available to the account. Fetch the prov
 
 The upstream reverse proxy or provider can reject a request even when it is below the local proxy's limit. Reduce oversized attachments and pasted logs, or compact the conversation using the client's supported command. Operators of an upstream gateway should check its documented body limits before changing them. A local setting does not override the provider's limit.
 
+## Native routing returns the generic processing error
+
+With reversible DLP enabled, a supported native route can return HTTP 500 with `proxy_processing_failed` and `The local proxy could not process the request. Please retry.` The client message is intentionally fixed; the cause is recorded only in safe internal diagnostics.
+
+Common causes on the enabled routes:
+
+- **A signed unit needs editing.** Anthropic `thinking` signatures, `redacted_thinking` blocks and Gemini Parts carrying `thoughtSignature` are immutable. If a rule or an authorized reference would have to change text inside one, the request is refused with HTTP 400 and `dlp_restore_unsupported` instead of being rewritten. Remove the signed content, or disable reversible DLP for that provider.
+- **Unsupported Gemini framing.** Only `:generateContent` (without `alt` or with `alt=json`) and `:streamGenerateContent?alt=sse` are restored. On a direct native route, any other framing is refused with HTTP 400, `dlp_restore_unsupported` and a message listing the supported routes. `countTokens`, model listing, duplicated or bare `alt` keys and other methods are refused the same way when a rule matches.
+- **An answer that cannot be delivered.** An answer containing no local placeholder is passed through unchanged, including `MAX_TOKENS`, media Parts and upstream safety blocks: such an answer needs no restoration, so it is not an error. The same applies when restoration itself cannot complete on such an answer, because the forwarded body already equals the restored one.
+  If the answer does contain placeholders that could not be restored safely, or it could not be verified, the client receives HTTP 502 with `server_error` / `proxy_processing_failed` and the fixed message `The local proxy could not process the request. Please retry.` A streaming Anthropic client gets one fixed `event: error` frame and a streaming Gemini client one fixed `data: {"error":...}` frame carrying the same generic code, so the failure is never a silently broken stream. An upstream HTTP rejection keeps its own status instead and is described in the next section.
+
+  The client projection deliberately names no cause: a restoration limitation is not a DLP-module fault and an unresolved placeholder is not something the caller can fix. The failing stage and reason stay in sanitized diagnostics; see the diagnostic section below. This is deliberately different from a request that was never sent: request-side refusals report HTTP 400 with `dlp_restore_unsupported` (see the signed-content cause above), so a 400 means "fix the request" and a 502 means "the answer could not be delivered".
+
+- **Vendor history normalization.** Native Anthropic requests to MiMo/DeepSeek endpoints that contain signed tool history are refused rather than having their signatures stripped. Unsigned histories keep the previous normalization.
+
+If the same request succeeds with DLP disabled, the failure is related to DLP processing: check the causes above first, then capacity, payload budget or internal processing failures. Do not disable the rule globally to work around it.
+
 ## Upstream HTTP errors during reversible DLP forwarding
 
 For an initial non-success upstream HTTP response, the proxy preserves the status. A prepared DLP request, including one with no restoration references, uses a separate safety check before returning the body. Safe JSON fields are retained; safe text is wrapped in a JSON error. Sensitive values are redacted and unsafe object keys are removed. This is a JSON error even when the client requested streaming, not a successful SSE response. Ordinary Codex upstream errors no longer receive a local-failure prefix or added provider, model or endpoint details.

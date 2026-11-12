@@ -377,6 +377,8 @@ struct OutboundTail<'a> {
     patch: Option<&'a Value>,
     schema_names: bool,
     root: bool,
+    preserve_native_messages: bool,
+    native_messages: bool,
 }
 
 impl<'a> OutboundTail<'a> {
@@ -427,6 +429,7 @@ impl<'a> OutboundTail<'a> {
                             "properties" | "patternProperties" | "definitions" | "$defs"
                         ),
                         root: false,
+                        ..self
                     };
                     if !child.filtered_equals(raw, depth + 1, nodes)? {
                         return Ok(false);
@@ -461,7 +464,7 @@ impl<'a> OutboundTail<'a> {
     }
 
     fn visible(self, key: &str) -> bool {
-        !key.starts_with('_') || self.schema_names
+        !key.starts_with('_') || self.schema_names || self.native_messages
     }
 
     fn patch_field(self, key: &str) -> Option<&'a Value> {
@@ -488,6 +491,9 @@ impl<'a> OutboundTail<'a> {
                 "properties" | "patternProperties" | "definitions" | "$defs"
             ),
             root: false,
+            native_messages: self.native_messages
+                || (self.preserve_native_messages && self.root && key == "messages"),
+            ..self
         })
     }
 
@@ -654,6 +660,25 @@ impl PayloadJson {
         budget: PayloadBudget,
         local_limit: usize,
     ) -> Result<Self, TokenError> {
+        Self::try_outbound_tail_with_native_messages(source, patch, budget, local_limit, false)
+    }
+
+    pub(super) fn try_anthropic_outbound_tail(
+        source: &Value,
+        patch: Option<&Value>,
+        budget: PayloadBudget,
+        local_limit: usize,
+    ) -> Result<Self, TokenError> {
+        Self::try_outbound_tail_with_native_messages(source, patch, budget, local_limit, true)
+    }
+
+    fn try_outbound_tail_with_native_messages(
+        source: &Value,
+        patch: Option<&Value>,
+        budget: PayloadBudget,
+        local_limit: usize,
+        preserve_native_messages: bool,
+    ) -> Result<Self, TokenError> {
         fn size(
             tail: OutboundTail<'_>,
             state: &mut Size,
@@ -661,6 +686,9 @@ impl PayloadJson {
             budget: &PayloadBudget,
         ) -> Result<(), TokenError> {
             let tail = tail.selected()?;
+            if tail.native_messages && tail.patch.is_none() {
+                return state.value(tail.source, depth, &mut Replacements::new(&[])?);
+            }
             if depth > MAX_DEPTH || state.nodes >= MAX_NODES {
                 return Err(TokenError::CapacityExceeded);
             }
@@ -701,6 +729,8 @@ impl PayloadJson {
             patch: patch.filter(|patch| patch.is_object()),
             schema_names: false,
             root: true,
+            preserve_native_messages,
+            native_messages: false,
         };
         let mut sizing = Size {
             bytes: 0,
@@ -723,6 +753,10 @@ impl PayloadJson {
 
     fn rebuild_outbound_tail(&self, tail: OutboundTail<'_>) -> Result<Value, TokenError> {
         let tail = tail.selected()?;
+        if tail.native_messages && tail.patch.is_none() {
+            // Keep provider-native fields and signed block order without a second tree.
+            return self.rebuild(tail.source, &mut Replacements::new(&[])?);
+        }
         match tail.source {
             Value::Object(_) => {
                 let keys = tail.keys(&self.budget)?;

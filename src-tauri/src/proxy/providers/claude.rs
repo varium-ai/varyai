@@ -236,6 +236,41 @@ pub fn normalize_anthropic_messages_for_provider(
     changed
 }
 
+/// Native Anthropic history treats signed and opaque reasoning carriers as
+/// immutable. Report whether vendor normalization would rewrite them so native
+/// callers can refuse before the mapped body is touched.
+pub fn anthropic_vendor_normalization_would_rewrite_immutable(
+    body: &Value,
+    provider: &Provider,
+    api_format: &str,
+) -> bool {
+    if !should_normalize_anthropic_tool_thinking_history(provider, body, api_format) {
+        return false;
+    }
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return false;
+    };
+    messages.iter().any(|message| {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            return false;
+        }
+        let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+            return false;
+        };
+        let tool_bearing = blocks
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"));
+        tool_bearing
+            && blocks
+                .iter()
+                .any(|block| match block.get("type").and_then(Value::as_str) {
+                    Some("redacted_thinking") => true,
+                    Some("thinking") => block.get("signature").is_some(),
+                    _ => false,
+                })
+    })
+}
+
 fn normalize_anthropic_tool_thinking_history(body: &mut Value) -> bool {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return false;
@@ -2360,6 +2395,100 @@ mod tests {
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[2]["role"], "system");
         assert_eq!(body["system"], "Existing top-level system.");
+    }
+
+    #[test]
+    fn test_vendor_immutable_predicate_matrix() {
+        let vendor = create_provider(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                "ANTHROPIC_API_KEY": "test-key"
+            }
+        }));
+        let generic = create_provider(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                "ANTHROPIC_API_KEY": "test-key"
+            }
+        }));
+        let history = |carrier: Value| {
+            json!({
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    { "role": "user", "content": "hello" },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            carrier,
+                            { "type": "tool_use", "id": "call_1", "name": "lookup", "input": {} }
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [{ "type": "tool_result", "tool_use_id": "call_1", "content": "ok" }]
+                    }
+                ]
+            })
+        };
+        let signed = json!({ "type": "thinking", "thinking": "reasoning", "signature": "sig" });
+        let redacted = json!({ "type": "redacted_thinking", "data": "opaque" });
+        assert!(anthropic_vendor_normalization_would_rewrite_immutable(
+            &history(signed.clone()),
+            &vendor,
+            "anthropic"
+        ));
+        assert!(anthropic_vendor_normalization_would_rewrite_immutable(
+            &history(redacted.clone()),
+            &vendor,
+            "anthropic"
+        ));
+
+        // Unsigned carriers are still normalized, never refused.
+        let unsigned = json!({ "type": "thinking", "thinking": "reasoning" });
+        let empty = json!({ "type": "thinking", "thinking": "   " });
+        assert!(!anthropic_vendor_normalization_would_rewrite_immutable(
+            &history(unsigned),
+            &vendor,
+            "anthropic"
+        ));
+        assert!(!anthropic_vendor_normalization_would_rewrite_immutable(
+            &history(empty),
+            &vendor,
+            "anthropic"
+        ));
+
+        // No tool-bearing turn, no rewrite target.
+        let no_tool = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": [signed.clone()] }
+            ]
+        });
+        assert!(!anthropic_vendor_normalization_would_rewrite_immutable(
+            &no_tool,
+            &vendor,
+            "anthropic"
+        ));
+
+        // Non-native formats and non-vendor providers are outside the boundary.
+        assert!(!anthropic_vendor_normalization_would_rewrite_immutable(
+            &history(signed.clone()),
+            &vendor,
+            "openai_chat"
+        ));
+        let generic_history = json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [{
+                "role": "assistant",
+                "content": [signed.clone(), { "type": "tool_use", "id": "call_1", "name": "lookup", "input": {} }]
+            }]
+        });
+        assert!(!anthropic_vendor_normalization_would_rewrite_immutable(
+            &generic_history,
+            &generic,
+            "anthropic"
+        ));
     }
 
     #[test]

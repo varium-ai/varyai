@@ -7,7 +7,7 @@ use std::{
     future::{pending, Future},
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Barrier},
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
     thread,
 };
 
@@ -386,11 +386,6 @@ fn unwind_releases_the_owned_reservation() -> Result<(), TokenError> {
     Ok(())
 }
 
-struct NoopWake;
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 #[test]
 fn cancelling_a_pending_future_releases_its_reservation_without_a_runtime() -> Result<(), TokenError>
 {
@@ -400,9 +395,9 @@ fn cancelling_a_pending_future_releases_its_reservation_without_a_runtime() -> R
         let _reservation = reservation;
         pending::<()>().await;
     });
-    let waker = Waker::from(Arc::new(NoopWake));
+    let waker = Waker::noop();
     assert!(matches!(
-        operation.as_mut().poll(&mut Context::from_waker(&waker)),
+        operation.as_mut().poll(&mut Context::from_waker(waker)),
         Poll::Pending
     ));
     assert_eq!(budget.used(), 8);

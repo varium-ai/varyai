@@ -735,7 +735,10 @@ mod tests {
         let holder = tokio::spawn(async move {
             let (mut socket, _) = occupied.accept().await?;
             let mut bytes = [0; 2048];
-            socket.read(&mut bytes).await?;
+            assert!(
+                socket.read(&mut bytes).await? > 0,
+                "fixture must receive the request line"
+            );
             socket
                 .write_all(
                     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -1335,7 +1338,10 @@ mod exchange_tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await?;
             let mut bytes = [0; 4096];
-            socket.read(&mut bytes).await?;
+            assert!(
+                socket.read(&mut bytes).await? > 0,
+                "fixture must receive the request line"
+            );
             socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{").await?;
             std::future::pending::<()>().await;
             Ok::<_, std::io::Error>(())

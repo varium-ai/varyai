@@ -409,6 +409,36 @@ pub(crate) async fn process_codex_response(
     })
 }
 
+/// Keep tokenized observations before the sole direct-native finalizer.
+pub(crate) async fn process_native_response(
+    response: ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    parser_config: &UsageParserConfig,
+    connection_guard: Option<ActiveConnectionGuard>,
+    dlp_attempt: Option<super::security::http_restoration::DlpPreparedAttempt>,
+) -> Result<Response, ProxyError> {
+    let leased = dlp_attempt.is_some();
+    let response = process_response(response, ctx, state, parser_config, connection_guard)
+        .await
+        .map_err(|error| isolate_codex_dlp_response_error(error, leased))?;
+    Ok(match dlp_attempt {
+        Some(attempt)
+            if attempt.is_native_chat()
+                || attempt.is_native_anthropic()
+                || attempt.is_native_gemini() =>
+        {
+            attempt.restore_native_chat_http_response(response).await
+        }
+        Some(_) => {
+            return Err(ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+            ))
+        }
+        None => response,
+    })
+}
+
 // ============================================================================
 // SSE 使用量收集器
 // ============================================================================

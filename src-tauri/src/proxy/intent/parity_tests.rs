@@ -36,7 +36,7 @@ async fn parity_rejected_and_precontent_failed_attempts_use_backup_without_repla
         let published = global_tests::menu(&format!("http://{address}/primary"));
         let mut session = published.groups.values().next().ok_or("fixture")?.as_ref().clone();
         session.group.enabled=false;
-        session.group.patience=-1;
+        session.group.patience = -1;
         session.group.members.push(crate::services::intent_routing::Member { id:"backup".into(),provider_id:"backup".into(),model_id:"exact-model".into(),weight:1,free:None,effort:None });
         session.group.fallback_member_ids.push("backup".into());
         let mut backup = session.targets[0].clone();

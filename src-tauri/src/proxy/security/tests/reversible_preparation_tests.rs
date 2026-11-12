@@ -181,7 +181,7 @@ fn preparation_rejects_sensitive_read_only_values_before_mapping_commit() -> Res
         &[],
         |_, _, _| Ok(()),
     );
-    assert_eq!(result.err(), Some(PlanError::Unsupported));
+    assert_eq!(result.err(), Some(PlanError::ImmutableContent));
     assert_eq!(store.stats()?.entries, 0);
     Ok(())
 }
@@ -1107,13 +1107,8 @@ fn serialization_budget_measures_json_escaping_and_utf8_not_logical_text_length(
 fn serialization_budget_polled_cancellation_releases_owner() -> Result<(), PlanError> {
     use std::{
         future::Future,
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll, Waker},
     };
-    struct Noop;
-    impl Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
     let budget = PayloadBudget::with_limit(8192);
@@ -1130,8 +1125,8 @@ fn serialization_budget_polled_cancellation_releases_owner() -> Result<(), PlanE
         std::future::pending::<()>().await;
         drop(prepared);
     });
-    let waker = Waker::from(Arc::new(Noop));
-    let mut context = Context::from_waker(&waker);
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
     assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
     assert!(budget.used() > 0);
     drop(future);

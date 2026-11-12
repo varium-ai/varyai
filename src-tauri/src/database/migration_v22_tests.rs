@@ -103,7 +103,6 @@ pub(super) fn assert_v22_state(
     local_tool_risk: bool,
 ) -> Result<(), AppError> {
     assert_eq!(Database::get_user_version(conn)?, SCHEMA_VERSION);
-    assert!(SCHEMA_VERSION >= 22);
     for table in [
         "security_custom_rules",
         "security_settings",

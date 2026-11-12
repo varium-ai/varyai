@@ -432,7 +432,7 @@ fn history_provenance_mapping_is_typed_ordered_exact_and_live() -> Result<(), To
     let mut mapping = projection.mapping().ok_or(TokenError::Unavailable)?;
     assert!(!mapping.record(
         Target::ChatContent { message_index: 0 },
-        &[first.clone()],
+        std::slice::from_ref(&first),
         Sep::None
     ));
     assert!(!mapping.record(
@@ -812,8 +812,8 @@ fn history_provenance_chat_snapshot_each_fallible_copy_failure_revokes_all_targe
     ];
     let mapping = || {
         let mut mapping = projection.mapping().ok_or(TokenError::Unavailable)?;
-        assert!(mapping.record(targets[0], &[reasoning.clone()], Sep::None));
-        assert!(mapping.record(targets[1], &[output.clone()], Sep::None));
+        assert!(mapping.record(targets[0], std::slice::from_ref(&reasoning), Sep::None));
+        assert!(mapping.record(targets[1], std::slice::from_ref(&output), Sep::None));
         Ok::<_, TokenError>(mapping)
     };
     let outbound = json!({"messages":[{"role":"assistant",
@@ -914,7 +914,7 @@ fn history_provenance_chat_snapshot_depth_64_65_boundary_is_exact() -> Result<()
         let outbound = json!({"messages":[{"role":"assistant",
         "reasoning_content":"synthetic first","metadata":nested}]});
         let mut mapping = projection.mapping().ok_or(TokenError::Unavailable)?;
-        assert!(mapping.record(target, &[source.clone()], Sep::None));
+        assert!(mapping.record(target, std::slice::from_ref(&source), Sep::None));
         assert_eq!(mapping.seal_chat_targets(&outbound), depth == 64);
         assert_eq!(mapping.failed(), depth == 65);
         assert_eq!(
@@ -951,7 +951,7 @@ fn history_provenance_chat_snapshot_multibyte_exact_byte_ceiling_releases_charge
     let target = Target::ChatReasoning { message_index: 0 };
     let mapping = || {
         let mut mapping = projection.mapping().ok_or(TokenError::Unavailable)?;
-        assert!(mapping.record(target, &[source.clone()], Sep::None));
+        assert!(mapping.record(target, std::slice::from_ref(&source), Sep::None));
         Ok::<_, TokenError>(mapping)
     };
     let mut outbound = json!({"messages":[{"role":"assistant",
