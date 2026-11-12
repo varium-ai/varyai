@@ -251,6 +251,95 @@ pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
     Ok(text)
 }
 
+/// Explicit recovery only: a foreign writer can discard our opening comment.
+pub(crate) fn recover_for_reapply(source: &str, installed: &Value) -> Result<String, String> {
+    let conflict = super::agent_connections::CONFLICT;
+    if source.matches(END).count() != 1 {
+        return Err(conflict.into());
+    }
+    let end = source.find(END).ok_or(conflict)?;
+    if end > 0 && source.as_bytes()[end - 1] != b'\n' {
+        return Err(conflict.into());
+    }
+    let expected = installed["providers"]
+        .as_object()
+        .filter(|providers| !providers.is_empty())
+        .ok_or(conflict)?;
+    let opening = source.find(START);
+    let candidates = if let Some(start) = opening {
+        sections(source).map_err(|_| conflict)?;
+        vec![start + START.len()]
+    } else {
+        source[..end]
+            .rmatch_indices("\n- ")
+            .map(|(index, _)| index + 1)
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    for start in candidates {
+        let Ok(entries) = array(&source[start..end]) else {
+            continue;
+        };
+        if entries.len() != 2 || entries[0]["id"] != "llm-pi-ai" {
+            continue;
+        }
+        let mut native = entries[0].clone();
+        if native["name"] != PLUGIN
+            || native.as_object().is_none_or(|entry| entry.len() != 3)
+            || entries[1]["id"] != "agent-default-model"
+            || !valid_selection(&entries[1]["config"])
+        {
+            return Err(conflict.into());
+        }
+        let mut owned_routes = Vec::new();
+        let routes = native["config"]["providers"]
+            .as_object_mut()
+            .ok_or(conflict)?;
+        for provider in expected.values() {
+            if provider["name"] != PLUGIN {
+                return Err(conflict.into());
+            }
+            for id in provider["config"]["providers"]
+                .as_object()
+                .filter(|routes| !routes.is_empty())
+                .ok_or(conflict)?
+                .keys()
+            {
+                if !id.starts_with("varyai-") || routes.remove(id).is_none() {
+                    return Err(conflict.into());
+                }
+                owned_routes.push(id.as_str());
+            }
+        }
+        if routes.keys().any(|id| id.starts_with("varyai-")) {
+            return Err(conflict.into());
+        }
+        // Keep the effective native config, including another manager's disconnect.
+        // Dropping this entire row could expose its stale snapshot earlier in the file.
+        let mut retained = vec![native];
+        if !owned_routes.contains(&entries[1]["config"]["provider"].as_str().ok_or(conflict)?) {
+            retained.push(entries[1].clone());
+        }
+        let clean = format!(
+            "{}{}{}",
+            &source[..opening.unwrap_or(start)],
+            serde_yaml::to_string(&retained).map_err(|_| conflict)?,
+            &source[end + END.len()..],
+        );
+        let parsed = parse(&clean).map_err(|_| conflict)?;
+        if expected.keys().any(|id| {
+            foreign_conflict(
+                &parsed["patches"],
+                id.trim_start_matches("varyai-provider-"),
+            )
+        }) {
+            return Err(conflict.into());
+        }
+        return Ok(clean);
+    }
+    Err(conflict.into())
+}
+
 fn key(id: &str) -> String {
     format!("varyai-provider-{id}")
 }

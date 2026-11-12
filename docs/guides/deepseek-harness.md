@@ -10,6 +10,12 @@ The desktop profile is `$DSH_HOME/profiles/desktop/cordis.patch.yml`, with `DSH_
 
 Existing conversations retain their own model selection; switch those inside Harness, or start a new session to use the default chosen in VaryAI. Disconnecting removes the managed default override and restores the preceding profile. VaryAI leaves the client's official account and credential store with the client. Native DeepSeek account traffic is outside this adapter's inspection coverage; select a VaryAI model to route that conversation through inspection. Existing pi-ai provider patches with explicit endpoints can use the native API-key routing path. File changes can be reloaded by Harness; if its catalog has not refreshed, quit and reopen it manually.
 
+## Recovering after another manager changes the profile
+
+Use one manager for DeepSeek Harness at a time. If Magpie or another tool also manages Harness, turn off its Harness integration first; the other application can remain running. In VaryAI, click **Reconnect** on the Harness row or turn its connection switch on. Restarting VaryAI alone does not repair a damaged profile.
+
+Explicit reconnection can recover a lost opening marker when the provider identity can still be identified from VaryAI's saved connection record. As with Claude Code, this action rewrites VaryAI's connection fields from the current shared catalog, including changed endpoints, authentication and model lists. It saves a private `deepseek-harness-recovery-*.yml` backup beside the connection record before changing the profile. The effective native provider settings are retained, including a disconnect performed by the other manager and a native default-model choice. Polling and startup do not perform this repair or take ownership back automatically. Invalid YAML and ambiguous provider ownership still stop recovery without overwriting the profile; restore a known-good profile backup or contact support in those cases.
+
 ## Versions and updates
 
 On macOS, presence and installed versions are read from the official `DeepSeek Harness.app` bundle with identity `com.deepseek.dsh`. The homepage includes this agent in individual and batch update checks. Apple Silicon builds using the installed official Nightly feed can use the existing verified desktop updater. An absent, different or unreadable feed does not offer an automatic update; use Harness's own updater or the official download page. Update checks do not download or replace an application.

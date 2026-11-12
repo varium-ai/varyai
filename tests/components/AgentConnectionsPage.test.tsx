@@ -3435,6 +3435,36 @@ describe("Agent connections", () => {
       );
     },
   );
+  it("explains how to recover DeepSeek Harness and retries from its switch", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      "deepseek-harness": true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "deepseek-harness",
+        enabled: false,
+        configured: false,
+        model: "vary-auto/shared",
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        restartRequired: false,
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", {
+      name: "apps.deepseek-harness",
+    });
+    expect(
+      within(row).getByText("agentConnections.deepseekRecoveryHint"),
+    ).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("switch"));
+    await waitFor(() =>
+      expect(agentConnectionsApi.reapply).toHaveBeenCalledWith(
+        "deepseek-harness",
+      ),
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
   it.each([false, true])(
     "selects the DeepSeek Harness starting model when connected is %s",
     async (enabled) => {

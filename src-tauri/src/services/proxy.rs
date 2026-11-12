@@ -6791,6 +6791,8 @@ mod tests {
             let origin = format!("http://127.0.0.1:{}", info.port);
             let mut apps = vec![
                 "deepseek-harness",
+                "gemini",
+                "qoder",
                 "opencode",
                 "openclaw",
                 "hermes",

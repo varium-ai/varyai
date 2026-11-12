@@ -157,7 +157,7 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     let receipt = build("opencode", &menu, "http://127.0.0.1:1", selected)?;
     receipt.files[0].write()?;
     let installed: Value = serde_json::from_str(&fs::read_to_string(&json_path)?)?;
-    assert_eq!(installed["model"], format!("varyai/{selected}"));
+    assert_eq!(installed["model"], format!("varyai/{name}"));
     assert_eq!(installed["small_model"], "mine/small");
     assert_eq!(
         installed["provider"]["mine"]["models"]["small"]["name"],

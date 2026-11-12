@@ -28,7 +28,7 @@ fn wire_name(label: &str) -> String {
     }
 }
 
-pub(super) fn project(
+pub(crate) fn project(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
 ) -> Result<Vec<String>, String> {
@@ -102,7 +102,7 @@ pub(super) fn project(
     Ok(visible)
 }
 
-pub(super) fn selected<'a>(
+pub(crate) fn selected<'a>(
     visible: &'a [String],
     retained: &BTreeMap<String, String>,
     model: &str,

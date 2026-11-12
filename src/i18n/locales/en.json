@@ -5128,6 +5128,7 @@
     "nativeDefault": "Default",
     "nativeDefaultHint": "No starting model is set in this tool's configuration. It chooses its own default; no Vary model has been selected.",
     "deepseekStartingModelHint": "Sets the default model for new DeepSeek Harness sessions. Switch models for existing sessions inside the client.",
+    "deepseekRecoveryHint": "Turn off DeepSeek Harness integration in other tools such as Magpie, then click Reconnect here. Restarting Vary does not repair damaged configuration.",
     "nativeModelHint": "This is the tool's current native configuration, not a Vary selection. Picking a shared model connects this tool to Vary. Disconnect and restore returns to its saved configuration.",
     "nativeUnavailable": "Native model unavailable",
     "manageVisibleModels": "Manage visible models",

@@ -1,6 +1,8 @@
 //! Agents consume a shared catalog. Receipts own only explicitly changed fields.
 mod bridge;
 mod claude_policy;
+#[cfg(test)]
+mod deepseek_recovery_tests;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
@@ -10,6 +12,8 @@ pub(crate) mod native;
 #[cfg(test)]
 mod parity_tests;
 mod projections;
+#[cfg(test)]
+mod readable_tests;
 mod reasoning;
 mod selection;
 pub(crate) mod t3code;
@@ -63,6 +67,27 @@ pub(crate) struct Model {
     pub default_reasoning_level: Option<String>,
     pub images: bool,
     pub icon: Option<String>,
+}
+pub(crate) fn model_wire<'a>(
+    names: &'a BTreeMap<String, String>,
+    visible: Option<&'a [String]>,
+    alias: &'a str,
+) -> &'a str {
+    if let Some(wire) = visible.and_then(|visible| {
+        visible
+            .iter()
+            .find(|wire| names.get(*wire).is_some_and(|target| target == alias))
+    }) {
+        return wire;
+    }
+    let legacy = projections::wire_id(alias);
+    names
+        .iter()
+        .find(|(wire, target)| {
+            target.as_str() == alias && wire.as_str() != alias && **wire != legacy
+        })
+        .map(|(wire, _)| wire.as_str())
+        .unwrap_or(alias)
 }
 pub(crate) fn models(menu: &Menu) -> Vec<Model> {
     let mut models = menu
@@ -250,6 +275,7 @@ pub(crate) struct Receipt {
     pub token: String,
     pub model: String,
     pub model_map: BTreeMap<String, String>,
+    // Desktop stores canonical identities; other agents store current picker IDs.
     #[serde(default)]
     pub visible_models: Option<Vec<String>>,
     pub files: Vec<FileEdit>,
@@ -1067,6 +1093,21 @@ impl Manager {
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
         let receipt = self.load(app)?.ok_or(CONFLICT)?;
+        if app == "deepseek-harness" && receipt.files.len() == 1 {
+            let file = &receipt.files[0];
+            let text = read(&file.path)?;
+            if matches!(file.format, Format::Cordis) && file.format.parse(text.as_deref()).is_err()
+            {
+                let source = text.as_deref().ok_or(CONFLICT)?;
+                let clean = super::deepseek_harness::recover_for_reapply(source, &file.installed)?;
+                let backup = self
+                    .root
+                    .join(format!("deepseek-harness-recovery-{}.yml", new_token()));
+                atomic_write_private(&backup, source.as_bytes()).map_err(|_| FAILED)?;
+                replace_checked(&file.path, Some(source), Some(&clean))?;
+                return fs::remove_file(self.path(app)?).map_err(|_| FAILED.into());
+            }
+        }
         // Explicit reapplication retains external edits as the next connection's baseline.
         for file in &receipt.files {
             file.format.parse(read(&file.path)?.as_deref())?;
@@ -1303,9 +1344,15 @@ fn build_with_token(
         applied_at_ms: Some(chrono::Utc::now().timestamp_millis()),
     };
     match app {
-        "t3code" => t3code::project(&t3code::settings_path(), &crate::services::intent_routing::client::menu_catalog(menu, "")?, &base, &mut receipt)?,
+        "t3code" => t3code::project(
+            &t3code::settings_path(),
+            &crate::services::intent_routing::client::menu_catalog(menu, "")?,
+            &base,
+            &mut receipt,
+        )?,
         "claude" => {
-            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            let (catalog, selected) =
+                projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
             for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
                 let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { &selected };
@@ -1331,31 +1378,51 @@ fn build_with_token(
         })?);
         }
         "pi" => {
-            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            let (catalog, selected) =
+                projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_models_path().map_err(|_| FAILED)?, |value| {
                 let models = catalog.iter().map(pi_model).collect::<Vec<_>>();
                 put(value, &["providers".into(), "varyai".into()], Some(json!({"baseUrl":format!("{base}/v1"),"apiKey":token,"api":"openai-completions","models":models})))
             })?);
-            receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_settings_path().map_err(|_| FAILED)?, |value| {
-                put(value, &["defaultProvider".into()], Some(json!("varyai")))?;
-                put(value, &["defaultModel".into()], Some(json!(selected)))?;
-                if let Some(scope) = value.get_mut("enabledModels").and_then(Value::as_array_mut) {
-                    for entry in scope.iter_mut() {
-                        if let Some(alias) = entry.as_str().and_then(|id| id.strip_prefix("varyai/")) {
-                            if let Some((name, _)) = receipt.model_map.iter().find(|(_, internal)| internal.as_str() == alias) {
-                                *entry = json!(format!("varyai/{name}"));
+            receipt.files.push(FileEdit::prepare(
+                crate::pi_config::get_pi_settings_path().map_err(|_| FAILED)?,
+                |value| {
+                    put(value, &["defaultProvider".into()], Some(json!("varyai")))?;
+                    put(value, &["defaultModel".into()], Some(json!(selected)))?;
+                    if let Some(scope) =
+                        value.get_mut("enabledModels").and_then(Value::as_array_mut)
+                    {
+                        for entry in scope.iter_mut() {
+                            if let Some(alias) =
+                                entry.as_str().and_then(|id| id.strip_prefix("varyai/"))
+                            {
+                                if let Some((name, _)) = receipt
+                                    .model_map
+                                    .iter()
+                                    .find(|(_, internal)| internal.as_str() == alias)
+                                {
+                                    *entry = json!(format!("varyai/{name}"));
+                                }
+                            }
+                        }
+                        if !scope.is_empty() {
+                            let reference = json!(format!("varyai/{selected}"));
+                            if !scope.contains(&reference) {
+                                scope.push(reference);
                             }
                         }
                     }
-                    if !scope.is_empty() { let reference = json!(format!("varyai/{selected}")); if !scope.contains(&reference) { scope.push(reference); } }
-                }
-                Ok(())
-            })?);
+                    Ok(())
+                },
+            )?);
         }
         "workbuddy" | "workbuddy-ai" => {
             let path = workbuddy_connection_path(app)?.ok_or(FAILED)?;
             let (named, _) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
-            let named_models = named.iter().map(|model| (model.id.clone(), model)).collect::<Vec<_>>();
+            let named_models = named
+                .iter()
+                .map(|model| (model.id.clone(), model))
+                .collect::<Vec<_>>();
             receipt.files.push(FileEdit::prepare_document(path, true, |value| {
             let array = value.is_array();
             if array { *value = json!({"models":value.take()}); }
@@ -1379,22 +1446,43 @@ fn build_with_token(
             if array { *value = value["models"].take(); }
             Ok(())
         })?);
-        },
-        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Jsonc, |value| {
+        }
+        "opencode" => {
+            let (catalog, selected) =
+                projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Jsonc, |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;
             put(value, &["model".into()], Some(json!(format!("varyai/{selected}"))))
-        })?),
+        })?);
+        }
         "claude-desktop" => {
             let visible = visibility.desktop_models(&catalog, selected);
-            if let Some(default) = visible.first() { receipt.model = default.id.clone(); }
-            let (mut files, _) = crate::claude_desktop_config::shared_catalog_edits(&base, &token, previous.filter(|old| !old.suspended).map(|old| old.token.as_str()), &visible)?;
+            if let Some(default) = visible.first() {
+                receipt.model = default.id.clone();
+            }
+            let (mut files, _) = crate::claude_desktop_config::shared_catalog_edits(
+                &base,
+                &token,
+                previous
+                    .filter(|old| !old.suspended)
+                    .map(|old| old.token.as_str()),
+                &visible,
+            )?;
             desktop_config::seed_tool_search(&mut files, previous);
             desktop_config::preserve_carried(&mut files, previous)?;
             receipt.files = files;
             receipt.visible_models = Some(visible.iter().map(|m| m.id.clone()).collect());
             // Keep hidden models addressable by existing Desktop conversations.
-            receipt.model_map = catalog.iter().map(|m| (crate::claude_desktop_config::shared_model_wire(m), m.id.clone())).collect();
+            receipt.model_map = catalog
+                .iter()
+                .map(|m| {
+                    (
+                        crate::claude_desktop_config::shared_model_wire(m),
+                        m.id.clone(),
+                    )
+                })
+                .collect();
         }
         _ => projections::build(app, &catalog, &base, &token, selected, &mut receipt)?,
     }

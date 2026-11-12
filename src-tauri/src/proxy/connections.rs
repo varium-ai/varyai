@@ -336,7 +336,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         }
         if endpoint == "/v1beta/models" {
             let models = catalog.into_iter().map(|model| {
-                let wire = connection.model_map.iter().find(|(_, alias)| **alias == model.id).map(|(wire, _)| wire.as_str()).unwrap_or(&model.id);
+                let wire = crate::services::agent_connections::model_wire(&connection.model_map, connection.visible_models.as_deref(), &model.id);
                 let mut row = json!({"name":format!("models/{wire}"),"displayName":model.name,"supportedGenerationMethods":["generateContent","streamGenerateContent","countTokens"]});
                 if let Some(window) = model.context_window { row["inputTokenLimit"] = json!(window); }
                 row
@@ -354,24 +354,12 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                     }
                     entry = crate::claude_desktop_config::desktop_model_entry(&model, entry);
                 }
-                if [
-                    "claude",
-                    "pi",
-                    "hermes",
-                    "grokbuild",
-                    "kimi",
-                    "qwen",
-                    "zcode",
-                ]
-                .contains(&app)
-                {
-                    if let Some((wire, _)) = connection
-                        .model_map
-                        .iter()
-                        .find(|(_, alias)| **alias == model.id)
-                    {
-                        entry["id"] = json!(wire);
-                    }
+                if app != "claude-desktop" {
+                    entry["id"] = json!(crate::services::agent_connections::model_wire(
+                        &connection.model_map,
+                        connection.visible_models.as_deref(),
+                        &model.id
+                    ));
                 }
                 entry["display_name"] = json!(model.name);
                 Some(entry)

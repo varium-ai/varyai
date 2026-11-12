@@ -894,6 +894,12 @@ export function AgentConnectionsPage({
             </span>
             {bypassed && reapplyButton}
           </p>
+          {app === "deepseek-harness" &&
+            state?.recoveryReason === "configuration_changed" && (
+              <p className="text-xs text-muted-foreground">
+                {t("agentConnections.deepseekRecoveryHint")}
+              </p>
+            )}
         </div>
         {compact && (
           <span className="mp-agent-summary-model" title={currentModel}>

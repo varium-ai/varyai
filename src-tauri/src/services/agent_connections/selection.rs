@@ -20,6 +20,7 @@ fn paths(app: &str) -> &'static [&'static [&'static str]] {
         "zcode" => &[&["config", "defaultModelSelection"]],
         "deepseek-harness" => &[&["selection"]],
         "t3code" => &[
+            &["model"],
             &["defaultModelSelection", "instanceId"],
             &["defaultModelSelection", "model"],
         ],
@@ -120,6 +121,7 @@ fn contains(value: &Value, needle: &str) -> bool {
 fn renamed_model(
     old: &Receipt,
     names: &std::collections::BTreeMap<String, String>,
+    visible: Option<&[String]>,
     file: &super::FileEdit,
     wire: &str,
 ) -> Option<String> {
@@ -144,10 +146,56 @@ fn renamed_model(
                 .flatten()
         })
         .unwrap_or(base);
-    names
-        .iter()
-        .find(|(_, alias_id)| alias_id.as_str() == alias)
-        .map(|(name, _)| format!("{name}{}", &wire[base.len()..]))
+    names.values().any(|id| id == alias).then(|| {
+        let name = super::model_wire(names, visible, alias);
+        format!("{name}{}", &wire[base.len()..])
+    })
+}
+
+fn renamed_choice(
+    old: &Receipt,
+    names: &std::collections::BTreeMap<String, String>,
+    visible: Option<&[String]>,
+    file: &super::FileEdit,
+    choice: &Value,
+) -> Option<Value> {
+    match choice {
+        Value::String(wire) => {
+            let prefixed =
+                matches!(old.app.as_str(), "opencode" | "openclaw") && wire.starts_with("varyai/");
+            let model = if prefixed {
+                &wire["varyai/".len()..]
+            } else {
+                wire
+            };
+            renamed_model(old, names, visible, file, model).map(|name| {
+                Value::String(if prefixed {
+                    format!("varyai/{name}")
+                } else {
+                    name
+                })
+            })
+        }
+        Value::Object(value) => {
+            let field = match old.app.as_str() {
+                "zcode" => "modelId",
+                "deepseek-harness" => "model",
+                _ => return None,
+            };
+            let model = value.get(field)?.as_str()?;
+            let name = renamed_model(old, names, visible, file, model)?;
+            let mut choice = choice.clone();
+            choice[field] = Value::String(name);
+            Some(choice)
+        }
+        Value::Array(values) if old.app == "deepseek-harness" => {
+            let mut choice = choice.clone();
+            let name = renamed_choice(old, names, visible, file, values.first()?.get("config")?)?;
+            choice[0]["config"] = name;
+            Some(choice)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> {
@@ -160,6 +208,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
         .map(|file| file.installed.clone())
         .collect::<Vec<_>>();
     let names = &next.model_map;
+    let visible = next.visible_models.as_deref();
     for file in &mut next.files {
         let prior = old
             .files
@@ -176,7 +225,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
                     if let Some(name) = model
                         .as_str()
                         .and_then(|wire| wire.strip_prefix("varyai/"))
-                        .and_then(|wire| renamed_model(old, names, prior, wire))
+                        .and_then(|wire| renamed_model(old, names, visible, prior, wire))
                     {
                         *model = Value::String(format!("varyai/{name}"));
                     }
@@ -200,15 +249,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             {
                 continue;
             }
-            let renamed = ["claude", "pi", "hermes", "grokbuild"]
-                .contains(&old.app.as_str())
-                .then(|| {
-                    choice
-                        .as_str()
-                        .and_then(|wire| renamed_model(old, names, prior, wire))
-                })
-                .flatten()
-                .map(Value::String);
+            let renamed = renamed_choice(old, names, visible, prior, choice);
             let choice = renamed.as_ref().unwrap_or(choice);
             // Retain native choices and surviving shared models. Deleted shared models
             // use the newly projected default instead of a dangling model reference.
@@ -225,7 +266,11 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
                 });
             if !managed(choice, old)
                 || model.is_some_and(|model| {
-                    catalogs.iter().any(|catalog| {
+                    visible.is_some_and(|visible| {
+                        visible.iter().any(|wire| {
+                            wire == model || wire == model.strip_prefix("varyai/").unwrap_or(model)
+                        })
+                    }) || catalogs.iter().any(|catalog| {
                         contains(catalog, model)
                             || contains(catalog, model.strip_prefix("varyai/").unwrap_or(model))
                     })

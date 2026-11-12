@@ -5053,6 +5053,7 @@
     "nativeDefault": "預設",
     "nativeDefaultHint": "工具設定中未指定啟動模型，將沿用工具自身預設；這不表示已選擇 Vary 共享模型。",
     "deepseekStartingModelHint": "設定 DeepSeek Harness 新對話的預設模型；現有對話請在用戶端內切換模型。",
+    "deepseekRecoveryHint": "請先關閉 Magpie 等其他工具對 DeepSeek Harness 的接管，再點擊這裡的「重新接入」。重新啟動 Vary 不會修復已損壞的設定。",
     "nativeModelHint": "這裡顯示工具的原生設定，不代表已接入 Vary。選擇共享模型會接入 Vary；「中斷連線並還原」可返回接入前儲存的設定。",
     "nativeUnavailable": "無法讀取原生模型",
     "manageVisibleModels": "管理可見模型",

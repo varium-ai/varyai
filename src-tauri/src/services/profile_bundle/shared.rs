@@ -69,6 +69,7 @@ pub(super) fn capture(state: &AppState, app: &AppType) -> Result<Option<Connecti
             receipt
                 .model_map
                 .get(wire)
+                .or_else(|| receipt.model_map.get(wire.strip_prefix("varyai/")?))
                 .map(String::as_str)
                 .unwrap_or_else(|| wire.strip_prefix("varyai/").unwrap_or(wire))
         })
@@ -171,7 +172,12 @@ pub(super) fn preview(
         label(
             receipt
                 .as_ref()
-                .and_then(|receipt| receipt.model_map.get(&wire))
+                .and_then(|receipt| {
+                    receipt
+                        .model_map
+                        .get(&wire)
+                        .or_else(|| receipt.model_map.get(wire.strip_prefix("varyai/")?))
+                })
                 .map(String::as_str)
                 .unwrap_or_else(|| wire.strip_prefix("varyai/").unwrap_or(&wire)),
         )

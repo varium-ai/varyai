@@ -11,7 +11,7 @@ use std::{
 };
 use toml_edit::DocumentMut;
 
-mod aliases;
+pub(crate) mod aliases;
 mod health;
 mod thread_lifecycle;
 mod threads;

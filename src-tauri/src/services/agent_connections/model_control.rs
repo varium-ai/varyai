@@ -91,12 +91,11 @@ impl Manager {
             return Ok(());
         }
         use sha2::{Digest, Sha256};
-        let model = receipt
-            .model_map
-            .iter()
-            .find(|(_, alias)| *alias == &receipt.model)
-            .map(|(wire, _)| wire.as_str())
-            .unwrap_or(&receipt.model);
+        let model = super::model_wire(
+            &receipt.model_map,
+            receipt.visible_models.as_deref(),
+            &receipt.model,
+        );
         let revision = format!(
             "{:x}",
             Sha256::digest(
@@ -228,8 +227,11 @@ mod tests {
             app: "qoder".into(),
             token: "synthetic-connection-secret".into(),
             model: "synthetic-model".into(),
-            model_map: BTreeMap::new(),
-            visible_models: None,
+            model_map: BTreeMap::from([
+                ("a-previous-name".into(), "synthetic-model".into()),
+                ("Zeta Model".into(), "synthetic-model".into()),
+            ]),
+            visible_models: Some(vec!["Zeta Model".into()]),
             files: vec![],
             suspended: false,
             applied_at_ms: Some(123),
@@ -239,7 +241,7 @@ mod tests {
         assert!(!plan.contains(&receipt.token));
         assert_eq!(
             serde_json::from_str::<Value>(&plan).map_err(|_| FAILED)?["model"],
-            "synthetic-model"
+            "Zeta Model"
         );
         assert_eq!(
             manager.profile_paths("qoder")?,

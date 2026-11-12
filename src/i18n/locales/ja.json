@@ -5052,6 +5052,7 @@
     "nativeDefault": "デフォルト",
     "nativeDefaultHint": "起動モデルが設定されていないため、ツール自身のデフォルトを使用します。Vary のモデルが選択されたわけではありません。",
     "deepseekStartingModelHint": "DeepSeek Harness の新しいセッションの既定モデルを設定します。既存セッションのモデルはクライアント内で切り替えてください。",
+    "deepseekRecoveryHint": "Magpie など他のツールで DeepSeek Harness の連携をオフにしてから、ここで「再接続」をクリックしてください。Vary を再起動しても、破損した設定は修復されません。",
     "nativeModelHint": "ツールの現在のネイティブ設定です。共有モデルを選ぶと Vary に接続します。「接続を解除して復元」で接続前の保存済み設定に戻ります。",
     "nativeUnavailable": "ネイティブモデルを取得できません",
     "manageVisibleModels": "表示するモデルを管理",

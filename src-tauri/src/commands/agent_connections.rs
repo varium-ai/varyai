@@ -1248,11 +1248,18 @@ mod tests {
                     installed["providers"]["varyai"]["models"][0]["thinkingLevelMap"]["max"],
                     "max"
                 ),
-                "opencode" => assert_eq!(
-                    installed["provider"]["varyai"]["models"][alias]["variants"]["max"]
-                        ["reasoningEffort"],
-                    "max"
-                ),
+                "opencode" => {
+                    let wire = agent_connections::model_wire(
+                        &receipt.model_map,
+                        receipt.visible_models.as_deref(),
+                        alias,
+                    );
+                    assert_eq!(
+                        installed["provider"]["varyai"]["models"][wire]["variants"]["max"]
+                            ["reasoningEffort"],
+                        "max"
+                    );
+                }
                 "workbuddy" => {
                     let row = if installed.is_array() {
                         &installed[0]

@@ -4,6 +4,19 @@ The Agent model dropdown is the single model entry point for WorkBuddy, WorkBudd
 
 The Agent model selector saves the model for new sessions. Existing conversations retain their own selections. CLI integrations use their supported configuration fields; desktop integrations may need a confirmed restart to reload their configuration. The restart button appears when a running desktop instance predates the applied configuration. A stopped application reads the configuration on launch; a newer instance has no pending restart.
 
+Managed model catalogs and default selections use readable model names, including
+their supplier labels, rather than internal `vary-provider/` or `vary-auto/`
+execution identities. Duplicate names receive stable numeric suffixes. Gemini CLI
+and T3 Code use ASCII model IDs suitable for request URLs and Codex routing
+headers; their catalogs retain the full display names. Claude Desktop keeps its
+required native model-ID shapes and publishes readable picker labels separately.
+Provider identifiers such as `varyai` still identify the local connection.
+
+Refreshing a managed connection migrates its model selection to the readable ID
+without changing the selected model. Old execution identities and retained aliases
+remain accepted for existing conversations while their models remain available. They are not added as duplicate picker
+rows. Refresh and disconnect continue to preserve unrelated native settings.
+
 Claude Desktop publishes the chosen visible model first in `inferenceModels` and enables `alwaysStartWithDefaultModel`. The remaining visible models retain their saved order. Hiding the default falls back to the first visible model. Hiding every model leaves no starting model. Disconnect restores the original profile settings. Native observations read the active profile identified by `_meta.json`, rather than a dormant Vary profile.
 
 WorkBuddy, WorkBuddy AI and Qoder CN save new-chat choices in native renderer storage. Their model files alone do not set the desktop composer's selection. Choosing a default in Vary requests device-local control permission the first time. Saving a model leaves a pending restart button on the Agent row; restart confirmation opens only when that button is clicked. An installed Node.js runtime is required. Permission, a model-only plan and readback records are kept under the local `agent-connections/model-control` directory and are excluded from profile exports.

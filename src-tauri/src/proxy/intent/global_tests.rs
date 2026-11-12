@@ -52,6 +52,160 @@ pub(super) fn menu(url: &str) -> Menu {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/*path", post(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body).await;
+                Json(json!({"id":"synthetic","object":"response","status":"completed","model":"exact-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic answer"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}))
+            }
+        }))).await
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu(&format!("http://{address}/responses"));
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing session")?,
+    );
+    let mut upstream = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({"base_url":format!("http://{address}"),"auth":{"OPENAI_API_KEY":"synthetic-upstream"}}),
+        None,
+    );
+    upstream.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_responses".into()),
+        ..Default::default()
+    });
+    session.group.levels.clear();
+    session.targets[0].upstream = Some(upstream);
+    let alias = group().alias();
+    published.models.insert(
+        "fixture".into(),
+        MenuModel {
+            alias: alias.clone(),
+            label: "Zeta Model".into(),
+            description: "VaryAI routing group",
+            order: 0,
+        },
+    );
+    runtime.set_global(published, 0)?;
+    let apps = [
+        "gemini",
+        "opencode",
+        "openclaw",
+        "qoder",
+        "deepseek-harness",
+        "t3code",
+        "claude",
+        "pi",
+        "workbuddy",
+    ];
+    let name = "zeta-model";
+    use sha2::{Digest, Sha256};
+    let legacy = format!("vary-{:x}", Sha256::digest(alias.as_bytes()));
+    for app in apps {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: format!("synthetic-{app}"),
+                model: alias.clone(),
+                model_map: std::collections::BTreeMap::from([
+                    (legacy.clone(), alias.clone()),
+                    ("a-previous-readable-name".into(), alias.clone()),
+                    (name.into(), alias.clone()),
+                ]),
+                visible_models: Some(vec![name.into()]),
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for app in apps {
+        let base = format!("http://127.0.0.1:{}/connections/{app}", info.port);
+        let models: Value = client
+            .get(format!("{base}/v1/models"))
+            .bearer_auth(format!("synthetic-{app}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(models["data"][0]["id"], name, "{app}");
+        assert_eq!(models["data"][0]["display_name"], "Zeta Model");
+        if app == "gemini" {
+            let models: Value = client
+                .get(format!("{base}/v1beta/models"))
+                .bearer_auth(format!("synthetic-{app}"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            assert_eq!(models["models"][0]["name"], format!("models/{name}"));
+        }
+        for wire in [name, "a-previous-readable-name", &legacy, &alias] {
+            let (endpoint, body) = if app == "gemini" {
+                (
+                    format!("{base}/v1beta/models/{wire}:generateContent"),
+                    json!({"contents":[{"role":"user","parts":[{"text":"Synthetic request"}]}]}),
+                )
+            } else {
+                (
+                    format!("{base}/v1/responses"),
+                    json!({"model":wire,"input":"Synthetic request"}),
+                )
+            };
+            let response = client
+                .post(endpoint)
+                .bearer_auth(format!("synthetic-{app}"))
+                .json(&body)
+                .send()
+                .await?;
+            let status = response.status();
+            let bytes = response.bytes().await?;
+            let error = serde_json::from_slice::<Value>(&bytes).ok();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{app}: {:?}",
+                error
+                    .as_ref()
+                    .and_then(|value| value.pointer("/error/code"))
+            );
+            let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await?
+                .ok_or("missing request")?;
+            assert_eq!(sent["model"], "exact-model");
+        }
+    }
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn workbuddy_readable_picker_ids_and_legacy_ids_reach_the_same_upstream(
 ) -> Result<(), Box<dyn std::error::Error>> {
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
