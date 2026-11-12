@@ -35,6 +35,9 @@ const CONTRACT_PROTOCOL: Protocol = Protocol::Gemini;
 const CONTRACT_OPERATION: Operation = Operation::GenerateContent;
 
 #[path = "../contract_probe.rs"]
+// Each native lane compiles this body against its own protocol constants, so the
+// duplicate module is the point rather than an accident.
+#[allow(clippy::duplicate_mod)]
 mod contract_probe;
 
 use std::cell::Cell;
@@ -2532,7 +2535,9 @@ fn ge3_source(reference: &str) -> Value {
         {"text":"Synthetic public Gemini reasoning","thoughtSignature":"synthetic-ge3-signature"},
         {"functionCall":{"id":"synthetic-ge3-call","name":"synthetic_tool","args":{"query":reference,"types":[true,null,7,1.0]}}}
     ]);
-    source["candidates"].as_array_mut().map(|candidates| candidates.push(json!({"index":2,"content":{"role":"model","parts":[{"text":"Synthetic second candidate"}]},"finishReason":"STOP"})));
+    if let Some(candidates) = source["candidates"].as_array_mut() {
+        candidates.push(json!({"index":2,"content":{"role":"model","parts":[{"text":"Synthetic second candidate"}]},"finishReason":"STOP"}))
+    }
     source
 }
 

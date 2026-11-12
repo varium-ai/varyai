@@ -536,7 +536,7 @@ fn pi_routing_migrates_the_legacy_duplicate_and_preserves_unrelated_nodes() {
     let original = source("company");
     db.save_provider("pi", &original).expect("source");
     let legacy = Catalog::build(
-        &[original.clone()],
+        std::slice::from_ref(&original),
         &["company".into()],
         "http://127.0.0.1:12345",
         "local-token",
@@ -1064,7 +1064,7 @@ fn pi_history_reports_orphaned_saved_projections_even_before_routing_is_enabled(
     let db = crate::database::Database::memory().expect("db");
     let original = source("orphaned");
     let catalog = Catalog::build(
-        &[original.clone()],
+        std::slice::from_ref(&original),
         &["orphaned".into()],
         "http://127.0.0.1:12345",
         "local-token",

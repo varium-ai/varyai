@@ -3,6 +3,7 @@
 use axum::{body::Body, http::StatusCode, response::Response};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::ops::Range;
 
 use super::{
     http_restoration::{
@@ -702,7 +703,7 @@ fn c1_patch_validation_rejects_foreign_owner_immutable_and_invalid_ranges() -> T
             ContractError::InvalidRange,
         ),
         (
-            TextPatch::new(editable, 3..1, "x"),
+            TextPatch::new(editable, Range { start: 3, end: 1 }, "x"),
             ContractError::InvalidRange,
         ),
     ] {

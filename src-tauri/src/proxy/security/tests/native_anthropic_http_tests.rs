@@ -1,5 +1,8 @@
 //! Native Anthropic HTTP integration with synthetic dynamic upstreams only.
-use std::sync::{Arc, Mutex};
+use std::{
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     body::Body,
@@ -814,7 +817,7 @@ async fn m3_anthropic_desktop_auth_and_routing_precede_admission() -> TestResult
 async fn m3_anthropic_desktop_mapping_owner_precharged_through_send_and_refunded() -> TestResult {
     let fixture = HttpFixture::new(ReplyMode::History).await?;
     fixture.configure_desktop()?;
-    let probe = Arc::new(super::http_restoration::mapping_copy_test_support::install());
+    let probe = Rc::new(super::http_restoration::mapping_copy_test_support::install());
     let at_send = Arc::new(Mutex::new(None));
     let observed = at_send.clone();
     let send_probe = probe.clone();
@@ -1019,24 +1022,25 @@ async fn m3_anthropic_desktop_strict_routes_and_unsigned_mimo_normalization_rema
         status == StatusCode::OK && !failed,
         "m3_unsigned_mimo_normalization_failed"
     );
-    let records = fixture
-        .capture
-        .0
-        .lock()
-        .map_err(|_| "m3_mimo_capture_poisoned")?;
-    assert!(
-        records.len() == 1
-            && records[0]["model"] == "synthetic-mimo-model"
-            && records[0]["extension"] == body["extension"],
-        "m3_desktop_mimo_route_or_unknown_types_changed"
-    );
-    assert!(
-        records[0]["messages"][1]["content"][0]
-            == json!({"type":"thinking","thinking":"tool call"})
-            && records[0]["messages"][1]["content"][1] == body["messages"][1]["content"][0],
-        "m3_unsigned_mimo_normalization_semantics_changed"
-    );
-    drop(records);
+    {
+        let records = fixture
+            .capture
+            .0
+            .lock()
+            .map_err(|_| "m3_mimo_capture_poisoned")?;
+        assert!(
+            records.len() == 1
+                && records[0]["model"] == "synthetic-mimo-model"
+                && records[0]["extension"] == body["extension"],
+            "m3_desktop_mimo_route_or_unknown_types_changed"
+        );
+        assert!(
+            records[0]["messages"][1]["content"][0]
+                == json!({"type":"thinking","thinking":"tool call"})
+                && records[0]["messages"][1]["content"][1] == body["messages"][1]["content"][0],
+            "m3_unsigned_mimo_normalization_semantics_changed"
+        );
+    }
     let before = transport.transport_counts();
     let mut unknown = body;
     unknown["model"] = json!("synthetic-unknown-desktop-route");

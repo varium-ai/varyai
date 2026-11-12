@@ -463,9 +463,9 @@ mod tests {
                     .contains("13800138000"),
                 action != AuditAction::Redact
             );
-            changed
-                .pointer_mut(pointer)
-                .map(|v| *v = native.pointer(pointer).unwrap().clone());
+            if let Some(slot) = changed.pointer_mut(pointer) {
+                *slot = native.pointer(pointer).unwrap().clone();
+            }
             assert_eq!(changed, native);
         }
     }

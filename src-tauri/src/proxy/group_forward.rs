@@ -421,6 +421,9 @@ mod tests {
         provider
     }
 
+    /// Channel plus the canned body a fixture router answers with.
+    type CapturedRequest = (mpsc::Sender<(http::Uri, HeaderMap, Value)>, Value);
+
     async fn upstream(
         protocol: Protocol,
     ) -> (
@@ -447,10 +450,7 @@ mod tests {
             .route(
                 "/*path",
                 post(
-                    |State((tx, response)): State<(
-                        mpsc::Sender<(http::Uri, HeaderMap, Value)>,
-                        Value,
-                    )>,
+                    |State((tx, response)): State<CapturedRequest>,
                      OriginalUri(uri): OriginalUri,
                      headers: HeaderMap,
                      body: Bytes| async move {

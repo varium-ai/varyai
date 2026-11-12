@@ -58,6 +58,9 @@ const CONTRACT_PROTOCOL: Protocol = Protocol::Chat;
 const CONTRACT_OPERATION: Operation = Operation::ChatCompletions;
 
 #[path = "../contract_probe.rs"]
+// Each native lane compiles this body against its own protocol constants, so the
+// duplicate module is the point rather than an accident.
+#[allow(clippy::duplicate_mod)]
 mod contract_probe;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

@@ -4107,7 +4107,7 @@ mod response_scan_tests {
             assert!(reference.ends_with("-ai"), "hyphen suffix required");
             let ranges = scan_token_references(&reference)?;
             assert!(
-                ranges == [0..reference.len()],
+                ranges.as_slice() == std::slice::from_ref(&(0..reference.len())),
                 "new reference must be recognized exactly"
             );
         }

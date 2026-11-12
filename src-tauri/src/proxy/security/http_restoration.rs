@@ -3271,13 +3271,14 @@ impl DlpPreparedAttempt {
         body: &Value,
         _norm_mode: ArgumentNormalizationMode,
         observation: Option<&CompletionObservation<'_>>,
-    ) -> Result<responses_adapter::RestoredJsonResponse, Response> {
+    ) -> Result<responses_adapter::RestoredJsonResponse, Box<Response>> {
+        // Boxed so this helper's error stays cheap to return; tests only inspect the outcome.
         let witness = self
             .json_completion_witness(status, observation)
-            .map_err(build_codex_restore_error_response)?;
+            .map_err(|error| Box::new(build_codex_restore_error_response(error)))?;
         stage_json_response(body, self.endpoint_is_compact, &self.lease, &self.budget)
             .and_then(|staged| staged.publish(&self.lease, &self.binding, &witness, &self.budget))
-            .map_err(build_codex_restore_error_response)
+            .map_err(|error| Box::new(build_codex_restore_error_response(error)))
     }
 
     #[cfg(test)]
@@ -5179,8 +5180,11 @@ mod private_correctness_tests {
                 "m3_desktop_mapping_build_failure_not_propagated"
             );
             drop(hook);
+            // Compare the serialized source, not `Value` equality: map order is preserved
+            // on the wire, so only the encoded form proves the source stayed untouched.
+            let restored_source = body.to_string();
             assert!(
-                budget.used() == before && body.to_string() == original,
+                budget.used() == before && restored_source == original,
                 "m3_desktop_mapping_failure_mutated_source_or_leaked"
             );
             drop(request);
@@ -5506,7 +5510,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
@@ -5525,7 +5529,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
@@ -5538,7 +5542,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 Some(&CompletionObservation::InvalidJson)
             )
@@ -5555,7 +5559,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
@@ -5572,7 +5576,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )

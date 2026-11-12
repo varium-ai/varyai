@@ -92,7 +92,8 @@ mod integration_registration_tests {
                 }
             }
             // M4 integrates the previously deferred same-protocol Gemini cell.
-            for (client, operation) in [(Protocol::Gemini, Operation::GenerateContent)] {
+            {
+                let (client, operation) = (Protocol::Gemini, Operation::GenerateContent);
                 let pair =
                     ProtocolPair::new(ClientProtocol::new(client), UpstreamProtocol::new(client));
                 assert!(

@@ -680,7 +680,7 @@ mod tests {
         o.tool.server_id = Some("device-mcp-1".into());
         o.tool.namespace = Some("mcp".into());
         let r = field_rule(&o, "/chosen/message", ConditionOp::Keyword, "danger");
-        let d = eval_rules(&o, &[r.clone()]);
+        let d = eval_rules(&o, std::slice::from_ref(&r));
         assert_eq!(d.scope, DetectionScope::InScope);
         assert_eq!(d.verdict, Some(Verdict::Uncertain));
         assert!(d.hits.is_empty());
@@ -718,7 +718,10 @@ mod tests {
     fn regression_tool_refs_bind_all_identity_components_and_legacy_is_inert() {
         let o = obs("Read", json!({"file_path":"danger"}));
         let r = field_rule(&o, "/file_path", ConditionOp::Eq, "danger");
-        assert_eq!(eval_rules(&o, &[r.clone()]).verdict, Some(Verdict::Risky));
+        assert_eq!(
+            eval_rules(&o, std::slice::from_ref(&r)).verdict,
+            Some(Verdict::Risky)
+        );
         for component in ["client", "namespace", "server", "schema"] {
             let mut other = o.clone();
             match component {
@@ -728,7 +731,7 @@ mod tests {
                 _ => other.tool.definition_ref = Some("unverified-schema".into()),
             }
             assert_eq!(
-                eval_rules(&other, &[r.clone()]).scope,
+                eval_rules(&other, std::slice::from_ref(&r)).scope,
                 DetectionScope::OutOfScope
             );
         }
@@ -1299,7 +1302,7 @@ mod custom_policy_regressions {
             evaluate(&EngineInput {
                 observation: &o,
                 rules: &rules,
-                lists: &[list.clone()]
+                lists: std::slice::from_ref(&list)
             })
             .verdict,
             Some(Verdict::LowRisk)
@@ -1308,7 +1311,7 @@ mod custom_policy_regressions {
             evaluate(&EngineInput {
                 observation: &o,
                 rules: &[],
-                lists: &[list.clone()]
+                lists: std::slice::from_ref(&list)
             })
             .scope,
             DetectionScope::OutOfScope
@@ -1318,7 +1321,7 @@ mod custom_policy_regressions {
             evaluate(&EngineInput {
                 observation: &o,
                 rules: &rules,
-                lists: &[list.clone()]
+                lists: std::slice::from_ref(&list)
             })
             .verdict,
             Some(Verdict::Uncertain)
@@ -1338,7 +1341,7 @@ mod custom_policy_regressions {
         let d = evaluate(&EngineInput {
             observation: &o,
             rules: &rules,
-            lists: &[list.clone()],
+            lists: std::slice::from_ref(&list),
         });
         assert_eq!(d.verdict, Some(Verdict::Risky));
         assert!(d.hits.iter().any(|hit| hit.rule_id == "custom-query-risk"));

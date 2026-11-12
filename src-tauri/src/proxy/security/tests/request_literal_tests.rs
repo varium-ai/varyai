@@ -641,16 +641,16 @@ fn placeholder_passthrough_request_readable_mixed_history_degrades_without_tool_
     Ok(())
 }
 
-fn message_projection_fixture() -> Result<
-    (
-        DlpTokenStore,
-        super::tokenization::DlpRequestLease,
-        super::completed_context::ActualAttemptBinding,
-        Value,
-        String,
-    ),
-    Box<dyn std::error::Error>,
-> {
+/// Everything one message-projection case needs: store, lease, binding, body, text.
+type MessageProjectionFixture = (
+    DlpTokenStore,
+    super::tokenization::DlpRequestLease,
+    super::completed_context::ActualAttemptBinding,
+    Value,
+    String,
+);
+
+fn message_projection_fixture() -> Result<MessageProjectionFixture, Box<dyn std::error::Error>> {
     let revision = runtime::admit_security_runtime()?.restoration_policy_revision;
     let store = DlpTokenStore::new();
     let mut lease =

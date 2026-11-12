@@ -1515,6 +1515,156 @@ fn proxy_origin_from_parts(listen_address: &str, listen_port: u16) -> String {
     format!("http://{}:{}", connect_host_for_url, listen_port)
 }
 
+pub(crate) fn shared_model_name(id: &str) -> String {
+    let legacy = legacy_shared_model_name(id);
+    format!(
+        "claude-sonnet-4-6-vary-{}",
+        legacy.trim_start_matches("claude-vary-")
+    )
+}
+
+pub(crate) fn shared_reasoning_model_name(id: &str) -> String {
+    let legacy = legacy_shared_model_name(id);
+    format!(
+        "claude-mythos-vary-{}",
+        legacy.trim_start_matches("claude-vary-")
+    )
+}
+
+pub(crate) fn shared_model_wire(model: &crate::services::agent_connections::Model) -> String {
+    if desktop_max_effort(model).is_some() {
+        shared_reasoning_model_name(&model.id)
+    } else {
+        shared_model_name(&model.id)
+    }
+}
+
+pub(crate) fn desktop_max_effort(
+    model: &crate::services::agent_connections::Model,
+) -> Option<&str> {
+    ["max", "xhigh", "high", "medium", "low"]
+        .into_iter()
+        .find(|level| model.reasoning_levels.iter().any(|known| known == level))
+}
+
+pub(crate) fn legacy_shared_model_name(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("claude-vary-{:x}", Sha256::digest(id.as_bytes()))
+}
+
+/// Publish the visible shared menu through Desktop's native gateway profile.
+pub(crate) fn shared_catalog_edits(
+    base: &str,
+    token: &str,
+    models: &[crate::services::agent_connections::Model],
+) -> Result<
+    (
+        Vec<crate::services::agent_connections::FileEdit>,
+        std::collections::BTreeMap<String, String>,
+    ),
+    String,
+> {
+    use crate::services::agent_connections::FAILED;
+    let paths = current_platform_paths().map_err(|_| FAILED)?;
+    shared_catalog_edits_at(paths, base, token, models)
+}
+
+fn shared_catalog_edits_at(
+    paths: ClaudeDesktopPaths,
+    base: &str,
+    token: &str,
+    models: &[crate::services::agent_connections::Model],
+) -> Result<
+    (
+        Vec<crate::services::agent_connections::FileEdit>,
+        std::collections::BTreeMap<String, String>,
+    ),
+    String,
+> {
+    use crate::services::agent_connections::{
+        desktop_config::{key_matches, Kind},
+        FileEdit,
+    };
+    let mut mapping = std::collections::BTreeMap::new();
+    let specs = models
+        .iter()
+        .map(|model| {
+            let name = shared_model_wire(model);
+            mapping.insert(name.clone(), model.id.clone());
+            InferenceModelSpec {
+                name,
+                label_override: Some(model.name.clone()),
+                supports_1m: model.context_window.is_some_and(|n| n >= 1_000_000),
+                max_effort: desktop_max_effort(model).map(str::to_owned),
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut profile = build_gateway_profile(base, token, Some(&specs));
+    if let Some(effort) = models.first().and_then(|model| {
+        model.default_reasoning_level.as_deref().filter(|effort| {
+            matches!(*effort, "low" | "medium" | "high" | "xhigh" | "max")
+                && model.reasoning_levels.iter().any(|level| level == effort)
+        })
+    }) {
+        profile["defaultModelEffort"] = json!(effort);
+    }
+    let mut files = vec![];
+    for path in [paths.normal_config_path, paths.threep_config_path] {
+        files.push(
+            FileEdit::prepare(path, |value| {
+                value["deploymentMode"] = json!("3p");
+                Ok(())
+            })?
+            .for_desktop(Kind::Mode),
+        );
+    }
+    files.push(
+        FileEdit::prepare(paths.profile_path, |value| {
+            let preserve_key = value["inferenceProvider"] == "gateway"
+                && value["inferenceGatewayBaseUrl"] == base
+                && value
+                    .get("inferenceGatewayApiKey")
+                    .is_some_and(|key| key_matches(key, &json!(token)));
+            for (key, next) in profile
+                .as_object()
+                .ok_or(crate::services::agent_connections::FAILED)?
+            {
+                if (key == "inferenceGatewayApiKey" && preserve_key)
+                    || ([
+                        "coworkEgressAllowedHosts",
+                        "disableDeploymentModeChooser",
+                        "defaultModelEffort",
+                    ]
+                    .contains(&key.as_str())
+                        && value.get(key).is_some())
+                {
+                    continue;
+                }
+                value[key] = next.clone();
+            }
+            Ok(())
+        })?
+        .for_desktop(Kind::Profile),
+    );
+    files.push(
+        FileEdit::prepare(paths.meta_path, |value| {
+            let mut entries = match value.get("entries") {
+                None => vec![],
+                Some(Value::Array(entries)) => entries.clone(),
+                _ => return Err(crate::services::agent_connections::FAILED.into()),
+            };
+            if !entries.iter().any(|entry| entry["id"] == PROFILE_ID) {
+                entries.push(json!({"id":PROFILE_ID,"name":PROFILE_NAME}));
+            }
+            value["entries"] = json!(entries);
+            value["appliedId"] = json!(PROFILE_ID);
+            Ok(())
+        })?
+        .for_desktop(Kind::Meta),
+    );
+    Ok((files, mapping))
+}
+
 #[cfg(not(any(target_os = "macos", windows)))]
 fn unsupported_platform_error() -> AppError {
     AppError::localized(
@@ -2693,154 +2843,4 @@ mod tests {
         );
         assert!(!is_compatible_direct_provider(&missing_bearer));
     }
-}
-
-pub(crate) fn shared_model_name(id: &str) -> String {
-    let legacy = legacy_shared_model_name(id);
-    format!(
-        "claude-sonnet-4-6-vary-{}",
-        legacy.trim_start_matches("claude-vary-")
-    )
-}
-
-pub(crate) fn shared_reasoning_model_name(id: &str) -> String {
-    let legacy = legacy_shared_model_name(id);
-    format!(
-        "claude-mythos-vary-{}",
-        legacy.trim_start_matches("claude-vary-")
-    )
-}
-
-pub(crate) fn shared_model_wire(model: &crate::services::agent_connections::Model) -> String {
-    if desktop_max_effort(model).is_some() {
-        shared_reasoning_model_name(&model.id)
-    } else {
-        shared_model_name(&model.id)
-    }
-}
-
-pub(crate) fn desktop_max_effort(
-    model: &crate::services::agent_connections::Model,
-) -> Option<&str> {
-    ["max", "xhigh", "high", "medium", "low"]
-        .into_iter()
-        .find(|level| model.reasoning_levels.iter().any(|known| known == level))
-}
-
-pub(crate) fn legacy_shared_model_name(id: &str) -> String {
-    use sha2::{Digest, Sha256};
-    format!("claude-vary-{:x}", Sha256::digest(id.as_bytes()))
-}
-
-/// Publish the visible shared menu through Desktop's native gateway profile.
-pub(crate) fn shared_catalog_edits(
-    base: &str,
-    token: &str,
-    models: &[crate::services::agent_connections::Model],
-) -> Result<
-    (
-        Vec<crate::services::agent_connections::FileEdit>,
-        std::collections::BTreeMap<String, String>,
-    ),
-    String,
-> {
-    use crate::services::agent_connections::FAILED;
-    let paths = current_platform_paths().map_err(|_| FAILED)?;
-    shared_catalog_edits_at(paths, base, token, models)
-}
-
-fn shared_catalog_edits_at(
-    paths: ClaudeDesktopPaths,
-    base: &str,
-    token: &str,
-    models: &[crate::services::agent_connections::Model],
-) -> Result<
-    (
-        Vec<crate::services::agent_connections::FileEdit>,
-        std::collections::BTreeMap<String, String>,
-    ),
-    String,
-> {
-    use crate::services::agent_connections::{
-        desktop_config::{key_matches, Kind},
-        FileEdit,
-    };
-    let mut mapping = std::collections::BTreeMap::new();
-    let specs = models
-        .iter()
-        .map(|model| {
-            let name = shared_model_wire(model);
-            mapping.insert(name.clone(), model.id.clone());
-            InferenceModelSpec {
-                name,
-                label_override: Some(model.name.clone()),
-                supports_1m: model.context_window.is_some_and(|n| n >= 1_000_000),
-                max_effort: desktop_max_effort(model).map(str::to_owned),
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut profile = build_gateway_profile(base, token, Some(&specs));
-    if let Some(effort) = models.first().and_then(|model| {
-        model.default_reasoning_level.as_deref().filter(|effort| {
-            matches!(*effort, "low" | "medium" | "high" | "xhigh" | "max")
-                && model.reasoning_levels.iter().any(|level| level == effort)
-        })
-    }) {
-        profile["defaultModelEffort"] = json!(effort);
-    }
-    let mut files = vec![];
-    for path in [paths.normal_config_path, paths.threep_config_path] {
-        files.push(
-            FileEdit::prepare(path, |value| {
-                value["deploymentMode"] = json!("3p");
-                Ok(())
-            })?
-            .for_desktop(Kind::Mode),
-        );
-    }
-    files.push(
-        FileEdit::prepare(paths.profile_path, |value| {
-            let preserve_key = value["inferenceProvider"] == "gateway"
-                && value["inferenceGatewayBaseUrl"] == base
-                && value
-                    .get("inferenceGatewayApiKey")
-                    .is_some_and(|key| key_matches(key, &json!(token)));
-            for (key, next) in profile
-                .as_object()
-                .ok_or(crate::services::agent_connections::FAILED)?
-            {
-                if (key == "inferenceGatewayApiKey" && preserve_key)
-                    || ([
-                        "coworkEgressAllowedHosts",
-                        "disableDeploymentModeChooser",
-                        "defaultModelEffort",
-                    ]
-                    .contains(&key.as_str())
-                        && value.get(key).is_some())
-                {
-                    continue;
-                }
-                value[key] = next.clone();
-            }
-            Ok(())
-        })?
-        .for_desktop(Kind::Profile),
-    );
-    files.push(
-        FileEdit::prepare(paths.meta_path, |value| {
-            let mut entries = match value.get("entries") {
-                None => vec![],
-                Some(Value::Array(entries)) => entries.clone(),
-                _ => return Err(crate::services::agent_connections::FAILED.into()),
-            };
-            if !entries.iter().any(|entry| entry["id"] == PROFILE_ID) {
-                entries.push(json!({"id":PROFILE_ID,"name":PROFILE_NAME}));
-            }
-            value["entries"] = json!(entries);
-            value["appliedId"] = json!(PROFILE_ID);
-            Ok(())
-        })?
-        .for_desktop(Kind::Meta),
-    );
-    Ok((files, mapping))
 }

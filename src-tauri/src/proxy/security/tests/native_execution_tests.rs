@@ -1088,7 +1088,7 @@ fn c5_native_execution_sse_lifecycle_cross_frame_reference_handoff() -> TestResu
             fixture.counts()? == (0, 1, 1),
             "native_sse_handoff_last_yield_activated"
         );
-        if index < 2 {
+        if let Some(expected) = fragments.get(index) {
             let data = std::str::from_utf8(&chunk)?
                 .lines()
                 .find_map(|line| line.strip_prefix("data: "))
@@ -1100,7 +1100,7 @@ fn c5_native_execution_sse_lifecycle_cross_frame_reference_handoff() -> TestResu
                     .ok_or("native_sse_handoff_text_missing")?,
             );
             assert!(
-                parsed["extension"]["same_value"].as_str() == Some(fragments[index]),
+                parsed["extension"]["same_value"].as_str() == Some(*expected),
                 "native_sse_handoff_equal_sibling_changed"
             );
         }
@@ -1693,6 +1693,7 @@ fn c5_native_execution_context_degradation_request_failures_stay_closed() -> Tes
         types::{AuditAction, RiskLevel},
     };
     use std::{cell::Cell, rc::Rc};
+    let degraded_block_regex = regex::Regex::new("13900000000")?;
     for mode in 0..4 {
         let history = ExpiredNativeHistory::new()?;
         let (mut lease, binding) = history.current()?;
@@ -1723,7 +1724,7 @@ fn c5_native_execution_context_degradation_request_failures_stay_closed() -> Tes
                     name: "Synthetic block".into(),
                     rule_type: "regex".into(),
                     pattern: "13900000000".into(),
-                    regex: Some(regex::Regex::new("13900000000")?),
+                    regex: Some(degraded_block_regex.clone()),
                     risk_level: RiskLevel::High,
                     action: AuditAction::Block,
                     enabled: true,

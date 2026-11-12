@@ -1320,8 +1320,10 @@ fn test_security_audit_tables_and_dao_operations() {
     assert_eq!(res.items.len(), 2);
     assert_eq!(res.items[0].timestamp, 2000);
 
-    let mut claude_filter = crate::database::AuditLogFilter::default();
-    claude_filter.app_type = Some("claude".to_string());
+    let claude_filter = crate::database::AuditLogFilter {
+        app_type: Some("claude".to_string()),
+        ..Default::default()
+    };
     let res_claude = db.get_security_audit_logs(&claude_filter, 1, 10).unwrap();
     assert_eq!(res_claude.total, 1);
     assert_eq!(res_claude.items[0].rule_id, "rsa_ssh_private_key");
@@ -1396,7 +1398,7 @@ fn test_security_audit_logs_crud_and_clamping() {
         location: Some("messages[0]".to_string()),
     };
 
-    db.insert_audit_logs_batch(&[event.clone()])
+    db.insert_audit_logs_batch(std::slice::from_ref(&event))
         .expect("insert audit log");
 
     let res = db
@@ -1456,11 +1458,9 @@ fn test_custom_security_rules_and_toggle() {
         .get_custom_security_rules()
         .expect("get rules after allow action update");
     assert_eq!(rules_after_allow[0].action, "allow");
-    assert!(
-        db.update_custom_security_rule_action("missing", "audit")
-            .expect("update missing custom rule action")
-            == false
-    );
+    assert!(!db
+        .update_custom_security_rule_action("missing", "audit")
+        .expect("update missing custom rule action"));
     assert!(db
         .update_custom_security_rule_action("test_rule_1", "invalid")
         .is_err());

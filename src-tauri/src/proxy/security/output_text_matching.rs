@@ -159,7 +159,7 @@ mod tests {
             let mut count = 0;
             visit_complete_references(&text, |range| {
                 assert!(
-                    &text[range] == reference,
+                    text[range] == reference,
                     "only complete references are visited"
                 );
                 count += 1;
@@ -219,7 +219,7 @@ mod tests {
         let mut count = 0;
         visit_complete_references(&text, |range| {
             assert!(
-                &text[range] == reference,
+                text[range] == reference,
                 "only exact complete references are visited"
             );
             count += 1;

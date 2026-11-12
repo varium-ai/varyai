@@ -602,8 +602,10 @@ async fn run_wire_policy_with_prompt(
     prompt_mode: Option<&str>,
 ) -> TestResult {
     let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
-    let mut config = runtime::SecurityRuntimeConfig::default();
-    config.enabled = enabled;
+    let mut config = runtime::SecurityRuntimeConfig {
+        enabled,
+        ..Default::default()
+    };
     config
         .builtin_action_overrides
         .insert("chinese_phone_number".into(), action);
@@ -8032,9 +8034,11 @@ async fn run_closure_task_counterexample(mode: &'static str) -> TestResult {
     );
     // Custom DLP rules are not a guarantee of arbitrary tool-summary sanitization.
     // The fixture retains summaries only in local memory, never logs or persists them.
-    let capture = seen.lock().map_err(|_| "synthetic task capture poisoned")?;
-    assert_eq!(capture.len(), 1);
-    let sent = capture[0].to_string();
+    let sent = {
+        let capture = seen.lock().map_err(|_| "synthetic task capture poisoned")?;
+        assert_eq!(capture.len(), 1);
+        capture[0].to_string()
+    };
     assert!(
         !sent.contains("private-first")
             && !sent.contains("private-second")

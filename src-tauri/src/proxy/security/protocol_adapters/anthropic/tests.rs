@@ -33,6 +33,9 @@ const CONTRACT_PROTOCOL: Protocol = Protocol::Anthropic;
 const CONTRACT_OPERATION: Operation = Operation::Messages;
 
 #[path = "../contract_probe.rs"]
+// Each native lane compiles this body against its own protocol constants, so the
+// duplicate module is the point rather than an accident.
+#[allow(clippy::duplicate_mod)]
 mod contract_probe;
 
 use std::cell::Cell;

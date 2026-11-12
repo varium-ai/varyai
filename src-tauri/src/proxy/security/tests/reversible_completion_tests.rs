@@ -1929,10 +1929,11 @@ fn reversible_completion_json_and_compact_require_strict_envelopes_and_reject_re
 
     let check_json = |protocol: P, raw: &str| -> bool {
         let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
-        let mut validator = JsonCompletion::new(protocol);
-        validator.observe_raw_json(raw, &budget);
-        let ok = validator.permits_completion();
-        drop(validator);
+        let ok = {
+            let mut validator = JsonCompletion::new(protocol);
+            validator.observe_raw_json(raw, &budget);
+            validator.permits_completion()
+        };
         assert_eq!(budget.used(), 0);
         ok
     };
@@ -4075,9 +4076,7 @@ fn history_provenance_client_error_assertion_failure_is_content_free() {
         let panic = std::panic::catch_unwind(|| {
             assert_fixed_restore_client_error(&invalid, expected);
         });
-        let payload = panic
-            .err()
-            .expect("mutated envelope must fail its assertion");
+        let payload = panic.expect_err("mutated envelope must fail its assertion");
         let fixed = payload
             .downcast_ref::<&str>()
             .copied()
@@ -4122,7 +4121,8 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
         "token_format",
         RestoreError::FailedBecause(super::restore_diagnostics::RestoreReason::TokenFormat),
     ));
-    for (text, reason) in [(token.repeat(4097), "restore_capacity")] {
+    {
+        let (text, reason) = (token.repeat(4097), "restore_capacity");
         let err =
             restore_text_with_lease(&text, &lease, &budget, &mut references, &mut occurrences)
                 .err()
