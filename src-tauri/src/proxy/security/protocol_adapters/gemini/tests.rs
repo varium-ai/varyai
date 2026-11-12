@@ -282,6 +282,7 @@ fn ge1_non_generation_routes_and_methods_are_unsupported() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_unsupported_framing_grants_no_observation_or_mapping() -> TestResult {
     let body = json!({"contents":[{"role":"user","parts":[{"text":CONTACT}]}],"stream":true});
     let store = DlpTokenStore::new();
@@ -404,6 +405,7 @@ fn ge1_observation_metadata_uses_supplied_budget_and_refunds() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_current_mandatory_redaction_changes_only_native_string_leaves() -> TestResult {
     let body = native_fixture();
     let original = body.clone();
@@ -461,6 +463,7 @@ fn ge1_current_mandatory_redaction_changes_only_native_string_leaves() -> TestRe
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_reversible_preparation_preserves_native_objects_types_and_opaque_fields() -> TestResult {
     let body = native_fixture();
     let original = body.clone();
@@ -564,6 +567,7 @@ fn ge1_signed_parts_keep_readable_sites_immutable_and_signature_opaque() -> Test
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_signed_mandatory_patch_conflict_rolls_back_all_native_edits() -> TestResult {
     for part in signed_parts() {
         for restore_rules in [&[][..], RESTORE_RULES] {
@@ -613,6 +617,7 @@ fn ge1_signed_mandatory_patch_conflict_rolls_back_all_native_edits() -> TestResu
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_unchanged_signed_parts_and_opaque_signature_preserve_native_units() -> TestResult {
     // The signature deliberately resembles an inspectable match; it must stay opaque.
     let body = json!({"contents":[{"role":"model","parts":[
@@ -672,6 +677,7 @@ fn ge1_unchanged_signed_parts_and_opaque_signature_preserve_native_units() -> Te
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_signed_authorized_reference_conflict_preserves_existing_lease_only() -> TestResult {
     let store = DlpTokenStore::new();
     let (_runtime, mut lease) = native_lease(&store)?;
@@ -737,6 +743,7 @@ fn ge1_signed_authorized_reference_conflict_preserves_existing_lease_only() -> T
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_final_validation_failure_rolls_back_provisional_native_mappings() -> TestResult {
     let body = native_fixture();
     let original = body.clone();
@@ -784,6 +791,7 @@ fn ge1_final_validation_failure_rolls_back_provisional_native_mappings() -> Test
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_explicit_block_on_signed_readable_text_preserves_policy_precedence() -> TestResult {
     let body = json!({"contents":[{"role":"model","parts":[
         {"text":CONTACT,"thoughtSignature":"c3ludGhldGlj"}]}]});
@@ -830,6 +838,7 @@ fn ge1_explicit_block_on_signed_readable_text_preserves_policy_precedence() -> T
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_resource_metadata_byte_boundary_uses_exact_borrowed_owner_and_refunds() -> TestResult {
     let body = json!({"contents":[{"role":"user","parts":[{"text":"Synthetic text"}]}]});
     let original = body.clone();
@@ -883,6 +892,7 @@ fn ge1_resource_metadata_byte_boundary_uses_exact_borrowed_owner_and_refunds() -
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_resource_site_count_accepts_4096_then_rejects_and_refunds() -> TestResult {
     let mut body = json!({"contents":[{"role":"user","parts":
         vec![json!({"text":"Synthetic text"}); 4096]}]});
@@ -965,6 +975,7 @@ fn recursive_native_leaf(payload: &Value, depth: usize) -> TestResult<&Value> {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_resource_within_limit_recursive_values_remain_exact_borrowed_sites() -> TestResult {
     // Native root -> contents -> content -> parts -> Part -> call/result -> Struct -> payload.
     // Forty-eight additional containers leave the string below the depth-64 boundary.
@@ -1004,6 +1015,7 @@ fn ge1_resource_within_limit_recursive_values_remain_exact_borrowed_sites() -> T
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_resource_excessive_native_depth_fails_atomically_and_refunds() -> TestResult {
     for (carrier, field) in [("functionCall", "args"), ("functionResponse", "response")] {
         let mut part = json!({});
@@ -1280,6 +1292,7 @@ fn ge1_signature_alias_function_response_authorized_reference_fails_preserving_e
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_signature_alias_unsigned_carriers_still_redact_and_tokenize() -> TestResult {
     for (part_index, mut part) in signature_alias_parts("thought_signature")?
         .into_iter()
@@ -1371,6 +1384,7 @@ fn ge1_signature_alias_camel_case_conflicts_remain_fail_closed() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge1_signature_alias_unchanged_units_keep_both_signature_spellings_opaque() -> TestResult {
     for signature_field in ["thought_signature", "thoughtSignature"] {
         let mut parts = signature_alias_parts(signature_field)?.to_vec();

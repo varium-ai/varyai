@@ -190,6 +190,7 @@ fn an1_system_string_and_text_blocks_have_current_editable_sites() -> TestResult
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_message_string_and_text_blocks_preserve_source_classes() -> TestResult {
     let body = json!({"messages":[
         {"role":"user", "content":MARKER},
@@ -238,6 +239,7 @@ fn an1_message_string_and_text_blocks_preserve_source_classes() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_tool_result_string_and_text_blocks_are_untrusted_input() -> TestResult {
     let body = json!({"messages":[
         {"role":"assistant", "content":[{"type":"tool_use", "id":"synthetic-call", "name":"synthetic-tool", "input":{}}]},
@@ -380,6 +382,7 @@ fn an1_thinking_is_readable_immutable_before_signature_and_keeps_association() -
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_opaque_signature_redacted_media_and_unknown_fields_have_no_sites() -> TestResult {
     let body = json!({"model":MARKER, "metadata":{"user_id":MARKER}, "unknown":{"text":MARKER},
     "system":[{"type":"synthetic_future", "text":MARKER}], "messages":[
@@ -454,6 +457,7 @@ fn an1_opaque_signature_redacted_media_and_unknown_fields_have_no_sites() -> Tes
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_prepare_redacts_native_sites_atomically_and_preserves_types() -> TestResult {
     for action in [AuditAction::Redact, AuditAction::RedactRestore] {
         let body = json!({"model":"synthetic-model", "temperature":0.25, "max_tokens":256, "stream":false,
@@ -567,6 +571,7 @@ fn an1_prepare_redacts_native_sites_atomically_and_preserves_types() -> TestResu
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_prepare_immutable_mandatory_patch_rejects_before_commit() -> TestResult {
     for signed in [false, true] {
         for action in [AuditAction::Redact, AuditAction::RedactRestore] {
@@ -622,6 +627,7 @@ fn an1_prepare_immutable_mandatory_patch_rejects_before_commit() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_prepare_explicit_block_in_thinking_remains_policy_block() -> TestResult {
     let body = json!({"messages":[{"role":"assistant", "content":[
         {"type":"thinking", "thinking":MARKER, "signature":"synthetic-block-signature"}
@@ -657,6 +663,7 @@ fn an1_prepare_explicit_block_in_thinking_remains_policy_block() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_prepare_validation_failure_has_no_commit_or_mutation() -> TestResult {
     let body = json!({"system":MARKER, "messages":[{"role":"user", "content":MARKER}],
         "unknown":{"same_value":MARKER, "types":[true, null, 7]}});
@@ -710,6 +717,7 @@ fn an1_prepare_validation_failure_has_no_commit_or_mutation() -> TestResult {
 // The 4 Mi work ceiling is intentionally not exercised with a huge native fixture.
 // Immutable thinking/no-mutable-fallback remains covered by the preparation tests above.
 #[test]
+#[serial_test::serial]
 fn an1_resource_metadata_exact_bytes_accept_one_byte_short_refunds() -> TestResult {
     // One site and one history claim avoid vector-growth overlap in the measured charge.
     let body = json!({"messages":[{"role":"assistant", "content":[
@@ -796,6 +804,7 @@ fn an1_resource_metadata_exact_bytes_accept_one_byte_short_refunds() -> TestResu
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_resource_4096_sites_accept_4097_typed_failure_refunds() -> TestResult {
     let store = DlpTokenStore::new();
     let (_runtime, lease) = native_lease(&store)?;
@@ -858,6 +867,7 @@ fn an1_resource_4096_sites_accept_4097_typed_failure_refunds() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_resource_tool_input_inside_depth_limit_borrows_recursive_leaf() -> TestResult {
     // Twelve object/array pairs put the leaf at depth 29, comfortably inside 64.
     let mut input = json!(MARKER);
@@ -907,6 +917,7 @@ fn an1_resource_tool_input_inside_depth_limit_borrows_recursive_leaf() -> TestRe
 }
 
 #[test]
+#[serial_test::serial]
 fn an1_resource_excessive_tool_input_depth_after_text_is_atomic_typed_failure() -> TestResult {
     let mut body = json!({"messages":[{"role":"assistant", "content":[
         {"type":"text", "text":MARKER},

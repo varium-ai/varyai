@@ -172,9 +172,10 @@ pub fn set_security_runtime_for_test(config: SecurityRuntimeConfig) {
         &config.builtin_action_overrides,
         DETECTION_CATALOG_REVISION,
     );
-    if let Ok(update) = policy_gate().begin_update() {
-        let _ = update.publish(Arc::new(config), policy);
-    }
+    // Install atomically: `begin_update` closes admission on purpose, and a synthetic
+    // install has no persistence that could fail, so that window would only expose an
+    // `Unavailable` state to concurrent readers that nothing can repair.
+    let _ = policy_gate().install_synthetic(Arc::new(config), policy);
 }
 
 fn unavailable() -> AppError {
