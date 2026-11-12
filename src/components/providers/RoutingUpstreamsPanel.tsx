@@ -401,6 +401,22 @@ export function RoutingUpstreamsPanel({
       }
       return;
     }
+    const validKey = (value: string) =>
+      !!value.trim() &&
+      new TextEncoder().encode(value).length <= 16384 &&
+      !/[\x00-\x1f\x7f-\x9f]/.test(value);
+    if (
+      (apiKey ? !validKey(apiKey) : !draft.hasApiKey) ||
+      (draft.transport?.keys.length ?? 0) > 64 ||
+      draft.transport?.keys.some((key) =>
+        key.key !== undefined
+          ? !validKey(key.key)
+          : !loadedRecord?.transport?.keys.some((saved) => saved.id === key.id),
+      )
+    ) {
+      report("save", "invalid");
+      return;
+    }
     let raw: unknown;
     try {
       raw = stagedModels ?? JSON.parse(models);
@@ -687,20 +703,38 @@ export function RoutingUpstreamsPanel({
     }
   }
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  function searchableModels(record: RoutingUpstream) {
+    if (record.source.kind === "codex") return [];
+    return record.source.mode === "picked" || !record.source.catalog.length
+      ? record.source.models
+      : record.source.catalog;
+  }
+  function modelSearchText(row: unknown) {
+    if (!row || typeof row !== "object") return modelId(row);
+    const model = row as Record<string, unknown>;
+    return [
+      modelId(row),
+      model.displayName,
+      (model.modelPreferences as { name?: string } | undefined)?.name,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   const filtered =
     ordered.filter((record) => {
       const text = [
         record.name,
         endpointHost(record),
-        record.source.kind === "api"
-          ? record.source.models.map(modelId).join(" ")
-          : record.source.kind === "subscription"
-            ? subscriptionProviders.find(
-                (p) =>
-                  record.source.kind === "subscription" &&
-                  p.id === record.source.provider,
-              )?.aliases
-            : "ChatGPT Codex",
+        searchableModels(record).map(modelSearchText).join(" "),
+        record.source.kind === "subscription"
+          ? subscriptionProviders.find(
+              (p) =>
+                record.source.kind === "subscription" &&
+                p.id === record.source.provider,
+            )?.aliases
+          : record.source.kind === "codex"
+            ? "ChatGPT Codex"
+            : "",
       ]
         .join(" ")
         .toLocaleLowerCase();
@@ -788,6 +822,11 @@ export function RoutingUpstreamsPanel({
       plans.some((plan) => !!plan) ||
       (record.source.kind !== "api" && record.reauthRequired === false);
     const needsLogin = record.source.kind !== "api" && record.reauthRequired;
+    const matchingModels = searchableModels(record).filter((row) =>
+      terms.some((term) =>
+        modelSearchText(row).toLocaleLowerCase().includes(term),
+      ),
+    );
     return (
       <SortableWorkspaceRow
         key={record.id}
@@ -854,9 +893,20 @@ export function RoutingUpstreamsPanel({
             {!editorOpen && <ProviderListQuota record={record} />}
             {record.source.kind === "api" && (
               <span className="pv-sub">
-                {`${endpointHost(record) || t("providerFlow.custom")} · ${t("modelProviders.modelCount", { count: record.source.models.length })}`}
+                {`${endpointHost(record) || t("providerFlow.custom")} · ${t("modelProviders.modelCount", { count: searchableModels(record).length })}`}
               </span>
             )}
+            {!!matchingModels.length &&
+              !terms.every((term) =>
+                `${record.name} ${endpointHost(record)}`
+                  .toLocaleLowerCase()
+                  .includes(term),
+              ) && (
+                <span className="pv-sub pv-search-match">
+                  {t("modelProviders.matchedModels")}:{" "}
+                  {matchingModels.slice(0, 3).map(modelId).join(", ")}
+                </span>
+              )}
           </span>
         </button>
         <span
@@ -971,11 +1021,16 @@ export function RoutingUpstreamsPanel({
             className="pv-query"
             type="search"
             aria-label={t("modelProviders.find")}
-            placeholder={t("modelProviders.find")}
+            aria-describedby="provider-search-scope"
+            title={t("modelProviders.searchScope")}
+            placeholder={t("modelProviders.searchPlaceholder")}
             value={query}
             disabled={busy || !!draft}
             onChange={(event) => setQuery(event.target.value)}
           />
+          <span id="provider-search-scope" className="pv-search-scope">
+            {t("modelProviders.searchScope")}
+          </span>
           {selected && (
             <button
               type="button"

@@ -1689,6 +1689,21 @@ impl ProxyService {
     }
 
     pub(crate) async fn refresh_trae_takeover(&self) {
+        // Reconnect existing desktops outside catalog switch locks. Route edits
+        // must not wait for helper injection or rewrite client launch settings.
+        if self.is_running().await {
+            use super::trae_bridge::shared::{Client, Edition};
+            for edition in [Edition::China, Edition::International] {
+                if self.agent_connections.bridge_for(edition).bridge_owned()
+                    && self
+                        .db
+                        .get_bool_flag(edition.consent_key())
+                        .unwrap_or(false)
+                {
+                    let _ = tokio::task::spawn_blocking(move || Client(edition).reconnect()).await;
+                }
+            }
+        }
         self.sync_shared_trae_intl(false).await;
         if self.agent_connections.bridge_owned() {
             self.sync_shared_trae(false).await;
@@ -1783,6 +1798,33 @@ impl ProxyService {
             .map_err(|_| super::agent_connections::FAILED)?
     }
 
+    pub(crate) async fn prepare_shared_trae(
+        &self,
+        edition: super::trae_bridge::shared::Edition,
+    ) -> bool {
+        let _guard = self.lock_switch_for_app(edition.app()).await;
+        if !self.is_running().await
+            || !self.agent_connections.bridge_for(edition).bridge_owned()
+            || !self
+                .db
+                .get_bool_flag(edition.consent_key())
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        let prepared = matches!(
+            tokio::task::spawn_blocking(
+                move || super::trae_bridge::shared::Client(edition).prepare()
+            )
+            .await,
+            Ok(Ok(()))
+        );
+        if !prepared {
+            self.intent_runtime.connections.revoke(edition.app());
+        }
+        prepared
+    }
+
     pub(crate) async fn sync_shared_trae(&self, suspend: bool) {
         let _guard = self.lock_switch_for_app("trae").await;
         if !self.agent_connections.bridge_owned() {
@@ -1804,12 +1846,6 @@ impl ProxyService {
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            if running {
-                super::trae_bridge::prepare_shared()
-                    .map_err(|_| super::agent_connections::FAILED)?;
-                // Shared delivery owns only its additive namespace. Legacy replacement
-                // must not block or rewrite the active shared connection's catalog.
-            }
             if let Some(receipt) = manager.bridge_sync(
                 menu.as_deref(),
                 &format!("http://127.0.0.1:{port}"),
@@ -1828,7 +1864,7 @@ impl ProxyService {
     }
 
     pub(crate) async fn sync_shared_trae_intl(&self, suspend: bool) {
-        use super::trae_bridge::shared::{Client, Edition};
+        use super::trae_bridge::shared::Edition;
         let edition = Edition::International;
         let _guard = self.lock_switch_for_app(edition.app()).await;
         if !self.agent_connections.bridge_for(edition).bridge_owned() {
@@ -1854,11 +1890,6 @@ impl ProxyService {
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            if running {
-                Client(edition)
-                    .prepare()
-                    .map_err(|_| super::agent_connections::FAILED)?;
-            }
             if let Some(receipt) = manager.bridge_for(edition).bridge_sync(
                 menu.as_deref(),
                 &format!("http://127.0.0.1:{port}"),
@@ -2906,6 +2937,7 @@ impl ProxyService {
 
     async fn refresh_global_routing_inner(&self) -> Result<(), String> {
         use super::intent_routing::{catalog, menu};
+        let started = std::time::Instant::now();
         let result = async {
             let db = self.db.clone();
             let generation = self.db.routing_generation();
@@ -2915,6 +2947,7 @@ impl ProxyService {
                 false,
             )
             .await?;
+            let providers_ready = started.elapsed();
             let discovery = providers.clone();
             let (groups, stand_ins) = tokio::task::spawn_blocking(move || {
                 let catalog = db.intent_routing_catalog_with_providers(Some(discovery))?;
@@ -2922,6 +2955,7 @@ impl ProxyService {
             })
             .await
             .map_err(|_| "intentRouting.failed")??;
+            let catalog_ready = started.elapsed();
             self.intent_runtime
                 .reserve_global_aliases(groups.iter().map(|g| g.alias()))?;
             let groups = groups.into_iter().filter(|g| g.enabled).collect::<Vec<_>>();
@@ -2937,6 +2971,12 @@ impl ProxyService {
                 stand_ins,
             )
             .await?;
+            log::info!(
+                "Routing catalog prepared: providers_ms={} definitions_ms={} targets_ms={}",
+                providers_ready.as_millis(),
+                catalog_ready.saturating_sub(providers_ready).as_millis(),
+                started.elapsed().saturating_sub(catalog_ready).as_millis()
+            );
             prepared.context_settings = self.db.routing_context_settings()?;
             if self.db.routing_generation() != generation {
                 return Err("intentRouting.conflict".into());
@@ -2975,15 +3015,35 @@ impl ProxyService {
         if !self.is_running().await {
             return;
         }
+        let started = std::time::Instant::now();
         self.sync_codex_configuration().await;
+        log::info!(
+            "Routing client sync completed: client=codex elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        let started = std::time::Instant::now();
         self.sync_shared_trae(false).await;
+        log::info!(
+            "Routing client sync completed: client=trae elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        let started = std::time::Instant::now();
         self.sync_shared_trae_intl(false).await;
+        log::info!(
+            "Routing client sync completed: client=trae-intl elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
         for app in super::agent_connections::APPS
             .iter()
             .copied()
             .filter(|app| *app != "codex")
         {
+            let started = std::time::Instant::now();
             self.sync_shared_agent_catalog(app).await;
+            log::info!(
+                "Routing client sync completed: client={app} elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
         }
     }
 
@@ -6113,6 +6173,98 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn explicit_trae_preparation_requires_existing_intent_and_consent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::trae_bridge::shared::Edition;
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory()?);
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        service.start().await?;
+        for edition in [Edition::China, Edition::International] {
+            assert!(!service.prepare_shared_trae(edition).await);
+            service
+                .agent_connections
+                .bridge_for(edition)
+                .bridge_select(true)?;
+            assert!(!service.prepare_shared_trae(edition).await);
+            assert!(!service.intent_runtime.connections.active(edition.app()));
+        }
+        let _ = service.stop().await;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn routing_catalog_refresh_queues_both_trae_editions_without_connection_setup(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::trae_bridge::shared::{Client, Edition};
+        let home = TempHome::new();
+        let db = Arc::new(Database::memory()?);
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        service.start().await?;
+        let provider = Provider::with_id(
+            "synthetic".into(),
+            "Synthetic".into(),
+            json!({"auth":{"OPENAI_API_KEY":"synthetic-key"},"apiFormat":"openai_responses",
+                "config":"model='synthetic-model'\nmodel_provider='synthetic'\n[model_providers.synthetic]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'"}),
+            None,
+        );
+        let menu = super::super::intent_routing::menu::prepare(
+            service.codex_oauth_manager.clone(),
+            vec![provider],
+            vec![],
+            None,
+        )
+        .await?;
+        service
+            .intent_runtime
+            .set_global(menu, db.routing_generation())?;
+        let original = "{\"remote-debugging-port\":9229,\"syntheticUserSetting\":true}";
+        for edition in [Edition::China, Edition::International] {
+            db.set_setting(edition.consent_key(), "true")?;
+            service
+                .agent_connections
+                .bridge_for(edition)
+                .bridge_select(true)?;
+            let argv = Client(edition).argv_path()?;
+            assert!(argv.starts_with(home.dir.path()));
+            std::fs::create_dir_all(argv.parent().ok_or("argv parent")?)?;
+            std::fs::write(argv, original)?;
+        }
+        service.sync_shared_agent_catalogs().await;
+        for (edition, file) in [
+            (Edition::China, "trae-shared.json"),
+            (Edition::International, "trae-intl-shared.json"),
+        ] {
+            let outbox: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(service.agent_connections.root.join(file))?)?;
+            assert!(
+                outbox["provider"].is_object(),
+                "latest catalog was not queued for {}",
+                edition.app()
+            );
+            assert_eq!(outbox["enabled"], true);
+            assert_eq!(outbox["delivered"], false);
+            assert!(!service.intent_runtime.connections.active(edition.app()));
+            assert_eq!(
+                std::fs::read_to_string(Client(edition).argv_path()?)?,
+                original
+            );
+            assert!(!Client(edition)
+                .directory()?
+                .join("launch-backup.json")
+                .exists());
+        }
+        let _ = service.stop().await;
+        assert!(!service.is_running().await);
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     #[serial]
@@ -7796,6 +7948,88 @@ mod tests {
         service.agent_connections.disconnect("claude")?;
         codex.restore()?;
         assert!(!service.is_running().await);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    #[ignore = "manual synthetic save timing profile"]
+    async fn routing_save_timing_profile() -> Result<(), Box<dyn std::error::Error>> {
+        struct TimingLogger;
+        impl log::Log for TimingLogger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                let message = record.args().to_string();
+                if message.starts_with("Routing ") {
+                    eprintln!("{message}");
+                }
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: TimingLogger = TimingLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Info);
+        let _home = TempHome::new();
+        crate::settings::reload_settings()?;
+        let db = Arc::new(Database::memory()?);
+        db.set_intent_routing_auto_create(false)?;
+        use_ephemeral_proxy_port(&db).await;
+        let mut sources = Vec::new();
+        for index in 0..12 {
+            let provider = crate::provider::Provider::with_id(
+                format!("source-{index}"),
+                format!("Synthetic {index}"),
+                json!({
+                    "auth":{"OPENAI_API_KEY":"synthetic-key"}, "apiFormat":"openai_responses",
+                    "config":"model='fixture-model'\nmodel_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'",
+                    "modelCatalog":{"models":(0..16).map(|model| json!({"model":format!("model-{model}")})).collect::<Vec<_>>()}
+                }),
+                None,
+            );
+            db.save_provider("codex", &provider)?;
+            sources.push(db.register_routing_fixture("codex", &provider.id)?.id);
+        }
+        crate::codex_config::write_codex_live_atomic(
+            &json!({"OPENAI_API_KEY":"synthetic-original"}),
+            Some("model='original'\n"),
+        )?;
+        let mut service = ProxyService::new(db.clone());
+        service.intent_client = Arc::new(super::super::intent_routing::client::Manager::new(
+            crate::codex_config::get_codex_config_path(),
+            crate::config::get_app_config_dir().join("intent-test.json"),
+            service.intent_runtime.clone(),
+        ));
+        service.start().await?;
+        service.connect_codex_menu(true, false).await?;
+        let mut group = synthetic_codex_menu().groups["vary-auto/fixture"]
+            .group
+            .clone();
+        group.members[0].provider_id = sources[0].clone();
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            group = db.save_intent_routing_group(group)?;
+            eprintln!(
+                "Routing profile: persistence_us={}",
+                started.elapsed().as_micros()
+            );
+            super::super::intent_routing::menu::refresh_active(&service).await;
+            eprintln!(
+                "Routing profile: save_total_us={}",
+                started.elapsed().as_micros()
+            );
+            assert!(service
+                .intent_runtime
+                .global_current(db.routing_generation()));
+            assert!(service
+                .intent_runtime
+                .menu_snapshot()?
+                .ok_or("menu")?
+                .groups
+                .contains_key("vary-auto/fixture"));
+        }
+        service.stop().await?;
         Ok(())
     }
 

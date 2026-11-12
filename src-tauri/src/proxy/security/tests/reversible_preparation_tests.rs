@@ -187,8 +187,8 @@ fn preparation_rejects_sensitive_read_only_values_before_mapping_commit() -> Res
 }
 
 #[test]
-fn preparation_preserves_block_precedence_and_never_promotes_allow_or_generic_sk(
-) -> Result<(), PlanError> {
+fn preparation_preserves_block_precedence_and_never_promotes_default_allow() -> Result<(), PlanError>
+{
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
     let mut runtime = SecurityRuntimeConfig::default();
@@ -225,6 +225,86 @@ fn preparation_preserves_block_precedence_and_never_promotes_allow_or_generic_sk
     )?;
     assert!(allowed.body.as_value()["input"] == "synthetic-allowed sk-shortsynthetic");
     assert_eq!(store.stats()?.entries, 0);
+    Ok(())
+}
+
+#[test]
+fn generic_sk_preparation_honors_both_hiding_actions_without_mutating_wire_fields(
+) -> Result<(), PlanError> {
+    for action in [AuditAction::Redact, AuditAction::RedactRestore] {
+        let store = DlpTokenStore::new();
+        let mut lease = store.admit("codex", None, 1)?;
+        let mut runtime = SecurityRuntimeConfig::default();
+        runtime
+            .builtin_action_overrides
+            .insert("catalog:generic-sk-key-notice".into(), action);
+        let body =
+            json!({"model":"synthetic-model", "temperature":0.25, "input":"sk-syntheticfixture"});
+        let prepared =
+            prepare_codex_request(&mut lease, &body, &runtime, &[], &[], |_, _, _| Ok(()))?;
+        assert_eq!(prepared.body.as_value()["model"], body["model"]);
+        assert_eq!(prepared.body.as_value()["temperature"], body["temperature"]);
+        assert!(!prepared
+            .body
+            .as_value()
+            .to_string()
+            .contains("sk-syntheticfixture"));
+        if action == AuditAction::Redact {
+            assert_eq!(prepared.body.as_value()["input"], "[REDACTED]");
+            assert_eq!(
+                (
+                    prepared.reversible_occurrences,
+                    prepared.irreversible_occurrences
+                ),
+                (0, 1)
+            );
+            assert_eq!(store.stats()?.entries, 0);
+        } else {
+            let reference = prepared.body.as_value()["input"]
+                .as_str()
+                .ok_or(TokenError::RedactionFailed)?;
+            assert_eq!(lease.resolve(reference)?, "sk-syntheticfixture");
+            assert_eq!(
+                (
+                    prepared.reversible_occurrences,
+                    prepared.irreversible_occurrences
+                ),
+                (1, 0)
+            );
+            assert_eq!(store.stats()?.entries, 1);
+        }
+        assert_eq!(body["input"], "sk-syntheticfixture");
+    }
+    Ok(())
+}
+
+#[test]
+fn generic_sk_restoration_keeps_specific_irreversible_key_rules_authoritative(
+) -> Result<(), PlanError> {
+    let store = DlpTokenStore::new();
+    let mut lease = store.admit("codex", None, 1)?;
+    let mut runtime = SecurityRuntimeConfig::default();
+    runtime.builtin_action_overrides.insert(
+        "catalog:generic-sk-key-notice".into(),
+        AuditAction::RedactRestore,
+    );
+    let prepared = prepare_codex_request(
+        &mut lease,
+        &json!({"input":"sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"}),
+        &runtime,
+        &[],
+        &[],
+        |_, _, _| Ok(()),
+    )?;
+    assert_eq!(prepared.body.as_value()["input"], "[REDACTED]");
+    assert_eq!(store.stats()?.entries, 0);
+    assert_eq!(
+        (
+            prepared.reversible_occurrences,
+            prepared.irreversible_occurrences
+        ),
+        (0, 1)
+    );
     Ok(())
 }
 

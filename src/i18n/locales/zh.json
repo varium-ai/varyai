@@ -2196,6 +2196,8 @@
     "noSearchResults": "没有匹配的预设供应商。"
   },
   "usage": {
+    "modelFilterScope": "可按请求、响应或计费模型筛选；费用仍按计费模型汇总。",
+    "requestResponseModel": "请求 → 响应",
     "title": "使用统计",
     "subtitle": "查看 AI 模型的使用情况和成本统计",
     "today": "24小时",
@@ -5009,6 +5011,9 @@
     "gatewayUnavailable": "无法获取网关状态"
   },
   "modelProviders": {
+    "searchPlaceholder": "名称、地址或模型",
+    "searchScope": "搜索供应商名称、接口域名、模型 ID 或名称；空格分隔的条件须同时匹配。",
+    "matchedModels": "匹配模型",
     "sorting": {
       "role": "可排序供应商",
       "handle": "拖动排序 {{provider}}",
@@ -5491,6 +5496,7 @@
       "manual": "只向手动选择的模型发送请求。"
     },
     "export": "导出路由组",
+    "exportStarted": "已开始导出“{{name}}”，请查看下载列表。",
     "previous": "上一页",
     "next": "下一页",
     "sunk": "此前遇到限流 · 已移到末尾",
@@ -5612,7 +5618,7 @@
     "addKey": "添加另一个密钥",
     "keyName": "密钥名称",
     "keyRunning": "{{count}} 运行中",
-    "keyPoolHint": "勾选要使用的密钥。请求先走第一个，额度用完或被限流时由下一个接上。",
+    "keyPoolHint": "勾选要使用的密钥。请求先走第一个，额度用完或被限流时由下一个接上。 最多添加 64 个备用密钥，每个密钥不超过 16,384 字节。",
     "copyKeyFailed": "无法复制此密钥，请关闭编辑器后重新打开再试。",
     "showKey": "显示",
     "hideKey": "隐藏",

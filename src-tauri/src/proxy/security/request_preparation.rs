@@ -593,10 +593,7 @@ pub(super) fn prepare_codex_request_with_history<T>(
 }
 
 fn selected_action(id: &str, action: EffectiveAction, selected: &[&str]) -> EffectiveAction {
-    if action == EffectiveAction::Redact
-        && id != "catalog:generic-sk-key-notice"
-        && selected.contains(&id)
-    {
+    if action == EffectiveAction::Redact && selected.contains(&id) {
         EffectiveAction::Restore
     } else {
         action

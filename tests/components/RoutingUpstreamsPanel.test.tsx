@@ -763,6 +763,90 @@ describe("global upstream editor", () => {
       ),
     );
   });
+  it.each(["", "synthetic\u0001invalid", "x".repeat(16385)])(
+    "rejects invalid staged keys with safe feedback",
+    async (key) => {
+      const saved = {
+        ...primary,
+        transport: {
+          endpoints: {},
+          fullUrl: false,
+          keys: [{ id: "new-key", name: "", enabled: true, key }],
+        },
+      };
+      vi.mocked(routingUpstreamsApi.list).mockResolvedValue([saved]);
+      vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(saved);
+      mount();
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "common.edit Synthetic primary",
+        }),
+      );
+      await screen.findByRole("button", { name: "common.save" });
+      fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(
+          "modelProviders.errors.save",
+          expect.objectContaining({
+            description: "modelProviders.errors.invalid",
+          }),
+        ),
+      );
+      expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["api", "subscription"] as const)(
+    "explains model matches in %s vendor catalogs and display names",
+    async (kind) => {
+      const vendor = {
+        ...primary,
+        source:
+          kind === "api"
+            ? {
+                ...primary.source,
+                mode: "vendor" as const,
+                models: [],
+                catalog: [
+                  { model: "vision-3", displayName: "Friendly vision" },
+                ],
+              }
+            : {
+                kind: "subscription" as const,
+                provider: "gemini_cli" as const,
+                accountId: "synthetic-account",
+                mode: "vendor" as const,
+                models: [],
+                catalog: [
+                  { model: "vision-3", displayName: "Friendly vision" },
+                ],
+                groupsOnly: false,
+              },
+      };
+      const other = {
+        ...primary,
+        id: "other",
+        name: "Another supplier",
+        source: { ...primary.source, models: [{ model: "fast-model" }] },
+      };
+      vi.mocked(routingUpstreamsApi.list).mockResolvedValue([vendor, other]);
+      mount();
+      const search = await screen.findByRole("searchbox", {
+        name: "modelProviders.find",
+      });
+      expect(search).toHaveAccessibleDescription("modelProviders.searchScope");
+      fireEvent.change(search, { target: { value: "3" } });
+      expect(
+        screen.getByRole("article", { name: primary.name }),
+      ).toHaveTextContent("vision-3");
+      expect(
+        screen.queryByRole("article", { name: other.name }),
+      ).not.toBeInTheDocument();
+      fireEvent.change(search, { target: { value: "Friendly vision" } });
+      expect(
+        screen.getByRole("article", { name: primary.name }),
+      ).toHaveTextContent("modelProviders.matchedModels");
+    },
+  );
   it("distinguishes a saved single key from a provider that still needs a key", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       primary,

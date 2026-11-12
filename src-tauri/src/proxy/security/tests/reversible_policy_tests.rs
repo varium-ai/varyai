@@ -225,8 +225,7 @@ fn explicit_builtin_default_and_reset_preserve_the_effective_policy_generation(
     Ok(())
 }
 #[test]
-fn builtin_policy_comparison_uses_catalog_defaults_and_generic_notice_restrictions(
-) -> Result<(), TokenError> {
+fn builtin_policy_comparison_tracks_explicit_generic_notice_actions() -> Result<(), TokenError> {
     let gate = DlpPolicyGate::new();
     gate.begin_update()?
         .publish(runtime(true), policy(true, &[], &HashMap::new(), 1))?;
@@ -237,16 +236,25 @@ fn builtin_policy_comparison_uses_catalog_defaults_and_generic_notice_restrictio
     overrides.insert("chinese_id_card".into(), AuditAction::Redact);
     overrides.insert("chinese_phone_number".into(), AuditAction::Redact);
     overrides.insert("synthetic-unknown-rule".into(), AuditAction::Allow);
-    for ineffective in [AuditAction::Block, AuditAction::Redact, AuditAction::Allow] {
-        overrides.insert("catalog:generic-sk-key-notice".into(), ineffective);
-        gate.begin_update()?
-            .publish(runtime(true), policy(true, &[], &overrides, 1))?;
-        assert_eq!(gate.admit()?.restoration_policy_revision, 1);
-    }
-    overrides.insert("catalog:generic-sk-key-notice".into(), AuditAction::Audit);
+    overrides.insert("catalog:generic-sk-key-notice".into(), AuditAction::Allow);
     gate.begin_update()?
         .publish(runtime(true), policy(true, &[], &overrides, 1))?;
-    assert_eq!(gate.admit()?.restoration_policy_revision, 2);
+    assert_eq!(gate.admit()?.restoration_policy_revision, 1);
+    for (index, action) in [
+        AuditAction::Audit,
+        AuditAction::Redact,
+        AuditAction::RedactRestore,
+        AuditAction::Block,
+        AuditAction::Allow,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        overrides.insert("catalog:generic-sk-key-notice".into(), action);
+        gate.begin_update()?
+            .publish(runtime(true), policy(true, &[], &overrides, 1))?;
+        assert_eq!(gate.admit()?.restoration_policy_revision, index as u64 + 2);
+    }
     Ok(())
 }
 

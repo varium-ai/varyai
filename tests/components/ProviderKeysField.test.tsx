@@ -304,3 +304,21 @@ it("copies only the explicitly selected stored key and never fills the editor wi
     screen.queryByDisplayValue("synthetic-copy-key"),
   ).not.toBeInTheDocument();
 });
+
+it("stops adding keys at the backend limit", async () => {
+  mount({
+    ...record,
+    transport: {
+      ...record.transport!,
+      keys: Array.from({ length: 64 }, (_, index) => ({
+        id: `key-${index}`,
+        name: `Key ${index}`,
+        enabled: true,
+        key: "synthetic-key",
+      })),
+    },
+  });
+  expect(
+    await screen.findByRole("button", { name: "providerEditor.addKey" }),
+  ).toBeDisabled();
+});

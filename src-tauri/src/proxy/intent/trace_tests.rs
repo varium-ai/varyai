@@ -5,6 +5,7 @@ fn candidate() -> Candidate {
     Candidate {
         key_id: None,
         provider_id: "fixture".into(),
+        source_provider_id: None,
         provider_name: "Synthetic".into(),
         model: "model-a".into(),
         fixed_effort: None,
@@ -1205,5 +1206,28 @@ fn history_failure_never_changes_a_forwarding_observation() -> Result<(), Box<dy
     store.flush_history()?;
     assert_eq!(store.snapshot()[0].state, State::Completed);
     assert!(store.history(None).is_err());
+    Ok(())
+}
+
+#[test]
+fn trace_keeps_execution_identity_and_records_the_configured_supplier_id(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::default();
+    let mut target = observed_target("synthetic-only")?;
+    let public_id = target
+        .upstream
+        .as_ref()
+        .ok_or("synthetic upstream")?
+        .id
+        .clone();
+    target.provider_id = "immutable-owner".into();
+    let candidate = store.candidate(&target);
+    assert_eq!(candidate.provider_id, "immutable-owner");
+    assert_eq!(
+        candidate.source_provider_id.as_deref(),
+        Some(public_id.as_str())
+    );
+    let wire = serde_json::to_value(candidate)?;
+    assert_eq!(wire["sourceProviderId"], public_id);
     Ok(())
 }

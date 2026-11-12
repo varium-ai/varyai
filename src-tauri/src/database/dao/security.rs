@@ -586,7 +586,7 @@ impl Database {
             if let Some(id) = key.strip_prefix("builtin_action:") {
                 if is_builtin_security_rule_id(id) {
                     validate_security_rule_action(&action)?;
-                    if is_valid_builtin_action(id, &action) {
+                    if is_valid_builtin_action(&action) {
                         actions.insert(id.to_owned(), action);
                     }
                 }
@@ -605,12 +605,8 @@ impl Database {
         }
         let action = action.map(normalize_security_rule_action);
         if let Some(action) = action.as_deref() {
-            if !is_valid_builtin_action(id, action) {
-                let message = if id == "catalog:generic-sk-key-notice" {
-                    "通用 sk- 提醒规则仅支持 audit 或 allow 动作"
-                } else {
-                    "无效的处理动作，仅支持 redact、redact_restore、audit、allow"
-                };
+            if !is_valid_builtin_action(action) {
+                let message = "无效的处理动作，仅支持 redact、redact_restore、audit、allow";
                 return Err(AppError::Database(message.to_string()));
             }
         }
@@ -636,9 +632,8 @@ fn is_builtin_security_rule_id(id: &str) -> bool {
             .any(|rule| rule.id == id)
 }
 
-fn is_valid_builtin_action(id: &str, action: &str) -> bool {
+fn is_valid_builtin_action(action: &str) -> bool {
     matches!(action, "audit" | "redact" | "redact_restore" | "allow")
-        && (id != "catalog:generic-sk-key-notice" || matches!(action, "audit" | "allow"))
 }
 
 #[cfg(test)]
@@ -929,12 +924,16 @@ mod redact_restore_tests {
                 .update_builtin_security_rule_action("chinese_phone_number", Some(invalid))
                 .is_err());
         }
-        assert!(db
-            .update_builtin_security_rule_action(
-                "catalog:generic-sk-key-notice",
-                Some("redact_restore")
-            )
-            .is_err());
+        db.update_builtin_security_rule_action(
+            "catalog:generic-sk-key-notice",
+            Some("redact_restore"),
+        )?;
+        assert_eq!(
+            db.get_builtin_security_rule_actions()?
+                .get("catalog:generic-sk-key-notice")
+                .map(String::as_str),
+            Some("redact_restore")
+        );
         assert_eq!(db.get_custom_security_rules()?[0].action, "redact_restore");
         Ok(())
     }

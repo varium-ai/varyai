@@ -683,7 +683,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps allow selected for the generic sk rule and permits switching only to audit", () => {
+it("keeps allow selected for the generic sk rule and permits explicit hiding actions", () => {
   extraRules.items = [
     {
       id: "catalog:generic-sk-key-notice",
@@ -702,13 +702,13 @@ it("keeps allow selected for the generic sk rule and permits switching only to a
     within(row).getByRole("button", { name: "security.ruleActionAllow" }),
   ).toHaveAttribute("aria-pressed", "true");
   expect(
-    within(row).queryByRole("button", { name: "security.ruleActionRedact" }),
-  ).not.toBeInTheDocument();
+    within(row).getByRole("button", { name: "security.ruleActionRedact" }),
+  ).toBeEnabled();
   expect(
-    within(row).queryByRole("button", {
+    within(row).getByRole("button", {
       name: "security.ruleActionRedactRestore",
     }),
-  ).not.toBeInTheDocument();
+  ).toBeEnabled();
   expect(
     within(row).queryByRole("button", { name: "security.ruleActionBlock" }),
   ).not.toBeInTheDocument();
@@ -719,6 +719,16 @@ it("keeps allow selected for the generic sk rule and permits switching only to a
     "catalog:generic-sk-key-notice",
     "audit",
   );
+  for (const [name, action] of [
+    ["security.ruleActionRedact", "redact"],
+    ["security.ruleActionRedactRestore", "redact_restore"],
+  ]) {
+    fireEvent.click(within(row).getByRole("button", { name }));
+    expect(updateBuiltinAction).toHaveBeenCalledWith(
+      "catalog:generic-sk-key-notice",
+      action,
+    );
+  }
 });
 
 it("keeps the two password rule descriptions distinct and readable in full", () => {
@@ -1278,8 +1288,8 @@ describe("redact_restore public rule controls", () => {
   });
 });
 
-describe("generic sk notice action restrictions", () => {
-  it("offers only audit and allow while other built-ins can select restoration", () => {
+describe("generic sk notice actions", () => {
+  it("supports redaction and restoration like other built-in key rules", () => {
     extraRules.items = [
       {
         id: "catalog:generic-sk-key-notice",
@@ -1296,11 +1306,28 @@ describe("generic sk notice action restrictions", () => {
     const generic = screen.getByTestId(
       "security-rule-catalog:generic-sk-key-notice",
     );
+    for (const action of [
+      "security.ruleActionRedact",
+      "security.ruleActionRedactRestore",
+    ]) {
+      const button = within(generic).getByRole("button", { name: action });
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+    }
+    expect(updateBuiltinAction).toHaveBeenCalledWith(
+      "catalog:generic-sk-key-notice",
+      "redact",
+    );
+    expect(updateBuiltinAction).toHaveBeenCalledWith(
+      "catalog:generic-sk-key-notice",
+      "redact_restore",
+    );
     expect(
-      within(generic)
-        .getAllByRole("button")
-        .map((button) => button.textContent),
-    ).toEqual(["security.ruleActionAlert", "security.ruleActionAllow"]);
+      within(generic).getByRole("button", { name: "security.ruleActionAlert" }),
+    ).toBeEnabled();
+    expect(
+      within(generic).getByRole("button", { name: "security.ruleActionAllow" }),
+    ).toBeEnabled();
     const builtin = screen.getByTestId("security-rule-builtin-token");
     expect(
       within(builtin).getByRole("button", {

@@ -529,7 +529,15 @@ pub(crate) async fn reapply_agent_connection(
                 .bridge_for(edition)
                 .bridge_retry()?;
         }
-        state.proxy_service.sync_shared_trae_intl(false).await;
+        if !state
+            .proxy_service
+            .agent_connections
+            .bridge_for(edition)
+            .bridge_enabled()
+            || state.proxy_service.prepare_shared_trae(edition).await
+        {
+            state.proxy_service.sync_shared_trae_intl(false).await;
+        }
         return Ok(());
     }
     if app == "trae" {
@@ -544,7 +552,14 @@ pub(crate) async fn reapply_agent_connection(
                 .await
                 .map_err(|_| FAILED)??;
         }
-        state.proxy_service.sync_shared_trae(false).await;
+        if !state.proxy_service.agent_connections.bridge_enabled()
+            || state
+                .proxy_service
+                .prepare_shared_trae(Edition::China)
+                .await
+        {
+            state.proxy_service.sync_shared_trae(false).await;
+        }
         return Ok(());
     }
     state
@@ -689,7 +704,9 @@ pub(crate) async fn set_agent_connection(
                 .bridge_for(edition)
                 .bridge_select_model(enabled, model)?;
         }
-        state.proxy_service.sync_shared_trae_intl(false).await;
+        if !enabled || state.proxy_service.prepare_shared_trae(edition).await {
+            state.proxy_service.sync_shared_trae_intl(false).await;
+        }
         return Ok(());
     }
     if app == "trae" {
@@ -725,7 +742,14 @@ pub(crate) async fn set_agent_connection(
             .proxy_service
             .select_shared_trae_connection_model(enabled, model)
             .await?;
-        state.proxy_service.sync_shared_trae(false).await;
+        if !enabled
+            || state
+                .proxy_service
+                .prepare_shared_trae(Edition::China)
+                .await
+        {
+            state.proxy_service.sync_shared_trae(false).await;
+        }
         return Ok(());
     }
     if !agent_connections::APPS.contains(&app.as_str()) {

@@ -193,7 +193,7 @@ pub async fn fetch_models(
     request_headers: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<FetchedModel>, String> {
     let is_gemini = matches!(api_format, Some("google-generative-ai" | "gemini_native"));
-    let candidates = if is_gemini {
+    let mut candidates = if is_gemini {
         vec![build_gemini_models_url(
             base_url,
             is_full_url,
@@ -204,6 +204,16 @@ pub async fn fetch_models(
     };
     let headers =
         build_model_fetch_headers(api_key, api_format, user_agent.as_ref(), request_headers)?;
+    let native_url = candidates.first().cloned();
+    if is_gemini && models_url_override.is_none_or(|value| value.trim().is_empty()) {
+        let mut compatibility =
+            url::Url::parse(&candidates[0]).map_err(|_| "Invalid models endpoint".to_string())?;
+        if let Some(prefix) = compatibility.path().strip_suffix("/v1beta/models") {
+            let path = format!("{prefix}/v1/models");
+            compatibility.set_path(&path);
+            candidates.push(compatibility.into());
+        }
+    }
     let client = crate::proxy::http_client::get_without_redirects()
         .map_err(|_| "Model discovery client unavailable".to_string())?;
     let mut last_err: Option<String> = None;
@@ -213,6 +223,17 @@ pub async fn fetch_models(
     }
 
     'candidates: for url in &candidates {
+        let mut candidate_headers = headers.clone();
+        if is_gemini && Some(url) != native_url.as_ref() && !headers.contains_key(AUTHORIZATION) {
+            if let Some(key) = headers
+                .get("x-goog-api-key")
+                .and_then(|value| value.to_str().ok())
+            {
+                let bearer = HeaderValue::from_str(&format!("Bearer {key}"))
+                    .map_err(|_| "Invalid model discovery credential".to_string())?;
+                candidate_headers.insert(AUTHORIZATION, bearer);
+            }
+        }
         log::debug!(
             "[ModelFetch] Trying endpoint: {}",
             crate::url_for_log_with_secrets(url, &known_secrets)
@@ -227,7 +248,7 @@ pub async fn fetch_models(
         for page in 0..MAX_MODEL_PAGES {
             let request = client
                 .get(page_url.clone())
-                .headers(headers.clone())
+                .headers(candidate_headers.clone())
                 .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
             let response = match request.send().await {
                 Ok(r) => r,
@@ -736,6 +757,46 @@ mod tests {
                 "https://fixture.example/proxy/models"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn gemini_compatible_gateway_falls_back_to_its_openai_catalog(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::get, Json, Router};
+        let app = Router::new().route(
+            "/relay/v1/models",
+            get(|headers: axum::http::HeaderMap| async move {
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("Bearer synthetic-key")
+                );
+                Json(serde_json::json!({"data":[{"id":"gemini-fixture"}]}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}/relay", listener.local_addr()?);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let headers = BTreeMap::from([("x-goog-api-key".into(), "synthetic-key".into())]);
+        let result = fetch_models(
+            &base,
+            "",
+            false,
+            None,
+            None,
+            Some("gemini_native"),
+            Some(&headers),
+        )
+        .await;
+        task.abort();
+        assert_eq!(
+            result?.first().map(|model| model.id.as_str()),
+            Some("gemini-fixture")
+        );
+        Ok(())
     }
 
     #[test]

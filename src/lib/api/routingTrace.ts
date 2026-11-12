@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface RoutingCandidate {
   providerId: string;
+  sourceProviderId?: string | null;
   providerName: string;
   model: string;
   fixedEffort?: string | null;

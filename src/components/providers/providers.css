@@ -62,6 +62,13 @@
   gap: 10px;
   margin: 0 0 12px;
 }
+.vary-providers .pv-search-scope {
+  order: 1;
+  flex-basis: 100%;
+  color: var(--mp-muted);
+  font-size: 11px;
+  text-align: right;
+}
 .vary-providers .pv-select-all {
   display: inline-flex;
   align-items: center;

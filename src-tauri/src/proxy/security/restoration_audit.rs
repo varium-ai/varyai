@@ -110,7 +110,6 @@ impl PendingRequestAudit {
                     .filter(|n| *n <= MAX_FINDINGS)
                     .ok_or(TokenError::CapacityExceeded)?;
                 let action = if found.action == EffectiveAction::Redact
-                    && found.rule_id != "catalog:generic-sk-key-notice"
                     && restore_ids.contains(&found.rule_id)
                 {
                     EffectiveAction::Restore

@@ -22,6 +22,8 @@ pub(crate) struct Candidate {
     #[serde(skip)]
     pub(super) key_id: Option<String>,
     pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_provider_id: Option<String>,
     pub provider_name: String,
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,6 +280,18 @@ impl Store {
                 .as_deref()
                 .map(crate::services::routing_upstreams::key_observation),
             provider_id: target.provider_id.clone(),
+            source_provider_id: target
+                .upstream
+                .as_ref()
+                .map(|provider| provider.id.as_str())
+                .or_else(|| {
+                    target
+                        .credentials
+                        .as_ref()
+                        .map(|credentials| credentials.provider_id())
+                })
+                .filter(|id| *id != target.provider_id)
+                .map(str::to_owned),
             provider_name,
             model: label(&target.model),
             fixed_effort: target.fixed_effort.clone(),

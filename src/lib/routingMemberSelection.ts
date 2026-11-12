@@ -12,6 +12,20 @@ export function routingMemberKey(
   return JSON.stringify([member.providerId, member.modelId]);
 }
 
+export function routingMemberAvailable(
+  providers: RoutingProviderOption[],
+  member: Pick<RoutingMember, "providerId" | "modelId">,
+) {
+  const provider = providers.find(
+    (provider) => provider.id === member.providerId,
+  );
+  return (
+    !!provider?.taskEligible &&
+    (!provider.models ||
+      provider.models.some((model) => model.id === member.modelId))
+  );
+}
+
 export function catalogRoutingMembers(providers: RoutingProviderOption[]) {
   const seen = new Set<string>();
   return providers

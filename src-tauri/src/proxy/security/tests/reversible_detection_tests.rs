@@ -201,11 +201,12 @@ fn custom_actions_keyword_casefold_and_disabled_runtime_are_respected() -> Resul
 }
 
 #[test]
-fn generic_sk_actions_remain_restricted_and_saved_defaults_are_unchanged() -> Result<(), TokenError>
+fn generic_sk_actions_are_explicit_and_other_saved_defaults_are_unchanged() -> Result<(), TokenError>
 {
     for action in [
         AuditAction::Block,
         AuditAction::Redact,
+        AuditAction::RedactRestore,
         AuditAction::Audit,
         AuditAction::Allow,
     ] {
@@ -220,10 +221,12 @@ fn generic_sk_actions_remain_restricted_and_saved_defaults_are_unchanged() -> Re
             .ok_or(TokenError::RedactionFailed)?;
         assert_eq!(
             generic.action,
-            if action == AuditAction::Audit {
-                EffectiveAction::Audit
-            } else {
-                EffectiveAction::Allow
+            match action {
+                AuditAction::Audit => EffectiveAction::Audit,
+                AuditAction::Allow => EffectiveAction::Allow,
+                AuditAction::Redact => EffectiveAction::Redact,
+                AuditAction::RedactRestore => EffectiveAction::Restore,
+                AuditAction::Block => EffectiveAction::Block,
             }
         );
         let phone = detect_spans("13800138000", false, &runtime)?;

@@ -485,11 +485,19 @@ pub(crate) async fn save_intent_routing_group(
     state: State<'_, AppState>,
     group: RoutingGroup,
 ) -> Result<RoutingGroup, String> {
+    let started = std::time::Instant::now();
     let db = state.db.clone();
     let saved = tauri::async_runtime::spawn_blocking(move || db.save_intent_routing_group(group))
         .await
         .map_err(|_| "intentRouting.failed")??;
+    let persisted = started.elapsed();
     crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    log::info!(
+        "Routing save completed: persistence_ms={} publication_ms={} total_ms={}",
+        persisted.as_millis(),
+        started.elapsed().saturating_sub(persisted).as_millis(),
+        started.elapsed().as_millis()
+    );
     Ok(saved)
 }
 

@@ -48,6 +48,7 @@ fn direct_group(provider: &Provider, model: &str) -> RoutingGroup {
         classifier_target: None,
         classification_budget_ms: 2000,
         rules: vec![],
+        retired_policy: None,
         auto_generated: false,
         routing: Default::default(),
         model_alias: None,
@@ -440,16 +441,26 @@ pub(crate) async fn prepare(
 }
 
 pub(crate) async fn refresh_active(service: &crate::services::ProxyService) {
+    let started = Instant::now();
     if service.refresh_global_routing().await.is_err() {
         log::warn!("Global routing catalog refresh failed; stale targets were revoked");
     }
+    let global = started.elapsed();
     service.sync_shared_agent_catalogs().await;
+    let synced = started.elapsed();
     if service.intent_runtime.menu_active()
         && service.connect_codex_menu(false, false).await.is_err()
     {
         // Persistence succeeded; the service revoked stale targets under its switch lock.
         log::warn!("Codex model menu refresh failed; reconnect is required");
     }
+    log::info!(
+        "Routing refresh completed: global_ms={} clients_ms={} codex_ms={} total_ms={}",
+        global.as_millis(),
+        synced.saturating_sub(global).as_millis(),
+        started.elapsed().saturating_sub(synced).as_millis(),
+        started.elapsed().as_millis()
+    );
 }
 
 pub(crate) async fn prepare_with_stand_ins(

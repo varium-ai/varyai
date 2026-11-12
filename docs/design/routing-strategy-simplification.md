@@ -1,185 +1,139 @@
-# Routing strategy simplification
+# 路由策略简化设计
 
-Status: proposal; no runtime behavior changed.
-Date: 2026-11-12.
-Reviewed base: `919a3b9d9`; routing files were also inspected in the original
-working tree. This document was restored to the original checkout on
-`codex/intent-recognition` after the separate proposal worktree was removed.
-Its implementation findings describe the earlier review, not a fresh audit of
-subsequent code changes.
+状态：设计草案。按本次要求，四种新策略、新版界面及新旧切换已撤回，产品目前保留原版三个模板、九种策略和完整高级设置。以下内容用于后续方案讨论，不代表当前已实现功能。
 
-## Current implementation
+日期：2026-11-12。
 
-The interface combines three separate concepts:
+分析基线：`919a3b9d9`，同时检查了原工作区中的路由相关文件。独立提案 worktree 删除后，本文已恢复到原工作区的 `codex/intent-recognition` 分支。以下现状描述来自此前的代码分析，不代表已重新核查后续代码变更。
 
-1. A routing group contains exact provider/model members, a default member and
-   fallback members. Discovery can group equivalent models across providers.
-2. Nine scheduling algorithms order approved candidates using configuration and
-   in-memory observations.
-3. Optional deterministic conditions and model-based intent classification can
-   prefer members ahead of the scheduler's remaining candidates. Three templates
-   generate group members, rules and classifier settings.
+## 一、当前实现
 
-These concepts are not interchangeable. In particular, the scheduling strategy
-named `smart` does not assess task difficulty.
+目前的界面叠加了三个不同层次的概念：
 
-| Existing strategy | Implementation                                                                                                                                                                                |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `smart`           | Quota-aware ordering, with 90%/98% utilization tiers, reset-time comparisons and usable-credit handling. Unknown official-account allowance can receive learning priority.                    |
-| `ordered`         | Preserve the configured default/fallback order.                                                                                                                                               |
-| `round_robin`     | Rotate the first candidate on unbound selections.                                                                                                                                             |
-| `least_used`      | Compare quota utilization, then recent routed tokens with a one-hour half-life; usable credits help distinguish spent accounts.                                                               |
-| `pace`            | Prefer a higher remaining-allowance percentage per hour until reset; use day-or-longer windows when available and the tightest applicable budget. This is not simply earliest deadline first. |
-| `free_first`      | Prefer explicitly free members. This does not rank paid models by price.                                                                                                                      |
-| `fastest`         | Estimate first-content latency plus time to produce 200 tokens, retain configured order within 10% bands, and periodically explore an unmeasured available route.                             |
-| `weighted`        | Smooth weighted rotation using member weights from 1 to 1000. Charge the destination that actually answers.                                                                                   |
-| `manual`          | Use the selected member; pause intent/rule selection and cross-member fallback.                                                                                                               |
+1. **路由组**：包含明确的供应商和模型成员、默认成员以及后备成员。自动发现功能可以把不同供应商提供的等价模型组成一个组。
+2. **调度策略**：共 9 种，根据配置和内存中的观测数据，为允许使用的候选目标排序。
+3. **规则与模板**：可选的确定性条件和模型意图分类，可以让指定成员排到其他候选之前；另有 3 个模板，自动生成成员、规则和分类器配置。
 
-All scheduling remains subordinate to continuation ownership, supported request
-capabilities, context capacity and availability handling. A rule's preferred
-members can precede the scheduler's order. Optional rate-limit sinking and
-account-pool handling also affect execution; the selected strategy is not the
-only source of the final order.
+这三个概念不能混为一谈。特别是，名为 `smart` 的“智能”调度策略并不判断任务难度。
 
-Supported rule conditions include estimated tokens, images, requested reasoning
-effort, agent, compaction, time and folders. Intent classification sends only
-supported user text and rule descriptions through independent privacy inspection
-to an explicitly configured eligible classifier. Classification is bounded and
-falls back to the default plan when unavailable or invalid. Hard-bound
-continuations do not become opportunities to switch accounts or reclassify.
+### 1. 现有 9 种调度策略
 
-The existing templates are:
+| 策略                  | 实现方式                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 智能 `smart`          | 根据额度情况排序，以 90% 和 98% 使用率划分层级，并比较重置时间、是否还有可用余额等。额度未知的官方账号可能被优先尝试，以获取观测数据。            |
+| 按顺序 `ordered`      | 保持配置的默认成员和后备成员顺序。                                                                                                                |
+| 轮流 `round_robin`    | 在没有强绑定、允许重新选路时，轮换首选候选目标。                                                                                                  |
+| 最少使用 `least_used` | 先比较额度使用率，再比较近期转发的 Token 用量；近期用量按一小时半衰期衰减。对于周期额度已耗尽的账号，可用余额参与排序。                           |
+| 重置前用完 `pace`     | 优先选择“剩余额度百分比 ÷ 距重置的小时数”较高的目标；如果存在一天及以上的额度窗口，则优先用这些窗口，并取最紧的额度预算。它不等于“最早到期优先”。 |
+| 免费优先 `free_first` | 明确免费的成员排在前面，不负责比较付费模型之间的价格。                                                                                            |
+| 速度优先 `fastest`    | 估算首个内容的等待时间加上生成 200 Token 的时间；速度差异在 10% 范围内时保留配置顺序，并定期尝试尚无测量记录的可用目标。                          |
+| 按权重 `weighted`     | 使用平滑加权轮询，成员权重范围为 1～1000；按实际完成响应的目标结算调度权重。                                                                      |
+| 手动 `manual`         | 只使用选中的成员，暂停意图分类、规则选路和跨成员故障转移。                                                                                        |
 
-- **Hard tasks to stronger models, easy tasks to cheaper models:** an ordered
-  group with strong/cheap members, a classifier, hard/easy intent descriptions
-  and special compaction/image rules. The strong member is the default.
-- **Cheaper first:** cheap members precede a strong fallback; high requested
-  reasoning effort and relevant image support can prefer the strong member.
-- **Keep going:** select up to three providers' strongest candidates and order
-  them as fallbacks; this is a template, not a tenth scheduler.
+所有调度都必须遵守会话续接归属、请求能力支持、上下文容量和可用性约束。规则指定的成员可以排在策略排序结果之前。可选的限流后置处理和账号池处理也会影响执行，因此最终顺序并不只由策略决定。
 
-Template strength is heuristic: maker metadata, output-price thresholds,
-small-model name/size markers and release dates. Missing output prices become
-zero in template ranking. This is neither a validated ability score nor reliable
-proof of low cost. Actual free-use scheduling separately preserves unknown cost.
+### 2. 规则与意图识别
 
-The scheduling quota reader consumes official Codex allowance, supported headers
-and rate-limit events. Its windows record utilization, duration and reset time,
-not generic prepaid-credit expiry. Provider quota cards have separate allowance
-readers; displaying a balance does not automatically make it scheduler telemetry.
+确定性规则支持以下条件：估算 Token 数、是否包含图片、请求的推理强度、Agent、是否为上下文压缩、时间和目录。
 
-## Product model: four choices
+意图识别只把支持提取的用户文本和规则描述，经独立隐私检查后发送给明确配置、符合要求的分类模型。分类调用有资源和时间限制；不可用或结果无效时，使用默认计划。强绑定的续接请求不会因此重新分类或切换账号。
 
-Expose four task-oriented policies instead of the combination of templates,
-nine algorithms and rule configuration. Select models first, then choose one
-policy. Show a plain-language preview of the resulting preference order before
-saving. Prefer simple controls over a general rule editor in the default flow.
+### 3. 现有 3 个模板
 
-| Product policy                                                    | Reuse                                                                         | Required change                                                                                                                                                               |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Adaptive: hard tasks to strong models, easy tasks to cheap models | Existing hard/easy template, classifier privacy checks and fallback execution | Give the policy durable identity, expose strong/economical roles and generate its rules internally. Do not make users configure rule IDs or a separate classifier by default. |
-| Capability first                                                  | Ordered execution and fallback machinery                                      | Add explicit, editable capability ordering. Existing template heuristics can suggest an order but must not present price or model names as measured ability.                  |
-| Speed first                                                       | Existing `fastest` scheduler and exact-destination measurements               | Retain measured first-content/output speed and bounded exploration. Explain when there are insufficient observations; use a stable fallback order.                            |
-| Expiring allowance first                                          | Existing quota observations and cooldown handling                             | Normalize usable expiring allowance and order by its actual deadline. Do not relabel `pace` as equivalent behavior.                                                           |
+- **难题给强模型，简单任务给便宜模型**：生成一个按顺序执行的路由组，包含强模型、便宜模型、分类器、难题和简单任务的意图描述，以及压缩、图片等特殊规则。默认使用强模型。
+- **便宜优先**：便宜模型排在前面，强模型作为后备；高推理强度和相关图片支持条件可以优先选择强模型。
+- **不中断**：从最多 3 家供应商中各选出较强候选，按顺序设置后备。这是模板，不是第 10 种调度算法。
 
-### Adaptive policy
+现有模板判断模型强弱，依赖原厂标记、输出价格阈值、模型名称或参数规模中的小模型标记，以及发布日期。这些是启发式判断，不是经过验证的能力评分。
 
-The essential configuration is a strong role and an economical role, with
-optional alternatives within each role. Suggest role assignments, but allow
-correction. Use known provider pricing when available; unknown pricing must
-remain unknown rather than being classified as free or cheaper.
+模板排序还会把缺失的输出价格当作 0，不能据此可靠判断便宜程度。实际的“免费优先”调度另有处理，会区分价格未知和明确免费。
 
-Choose an eligible economical classifier automatically when one is available and
-show its destination and possible extra charge in the policy preview. If no
-classifier is usable, explain the requirement and permit an explicit choice or
-another policy; do not silently claim that difficulty detection works.
+### 4. 额度数据的边界
 
-Keep the existing bounded classification and privacy behavior. Failed, ambiguous
-or unavailable classification uses the strong role. Prefer alternatives in the
-same role during failover. A cross-role downgrade for a hard task must be a
-visible policy decision, not a hidden consequence of a generic fallback list.
-Image support and context capacity remain independent eligibility checks.
+调度层读取官方 Codex 额度、支持的响应头和限流事件。额度窗口记录的是使用率、窗口时长和重置时间，不是通用充值余额的到期时间。
 
-### Capability-first policy
+供应商额度卡片另有查询逻辑。界面能够显示余额，并不意味着这些数据已经接入调度层。
 
-Use an ordered model list that the user can correct. It is sufficient for the
-first version; a new numeric scoring or benchmark service is unnecessary.
-Ordering suggestions must identify themselves as suggestions. Cost, release
-date, context length and reasoning-level names do not independently establish
-general ability. Fail over to the next eligible member when safe.
+## 二、产品方案：只保留四种选择
 
-### Speed-first policy
+将“模板 + 9 种调度算法 + 规则配置”的组合，收敛为面向任务目标的四种策略。用户先选参与路由的模型，再选策略；保存前，用通俗语言预览角色分配或优先顺序。默认配置流程不再要求用户操作通用规则编辑器。
 
-Reuse real inference observations rather than a network ping. Retain bounded
-freshness, 10% bands and the existing exploration behavior. Exploration uses a
-normal task request and may select an unmeasured route; explain this in policy
-help. Do not add background billable inference probes. Show measurements only
-for the exact account/model destination that produced them.
+| 产品策略                         | 可以复用的能力                                    | 需要优化的部分                                                                                                               |
+| -------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 难题给强模型，简单任务给便宜模型 | 现有难题/简单任务模板、分类隐私检查、后备执行逻辑 | 为产品策略设置独立、可持久化的标识；提供“强模型”和“经济模型”角色，内部生成规则。默认不要求用户配置规则 ID 或单独设置分类器。 |
+| 能力强的优先使用                 | 按顺序执行和故障转移机制                          | 增加明确、可调整的能力排序。现有模板可以推荐顺序，但不能把价格和模型名称包装成实测能力。                                     |
+| 速度快的优先使用                 | 现有 `fastest` 调度、精确到目标的速度观测         | 保留首个内容延迟、输出速度和有限探索；说明数据不足的情况，并采用稳定的后备顺序。                                             |
+| 即将到期的额度优先使用           | 现有额度观测和冷却处理                            | 统一可用额度及其真实失效时间的数据表达，按失效时间排序。不能直接把 `pace` 改名后当作同一功能。                               |
 
-### Expiring-allowance-first policy
+### 1. 难题给强模型，简单任务给便宜模型
 
-Working interpretation: use remaining allowance that will be lost soonest. A
-periodic reset counts only when unused allowance is known not to carry over.
-A credential's expiry is not allowance expiry, and an exhausted window is not
-usable allowance. Subscription renewal alone is not evidence that wallet funds
-expire. Supporting prepaid balances requires their actual expiry metadata.
+核心配置只有两个角色：**强模型**和**经济模型**，每个角色可以有同类后备。系统推荐角色分配，用户可以修改。
 
-Among otherwise eligible candidates, prefer a usable known deadline over an
-unknown deadline, then the earliest deadline. Use configured capability order
-to break ties. Unknown data remains eligible as a fallback and never receives
-an invented expiry. Expired, depleted and temporarily unavailable allowance must
-not win because its deadline is earlier. Observation failures must not interrupt
-normal forwarding.
+价格优先使用供应商提供的已知数据。价格未知就保持未知，不能把未知价格当作免费或更便宜。
 
-The existing `pace` algorithm optimizes consumption rate, not strict deadline
-order. If rate-based consumption is desired later, it needs a separately stated
-product rule; it must not silently override this policy's meaning.
+存在符合要求的经济型分类模型时，系统自动选择，并在策略预览中展示分类请求发往哪里、可能产生什么额外费用。没有可用分类器时，应说明要求，允许用户明确选择分类模型或改用其他策略，不能静默宣称已经具备难度识别能力。
 
-## Compatibility and configuration
+保留现有分类调用限制和隐私处理。分类失败、结果不明确或分类器不可用时，默认使用强模型。故障转移优先使用同角色的后备模型。难题是否允许降级到经济模型，必须是用户可见的策略决定，不能隐藏在通用后备列表中。
 
-- Keep the legacy scheduler values readable for stored and imported groups.
-  A legacy group must retain its current behavior until the user explicitly
-  converts it. Hiding a scheduler does not authorize changing its meaning.
-- Preserve legacy rules in compatibility editing. Do not let invisible old rules
-  override a newly selected simple policy. Conversion must make the replacement
-  of custom rules and manual/no-fallback semantics explicit and reviewable.
-- Existing `smart` groups do not automatically become adaptive groups. Existing
-  `pace` groups do not automatically become strict expiry-first groups.
-- Preserve group IDs, public aliases, exact model/account identities, publication
-  consent and ownership receipts. A strategy change cannot transfer opaque
-  continuation state between destinations.
-- Keep manual provider/model selection available through direct model entries;
-  it need not be a fifth intelligent policy.
-- Apply shared behavior on macOS and Windows and update all four runtime
-  languages. New documentation and code comments remain in English.
+图片支持和上下文容量仍然是独立的候选资格检查。
 
-## Implementation sequence and acceptance
+### 2. 能力强的优先使用
 
-1. Add a distinct product-policy configuration with legacy round-trip tests;
-   verify old groups and imports keep their exact semantics.
-2. Implement editable capability ordering and role assignment with synthetic
-   tests; verify missing prices never prove cheapness or ability.
-3. Implement deadline metadata and selection tests, including multiple windows,
-   unknown/stale data, carryover, depleted allowance and cooldown. Keep fetches
-   and persistence outside the forwarding hot path.
-4. Replace the new-group flow with four choices, generated defaults and a
-   decision preview. Test each policy and explicit legacy conversion.
-5. Exercise classification fallback, protocol/context eligibility, retry safety
-   and continuation ownership across every policy. Run the repository's required
-   frontend/backend checks and applicable platform CI before release acceptance.
+首版使用用户可以调整的有序模型列表即可，不必新增数值评分体系或模型评测服务。
 
-This change is a design-only checkpoint. No application was launched, no client
-configuration was changed, and no runtime or cross-platform acceptance is
-claimed.
+系统可以推荐顺序，但必须明确这是推荐。价格、发布日期、上下文长度和推理强度名称，都不能单独证明模型的综合能力。首选不可用时，在允许安全切换的前提下，使用下一个符合要求的成员。
 
-## Implementation references
+### 3. 速度快的优先使用
 
-- [Strategy configuration](../../src-tauri/src/services/intent_routing/mod.rs)
-- [Scheduling and telemetry](../../src-tauri/src/proxy/intent/scheduling.rs)
-- [Runtime planning and forwarding](../../src-tauri/src/proxy/intent/mod.rs)
-- [Intent classification](../../src-tauri/src/services/intent_routing/classifier.rs)
-- [Deterministic rules](../../src-tauri/src/services/intent_routing/rules.rs)
-- [Templates and import/export](../../src/lib/routingGroupTransfer.ts)
-- [Group editor](../../src/components/routing/IntentRoutingPanel.tsx)
-- [Provider quota observations](../../src-tauri/src/services/routing_provider_quota.rs)
-- [Magpie source attribution](../../third_party/routing-reference/NOTICE.md)
+复用真实推理请求的观测数据，不使用网络 ping 代替模型响应速度。
+
+保留观测数据的有效期、10% 速度分档和现有探索机制。探索使用普通任务请求，可能选中一个尚无测量记录的目标，应在策略帮助中说明。不增加后台付费推理探测。
+
+速度记录只归属于实际产生数据的账号和模型，不能借用其他账号或模型的结果。
+
+### 4. 即将到期的额度优先使用
+
+**当前建议的产品定义：优先使用即将失效的剩余额度。**
+
+周期重置只有在确认未使用额度不会结转时，才计入“到期”。凭据到期不等于额度到期；额度已经耗尽的窗口也不是可用额度。订阅续费时间本身不能证明钱包余额会失效。要支持充值余额，必须取得其真实到期信息。
+
+对于其他条件均满足的候选目标，按以下顺序选择：
+
+1. 有可用额度且到期时间已知的目标，优先于到期时间未知的目标。
+2. 到期时间越早，优先级越高。
+3. 到期时间相同时，按配置的能力顺序选择。
+
+数据未知的目标仍可以作为后备，但不能编造到期时间。已过期、已耗尽或暂时不可用的额度，不能因为时间更早而排在前面。额度观测失败不得中断正常转发。
+
+现有 `pace` 优化的是额度消耗节奏，不是严格按到期先后排序。如果后续需要按消耗节奏调度，应单独明确产品规则，不能悄悄改变本策略的含义。
+
+## 三、兼容性与配置
+
+- 保留旧调度值的读取能力，支持现有存储和导入格式。用户明确转换之前，旧路由组维持原有行为；隐藏某种调度算法，不代表可以改变它的语义。
+- 兼容编辑时保留旧规则。用户选择新简化策略后，不能让不可见的旧规则继续覆盖新策略。转换时，必须明确展示自定义规则如何被替换，以及手动模式、不允许故障转移等行为如何变化。
+- 旧 `smart` 组不能自动变成任务难度识别组；旧 `pace` 组不能自动变成严格的到期优先组。
+- 保留路由组 ID、公开别名、精确模型和账号身份、发布授权以及配置接管凭据。策略变化不能把不透明的会话续接状态迁移到其他目标。
+- 继续通过供应商和模型的直接入口支持手动选择，不必把“手动”作为第 5 种智能策略。
+- macOS 和 Windows 使用一致的逻辑，并同步维护 4 种运行时语言。本设计文档按本次要求使用中文；其他新增文档和代码注释仍遵循仓库的英文约定。
+
+## 四、实施顺序与验收
+
+1. **增加独立的产品策略配置。** 先补旧格式往返测试，确认旧路由组和导入配置的语义不变。
+2. **实现可调整的能力顺序和角色分配。** 使用合成数据测试，确认缺失价格不会被当成便宜或能力强的依据。
+3. **实现额度到期数据和排序。** 测试多个额度窗口、未知或过期数据、额度结转、额度耗尽和冷却状态。数据抓取和持久化必须位于请求转发热路径之外。
+4. **将新建路由组流程改为四种策略。** 自动生成默认配置并提供决策预览；覆盖每种策略及用户明确转换旧配置的界面测试。
+5. **验证所有策略的执行边界。** 覆盖分类失败回退、协议与上下文资格检查、重试安全和会话续接归属。发布验收前，运行仓库要求的前后端检查及适用平台的 CI。
+
+实现进度：本次四种新策略、配置生成与校验、新版编辑器及界面对照开关均已撤回。原版三个模板、九种调度策略和所有高级设置继续保留。已保存实验数据中的 `policy` 仅兼容读取，不参与执行或再次输出；实验值 `expiring` 按原版按顺序策略读取。未修改真实用户数据库。
+
+## 五、实现参考
+
+- [策略配置](../../src-tauri/src/services/intent_routing/mod.rs)
+- [调度与观测数据](../../src-tauri/src/proxy/intent/scheduling.rs)
+- [运行时计划与转发](../../src-tauri/src/proxy/intent/mod.rs)
+- [意图分类](../../src-tauri/src/services/intent_routing/classifier.rs)
+- [确定性规则](../../src-tauri/src/services/intent_routing/rules.rs)
+- [路由配置导入导出](../../src/lib/routingGroupTransfer.ts)
+- [路由组编辑器](../../src/components/routing/IntentRoutingPanel.tsx)
+- [供应商额度观测](../../src-tauri/src/services/routing_provider_quota.rs)
+- [Magpie 来源与许可说明](../../third_party/routing-reference/NOTICE.md)

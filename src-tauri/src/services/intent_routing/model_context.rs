@@ -29,6 +29,10 @@ struct Catalog {
     capabilities: BTreeMap<String, Value>,
     #[serde(default)]
     capability_version: u8,
+    #[serde(skip)]
+    normalized_facts: std::sync::OnceLock<BTreeMap<String, String>>,
+    #[serde(skip)]
+    normalized_windows: std::sync::OnceLock<BTreeMap<String, u64>>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -161,6 +165,7 @@ fn parse(value: &Value) -> Catalog {
                     .map(|(n, _)| (id, n))
             })
             .collect(),
+        ..Catalog::default()
     }
 }
 
@@ -169,10 +174,17 @@ impl Catalog {
         let bare = model.rsplit('/').next().unwrap_or(model);
         self.facts.get(bare).or_else(|| {
             let normalized = super::discovery::same_model(bare);
-            self.facts
-                .iter()
-                .find(|(id, _)| super::discovery::same_model(id) == normalized)
-                .map(|(_, facts)| facts)
+            let index = self.normalized_facts.get_or_init(|| {
+                let mut index = BTreeMap::new();
+                for id in self.facts.keys() {
+                    // Preserve the first sorted spelling used by the previous scan.
+                    index
+                        .entry(super::discovery::same_model(id))
+                        .or_insert_with(|| id.clone());
+                }
+                index
+            });
+            index.get(&normalized).and_then(|id| self.facts.get(id))
         })
     }
     fn window(&self, model: &str) -> Option<u64> {
@@ -217,11 +229,17 @@ impl Catalog {
                     }
                 }
                 let normalized = super::discovery::same_model(leaf);
-                self.windows
-                    .iter()
-                    .filter(|(id, _)| super::discovery::same_model(id) == normalized)
-                    .map(|(_, n)| *n)
-                    .min()
+                let index = self.normalized_windows.get_or_init(|| {
+                    let mut index: BTreeMap<String, u64> = BTreeMap::new();
+                    for (id, n) in &self.windows {
+                        index
+                            .entry(super::discovery::same_model(id))
+                            .and_modify(|smallest| *smallest = (*smallest).min(*n))
+                            .or_insert(*n);
+                    }
+                    index
+                });
+                index.get(&normalized).copied()
             })
         })
     }
@@ -442,6 +460,87 @@ pub(super) async fn prepare(providers: &mut [Provider], refresh: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_lookups_preserve_exact_facts_and_conservative_capacity_collisions() {
+        let catalog = Catalog {
+            windows: BTreeMap::from([
+                ("Model_A".into(), 128000),
+                ("model-a".into(), 256000),
+                ("model_a".into(), 512000),
+            ]),
+            facts: BTreeMap::from([
+                (
+                    "Model_A".into(),
+                    TemplateFacts {
+                        output_price: Some(1.0),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "model-a".into(),
+                    TemplateFacts {
+                        output_price: Some(2.0),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        let serialized = serde_json::to_value(&catalog).unwrap();
+        for _ in 0..2 {
+            assert_eq!(catalog.window("Model_A"), Some(128000));
+            assert_eq!(catalog.window("vendor/model-a"), Some(256000));
+            assert_eq!(catalog.window("vendor/MODEL A"), Some(128000));
+            assert_eq!(catalog.window("model-a[1m]"), Some(1000000));
+            assert_eq!(catalog.window("unheard-of[1m]"), None);
+            assert_eq!(
+                catalog.facts("vendor/model-a").unwrap().output_price,
+                Some(2.0)
+            );
+            assert_eq!(
+                catalog.facts("vendor/MODEL A").unwrap().output_price,
+                Some(1.0)
+            );
+            assert!(catalog.facts("unknown").is_none());
+        }
+        assert_eq!(serde_json::to_value(&catalog).unwrap(), serialized);
+    }
+
+    #[test]
+    #[ignore = "manual synthetic save timing profile"]
+    fn routing_model_enrichment_timing_profile() {
+        let mut catalog: Catalog =
+            serde_json::from_value(serde_json::to_value(bundled()).unwrap()).unwrap();
+        catalog.windows = (0..2614)
+            .map(|i| (format!("public-model-{i}"), 128000))
+            .collect();
+        catalog.facts = (0..189)
+            .map(|i| (format!("public-model-{i}"), TemplateFacts::default()))
+            .collect();
+        let models = (0..32)
+            .map(|i| json!({"model":format!("synthetic-{i}")}))
+            .collect::<Vec<_>>();
+        let mut providers = (0..12)
+            .map(|i| {
+                Provider::with_id(
+                    format!("synthetic-{i}"),
+                    "Synthetic".into(),
+                    json!({"modelCatalog":{"models":models}}),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            enrich(&mut providers, &catalog);
+            eprintln!(
+                "Routing enrichment profile: providers=12 models=384 elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
+    }
+
     #[test]
     fn existing_bare_model_rows_get_verified_efforts_without_reimport_or_catalog_network() {
         let mut relay = Provider::with_id(

@@ -208,6 +208,8 @@ export function ProviderKeysField({
               value={apiKey}
               placeholder={t("providerEditor.keyPlaceholder")}
               autoComplete="off"
+              required={!draft.hasApiKey}
+              maxLength={16384}
               spellCheck={false}
               disabled={disabled}
               onChange={(event) => onKeyChange(event.target.value)}
@@ -270,6 +272,7 @@ export function ProviderKeysField({
                           id={`${id}-key`}
                           type={show ? "text" : "password"}
                           autoComplete="new-password"
+                          maxLength={16384}
                           value={key.key ?? ""}
                           required={
                             editing === ""

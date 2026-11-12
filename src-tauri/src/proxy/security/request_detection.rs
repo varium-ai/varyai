@@ -216,14 +216,6 @@ fn builtin_action(rule: &BuiltinRule, runtime: &SecurityRuntimeConfig) -> Effect
         .get(rule.id)
         .copied()
         .unwrap_or(rule.default_action);
-    if rule.id == "catalog:generic-sk-key-notice"
-        && matches!(
-            chosen,
-            AuditAction::Block | AuditAction::Redact | AuditAction::RedactRestore
-        )
-    {
-        return action(rule.default_action);
-    }
     action(chosen)
 }
 

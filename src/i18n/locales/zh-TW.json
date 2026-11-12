@@ -2123,6 +2123,8 @@
     "noSearchResults": "沒有相符的預設供應商。"
   },
   "usage": {
+    "modelFilterScope": "可依請求、回應或計費模型篩選；費用仍依計費模型彙總。",
+    "requestResponseModel": "請求 → 回應",
     "title": "使用統計",
     "subtitle": "查看 AI 模型的使用情況和成本統計",
     "today": "24 小時",
@@ -4936,6 +4938,9 @@
     "gatewayUnavailable": "無法取得閘道狀態"
   },
   "modelProviders": {
+    "searchPlaceholder": "名稱、位址或模型",
+    "searchScope": "搜尋供應商名稱、介面網域、模型 ID 或名稱；空格分隔的條件須同時符合。",
+    "matchedModels": "符合的模型",
     "sorting": {
       "role": "可排序供應商",
       "handle": "拖動排序 {{provider}}",
@@ -5418,6 +5423,7 @@
       "manual": "只向手動選擇的模型傳送請求。"
     },
     "export": "匯出路由群組",
+    "exportStarted": "已開始匯出「{{name}}」，請查看下載清單。",
     "previous": "上一頁",
     "next": "下一頁",
     "sunk": "先前遇到限流 · 已移到末尾",
@@ -5539,7 +5545,7 @@
     "addKey": "新增另一個金鑰",
     "keyName": "金鑰名稱",
     "keyRunning": "{{count}} 執行中",
-    "keyPoolHint": "勾選要使用的金鑰。請求先走第一個，額度用完或被限流時由下一個接上。",
+    "keyPoolHint": "勾選要使用的金鑰。請求先走第一個，額度用完或被限流時由下一個接上。 最多新增 64 個備用金鑰，每個金鑰不超過 16,384 位元組。",
     "copyKeyFailed": "無法複製此金鑰，請關閉編輯器後重新開啟再試。",
     "showKey": "顯示",
     "hideKey": "隱藏",

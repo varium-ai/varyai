@@ -148,6 +148,7 @@ export function ProviderImportDialog({
     } finally {
       saving.current = false;
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
   async function browse() {

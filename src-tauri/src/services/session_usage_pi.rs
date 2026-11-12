@@ -519,6 +519,11 @@ fn parse_usage_record(
     let (provider_id, model, request_model) = if kind == "assistant" {
         let message = message?;
         let provider = bounded_label(message.get("provider"), PROVIDER_PLACEHOLDER);
+        let provider = if provider == "varyai" {
+            PROVIDER_PLACEHOLDER.to_owned()
+        } else {
+            provider
+        };
         let requested = bounded_label(message.get("model"), UNKNOWN_MODEL);
         let actual = nonempty_string(message.get("responseModel"))
             .map(truncate_usage_label)
@@ -943,6 +948,15 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn gateway_session_usage_never_claims_the_gateway_as_an_upstream_supplier() {
+        let entry = serde_json::json!({"type":"message","id":"synthetic-id","message":{"role":"assistant","provider":"varyai","model":"configured-model","usage":{"input":1,"output":1}}});
+        let record =
+            parse_usage_record(&entry, "synthetic-session", None, 1000).expect("synthetic usage");
+        assert_eq!(record.provider_id, PROVIDER_PLACEHOLDER);
+        assert_eq!(record.request_model, "configured-model");
     }
 
     #[test]

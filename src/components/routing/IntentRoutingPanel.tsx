@@ -21,6 +21,7 @@ import { useRoutingDialogHeight } from "@/components/routing/useRoutingDialogHei
 import { RoutingMemberPicker } from "@/components/routing/RoutingMemberPicker";
 import {
   catalogRoutingMembers,
+  routingMemberAvailable,
   selectRoutingMembers,
 } from "@/lib/routingMemberSelection";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
@@ -147,6 +148,8 @@ export function IntentRoutingPanel({
   const [importError, setImportError] = useState(false);
   const [imported, setImported] = useState<RoutingImportResult | null>(null);
   const [shared, setShared] = useState<string | null>(null);
+  const [exported, setExported] = useState<string | null>(null);
+  const [autoChanging, setAutoChanging] = useState(false);
   const [groupMenu, setGroupMenu] = useState<string | null>(null);
   const groupDrag = useRoutingRowDrag("data-routing-group", (from, to) => {
     void arrangeGroup(from, to);
@@ -345,20 +348,26 @@ export function IntentRoutingPanel({
     }
   }
   function exportGroup(group: RoutingGroup) {
-    let text: string;
+    setError(null);
+    setExported(null);
+    let url: string | undefined;
     try {
-      text = shareRoutingGroup(group);
+      const text = shareRoutingGroup(group);
+      const blob = new Blob([text], { type: "application/json" });
+      url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `vary-routing-group-${group.id}.json`;
+      anchor.click();
+      setExported(group.name);
     } catch {
       report(null);
-      return;
+    } finally {
+      if (url) {
+        const downloadUrl = url;
+        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      }
     }
-    const blob = new Blob([text], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `vary-routing-group-${group.id}.json`;
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   async function shareGroup(group: RoutingGroup) {
     setError(null);
@@ -685,6 +694,7 @@ export function IntentRoutingPanel({
   }
   async function toggleAutoCreate(enabled: boolean) {
     setPending(true);
+    setAutoChanging(true);
     setError(null);
     try {
       await intentRoutingApi.setAutoCreate(enabled);
@@ -694,6 +704,7 @@ export function IntentRoutingPanel({
     } finally {
       await refreshRoutingStatus();
       setPending(false);
+      setAutoChanging(false);
     }
   }
   async function reload() {
@@ -774,7 +785,9 @@ export function IntentRoutingPanel({
         const name =
           providers.data?.find((p) => p.id === member.providerId)?.name ||
           member.providerId;
-        return `${name} · ${member.modelId}${member.effort ? ` :${member.effort}` : ""}`;
+        const unavailable =
+          providers.data && !routingMemberAvailable(providers.data, member);
+        return `${name} · ${member.modelId}${member.effort ? ` :${member.effort}` : ""}${unavailable ? ` (${t("intentRouting.memberNotReady")})` : ""}`;
       })
       .join(" · ");
   }
@@ -1666,7 +1679,12 @@ export function IntentRoutingPanel({
   );
 
   return (
-    <AccountMask as="section" masked={maskAccounts} className="rt-group-panel">
+    <AccountMask
+      as="section"
+      masked={maskAccounts}
+      names={providers.data?.map((provider) => provider.name)}
+      className="rt-group-panel"
+    >
       <div className="rt-group-heading">
         <h3 className="label">{t("intentRouting.title")}</h3>
         <div className="rt-group-tools">
@@ -1879,9 +1897,27 @@ export function IntentRoutingPanel({
       )}
       <div className="rt-gfound">
         <div className="txt">
-          <label htmlFor="intent-routing-auto-create">
-            {t("intentRouting.autoCreate")}
-          </label>
+          <div className="rt-gfound-heading">
+            <span id="intent-routing-auto-label">
+              {t("intentRouting.autoCreate")}
+            </span>
+            <Switch
+              className="mp-switch"
+              id="intent-routing-auto-create"
+              aria-labelledby="intent-routing-auto-label"
+              aria-busy={autoChanging || discovery.isFetching}
+              aria-describedby="intent-routing-auto-description"
+              checked={groups.data?.autoCreate ?? false}
+              disabled={
+                groups.isPending ||
+                groups.isError ||
+                pending ||
+                !!draft ||
+                !!deleting
+              }
+              onCheckedChange={(enabled) => void toggleAutoCreate(enabled)}
+            />
+          </div>
           <small id="intent-routing-auto-description">
             {t(
               groups.data?.autoCreate
@@ -1902,20 +1938,6 @@ export function IntentRoutingPanel({
             />
           )}
         </div>
-        <Switch
-          className="mp-switch"
-          id="intent-routing-auto-create"
-          aria-describedby="intent-routing-auto-description"
-          checked={groups.data?.autoCreate ?? false}
-          disabled={
-            groups.isPending ||
-            groups.isError ||
-            pending ||
-            !!draft ||
-            !!deleting
-          }
-          onCheckedChange={(enabled) => void toggleAutoCreate(enabled)}
-        />
       </div>
       {!draft &&
         !selectedGroups &&
@@ -1938,18 +1960,16 @@ export function IntentRoutingPanel({
                         .map((member) => member.modelId)
                         .join(" \u2192 ")}
                 </span>
-                {!template.need && (
-                  <div className="rt-template-actions">
-                    <button
-                      type="button"
-                      className="text primary"
-                      disabled={pending || !!deleting}
-                      onClick={() => useTemplate(template)}
-                    >
-                      {t("routingPage.addTemplate")}
-                    </button>
-                  </div>
-                )}
+                <div className="rt-template-actions">
+                  <button
+                    type="button"
+                    className="text primary"
+                    disabled={pending || !!deleting || !!template.need}
+                    onClick={() => useTemplate(template)}
+                  >
+                    {t("routingPage.addTemplate")}
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1987,7 +2007,12 @@ export function IntentRoutingPanel({
           </Button>
         </div>
       )}
-      {discovery.isFetching && (
+      {exported && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {t("routingPage.exportStarted", { name: exported })}
+        </p>
+      )}
+      {(autoChanging || discovery.isFetching) && (
         <p role="status" className="text-xs text-muted-foreground">
           {t("intentRouting.discoveringCatalogs")}
         </p>
@@ -2031,9 +2056,7 @@ export function IntentRoutingPanel({
                   (group.routing !== "manual" ||
                     member.id ===
                       (group.manualMemberId ?? group.defaultMemberId)) &&
-                  !providers.data?.some(
-                    (p) => p.id === member.providerId && p.taskEligible,
-                  ),
+                  !routingMemberAvailable(providers.data ?? [], member),
               );
             const summary = memberSummary(group);
             return (
@@ -2241,10 +2264,9 @@ export function IntentRoutingPanel({
                               !!draft ||
                               !!deleting ||
                               group.off?.includes(member.id) ||
-                              !providers.data?.some(
-                                (provider) =>
-                                  provider.id === member.providerId &&
-                                  provider.taskEligible,
+                              !routingMemberAvailable(
+                                providers.data ?? [],
+                                member,
                               )
                             }
                             onClick={() => {
@@ -2327,7 +2349,7 @@ export function IntentRoutingPanel({
           )}
         </ul>
       )}
-      {!!groups.data?.removedGroups?.length && groups.data.autoCreate && (
+      {!!groups.data?.removedGroups?.length && (
         <div className="rt-ghidden">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

@@ -1455,6 +1455,14 @@ fn build_with_token(
             options.retain(|row| !row["model"].as_str().is_some_and(|id| id.starts_with("vary-provider/") || id.starts_with("vary-auto/") || previous.is_some_and(|old| old.model_map.contains_key(id))));
             options.extend(catalog.iter().map(|model| json!({"model":model.id,"label":model.name,"description":"via VaryAI"})));
             put(value, &["modelPicker".into(), "options".into()], Some(json!(options)))?;
+            if let Some(available) = value.get_mut("availableModels") {
+                let available = available.as_array_mut().ok_or(FAILED)?;
+                available.retain(|id| !id.as_str().is_some_and(|id| previous.is_some_and(|old| old.model_map.contains_key(id))));
+                for model in &catalog {
+                    let id = json!(model.id);
+                    if !available.contains(&id) { available.push(id); }
+                }
+            }
             let context = catalog.iter().find(|m| m.id == selected).and_then(working_window);
             put(value, &["env".into(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into()], context.map(|n| json!(n.to_string())))?;
             let capabilities = reasoning::claude_capabilities(&catalog);

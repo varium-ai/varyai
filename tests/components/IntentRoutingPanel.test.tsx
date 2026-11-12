@@ -87,6 +87,35 @@ function mount(
 }
 
 describe("IntentRoutingPanel", () => {
+  it("only toggles automatic discovery from its switch", async () => {
+    mount();
+    const toggle = await screen.findByRole("switch", {
+      name: "intentRouting.autoCreate",
+    });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    await userEvent.click(screen.getByText("intentRouting.autoCreate"));
+    expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
+  });
+  it("announces discovery while enabling is still pending", async () => {
+    let finish!: () => void;
+    vi.mocked(intentRoutingApi.setAutoCreate).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    mount();
+    const toggle = await screen.findByRole("switch", {
+      name: "intentRouting.autoCreate",
+    });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    fireEvent.click(toggle);
+    expect(
+      await screen.findByText("intentRouting.discoveringCatalogs"),
+    ).toHaveAttribute("role", "status");
+    finish();
+    await waitFor(() => expect(toggle).toBeEnabled());
+  });
   it("places routing directly below the name and keeps state-specific rate-limit help", async () => {
     mount();
     await screen.findByText("Fixture group");
@@ -97,6 +126,9 @@ describe("IntentRoutingPanel", () => {
     const routing = within(form).getByRole("radiogroup", {
       name: "intentRouting.routingStrategy",
     });
+    expect(
+      screen.queryByRole("checkbox", { name: "intentRouting.useNewRoutingUi" }),
+    ).not.toBeInTheDocument();
     expect(within(routing).getAllByRole("radio")).toHaveLength(9);
     const fields = [...form.querySelectorAll("[data-routing-field]")].map(
       (node) => node.getAttribute("data-routing-field"),
@@ -218,7 +250,7 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
-  it("masks account addresses without renaming vendors or replacing their icons", async () => {
+  it("masks configured supplier names and account addresses while keeping icons and models", async () => {
     const options = [
       {
         id: "provider",
@@ -255,14 +287,18 @@ describe("IntentRoutingPanel", () => {
     const view = mount(client, true);
     await screen.findByText("Fixture group");
     const summary = document.querySelector(".rt-group-summary");
-    expect(summary).toHaveTextContent("Fixture provider · fixture-model");
+    expect(summary).toHaveTextContent("· fixture-model");
+    expect(summary).not.toHaveTextContent("Fixture provider");
     expect(summary).toHaveTextContent("Codex ·");
     expect(summary).not.toHaveTextContent("fixture.account@example.test");
     expect(summary?.querySelector(".account-mask")).not.toBeNull();
     expect(
       summary?.querySelector("[title]")?.getAttribute("title"),
     ).not.toContain("fixture.account@example.test");
-    expect(document.querySelector(".mp-icon-stack")).toHaveTextContent("FP");
+    expect(document.querySelector(".mp-icon-stack")).toHaveTextContent("•");
+    expect(document.querySelector(".mp-icon-stack")).not.toHaveTextContent(
+      "FP",
+    );
     expect(document.querySelectorAll(".mp-icon-disc svg")).toHaveLength(1);
     expect(view.container.innerHTML).not.toContain(
       "fixture.account@example.test",
@@ -272,7 +308,10 @@ describe("IntentRoutingPanel", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "intentRouting.skipProviders" }),
     );
-    expect(await screen.findByText("Fixture provider")).toBeVisible();
+    expect(
+      screen.getByRole("dialog").querySelector(".account-mask"),
+    ).not.toBeNull();
+    expect(document.body).not.toHaveTextContent("Fixture provider");
     expect(document.body.innerHTML).not.toContain(
       "fixture.account@example.test",
     );
@@ -299,6 +338,10 @@ describe("IntentRoutingPanel", () => {
     expect(document.querySelector(".rt-group-summary")).toHaveTextContent(
       "fixture.account@example.test",
     );
+    expect(document.querySelector(".rt-group-summary")).toHaveTextContent(
+      "Fixture provider · fixture-model",
+    );
+    expect(document.querySelector(".mp-icon-stack")).toHaveTextContent("FP");
     expect(client.getQueryData(["intent-routing-providers"])).toEqual(options);
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
   });
@@ -566,9 +609,11 @@ describe("IntentRoutingPanel", () => {
     expect(
       screen.getAllByText("routingPage.templateNeed_provider"),
     ).toHaveLength(3);
-    expect(
-      screen.queryByRole("button", { name: "routingPage.addTemplate" }),
-    ).not.toBeInTheDocument();
+    const actions = screen.getAllByRole("button", {
+      name: "routingPage.addTemplate",
+    });
+    expect(actions).toHaveLength(3);
+    actions.forEach((action) => expect(action).toBeDisabled());
     expect(
       screen.queryByText("routingPage.templateFallback"),
     ).not.toBeInTheDocument();

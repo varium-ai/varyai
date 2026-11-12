@@ -76,10 +76,16 @@ export function RoutingPage({
   const upstreams = useQuery({
     queryKey: ["routing-upstreams"],
     queryFn: routingUpstreamsApi.list,
-    enabled: rows.some((row) => row.candidates.length > 0),
+    enabled: masked || rows.some((row) => row.candidates.length > 0),
     staleTime: 30000,
   });
   const shown = rows[0];
+  const focusedRequests = rows.filter(
+    (row) =>
+      row.agent === shown?.agent &&
+      row.model === shown.model &&
+      row.session === shown.session,
+  );
   const accounts = trace.data?.accounts ?? [];
   const accountName = (candidate: {
     providerId: string;
@@ -89,6 +95,7 @@ export function RoutingPage({
     <AccountMask
       masked={masked}
       names={[
+        ...(upstreams.data?.map((provider) => provider.name) ?? []),
         ...(logins.data?.accounts.map((account) => account.login) ?? []),
         ...rows.flatMap((row) =>
           row.candidates.flatMap((candidate) =>
@@ -184,7 +191,7 @@ export function RoutingPage({
           }
           address={address}
           currentAccounts={accounts}
-          concurrent={rows}
+          concurrent={focusedRequests}
           liveObservations={running}
         />
         <div className={`rt-foot${shown ? "" : " idle"}`}>

@@ -2196,6 +2196,8 @@
     "noSearchResults": "No provider presets match your search."
   },
   "usage": {
+    "modelFilterScope": "Filter by request, response or billing model. Costs stay grouped by billing model.",
+    "requestResponseModel": "Request → response",
     "title": "Usage Statistics",
     "subtitle": "View AI model usage and cost statistics",
     "today": "24 Hours",
@@ -5009,6 +5011,9 @@
     "gatewayUnavailable": "Gateway status unavailable"
   },
   "modelProviders": {
+    "searchPlaceholder": "Name, endpoint or model",
+    "searchScope": "Search names, endpoint hosts and model IDs or names. Space-separated terms must all match.",
+    "matchedModels": "Matching models",
     "sorting": {
       "role": "Sortable provider",
       "handle": "Drag to reorder {{provider}}",
@@ -5493,6 +5498,7 @@
       "manual": "Only the manually selected model receives this request."
     },
     "export": "Export group",
+    "exportStarted": "Export started for “{{name}}”. Check your downloads.",
     "previous": "Previous",
     "next": "Next",
     "sunk": "Rate limited earlier · at the back",
@@ -5614,7 +5620,7 @@
     "addKey": "Add another key",
     "keyName": "Key name",
     "keyRunning": "{{count}} running",
-    "keyPoolHint": "Tick every key to use. Requests go to the first; when it runs out of quota or hits a rate limit, the next ticked key takes over.",
+    "keyPoolHint": "Tick every key to use. Requests go to the first; when it runs out of quota or hits a rate limit, the next ticked key takes over. Up to 64 additional keys; each key can contain at most 16,384 bytes.",
     "copyKeyFailed": "Could not copy this key. Close the editor and reopen it to retry.",
     "showKey": "Show",
     "hideKey": "Hide",

@@ -467,6 +467,7 @@ export function ProviderEditorDialog({
             </DialogDescription>
           </header>
           <form
+            onInvalidCapture={() => onError("save", "invalid")}
             onSubmit={(event) => {
               if (disabled) event.preventDefault();
               else void onSave(event);

@@ -29,6 +29,7 @@ const INVALID: &str = "intentRouting.invalid";
 pub(crate) enum RoutingStrategy {
     Smart,
     #[default]
+    #[serde(alias = "expiring")]
     Ordered,
     RoundRobin,
     LeastUsed,
@@ -105,6 +106,9 @@ pub(crate) struct RoutingGroup {
     pub classifier_target: Option<Target>,
     pub classification_budget_ms: u32,
     pub rules: Vec<Rule>,
+    // Read experimental metadata without keeping it in saved or exported groups.
+    #[serde(default, rename = "policy", skip_serializing)]
+    pub(super) retired_policy: Option<serde_json::Value>,
     #[serde(default)]
     pub auto_generated: bool,
     #[serde(default)]

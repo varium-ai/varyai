@@ -694,7 +694,6 @@ fn body_matches_any_restore_rule(
             detect_spans_with_budget(field.text, field.is_password_field, runtime, budget.clone())?;
         for found in spans.as_slice() {
             if !found.range.is_empty()
-                && found.rule_id != "catalog:generic-sk-key-notice"
                 && (found.action == EffectiveAction::Restore
                     || (found.action == EffectiveAction::Redact
                         && restore_rule_ids.contains(&found.rule_id)))
@@ -4921,59 +4920,67 @@ mod private_production_activation_tests {
             }
         }
         let _reset = Reset(previous);
-        let mut runtime = SecurityRuntimeConfig::default();
-        runtime.builtin_action_overrides.insert(
-            "chinese_phone_number".into(),
-            super::super::types::AuditAction::RedactRestore,
-        );
-        super::super::runtime::set_security_runtime_for_test(runtime.clone());
-        let gateway = RestorationGateway::new_default();
-        let mut body = json!({"input":"13800138000"});
-        let admission = admit_http_request(
-            &gateway,
-            &AppType::Codex,
-            true,
-            false,
-            &mut body,
-            &HeaderMap::new(),
-        )
-        .expect("admission");
-        assert!(
-            matches!(admission, RestorationAdmission::Admitted(_)),
-            "real runtime restoration activates default gateway"
-        );
-        assert!(body["input"]
-            .as_str()
-            .is_some_and(|text| text.starts_with("rredact-cn_phone-")));
-        let mut unsupported = json!({"messages":[{"role":"user","content":"13800138000"}]});
-        let admission = admit_http_request(
-            &gateway,
-            &AppType::Codex,
-            false,
-            false,
-            &mut unsupported,
-            &HeaderMap::new(),
-        )
-        .expect("unsupported admission");
-        assert!(
-            matches!(admission, RestorationAdmission::Intercepted(_)),
-            "actual restore match on unsupported route must reject"
-        );
-        let mut ordinary = json!({"input":"hello"});
-        runtime.builtin_action_overrides.clear();
-        super::super::runtime::set_security_runtime_for_test(runtime);
-        assert!(matches!(
-            admit_http_request(
+        for (id, text, prefix) in [
+            ("chinese_phone_number", "13800138000", "rredact-cn_phone-"),
+            (
+                "catalog:generic-sk-key-notice",
+                "sk-syntheticfixture",
+                "rredact-api_token-",
+            ),
+        ] {
+            let mut runtime = SecurityRuntimeConfig::default();
+            runtime
+                .builtin_action_overrides
+                .insert(id.into(), super::super::types::AuditAction::RedactRestore);
+            super::super::runtime::set_security_runtime_for_test(runtime.clone());
+            let gateway = RestorationGateway::new_default();
+            let mut body = json!({"input":text});
+            let admission = admit_http_request(
                 &gateway,
                 &AppType::Codex,
                 true,
                 false,
-                &mut ordinary,
-                &HeaderMap::new()
+                &mut body,
+                &HeaderMap::new(),
             )
-            .expect("ordinary"),
-            RestorationAdmission::Passthrough
-        ));
+            .expect("admission");
+            assert!(
+                matches!(admission, RestorationAdmission::Admitted(_)),
+                "real runtime restoration activates default gateway"
+            );
+            assert!(body["input"]
+                .as_str()
+                .is_some_and(|text| text.starts_with(prefix)));
+            let mut unsupported = json!({"messages":[{"role":"user","content":text}]});
+            let admission = admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                false,
+                false,
+                &mut unsupported,
+                &HeaderMap::new(),
+            )
+            .expect("unsupported admission");
+            assert!(
+                matches!(admission, RestorationAdmission::Intercepted(_)),
+                "actual restore match on unsupported route must reject"
+            );
+            let mut ordinary = json!({"input":"hello"});
+            runtime.builtin_action_overrides.clear();
+            super::super::runtime::set_security_runtime_for_test(runtime);
+            assert!(matches!(
+                admit_http_request(
+                    &gateway,
+                    &AppType::Codex,
+                    true,
+                    false,
+                    &mut ordinary,
+                    &HeaderMap::new()
+                )
+                .expect("ordinary"),
+                RestorationAdmission::Passthrough
+            ));
+        }
     }
 }
 

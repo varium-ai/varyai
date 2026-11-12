@@ -19,6 +19,27 @@ API-key task upstreams support explicit `openai_responses`, `openai_chat`, `anth
 
 The routing provider selector never returns stored API credentials. New API connections are edited inline in **Models / Providers**. Imported rows open the same provider dialog. Supported static connections become independent shared API resources on explicit save, keeping their global IDs and leaving original Agent configurations unchanged. Account authentication and custom transports remain attached to their existing source; their shared names and enabled state can be changed in the same dialog. Stored credentials never enter the renderer. Deleting a source provider makes its targets unavailable instead of redirecting them to another provider. Deleting an imported reference leaves its original source configuration intact and does not restore it automatically. Only a manual reimport restores that reference, keeping its identity and increasing its revision.
 
+## Saving and synchronization
+
+Saving waits for local persistence, global route publication, connected-client
+catalog synchronization and any active Codex menu refresh. It does not activate
+disconnected clients. These steps remain ordered; a failed publication still
+revokes stale targets. Public model facts use immutable lookup indexes.
+This reduces repeated preparation without delaying route
+activation or moving client synchronization into an unobserved background task.
+
+Runtime logs report only elapsed milliseconds for persistence, provider
+preparation, group definitions, executable targets, client synchronization and
+Codex refresh. They do not include group names, model IDs or credentials. See
+[save performance verification](../qa/2026-11-12-routing-save-performance.md) for
+the isolated timing fixtures and verification limits.
+
+TRAE catalog delivery does not prepare native connections or rewrite launch
+arguments. Explicit connect/reapply actions prepare them; the existing recovery
+loop reconnects previously authorized desktops outside catalog switch locks.
+Offline deliveries remain pending until acknowledged. See
+[live save diagnosis](../qa/2026-11-12-routing-save-live-followup.md).
+
 ## External consumers
 
 Start the loopback gateway explicitly and configure a gateway key under **Settings → Routing → Local routing**. Give restricted keys the group's public alias, not its concrete member model. Authenticated `GET /gateway/v1/models` lists only executable published groups permitted by that key. Use the same alias on `/gateway/v1/responses`, `/gateway/v1/chat/completions`, `/gateway/v1/messages`, or the Gemini generate/streamGenerateContent route. See [gateway keys](gateway-keys.md) for headers, budgets and manual connection setup. This version does not automatically take over every agent.
@@ -71,6 +92,11 @@ Automatic groups are not persisted as separate configuration rows. Editing and s
 The combined list shows at most 32 groups, with saved groups taking priority. Groups exceeding the validated 256-member limit are omitted instead of silently discarding members. The interface reports the number omitted. Import/restore turns automatic discovery off while preserving hidden IDs and saved drafts. Discovery never starts the listener or connects an Agent. Enabled discovered groups enter the global execution snapshot alongside direct provider models, independently of Codex activation. Switching discovery off keeps user-owned groups, removes discovered groups from pickers, and reseats connected Agents to the corresponding model from the first available provider. Requests still naming an automatic alias resolve to that one provider, even when only one provider now remains. Opaque continuations are never remapped across changed destinations; an incompatible continuation still fails closed.
 
 ## Group scheduling
+
+The experimental four-policy UI has been withdrawn. Previously saved experimental
+`policy` metadata is accepted only for reading and omitted from saved/exported
+configuration; it no longer changes planning. The retired `expiring` value is
+read as **In order**. Original rules, members and execution settings remain intact.
 
 New automatic groups default to **Smart**. Existing saved groups without a strategy retain **In order** for compatibility. The compact list and editor expose the nine routing choices:
 

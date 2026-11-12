@@ -1781,6 +1781,9 @@ impl ExecutionCredentials {
     pub(crate) fn provider_name(&self) -> &str {
         &self.provider.name
     }
+    pub(crate) fn provider_id(&self) -> &str {
+        &self.provider.id
+    }
 
     pub(crate) fn continuation_identity(&self) -> Option<&str> {
         self.continuation.as_deref()

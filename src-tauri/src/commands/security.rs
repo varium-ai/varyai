@@ -186,14 +186,6 @@ fn update_builtin_security_rule_action_db(
         return Err(crate::error::AppError::Database("无效的内置规则 ID".into()).to_string());
     }
     if let Some(action) = action {
-        if id == "catalog:generic-sk-key-notice"
-            && !matches!(action.to_ascii_lowercase().as_str(), "audit" | "allow")
-        {
-            return Err(crate::error::AppError::Database(
-                "通用 sk- 提醒规则仅支持 audit 或 allow 动作".into(),
-            )
-            .to_string());
-        }
         validate_rule_action_update(action)?;
     }
     crate::proxy::security::runtime::update_security_runtime(db, |db| {
@@ -786,8 +778,8 @@ mod rule_write_tests {
         }
         for (id, action) in [
             ("synthetic-unknown", Some("audit")),
-            (BUILTIN_ID, Some("redact")),
-            (BUILTIN_ID, Some("block")),
+            (BUILTIN_ID, Some("redactrestore")),
+            (BUILTIN_ID, Some("unsupported")),
             ("chinese_phone_number", Some("redactrestore")),
         ] {
             assert!(update_builtin_security_rule_action_db(&db, id, action).is_err());
@@ -824,12 +816,17 @@ mod rule_write_tests {
             assert!(saved.updated_at > 0);
             update_custom_security_rule_action_db(&db, CUSTOM_ID, action).unwrap();
             assert_eq!(db.get_custom_security_rules().unwrap()[0].action, expected);
-            update_builtin_security_rule_action_db(&db, "chinese_phone_number", Some(action))
-                .unwrap();
-            assert_eq!(
-                db.get_builtin_security_rule_actions().unwrap()["chinese_phone_number"],
-                expected
-            );
+            for id in ["chinese_phone_number", BUILTIN_ID] {
+                update_builtin_security_rule_action_db(&db, id, Some(action)).unwrap();
+                assert_eq!(
+                    db.get_builtin_security_rule_actions().unwrap()[id],
+                    expected
+                );
+                assert_eq!(
+                    get_security_runtime().builtin_action_overrides[id].as_str(),
+                    expected
+                );
+            }
         }
         update_builtin_security_rule_action_db(&db, "chinese_phone_number", None).unwrap();
         assert!(!get_security_runtime()
@@ -943,12 +940,12 @@ mod redact_restore_tests {
             runtime.builtin_action_overrides["chinese_phone_number"].as_str(),
             "redact_restore"
         );
-        assert!(update_builtin_security_rule_action_db(
+        update_builtin_security_rule_action_db(
             &db,
             "catalog:generic-sk-key-notice",
-            Some("redact_restore")
-        )
-        .is_err());
+            Some("redact_restore"),
+        )?;
+        assert!(crate::proxy::security::get_security_runtime().restoration_enabled());
         assert!(update_custom_security_rule_action_db(
             &db,
             "synthetic-public-restore",

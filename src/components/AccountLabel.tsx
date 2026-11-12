@@ -19,7 +19,7 @@ export function AccountMask({
   const parent = useContext(AccountMaskContext);
   return (
     <AccountMaskContext.Provider
-      value={{ masked, names: names ?? parent.names }}
+      value={{ masked, names: [...parent.names, ...(names ?? [])] }}
     >
       <Element {...props} />
     </AccountMaskContext.Provider>

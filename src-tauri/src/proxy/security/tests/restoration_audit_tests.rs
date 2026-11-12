@@ -60,6 +60,37 @@ fn policy(rules: &[(&str, &str, AuditAction)]) -> SecurityRuntimeConfig {
 }
 
 #[test]
+fn generic_sk_audit_records_the_selected_hiding_action() -> TestResult {
+    let id = "catalog:generic-sk-key-notice";
+    for (action, selected) in [
+        (AuditAction::RedactRestore, vec![]),
+        (AuditAction::Redact, vec![id]),
+    ] {
+        let mut runtime = SecurityRuntimeConfig::default();
+        runtime.builtin_action_overrides.insert(id.into(), action);
+        let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+        let lease = DlpTokenStore::new().admit("codex", None, 1)?;
+        let state = RequestAuditState::new(&AppType::Codex, None, budget.clone())?;
+        let pending = PendingRequestAudit::capture(
+            &json!({"input":"sk-syntheticfixture"}),
+            &runtime,
+            &selected,
+            &lease,
+            budget,
+        )
+        .map_err(|_| std::io::Error::other("fixture summary failed"))?;
+        let mut events = Vec::new();
+        state.record_with(&pending, "synthetic-provider", None, false, |event| {
+            events.push(event)
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].log.rule_id, id);
+        assert_eq!(events[0].log.action_taken, "redact_restore");
+    }
+    Ok(())
+}
+
+#[test]
 fn restoration_audit_only_first_permitted_attempt_records_and_new_history_is_independent(
 ) -> TestResult {
     let runtime = policy(&[("fixture", "private-[ab]", AuditAction::RedactRestore)]);

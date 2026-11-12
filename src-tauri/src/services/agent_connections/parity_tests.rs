@@ -227,12 +227,21 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     let selected = menu.default_model.as_deref().ok_or("fixture default")?;
     let claude_path = crate::config::get_claude_settings_path();
     fs::create_dir_all(claude_path.parent().ok_or("parent")?)?;
-    let original = json!({"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"native"},"model":"native-choice","modelPicker":{"options":[{"model":"native-extra","label":"Native extra"}]}}).to_string();
+    let original = json!({"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"native"},"model":"native-choice","availableModels":["sonnet"],"modelPicker":{"options":[{"model":"native-extra","label":"Native extra"}]}}).to_string();
     fs::write(&claude_path, &original)?;
     let receipt = build("claude", &menu, "http://127.0.0.1:1", selected)?;
     let installed = &receipt.files[0].installed;
     assert_eq!(installed["env"]["CLAUDE_CODE_USE_BEDROCK"], "0");
     assert!(installed["env"].get("ANTHROPIC_MODEL").is_none());
+    for model in models(&menu) {
+        assert!(
+            installed["availableModels"]
+                .as_array()
+                .ok_or("allowlist")?
+                .contains(&json!(model.name)),
+            "shared model missing from the user allowlist"
+        );
+    }
     let name = &models(&menu)[0].name;
     assert_eq!(installed["model"], name.as_str());
     assert_eq!(

@@ -18,6 +18,7 @@ import type {
 import {
   catalogRoutingMembers,
   routingMemberKey,
+  routingMemberAvailable,
   ROUTING_MEMBER_LIMIT,
 } from "@/lib/routingMemberSelection";
 
@@ -152,7 +153,7 @@ export function RoutingMemberPicker({
                           ? choices
                           : choices.filter(
                               (choice) =>
-                                provider.taskEligible ||
+                                routingMemberAvailable(providers, choice) ||
                                 selected.has(routingMemberKey(choice)),
                             ),
                         provider.taskEligible && !all,
@@ -210,6 +211,7 @@ export function RoutingMemberPicker({
                       modelId: model.id,
                     };
                     const checked = selected.has(routingMemberKey(choice));
+                    const ready = routingMemberAvailable(providers, choice);
                     return (
                       <label
                         key={model.id}
@@ -223,7 +225,7 @@ export function RoutingMemberPicker({
                           disabled={
                             disabled ||
                             (!checked &&
-                              (!provider.taskEligible ||
+                              (!ready ||
                                 members.length >= ROUTING_MEMBER_LIMIT))
                           }
                           onChange={(event) =>
@@ -232,6 +234,9 @@ export function RoutingMemberPicker({
                         />
                         <Check size={13} aria-hidden />
                         <span>{model.name || model.id}</span>
+                        {!ready && provider.taskEligible && (
+                          <small>{t("intentRouting.memberNotReady")}</small>
+                        )}
                       </label>
                     );
                   })}
