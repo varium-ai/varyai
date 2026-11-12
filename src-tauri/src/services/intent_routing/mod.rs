@@ -10,7 +10,6 @@ pub(crate) mod execution;
 pub(crate) mod folders;
 pub(crate) mod membership;
 pub(crate) mod menu;
-mod menu_labels;
 pub(crate) mod model_context;
 pub(crate) mod model_preferences;
 pub(crate) mod rules;

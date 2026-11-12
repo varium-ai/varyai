@@ -207,10 +207,7 @@ fn standalone_connection_migrates_legacy_providers_without_changing_saved_models
             manager.sync_threads()?;
             let installed: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
             assert_eq!(installed["model_provider"].as_str(), Some(PROVIDER));
-            assert_eq!(
-                installed["model"].as_str(),
-                Some("Development-routing-group")
-            );
+            assert_eq!(installed["model"].as_str(), Some("group/development"));
             assert_eq!(manager.selected_model()?.as_deref(), Some(alias.as_str()));
             assert_eq!(
                 thread_provider(dir.path(), "unpublished-thread")?,
@@ -627,7 +624,7 @@ fn chatgpt_connection_preserves_openai_provider_and_remote_catalog(
             assert!(manager.status()?.configuration_owned);
         }
         manager.restore()?;
-        tests::assert_restored_config(&manager, &original);
+        tests::assert_restored_config(&manager, original);
     }
     Ok(())
 }

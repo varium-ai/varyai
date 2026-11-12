@@ -9,7 +9,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::Instant,
 };
@@ -84,16 +84,9 @@ pub(crate) async fn prepare(
     groups: Vec<RoutingGroup>,
     current_provider: Option<String>,
 ) -> Result<Menu, String> {
-    providers.sort_by(|a, b| {
-        (
-            Some(&a.id) != current_provider.as_ref(),
-            crate::services::routing_upstreams::execution_identity(a),
-        )
-            .cmp(&(
-                Some(&b.id) != current_provider.as_ref(),
-                crate::services::routing_upstreams::execution_identity(b),
-            ))
-    });
+    // Magpie provider.ordered keeps the user's provider order; selecting a
+    // default model does not move its provider to the front of the picker.
+    providers.sort_by_key(|provider| provider.sort_index.unwrap_or(usize::MAX));
     let mut omitted_groups = 0;
     let groups = groups
         .into_iter()
@@ -132,16 +125,12 @@ pub(crate) async fn prepare(
         .collect();
     let mut http_client = None;
     let mut accounts: Vec<Target> = Vec::new();
-    let mut direct_labels = HashMap::new();
     // Leave capacity for every saved/discovered routing group, even with large catalogs.
     let direct_limit = MAX_MENU_ENTRIES.saturating_sub(groups.len());
     for provider in &providers {
         let current = Some(&provider.id) == current_provider.as_ref();
         let default = configured_model(provider);
-        let mut models = BTreeSet::new();
-        if let Some(model) = &default {
-            models.insert(model.clone());
-        }
+        let mut models = Vec::new();
         if let Some(entries) = provider
             .settings_config
             .pointer("/modelCatalog/models")
@@ -154,6 +143,13 @@ pub(crate) async fn prepare(
                     .map(|s| s.trim().to_owned()),
             );
         }
+        if let Some(model) = &default {
+            if !models.contains(model) {
+                models.push(model.clone());
+            }
+        }
+        let mut seen = HashSet::new();
+        models.retain(|model| seen.insert(model.clone()));
         let policy = provider
             .settings_config
             .get(crate::services::codex_provider::POLICY)
@@ -173,7 +169,7 @@ pub(crate) async fn prepare(
                 ["groupsOnly"]
                 == true
         {
-            BTreeSet::new()
+            Vec::new()
         } else {
             models.clone()
         };
@@ -186,7 +182,7 @@ pub(crate) async fn prepare(
                     .map(|m| m.model_id.clone()),
             );
         }
-        let mut models = models
+        let models = models
             .into_iter()
             .filter(|model| {
                 crate::services::codex_provider::serves(provider, model)
@@ -194,7 +190,11 @@ pub(crate) async fn prepare(
             })
             .filter(|model| direct_group(provider, model).validate().is_ok())
             .collect::<Vec<_>>();
-        models.sort_by_key(|model| (Some(model) != default.as_ref(), model.clone()));
+        let mut seen = HashSet::new();
+        let models = models
+            .into_iter()
+            .filter(|model| seen.insert(model.clone()))
+            .collect::<Vec<_>>();
         let Some(first) = models.first() else {
             continue;
         };
@@ -265,7 +265,7 @@ pub(crate) async fn prepare(
             let mut group = direct_group(provider, &model);
             crate::services::routing_upstreams::execution_group(&mut group, providers.iter());
             let alias = format!("vary-provider/{}", group.id);
-            let display = provider
+            let model_entry = provider
                 .settings_config
                 .pointer("/modelCatalog/models")
                 .and_then(serde_json::Value::as_array)
@@ -273,11 +273,14 @@ pub(crate) async fn prepare(
                     entries
                         .iter()
                         .find(|entry| entry["model"].as_str() == Some(&model))
-                })
+                });
+            let display = model_entry
                 .and_then(super::model_preferences::name)
                 .unwrap_or(&model);
-            let label = format!("{} · {}", display, provider.name);
-            direct_labels.insert(group.id.clone(), (provider.id.clone(), display.to_owned()));
+            // Keep the model identity separate from its provider metadata.
+            // The Agent picker renders the provider as a separate source, in
+            // the same way Magpie presents duplicate model IDs.
+            let label = display.to_owned();
             if menu.default_model.is_none() || (current && Some(&model) == default.as_ref()) {
                 menu.default_model = Some(alias.clone());
             }
@@ -421,22 +424,6 @@ pub(crate) async fn prepare(
     if menu.groups.is_empty() {
         return Err("intentRouting.providerUnavailable".into());
     }
-    let visible_sources = direct_labels
-        .iter()
-        .filter(|(id, _)| menu.models.contains_key(*id))
-        .map(|(_, (provider, _))| provider.as_str())
-        .collect::<HashSet<_>>();
-    let source_names = super::menu_labels::provider_names(
-        providers
-            .iter()
-            .filter(|provider| visible_sources.contains(provider.id.as_str())),
-    );
-    for (id, (provider, display)) in direct_labels {
-        if let (Some(entry), Some(source)) = (menu.models.get_mut(&id), source_names.get(&provider))
-        {
-            entry.label = format!("{display} · {source}");
-        }
-    }
     Ok(menu)
 }
 
@@ -519,6 +506,53 @@ pub(crate) async fn prepare_with_stand_ins(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn magpie_custom_model_name_that_contains_provider_is_not_suffixed_twice(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut source = provider("relay");
+        source.name = "Relay".into();
+        source.settings_config["modelCatalog"]["models"][0]["modelPreferences"] =
+            json!({"name":"My RELAY model"});
+        let menu = prepare(manager, vec![source], vec![], None).await?;
+        assert_eq!(
+            menu.models.values().next().ok_or("model")?.label,
+            "My RELAY model"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn magpie_picker_preserves_provider_and_vendor_model_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut first = provider("z-company");
+        first.name = "公司".into();
+        first.sort_index = Some(0);
+        first.settings_config["modelCatalog"]["models"] =
+            json!([{"model":"z-model"},{"model":"a-model"}]);
+        let mut second = provider("a-test");
+        second.name = "测试".into();
+        second.sort_index = Some(1);
+        let menu = prepare(manager, vec![second, first], vec![], Some("a-test".into())).await?;
+        let catalog = super::super::client::menu_catalog(&menu, "")?;
+        // Visible labels follow the saved provider order and each vendor's list.
+        let names = catalog["models"]
+            .as_array()
+            .ok_or("models")?
+            .iter()
+            .map(|m| m["display_name"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["z-model", "a-model", "shared-model", "shared-model"]
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn parity_each_account_retains_its_own_model_capabilities(
@@ -565,7 +599,7 @@ mod tests {
             provider.settings_config[codex_provider::CATALOGS]["one"].clone();
         let menu = prepare(manager, vec![provider], vec![], None).await?;
         let entry = menu.models.values().next().ok_or("fixture")?;
-        assert_eq!(entry.label, "shared-model · Codex");
+        assert_eq!(entry.label, "shared-model");
         assert_eq!(
             entry.alias,
             format!(
@@ -744,7 +778,7 @@ mod tests {
             ])
         );
         assert!(models.iter().any(|model| model.group == "Subscription"
-            && model.name == "Shared 0 · Subscription"
+            && model.name == "Shared 0"
             && model.context_window == Some(500000)));
         assert!(models.iter().any(|model| model.group == "Relay"));
         let official_alias = models
@@ -908,11 +942,11 @@ mod tests {
         let menu = prepare(manager, vec![source], vec![], None).await?;
         let models = crate::services::agent_connections::models(&menu);
         let model = models.first().ok_or("missing model")?;
-        assert_eq!(model.name, "My model · a");
+        assert_eq!(model.name, "My model");
         assert!(!model.images);
         assert!(model.reasoning_levels.is_empty());
         let pi = crate::services::agent_connections::pi_model(model);
-        assert_eq!(pi["name"], "My model · a");
+        assert_eq!(pi["name"], "My model");
         assert_eq!(pi["reasoning"], false);
         assert_eq!(pi["input"], json!(["text"]));
         {
@@ -1003,10 +1037,7 @@ mod tests {
                     manager.install(receipt.clone())?;
                     let rows = crate::workbuddy_config::read_models()?;
                     assert_eq!(rows[0], native);
-                    let expected = [
-                        "shared-model · Synthetic supplier",
-                        "shared-model · Synthetic supplier (2)",
-                    ];
+                    let expected = ["shared-model", "shared-model (2)"];
                     for (row, name) in rows[1..].iter().zip(expected) {
                         assert_eq!(row["name"], name);
                         assert_eq!(row["id"], name);
@@ -1117,8 +1148,13 @@ mod tests {
             .await
             .expect("global direct menu");
         assert_eq!(menu.groups.len(), 2);
-        assert!(menu.models.values().any(|m| m.label.ends_with(" · a")));
-        assert!(menu.models.values().any(|m| m.label.ends_with(" · b")));
+        assert_eq!(
+            menu.models
+                .values()
+                .filter(|m| m.label == "shared-model")
+                .count(),
+            2
+        );
         assert!(menu.default_model.is_some());
     }
 
@@ -1153,14 +1189,14 @@ mod tests {
         let entries = projection["models"].as_array().expect("models");
         let direct = entries
             .iter()
-            .find(|e| e["display_name"] == "shared-model · a")
+            .find(|e| e["display_name"] == "shared-model")
             .expect("direct");
         assert_eq!(direct["context_window"], 1000000);
         assert_eq!(direct["max_context_window"], 1200000);
         assert_eq!(direct["auto_compact_token_limit"], 200000);
         let other = entries
             .iter()
-            .find(|e| e["display_name"] == "other-model · a")
+            .find(|e| e["display_name"] == "other-model")
             .expect("retargeted");
         assert_eq!(other["context_window"], 262144);
         assert_eq!(other["effective_context_window_percent"], 90);
@@ -1218,9 +1254,10 @@ mod tests {
         let entries = projection["models"].as_array().ok_or("missing models")?;
         assert_eq!(entries.len(), 3);
         for entry in entries {
-            if entry["slug"] == "vary-auto/mixed-unknown"
-                || entry["display_name"] == "shared-model · known"
-            {
+            let known_direct = entry["slug"].as_str().is_some_and(|slug| {
+                slug == format!("vary-provider/{}", direct_id("known", "shared-model"))
+            });
+            if entry["slug"] == "vary-auto/mixed-unknown" || known_direct {
                 assert_eq!(entry["context_window"], 500000);
             } else {
                 assert!(entry.get("context_window").is_none());
@@ -1481,7 +1518,7 @@ mod tests {
         assert_eq!(menu.groups["vary-auto/saved"].targets.len(), 2);
         assert_eq!(
             menu.models[&direct_id("b", "shared-model")].label,
-            "shared-model · b"
+            "shared-model"
         );
         assert_eq!(menu.models["saved"].label, "Saved · routing group");
         assert!(!Arc::ptr_eq(
@@ -1652,10 +1689,7 @@ mod tests {
             .iter()
             .find(|m| m["slug"] == direct_alias)
             .expect("direct entry");
-        assert_eq!(
-            direct["display_name"],
-            format!("{exact_model} · fixture-provider")
-        );
+        assert_eq!(direct["display_name"], exact_model);
         assert_eq!(direct["description"], "VaryAI direct provider model");
         let saved = models
             .iter()
@@ -1709,15 +1743,12 @@ mod tests {
         let labels = menu
             .models
             .values()
-            .map(|model| model.label.replace(" · ", "-"))
+            .filter_map(|model| menu.groups.get(&model.alias))
+            .filter_map(|session| session.targets.first())
+            .map(|target| format!("{}/{}", target.provider_id, target.model))
             .collect::<BTreeSet<_>>();
-        let default_label = menu
-            .models
-            .values()
-            .find(|model| model.alias == default)
-            .unwrap()
-            .label
-            .replace(" · ", "-");
+        let target = &menu.groups[&default].targets[0];
+        let default_label = format!("{}/{}", target.provider_id, target.model);
         manager
             .activate_menu(Arc::new(menu), "http://127.0.0.1:1/intent/v1")
             .unwrap();

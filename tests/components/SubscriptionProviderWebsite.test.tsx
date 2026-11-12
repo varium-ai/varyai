@@ -64,8 +64,6 @@ it.each([
           onProbe={vi.fn()}
           onSave={vi.fn()}
           onClose={vi.fn()}
-          onDelete={vi.fn()}
-          onDuplicate={vi.fn()}
           onReturnFocus={vi.fn()}
           onError={vi.fn()}
           nestedOpen={false}

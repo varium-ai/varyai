@@ -19,6 +19,8 @@ import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
 import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
 import type { ProviderErrorHandler } from "./providerErrorToast";
 import { SubscriptionModelChip } from "./SubscriptionModelChip";
+import { ProviderCheckbox } from "./ProviderCheckbox";
+import { Button } from "@/components/ui/button";
 
 export function CodexProviderFields({
   draft,
@@ -179,12 +181,26 @@ export function CodexProviderFields({
   }, [working, onBusyChange]);
   useEffect(() => () => onBusyChange(false), [onBusyChange]);
   const locked = disabled || working;
-  const rows = editor.accounts.map((row) => {
+  const rows: typeof editor.accounts = editor.accounts.map((row) => {
+    const id =
+      policy.accounts.find(
+        (account) => account === row.id || row.aliases?.includes(account),
+      ) ?? row.id;
     const current =
-      !row.native && auth.accounts?.find((account) => account.id === row.id);
-    return current
-      ? { ...row, login: current.login, ready: !current.reauth_required }
-      : row;
+      id !== "native" && auth.accounts?.find((account) => account.id === id);
+    return {
+      ...row,
+      id,
+      native: id === "native",
+      aliases: [...new Set([row.id, ...(row.aliases ?? [])])].filter(
+        (alias) => alias !== id,
+      ),
+      ...(current
+        ? { login: current.login, ready: !current.reauth_required }
+        : id !== row.id
+          ? { ready: false }
+          : {}),
+    };
   });
   const aliases = new Set(rows.flatMap((row) => row.aliases ?? []));
   for (const account of auth.accounts ?? []) {
@@ -303,13 +319,20 @@ export function CodexProviderFields({
     (row) => !isImageGenerationModel(row),
   );
   const imageModels = [...all.values()].filter(isImageGenerationModel);
-  const imagePicks = policy.models.filter(isImageGenerationModel);
   const term = filter.trim().toLocaleLowerCase();
   const matches = (row: Record<string, unknown>) =>
     `${row.model} ${(row.modelPreferences as { name?: string })?.name ?? row.displayName ?? ""}`
       .toLocaleLowerCase()
       .includes(term);
   const shown = chatModels.filter(matches);
+  const shownIds = new Set(shown.map((row) => String(row.model)));
+  const allShownSelected =
+    shown.length > 0 &&
+    policy.mode === "picked" &&
+    shown.every((row) => selected.has(String(row.model)));
+  const someShownSelected =
+    policy.mode === "picked" &&
+    shown.some((row) => selected.has(String(row.model)));
   function update(next: Partial<CodexProviderSettings>) {
     onChange({
       ...draft,
@@ -720,6 +743,51 @@ export function CodexProviderFields({
             </p>
           )}
           <div className="pv-model-actions">
+            <label className="pv-model-select-all">
+              <ProviderCheckbox
+                checked={
+                  allShownSelected
+                    ? true
+                    : someShownSelected
+                      ? "indeterminate"
+                      : false
+                }
+                disabled={locked || !shown.length}
+                onCheckedChange={(checked) =>
+                  update({
+                    mode: "picked",
+                    models: checked
+                      ? [
+                          ...policy.models,
+                          ...shown.filter(
+                            (row) => !selected.has(String(row.model)),
+                          ),
+                        ].slice(0, 256)
+                      : policy.models.filter(
+                          (row) => !shownIds.has(String(row.model)),
+                        ),
+                  })
+                }
+              />
+              <span>{t("providerEditor.selectAll")}</span>
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label={t("codexProvider.fetchModels")}
+              aria-busy={fetching}
+              disabled={locked || !accountReady}
+              onClick={() => void discover()}
+            >
+              {fetching && (
+                <RefreshCw
+                  size={12}
+                  className="animate-spin motion-reduce:animate-none"
+                  aria-hidden
+                />
+              )}
+              {t(fetching ? "common.loading" : "codexProvider.fetchModels")}
+            </Button>
             {chatModels.length > 24 && (
               <input
                 type="search"
@@ -735,30 +803,6 @@ export function CodexProviderFields({
                 onChange={(event) => setFilter(event.target.value)}
               />
             )}
-            <button
-              type="button"
-              disabled={locked}
-              onClick={() =>
-                update({
-                  mode: "picked",
-                  models: [
-                    ...imagePicks,
-                    ...chatModels.filter(
-                      (row) => selected.has(String(row.model)) || matches(row),
-                    ),
-                  ].slice(0, 256),
-                })
-              }
-            >
-              {t("providerEditor.selectAll")}
-            </button>
-            <button
-              type="button"
-              disabled={locked}
-              onClick={() => update({ mode: "picked", models: imagePicks })}
-            >
-              {t("providerEditor.selectNone")}
-            </button>
           </div>
           <div
             className="pv-model-chips"
@@ -781,19 +825,6 @@ export function CodexProviderFields({
                 )}
               </SubscriptionModelChip>
             ))}
-          </div>
-          <div className="pv-model-footer">
-            <div className="pv-add-model">
-              <button
-                type="button"
-                disabled={locked || !policy.accounts.length}
-                onClick={() => void discover()}
-              >
-                {fetching
-                  ? t("common.loading")
-                  : t("codexProvider.fetchModels")}
-              </button>
-            </div>
           </div>
           <p className="pv-hint">{t(`codexProvider.${policy.mode}Hint`)}</p>
         </div>

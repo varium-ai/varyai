@@ -51,7 +51,7 @@
   --muted-foreground: 240 4% 56%;
 }
 .rt-create-dialog.rt-form-theme[role="dialog"] {
-  width: min(1040px, calc(100vw - 48px));
+  width: min(880px, calc(100vw - 48px));
   max-height: min(760px, calc(100dvh - 144px));
   transition: height 220ms cubic-bezier(0.2, 0, 0, 1);
   margin: auto;
@@ -587,11 +587,18 @@
   accent-color: var(--mp-accent);
 }
 .rt-group-form .rt-provider-models-count,
-.rt-group-form .rt-provider-models-agent {
+.rt-group-form .rt-provider-models-agent,
+.rt-group-form .rt-provider-models-id {
   flex: none;
   color: var(--mp-muted);
   font-size: 11px;
   font-weight: 400;
+}
+.rt-group-form .rt-provider-models-id {
+  overflow: hidden;
+  max-width: 24ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .rt-group-form .rt-model-chips {
   display: flex;

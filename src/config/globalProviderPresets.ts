@@ -5,6 +5,8 @@ export interface GlobalProviderPreset {
   apiFormat: "anthropic" | "openai_chat" | "openai_responses" | "gemini_native";
   kind: "vendor" | "relay";
   icon: string;
+  website: string;
+  apiKeyUrl: string;
   authType?: "api-key" | "bearer";
   endpoints?: Partial<Record<GlobalProviderPreset["apiFormat"], string>>;
   regionLabel?: "region" | "plan";
@@ -12,10 +14,14 @@ export interface GlobalProviderPreset {
     id: string;
     name: string;
     endpoints: NonNullable<GlobalProviderPreset["endpoints"]>;
+    website?: string;
+    apiKeyUrl?: string;
   }>;
   china?: {
     name: string;
     endpoints: NonNullable<GlobalProviderPreset["endpoints"]>;
+    website?: string;
+    apiKeyUrl?: string;
   };
 }
 
@@ -23,6 +29,8 @@ export interface GlobalProviderPreset {
 export const globalProviderPresets: GlobalProviderPreset[] = [
   {
     id: "openai",
+    website: "https://platform.openai.com",
+    apiKeyUrl: "https://platform.openai.com/api-keys",
     name: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
     apiFormat: "openai_responses",
@@ -35,6 +43,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "anthropic",
+    website: "https://console.anthropic.com",
+    apiKeyUrl: "https://console.anthropic.com/settings/keys",
     name: "Anthropic",
     baseUrl: "https://api.anthropic.com",
     apiFormat: "anthropic",
@@ -45,6 +55,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "google",
+    website: "https://aistudio.google.com",
+    apiKeyUrl: "https://aistudio.google.com/apikey",
     name: "Google Gemini",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     apiFormat: "gemini_native",
@@ -57,6 +69,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "deepseek",
+    website: "https://platform.deepseek.com",
+    apiKeyUrl: "https://platform.deepseek.com/api_keys",
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
     apiFormat: "openai_chat",
@@ -70,6 +84,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "moonshot",
+    website: "https://platform.kimi.ai",
+    apiKeyUrl: "https://platform.kimi.ai/console/api-keys",
     name: "Kimi",
     baseUrl: "https://api.moonshot.ai/v1",
     apiFormat: "openai_chat",
@@ -81,6 +97,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
     },
     china: {
       name: "Kimi (China)",
+      website: "https://platform.kimi.com",
+      apiKeyUrl: "https://platform.kimi.com/console/api-keys",
       endpoints: {
         openai_chat: "https://api.moonshot.cn/v1",
         anthropic: "https://api.moonshot.cn/anthropic",
@@ -89,6 +107,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "zai",
+    website: "https://z.ai",
+    apiKeyUrl: "https://z.ai/manage-apikey/apikey-list",
     name: "Z.ai",
     baseUrl: "https://api.z.ai/api/paas/v4",
     apiFormat: "openai_chat",
@@ -121,6 +141,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "openrouter",
+    website: "https://openrouter.ai",
+    apiKeyUrl: "https://openrouter.ai/keys",
     name: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",
     apiFormat: "openai_chat",
@@ -133,6 +155,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "xai",
+    website: "https://console.x.ai",
+    apiKeyUrl: "https://console.x.ai",
     name: "xAI",
     kind: "vendor",
     icon: "xai",
@@ -146,6 +170,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "kimi-code",
+    website: "https://www.kimi.ai/code",
+    apiKeyUrl: "https://www.kimi.ai/code/console",
     name: "Kimi Code",
     kind: "vendor",
     icon: "kimi-code",
@@ -157,6 +183,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
     },
     china: {
       name: "Kimi Code (China)",
+      website: "https://www.kimi.com/code",
+      apiKeyUrl: "https://www.kimi.com/code/console",
       endpoints: {
         openai_chat: "https://api.kimi.com/coding/v1",
         anthropic: "https://api.kimi.com/coding",
@@ -165,6 +193,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "zhipu",
+    website: "https://open.bigmodel.cn",
+    apiKeyUrl: "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys",
     name: "Zhipu GLM",
     kind: "vendor",
     icon: "zhipu",
@@ -197,6 +227,9 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "minimax",
+    website: "https://platform.minimax.io",
+    apiKeyUrl:
+      "https://platform.minimax.io/user-center/basic-information/interface-key",
     name: "MiniMax",
     kind: "vendor",
     icon: "minimax",
@@ -208,6 +241,9 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
     },
     china: {
       name: "MiniMax (China)",
+      website: "https://platform.minimaxi.com",
+      apiKeyUrl:
+        "https://platform.minimaxi.com/user-center/basic-information/interface-key",
       endpoints: {
         openai_chat: "https://api.minimaxi.com/v1",
         anthropic: "https://api.minimaxi.com/anthropic",
@@ -216,6 +252,9 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "qwen",
+    website: "https://modelstudio.console.alibabacloud.com",
+    apiKeyUrl:
+      "https://modelstudio.console.alibabacloud.com/?tab=playground#/api-key",
     name: "Qwen",
     kind: "vendor",
     icon: "qwen",
@@ -227,6 +266,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
     },
     china: {
       name: "Qwen (China)",
+      website: "https://bailian.console.aliyun.com",
+      apiKeyUrl: "https://bailian.console.aliyun.com/?tab=model#/api-key",
       endpoints: {
         openai_chat: "https://dashscope.aliyuncs.com/compatible-mode/v1",
         anthropic: "https://dashscope.aliyuncs.com/apps/anthropic",
@@ -235,6 +276,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "mistral",
+    website: "https://console.mistral.ai",
+    apiKeyUrl: "https://console.mistral.ai/api-keys",
     name: "Mistral",
     kind: "vendor",
     icon: "mistral",
@@ -244,6 +287,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "groq",
+    website: "https://console.groq.com",
+    apiKeyUrl: "https://console.groq.com/keys",
     name: "Groq",
     kind: "vendor",
     icon: "groq",
@@ -256,6 +301,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "together",
+    website: "https://api.together.ai",
+    apiKeyUrl: "https://api.together.ai/settings/api-keys",
     name: "Together AI",
     kind: "relay",
     icon: "together",
@@ -265,6 +312,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "fireworks",
+    website: "https://fireworks.ai",
+    apiKeyUrl: "https://app.fireworks.ai/settings/users/api-keys",
     name: "Fireworks",
     kind: "relay",
     icon: "fireworks",
@@ -274,6 +323,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "siliconflow",
+    website: "https://cloud.siliconflow.com",
+    apiKeyUrl: "https://cloud.siliconflow.com/account/ak",
     name: "SiliconFlow",
     kind: "relay",
     icon: "siliconflow",
@@ -282,11 +333,15 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
     endpoints: { openai_chat: "https://api.siliconflow.com/v1" },
     china: {
       name: "SiliconFlow (China)",
+      website: "https://cloud.siliconflow.cn",
+      apiKeyUrl: "https://cloud.siliconflow.cn/account/ak",
       endpoints: { openai_chat: "https://api.siliconflow.cn/v1" },
     },
   },
   {
     id: "nvidia",
+    website: "https://build.nvidia.com",
+    apiKeyUrl: "https://build.nvidia.com/settings/api-keys",
     name: "NVIDIA NIM",
     kind: "relay",
     icon: "nvidia",
@@ -296,6 +351,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "modelscope",
+    website: "https://modelscope.cn/docs/model-service/API-Inference/intro",
+    apiKeyUrl: "https://modelscope.cn/my/myaccesstoken",
     name: "ModelScope",
     kind: "relay",
     icon: "modelscope",
@@ -308,6 +365,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "aihubmix",
+    website: "https://aihubmix.com",
+    apiKeyUrl: "https://console.aihubmix.com/token",
     name: "AiHubMix",
     kind: "relay",
     icon: "aihubmix",
@@ -320,6 +379,8 @@ export const globalProviderPresets: GlobalProviderPreset[] = [
   },
   {
     id: "302ai",
+    website: "https://302.ai",
+    apiKeyUrl: "https://302.ai/api-keys/list",
     name: "302.AI",
     kind: "relay",
     icon: "ai302",

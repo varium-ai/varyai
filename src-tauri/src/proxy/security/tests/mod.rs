@@ -431,18 +431,20 @@ fn test_catalog_password_field_is_detected_only_for_structured_password_values()
 fn test_optional_password_rules_can_be_changed_to_redact_without_leaking_values() {
     use std::collections::HashMap;
 
-    let mut runtime = SecurityRuntimeConfig::default();
-    runtime.builtin_action_overrides = HashMap::from([
-        (
-            "catalog:login-url-password".to_string(),
-            AuditAction::Redact,
-        ),
-        (
-            "catalog:password-assignment".to_string(),
-            AuditAction::Redact,
-        ),
-        ("catalog:password-field".to_string(), AuditAction::Redact),
-    ]);
+    let runtime = SecurityRuntimeConfig {
+        builtin_action_overrides: HashMap::from([
+            (
+                "catalog:login-url-password".to_string(),
+                AuditAction::Redact,
+            ),
+            (
+                "catalog:password-assignment".to_string(),
+                AuditAction::Redact,
+            ),
+            ("catalog:password-field".to_string(), AuditAction::Redact),
+        ]),
+        ..Default::default()
+    };
 
     let mut body = json!({
         "messages": [{
@@ -930,9 +932,13 @@ async fn blocked_response_uses_dynamic_rule_name_and_risk_level() {
     use axum::body::to_bytes;
     use std::collections::HashMap;
 
-    let mut runtime = SecurityRuntimeConfig::default();
-    runtime.builtin_action_overrides =
-        HashMap::from([("chinese_phone_number".to_string(), AuditAction::Block)]);
+    let runtime = SecurityRuntimeConfig {
+        builtin_action_overrides: HashMap::from([(
+            "chinese_phone_number".to_string(),
+            AuditAction::Block,
+        )]),
+        ..Default::default()
+    };
     let body = json!({
         "messages": [{
             "role": "user",
@@ -1476,29 +1482,31 @@ fn test_redaction_preserves_unmatched_escaped_underscores() {
 #[test]
 fn test_custom_explicit_block_and_redact_overlap() {
     use super::runtime::{CompiledCustomRule, SecurityRuntimeConfig};
-    let mut runtime = SecurityRuntimeConfig::default();
-    runtime.custom_rules = vec![
-        CompiledCustomRule {
-            id: "redact".into(),
-            name: "redact".into(),
-            rule_type: "regex".into(),
-            pattern: "secret".into(),
-            regex: regex::Regex::new("secret").ok(),
-            risk_level: RiskLevel::High,
-            action: AuditAction::Redact,
-            enabled: true,
-        },
-        CompiledCustomRule {
-            id: "block".into(),
-            name: "block".into(),
-            rule_type: "keyword".into(),
-            pattern: "secret".into(),
-            regex: None,
-            risk_level: RiskLevel::High,
-            action: AuditAction::Block,
-            enabled: true,
-        },
-    ];
+    let runtime = SecurityRuntimeConfig {
+        custom_rules: vec![
+            CompiledCustomRule {
+                id: "redact".into(),
+                name: "redact".into(),
+                rule_type: "regex".into(),
+                pattern: "secret".into(),
+                regex: regex::Regex::new("secret").ok(),
+                risk_level: RiskLevel::High,
+                action: AuditAction::Redact,
+                enabled: true,
+            },
+            CompiledCustomRule {
+                id: "block".into(),
+                name: "block".into(),
+                rule_type: "keyword".into(),
+                pattern: "secret".into(),
+                regex: None,
+                risk_level: RiskLevel::High,
+                action: AuditAction::Block,
+                enabled: true,
+            },
+        ],
+        ..Default::default()
+    };
     let mut body = json!({"prompt": "secret"});
     let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
     assert!(result.blocked);
@@ -1603,11 +1611,13 @@ fn test_redaction_verification_failure_blocks_without_partial_commit() {
 #[test]
 fn test_builtin_override_actions_match_redaction_and_block_policy() {
     use std::collections::HashMap;
-    let mut runtime = SecurityRuntimeConfig::default();
-    runtime.builtin_action_overrides = HashMap::from([
-        ("github_token".to_string(), AuditAction::Redact),
-        ("chinese_phone_number".to_string(), AuditAction::Block),
-    ]);
+    let runtime = SecurityRuntimeConfig {
+        builtin_action_overrides: HashMap::from([
+            ("github_token".to_string(), AuditAction::Redact),
+            ("chinese_phone_number".to_string(), AuditAction::Block),
+        ]),
+        ..Default::default()
+    };
     let token = "gh".to_owned() + "p_" + &"a".repeat(36);
     let mut body =
         json!({"messages": [{"role": "user", "content": format!("{token} 13800138000")}]});

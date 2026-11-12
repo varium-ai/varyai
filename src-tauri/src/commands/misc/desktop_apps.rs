@@ -354,14 +354,14 @@ mod tests {
         let domestic = bundle(&apps, "WorkBuddy.app", "com.tencent.workbuddy.mac");
         let international = bundle(&apps, "WorkBuddy AI.app", "com.workbuddy.workbuddy-ai");
         assert_eq!(
-            find_in("workbuddy", &[apps.clone()]),
+            find_in("workbuddy", std::slice::from_ref(&apps)),
             Some(domestic.clone())
         );
         let trash = dir.path().join(".Trash");
         std::fs::create_dir(&trash).unwrap();
         std::fs::rename(&domestic, trash.join("WorkBuddy.app")).unwrap();
         assert_eq!(
-            find_in("workbuddy-ai", &[apps.clone()]),
+            find_in("workbuddy-ai", std::slice::from_ref(&apps)),
             Some(international)
         );
         assert!(find_in("workbuddy", &[apps, trash]).is_none());
@@ -424,7 +424,7 @@ mod tests {
         bundle(&outer, "WorkBuddy.app", "com.tencent.workbuddy.mac");
         assert!(find_in("workbuddy", &[dir.path().into()]).is_none());
         let missing = dir.path().join("missing");
-        assert!(find_in("workbuddy", &[missing.clone()]).is_none());
+        assert!(find_in("workbuddy", std::slice::from_ref(&missing)).is_none());
         assert!(!missing.exists());
     }
 }

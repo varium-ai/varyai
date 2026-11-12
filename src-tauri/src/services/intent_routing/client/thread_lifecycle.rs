@@ -457,6 +457,78 @@ impl Manager {
     }
 }
 
+fn historical_provider_ids(config: &toml::Value, source: &str) -> Vec<String> {
+    config
+        .get("model_providers")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|providers| providers.iter())
+        .filter_map(|(id, value)| {
+            // Validate before placing an ID inside the private recovery path.
+            let safe_id = !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+            if !safe_id
+                || matches!(id.as_str(), PROVIDER | "openai")
+                || id == source
+                || profile_names_provider(config, id)
+            {
+                return None;
+            }
+            let table = value.as_table()?;
+            (menu_provider_signature(table, "/v1") || menu_provider_signature(table, "/intent/v1"))
+                .then(|| id.clone())
+        })
+        .collect()
+}
+
+fn effective_provider(config: &toml::Value) -> String {
+    selected_profile_provider(config)
+        .or_else(|| {
+            config
+                .get("model_provider")
+                .and_then(toml::Value::as_str)
+                .filter(|provider| !provider.is_empty())
+        })
+        .unwrap_or("openai")
+        .to_owned()
+}
+
+fn source_provider(config: &toml::Value) -> String {
+    let source = effective_provider(config);
+    if selected_profile_provider(config).is_none() && source == PROVIDER {
+        "openai".to_owned()
+    } else {
+        source
+    }
+}
+
+fn selected_profile_provider(config: &toml::Value) -> Option<&str> {
+    let profile = config.get("profile").and_then(toml::Value::as_str)?;
+    if profile.is_empty() {
+        return None;
+    }
+    config
+        .get("profiles")
+        .and_then(|profiles| profiles.get(profile))
+        .and_then(|profile| profile.get("model_provider"))
+        .and_then(toml::Value::as_str)
+        .filter(|provider| !provider.is_empty())
+}
+
+fn profile_names_provider(config: &toml::Value, provider: &str) -> bool {
+    config
+        .get("profiles")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|profiles| {
+            profiles.values().any(|profile| {
+                profile.get("model_provider").and_then(toml::Value::as_str) == Some(provider)
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,76 +1082,4 @@ mod tests {
         }
         Ok(())
     }
-}
-
-fn historical_provider_ids(config: &toml::Value, source: &str) -> Vec<String> {
-    config
-        .get("model_providers")
-        .and_then(toml::Value::as_table)
-        .into_iter()
-        .flat_map(|providers| providers.iter())
-        .filter_map(|(id, value)| {
-            // Validate before placing an ID inside the private recovery path.
-            let safe_id = !id.is_empty()
-                && id.len() <= 64
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
-            if !safe_id
-                || matches!(id.as_str(), PROVIDER | "openai")
-                || id == source
-                || profile_names_provider(config, id)
-            {
-                return None;
-            }
-            let table = value.as_table()?;
-            (menu_provider_signature(table, "/v1") || menu_provider_signature(table, "/intent/v1"))
-                .then(|| id.clone())
-        })
-        .collect()
-}
-
-fn effective_provider(config: &toml::Value) -> String {
-    selected_profile_provider(config)
-        .or_else(|| {
-            config
-                .get("model_provider")
-                .and_then(toml::Value::as_str)
-                .filter(|provider| !provider.is_empty())
-        })
-        .unwrap_or("openai")
-        .to_owned()
-}
-
-fn source_provider(config: &toml::Value) -> String {
-    let source = effective_provider(config);
-    if selected_profile_provider(config).is_none() && source == PROVIDER {
-        "openai".to_owned()
-    } else {
-        source
-    }
-}
-
-fn selected_profile_provider(config: &toml::Value) -> Option<&str> {
-    let profile = config.get("profile").and_then(toml::Value::as_str)?;
-    if profile.is_empty() {
-        return None;
-    }
-    config
-        .get("profiles")
-        .and_then(|profiles| profiles.get(profile))
-        .and_then(|profile| profile.get("model_provider"))
-        .and_then(toml::Value::as_str)
-        .filter(|provider| !provider.is_empty())
-}
-
-fn profile_names_provider(config: &toml::Value, provider: &str) -> bool {
-    config
-        .get("profiles")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|profiles| {
-            profiles.values().any(|profile| {
-                profile.get("model_provider").and_then(toml::Value::as_str) == Some(provider)
-            })
-        })
 }

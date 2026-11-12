@@ -6,7 +6,7 @@
 use super::{
     completion_evidence::{
         AnthropicCompletionReason, ChatCompletionReason, CompletionObservation,
-        NativeCompletionEvent,
+        GeminiCompletionReason, NativeCompletionEvent,
     },
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
@@ -88,6 +88,7 @@ impl NativeSseCompletion {
             | CompletionObservation::RawJson(_)
             | CompletionObservation::ChatChunk(_)
             | CompletionObservation::ChatDone
+            | CompletionObservation::GeminiChunk(_)
             | CompletionObservation::AnthropicEvent { .. }
             | CompletionObservation::AnthropicJson(_) => {
                 self.invalid = true;
@@ -187,6 +188,14 @@ impl NativeSseCompletion {
                 return Err(TokenError::RedactionFailed);
             }
         }
+        // Pair the raw header first; data-only SSE uses its validated protocol type.
+        let event_name = if event_name.is_empty() {
+            data.get("type")
+                .and_then(Value::as_str)
+                .ok_or(TokenError::RedactionFailed)?
+        } else {
+            event_name
+        };
         if event_name == "response.failed"
             || event_name == "error"
             || data.get("error").is_some_and(|v| !v.is_null())
@@ -226,6 +235,8 @@ pub(crate) enum JsonCompletionProtocol {
 
 pub(crate) struct JsonCompletion {
     protocol: JsonCompletionProtocol,
+    native_chat: bool,
+    native_gemini: bool,
     seen: bool,
     permitted: bool,
     unsupported_carrier: bool,
@@ -235,9 +246,27 @@ impl JsonCompletion {
     pub(crate) fn new(protocol: JsonCompletionProtocol) -> Self {
         Self {
             protocol,
+            native_chat: false,
+            native_gemini: false,
             seen: false,
             permitted: false,
             unsupported_carrier: false,
+        }
+    }
+
+    /// Native Chat preserves independently indexed choices; conversion stays single-choice.
+    pub(super) fn native_chat() -> Self {
+        Self {
+            native_chat: true,
+            ..Self::new(JsonCompletionProtocol::ChatCompletions)
+        }
+    }
+
+    /// Private native selection avoids widening integration-owned protocol enums.
+    pub(super) fn native_gemini() -> Self {
+        Self {
+            native_gemini: true,
+            ..Self::new(JsonCompletionProtocol::ChatCompletions)
         }
     }
 
@@ -246,31 +275,49 @@ impl JsonCompletion {
     }
 
     pub(super) fn observe_raw_json(&mut self, raw: &str, budget: &PayloadBudget) {
+        drop(self.observe_raw_json_scoped(raw, budget));
+    }
+
+    /// The caller may inspect the exact strict parse before conversion, without retaining a copy.
+    pub(super) fn observe_raw_json_scoped(
+        &mut self,
+        raw: &str,
+        budget: &PayloadBudget,
+    ) -> Option<PayloadJson> {
         if self.seen {
             self.permitted = false;
-            return;
+            return None;
         }
         self.seen = true;
         let Ok(parsed) = PayloadJson::try_from_str(raw, budget.clone(), budget.limit()) else {
             self.permitted = false;
-            return;
+            return None;
         };
         let value = parsed.as_value();
-        self.permitted = match self.protocol {
-            JsonCompletionProtocol::NativeResponses => {
-                validate_native_response_object(value, budget).is_ok()
-            }
-            JsonCompletionProtocol::ChatCompletions => {
-                validate_chat_json_response(value, budget, &mut self.unsupported_carrier).is_ok()
-            }
-            JsonCompletionProtocol::AnthropicMessages => {
-                validate_anthropic_json_response(value, budget, &mut self.unsupported_carrier)
-                    .is_ok()
-            }
-            JsonCompletionProtocol::ResponsesCompact => {
-                validate_compact_json_response(value).is_ok()
+        self.permitted = if self.native_gemini {
+            validate_gemini_json_response(value, &mut self.unsupported_carrier).is_ok()
+        } else {
+            match self.protocol {
+                JsonCompletionProtocol::NativeResponses => {
+                    validate_native_response_object(value, budget).is_ok()
+                }
+                JsonCompletionProtocol::ChatCompletions => validate_chat_json_response(
+                    value,
+                    budget,
+                    &mut self.unsupported_carrier,
+                    self.native_chat,
+                )
+                .is_ok(),
+                JsonCompletionProtocol::AnthropicMessages => {
+                    validate_anthropic_json_response(value, budget, &mut self.unsupported_carrier)
+                        .is_ok()
+                }
+                JsonCompletionProtocol::ResponsesCompact => {
+                    validate_compact_json_response(value).is_ok()
+                }
             }
         };
+        self.permitted.then_some(parsed)
     }
 
     pub(crate) fn permits_completion(&self) -> bool {
@@ -534,10 +581,43 @@ pub(super) fn chat_carriers_supported(
     }
 }
 
+/// Native carriers retain opaque siblings instead of passing through a lossy converter.
+/// Known readable fields still require their protocol types; tool structure is checked
+/// by the same strict completion validator that owns tool identities and arguments.
+pub(super) fn native_chat_carriers_supported(
+    message: &serde_json::Map<String, Value>,
+    streaming: bool,
+) -> bool {
+    for field in ["refusal", "reasoning_content"] {
+        if message
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return false;
+        }
+    }
+    match message.get("content") {
+        None | Some(Value::Null | Value::String(_)) => true,
+        Some(Value::Array(parts)) if !streaming => parts.iter().all(|part| {
+            let Some(object) = part.as_object() else {
+                return false;
+            };
+            match object.get("type").and_then(Value::as_str) {
+                Some("text" | "output_text") => object.get("text").is_some_and(Value::is_string),
+                Some("refusal") => object.get("refusal").is_some_and(Value::is_string),
+                Some(_) => true,
+                None => false,
+            }
+        }),
+        _ => false,
+    }
+}
+
 fn validate_chat_json_response(
     body: &Value,
     budget: &PayloadBudget,
     unsupported_carrier: &mut bool,
+    native_chat: bool,
 ) -> Result<(), TokenError> {
     let obj = body.as_object().ok_or(TokenError::RedactionFailed)?;
     if obj.get("error").is_some_and(|v| !v.is_null())
@@ -552,18 +632,58 @@ fn validate_chat_json_response(
         .get("choices")
         .and_then(Value::as_array)
         .ok_or(TokenError::RedactionFailed)?;
-    if choices.len() != 1 {
-        return Err(TokenError::RedactionFailed);
+    if native_chat {
+        if choices.is_empty() || choices.len() > 128 {
+            return Err(TokenError::RedactionFailed);
+        }
+        for (position, choice) in choices.iter().enumerate() {
+            let index = choice
+                .get("index")
+                .and_then(Value::as_u64)
+                .filter(|index| *index < 128)
+                .ok_or(TokenError::RedactionFailed)?;
+            if choices[..position]
+                .iter()
+                .any(|prior| prior.get("index").and_then(Value::as_u64) == Some(index))
+            {
+                return Err(TokenError::RedactionFailed);
+            }
+            validate_chat_json_choice(choice, budget, unsupported_carrier, true)?;
+        }
+        Ok(())
+    } else {
+        if choices.len() != 1 {
+            return Err(TokenError::RedactionFailed);
+        }
+        validate_chat_json_choice(&choices[0], budget, unsupported_carrier, false)
     }
-    let choice = choices[0].as_object().ok_or(TokenError::RedactionFailed)?;
+}
+
+fn validate_chat_json_choice(
+    choice: &Value,
+    budget: &PayloadBudget,
+    unsupported_carrier: &mut bool,
+    native_chat: bool,
+) -> Result<(), TokenError> {
+    let choice = choice.as_object().ok_or(TokenError::RedactionFailed)?;
     let reason = choice.get("finish_reason").and_then(Value::as_str);
     if !ChatCompletionReason::new(reason).permits_completion() {
         return Err(TokenError::RedactionFailed);
     }
-    let message = choice
-        .get("message")
-        .and_then(Value::as_object)
-        .ok_or(TokenError::RedactionFailed)?;
+    let message = choice.get("message").ok_or(TokenError::RedactionFailed)?;
+    validate_chat_message(message, reason, budget, unsupported_carrier, native_chat)
+}
+
+/// Structural validation only; no transport, release or completion authority.
+/// Shared by complete native JSON and independently composed Chat SSE snapshots.
+pub(super) fn validate_chat_message(
+    message: &Value,
+    reason: Option<&str>,
+    budget: &PayloadBudget,
+    unsupported_carrier: &mut bool,
+    native_chat: bool,
+) -> Result<(), TokenError> {
+    let message = message.as_object().ok_or(TokenError::RedactionFailed)?;
     if message
         .get("role")
         .filter(|v| !v.is_null())
@@ -572,7 +692,12 @@ fn validate_chat_json_response(
     {
         return Err(TokenError::RedactionFailed);
     }
-    if !chat_carriers_supported(message, false) {
+    let supported = if native_chat {
+        native_chat_carriers_supported(message, false)
+    } else {
+        chat_carriers_supported(message, false)
+    };
+    if !supported {
         *unsupported_carrier = true;
         return Err(TokenError::RedactionFailed);
     }
@@ -743,6 +868,114 @@ fn validate_anthropic_json_response(
     }
     if (reason == Some("tool_use")) != (tool_count != 0) {
         return Err(TokenError::RedactionFailed);
+    }
+    Ok(())
+}
+
+fn validate_gemini_json_response(
+    body: &Value,
+    unsupported_carrier: &mut bool,
+) -> Result<(), TokenError> {
+    let obj = body.as_object().ok_or(TokenError::RedactionFailed)?;
+    if obj.get("error").is_some_and(|error| !error.is_null())
+        || body
+            .pointer("/promptFeedback/blockReason")
+            .is_some_and(|reason| !reason.is_null())
+    {
+        return Err(TokenError::RedactionFailed);
+    }
+    let candidates = obj
+        .get("candidates")
+        .and_then(Value::as_array)
+        .filter(|candidates| !candidates.is_empty() && candidates.len() <= 128)
+        .ok_or(TokenError::RedactionFailed)?;
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        let candidate = candidate.as_object().ok_or(TokenError::RedactionFailed)?;
+        let reason = candidate.get("finishReason").and_then(Value::as_str);
+        if !GeminiCompletionReason::new(reason).permits_completion() {
+            return Err(TokenError::RedactionFailed);
+        }
+        if let Some(index) = candidate.get("index") {
+            let index = index.as_u64().ok_or(TokenError::RedactionFailed)?;
+            if candidates[..candidate_index]
+                .iter()
+                .any(|prior| prior.get("index").and_then(Value::as_u64) == Some(index))
+            {
+                return Err(TokenError::RedactionFailed);
+            }
+        }
+        let content = candidate
+            .get("content")
+            .ok_or(TokenError::RedactionFailed)?;
+        validate_gemini_content(content, unsupported_carrier)?;
+    }
+    Ok(())
+}
+
+/// Structural validation for one exact streamed or buffered native Content.
+/// This grants no cross-frame identity, completion or publication authority.
+pub(super) fn validate_gemini_content(
+    content: &Value,
+    unsupported_carrier: &mut bool,
+) -> Result<(), TokenError> {
+    let content = content.as_object().ok_or(TokenError::RedactionFailed)?;
+    if content.get("role").and_then(Value::as_str) != Some("model") {
+        return Err(TokenError::RedactionFailed);
+    }
+    let parts = content
+        .get("parts")
+        .and_then(Value::as_array)
+        .filter(|parts| parts.len() <= 128)
+        .ok_or(TokenError::RedactionFailed)?;
+    for part in parts {
+        let part = part.as_object().ok_or(TokenError::RedactionFailed)?;
+        if part.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "text" | "functionCall" | "thought" | "thoughtSignature"
+            )
+        }) {
+            *unsupported_carrier = true;
+            return Err(TokenError::RedactionFailed);
+        }
+        if part
+            .get("thought")
+            .is_some_and(|thought| !thought.is_boolean())
+            || part.get("thoughtSignature").is_some_and(|signature| {
+                !signature
+                    .as_str()
+                    .is_some_and(|signature| !signature.is_empty())
+            })
+        {
+            return Err(TokenError::RedactionFailed);
+        }
+        let payloads =
+            usize::from(part.contains_key("text")) + usize::from(part.contains_key("functionCall"));
+        if payloads > 1 || (payloads == 0 && !part.contains_key("thoughtSignature")) {
+            return Err(TokenError::RedactionFailed);
+        }
+        if let Some(text) = part.get("text") {
+            if !text.is_string() {
+                return Err(TokenError::RedactionFailed);
+            }
+        }
+        if let Some(call) = part.get("functionCall") {
+            let call = call.as_object().ok_or(TokenError::RedactionFailed)?;
+            if call
+                .keys()
+                .any(|key| !matches!(key.as_str(), "id" | "name" | "args"))
+                || !call
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(valid_external_id)
+                || call
+                    .get("id")
+                    .is_some_and(|id| !id.as_str().is_some_and(valid_external_id))
+                || !call.get("args").is_some_and(Value::is_object)
+            {
+                return Err(TokenError::RedactionFailed);
+            }
+        }
     }
     Ok(())
 }

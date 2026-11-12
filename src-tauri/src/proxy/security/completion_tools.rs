@@ -34,6 +34,7 @@ pub(super) fn chat_tool_carriers_supported(value: &Value, _streaming: bool) -> b
 }
 
 struct ChatTool {
+    index: usize,
     id: Option<PayloadText>,
     name: Option<PayloadText>,
     function_type: bool,
@@ -43,12 +44,21 @@ struct ChatTool {
 
 pub(super) struct ChatTools {
     tools: PayloadVec<ChatTool>,
+    native: bool,
 }
 
 impl ChatTools {
     pub(super) fn new(budget: PayloadBudget) -> Result<Self, TokenError> {
         Ok(Self {
             tools: PayloadVec::new(budget)?,
+            native: false,
+        })
+    }
+
+    pub(super) fn native(budget: PayloadBudget) -> Result<Self, TokenError> {
+        Ok(Self {
+            native: true,
+            ..Self::new(budget)?
         })
     }
 
@@ -58,17 +68,33 @@ impl ChatTools {
         budget: &PayloadBudget,
     ) -> Result<(), TokenError> {
         let tools = value.as_array().ok_or(TokenError::RedactionFailed)?;
-        for delta in tools {
+        for (position, delta) in tools.iter().enumerate() {
             let index = delta
                 .get("index")
                 .and_then(Value::as_u64)
                 .filter(|index| *index < 128)
                 .ok_or(TokenError::RedactionFailed)? as usize;
-            if index > self.tools.len() {
-                return Err(TokenError::RedactionFailed);
-            }
-            if index == self.tools.len() {
+            let slot = if self.native {
+                if tools[..position]
+                    .iter()
+                    .any(|prior| prior.get("index").and_then(Value::as_u64) == Some(index as u64))
+                {
+                    return Err(TokenError::RedactionFailed);
+                }
+                self.tools
+                    .as_slice()
+                    .iter()
+                    .position(|tool| tool.index == index)
+                    .unwrap_or(self.tools.len())
+            } else {
+                if index > self.tools.len() {
+                    return Err(TokenError::RedactionFailed);
+                }
+                index
+            };
+            if slot == self.tools.len() {
                 self.tools.push(ChatTool {
+                    index,
                     id: None,
                     name: None,
                     function_type: false,
@@ -78,7 +104,7 @@ impl ChatTools {
             }
             let tool = self
                 .tools
-                .get_mut(index)
+                .get_mut(slot)
                 .ok_or(TokenError::RedactionFailed)?;
             if let Some(kind) = delta.get("type").filter(|v| !v.is_null()) {
                 if kind.as_str() != Some("function") {

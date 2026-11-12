@@ -1004,7 +1004,7 @@ fn explicit_reconnect_repairs_partial_menu_without_modifying_login(
     let installed: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
     assert_eq!(
         installed["model"].as_str(),
-        Some(format!("{}-routing-group", group().name).as_str())
+        Some(format!("group/{}", group().id).as_str())
     );
     assert_eq!(
         installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
@@ -1082,7 +1082,7 @@ fn explicit_reconnect_adopts_restored_or_modified_provider_and_preserves_baselin
         assert_eq!(installed["model_provider"].as_str(), Some(PROVIDER));
         assert_eq!(
             installed["model"].as_str(),
-            Some(format!("{}-routing-group", group().name).as_str())
+            Some(format!("group/{}", group().id).as_str())
         );
         assert_eq!(
             installed["model_providers"][PROVIDER]["base_url"].as_str(),
@@ -1994,18 +1994,19 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         &fs::read_to_string(receipt.catalogs.last().expect("catalog path")).expect("catalog"),
     )
     .expect("json");
-    aliases::project(&mut expected, &mut BTreeMap::new()).expect("readable catalog");
+    aliases::project_menu(&mut expected, &mut BTreeMap::new(), Some(&menu))
+        .expect("Magpie catalog");
     assert_eq!(actual, expected);
     let (published_menu, native_catalog) = manager.runtime.native.menu().expect("native snapshot");
     assert_eq!(native_catalog, actual);
     assert_eq!(published_menu.token, menu.token);
-    assert_eq!(actual["models"][0]["slug"], "Exact-group-label");
+    assert_eq!(actual["models"][0]["slug"], "auto/exact-group");
     assert_eq!(
         actual["models"][0]["description"],
         "Routing group description"
     );
     assert_eq!(actual["models"][0]["input_modalities"], json!(["text"]));
-    assert_eq!(actual["models"][1]["slug"], "Exact-direct-label");
+    assert_eq!(actual["models"][1]["slug"], "fixture/balanced-model");
     assert_eq!(actual["models"][1]["display_name"], "Exact direct label");
     assert_eq!(
         actual["models"][1]["supported_reasoning_levels"]
@@ -2054,7 +2055,7 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         .expect("config")
         .parse()
         .expect("toml");
-    assert_eq!(selected["model"].as_str(), Some("Exact-group-label"));
+    assert_eq!(selected["model"].as_str(), Some("auto/exact-group"));
     assert_eq!(
         manager
             .selected_model()
@@ -2069,7 +2070,7 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         .expect("config")
         .parse()
         .expect("toml");
-    assert_eq!(selected["model"].as_str(), Some("Exact-group-label"));
+    assert_eq!(selected["model"].as_str(), Some("auto/exact-group"));
     assert_eq!(
         manager
             .selected_model()

@@ -288,8 +288,13 @@ fn codex_proxy_diagnostic_origin_sanitization() {
 
 #[test]
 fn codex_proxy_diagnostic_login_values_are_only_exact_exported_keys() {
-    let bytes = b"startup noise\0VARY_PROXY_ENV_V1\0HTTP_PROXY\0http://127.0.0.1:7890\n\0NO_PROXY\0127.0.0.1\n\0";
-    let parsed = discovery::parse_login(bytes).expect("synthetic login fixture");
+    // The NUL terminator before the address is explicit: `\0127.0.0.1` would read as an
+    // octal escape and hide which byte the fixture actually intends.
+    let mut bytes =
+        b"startup noise\0VARY_PROXY_ENV_V1\0HTTP_PROXY\0http://127.0.0.1:7890\n\0NO_PROXY\0"
+            .to_vec();
+    bytes.extend_from_slice(b"127.0.0.1\n\0");
+    let parsed = discovery::parse_login(&bytes).expect("synthetic login fixture");
     let mut process = env(&[
         ("HTTP_PROXY", "http://127.0.0.1:7892"),
         ("ALL_PROXY", "http://127.0.0.1:7891"),

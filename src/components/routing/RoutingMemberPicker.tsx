@@ -88,6 +88,11 @@ export function RoutingMemberPicker({
       provider.models.push({ id: member.modelId, name: member.modelId });
     }
   }
+  const providerNameCounts = new Map<string, number>();
+  for (const provider of sections) {
+    const key = provider.name.trim().toLocaleLowerCase();
+    providerNameCounts.set(key, (providerNameCounts.get(key) ?? 0) + 1);
+  }
   return (
     <div className="rt-member-picker">
       <div className="rt-member-picker-actions">
@@ -125,6 +130,12 @@ export function RoutingMemberPicker({
             providerId: provider.id,
             modelId: model.id,
           }));
+          const providerNameKey = provider.name.trim().toLocaleLowerCase();
+          const duplicateName =
+            (providerNameCounts.get(providerNameKey) ?? 0) > 1;
+          const providerLabel = duplicateName
+            ? `${provider.name} · ${provider.id}`
+            : provider.name;
           const count = choices.filter((choice) =>
             selected.has(routingMemberKey(choice)),
           ).length;
@@ -167,6 +178,7 @@ export function RoutingMemberPicker({
                     aria-label={accountText(provider.name)}
                     aria-expanded={expanded}
                     aria-controls={modelsId}
+                    title={accountText(providerLabel)}
                     onClick={() =>
                       setFolded((previous) => {
                         const next = new Set(previous);
@@ -182,6 +194,11 @@ export function RoutingMemberPicker({
                       size={14}
                     />
                     <AccountLabel>{provider.name}</AccountLabel>
+                    {duplicateName && (
+                      <span className="rt-provider-models-id">
+                        · {provider.id}
+                      </span>
+                    )}
                     {provider.appType && (
                       <span className="rt-provider-models-agent">
                         {provider.appType}

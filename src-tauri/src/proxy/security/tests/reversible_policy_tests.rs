@@ -1,7 +1,10 @@
 //! Synthetic-only tests for atomic restoration policy admission and publication.
 use super::{
     restoration_policy::{DlpPolicyGate, RestorationPolicy},
-    runtime::{CompiledCustomRule, SecurityRuntimeConfig},
+    runtime::{
+        admit_security_runtime, get_security_runtime, set_security_runtime_for_test,
+        CompiledCustomRule, SecurityRuntimeConfig,
+    },
     tokenization::TokenError,
     types::{AuditAction, RiskLevel},
 };
@@ -275,4 +278,35 @@ fn rule_type_removal_and_recreation_close_the_previous_generation() -> Result<()
         .publish(runtime(true), policy(true, &rules, &HashMap::new(), 1))?;
     assert_eq!(gate.admit()?.restoration_policy_revision, 4);
     Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn synthetic_runtime_install_never_closes_admission_for_a_parallel_reader() {
+    // The global gate is shared by every test that installs a synthetic runtime, and
+    // `begin_update` closes admission on purpose. Building the test install on it left a
+    // window where an unrelated test's `admit` saw `Unavailable`.
+    struct RestoreRuntime(SecurityRuntimeConfig);
+    impl Drop for RestoreRuntime {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = RestoreRuntime((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
+
+    const ROUNDS: usize = 2000;
+    let writer = std::thread::spawn(|| {
+        for _ in 0..ROUNDS {
+            set_security_runtime_for_test(SecurityRuntimeConfig::default());
+        }
+    });
+    let mut closed = 0usize;
+    for _ in 0..ROUNDS {
+        if admit_security_runtime().is_err() {
+            closed += 1;
+        }
+    }
+    writer.join().expect("synthetic install thread");
+    assert_eq!(closed, 0, "synthetic_install_closed_admission");
 }

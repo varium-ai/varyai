@@ -9,6 +9,7 @@ pub(crate) enum CompletionObservation<'a> {
     RawJson(&'a str),
     ChatChunk(&'a Value),
     ChatDone,
+    GeminiChunk(&'a Value),
     AnthropicEvent {
         event_name: Option<&'a str>,
         data: &'a Value,
@@ -131,6 +132,20 @@ impl<'a> AnthropicCompletionReason<'a> {
     }
 }
 
+/// Gemini STOP is the only initial completed-record terminal reason.
+/// MAX_TOKENS, blocked, unknown and absent reasons never grant completion.
+pub(crate) struct GeminiCompletionReason<'a>(Option<&'a str>);
+
+impl<'a> GeminiCompletionReason<'a> {
+    pub(crate) fn new(reason: Option<&'a str>) -> Self {
+        Self(reason)
+    }
+
+    pub(crate) fn permits_completion(&self) -> bool {
+        self.0 == Some("STOP")
+    }
+}
+
 /// Classifies a borrowed original Responses event, never a converted event.
 pub(crate) struct NativeCompletionEvent<'a> {
     event_name: &'a str,
@@ -170,6 +185,7 @@ impl<'a> NativeCompletionEvent<'a> {
 enum SseProtocol {
     Chat,
     Anthropic,
+    Gemini,
 }
 
 /// Converter lifecycle extracted from the legacy finalization bit. This is not
@@ -192,7 +208,21 @@ pub(crate) struct SseCompletion {
     pending_raw: Option<super::payload_json::PayloadJson>,
     pending_done: bool,
     chat_tools: Option<super::completion_tools::ChatTools>,
+    native_chat: bool,
+    native_choices: Option<super::payload_metadata::PayloadVec<NativeChatChoice>>,
+    gemini_candidates: Option<super::payload_metadata::PayloadVec<NativeGeminiCandidate>>,
     anthropic_tools: Option<super::completion_tools::AnthropicTools>,
+}
+
+struct NativeChatChoice {
+    index: u64,
+    terminal: bool,
+    tools: Option<super::completion_tools::ChatTools>,
+}
+
+struct NativeGeminiCandidate {
+    index: u64,
+    terminal: bool,
 }
 
 impl SseCompletion {
@@ -215,6 +245,9 @@ impl SseCompletion {
             pending_raw: None,
             pending_done: false,
             chat_tools: None,
+            native_chat: false,
+            native_choices: None,
+            gemini_candidates: None,
             anthropic_tools: None,
         }
     }
@@ -223,8 +256,20 @@ impl SseCompletion {
         Self::new(SseProtocol::Chat)
     }
 
+    /// Explicit native mechanics; the conversion observer keeps its original limits.
+    pub(super) fn native_chat() -> Self {
+        Self {
+            native_chat: true,
+            ..Self::chat()
+        }
+    }
+
     pub(crate) fn anthropic() -> Self {
         Self::new(SseProtocol::Anthropic)
+    }
+
+    pub(super) fn gemini() -> Self {
+        Self::new(SseProtocol::Gemini)
     }
 
     pub(super) fn has_unsupported_carrier(&self) -> bool {
@@ -259,6 +304,10 @@ impl SseCompletion {
                 self.pending_done = false;
                 self.chat_done = true;
             }
+            (SseProtocol::Gemini, CompletionObservation::GeminiChunk(data)) => {
+                self.consume_raw(data);
+                self.invalid |= self.gemini_chunk(data, budget).is_err();
+            }
             (
                 SseProtocol::Anthropic,
                 CompletionObservation::AnthropicEvent { event_name, data },
@@ -283,9 +332,16 @@ impl SseCompletion {
                 | CompletionObservation::BufferedBodyEnd { .. },
             )
             | (SseProtocol::Chat, CompletionObservation::AnthropicEvent { .. })
+            | (SseProtocol::Chat | SseProtocol::Anthropic, CompletionObservation::GeminiChunk(_))
             | (
                 SseProtocol::Anthropic,
                 CompletionObservation::ChatChunk(_) | CompletionObservation::ChatDone,
+            )
+            | (
+                SseProtocol::Gemini,
+                CompletionObservation::ChatChunk(_)
+                | CompletionObservation::ChatDone
+                | CompletionObservation::AnthropicEvent { .. },
             ) => self.invalid = true,
             (_, CompletionObservation::EntityEnd { .. }) => {}
         }
@@ -333,14 +389,15 @@ impl SseCompletion {
             }
         }
         if data_count == 0 {
-            return if event_name.is_none() {
+            return if event_name.is_none() || self.native_chat {
                 Ok(())
             } else {
                 Err(TokenError::RedactionFailed)
             };
         }
-        if matches!(self.protocol, SseProtocol::Chat)
-            && event_name.is_some_and(|name| !matches!(name, "" | "message"))
+        if (matches!(self.protocol, SseProtocol::Chat)
+            && event_name.is_some_and(|name| !matches!(name, "" | "message")))
+            || (matches!(self.protocol, SseProtocol::Gemini) && event_name.is_some())
         {
             return Err(TokenError::RedactionFailed);
         }
@@ -407,6 +464,10 @@ impl SseCompletion {
             self.invalid = true;
             return;
         }
+        if self.native_chat {
+            self.invalid |= self.native_chat_chunk(data, budget).is_err();
+            return;
+        }
         let Some(choices) = data.get("choices").and_then(Value::as_array) else {
             self.invalid = true;
             return;
@@ -470,6 +531,208 @@ impl SseCompletion {
                 };
             self.terminal = true;
         }
+    }
+
+    fn native_chat_chunk(
+        &mut self,
+        data: &Value,
+        budget: &super::payload_budget::PayloadBudget,
+    ) -> Result<(), super::tokenization::TokenError> {
+        use super::{
+            completion_tools::ChatTools, payload_metadata::PayloadVec, tokenization::TokenError,
+        };
+        let choices = data
+            .get("choices")
+            .and_then(Value::as_array)
+            .ok_or(TokenError::RedactionFailed)?;
+        if choices.is_empty() {
+            return if data.get("usage").is_some_and(Value::is_object) {
+                Ok(())
+            } else {
+                Err(TokenError::RedactionFailed)
+            };
+        }
+        if choices.len() > 128 {
+            return Err(TokenError::CapacityExceeded);
+        }
+        if self.native_choices.is_none() {
+            self.native_choices = Some(PayloadVec::new(budget.clone())?);
+        }
+        let states = self
+            .native_choices
+            .as_mut()
+            .ok_or(TokenError::RedactionFailed)?;
+        for (position, choice) in choices.iter().enumerate() {
+            let index = choice
+                .get("index")
+                .and_then(Value::as_u64)
+                .filter(|index| *index < 128)
+                .ok_or(TokenError::RedactionFailed)?;
+            if choices[..position]
+                .iter()
+                .any(|prior| prior.get("index").and_then(Value::as_u64) == Some(index))
+            {
+                return Err(TokenError::RedactionFailed);
+            }
+            let slot = states
+                .as_slice()
+                .iter()
+                .position(|state| state.index == index)
+                .unwrap_or(states.len());
+            if slot == states.len() {
+                if states.len() >= 128 {
+                    return Err(TokenError::CapacityExceeded);
+                }
+                states.push(NativeChatChoice {
+                    index,
+                    terminal: false,
+                    tools: None,
+                })?;
+            }
+            let state = states.get_mut(slot).ok_or(TokenError::RedactionFailed)?;
+            if state.terminal {
+                return Err(TokenError::RedactionFailed);
+            }
+            let delta = choice
+                .get("delta")
+                .and_then(Value::as_object)
+                .ok_or(TokenError::RedactionFailed)?;
+            if !super::completion_json::native_chat_carriers_supported(delta, true) {
+                self.unsupported_carrier = true;
+                return Err(TokenError::RedactionFailed);
+            }
+            if delta
+                .get("role")
+                .filter(|value| !value.is_null())
+                .is_some_and(|value| value.as_str() != Some("assistant"))
+                || delta
+                    .get("function_call")
+                    .is_some_and(|value| !value.is_null())
+            {
+                return Err(TokenError::RedactionFailed);
+            }
+            if let Some(tools) = delta.get("tool_calls").filter(|value| !value.is_null()) {
+                if state.tools.is_none() {
+                    state.tools = Some(ChatTools::native(budget.clone())?);
+                }
+                state
+                    .tools
+                    .as_mut()
+                    .ok_or(TokenError::RedactionFailed)?
+                    .observe(tools, budget)?;
+            }
+            if let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null()) {
+                if !ChatCompletionReason::new(reason.as_str()).permits_completion() {
+                    return Err(TokenError::RedactionFailed);
+                }
+                let tool_reason = matches!(reason.as_str(), Some("tool_calls" | "function_call"));
+                match &state.tools {
+                    Some(tools) => tools.finish(tool_reason, budget)?,
+                    None if tool_reason => return Err(TokenError::RedactionFailed),
+                    None => {}
+                }
+                state.terminal = true;
+            }
+        }
+        self.started = true;
+        self.terminal = states.as_slice().iter().all(|state| state.terminal);
+        self.allowed_reason = self.terminal;
+        Ok(())
+    }
+
+    fn gemini_chunk(
+        &mut self,
+        data: &Value,
+        budget: &super::payload_budget::PayloadBudget,
+    ) -> Result<(), super::tokenization::TokenError> {
+        use super::{payload_metadata::PayloadVec, tokenization::TokenError};
+
+        let object = data.as_object().ok_or(TokenError::RedactionFailed)?;
+        if object.get("error").is_some_and(|error| !error.is_null())
+            || data
+                .pointer("/promptFeedback/blockReason")
+                .is_some_and(|reason| !reason.is_null())
+        {
+            return Err(TokenError::RedactionFailed);
+        }
+        // Usage-only frames carry protocol metadata without a candidates field;
+        // present-but-empty or non-array candidates are malformed, not usage-only.
+        let candidates = match object.get("candidates") {
+            None => {
+                return if object.get("usageMetadata").is_some_and(Value::is_object) {
+                    Ok(())
+                } else {
+                    Err(TokenError::RedactionFailed)
+                };
+            }
+            Some(value) => value.as_array().ok_or(TokenError::RedactionFailed)?,
+        };
+        if candidates.is_empty() {
+            return Err(TokenError::RedactionFailed);
+        }
+        if candidates.len() > 128 {
+            return Err(TokenError::CapacityExceeded);
+        }
+        if self.gemini_candidates.is_none() {
+            self.gemini_candidates = Some(PayloadVec::new(budget.clone())?);
+        }
+        let states = self
+            .gemini_candidates
+            .as_mut()
+            .ok_or(TokenError::RedactionFailed)?;
+        for (position, candidate) in candidates.iter().enumerate() {
+            let candidate = candidate.as_object().ok_or(TokenError::RedactionFailed)?;
+            let index = candidate
+                .get("index")
+                .and_then(Value::as_u64)
+                .filter(|index| *index < 128)
+                .ok_or(TokenError::RedactionFailed)?;
+            if candidates[..position]
+                .iter()
+                .any(|prior| prior.get("index").and_then(Value::as_u64) == Some(index))
+            {
+                return Err(TokenError::RedactionFailed);
+            }
+            let content = candidate.get("content");
+            let reason = candidate.get("finishReason");
+            if content.is_none() && reason.is_none_or(Value::is_null) {
+                return Err(TokenError::RedactionFailed);
+            }
+            if let Some(content) = content {
+                super::completion_json::validate_gemini_content(
+                    content,
+                    &mut self.unsupported_carrier,
+                )?;
+            }
+            let slot = states
+                .as_slice()
+                .iter()
+                .position(|state| state.index == index)
+                .unwrap_or(states.len());
+            if slot == states.len() {
+                if states.len() >= 128 {
+                    return Err(TokenError::CapacityExceeded);
+                }
+                states.push(NativeGeminiCandidate {
+                    index,
+                    terminal: false,
+                })?;
+            }
+            let state = states.get_mut(slot).ok_or(TokenError::RedactionFailed)?;
+            if state.terminal {
+                return Err(TokenError::RedactionFailed);
+            }
+            if let Some(reason) = reason.filter(|reason| !reason.is_null()) {
+                if !GeminiCompletionReason::new(reason.as_str()).permits_completion() {
+                    return Err(TokenError::RedactionFailed);
+                }
+                state.terminal = true;
+            }
+        }
+        self.started = !states.as_slice().is_empty();
+        self.terminal = self.started && states.as_slice().iter().all(|state| state.terminal);
+        self.allowed_reason = self.terminal;
+        Ok(())
     }
 
     fn anthropic_event(

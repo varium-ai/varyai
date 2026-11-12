@@ -181,11 +181,15 @@ mod tests {
         );
         assert_eq!(
             installed["providerInstances"]["varyai"]["config"]["customModels"][0]["slug"],
-            "Example"
+            "vary-provider/example"
         );
         assert_eq!(
             installed["defaultModelSelection"],
-            json!({"instanceId":"varyai","model":"Example"})
+            json!({"instanceId":"varyai","model":"vary-provider/example"})
+        );
+        assert_eq!(
+            installed["providerInstances"]["varyai"]["config"]["customModels"][0]["name"],
+            "Example"
         );
         let home = std::path::PathBuf::from(
             installed["providerInstances"]["varyai"]["config"]["homePath"]

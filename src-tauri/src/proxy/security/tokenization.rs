@@ -296,7 +296,17 @@ impl MappingIndex {
     }
 }
 
-type ContextTable = StoreVec<super::completed_context::ContextEntry>;
+// Hidden records have no readable clones; only visible records may be snapshotted.
+struct ContextSlot {
+    record: super::completed_context::ContextEntry,
+    serial: u64,
+    visible: bool,
+    owners: usize,
+    charge: Charge,
+    entries: usize,
+}
+
+type ContextTable = StoreVec<Option<ContextSlot>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HistoryPolicySource {
@@ -316,6 +326,7 @@ impl HistoryPolicySource {
 }
 
 struct Namespace {
+    scope: super::restoration_contract::ContinuityScope,
     identity: Option<[u8; 32]>,
     policy_revision: u64,
     history_policy: HistoryPolicySource,
@@ -323,6 +334,9 @@ struct Namespace {
     key: [u8; 32],
     version: u64,
     active_leases: usize,
+    publication_pins: usize,
+    next_context_serial: u64,
+    pending_context_entries: usize,
     last_used: Instant,
     mappings: MappingIndex,
     contexts: Option<ContextTable>,
@@ -394,6 +408,7 @@ struct StoreState {
     // Retained namespace slots remain charged at their high-water slot count.
     namespace_index_slots: usize,
     context_entries: usize,
+    pending_context_entries: usize,
     committed: Charge,
     reserved: Charge,
     unavailable: bool,
@@ -435,6 +450,363 @@ struct Reservation {
     namespace: Option<u64>,
     charge: Charge,
     active: bool,
+}
+
+// No record reference or store-owning reservation is retained in a slot.
+struct PendingContext {
+    store: DlpTokenStore,
+    handle: super::completed_context::CompletedContextHandle,
+    serial: u64,
+    charge: Charge,
+    _backing: super::token_store_owners::AllocationReservation,
+    active: bool,
+}
+
+impl PendingContext {
+    fn activate(mut self) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
+        let mut state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.handle.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.generation != self.handle.generation
+            || ns.policy_revision != self.handle.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let slot = ns
+            .contexts
+            .as_ref()
+            .and_then(|slots| {
+                slots
+                    .as_slice()
+                    .iter()
+                    .flatten()
+                    .find(|slot| slot.serial == self.serial)
+            })
+            .ok_or(TokenError::ContextUnavailable)?;
+        let record = slot.record.get()?;
+        if record.evidence.identity() != self.handle.evidence
+            || record.provider_fingerprint != self.handle.provider_fingerprint
+            || record.policy_revision != self.handle.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        if slot.owners == 0 {
+            return Err(TokenError::Unavailable);
+        }
+        let record_charge = if slot.visible {
+            Charge::default()
+        } else {
+            slot.charge
+        };
+        let entries = if slot.visible { 0 } else { slot.entries };
+        let refund = record_charge.add(self.charge)?;
+        let reserved = state.reserved.subtract(refund)?;
+        let committed = state.committed.add(record_charge)?;
+        let pending = state
+            .pending_context_entries
+            .checked_sub(entries)
+            .ok_or(TokenError::Unavailable)?;
+        let count = state
+            .context_entries
+            .checked_add(entries)
+            .ok_or(TokenError::Unavailable)?;
+        let ns_reserved = ns.reserved.subtract(refund)?;
+        let ns_committed = ns.committed.add(record_charge)?;
+        let ns_pending = ns
+            .pending_context_entries
+            .checked_sub(entries)
+            .ok_or(TokenError::Unavailable)?;
+        let ns_count = ns
+            .context_entries
+            .checked_add(entries)
+            .ok_or(TokenError::Unavailable)?;
+        let pins = ns
+            .publication_pins
+            .checked_sub(1)
+            .ok_or(TokenError::Unavailable)?;
+        let ns = state
+            .namespaces
+            .get_mut(&self.handle.namespace)
+            .ok_or(TokenError::Unavailable)?;
+        let slot = ns
+            .contexts
+            .as_mut()
+            .and_then(|slots| {
+                slots
+                    .as_mut_slice()
+                    .iter_mut()
+                    .flatten()
+                    .find(|slot| slot.serial == self.serial)
+            })
+            .ok_or(TokenError::Unavailable)?;
+        slot.visible = true;
+        slot.owners -= 1;
+        ns.reserved = ns_reserved;
+        ns.committed = ns_committed;
+        ns.pending_context_entries = ns_pending;
+        ns.context_entries = ns_count;
+        ns.publication_pins = pins;
+        ns.last_used = Instant::now();
+        state.reserved = reserved;
+        state.committed = committed;
+        state.pending_context_entries = pending;
+        state.context_entries = count;
+        self.active = false;
+        Ok(self.handle.clone())
+    }
+}
+
+// The pending owner cannot activate without the matching sealed continuation.
+pub(super) struct PendingPublication {
+    context: PendingContext,
+    release: super::response_restoration::ReleaseIdentity,
+}
+impl PendingPublication {
+    pub(super) fn activate(
+        self,
+        resume: super::response_restoration::DeliveryResume,
+    ) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
+        if !resume.matches(&self.release) {
+            return Err(TokenError::ContextUnavailable);
+        }
+        self.context.activate()
+    }
+    #[cfg(test)]
+    pub(super) fn activate_fixture(
+        self,
+    ) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
+        self.context.activate()
+    }
+}
+
+// Drop the detached payload before releasing its reservation and last expiry pin.
+struct RetiredContext {
+    _slot: Option<ContextSlot>,
+    _release: ContextCleanup,
+}
+struct ContextCleanup {
+    store: DlpTokenStore,
+    namespace: u64,
+    generation: [u8; 16],
+    charge: Charge,
+    entries: usize,
+}
+impl Drop for ContextCleanup {
+    fn drop(&mut self) {
+        let Ok(inner) = self.store.inner() else {
+            return;
+        };
+        // Cleanup is allowed for an unavailable store, never a poisoned one.
+        let Ok(mut state) = inner.state.lock() else {
+            return;
+        };
+        let result = (|| {
+            let reserved = state.reserved.subtract(self.charge)?;
+            let pending = state
+                .pending_context_entries
+                .checked_sub(self.entries)
+                .ok_or(TokenError::Unavailable)?;
+            let ns = state
+                .namespaces
+                .get_mut(&self.namespace)
+                .ok_or(TokenError::Unavailable)?;
+            if ns.generation != self.generation {
+                return Err(TokenError::Unavailable);
+            }
+            let ns_reserved = ns.reserved.subtract(self.charge)?;
+            let ns_pending = ns
+                .pending_context_entries
+                .checked_sub(self.entries)
+                .ok_or(TokenError::Unavailable)?;
+            let pins = ns
+                .publication_pins
+                .checked_sub(1)
+                .ok_or(TokenError::Unavailable)?;
+            ns.reserved = ns_reserved;
+            ns.pending_context_entries = ns_pending;
+            ns.publication_pins = pins;
+            ns.last_used = Instant::now();
+            state.reserved = reserved;
+            state.pending_context_entries = pending;
+            Ok::<_, TokenError>(())
+        })();
+        if result.is_err() {
+            state.unavailable = true;
+        }
+    }
+}
+impl Drop for PendingContext {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let Ok(inner) = self.store.inner() else {
+            return;
+        };
+        let Ok(mut state) = inner.state.lock() else {
+            return;
+        };
+        let Some(ns) = state.namespaces.get_mut(&self.handle.namespace) else {
+            return;
+        };
+        if ns.generation != self.handle.generation {
+            return;
+        }
+        let Some(entry) = ns.contexts.as_mut().and_then(|slots| {
+            slots.as_mut_slice().iter_mut().find(|entry| {
+                entry
+                    .as_ref()
+                    .is_some_and(|slot| slot.serial == self.serial)
+            })
+        }) else {
+            return;
+        };
+        let Some(slot) = entry.as_mut() else {
+            return;
+        };
+        let Some(owners) = slot.owners.checked_sub(1) else {
+            state.unavailable = true;
+            return;
+        };
+        slot.owners = owners;
+        let detached = if !slot.visible && owners == 0 {
+            entry.take()
+        } else {
+            None
+        };
+        let charge = match detached
+            .as_ref()
+            .map_or(Ok(self.charge), |slot| self.charge.add(slot.charge))
+        {
+            Ok(charge) => charge,
+            Err(_) => {
+                state.unavailable = true;
+                return;
+            }
+        };
+        let retired = RetiredContext {
+            _release: ContextCleanup {
+                store: self.store.clone(),
+                namespace: self.handle.namespace,
+                generation: self.handle.generation,
+                charge,
+                entries: detached.as_ref().map_or(0, |slot| slot.entries),
+            },
+            _slot: detached,
+        };
+        drop(state);
+        #[cfg(test)]
+        publication_test_support::retiring();
+        drop(retired);
+        self.active = false;
+    }
+}
+
+#[cfg(test)]
+pub(super) mod publication_test_support {
+    use super::*;
+    use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+
+    type Hook = Box<dyn FnOnce()>;
+    thread_local! { static RETIRING: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
+
+    pub(in super::super) struct Guard {
+        previous: Option<Hook>,
+        _bound: PhantomData<Rc<()>>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RETIRING.with(|hook| hook.replace(self.previous.take()));
+        }
+    }
+    pub(in super::super) fn before_retirement(hook: impl FnOnce() + 'static) -> Guard {
+        Guard {
+            previous: RETIRING.with(|slot| slot.replace(Some(Box::new(hook)))),
+            _bound: PhantomData,
+        }
+    }
+    pub(super) fn retiring() {
+        if let Some(hook) = RETIRING.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+    }
+    // Cleanup-only snapshots remain readable when the public store is unavailable.
+    pub(in super::super) fn counts(
+        store: &DlpTokenStore,
+    ) -> Result<(usize, usize, usize, usize), TokenError> {
+        let state = store
+            .inner()?
+            .state
+            .lock()
+            .map_err(|_| TokenError::Unavailable)?;
+        Ok((
+            state.context_entries,
+            state.pending_context_entries,
+            state
+                .namespaces
+                .values()
+                .map(|ns| ns.publication_pins)
+                .sum(),
+            state.reserved.metadata_bytes,
+        ))
+    }
+    pub(in super::super) fn unavailable(store: &DlpTokenStore) -> Result<(), TokenError> {
+        store
+            .inner()?
+            .state
+            .lock()
+            .map_err(|_| TokenError::Unavailable)?
+            .unavailable = true;
+        Ok(())
+    }
+    pub(in super::super) fn set_next_serial(
+        lease: &DlpRequestLease,
+        serial: u64,
+    ) -> Result<(), TokenError> {
+        lease
+            .store
+            .lock()?
+            .namespaces
+            .get_mut(&lease.namespace)
+            .ok_or(TokenError::Unavailable)?
+            .next_context_serial = serial;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(super) struct PendingContextForTest(PendingContext);
+#[cfg(test)]
+impl PendingContextForTest {
+    pub(super) fn activate(
+        self,
+    ) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
+        self.0.activate()
+    }
+}
+#[cfg(test)]
+impl DlpRequestLease {
+    pub(super) fn prepare_context_for_test(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        response_id: &str,
+        calls: &[super::completed_context::CompletedCallSpec<'_>],
+        opaques: &[&str],
+    ) -> Result<PendingContextForTest, TokenError> {
+        self.prepare_completed_context(
+            binding,
+            response_id,
+            &[],
+            super::completed_context::CompletedCallPublications {
+                originals: calls,
+                delivered: &[],
+            },
+            opaques,
+        )
+        .map(PendingContextForTest)
+    }
 }
 
 impl DlpTokenStore {
@@ -566,8 +938,42 @@ impl DlpTokenStore {
         )
     }
 
+    /// Namespace isolation only; this entry does not enable a route or publish evidence.
+    pub(super) fn admit_scoped_published_policy(
+        &self,
+        scope: super::restoration_contract::ContinuityScope,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+    ) -> Result<DlpRequestLease, TokenError> {
+        self.admit_scoped_with_history_policy(
+            scope,
+            app,
+            session,
+            policy_revision,
+            HistoryPolicySource::Published,
+        )
+    }
+
     fn admit_with_history_policy(
         &self,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+        history_policy: HistoryPolicySource,
+    ) -> Result<DlpRequestLease, TokenError> {
+        self.admit_scoped_with_history_policy(
+            super::restoration_contract::ContinuityScope::LegacyResponses,
+            app,
+            session,
+            policy_revision,
+            history_policy,
+        )
+    }
+
+    fn admit_scoped_with_history_policy(
+        &self,
+        scope: super::restoration_contract::ContinuityScope,
         app: &str,
         session: Option<&str>,
         policy_revision: u64,
@@ -585,7 +991,7 @@ impl DlpTokenStore {
                     .any(|ch| ch.is_whitespace() || ch.is_control())
         });
         let identity = match session {
-            Some(session) => Some(self.identity_fingerprint(app, session)?),
+            Some(session) => Some(self.scoped_identity_fingerprint(scope, app, session)?),
             None => {
                 // Initialization failure must not silently admit anonymous requests.
                 self.identity_key()?;
@@ -609,6 +1015,7 @@ impl DlpTokenStore {
             let existing = identity.and_then(|identity| {
                 state.namespaces.iter().find_map(|(id, namespace)| {
                     (namespace.identity == Some(identity)
+                        && namespace.scope == scope
                         && namespace.policy_revision == policy_revision
                         && namespace.history_policy == history_policy)
                         .then_some(*id)
@@ -687,6 +1094,7 @@ impl DlpTokenStore {
                 .ok_or(TokenError::Unavailable)?;
             let committed = state.committed.add(total_charge)?;
             let namespace = Namespace {
+                scope,
                 identity,
                 policy_revision,
                 history_policy,
@@ -694,6 +1102,9 @@ impl DlpTokenStore {
                 key,
                 version: 0,
                 active_leases: 1,
+                publication_pins: 0,
+                next_context_serial: 0,
+                pending_context_entries: 0,
                 last_used: Instant::now(),
                 mappings: MappingIndex::default(),
                 contexts: None,
@@ -765,6 +1176,7 @@ impl DlpTokenStore {
                     .enumerate()
                     .find_map(|(index, (_, namespace))| {
                         (namespace.active_leases == 0
+                            && namespace.publication_pins == 0
                             && now.saturating_duration_since(namespace.last_used) >= idle_ttl)
                             .then_some((index, namespace.committed, namespace.context_entries))
                     });
@@ -870,6 +1282,11 @@ impl DlpTokenStore {
     }
 
     #[cfg(test)]
+    pub(super) fn context_slot_bytes_for_test(&self) -> usize {
+        std::mem::size_of::<Option<ContextSlot>>()
+    }
+
+    #[cfg(test)]
     pub(super) fn mapping_backing_bytes_for_test(&self) -> Result<usize, TokenError> {
         super::token_store_owners::arc_backing_bytes::<Mapping>()
     }
@@ -930,7 +1347,21 @@ impl DlpTokenStore {
             .map_err(|error| *error)
     }
 
+    #[cfg(test)]
     fn identity_fingerprint(&self, app: &str, session: &str) -> Result<[u8; 32], TokenError> {
+        self.scoped_identity_fingerprint(
+            super::restoration_contract::ContinuityScope::LegacyResponses,
+            app,
+            session,
+        )
+    }
+
+    fn scoped_identity_fingerprint(
+        &self,
+        scope: super::restoration_contract::ContinuityScope,
+        app: &str,
+        session: &str,
+    ) -> Result<[u8; 32], TokenError> {
         let key = self.identity_key()?;
         #[cfg(test)]
         {
@@ -940,7 +1371,23 @@ impl DlpTokenStore {
                 state_unlocked,
             )?;
         }
-        namespace_identity_digest(key, app, session)
+        use super::restoration_contract::{ContinuityScope, IngressNamespace};
+        match scope {
+            ContinuityScope::LegacyResponses => namespace_identity_digest(key, app, session),
+            ContinuityScope::Native { client, ingress } => super::completed_context::keyed_digest(
+                key,
+                b"vary-dlp-native-namespace-identity-v1\0",
+                &[
+                    app.as_bytes(),
+                    session.as_bytes(),
+                    client.protocol().format().as_bytes(),
+                    match ingress {
+                        IngressNamespace::Direct => b"direct",
+                        IngressNamespace::Gateway => b"gateway",
+                    },
+                ],
+            ),
+        }
     }
 
     #[cfg(test)]
@@ -1029,6 +1476,15 @@ impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.active {
             return;
+        }
+        #[cfg(test)]
+        if let Ok(ledger) = self.store.allocation_ledger() {
+            let _ = super::token_store_owners::test_support::emit(
+                super::token_store_owners::test_support::Kind::Vector,
+                super::token_store_owners::test_support::Phase::BeforeDrop,
+                self.charge.metadata_bytes,
+                &ledger,
+            );
         }
         let Ok(inner) = self.store.inner() else {
             return;
@@ -1683,6 +2139,111 @@ impl DlpRequestLease {
         Ok(self.store.inner()? as *const StoreInner as usize)
     }
 
+    /// Namespace validation only: no route grant or historical authority.
+    pub(super) fn require_native_request_scope(
+        &self,
+        client: super::restoration_contract::ClientProtocol,
+    ) -> Result<(), TokenError> {
+        use super::restoration_contract::ContinuityScope;
+        let state = self.store.lock()?;
+        let namespace = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if !matches!(namespace.scope, ContinuityScope::Native { client: actual, .. } if actual == client)
+            || namespace.generation != self.generation
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
+    /// Current-request binding validation is independent of optional history publication.
+    pub(super) fn require_native_attempt_binding(
+        &self,
+        client: super::restoration_contract::ClientProtocol,
+        binding: &super::completed_context::ActualAttemptBinding,
+    ) -> Result<(), TokenError> {
+        use super::restoration_contract::ContinuityScope;
+
+        let state = self.store.lock()?;
+        let namespace = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if !matches!(namespace.scope, ContinuityScope::Native { client: actual, .. } if actual == client)
+            || namespace.generation != self.generation
+            || binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+            || binding.policy_revision != namespace.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
+    /// Current request only; no route support or historical authority is implied.
+    pub(super) fn require_current_attempt_binding(
+        &self,
+        client: super::restoration_contract::ClientProtocol,
+        binding: &super::completed_context::ActualAttemptBinding,
+    ) -> Result<(), TokenError> {
+        use super::restoration_contract::ContinuityScope;
+        if client.protocol() != crate::proxy::protocol_bridge::Protocol::Responses {
+            return self.require_native_attempt_binding(client, binding);
+        }
+        let state = self.store.lock()?;
+        let namespace = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if namespace.scope != ContinuityScope::LegacyResponses
+            || namespace.generation != self.generation
+            || binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+            || binding.policy_revision != namespace.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_responses_request_scope(&self) -> Result<(), TokenError> {
+        let state = self.store.lock()?;
+        let namespace = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if namespace.scope != super::restoration_contract::ContinuityScope::LegacyResponses
+            || namespace.generation != self.generation
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
+    fn require_responses_scope(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+    ) -> Result<(), TokenError> {
+        let state = self.store.lock()?;
+        let namespace = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if namespace.scope != super::restoration_contract::ContinuityScope::LegacyResponses
+            || namespace.generation != self.generation
+            || binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn history_binding_for_test(
         &self,
@@ -1742,7 +2303,10 @@ impl DlpRequestLease {
                 .namespaces
                 .get(&self.namespace)
                 .ok_or(TokenError::ContextUnavailable)?;
-            if ns.generation != self.generation {
+            if ns.generation != self.generation
+                || (operation.is_some()
+                    && ns.scope != super::restoration_contract::ContinuityScope::LegacyResponses)
+            {
                 return Err(TokenError::ContextUnavailable);
             }
             (ns.policy_revision, ns.identity.is_some())
@@ -1769,6 +2333,7 @@ impl DlpRequestLease {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn publish_completed_context_extracted(
         &self,
         binding: &super::completed_context::ActualAttemptBinding,
@@ -1777,11 +2342,655 @@ impl DlpRequestLease {
         publications: super::completed_context::CompletedCallPublications<'_>,
         opaques: &[&str],
     ) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
+        self.prepare_completed_context(binding, response_id, output_tokens, publications, opaques)?
+            .activate()
+    }
+
+    pub(super) fn prepare_publication(
+        &self,
+        spec: super::response_restoration::PublicationSpec<'_>,
+    ) -> Result<PendingPublication, TokenError> {
+        let view = spec.view();
+        let context = self.prepare_completed_context(
+            view.binding,
+            view.response_id,
+            view.output_tokens,
+            view.calls,
+            view.opaques,
+        )?;
+        Ok(PendingPublication {
+            context,
+            release: spec.release_identity(),
+        })
+    }
+
+    /// Only the consuming finalizer can supply the sealed native specification.
+    pub(super) fn prepare_native_publication(
+        &self,
+        spec: super::response_restoration::NativePublicationSpec<'_>,
+    ) -> Result<PendingPublication, TokenError> {
+        use super::completed_context::{
+            native_delivered_evidence, CompletedContextRecord, CONTEXT_ENTRY_METADATA,
+        };
+        use super::restoration_contract::ContinuityScope;
+
+        let view = spec.view();
+        self.require_native_attempt_binding(view.client, view.binding)?;
+        if view.binding.operation_lineage.is_some() {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let ingress = {
+            let state = self.store.lock()?;
+            let ns = state
+                .namespaces
+                .get(&self.namespace)
+                .ok_or(TokenError::ContextUnavailable)?;
+            match ns.scope {
+                ContinuityScope::Native { client, ingress } if client == view.client => ingress,
+                _ => return Err(TokenError::ContextUnavailable),
+            }
+        };
+        let limits = &self.store.inner()?.limits;
+        if view.output_tokens.len() > limits.entries_per_namespace {
+            return Err(TokenError::CapacityExceeded);
+        }
+        for token in view.output_tokens {
+            self.resolve(token)?;
+        }
+        let evidence = native_delivered_evidence(
+            self.store.identity_key()?,
+            view.binding,
+            view.client,
+            ingress,
+            view.delivered,
+            limits.fragment_bytes,
+        )?;
+        let metadata_bytes = CONTEXT_ENTRY_METADATA
+            .checked_add(
+                self.authorized
+                    .len()
+                    .checked_mul(AUTHORITY_METADATA)
+                    .ok_or(TokenError::CapacityExceeded)?,
+            )
+            .ok_or(TokenError::CapacityExceeded)?;
+        let charge = Charge {
+            metadata_bytes,
+            ..Default::default()
+        };
+        let ledger = self.store.allocation_ledger()?;
+        let owner_charge = Charge {
+            metadata_bytes: std::mem::size_of::<PendingContext>(),
+            ..Default::default()
+        };
+        let mut owner_reservation = self.store.reserve(Some(self.namespace), owner_charge)?;
+        let owner_backing = ledger.reserve(super::token_store_owners::AllocationCharge {
+            plaintext: 0,
+            metadata: owner_charge.metadata_bytes,
+        })?;
+        if let Some(serial) = self.join_native_context_duplicate(view.binding, &evidence)? {
+            owner_reservation.active = false;
+            return Ok(PendingPublication {
+                context: PendingContext {
+                    store: self.store.clone(),
+                    handle: super::completed_context::CompletedContextHandle {
+                        store_id: view.binding.store_id,
+                        namespace: self.namespace,
+                        generation: self.generation,
+                        policy_revision: view.binding.policy_revision,
+                        provider_fingerprint: view.binding.provider_fingerprint,
+                        evidence: evidence.identity(),
+                    },
+                    serial,
+                    charge: owner_charge,
+                    _backing: owner_backing,
+                    active: true,
+                },
+                release: spec.release_identity(),
+            });
+        }
+        let reservation = self.store.reserve(Some(self.namespace), charge)?;
+        let dependencies = if self.authorized.len() == 0 {
+            None
+        } else {
+            let mut entries = StoreVec::with_capacity(
+                self.authorized.len(),
+                ledger.clone(),
+                limits.entries_per_namespace,
+            )?;
+            for (digest, mapping) in self.authorized.as_slice() {
+                entries.push_without_growth((*digest, mapping.clone()))?;
+            }
+            Some(entries)
+        };
+        let record = SharedAllocation::new(
+            CompletedContextRecord {
+                evidence,
+                provider_fingerprint: view.binding.provider_fingerprint,
+                operation_lineage: None,
+                policy_revision: view.binding.policy_revision,
+                dependencies,
+                context_entries: 1,
+                metadata_bytes,
+            },
+            ledger,
+        )?;
+        let context = self.insert_completed_context(
+            view.binding,
+            reservation,
+            owner_reservation,
+            owner_backing,
+            record,
+        )?;
+        Ok(PendingPublication {
+            context,
+            release: spec.release_identity(),
+        })
+    }
+
+    /// Inspect only visible native evidence; neither mappings nor publication owners change.
+    pub(super) fn verify_native_delivered_extracted(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        delivered: &serde_json::Value,
+    ) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
+        use super::completed_context::{
+            native_replay_evidence, CompletedContextHandle, MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
+        };
+        use super::restoration_contract::ContinuityScope;
+
+        self.require_native_attempt_binding(client, binding)?;
+        if !binding.reusable_principal || binding.operation_lineage.is_some() {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let ingress = {
+            let state = self.store.lock()?;
+            let ns = state
+                .namespaces
+                .get(&self.namespace)
+                .ok_or(TokenError::ContextUnavailable)?;
+            if ns.identity.is_none()
+                || ns.generation != self.generation
+                || ns.policy_revision != binding.policy_revision
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
+            match ns.scope {
+                ContinuityScope::Native {
+                    client: actual,
+                    ingress,
+                } if actual == client => ingress,
+                _ => return Err(TokenError::ContextUnavailable),
+            }
+        };
+        let limits = &self.store.inner()?.limits;
+        // Bound inspection and hash borrowed values before taking the final store lock.
+        let evidence = native_replay_evidence(
+            self.store.identity_key()?,
+            binding,
+            client,
+            ingress,
+            delivered,
+            limits.fragment_bytes,
+        )?;
+        let state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.scope != (ContinuityScope::Native { client, ingress })
+            || ns.identity.is_none()
+            || ns.generation != self.generation
+            || binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+            || ns.policy_revision != binding.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let slots = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
+        if slots.len() > MAX_CONTEXT_ENTRIES_PER_NAMESPACE {
+            return Err(TokenError::CapacityExceeded);
+        }
+        for slot in slots.iter().flatten().filter(|slot| slot.visible) {
+            let record = slot.record.get()?;
+            if record.evidence.identity() != evidence.identity() {
+                continue;
+            }
+            record.validate_native_replay(binding, client, &evidence)?;
+            let dependencies = record.deps_slice();
+            if dependencies.len() > limits.entries_per_namespace {
+                return Err(TokenError::CapacityExceeded);
+            }
+            if dependencies.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+                return Err(TokenError::ContextUnavailable);
+            }
+            // The complete immutable dependency set must still belong to this namespace.
+            // An empty inspecting lease is valid and must not acquire these mappings.
+            for (digest, mapping) in dependencies {
+                let current = ns
+                    .mappings
+                    .get(digest)
+                    .ok_or(TokenError::ContextUnavailable)?;
+                if !std::ptr::eq(mapping.get()?, current.get()?) {
+                    return Err(TokenError::ContextUnavailable);
+                }
+            }
+            return Ok(CompletedContextHandle {
+                store_id: binding.store_id,
+                namespace: self.namespace,
+                generation: self.generation,
+                policy_revision: record.policy_revision,
+                provider_fingerprint: record.provider_fingerprint,
+                evidence: record.evidence.identity(),
+            });
+        }
+        Err(TokenError::ContextUnavailable)
+    }
+
+    /// Resolve an opaque native handle only against a currently visible, exact record.
+    /// The caller holds the store lock; every dependency must retain its live owner.
+    fn native_import_slot<'a>(
+        &self,
+        ns: &'a Namespace,
+        binding: &super::completed_context::ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        handle: &super::completed_context::CompletedContextHandle,
+    ) -> Result<&'a ContextSlot, TokenError> {
+        use super::completed_context::MAX_CONTEXT_ENTRIES_PER_NAMESPACE;
+        use super::restoration_contract::ContinuityScope;
+
+        if client.protocol() == crate::proxy::protocol_bridge::Protocol::Responses
+            || !matches!(ns.scope, ContinuityScope::Native { client: actual, .. } if actual == client)
+            || ns.identity.is_none()
+            || ns.generation != self.generation
+            || ns.policy_revision != binding.policy_revision
+            || binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+            || !binding.reusable_principal
+            || binding.operation_lineage.is_some()
+            || handle.store_id != binding.store_id
+            || handle.namespace != self.namespace
+            || handle.generation != self.generation
+            || handle.policy_revision != binding.policy_revision
+            || handle.provider_fingerprint != binding.provider_fingerprint
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let slots = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
+        if slots.len() > MAX_CONTEXT_ENTRIES_PER_NAMESPACE {
+            return Err(TokenError::CapacityExceeded);
+        }
+        let slot = slots
+            .iter()
+            .flatten()
+            .filter(|slot| slot.visible)
+            .find(|slot| {
+                slot.record
+                    .get()
+                    .is_ok_and(|record| record.evidence.identity() == handle.evidence)
+            })
+            .ok_or(TokenError::ContextUnavailable)?;
+        let record = slot.record.get()?;
+        // The handle selects the exact evidence identity; no operation-family transfer applies.
+        record.validate_native_replay(binding, client, &record.evidence)?;
+        let dependencies = record.deps_slice();
+        if dependencies.len() > self.store.inner()?.limits.entries_per_namespace {
+            return Err(TokenError::CapacityExceeded);
+        }
+        if dependencies.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(TokenError::ContextUnavailable);
+        }
+        for (digest, mapping) in dependencies {
+            let current = ns
+                .mappings
+                .get(digest)
+                .ok_or(TokenError::ContextUnavailable)?;
+            if !std::ptr::eq(mapping.get()?, current.get()?) {
+                return Err(TokenError::ContextUnavailable);
+            }
+        }
+        Ok(slot)
+    }
+
+    /// HTTP transcript orchestration checks publication order without minting a handle.
+    pub(super) fn native_delivered_serial(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        handle: &super::completed_context::CompletedContextHandle,
+    ) -> Result<u64, TokenError> {
+        let state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        Ok(self.native_import_slot(ns, binding, client, handle)?.serial)
+    }
+
+    /// Stage a complete ledger-backed authority replacement, then revalidate and commit once.
+    /// This grants neither Responses cursor authority nor native result/call pairing.
+    pub(super) fn import_native_completed_context_extracted(
+        &mut self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        handle: &super::completed_context::CompletedContextHandle,
+    ) -> Result<(), TokenError> {
+        let (serial, snapshot) = {
+            let state = self.store.lock()?;
+            let ns = state
+                .namespaces
+                .get(&self.namespace)
+                .ok_or(TokenError::ContextUnavailable)?;
+            let slot = self.native_import_slot(ns, binding, client, handle)?;
+            (slot.serial, slot.record.clone())
+        };
+        let record = snapshot.get()?;
+        let mut added = 0usize;
+        for (digest, mapping) in record.deps_slice() {
+            if let Some(existing) = self.authorized.get(digest) {
+                if !std::ptr::eq(mapping.get()?, existing.get()?) {
+                    return Err(TokenError::ContextUnavailable);
+                }
+            } else {
+                added = added.checked_add(1).ok_or(TokenError::CapacityExceeded)?;
+            }
+        }
+        // Empty evidence and repeated imports never allocate or widen authority.
+        if added == 0 {
+            return Ok(());
+        }
+        let limits = &self.store.inner()?.limits;
+        let total = self
+            .authorized
+            .len()
+            .checked_add(added)
+            .filter(|total| *total <= limits.entries_per_namespace)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let extra_metadata = added
+            .checked_mul(AUTHORITY_METADATA)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let metadata_bytes = self
+            .metadata_bytes
+            .checked_add(extra_metadata)
+            .ok_or(TokenError::CapacityExceeded)?;
+        // Retain the old table's charge until its replacement has been published and freed.
+        let staged_charge = Charge {
+            metadata_bytes: total
+                .checked_mul(AUTHORITY_METADATA)
+                .ok_or(TokenError::CapacityExceeded)?,
+            ..Default::default()
+        };
+        let mut reservation = self.store.reserve(None, staged_charge)?;
+        let mut staged = StoreVec::with_capacity(
+            total,
+            self.store.allocation_ledger()?,
+            limits.entries_per_namespace,
+        )?;
+        for (digest, mapping) in self.authorized.as_slice() {
+            staged.push_without_growth((*digest, mapping.clone()))?;
+        }
+        for (digest, mapping) in record.deps_slice() {
+            if !self.authorized.contains_key(digest) {
+                staged.push_without_growth((*digest, mapping.clone()))?;
+            }
+        }
+        staged.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let mut replacement = MappingIndex {
+            entries: Some(staged),
+        };
+
+        let mut state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        let slot = self.native_import_slot(ns, binding, client, handle)?;
+        if slot.serial != serial || !std::ptr::eq(slot.record.get()?, record) {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let authority_charge = Charge {
+            metadata_bytes: extra_metadata,
+            ..Default::default()
+        };
+        let copy_charge = staged_charge.subtract(authority_charge)?;
+        let reserved = state.reserved.subtract(authority_charge)?;
+        let committed = state.committed.add(authority_charge)?;
+        let ns = state
+            .namespaces
+            .get_mut(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        // All fallible work is complete. Release the displaced backing after unlocking.
+        ns.last_used = Instant::now();
+        state.reserved = reserved;
+        state.committed = committed;
+        std::mem::swap(&mut self.authorized, &mut replacement);
+        self.metadata_bytes = metadata_bytes;
+        reservation.charge = copy_charge;
+        drop(state);
+        drop(replacement);
+        Ok(())
+    }
+
+    // Exact native duplicates acquire only their owner/pin, never another record.
+    fn join_native_context_duplicate(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        evidence: &super::completed_context::CompletedEvidence,
+    ) -> Result<Option<u64>, TokenError> {
+        let mut state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.generation != self.generation || ns.policy_revision != binding.policy_revision {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let Some(slot) = ns.contexts.as_ref().and_then(|slots| {
+            slots.as_slice().iter().flatten().find(|slot| {
+                slot.record
+                    .get()
+                    .is_ok_and(|record| record.evidence.identity() == evidence.identity())
+            })
+        }) else {
+            return Ok(None);
+        };
+        let record = slot.record.get()?;
+        if record.provider_fingerprint != binding.provider_fingerprint
+            || record.operation_lineage != binding.operation_lineage
+            || record.policy_revision != binding.policy_revision
+            || !record.evidence.matches(evidence)
+            || record.deps_slice().len() != self.authorized.len()
+            || !record
+                .deps_slice()
+                .iter()
+                .zip(self.authorized.as_slice())
+                .all(|((left, _), (right, _))| left == right)
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let serial = slot.serial;
+        let owners = slot
+            .owners
+            .checked_add(1)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let pins = ns
+            .publication_pins
+            .checked_add(1)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let ns = state
+            .namespaces
+            .get_mut(&self.namespace)
+            .ok_or(TokenError::Unavailable)?;
+        let slot = ns
+            .contexts
+            .as_mut()
+            .and_then(|slots| {
+                slots
+                    .as_mut_slice()
+                    .iter_mut()
+                    .flatten()
+                    .find(|slot| slot.serial == serial)
+            })
+            .ok_or(TokenError::Unavailable)?;
+        slot.owners = owners;
+        ns.publication_pins = pins;
+        Ok(Some(serial))
+    }
+
+    // Compare and join under one lock without cloning a hidden record or
+    // allocating a second candidate. A missing record falls through to staging.
+    fn join_completed_context_duplicate(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        response_digest: [u8; 32],
+        publications: super::completed_context::CompletedCallPublications<'_>,
+        opaques: &[&str],
+        owner_charge: Charge,
+    ) -> Result<Option<u64>, TokenError> {
+        use super::completed_context::{
+            call_id_digest, call_snapshot_digest, opaque_content_digest, valid_external_id,
+            CompletedCallEntry, MAX_DELIVERED_CALL_SNAPSHOTS,
+        };
+        let key = self.store.identity_key()?;
+        let limits = &self.store.inner()?.limits;
+        let mut state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.identity.is_none()
+            || ns.generation != self.generation
+            || ns.policy_revision != binding.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let Some(slot) = ns.contexts.as_ref().and_then(|slots| {
+            slots.as_slice().iter().flatten().find(|slot| {
+                slot.record
+                    .get()
+                    .is_ok_and(|rec| rec.response_digest() == Some(response_digest))
+            })
+        }) else {
+            return Ok(None);
+        };
+        let rec = slot.record.get()?;
+        let calls = publications.originals;
+        if rec.provider_fingerprint != binding.provider_fingerprint
+            || rec.operation_lineage != binding.operation_lineage
+            || rec.policy_revision != binding.policy_revision
+            || rec.deps_slice().len() != self.authorized.len()
+            || !rec
+                .deps_slice()
+                .iter()
+                .zip(self.authorized.as_slice())
+                .all(|((a, _), (b, _))| a == b)
+            || rec.calls_slice().len() != calls.len()
+            || rec.opaques_slice().len() != opaques.len()
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        for (index, spec) in calls.iter().enumerate() {
+            if !valid_external_id(spec.call_id)
+                || !valid_external_id(spec.name)
+                || !matches!(spec.item_type, "function_call" | "custom_tool_call")
+                || spec.payload.len() > limits.fragment_bytes
+                || spec
+                    .reasoning
+                    .is_some_and(|v| v.len() > limits.fragment_bytes)
+                || spec
+                    .encrypted_reasoning
+                    .is_some_and(|v| v.is_empty() || v.len() > limits.fragment_bytes)
+                || calls[..index]
+                    .iter()
+                    .any(|prior| prior.call_id == spec.call_id)
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
+            // Payload references were authorized at the original insertion; exact
+            // snapshot equality below cannot widen the current dependency set.
+            let mut expected = CompletedCallEntry {
+                call_digest: call_id_digest(key, spec.call_id)?,
+                snapshot_digest: call_snapshot_digest(key, spec)?,
+                delivered_digests: [[0; 32]; MAX_DELIVERED_CALL_SNAPSHOTS],
+                delivered_len: 0,
+            };
+            for variant in publications
+                .delivered
+                .iter()
+                .filter(|variant| variant.call_id == spec.call_id)
+            {
+                let digest = call_snapshot_digest(key, variant)?;
+                if !expected.contains_snapshot(&digest) {
+                    let entry = expected
+                        .delivered_digests
+                        .get_mut(expected.delivered_len)
+                        .ok_or(TokenError::CapacityExceeded)?;
+                    *entry = digest;
+                    expected.delivered_len += 1;
+                }
+            }
+            expected.delivered_digests[..expected.delivered_len].sort_unstable();
+            if rec.find_call(&expected.call_digest) != Some(&expected) {
+                return Err(TokenError::ContextUnavailable);
+            }
+        }
+        for (index, op) in opaques.iter().enumerate() {
+            if op.is_empty()
+                || op.len() > limits.fragment_bytes
+                || opaques[..index].contains(op)
+                || !rec.contains_opaque(&opaque_content_digest(key, op)?)
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
+        }
+        let serial = slot.serial;
+        let owners = slot
+            .owners
+            .checked_add(1)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let pins = ns
+            .publication_pins
+            .checked_add(1)
+            .ok_or(TokenError::CapacityExceeded)?;
+        // The caller already holds a positive owner reservation and backing.
+        if owner_charge.metadata_bytes == 0 {
+            return Err(TokenError::CapacityExceeded);
+        }
+        let ns = state
+            .namespaces
+            .get_mut(&self.namespace)
+            .ok_or(TokenError::Unavailable)?;
+        let slot = ns
+            .contexts
+            .as_mut()
+            .and_then(|slots| {
+                slots
+                    .as_mut_slice()
+                    .iter_mut()
+                    .flatten()
+                    .find(|slot| slot.serial == serial)
+            })
+            .ok_or(TokenError::Unavailable)?;
+        slot.owners = owners;
+        ns.publication_pins = pins;
+        Ok(Some(serial))
+    }
+
+    fn prepare_completed_context(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        response_id: &str,
+        output_tokens: &[&str],
+        publications: super::completed_context::CompletedCallPublications<'_>,
+        opaques: &[&str],
+    ) -> Result<PendingContext, TokenError> {
         use super::completed_context::{
             call_id_digest, call_snapshot_digest, opaque_content_digest, response_id_digest,
             valid_external_id, CompletedCallEntry, CompletedContextHandle, CompletedContextRecord,
             CALL_ENTRY_METADATA, CONTEXT_ENTRY_METADATA, MAX_CALLS_PER_CONTEXT,
-            MAX_CONTEXT_ENTRIES_PER_NAMESPACE, MAX_GLOBAL_CONTEXT_ENTRIES, OPAQUE_ENTRY_METADATA,
+            MAX_CONTEXT_ENTRIES_PER_NAMESPACE, OPAQUE_ENTRY_METADATA,
         };
         if binding.store_id != self.store_id()?
             || binding.namespace != self.namespace
@@ -1791,6 +3000,7 @@ impl DlpRequestLease {
         {
             return Err(TokenError::ContextUnavailable);
         }
+        self.require_responses_scope(binding)?;
         let limits = &self.store.inner()?.limits;
         let calls = publications.originals;
         let delivered = publications.delivered;
@@ -1824,6 +3034,44 @@ impl DlpRequestLease {
         let key = self.store.identity_key()?;
         let response_digest = response_id_digest(key, response_id)?;
         let ledger = self.store.allocation_ledger()?;
+        let owner_charge = Charge {
+            metadata_bytes: std::mem::size_of::<PendingContext>(),
+            ..Default::default()
+        };
+        let mut owner_reservation = self.store.reserve(Some(self.namespace), owner_charge)?;
+        let owner_backing = ledger.reserve(super::token_store_owners::AllocationCharge {
+            plaintext: 0,
+            metadata: owner_charge.metadata_bytes,
+        })?;
+        if let Some(serial) = self.join_completed_context_duplicate(
+            binding,
+            response_digest,
+            super::completed_context::CompletedCallPublications {
+                originals: calls,
+                delivered,
+            },
+            opaques,
+            owner_charge,
+        )? {
+            owner_reservation.active = false;
+            return Ok(PendingContext {
+                store: self.store.clone(),
+                handle: CompletedContextHandle {
+                    store_id: binding.store_id,
+                    namespace: self.namespace,
+                    generation: self.generation,
+                    policy_revision: binding.policy_revision,
+                    provider_fingerprint: binding.provider_fingerprint,
+                    evidence: super::completed_context::CompletedEvidenceIdentity::Responses(
+                        response_digest,
+                    ),
+                },
+                serial,
+                charge: owner_charge,
+                _backing: owner_backing,
+                active: true,
+            });
+        }
 
         let mut call_entries = if calls.is_empty() {
             None
@@ -1924,71 +3172,11 @@ impl DlpRequestLease {
             ..Default::default()
         };
 
-        let (version, existing_record, context_len) = {
-            let state = self.store.lock()?;
-            let ns = state
-                .namespaces
-                .get(&self.namespace)
-                .ok_or(TokenError::ContextUnavailable)?;
-            if ns.identity.is_none()
-                || ns.generation != self.generation
-                || ns.policy_revision != binding.policy_revision
-            {
-                return Err(TokenError::ContextUnavailable);
-            }
-            let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
-            let found = slice.iter().find_map(|entry| {
-                entry
-                    .get()
-                    .ok()
-                    .filter(|r| r.response_digest == response_digest)
-                    .map(|_| entry.clone())
-            });
-            if found.is_none()
-                && (ns
-                    .context_entries
-                    .checked_add(entry_delta)
-                    .is_none_or(|n| n > MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
-                    || state
-                        .context_entries
-                        .checked_add(entry_delta)
-                        .is_none_or(|n| n > MAX_GLOBAL_CONTEXT_ENTRIES))
-            {
-                return Err(TokenError::CapacityExceeded);
-            }
-            (ns.version, found, slice.len())
-        };
-
-        if let Some(existing) = existing_record {
-            let rec = existing.get()?;
-            let calls_slice = call_entries.as_ref().map_or(&[][..], StoreVec::as_slice);
-            let opaques_slice = opaque_entries.as_ref().map_or(&[][..], StoreVec::as_slice);
-            let same_deps = rec.deps_slice().len() == self.authorized.len()
-                && rec
-                    .deps_slice()
-                    .iter()
-                    .zip(self.authorized.as_slice())
-                    .all(|((d1, _), (d2, _))| d1 == d2);
-            if rec.provider_fingerprint == binding.provider_fingerprint
-                && rec.operation_lineage == binding.operation_lineage
-                && rec.policy_revision == binding.policy_revision
-                && rec.calls_slice() == calls_slice
-                && rec.opaques_slice() == opaques_slice
-                && same_deps
-            {
-                return Ok(CompletedContextHandle {
-                    store_id: binding.store_id,
-                    namespace: self.namespace,
-                    generation: self.generation,
-                    policy_revision: binding.policy_revision,
-                    provider_fingerprint: binding.provider_fingerprint,
-                    response_digest,
-                });
-            }
-            return Err(TokenError::ContextUnavailable);
-        }
-
-        let mut reservation = self.store.reserve(Some(self.namespace), charge)?;
+        let reservation = self.store.reserve(Some(self.namespace), charge)?;
+        // Declare staged payload owners after the reservation so failure drops
+        // all payload/backing before refunding its logical metadata charge.
+        let mut call_entries = call_entries.take();
+        let mut opaque_entries = opaque_entries.take();
         let deps_copy = if self.authorized.len() == 0 {
             None
         } else {
@@ -2004,85 +3192,250 @@ impl DlpRequestLease {
         };
         let record = SharedAllocation::new(
             CompletedContextRecord {
-                response_digest,
+                evidence: super::completed_context::CompletedEvidence::Responses(
+                    super::completed_context::ResponsesEvidence {
+                        response_digest,
+                        calls: call_entries.take(),
+                        opaques: opaque_entries.take(),
+                    },
+                ),
                 provider_fingerprint: binding.provider_fingerprint,
                 operation_lineage: binding.operation_lineage,
                 policy_revision: binding.policy_revision,
                 dependencies: deps_copy,
-                calls: call_entries.take(),
-                opaques: opaque_entries.take(),
                 context_entries: entry_delta,
                 metadata_bytes,
             },
             ledger.clone(),
         )?;
 
-        let mut staged = StoreVec::with_capacity(
-            context_len + 1,
-            ledger.clone(),
-            MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
-        )?;
-        {
-            let state = self.store.lock()?;
-            let ns = state
-                .namespaces
-                .get(&self.namespace)
-                .ok_or(TokenError::ContextUnavailable)?;
-            if ns.version != version {
-                drop(state);
-                return Err(TokenError::Unavailable);
-            }
-            for existing in ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice) {
-                staged.push_without_growth(existing.clone())?;
-            }
-        }
-        staged.push_without_growth(record)?;
+        self.insert_completed_context(
+            binding,
+            reservation,
+            owner_reservation,
+            owner_backing,
+            record,
+        )
+    }
 
-        let next_version = version.checked_add(1).ok_or(TokenError::Unavailable)?;
-        let mut state = self.store.lock()?;
-        let state_reserved = state.reserved.subtract(charge)?;
-        let state_committed = state.committed.add(charge)?;
-        let next_global_entries = state
-            .context_entries
-            .checked_add(entry_delta)
-            .filter(|&n| n <= MAX_GLOBAL_CONTEXT_ENTRIES)
-            .ok_or(TokenError::CapacityExceeded)?;
-        let ns = state
-            .namespaces
-            .get_mut(&self.namespace)
-            .ok_or(TokenError::ContextUnavailable)?;
-        if ns.version != version {
-            drop(state);
-            return Err(TokenError::Unavailable);
-        }
-        let next_ns_entries = ns
-            .context_entries
-            .checked_add(entry_delta)
-            .filter(|&n| n <= MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
-            .ok_or(TokenError::CapacityExceeded)?;
-        let ns_committed = ns.committed.add(charge)?;
-        let ns_reserved = ns.reserved.subtract(charge)?;
-        let mut old_contexts = Some(staged);
-        std::mem::swap(&mut ns.contexts, &mut old_contexts);
-        ns.version = next_version;
-        ns.context_entries = next_ns_entries;
-        ns.committed = ns_committed;
-        ns.reserved = ns_reserved;
-        ns.last_used = Instant::now();
-        state.context_entries = next_global_entries;
-        state.reserved = state_reserved;
-        state.committed = state_committed;
-        reservation.active = false;
-        drop(state);
-        drop(old_contexts);
-        Ok(CompletedContextHandle {
+    // Responses and native evidence share the sole slot owner and retirement path.
+    fn insert_completed_context(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        mut reservation: Reservation,
+        mut owner_reservation: Reservation,
+        owner_backing: super::token_store_owners::AllocationReservation,
+        record: super::completed_context::ContextEntry,
+    ) -> Result<PendingContext, TokenError> {
+        use super::completed_context::{
+            CompletedContextHandle, CompletedEvidenceIdentity, MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
+            MAX_GLOBAL_CONTEXT_ENTRIES,
+        };
+        use super::restoration_contract::ContinuityScope;
+        use crate::proxy::protocol_bridge::Protocol;
+
+        let ledger = self.store.allocation_ledger()?;
+        let charge = reservation.charge;
+        let owner_charge = owner_reservation.charge;
+        let entry_delta = record.get()?.context_entries;
+        let evidence = record.get()?.evidence.identity();
+        let mut candidate = Some(record);
+        let mut replacement: Option<ContextTable> = None;
+        let handle = CompletedContextHandle {
             store_id: binding.store_id,
             namespace: self.namespace,
             generation: self.generation,
             policy_revision: binding.policy_revision,
             provider_fingerprint: binding.provider_fingerprint,
-            response_digest,
-        })
+            evidence,
+        };
+        loop {
+            let mut state = self.store.lock()?;
+            let ns = state
+                .namespaces
+                .get(&self.namespace)
+                .ok_or(TokenError::ContextUnavailable)?;
+            let scope_matches = match (evidence, ns.scope) {
+                (CompletedEvidenceIdentity::Responses(_), ContinuityScope::LegacyResponses) => {
+                    ns.identity.is_some()
+                }
+                (CompletedEvidenceIdentity::Chat(_), ContinuityScope::Native { client, .. }) => {
+                    client.protocol() == Protocol::Chat
+                }
+                (
+                    CompletedEvidenceIdentity::Anthropic(_),
+                    ContinuityScope::Native { client, .. },
+                ) => client.protocol() == Protocol::Anthropic,
+                (CompletedEvidenceIdentity::Gemini(_), ContinuityScope::Native { client, .. }) => {
+                    client.protocol() == Protocol::Gemini
+                }
+                _ => false,
+            };
+            if !scope_matches
+                || ns.generation != self.generation
+                || ns.policy_revision != binding.policy_revision
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
+            let pins = ns
+                .publication_pins
+                .checked_add(1)
+                .ok_or(TokenError::CapacityExceeded)?;
+            let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
+            // Equality is revalidated while holding the final insertion lock.
+            if let Some(index) = slice.iter().position(|slot| {
+                slot.as_ref().is_some_and(|slot| {
+                    slot.record
+                        .get()
+                        .is_ok_and(|rec| rec.evidence.identity() == evidence)
+                })
+            }) {
+                let slot = slice[index].as_ref().ok_or(TokenError::Unavailable)?;
+                let rec = slot.record.get()?;
+                let proposed = candidate.as_ref().ok_or(TokenError::Unavailable)?.get()?;
+                if rec.provider_fingerprint != proposed.provider_fingerprint
+                    || rec.operation_lineage != proposed.operation_lineage
+                    || rec.policy_revision != proposed.policy_revision
+                    || !rec.evidence.matches(&proposed.evidence)
+                    || rec.deps_slice().len() != proposed.deps_slice().len()
+                    || !rec
+                        .deps_slice()
+                        .iter()
+                        .zip(proposed.deps_slice())
+                        .all(|((a, _), (b, _))| a == b)
+                {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                let owners = slot
+                    .owners
+                    .checked_add(1)
+                    .ok_or(TokenError::CapacityExceeded)?;
+                let serial = slot.serial;
+                let ns = state
+                    .namespaces
+                    .get_mut(&self.namespace)
+                    .ok_or(TokenError::Unavailable)?;
+                let slot = ns
+                    .contexts
+                    .as_mut()
+                    .and_then(|slots| slots.as_mut_slice().get_mut(index))
+                    .and_then(Option::as_mut)
+                    .ok_or(TokenError::Unavailable)?;
+                slot.owners = owners;
+                ns.publication_pins = pins;
+                owner_reservation.active = false;
+                drop(state);
+                // Candidate payload dies before its logical reservation is refunded.
+                drop(candidate.take());
+                drop(reservation);
+                return Ok(PendingContext {
+                    store: self.store.clone(),
+                    handle,
+                    serial,
+                    charge: owner_charge,
+                    _backing: owner_backing,
+                    active: true,
+                });
+            }
+            let serial = ns
+                .next_context_serial
+                .checked_add(1)
+                .ok_or(TokenError::CapacityExceeded)?;
+            let pending = state
+                .pending_context_entries
+                .checked_add(entry_delta)
+                .filter(|n| {
+                    state
+                        .context_entries
+                        .checked_add(*n)
+                        .is_some_and(|total| total <= MAX_GLOBAL_CONTEXT_ENTRIES)
+                })
+                .ok_or(TokenError::CapacityExceeded)?;
+            let ns_pending = ns
+                .pending_context_entries
+                .checked_add(entry_delta)
+                .filter(|n| {
+                    ns.context_entries
+                        .checked_add(*n)
+                        .is_some_and(|total| total <= MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
+                })
+                .ok_or(TokenError::CapacityExceeded)?;
+            let index = slice.iter().position(Option::is_none);
+            if index.is_none() {
+                let size = slice
+                    .len()
+                    .checked_add(1)
+                    .filter(|n| *n <= MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
+                    .ok_or(TokenError::CapacityExceeded)?;
+                if replacement.as_ref().is_none_or(|slots| slots.len() < size) {
+                    drop(state);
+                    drop(replacement.take());
+                    // Empty replacement slots allocate outside the store lock. The
+                    // current table is moved only after final duplicate revalidation.
+                    replacement = Some(StoreVec::with_capacity(
+                        size,
+                        ledger.clone(),
+                        MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
+                    )?);
+                    if let Some(slots) = replacement.as_mut() {
+                        for _ in 0..size {
+                            slots.push_without_growth(None)?;
+                        }
+                    }
+                    continue;
+                }
+            }
+            let ns = state
+                .namespaces
+                .get_mut(&self.namespace)
+                .ok_or(TokenError::Unavailable)?;
+            let record = candidate.take().ok_or(TokenError::Unavailable)?;
+            let slot = Some(ContextSlot {
+                record,
+                serial,
+                visible: false,
+                owners: 1,
+                charge,
+                entries: entry_delta,
+            });
+            if let Some(index) = index {
+                // The checked index is an existing empty slot; no allocation or
+                // other fallible operation remains after moving the candidate.
+                if let Some(slots) = ns.contexts.as_mut() {
+                    slots.as_mut_slice()[index] = slot;
+                }
+            } else {
+                if let Some(slots) = replacement.as_mut() {
+                    if let Some(old) = ns.contexts.as_mut() {
+                        for (dest, source) in
+                            slots.as_mut_slice().iter_mut().zip(old.as_mut_slice())
+                        {
+                            *dest = source.take();
+                        }
+                    }
+                    let end = slots.len() - 1;
+                    slots.as_mut_slice()[end] = slot;
+                }
+                std::mem::swap(&mut ns.contexts, &mut replacement);
+            }
+            ns.next_context_serial = serial;
+            ns.pending_context_entries = ns_pending;
+            ns.publication_pins = pins;
+            ns.last_used = Instant::now();
+            state.pending_context_entries = pending;
+            reservation.active = false;
+            owner_reservation.active = false;
+            drop(state);
+            drop(replacement);
+            return Ok(PendingContext {
+                store: self.store.clone(),
+                handle,
+                serial,
+                charge: owner_charge,
+                _backing: owner_backing,
+                active: true,
+            });
+        }
     }
 
     pub(super) fn resume_completed_context_extracted(
@@ -2110,6 +3463,7 @@ impl DlpRequestLease {
         {
             return Err(context_unavailable!(LeaseBinding));
         }
+        self.require_responses_scope(binding)?;
         if previous_response_id.is_none()
             && required_calls.is_empty()
             && required_opaques.is_empty()
@@ -2189,16 +3543,17 @@ impl DlpRequestLease {
                 return Err(context_unavailable!(PolicyMismatch));
             }
             let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
-            if slice.is_empty() {
+            let visible = slice.iter().flatten().filter(|slot| slot.visible).count();
+            if visible == 0 {
                 return Err(context_unavailable!(ContextsEmpty));
             }
             let mut copied = StoreVec::with_capacity(
-                slice.len(),
+                visible,
                 ledger.clone(),
                 MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
             )?;
-            for entry in slice {
-                copied.push_without_growth(entry.clone())?;
+            for slot in slice.iter().flatten().filter(|slot| slot.visible) {
+                copied.push_without_growth(slot.record.clone())?;
             }
             copied
         };
@@ -2218,7 +3573,7 @@ impl DlpRequestLease {
         let prev_idx = if let Some(target) = prev_digest {
             let idx = snapshot.as_slice().iter().position(|entry| {
                 entry.get().is_ok_and(|rec| {
-                    rec.response_digest == target
+                    rec.response_digest() == Some(target)
                         && rec.authorizes_attempt(binding)
                         && rec.policy_revision == binding.policy_revision
                 })
@@ -2231,7 +3586,7 @@ impl DlpRequestLease {
                         let Ok(rec) = entry.get() else {
                             continue;
                         };
-                        if rec.response_digest == target {
+                        if rec.response_digest() == Some(target) {
                             cursor_found = true;
                             if rec.policy_revision != binding.policy_revision {
                                 return Err(context_unavailable!(PolicyMismatch));
@@ -2412,6 +3767,7 @@ impl DlpRequestLease {
         require_all: bool,
     ) -> Result<(), TokenError> {
         use super::completed_context::MAX_CONTEXT_ENTRIES_PER_NAMESPACE;
+        self.require_responses_request_scope()?;
         if referenced_tokens.is_empty() {
             return Ok(());
         }
@@ -2450,16 +3806,17 @@ impl DlpRequestLease {
                 };
             }
             let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
-            if require_all && slice.is_empty() {
+            let visible = slice.iter().flatten().filter(|slot| slot.visible).count();
+            if require_all && visible == 0 {
                 return Err(TokenError::ContextUnavailable);
             }
             let mut copied = StoreVec::with_capacity(
-                slice.len(),
+                visible,
                 ledger.clone(),
                 MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
             )?;
-            for entry in slice {
-                copied.push_without_growth(entry.clone())?;
+            for slot in slice.iter().flatten().filter(|slot| slot.visible) {
+                copied.push_without_growth(slot.record.clone())?;
             }
             copied
         };
@@ -2582,6 +3939,7 @@ impl DlpRequestLease {
         orphan_output_call_ids: &[&str],
     ) -> Result<(), TokenError> {
         use super::completed_context::{call_id_digest, response_id_digest, valid_external_id};
+        self.require_responses_scope(binding)?;
         if orphan_output_call_ids.is_empty() {
             return Ok(());
         }
@@ -2622,9 +3980,11 @@ impl DlpRequestLease {
         let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
         let rec = slice
             .iter()
-            .find_map(|entry| {
-                let r = entry.get().ok()?;
-                (r.response_digest == prev_digest
+            .flatten()
+            .filter(|slot| slot.visible)
+            .find_map(|slot| {
+                let r = slot.record.get().ok()?;
+                (r.response_digest() == Some(prev_digest)
                     && r.authorizes_attempt(binding)
                     && r.policy_revision == binding.policy_revision)
                     .then_some(r)
@@ -2747,7 +4107,7 @@ mod response_scan_tests {
             assert!(reference.ends_with("-ai"), "hyphen suffix required");
             let ranges = scan_token_references(&reference)?;
             assert!(
-                ranges == [0..reference.len()],
+                ranges.as_slice() == std::slice::from_ref(&(0..reference.len())),
                 "new reference must be recognized exactly"
             );
         }
@@ -3157,7 +4517,10 @@ impl DlpRequestLease {
         {
             let state = self.store.lock().ok()?;
             let ns = state.namespaces.get(&self.namespace)?;
-            if ns.generation != self.generation || ns.identity.is_none() {
+            if ns.generation != self.generation
+                || ns.identity.is_none()
+                || ns.scope != super::restoration_contract::ContinuityScope::LegacyResponses
+            {
                 return None;
             }
             if let Some(history) = &ns.history {
@@ -3171,7 +4534,10 @@ impl DlpRequestLease {
         let staged = super::history_provenance::HistoryNamespace::new(global)?;
         let mut state = self.store.lock().ok()?;
         let ns = state.namespaces.get_mut(&self.namespace)?;
-        if ns.generation != self.generation || ns.identity.is_none() {
+        if ns.generation != self.generation
+            || ns.identity.is_none()
+            || ns.scope != super::restoration_contract::ContinuityScope::LegacyResponses
+        {
             return None;
         }
         let history = ns.history.get_or_insert(staged).clone();

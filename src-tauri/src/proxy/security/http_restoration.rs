@@ -16,11 +16,9 @@ use crate::app_config::AppType;
 use crate::proxy::session::extract_codex_restoration_session_id;
 
 use super::{
-    completed_context::{
-        valid_external_id, ActualAttemptBinding, CompletedCallSpec, CompletionWitness,
-    },
+    completed_context::{valid_external_id, ActualAttemptBinding, CompletedCallSpec},
     completion_evidence::CompletionObservation,
-    completion_json::{JsonCompletion, JsonCompletionProtocol},
+    completion_json::JsonCompletionProtocol,
     extractor::extract_payload_texts,
     history_provenance::{
         history_target_for_path, visit_references_with_policy, visit_request_references,
@@ -33,19 +31,36 @@ use super::{
     payload_json::{JsonStringReplacement, PayloadJson},
     payload_metadata::PayloadVec,
     payload_text::PayloadText,
+    protocol_adapters::responses::{self as responses_adapter, RequestHistoryClassification},
+    protocol_adapters::responses::{
+        stage_json_response_bound, ArgumentNormalizationMode, RestoreError, SseRestorationState,
+    },
     request_carriers::CodexRequestCarriers,
     request_detection::detect_spans_with_budget,
     request_plan::{EffectiveAction, PlanError},
-    request_preparation::{prepare_codex_request_with_budget, RequestHistoryClassification},
-    response_restoration::{
-        stage_json_response, ArgumentNormalizationMode, RestoreError, SseRestorationState,
-    },
     restoration_audit::{PendingRequestAudit, RequestAuditState},
+    restoration_core::RequestAuthority,
     restore_diagnostics::{ContextCheckpoint, RestoreStage},
     runtime::{admit_security_runtime, SecurityRuntimeConfig},
     token_store_owners::{SharedAllocation, StoreText, StoreVec},
     tokenization::{DlpRequestLease, DlpTokenStore, TokenError},
 };
+mod completion_verifier;
+mod native_chat;
+#[cfg(test)]
+pub(in crate::proxy::security) use native_chat::capture_test_support;
+mod native_driver;
+#[cfg(test)]
+pub(in crate::proxy::security) mod test_transport;
+pub(in crate::proxy::security) use completion_verifier::{
+    VerifiedCompletion, VerifiedJsonCompletion, VerifiedNativeJson, VerifiedNativeSse,
+};
+
+#[cfg(test)]
+use super::{
+    completed_context::CompletionWitness, protocol_adapters::responses::stage_json_response,
+};
+
 struct GatewayState {
     store: DlpTokenStore,
     rules: StoreVec<StoreText>,
@@ -131,12 +146,12 @@ impl RestorationGateway {
 }
 
 pub(crate) struct DlpHttpRequest {
-    base_lease: DlpRequestLease,
+    authority: RequestAuthority,
     runtime: SecurityRuntimeConfig,
     restore_rules: StoreVec<StoreText>,
-    budget: PayloadBudget,
     source_body: PayloadJson,
     pretokenized: bool,
+    native_protocol: Option<crate::proxy::protocol_bridge::Protocol>,
     endpoint_is_compact: bool,
     audit_state: std::sync::Arc<RequestAuditState>,
     initial_audit: std::sync::Arc<PendingRequestAudit>,
@@ -201,21 +216,44 @@ pub(crate) struct DlpPreparedAttempt {
     pub(super) budget: PayloadBudget,
     pub(crate) endpoint_is_compact: bool,
     upstream_json_protocol: Option<JsonCompletionProtocol>,
-    json_completion: std::sync::atomic::AtomicU8,
+    provenance: super::restoration_core::AttemptProvenance,
+    json_completion: completion_verifier::JsonCompletionVerifier,
     audit_state: std::sync::Arc<RequestAuditState>,
     initial_audit: std::sync::Arc<PendingRequestAudit>,
     pending_audit: PendingRequestAudit,
     upstream_payload_owner: Option<super::UpstreamPayloadOwner>,
     history_mapping: Option<DlpHistoryMapping>,
+    native_history_digest: Option<[u8; 32]>,
+    native_protocol: Option<crate::proxy::protocol_bridge::Protocol>,
+    native_original: Option<native_chat::OriginalCapture>,
+    native_error_safety: Option<super::upstream_error::NativeErrorSafety>,
+    sse_evidence: std::sync::Mutex<Option<PreparedSseEvidence>>,
 }
 impl DlpPreparedAttempt {
     pub(crate) async fn guard_upstream_response(
         &mut self,
         response: crate::proxy::hyper_client::ProxyResponse,
     ) -> Result<crate::proxy::hyper_client::ProxyResponse, DlpForwardError> {
-        if !self.has_restoration_lease() {
+        if !self.has_restoration_lease() && self.native_protocol.is_none() {
             return Ok(response);
         }
+        // Capture before eager JSON guarding so original evidence comes from the
+        // actual transport, not from a decoded/rebuilt response or terminal marker.
+        let response = if self.native_protocol.is_some() {
+            let (response, capture) = native_chat::capture_original(
+                response,
+                &self.budget,
+                &self.provenance,
+                &self.binding,
+                self.native_protocol
+                    .ok_or(DlpForwardError::RestoreUnsupported)?,
+                self.native_error_safety.take(),
+            )?;
+            self.native_original = Some(capture);
+            response
+        } else {
+            response
+        };
         let guarded =
             super::upstream_guard::guard_upstream_response(response, &self.budget).await?;
         self.upstream_payload_owner = Some(guarded.owner);
@@ -233,7 +271,7 @@ impl DlpPreparedAttempt {
         body: &Value,
     ) -> Result<Option<Bytes>, DlpForwardError> {
         self.validate_final_send_history(body)?;
-        if !self.has_restoration_lease() {
+        if !self.has_restoration_lease() && self.native_protocol.is_none() {
             return Ok(None);
         }
         encode_outbound_with_budget(body, self.budget.clone()).map(Some)
@@ -310,6 +348,7 @@ impl DlpPreparedAttempt {
     }
 
     pub(crate) fn validate_final_send_history(&self, body: &Value) -> Result<(), DlpForwardError> {
+        native_chat::validate_native_history_digest(self.native_history_digest, body)?;
         if self
             .history_mapping
             .as_ref()
@@ -347,13 +386,38 @@ pub(crate) enum RestorationAdmission {
 
 pub(super) const CLIENT_PROCESSING_ERROR_MESSAGE: &str =
     "The local proxy could not process the request. Please retry.";
-pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
 
+/// Structural reasons a supported request cannot use reversible DLP. These are
+/// user-actionable categories only: never a rule name, matched value or internal label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestoreUnsupportedCause {
+    /// Route, method or response framing outside the enabled native cells.
+    UnsupportedEndpoint,
+    /// Signed or otherwise immutable content that a mandatory patch would have to edit.
+    ImmutableSignedUnit,
+}
+
+impl RestoreUnsupportedCause {
+    pub(crate) const fn client_message(self) -> &'static str {
+        match self {
+            Self::UnsupportedEndpoint => {
+                "This route or response framing is not supported by reversible DLP. Supported direct routes are /chat/completions, /v1/messages, generateContent and streamGenerateContent with alt=sse. Use one of them, or disable reversible DLP for this provider."
+            }
+            Self::ImmutableSignedUnit => {
+                "This request contains signed or otherwise immutable content that reversible DLP cannot modify. Remove that content, or disable reversible DLP for this provider."
+            }
+        }
+    }
+}
+pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
+/// Client-visible code for a route or framing that reversible DLP does not support.
+pub(super) const CLIENT_UNSUPPORTED_ENDPOINT_CODE: &str = "dlp_restore_unsupported";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DlpForwardError {
     ContextUnavailable,
     PolicyConflict,
     RestoreUnsupported,
+    RestoreUnsupportedFor(RestoreUnsupportedCause),
     RedactionFailed,
     Unavailable,
     CapacityExceeded,
@@ -363,6 +427,15 @@ pub(crate) enum DlpForwardError {
     RestoreFailedAt(super::restore_diagnostics::RestoreStage),
     /// Status-only upstream refusal; its untrusted body is never retained or decoded.
     UpstreamStatus(StatusCode),
+}
+
+/// HTTP-private decision, called only at the two optional-history boundaries below.
+/// Other context errors and mandatory processing never enter this whitelist.
+fn optional_history_miss(error: DlpForwardError) -> Result<(), DlpForwardError> {
+    match error {
+        DlpForwardError::ContextUnavailable => Ok(()),
+        other => Err(other),
+    }
 }
 
 impl DlpForwardError {
@@ -384,12 +457,25 @@ impl DlpForwardError {
         }
     }
 
+    /// Attributable form for the direct native path only. Legacy Responses and the
+    /// conversion facades keep the generic projection so their accepted contract holds.
+    pub(super) fn from_plan_error_native(err: PlanError) -> Self {
+        match err {
+            PlanError::ImmutableContent => {
+                Self::RestoreUnsupportedFor(RestoreUnsupportedCause::ImmutableSignedUnit)
+            }
+            other => Self::from_plan_error(other),
+        }
+    }
+
     pub(super) fn from_plan_error(err: PlanError) -> Self {
         match err {
             PlanError::Blocked => Self::Blocked,
             PlanError::PolicyConflict => Self::PolicyConflict,
             PlanError::Unsupported => Self::RestoreUnsupported,
             PlanError::Token(te) => Self::from_token_error(te),
+            // Non-native callers keep the generic projection for this cause.
+            PlanError::ImmutableContent => Self::RestoreUnsupported,
         }
     }
     pub(crate) fn status_code(self) -> StatusCode {
@@ -399,6 +485,7 @@ impl DlpForwardError {
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
+            | Self::RestoreUnsupportedFor(_)
             | Self::RedactionFailed
             | Self::Blocked => StatusCode::BAD_REQUEST,
             Self::Unavailable | Self::CapacityExceeded | Self::TokenCollision => {
@@ -414,6 +501,7 @@ impl DlpForwardError {
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
+            | Self::RestoreUnsupportedFor(_)
             | Self::RedactionFailed
             | Self::Blocked => "invalid_request_error",
             Self::Unavailable | Self::CapacityExceeded | Self::TokenCollision => "server_error",
@@ -426,7 +514,7 @@ impl DlpForwardError {
             Self::RestoreFailed | Self::RestoreFailedAt(_) => "dlp_restore_failed",
             Self::ContextUnavailable => "dlp_context_unavailable",
             Self::PolicyConflict => "dlp_policy_conflict",
-            Self::RestoreUnsupported => "dlp_restore_unsupported",
+            Self::RestoreUnsupported | Self::RestoreUnsupportedFor(_) => "dlp_restore_unsupported",
             Self::RedactionFailed => "dlp_redaction_failed",
             Self::Unavailable => "dlp_unavailable",
             Self::CapacityExceeded => "dlp_capacity_exceeded",
@@ -449,6 +537,7 @@ impl DlpForwardError {
             Self::RestoreUnsupported => {
                 "Reversible DLP tokenization is not supported for this endpoint or carrier."
             }
+            Self::RestoreUnsupportedFor(cause) => cause.client_message(),
             Self::RedactionFailed => "Reversible DLP request preparation failed.",
             Self::Unavailable => "Reversible DLP service is temporarily unavailable.",
             Self::CapacityExceeded => "Reversible DLP capacity limit exceeded.",
@@ -460,7 +549,8 @@ impl DlpForwardError {
     pub(crate) fn client_status_code(self) -> StatusCode {
         match self {
             Self::UpstreamStatus(status) => status,
-            Self::Blocked => StatusCode::BAD_REQUEST,
+            // A caused rejection is caller-actionable and nothing was sent upstream.
+            Self::Blocked | Self::RestoreUnsupportedFor(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -468,7 +558,7 @@ impl DlpForwardError {
     pub(crate) fn client_error_type(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
-            Self::Blocked => "invalid_request_error",
+            Self::Blocked | Self::RestoreUnsupportedFor(_) => "invalid_request_error",
             _ => "server_error",
         }
     }
@@ -477,13 +567,19 @@ impl DlpForwardError {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
             Self::Blocked => "dlp_blocked",
+            Self::RestoreUnsupportedFor(_) => CLIENT_UNSUPPORTED_ENDPOINT_CODE,
             _ => CLIENT_PROCESSING_ERROR_CODE,
         }
     }
 
     pub(crate) fn client_message(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(_) | Self::Blocked => self.message(),
+            Self::UpstreamStatus(_) | Self::Blocked | Self::RestoreUnsupportedFor(_) => {
+                self.message()
+            }
+            // The generic family keeps its historical projection so legacy paths are
+            // unaffected; only an explicit cause produces actionable text.
+            Self::RestoreUnsupported => CLIENT_PROCESSING_ERROR_MESSAGE,
             _ => CLIENT_PROCESSING_ERROR_MESSAGE,
         }
     }
@@ -512,19 +608,24 @@ impl DlpForwardError {
         let code = self.client_code();
         let message = self.client_message();
         let error_type = self.client_error_type();
+        let native_message = if matches!(self, Self::UpstreamStatus(_)) {
+            code
+        } else {
+            message
+        };
         let payload = match app_type {
             AppType::Claude | AppType::ClaudeDesktop => json!({
                 "type": "error",
                 "error": {
                     "type": if status == StatusCode::BAD_REQUEST { "invalid_request_error" } else { "api_error" },
-                    "message": code,
+                    "message": native_message,
                     "code": code,
                 }
             }),
             AppType::Gemini => json!({
                 "error": {
                     "code": status.as_u16(),
-                    "message": code,
+                    "message": native_message,
                     "status": if status == StatusCode::BAD_REQUEST { "INVALID_ARGUMENT" } else { "UNAVAILABLE" }
                 }
             }),
@@ -986,11 +1087,170 @@ fn extract_request_history(
     })
 }
 
+#[cfg(test)]
+pub(super) mod route_scope_test_support {
+    use std::{cell::Cell, marker::PhantomData, rc::Rc};
+
+    use crate::proxy::{
+        handler_context::{
+            RequestIngress, RestorationFraming, RestorationOperation, RestorationRouteScope,
+        },
+        protocol_bridge::Protocol,
+    };
+
+    type Snapshot = (
+        Protocol,
+        RequestIngress,
+        RestorationOperation,
+        RestorationFraming,
+    );
+
+    thread_local! {
+        static LAST_SCOPE: Cell<Option<Snapshot>> = const { Cell::new(None) };
+    }
+
+    // Read-only call-site observation; no request values or admission authority.
+    pub(in crate::proxy::security) struct Observation {
+        previous: Option<Snapshot>,
+        _thread_bound: PhantomData<Rc<()>>,
+    }
+
+    pub(in crate::proxy::security) fn observe() -> Observation {
+        Observation {
+            previous: LAST_SCOPE.with(|slot| slot.replace(None)),
+            _thread_bound: PhantomData,
+        }
+    }
+
+    impl Observation {
+        pub(in crate::proxy::security) fn recorded(&self) -> Option<Snapshot> {
+            LAST_SCOPE.with(Cell::get)
+        }
+    }
+
+    impl Drop for Observation {
+        fn drop(&mut self) {
+            LAST_SCOPE.with(|slot| slot.set(self.previous));
+        }
+    }
+
+    pub(super) fn record(scope: RestorationRouteScope) {
+        LAST_SCOPE.with(|slot| {
+            slot.set(Some((
+                scope.client,
+                scope.ingress,
+                scope.operation,
+                scope.framing,
+            )));
+        });
+    }
+}
+
+/// Admit only the existing Responses cells from trusted handler-owned scope.
+/// Native and unsupported cells retain ordinary inspection, never namespace authority.
+pub(crate) fn admit_http_request_with_scope(
+    gateway: &RestorationGateway,
+    app_type: &AppType,
+    scope: crate::proxy::handler_context::RestorationRouteScope,
+    body: &mut Value,
+    headers: &HeaderMap,
+) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
+    use crate::proxy::{
+        handler_context::{RequestIngress, RestorationFraming, RestorationOperation},
+        protocol_bridge::Protocol,
+    };
+    #[cfg(test)]
+    route_scope_test_support::record(scope);
+    if matches!(app_type, AppType::Codex)
+        && matches!(
+            (scope.ingress, scope.client, scope.operation, scope.framing),
+            (
+                RequestIngress::Direct,
+                Protocol::Chat,
+                RestorationOperation::ChatCompletions,
+                RestorationFraming::Json | RestorationFraming::Sse
+            )
+        )
+    {
+        return native_chat::admit(gateway, app_type, body, headers, Protocol::Chat);
+    }
+    if matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
+        && matches!(
+            (scope.ingress, scope.client, scope.operation, scope.framing),
+            (
+                RequestIngress::Direct,
+                Protocol::Anthropic,
+                RestorationOperation::Messages,
+                RestorationFraming::Json | RestorationFraming::Sse
+            )
+        )
+    {
+        return native_chat::admit(gateway, app_type, body, headers, Protocol::Anthropic);
+    }
+    // Only the two canonical generation pairs may acquire native Gemini authority;
+    // a mismatched operation/framing combination stays on the legacy path.
+    if matches!(app_type, AppType::Gemini)
+        && matches!(
+            (scope.ingress, scope.client, scope.operation, scope.framing),
+            (
+                RequestIngress::Direct,
+                Protocol::Gemini,
+                RestorationOperation::GenerateContent,
+                RestorationFraming::Json
+            ) | (
+                RequestIngress::Direct,
+                Protocol::Gemini,
+                RestorationOperation::StreamGenerateContent,
+                RestorationFraming::Sse
+            )
+        )
+    {
+        return native_chat::admit(gateway, app_type, body, headers, Protocol::Gemini);
+    }
+    // Registration is descriptive, not admission authority; no actual upstream is
+    // known here. Gateway keeps only its legacy Responses behavior. Neither ingress
+    // may acquire native authority from application attribution or request headers.
+    let responses_supported = matches!(
+        (scope.ingress, scope.client, scope.operation, scope.framing),
+        (
+            RequestIngress::Direct | RequestIngress::Gateway,
+            Protocol::Responses,
+            RestorationOperation::Responses,
+            RestorationFraming::Json | RestorationFraming::Sse
+        ) | (
+            RequestIngress::Direct | RequestIngress::Gateway,
+            Protocol::Responses,
+            RestorationOperation::ResponsesCompact,
+            RestorationFraming::Json
+        )
+    );
+    let native_direct_scope = scope.ingress == RequestIngress::Direct
+        && matches!(
+            (scope.client, app_type),
+            (Protocol::Chat, AppType::Codex)
+                | (
+                    Protocol::Anthropic,
+                    AppType::Claude | AppType::ClaudeDesktop
+                )
+                | (Protocol::Gemini, AppType::Gemini)
+        );
+    admit_http_request(
+        gateway,
+        app_type,
+        responses_supported,
+        scope.operation == RestorationOperation::ResponsesCompact,
+        native_direct_scope,
+        body,
+        headers,
+    )
+}
+
 pub(crate) fn admit_http_request(
     gateway: &RestorationGateway,
     app_type: &AppType,
     endpoint_supported_codex_responses: bool,
     endpoint_is_compact: bool,
+    native_direct_scope: bool,
     body: &mut Value,
     headers: &HeaderMap,
 ) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
@@ -1053,21 +1313,21 @@ pub(crate) fn admit_http_request(
 
     let dlp_active = snapshot.runtime.restoration_enabled()
         || (snapshot.runtime.enabled && !gw_state.rules.is_empty());
-    let mut admitted_lease = if is_supported_codex && dlp_active {
+    let mut admitted_authority = if is_supported_codex && dlp_active {
         Some(
-            gw_state
-                .store
-                .admit_published_policy(
-                    "codex",
-                    extract_codex_restoration_session_id(headers, body),
-                    snapshot.restoration_policy_revision,
+            RequestAuthority::admit_responses(
+                &gw_state.store,
+                "codex",
+                extract_codex_restoration_session_id(headers, body),
+                snapshot.restoration_policy_revision,
+                gw_state.budget.clone(),
+            )
+            .map_err(|error| {
+                crate::proxy::error::ProxyError::DlpForward(
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::NamespaceAdmission),
                 )
-                .map_err(|error| {
-                    crate::proxy::error::ProxyError::DlpForward(
-                        DlpForwardError::from_token_error(error)
-                            .at_context_checkpoint(ContextCheckpoint::NamespaceAdmission),
-                    )
-                })?,
+            })?,
         )
     } else {
         None
@@ -1076,9 +1336,11 @@ pub(crate) fn admit_http_request(
     let mut refusal_state = None;
     let result = (|| {
         // Optional discovery borrows the immutable request and never reserves mandatory payload bytes.
-        let candidate = admitted_lease
-            .as_ref()
-            .and_then(|lease| lease.history_admission_candidate_projection(body));
+        let candidate = admitted_authority.as_ref().and_then(|authority| {
+            authority
+                .lease()
+                .history_admission_candidate_projection(body)
+        });
         let has_tokens = if is_supported_codex {
             // Syntax is bounded and validated, but never creates restoration authority.
             if let Err(error) = visit_request_references(body, candidate.as_ref(), |_| Ok(()))
@@ -1178,8 +1440,17 @@ pub(crate) fn admit_http_request(
                 }
             };
             if matched_restore || has_tokens {
+                // Only a direct native scope is caller-actionable; gateway and other
+                // legacy shapes keep their existing fixed projection.
+                let error = if native_direct_scope {
+                    DlpForwardError::RestoreUnsupportedFor(
+                        RestoreUnsupportedCause::UnsupportedEndpoint,
+                    )
+                } else {
+                    DlpForwardError::RestoreUnsupported
+                };
                 return Ok(RestorationAdmission::Intercepted(
-                    DlpForwardError::RestoreUnsupported.into_app_response(app_type),
+                    error.into_app_response(app_type),
                 ));
             }
             return match inspect_and_intercept_mut_with_headers(app_type, body, headers)? {
@@ -1188,15 +1459,15 @@ pub(crate) fn admit_http_request(
             };
         }
 
-        let mut base_lease =
-            admitted_lease
+        let mut authority =
+            admitted_authority
                 .take()
                 .ok_or(crate::proxy::error::ProxyError::DlpForward(
                     DlpForwardError::ContextUnavailable,
                 ))?;
 
         let history_classification =
-            super::request_preparation::classify_request_history(body, &budget, candidate.as_ref())
+            responses_adapter::classify_request_history(body, &budget, candidate.as_ref())
                 .map_err(|error| {
                     crate::proxy::error::ProxyError::DlpForward(
                         DlpForwardError::from_token_error(error)
@@ -1271,7 +1542,7 @@ pub(crate) fn admit_http_request(
                 source_body.as_value(),
                 &snapshot.runtime,
                 rule_refs.as_slice(),
-                &base_lease,
+                authority.lease(),
                 budget.clone(),
                 candidate.as_ref(),
             ) {
@@ -1292,13 +1563,10 @@ pub(crate) fn admit_http_request(
             && !fresh_readable_history
             && history.referenced_tokens.as_slice().is_empty()
         {
-            match prepare_codex_request_with_budget(
-                &mut base_lease,
+            match authority.prepare_responses_request(
                 source_body.as_value(),
                 &snapshot.runtime,
                 rule_refs.as_slice(),
-                &[],
-                budget.clone(),
                 |_, _, _| Ok(()),
             ) {
                 Ok(prepared) => {
@@ -1314,12 +1582,12 @@ pub(crate) fn admit_http_request(
                             }
                         };
                     return Ok(RestorationAdmission::Admitted(Box::new(DlpHttpRequest {
-                        base_lease,
+                        authority,
                         runtime: (*snapshot.runtime).clone(),
                         restore_rules: rules_copy,
-                        budget,
                         source_body: pretokenized_body,
                         pretokenized: true,
+                        native_protocol: None,
                         endpoint_is_compact,
                         audit_state: std::sync::Arc::clone(&audit_state),
                         initial_audit,
@@ -1336,12 +1604,12 @@ pub(crate) fn admit_http_request(
         }
 
         Ok(RestorationAdmission::Admitted(Box::new(DlpHttpRequest {
-            base_lease,
+            authority,
             runtime: (*snapshot.runtime).clone(),
             restore_rules: rules_copy,
-            budget,
             source_body,
             pretokenized: false,
+            native_protocol: None,
             endpoint_is_compact,
             audit_state: std::sync::Arc::clone(&audit_state),
             initial_audit,
@@ -1458,19 +1726,31 @@ impl DlpResponseNamespaceTable {
 }
 
 impl DlpHttpRequest {
+    pub(crate) fn is_native_chat(&self) -> bool {
+        self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Chat)
+    }
+
+    pub(crate) fn is_native_anthropic(&self) -> bool {
+        self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Anthropic)
+    }
+
+    pub(crate) fn is_native_gemini(&self) -> bool {
+        self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Gemini)
+    }
+
     pub(crate) fn build_response_namespace_table(
         &self,
         body: &Value,
     ) -> Result<Option<DlpResponseNamespaceTable>, DlpForwardError> {
         if !(self.runtime.restoration_enabled()
             || (self.runtime.enabled && !self.restore_rules.as_slice().is_empty())
-            || !self.base_lease.is_empty())
+            || !self.authority.lease().is_empty())
         {
             return Ok(None);
         }
         #[cfg(test)]
-        response_namespace_test_support::before_build(&self.budget)?;
-        let result = DlpResponseNamespaceTable::build(body, self.budget.clone())
+        response_namespace_test_support::before_build(&self.authority.budget())?;
+        let result = DlpResponseNamespaceTable::build(body, self.authority.budget())
             .map(Some)
             .map_err(DlpForwardError::from_token_error);
         #[cfg(test)]
@@ -1481,12 +1761,16 @@ impl DlpHttpRequest {
     pub(crate) fn chat_history_provenance(
         &self,
     ) -> Result<super::chat_enrichment::ChatHistoryProvenance, DlpForwardError> {
+        if self.native_protocol.is_some() {
+            return Ok(super::chat_enrichment::ChatHistoryProvenance::UnknownPassthrough);
+        }
         let candidate = self
-            .base_lease
+            .authority
+            .lease()
             .history_admission_candidate_projection(self.source_body.as_value());
-        let classification = super::request_preparation::classify_request_history(
+        let classification = responses_adapter::classify_request_history(
             self.source_body.as_value(),
-            &self.budget,
+            &self.authority.budget(),
             candidate.as_ref(),
         )
         .map_err(|error| {
@@ -1511,8 +1795,8 @@ impl DlpHttpRequest {
     ) -> Option<super::chat_enrichment::ChatEnrichmentBudget> {
         (self.runtime.restoration_enabled()
             || (self.runtime.enabled && !self.restore_rules.as_slice().is_empty())
-            || !self.base_lease.is_empty())
-        .then(|| super::chat_enrichment::ChatEnrichmentBudget::new(self.budget.clone()))
+            || !self.authority.lease().is_empty())
+        .then(|| super::chat_enrichment::ChatEnrichmentBudget::new(self.authority.budget()))
     }
 
     #[cfg(test)]
@@ -1528,8 +1812,8 @@ impl DlpHttpRequest {
         source_copy_test_support::attempt();
         let copy = PayloadJson::try_from_value(
             self.source_body.as_value(),
-            self.budget.clone(),
-            self.budget.limit(),
+            self.authority.budget(),
+            self.authority.budget().limit(),
         )
         .map_err(DlpForwardError::from_token_error)?;
         let (value, reservation) = copy.into_parts();
@@ -1543,11 +1827,40 @@ impl DlpHttpRequest {
         ))
     }
 
+    pub(crate) fn prepare_native_error_safety(
+        &self,
+        attempt: &mut DlpPreparedAttempt,
+        provider: &Value,
+        credentials: &[String],
+        sent_credentials: Option<&super::upstream_error::ErrorCredentials>,
+    ) -> Result<(), DlpForwardError> {
+        if attempt.native_protocol.is_none() {
+            return Ok(());
+        }
+        if sent_credentials.is_none() {
+            return Err(DlpForwardError::RedactionFailed);
+        }
+        attempt.native_error_safety = Some(
+            super::upstream_error::NativeErrorSafety::prepare(
+                super::upstream_error::ErrorSafetyContext {
+                    runtime: &self.runtime,
+                    request: self.source_body.as_value(),
+                    provider,
+                    credentials,
+                    sent_credentials,
+                    budget: self.authority.budget(),
+                },
+            )
+            .map_err(DlpForwardError::from_token_error)?,
+        );
+        Ok(())
+    }
+
     pub(crate) fn capture_error_credentials(
         &self,
         headers: &http::HeaderMap,
     ) -> Option<super::upstream_error::ErrorCredentials> {
-        super::upstream_error::ErrorCredentials::capture(headers, self.budget.clone()).ok()
+        super::upstream_error::ErrorCredentials::capture(headers, self.authority.budget()).ok()
     }
 
     pub(crate) async fn read_upstream_error(
@@ -1569,7 +1882,7 @@ impl DlpHttpRequest {
                 provider,
                 credentials,
                 sent_credentials,
-                budget: self.budget.clone(),
+                budget: self.authority.budget(),
             },
             timeout,
         )
@@ -1598,10 +1911,14 @@ impl DlpHttpRequest {
             Some(edit) => PayloadJson::try_with_replacements(
                 body,
                 &[edit],
-                self.budget.clone(),
-                self.budget.limit(),
+                self.authority.budget(),
+                self.authority.budget().limit(),
             ),
-            None => PayloadJson::try_from_value(body, self.budget.clone(), self.budget.limit()),
+            None => PayloadJson::try_from_value(
+                body,
+                self.authority.budget(),
+                self.authority.budget().limit(),
+            ),
         }
         .map_err(DlpForwardError::from_token_error)?;
         let (value, reservation) = copy.into_parts();
@@ -1615,13 +1932,149 @@ impl DlpHttpRequest {
         ))
     }
 
+    /// Reserve resolver scratch before its first copy; release only after the
+    /// selected model is copied into the independently owned mapping tree.
+    pub(crate) fn build_desktop_provider_mapped_body(
+        &self,
+        body: &Value,
+        provider: &crate::provider::Provider,
+    ) -> Result<(Value, DlpMappingBodyOwner), crate::proxy::error::ProxyError> {
+        use crate::proxy::error::ProxyError;
+
+        let _resolver_scratch = if self.is_native_anthropic() {
+            let bytes =
+                crate::claude_desktop_config::proxy_request_model_scratch_bytes(body, provider)
+                    .ok_or(ProxyError::DlpForward(DlpForwardError::CapacityExceeded))?;
+            Some(
+                self.authority
+                    .budget()
+                    .reserve(bytes)
+                    .map_err(DlpForwardError::from_token_error)
+                    .map_err(ProxyError::DlpForward)?,
+            )
+        } else {
+            None
+        };
+        let model = crate::claude_desktop_config::proxy_request_upstream_model(body, provider)
+            .map_err(|error| {
+                // Do not move model-derived error text beyond the scratch owner
+                // or expose it to client responses and forwarding diagnostics.
+                let message = if self.is_native_anthropic() {
+                    "Claude Desktop model routing failed.".to_string()
+                } else {
+                    error.to_string()
+                };
+                ProxyError::InvalidRequest(message)
+            })?;
+        self.build_desktop_mapped_body(
+            body,
+            &model,
+            crate::claude_desktop_config::should_normalize_mimo_anthropic_thinking_history(
+                provider, &model,
+            ),
+        )
+        .map_err(ProxyError::DlpForward)
+    }
+
+    pub(crate) fn build_desktop_mapped_body(
+        &self,
+        body: &Value,
+        model: &str,
+        normalize_mimo: bool,
+    ) -> Result<(Value, DlpMappingBodyOwner), DlpForwardError> {
+        #[cfg(test)]
+        mapping_copy_test_support::attempt();
+        if normalize_mimo && self.is_native_anthropic() {
+            if let Some(messages) = body.get("messages").and_then(Value::as_array) {
+                for message in messages {
+                    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                        continue;
+                    }
+                    if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                        let tool_bearing = blocks.iter().any(|block| {
+                            block.get("type").and_then(Value::as_str) == Some("tool_use")
+                        });
+                        let immutable = blocks.iter().any(|block| {
+                            matches!(
+                                block.get("type").and_then(Value::as_str),
+                                Some("thinking" | "redacted_thinking")
+                            )
+                        });
+                        // Native carriers are immutable before normalization or
+                        // inspection. Never remove signatures to make them editable.
+                        if tool_bearing && immutable {
+                            return Err(DlpForwardError::RestoreUnsupported);
+                        }
+                    }
+                }
+            }
+        }
+        let target = body
+            .get("model")
+            .filter(|value| value.is_string())
+            .ok_or(DlpForwardError::RedactionFailed)?;
+        let model = crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model);
+        let copy = PayloadJson::try_with_replacements(
+            body,
+            &[JsonStringReplacement {
+                target,
+                text: model,
+            }],
+            self.authority.budget(),
+            self.authority.budget().limit(),
+        )
+        .map_err(DlpForwardError::from_token_error)?;
+        let (mut value, mut reservation) = copy.into_parts();
+        let result = (|| {
+            if normalize_mimo {
+                // MiMo can grow each tool-bearing assistant array by one block,
+                // replace redacted blocks, or add a missing thinking field. The
+                // second full-tree charge covers container reallocation peaks;
+                // each block/message gets a conservative new-object allowance.
+                let mut units = 0usize;
+                if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+                    units = messages.len();
+                    for message in messages {
+                        if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                            units = units
+                                .checked_add(blocks.len())
+                                .ok_or(DlpForwardError::CapacityExceeded)?;
+                        }
+                    }
+                }
+                let growth = units
+                    .checked_mul(4096)
+                    .and_then(|bytes| bytes.checked_add(reservation.bytes()))
+                    .ok_or(DlpForwardError::CapacityExceeded)?;
+                reservation
+                    .grow(growth)
+                    .map_err(DlpForwardError::from_token_error)?;
+                crate::claude_desktop_config::normalize_mimo_anthropic_thinking_history(&mut value);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            drop(value);
+            return Err(error);
+        }
+        let owner = DlpMappingBodyOwner {
+            #[cfg(test)]
+            _probe: mapping_copy_test_support::OwnerProbe::new(reservation.bytes()),
+            _reservation: reservation,
+        };
+        Ok((value, owner))
+    }
+
     pub(crate) fn build_namespace_body(
         &self,
         body: &Value,
     ) -> Result<Option<(Value, DlpNamespaceOwner)>, DlpForwardError> {
-        let Some(output) =
-            PayloadJson::try_namespace_body(body, self.budget.clone(), self.budget.limit())
-                .map_err(DlpForwardError::from_token_error)?
+        let Some(output) = PayloadJson::try_namespace_body(
+            body,
+            self.authority.budget(),
+            self.authority.budget().limit(),
+        )
+        .map_err(DlpForwardError::from_token_error)?
         else {
             return Ok(None);
         };
@@ -1644,8 +2097,8 @@ impl DlpHttpRequest {
         let output = PayloadJson::try_with_prompt_cache_key(
             body,
             key,
-            self.budget.clone(),
-            self.budget.limit(),
+            self.authority.budget(),
+            self.authority.budget().limit(),
         )
         .map_err(DlpForwardError::from_token_error)?;
         let (body, reservation) = output.into_parts();
@@ -1662,9 +2115,14 @@ impl DlpHttpRequest {
         body: &Value,
         patch: Option<&Value>,
     ) -> Result<(Value, DlpOutboundTailOwner), DlpForwardError> {
-        let output =
-            PayloadJson::try_outbound_tail(body, patch, self.budget.clone(), self.budget.limit())
-                .map_err(DlpForwardError::from_token_error)?;
+        let budget = self.authority.budget();
+        let limit = budget.limit();
+        let output = if self.is_native_anthropic() {
+            PayloadJson::try_anthropic_outbound_tail(body, patch, budget, limit)
+        } else {
+            PayloadJson::try_outbound_tail(body, patch, budget, limit)
+        }
+        .map_err(DlpForwardError::from_token_error)?;
         let (body, reservation) = output.into_parts();
         Ok((
             body,
@@ -1695,25 +2153,30 @@ impl DlpHttpRequest {
             &DlpHistoryTransform<'_>,
         ) -> Result<(Value, Option<DlpHistoryMapping>), DlpForwardError>,
     {
+        if self.native_protocol.is_some() {
+            return self.prepare_native_chat_attempt(
+                provider_id,
+                protocol,
+                target_url,
+                auth_principal,
+                operation,
+                enriched_body,
+                transform_and_override,
+            );
+        }
         let mut refusal_audit = None;
         let result = (|| {
-            let mut attempt_lease = self.base_lease.fork_attempt().map_err(|error| {
-                DlpForwardError::from_token_error(error)
-                    .at_context_checkpoint(ContextCheckpoint::AttemptFork)
-            })?;
-            let binding = attempt_lease
-                .bind_actual_operation_attempt(
-                    provider_id,
-                    protocol,
-                    target_url,
-                    auth_principal,
-                    operation,
-                )
+            let (mut attempt_lease, binding) = self
+                .authority
+                .fork_bound_attempt(provider_id, protocol, target_url, auth_principal, operation)
                 .map_err(|error| {
-                    DlpForwardError::from_token_error(error)
-                        .at_context_checkpoint(ContextCheckpoint::AttemptBinding)
+                    DlpForwardError::from_token_error(error.error)
+                        .at_context_checkpoint(error.checkpoint)
                 })?;
 
+            let provenance =
+                super::restoration_core::AttemptProvenance::new(&self.authority.budget())
+                    .map_err(DlpForwardError::from_token_error)?;
             let mut projection = attempt_lease.history_projection(&binding, enriched_body);
             if let Some(projection) = &mut projection {
                 projection.restrict_to_origin(self.source_body.as_value());
@@ -1721,23 +2184,22 @@ impl DlpHttpRequest {
             refusal_audit = PendingRequestAudit::capture_refusal_with_history(
                 enriched_body,
                 &self.runtime,
-                self.budget.clone(),
+                self.authority.budget(),
                 projection.as_ref(),
             )
             .ok();
-            let attempt_history_classification =
-                super::request_preparation::classify_request_history(
-                    enriched_body,
-                    &self.budget,
-                    projection.as_ref(),
-                )
-                .map_err(|error| {
-                    DlpForwardError::from_token_error(error)
-                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
-                })?;
+            let attempt_history_classification = responses_adapter::classify_request_history(
+                enriched_body,
+                &self.authority.budget(),
+                projection.as_ref(),
+            )
+            .map_err(|error| {
+                DlpForwardError::from_token_error(error)
+                    .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
+            })?;
             let history = extract_request_history(
                 enriched_body,
-                &self.budget,
+                &self.authority.budget(),
                 projection.as_ref(),
                 attempt_history_classification,
             )
@@ -1746,23 +2208,23 @@ impl DlpHttpRequest {
                     .at_context_checkpoint(ContextCheckpoint::AttemptHistory)
             })?;
 
-            let mut opaque_refs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            let mut opaque_refs = PayloadVec::new(self.authority.budget())
+                .map_err(DlpForwardError::from_token_error)?;
             for o in history.opaques.as_slice() {
                 opaque_refs
                     .push(o.as_str())
                     .map_err(DlpForwardError::from_token_error)?;
             }
-            let mut orphan_refs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            let mut orphan_refs = PayloadVec::new(self.authority.budget())
+                .map_err(DlpForwardError::from_token_error)?;
             for cid in history.orphan_output_call_ids.as_slice() {
                 orphan_refs
                     .push(cid.as_str())
                     .map_err(DlpForwardError::from_token_error)?;
             }
 
-            let mut token_candidates =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            let mut token_candidates = PayloadVec::new(self.authority.budget())
+                .map_err(DlpForwardError::from_token_error)?;
             for t in history.referenced_tokens.as_slice() {
                 token_candidates
                     .push(t.as_str())
@@ -1774,8 +2236,8 @@ impl DlpHttpRequest {
                     DlpForwardError::from_token_error(error)
                         .at_context_checkpoint(ContextCheckpoint::TokenResume)
                 })?;
-            let mut token_refs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            let mut token_refs = PayloadVec::new(self.authority.budget())
+                .map_err(DlpForwardError::from_token_error)?;
             for &reference in token_candidates.as_slice() {
                 if attempt_lease
                     .resolve_if_authorized(reference)
@@ -1789,19 +2251,19 @@ impl DlpHttpRequest {
             }
 
             let dependency_projection = self
-                .base_lease
+                .authority
+                .lease()
                 .history_admission_candidate_projection(self.source_body.as_value());
             // Freeze dependency obligations with the same candidate used for call selection.
-            let source_history_classification =
-                super::request_preparation::classify_request_history(
-                    self.source_body.as_value(),
-                    &self.budget,
-                    dependency_projection.as_ref(),
-                )
-                .map_err(|error| {
-                    DlpForwardError::from_token_error(error)
-                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
-                })?;
+            let source_history_classification = responses_adapter::classify_request_history(
+                self.source_body.as_value(),
+                &self.authority.budget(),
+                dependency_projection.as_ref(),
+            )
+            .map_err(|error| {
+                DlpForwardError::from_token_error(error)
+                    .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
+            })?;
             let requires_completed_context = matches!(
                 source_history_classification,
                 RequestHistoryClassification::ExplicitDependency
@@ -1815,16 +2277,16 @@ impl DlpHttpRequest {
                 && token_refs.as_slice().is_empty()
                 && opaque_refs.as_slice().is_empty()
                 && self.source_body.as_value().get("input") == enriched_body.get("input")
-                && super::request_preparation::is_fresh_readable_history_for_call_selection(
+                && responses_adapter::is_fresh_readable_history_for_call_selection(
                     self.source_body.as_value(),
-                    &self.budget,
+                    &self.authority.budget(),
                 )
                 .map_err(|error| {
                     DlpForwardError::from_token_error(error)
                         .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
                 })?;
-            let mut call_specs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            let mut call_specs = PayloadVec::new(self.authority.budget())
+                .map_err(DlpForwardError::from_token_error)?;
             for c in history.calls.as_slice() {
                 if per_call_readable_history
                     && !self
@@ -1877,7 +2339,7 @@ impl DlpHttpRequest {
                     &mut resume_reason,
                 ) {
                     let error = DlpForwardError::from_token_error(error);
-                    if error == DlpForwardError::ContextUnavailable {
+                    if optional_history_miss(error).is_ok() {
                         super::restore_diagnostics::log_context_resume_failure(
                             resume_reason.unwrap_or(
                                 super::restore_diagnostics::ContextResumeReason::Unknown,
@@ -1900,14 +2362,12 @@ impl DlpHttpRequest {
                 ) {
                     let error = DlpForwardError::from_token_error(error)
                         .at_context_checkpoint(ContextCheckpoint::OutputCallIds);
-                    if error != DlpForwardError::ContextUnavailable {
-                        return Err(error);
-                    }
+                    optional_history_miss(error)?;
                 }
             }
 
-            let mut rule_refs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            let mut rule_refs = PayloadVec::new(self.authority.budget())
+                .map_err(DlpForwardError::from_token_error)?;
             for r in self.restore_rules.as_slice() {
                 rule_refs
                     .push(r.as_str())
@@ -1919,20 +2379,20 @@ impl DlpHttpRequest {
                 &self.runtime,
                 rule_refs.as_slice(),
                 &attempt_lease,
-                self.budget.clone(),
+                self.authority.budget(),
                 projection.as_ref(),
             )
             .map_err(|error| {
                 DlpForwardError::from_plan_error(error)
                     .at_context_checkpoint(ContextCheckpoint::AttemptAudit)
             })?;
-            let prepared = super::request_preparation::prepare_codex_request_with_history(
+            let prepared = responses_adapter::prepare_request_with_history(
                 &mut attempt_lease,
                 enriched_body,
                 &self.runtime,
                 rule_refs.as_slice(),
                 token_refs.as_slice(),
-                self.budget.clone(),
+                self.authority.budget(),
                 projection.as_ref(),
                 |candidate_val, _encoded, _proof| {
                     visit_request_references(candidate_val, projection.as_ref(), |_| Ok(()))
@@ -1979,7 +2439,7 @@ impl DlpHttpRequest {
                 &attempt_lease,
                 FinalOutboundContext {
                     runtime: &self.runtime,
-                    budget: &self.budget,
+                    budget: &self.authority.budget(),
                     audit_state: &self.audit_state,
                     provider_id,
                     binding: Some(&binding),
@@ -1993,7 +2453,7 @@ impl DlpHttpRequest {
                 DlpPreparedAttempt {
                     lease: attempt_lease,
                     binding,
-                    budget: self.budget.clone(),
+                    budget: self.authority.budget(),
                     endpoint_is_compact: self.endpoint_is_compact,
                     upstream_json_protocol: match protocol {
                         "openai_responses" if self.endpoint_is_compact => {
@@ -2004,12 +2464,18 @@ impl DlpHttpRequest {
                         "anthropic" => Some(JsonCompletionProtocol::AnthropicMessages),
                         _ => None,
                     },
-                    json_completion: std::sync::atomic::AtomicU8::new(0),
+                    provenance,
+                    json_completion: completion_verifier::JsonCompletionVerifier::new(),
                     audit_state: std::sync::Arc::clone(&self.audit_state),
                     initial_audit: std::sync::Arc::clone(&self.initial_audit),
                     pending_audit,
                     upstream_payload_owner: None,
                     history_mapping,
+                    native_history_digest: None,
+                    native_protocol: None,
+                    native_original: None,
+                    native_error_safety: None,
+                    sse_evidence: std::sync::Mutex::new(None),
                 },
                 input_owner,
             ))
@@ -2365,6 +2831,23 @@ fn final_inspection_carriers(
             native: true,
         });
     }
+    if protocol == "gemini_native" {
+        let mut items =
+            PayloadVec::new(budget.clone()).map_err(DlpForwardError::from_token_error)?;
+        collect_final_gemini(body, &mut items).map_err(DlpForwardError::from_token_error)?;
+        let projection = final_inspection_json(
+            &FinalInspectionBody {
+                input: items.as_slice(),
+            },
+            budget,
+        )
+        .map_err(DlpForwardError::from_token_error)?;
+        return Ok(FinalInspectionCarriers {
+            carriers: collect(projection.as_value())?,
+            targets,
+            native: false,
+        });
+    }
     let anthropic = match protocol {
         "openai_chat" => false,
         "anthropic" => true,
@@ -2458,6 +2941,52 @@ fn final_inspection_carriers(
         targets,
         native: false,
     })
+}
+
+/// Native Gemini text carriers only: generated Parts, ProtoJSON system spellings and
+/// Struct-valued function arguments/results. Media, signatures and unknown members stay opaque.
+fn collect_final_gemini<'a>(
+    body: &'a Value,
+    items: &mut PayloadVec<FinalInspectionItem<'a>>,
+) -> Result<(), TokenError> {
+    for field in ["systemInstruction", "system_instruction"] {
+        if let Some(instruction) = body.get(field) {
+            collect_final_gemini_content(instruction, items)?;
+        }
+    }
+    if let Some(contents) = body.get("contents").and_then(Value::as_array) {
+        for content in contents {
+            collect_final_gemini_content(content, items)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_final_gemini_content<'a>(
+    content: &'a Value,
+    items: &mut PayloadVec<FinalInspectionItem<'a>>,
+) -> Result<(), TokenError> {
+    let Some(parts) = content.get("parts").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            items.push(FinalInspectionItem::Text(text))?;
+        }
+        for (carrier, field) in [("functionCall", "args"), ("functionResponse", "response")] {
+            if let Some(value) = part
+                .get(carrier)
+                .and_then(|function| function.get(field))
+                .filter(|value| value.is_object())
+            {
+                items.push(FinalInspectionItem::Arguments {
+                    kind: "function_call",
+                    arguments: value,
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn final_inspection_json(
@@ -2702,53 +3231,40 @@ impl DlpPreparedAttempt {
         self.budget.clone()
     }
 
+    fn response_protocol_pair(
+        &self,
+    ) -> Result<super::restoration_contract::ProtocolPair, RestoreError> {
+        use super::restoration_contract::{ClientProtocol, ProtocolPair, UpstreamProtocol};
+        use crate::proxy::protocol_bridge::Protocol;
+        let upstream = match self.upstream_json_protocol {
+            Some(
+                JsonCompletionProtocol::NativeResponses | JsonCompletionProtocol::ResponsesCompact,
+            ) => Protocol::Responses,
+            Some(JsonCompletionProtocol::ChatCompletions) => Protocol::Chat,
+            Some(JsonCompletionProtocol::AnthropicMessages) => Protocol::Anthropic,
+            None => return Err(RestoreError::RestoreFailed),
+        };
+        Ok(ProtocolPair::new(
+            ClientProtocol::new(Protocol::Responses),
+            UpstreamProtocol::new(upstream),
+        ))
+    }
+
     pub(crate) fn verify_upstream_json_completion(
         &self,
         protocol: JsonCompletionProtocol,
         raw_json: &str,
     ) -> Result<(), RestoreError> {
-        use std::sync::atomic::Ordering;
-        let matches_protocol = matches!(
-            (self.upstream_json_protocol, protocol),
-            (
-                Some(JsonCompletionProtocol::NativeResponses),
-                JsonCompletionProtocol::NativeResponses
-            ) | (
-                Some(JsonCompletionProtocol::ResponsesCompact),
-                JsonCompletionProtocol::ResponsesCompact
-            ) | (
-                Some(JsonCompletionProtocol::ChatCompletions),
-                JsonCompletionProtocol::ChatCompletions
-            ) | (
-                Some(JsonCompletionProtocol::AnthropicMessages),
-                JsonCompletionProtocol::AnthropicMessages
-            )
-        );
-        let mut completion = JsonCompletion::new(protocol);
-        completion.observe_raw_json(raw_json, &self.budget);
-        if !matches_protocol
-            || !completion.permits_completion()
-            || self
-                .json_completion
-                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-        {
-            let error = if matches_protocol && completion.has_unsupported_carrier() {
-                RestoreError::RestoreUnsupported
-            } else {
-                RestoreError::RestoreFailed
-            };
-            self.json_completion.store(
-                if error == RestoreError::RestoreUnsupported {
-                    3
-                } else {
-                    2
-                },
-                Ordering::Relaxed,
-            );
-            return Err(error);
-        }
-        Ok(())
+        self.json_completion.observe_json(
+            self.upstream_json_protocol,
+            protocol,
+            raw_json,
+            &self.budget,
+            &self.lease,
+            &self.binding,
+            self.response_protocol_pair()?,
+            &self.provenance,
+        )
     }
 
     #[cfg(test)]
@@ -2758,15 +3274,17 @@ impl DlpPreparedAttempt {
         body: &Value,
         _norm_mode: ArgumentNormalizationMode,
         observation: Option<&CompletionObservation<'_>>,
-    ) -> Result<super::response_restoration::RestoredJsonResponse, Response> {
+    ) -> Result<responses_adapter::RestoredJsonResponse, Box<Response>> {
+        // Boxed so this helper's error stays cheap to return; tests only inspect the outcome.
         let witness = self
             .json_completion_witness(status, observation)
-            .map_err(build_codex_restore_error_response)?;
+            .map_err(|error| Box::new(build_codex_restore_error_response(error)))?;
         stage_json_response(body, self.endpoint_is_compact, &self.lease, &self.budget)
             .and_then(|staged| staged.publish(&self.lease, &self.binding, &witness, &self.budget))
-            .map_err(build_codex_restore_error_response)
+            .map_err(|error| Box::new(build_codex_restore_error_response(error)))
     }
 
+    #[cfg(test)]
     fn json_completion_witness(
         &self,
         status: u16,
@@ -2793,27 +3311,27 @@ impl DlpPreparedAttempt {
                 _ => return Err(RestoreError::RestoreFailed),
             }
         }
-        CompletionWitness::from_verified_completion(
-            self.json_completion
-                .load(std::sync::atomic::Ordering::Relaxed)
-                == 1,
-        )
-        .map_err(|_| RestoreError::RestoreFailed)
+        CompletionWitness::from_verified_completion(self.json_completion.permits_completion())
+            .map_err(RestoreError::scan_error)
     }
 
     /// Only the actual xAI SSE branch requests original-byte evidence.
     pub(crate) fn xai_original_sse_evidence_tracker(
         &self,
     ) -> Option<std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>> {
-        Some(std::sync::Arc::new(std::sync::Mutex::new(
-            UpstreamSseEvidenceTracker::xai_original(self.budget.clone()),
-        )))
+        let mut tracker = UpstreamSseEvidenceTracker::xai_original(self.budget.clone());
+        tracker.bind_attempt(self.provenance.clone());
+        Some(std::sync::Arc::new(std::sync::Mutex::new(tracker)))
     }
 
     pub(crate) fn upstream_sse_evidence_tracker(
         &self,
     ) -> Option<std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>> {
-        let tracker = match self.upstream_json_protocol {
+        let mut owner = self.sse_evidence.lock().ok()?;
+        if let Some(owner) = &*owner {
+            return Some(owner.tracker.clone());
+        }
+        let mut tracker = match self.upstream_json_protocol {
             Some(JsonCompletionProtocol::ChatCompletions) => {
                 UpstreamSseEvidenceTracker::chat(self.budget.clone())
             }
@@ -2822,7 +3340,24 @@ impl DlpPreparedAttempt {
             }
             _ => return None,
         };
-        Some(std::sync::Arc::new(std::sync::Mutex::new(tracker)))
+        tracker.bind_attempt(self.provenance.clone());
+        match self.response_protocol_pair().and_then(|pair| {
+            responses_adapter::ResponsesSseInspection::begin(
+                &self.lease,
+                &self.binding,
+                &self.budget,
+                pair,
+                self.provenance.clone(),
+            )
+        }) {
+            Ok(inspection) => tracker.inspection = Some(inspection),
+            Err(_) => tracker.abort(),
+        }
+        let tracker = std::sync::Arc::new(std::sync::Mutex::new(tracker));
+        *owner = Some(PreparedSseEvidence {
+            tracker: tracker.clone(),
+        });
+        Some(tracker)
     }
 
     pub(crate) fn verify_upstream_sse_completion(
@@ -2840,95 +3375,34 @@ impl DlpPreparedAttempt {
                 JsonCompletionProtocol::AnthropicMessages,
             ) => UpstreamSseEvidenceTracker::anthropic(self.budget.clone()),
             _ => {
-                self.json_completion
-                    .store(2, std::sync::atomic::Ordering::Relaxed);
-                return Err(RestoreError::RestoreFailed);
+                return self
+                    .json_completion
+                    .observe_sse(Err(RestoreError::RestoreFailed));
             }
         };
-        let checked = (|| -> Result<(), RestoreError> {
-            let (mut frame_start, mut offset) = (0usize, 0usize);
-            for line in raw_sse.split_inclusive('\n') {
-                offset += line.len();
-                if offset - frame_start > 1024 * 1024 {
-                    return Err(RestoreError::RestoreFailed);
-                }
-                if line != "\n" && line != "\r\n" {
-                    continue;
-                }
-                let block = &raw_sse[frame_start..offset];
-                frame_start = offset;
-                tracker.observe(&CompletionObservation::RawFrame(block));
-                let mut data = PayloadBuffer::new(self.budget.clone(), 1024 * 1024)
-                    .map_err(|_| RestoreError::RestoreFailed)?;
-                let mut event = None;
-                let mut count = 0usize;
-                for line in block.lines() {
-                    if let Some(value) = line.strip_prefix("event:") {
-                        event = Some(value.trim());
-                    } else if let Some(value) = line
-                        .strip_prefix("data:")
-                        .or_else(|| (line == "data").then_some(""))
-                    {
-                        if count != 0 {
-                            data.append(b"\n")
-                                .map_err(|_| RestoreError::RestoreFailed)?;
-                        }
-                        count += 1;
-                        data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
-                            .map_err(|_| RestoreError::RestoreFailed)?;
-                    }
-                }
-                if count == 0 {
-                    continue;
-                }
-                let raw = std::str::from_utf8(data.as_slice())
-                    .map_err(|_| RestoreError::RestoreFailed)?;
-                if raw.trim() == "[DONE]" {
-                    tracker.observe(&CompletionObservation::ChatDone);
-                } else {
-                    let parsed =
-                        PayloadJson::try_from_str(raw, self.budget.clone(), self.budget.limit())
-                            .map_err(|_| RestoreError::RestoreFailed)?;
-                    match protocol {
-                        JsonCompletionProtocol::ChatCompletions => {
-                            tracker.observe(&CompletionObservation::ChatChunk(parsed.as_value()))
-                        }
-                        JsonCompletionProtocol::AnthropicMessages => {
-                            tracker.observe(&CompletionObservation::AnthropicEvent {
-                                event_name: event,
-                                data: parsed.as_value(),
-                            })
-                        }
-                        _ => return Err(RestoreError::RestoreFailed),
-                    }
-                }
-            }
-            tracker.observe(&CompletionObservation::EntityEnd {
-                reached_eof: true,
-                unfinished_frame: frame_start != raw_sse.len(),
-                unfinished_utf8: false,
-            });
-            tracker.completion_result()
+        tracker.bind_attempt(self.provenance.clone());
+        let checked = (|| -> Result<responses_adapter::ResponsesJsonInspection, RestoreError> {
+            let pair = self.response_protocol_pair()?;
+            let mut inspection = responses_adapter::ResponsesJsonInspection::begin(
+                &self.lease,
+                &self.binding,
+                &self.budget,
+                pair,
+                self.provenance.clone(),
+            )?;
+            tracker.observe_buffered_sse(protocol, raw_sse, |block| {
+                let original = super::restoration_contract::OriginalResponseObservation::frame(
+                    block.as_bytes(),
+                    pair.upstream(),
+                    self.provenance.clone(),
+                    self.budget.clone(),
+                )?;
+                inspection.observe_original(&original)
+            })?;
+            Ok(inspection)
         })();
-        use std::sync::atomic::Ordering;
-        if checked.is_err()
-            || self
-                .json_completion
-                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-        {
-            let error = checked.err().unwrap_or(RestoreError::RestoreFailed);
-            self.json_completion.store(
-                if error == RestoreError::RestoreUnsupported {
-                    3
-                } else {
-                    2
-                },
-                Ordering::Relaxed,
-            );
-            return Err(error);
-        }
-        Ok(())
+        self.json_completion
+            .observe_sse(checked.and_then(|inspection| Ok((tracker.take()?, inspection))))
     }
 
     pub(crate) async fn restore_client_http_response(
@@ -2937,6 +3411,17 @@ impl DlpPreparedAttempt {
         mode: ArgumentNormalizationMode,
         evidence: Option<std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>>,
     ) -> Response {
+        // Move cleanup into the delivered stream only after a successful handoff.
+        // Before the first poll, the attempt itself still owns this guard.
+        let early_inspection = match self.sse_evidence.lock() {
+            Ok(mut owner) => owner.take(),
+            Err(_) => {
+                return build_codex_restore_error_response_at(
+                    RestoreError::RestoreFailed,
+                    RestoreStage::SseInit,
+                )
+            }
+        };
         let upstream_owner = self.upstream_payload_owner();
         if !response.status().is_success() {
             let (parts, body) = response.into_parts();
@@ -2966,7 +3451,26 @@ impl DlpPreparedAttempt {
         }
         if is_sse {
             clear_entity_headers(&mut parts.headers);
-            let restorer = match self.into_sse_restorer(parts.status.as_u16(), mode) {
+            let inspection = match evidence
+                .as_ref()
+                .map(|tracker| {
+                    tracker
+                        .lock()
+                        .map_err(|_| RestoreError::RestoreFailed)
+                        .map(|mut tracker| tracker.inspection.take())
+                })
+                .transpose()
+            {
+                Ok(inspection) => inspection.flatten(),
+                Err(error) => {
+                    return build_codex_restore_error_response_at(error, RestoreStage::SseInit)
+                }
+            };
+            let restorer = match self.into_sse_restorer_with_inspection(
+                parts.status.as_u16(),
+                mode,
+                inspection,
+            ) {
                 Ok(restorer) => restorer,
                 Err(error) => {
                     return build_codex_restore_error_response_at(error, RestoreStage::SseInit)
@@ -2979,7 +3483,7 @@ impl DlpPreparedAttempt {
                 parts,
                 Body::from_stream(retain_stream_owner(
                     wrap_sse_stream_with_restoration_and_evidence(stream, restorer, evidence),
-                    upstream_owner,
+                    (upstream_owner, early_inspection),
                 )),
             );
         }
@@ -2990,22 +3494,16 @@ impl DlpPreparedAttempt {
                 budget.clone(),
                 crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
             let mut stream = body.into_data_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|_| RestoreError::RestoreFailed)?;
-                input
-                    .append(&chunk)
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                input.append(&chunk).map_err(RestoreError::scan_error)?;
             }
             let raw =
                 std::str::from_utf8(input.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
             stage = RestoreStage::CompletionEvidence;
-            if self
-                .json_completion
-                .load(std::sync::atomic::Ordering::Relaxed)
-                == 0
-            {
+            if self.json_completion.is_unobserved()? {
                 match self.upstream_json_protocol {
                     Some(
                         protocol @ (JsonCompletionProtocol::NativeResponses
@@ -3018,22 +3516,35 @@ impl DlpPreparedAttempt {
             }
             stage = RestoreStage::JsonRestore;
             let parsed = PayloadJson::try_from_str(raw, budget.clone(), budget.limit())
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
             stage = RestoreStage::CompletionEvidence;
-            let witness = self.json_completion_witness(parts.status.as_u16(), None)?;
+            let pair = self.response_protocol_pair()?;
+            let (proof, inspection) = self.json_completion.finish(
+                parsed.as_value(),
+                &self.binding,
+                parts.status.as_u16(),
+            )?;
             stage = RestoreStage::JsonRestore;
-            let staged = stage_json_response(
+            let staged = stage_json_response_bound(
                 parsed.as_value(),
                 self.endpoint_is_compact,
                 &self.lease,
+                &self.binding,
                 &budget,
+                pair,
+                &self.provenance,
+                inspection,
             )?;
             let pending_history = self
                 .lease
                 .capture_delivered_history(&self.binding, staged.as_value());
             let changed = staged.as_value() != parsed.as_value();
-            let encoded = super::response_restoration::serialize_json_with_budget(
-                staged.as_value(),
+            // Mandatory charged final encoding and activation share one sealed boundary.
+            stage = RestoreStage::ContextPublish;
+            let (_restored, encoded) = staged.encode_and_publish(
+                &self.lease,
+                &self.binding,
+                proof,
                 &budget,
                 crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
             )?;
@@ -3043,10 +3554,7 @@ impl DlpPreparedAttempt {
                 drop(encoded);
                 input
             };
-            // The final bytes own their reservation before continuity can be published.
             let bytes = bytes_with_owner(output, upstream_owner);
-            stage = RestoreStage::ContextPublish;
-            let _restored = staged.publish(&self.lease, &self.binding, &witness, &budget)?;
             if let Some(pending) = pending_history {
                 let _ = self.lease.publish_delivered_history(&self.binding, pending);
             }
@@ -3067,15 +3575,64 @@ impl DlpPreparedAttempt {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn into_sse_restorer(
         self,
         status: u16,
         norm_mode: ArgumentNormalizationMode,
     ) -> Result<SseRestorationState, RestoreError> {
+        self.into_sse_restorer_with_inspection(status, norm_mode, None)
+    }
+
+    fn into_sse_restorer_with_inspection(
+        self,
+        status: u16,
+        norm_mode: ArgumentNormalizationMode,
+        inspection: Option<responses_adapter::ResponsesSseInspection>,
+    ) -> Result<SseRestorationState, RestoreError> {
         if status != 200 || self.endpoint_is_compact {
             return Err(RestoreError::RestoreFailed);
         }
-        SseRestorationState::new(self.lease, self.binding, self.budget, norm_mode)
+        use super::restoration_contract::{ClientProtocol, ProtocolPair, UpstreamProtocol};
+        use crate::proxy::protocol_bridge::Protocol;
+        let upstream = match self.upstream_json_protocol {
+            Some(
+                JsonCompletionProtocol::NativeResponses | JsonCompletionProtocol::ResponsesCompact,
+            ) => Protocol::Responses,
+            Some(JsonCompletionProtocol::ChatCompletions) => Protocol::Chat,
+            Some(JsonCompletionProtocol::AnthropicMessages) => Protocol::Anthropic,
+            None => return Err(RestoreError::RestoreFailed),
+        };
+        let pair = ProtocolPair::new(
+            ClientProtocol::new(Protocol::Responses),
+            UpstreamProtocol::new(upstream),
+        );
+        let requirement = super::restoration_core::SseEvidenceRequirement::new(
+            self.provenance.clone(),
+            self.upstream_json_protocol,
+            norm_mode,
+        );
+        let mut restorer = match inspection {
+            Some(inspection) => SseRestorationState::from_inspection(
+                self.lease,
+                self.binding,
+                self.budget,
+                norm_mode,
+                pair,
+                &self.provenance,
+                inspection,
+            )?,
+            None => SseRestorationState::new_bound(
+                self.lease,
+                self.binding,
+                self.budget,
+                norm_mode,
+                pair,
+                self.provenance,
+            )?,
+        };
+        restorer.require_original_evidence(requirement);
+        Ok(restorer)
     }
 }
 
@@ -3101,153 +3658,362 @@ fn clear_entity_headers(headers: &mut HeaderMap) {
     }
 }
 
-#[derive(Clone, Copy)]
-enum XaiOriginalCompletion {
-    Pending,
-    Verified,
-    Failed,
-}
-
+/// Non-authoritative observer shell; completion transfers its single owned state.
 pub(crate) struct UpstreamSseEvidenceTracker {
-    xai_original: Option<XaiOriginalCompletion>,
-    xai_original_output: Option<PayloadJson>,
-    sse: super::completion_evidence::SseCompletion,
-    json_fallback: Option<JsonCompletion>,
-    observations_seen: bool,
-    transport: super::completion_evidence::CompletionTransport,
-    budget: PayloadBudget,
+    state: Option<completion_verifier::OriginalEvidence>,
+    inspection: Option<responses_adapter::ResponsesSseInspection>,
 }
 
 impl UpstreamSseEvidenceTracker {
     pub(super) fn chat(budget: PayloadBudget) -> Self {
         Self {
-            xai_original: None,
-            xai_original_output: None,
-            sse: super::completion_evidence::SseCompletion::chat(),
-            json_fallback: None,
-            observations_seen: false,
-            transport: super::completion_evidence::CompletionTransport::default(),
-            budget,
+            state: Some(completion_verifier::OriginalEvidence::chat(budget)),
+            inspection: None,
         }
     }
 
     pub(super) fn anthropic(budget: PayloadBudget) -> Self {
         Self {
-            xai_original: None,
-            xai_original_output: None,
-            sse: super::completion_evidence::SseCompletion::anthropic(),
-            json_fallback: Some(JsonCompletion::new(
-                JsonCompletionProtocol::AnthropicMessages,
-            )),
-            observations_seen: false,
-            transport: super::completion_evidence::CompletionTransport::default(),
-            budget,
+            state: Some(completion_verifier::OriginalEvidence::anthropic(budget)),
+            inspection: None,
         }
     }
 
     fn xai_original(budget: PayloadBudget) -> Self {
-        let mut tracker = Self::chat(budget);
-        tracker.xai_original = Some(XaiOriginalCompletion::Pending);
-        tracker
+        Self {
+            state: Some(completion_verifier::OriginalEvidence::xai_original(budget)),
+            inspection: None,
+        }
     }
 
-    fn finish_xai_original(&mut self, verified: bool) {
-        self.xai_original = Some(match (self.xai_original, verified) {
-            (Some(XaiOriginalCompletion::Pending), true) => XaiOriginalCompletion::Verified,
-            _ => XaiOriginalCompletion::Failed,
-        });
+    fn bind_attempt(&mut self, attempt: super::restoration_core::AttemptProvenance) {
+        if let Some(state) = &mut self.state {
+            state.bind_attempt(attempt);
+        }
     }
 
-    /// Called only after the handler fully reads an original explicit JSON entity.
-    /// This records JSON completion separately and never invents an SSE frame or EOF.
-    pub(crate) fn observe_fully_read_anthropic_json(&mut self, raw: &str) {
-        if self.observations_seen || self.xai_original.is_some() || self.json_fallback.is_none() {
-            self.transport.abort();
-            if self.xai_original.is_some() {
-                self.finish_xai_original(false);
+    fn abort(&mut self) {
+        if let Some(state) = &mut self.state {
+            state.abort();
+        }
+    }
+
+    fn observe_xai_original_frame(&mut self, raw: &str) -> Result<(), RestoreError> {
+        self.observe_inspection_frame(raw)?;
+        self.state
+            .as_mut()
+            .ok_or(RestoreError::RestoreFailed)?
+            .observe_xai_original_frame(raw)
+    }
+
+    fn observe_xai_original_end(&mut self, unfinished_frame: bool, unfinished_utf8: bool) {
+        if let Some(state) = &mut self.state {
+            state.observe_xai_original_end(unfinished_frame, unfinished_utf8);
+        }
+    }
+
+    /// Inspect the original buffered entity with the sole final-SSE mechanics owner.
+    pub(crate) fn observe_fully_read_anthropic_body(
+        &mut self,
+        raw: &str,
+        is_sse: bool,
+    ) -> Result<(), RestoreError> {
+        let result = if is_sse {
+            self.observe_buffered_sse(JsonCompletionProtocol::AnthropicMessages, raw, |_| Ok(()))
+        } else {
+            self.observe_fully_read_anthropic_json(raw);
+            self.completion_result()
+        };
+        if result.is_err() {
+            self.abort();
+        }
+        result
+    }
+
+    fn observe_buffered_sse(
+        &mut self,
+        protocol: JsonCompletionProtocol,
+        raw_sse: &str,
+        mut observe_original: impl FnMut(&str) -> Result<(), RestoreError>,
+    ) -> Result<(), RestoreError> {
+        let budget = self
+            .state
+            .as_ref()
+            .ok_or(RestoreError::RestoreFailed)?
+            .budget();
+        let (mut frame_start, mut offset) = (0usize, 0usize);
+        for line in raw_sse.split_inclusive('\n') {
+            offset += line.len();
+            if offset - frame_start > 1024 * 1024 {
+                return Err(RestoreError::RestoreFailed);
             }
-            return;
+            if line != "\n" && line != "\r\n" {
+                continue;
+            }
+            let block = &raw_sse[frame_start..offset];
+            frame_start = offset;
+            observe_original(block)?;
+            self.observe(&CompletionObservation::RawFrame(block));
+            let mut data = PayloadBuffer::new(budget.clone(), 1024 * 1024)
+                .map_err(RestoreError::scan_error)?;
+            let mut event = None;
+            let mut count = 0usize;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("event:") {
+                    event = Some(value.trim());
+                } else if let Some(value) = line
+                    .strip_prefix("data:")
+                    .or_else(|| (line == "data").then_some(""))
+                {
+                    if count != 0 {
+                        data.append(b"\n").map_err(RestoreError::scan_error)?;
+                    }
+                    count += 1;
+                    data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
+                        .map_err(RestoreError::scan_error)?;
+                }
+            }
+            if count == 0 {
+                continue;
+            }
+            let raw =
+                std::str::from_utf8(data.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
+            if raw.trim() == "[DONE]" {
+                self.observe(&CompletionObservation::ChatDone);
+            } else {
+                let parsed = PayloadJson::try_from_str(raw, budget.clone(), budget.limit())
+                    .map_err(RestoreError::scan_error)?;
+                match protocol {
+                    JsonCompletionProtocol::ChatCompletions => {
+                        self.observe(&CompletionObservation::ChatChunk(parsed.as_value()))
+                    }
+                    JsonCompletionProtocol::AnthropicMessages => {
+                        self.observe(&CompletionObservation::AnthropicEvent {
+                            event_name: event,
+                            data: parsed.as_value(),
+                        })
+                    }
+                    _ => return Err(RestoreError::RestoreFailed),
+                }
+            }
         }
-        self.observations_seen = true;
-        if let Some(json) = &mut self.json_fallback {
-            json.observe_raw_json(raw, &self.budget);
+        self.observe(&CompletionObservation::EntityEnd {
+            reached_eof: true,
+            unfinished_frame: frame_start != raw_sse.len(),
+            unfinished_utf8: false,
+        });
+        self.completion_result()?;
+        Ok(())
+    }
+
+    /// Records a fully read original JSON entity, never a synthetic SSE EOF.
+    pub(crate) fn observe_fully_read_anthropic_json(&mut self, raw: &str) {
+        let parsed = self
+            .state
+            .as_mut()
+            .and_then(|state| state.observe_fully_read_anthropic_json(raw));
+        if let Some(inspection) = &mut self.inspection {
+            let observed = parsed
+                .as_ref()
+                .ok_or(RestoreError::RestoreFailed)
+                .and_then(|parsed| {
+                    let budget = self
+                        .state
+                        .as_ref()
+                        .ok_or(RestoreError::RestoreFailed)?
+                        .budget();
+                    inspection.observe_json(parsed.as_value(), &budget)
+                });
+            if observed.is_err() {
+                self.abort();
+            }
         }
-        self.transport.observe_fully_read_json();
     }
 
     pub(crate) fn observe(&mut self, fact: &CompletionObservation<'_>) {
-        self.observations_seen = true;
-        if self.xai_original.is_some() {
-            self.finish_xai_original(false);
-            return;
-        }
-        self.transport.observe(fact);
-        match fact {
-            CompletionObservation::RawJson(raw) => {
-                if let Some(jf) = &mut self.json_fallback {
-                    jf.observe_raw_json(raw, &self.budget);
-                } else {
-                    self.sse.observe(fact, &self.budget);
-                }
-            }
-            CompletionObservation::AnthropicJson(_) => {
-                if self.json_fallback.is_none() {
-                    self.sse.observe(fact, &self.budget);
-                }
-            }
-            _ => {
-                self.sse.observe(fact, &self.budget);
+        if let CompletionObservation::RawFrame(raw) = fact {
+            if self.observe_inspection_frame(raw).is_err() {
+                self.abort();
+                return;
             }
         }
+        if let Some(state) = &mut self.state {
+            state.observe(fact);
+        }
+    }
+
+    fn observe_inspection_frame(&mut self, raw: &str) -> Result<(), RestoreError> {
+        if let Some(inspection) = &mut self.inspection {
+            let budget = self
+                .state
+                .as_ref()
+                .ok_or(RestoreError::RestoreFailed)?
+                .budget();
+            inspection.observe_frame(raw, &budget)?;
+        }
+        Ok(())
     }
 
     fn has_unsupported_carrier(&self) -> bool {
-        if self.xai_original.is_some() {
-            return false;
-        }
-        self.sse.has_unsupported_carrier()
-            || self
-                .json_fallback
-                .as_ref()
-                .is_some_and(JsonCompletion::has_unsupported_carrier)
+        self.state
+            .as_ref()
+            .is_some_and(completion_verifier::OriginalEvidence::has_unsupported_carrier)
     }
 
     fn completion_result(&self) -> Result<(), RestoreError> {
-        if self.has_unsupported_carrier() {
-            Err(RestoreError::RestoreUnsupported)
-        } else if self.permits_eof() {
-            Ok(())
-        } else {
-            Err(RestoreError::RestoreFailed)
-        }
+        self.state
+            .as_ref()
+            .ok_or(RestoreError::RestoreFailed)?
+            .completion_result()
     }
 
-    fn permits_terminal(&self) -> bool {
-        if let Some(state) = self.xai_original {
-            return matches!(state, XaiOriginalCompletion::Verified);
+    fn take(&mut self) -> Result<completion_verifier::OriginalEvidence, RestoreError> {
+        self.state.take().ok_or(RestoreError::RestoreFailed)
+    }
+}
+
+/// Owns only cancellation cleanup, from preparation through delivered-stream drop.
+/// Keeping an observer Arc alive never extends the mechanics owner's lifetime.
+struct PreparedSseEvidence {
+    tracker: std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>,
+}
+
+impl Drop for PreparedSseEvidence {
+    fn drop(&mut self) {
+        let mut tracker = match self.tracker.lock() {
+            Ok(tracker) => tracker,
+            // Poisoned state is accessible only to destroy it, never as evidence.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        tracker.inspection = None;
+        tracker.state = None;
+    }
+}
+
+#[cfg(test)]
+pub(in crate::proxy::security) mod xai_lending_test_support {
+    use super::UpstreamSseEvidenceTracker;
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::{Arc, Mutex},
+    };
+
+    #[derive(Default)]
+    struct State {
+        tracker: Option<Arc<Mutex<UpstreamSseEvidenceTracker>>>,
+        lends: usize,
+        observed: usize,
+    }
+    thread_local! {
+        static PROBE: RefCell<Option<Arc<Mutex<State>>>> = const { RefCell::new(None) };
+    }
+    pub(in crate::proxy::security) struct Guard(
+        Option<Arc<Mutex<State>>>,
+        std::marker::PhantomData<Rc<()>>,
+    );
+    pub(in crate::proxy::security) struct Probe(Arc<Mutex<State>>);
+    pub(in crate::proxy::security) fn install() -> (Guard, Probe) {
+        let state = Arc::new(Mutex::new(State::default()));
+        let previous = PROBE.with(|slot| slot.replace(Some(state.clone())));
+        (Guard(previous, std::marker::PhantomData), Probe(state))
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            PROBE.with(|slot| {
+                slot.replace(self.0.take());
+            });
         }
-        if self.transport.legacy_failed() {
-            return false;
+    }
+    impl Probe {
+        // Retain the observer shell to detect stranded owners after cancellation.
+        // Only counts and occupancy escape; this grants no mechanics or authority.
+        pub(in crate::proxy::security) fn snapshot(
+            &self,
+        ) -> Result<(usize, usize, bool), &'static str> {
+            let state = self.0.lock().map_err(|_| "c3_xai_probe_poisoned")?;
+            let (lends, observed, tracker) = (state.lends, state.observed, state.tracker.clone());
+            drop(state);
+            let occupied = match tracker {
+                Some(tracker) => tracker
+                    .lock()
+                    .map_err(|_| "c3_xai_tracker_poisoned")?
+                    .inspection
+                    .is_some(),
+                None => false,
+            };
+            Ok((lends, observed, occupied))
         }
-        self.sse.permits_completion()
-            || self
-                .json_fallback
-                .as_ref()
-                .is_some_and(JsonCompletion::permits_completion)
+    }
+    pub(in crate::proxy::security) fn lent(tracker: &Arc<Mutex<UpstreamSseEvidenceTracker>>) {
+        PROBE.with(|slot| {
+            if let Some(probe) = slot.borrow().as_ref() {
+                if let Ok(mut state) = probe.lock() {
+                    state.tracker = Some(tracker.clone());
+                    state.lends += 1;
+                }
+            }
+        });
+    }
+    pub(in crate::proxy::security) fn observed() {
+        PROBE.with(|slot| {
+            if let Some(probe) = slot.borrow().as_ref() {
+                if let Ok(mut state) = probe.lock() {
+                    state.observed += 1;
+                }
+            }
+        });
+    }
+}
+
+/// A cancellation guard for the sole mechanics owner while a converter is polled.
+/// The tracker is plumbing only: it cannot clone, extract or publish the lifecycle.
+struct LentSseInspection {
+    tracker: std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>,
+    active: bool,
+}
+
+impl LentSseInspection {
+    fn lend(
+        state: &mut SseRestorationState,
+        tracker: &std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>,
+    ) -> Result<Self, RestoreError> {
+        let mut slot = tracker.lock().map_err(|_| RestoreError::RestoreFailed)?;
+        if slot.inspection.is_some() {
+            return Err(RestoreError::RestoreFailed);
+        }
+        slot.inspection = Some(state.lend_original_inspection()?);
+        #[cfg(test)]
+        xai_lending_test_support::lent(tracker);
+        Ok(Self {
+            tracker: tracker.clone(),
+            active: true,
+        })
     }
 
-    fn permits_eof(&self) -> bool {
-        if let Some(state) = self.xai_original {
-            return matches!(state, XaiOriginalCompletion::Verified);
+    fn reclaim(mut self, state: &mut SseRestorationState) -> Result<(), RestoreError> {
+        let inspection = self
+            .tracker
+            .lock()
+            .map_err(|_| RestoreError::RestoreFailed)?
+            .inspection
+            .take()
+            .ok_or(RestoreError::RestoreFailed)?;
+        self.active = false;
+        state.reclaim_original_inspection(inspection)
+    }
+}
+
+impl Drop for LentSseInspection {
+    fn drop(&mut self) {
+        if self.active {
+            // Poisoning cannot strand the owner after cancellation.
+            let mut tracker = match self.tracker.lock() {
+                Ok(tracker) => tracker,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            tracker.inspection = None;
         }
-        if !self.transport.permits_completion() {
-            return false;
-        }
-        self.sse.permits_completion()
-            || self
-                .json_fallback
-                .as_ref()
-                .is_some_and(JsonCompletion::permits_completion)
     }
 }
 
@@ -3270,27 +4036,17 @@ where
             return;
         };
         let budget = match evidence.lock() {
-            Ok(tracker) => Some(tracker.budget.clone()),
+            Ok(tracker) => tracker.state.as_ref().map(completion_verifier::OriginalEvidence::budget),
             Err(_) => None,
         };
         let Some(budget) = budget else {
             yield Err(std::io::Error::other("Response stream failed."));
             return;
         };
-        let mut native = super::completion_json::NativeSseCompletion::new();
-        let mut original_arguments = match super::response_restoration::OriginalXaiArguments::new(budget.clone()) {
-            Ok(arguments) => arguments,
-            Err(_) => {
-                if let Ok(mut tracker) = evidence.lock() { tracker.finish_xai_original(false); }
-                yield Err(std::io::Error::other("Response stream failed."));
-                return;
-            }
-        };
-        let mut transport = super::completion_evidence::CompletionTransport::default();
         let mut frame = match PayloadBuffer::new(budget.clone(), 1024 * 1024) {
             Ok(frame) => frame,
             Err(_) => {
-                if let Ok(mut tracker) = evidence.lock() { tracker.finish_xai_original(false); }
+                if let Ok(mut tracker) = evidence.lock() { tracker.abort(); }
                 yield Err(std::io::Error::other("Response stream failed."));
                 return;
             }
@@ -3300,7 +4056,7 @@ where
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    if let Ok(mut tracker) = evidence.lock() { tracker.finish_xai_original(false); }
+                    if let Ok(mut tracker) = evidence.lock() { tracker.abort(); }
                     yield Err(std::io::Error::other("Response stream failed."));
                     return;
                 }
@@ -3310,7 +4066,7 @@ where
                 while offset < chunk.len() {
                     let end = chunk[offset..].iter().position(|byte| *byte == b'\n')
                         .map_or(chunk.len(), |pos| offset + pos + 1);
-                    frame.append(&chunk[offset..end]).map_err(|_| RestoreError::RestoreFailed)?;
+                    frame.append(&chunk[offset..end]).map_err(RestoreError::scan_error)?;
                     offset = end;
                     if chunk[end - 1] != b'\n' { continue; }
                     let line = &frame.as_slice()[line_start..];
@@ -3318,82 +4074,30 @@ where
                     line_start = frame.len();
                     if !blank { continue; }
                     let raw = std::str::from_utf8(frame.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
-                    observe_xai_original_frame(raw, &mut native, &mut original_arguments, &budget)?;
+                    evidence.lock().map_err(|_| RestoreError::RestoreFailed)?
+                        .observe_xai_original_frame(raw)?;
+                    #[cfg(test)]
+                    xai_lending_test_support::observed();
                     frame.clear();
                     line_start = 0;
                 }
                 Ok(())
             })();
             if checked.is_err() {
-                if let Ok(mut tracker) = evidence.lock() { tracker.finish_xai_original(false); }
+                if let Ok(mut tracker) = evidence.lock() { tracker.abort(); }
                 yield Err(std::io::Error::other("Response stream failed."));
                 return;
             }
             yield Ok(chunk);
         }
-        let end = CompletionObservation::EntityEnd {
-            reached_eof: true,
-            unfinished_frame: frame.len() != 0,
-            unfinished_utf8: std::str::from_utf8(frame.as_slice()).is_err(),
-        };
-        native.observe(&end, &budget);
-        transport.observe(&end);
-        let verified = native.permits_completion() && transport.permits_completion();
-        let original_output = if verified { original_arguments.take_completed_output().ok() } else { None };
         if let Ok(mut tracker) = evidence.lock() {
-            tracker.finish_xai_original(verified && original_output.is_some());
-            if matches!(tracker.xai_original, Some(XaiOriginalCompletion::Verified)) {
-                tracker.xai_original_output = original_output;
-            }
+            tracker.observe_xai_original_end(
+                frame.len() != 0,
+                std::str::from_utf8(frame.as_slice()).is_err(),
+            );
         };
         // Dropping/cancelling this stream never synthesizes an EOF or authority.
     })
-}
-
-fn observe_xai_original_frame(
-    raw: &str,
-    native: &mut super::completion_json::NativeSseCompletion,
-    original_arguments: &mut super::response_restoration::OriginalXaiArguments,
-    budget: &PayloadBudget,
-) -> Result<(), RestoreError> {
-    native.observe(&CompletionObservation::RawFrame(raw), budget);
-    let mut data =
-        PayloadBuffer::new(budget.clone(), 1024 * 1024).map_err(|_| RestoreError::RestoreFailed)?;
-    let mut event = "";
-    let mut count = 0;
-    for line in raw.lines() {
-        if let Some(value) = line.strip_prefix("event:") {
-            event = value.trim();
-        } else if let Some(value) = line
-            .strip_prefix("data:")
-            .or_else(|| (line == "data").then_some(""))
-        {
-            if count != 0 {
-                data.append(b"\n")
-                    .map_err(|_| RestoreError::RestoreFailed)?;
-            }
-            count += 1;
-            data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
-                .map_err(|_| RestoreError::RestoreFailed)?;
-        }
-    }
-    if count != 0 {
-        let raw_json =
-            std::str::from_utf8(data.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
-        if raw_json.trim() != "[DONE]" {
-            let parsed = PayloadJson::try_from_str(raw_json, budget.clone(), budget.limit())
-                .map_err(|_| RestoreError::RestoreFailed)?;
-            original_arguments.observe(parsed.as_value())?;
-            native.observe(
-                &CompletionObservation::NativeEvent {
-                    event_name: event,
-                    data: parsed.as_value(),
-                },
-                budget,
-            );
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn rebuild_restored_json_http_response(
@@ -3446,16 +4150,35 @@ where
         let mut frame = match PayloadBuffer::new(restorer.payload_budget(), 1024 * 1024) {
             Ok(buffer) => buffer,
             Err(_) => {
-                yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseInit));
+                yield Ok(responses_adapter::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseInit));
                 return;
             }
         };
+        let mut verifier = completion_verifier::SseCompletionVerifier::new(&restorer);
         let mut line_start = 0usize;
-        while let Some(chunk_res) = upstream_stream.next().await {
+        loop {
+            let lent = if restorer.needs_converted_inspection() {
+                match evidence.as_ref().ok_or(RestoreError::RestoreFailed)
+                    .and_then(|tracker| LentSseInspection::lend(&mut restorer, tracker)) {
+                    Ok(lent) => Some(lent),
+                    Err(error) => {
+                        yield Ok(responses_adapter::failed_sse_frame_at(error, RestoreStage::CompletionEvidence));
+                        return;
+                    }
+                }
+            } else { None };
+            let next = upstream_stream.next().await;
+            if let Some(lent) = lent {
+                if let Err(error) = lent.reclaim(&mut restorer) {
+                    yield Ok(responses_adapter::failed_sse_frame_at(error, RestoreStage::CompletionEvidence));
+                    return;
+                }
+            }
+            let Some(chunk_res) = next else { break };
             let chunk = match chunk_res {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseRead));
+                    yield Ok(responses_adapter::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseRead));
                     return;
                 }
             };
@@ -3464,7 +4187,7 @@ where
                 let end = chunk[offset..].iter().position(|&byte| byte == b'\n')
                     .map_or(chunk.len(), |pos| offset + pos + 1);
                 if frame.append(&chunk[offset..end]).is_err() {
-                    yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseFrame));
+                    yield Ok(responses_adapter::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseFrame));
                     return;
                 }
                 offset = end;
@@ -3480,10 +4203,18 @@ where
                 let block = match std::str::from_utf8(frame.as_slice()) {
                     Ok(block) => block,
                     Err(_) => {
-                        yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseFrame));
+                        yield Ok(responses_adapter::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseFrame));
                         return;
                     }
                 };
+                if let Err(error) = restorer.observe_native_input(block) {
+                    yield Ok(responses_adapter::failed_sse_frame_at(error, RestoreStage::CompletionEvidence));
+                    return;
+                }
+                if let Err(error) = verifier.observe_block(block) {
+                    yield Ok(responses_adapter::failed_sse_frame_at(error, RestoreStage::CompletionEvidence));
+                    return;
+                }
                 match restorer.process_sse_block(block) {
                     Ok(frames) => {
                         frame.clear();
@@ -3496,7 +4227,7 @@ where
                         let error = evidence.as_ref().and_then(|tracker| tracker.lock().ok()
                             .and_then(|guard| guard.has_unsupported_carrier().then_some(RestoreError::RestoreUnsupported)))
                             .unwrap_or(err);
-                        yield Ok(super::response_restoration::failed_sse_frame_at(error, restorer.failure_stage()));
+                        yield Ok(responses_adapter::failed_sse_frame_at(error, restorer.failure_stage()));
                         return;
                     }
                 }
@@ -3504,34 +4235,36 @@ where
         }
         // EOF is not an SSE delimiter and cannot authorize an unfinished event.
         if frame.len() != 0 {
-            yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseEof));
+            yield Ok(responses_adapter::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseEof));
             return;
         }
-        if let Some(ref evidence) = evidence {
-            let mut stage = RestoreStage::CompletionEvidence;
-            let checked = evidence.lock().map_err(|_| RestoreError::RestoreFailed)
-                .and_then(|guard| {
-                    guard.completion_result()?;
-                    if guard.xai_original.is_some() {
-                        let original = guard.xai_original_output.as_ref().ok_or(RestoreError::RestoreFailed)?;
-                        stage = RestoreStage::SseSnapshot;
-                        restorer.verify_original_xai_output(original.as_value())?;
-                    }
-                    Ok(())
-                });
-            if let Err(error) = checked {
-                yield Ok(super::response_restoration::failed_sse_frame_at(error, stage));
+        let checked_original = match evidence {
+            Some(evidence) => evidence.lock().map_err(|_| RestoreError::RestoreFailed)
+                .and_then(|mut tracker| tracker.take()).map(Some),
+            None => Ok(None),
+        };
+        let original = match checked_original {
+            Ok(original) => original,
+            Err(error) => {
+                yield Ok(responses_adapter::failed_sse_frame_at(error, RestoreStage::CompletionEvidence));
                 return;
             }
-        }
-        match restorer.finalize_and_flush(true) {
-            Ok(frames) => {
-                for frame in frames {
-                    yield Ok(frame);
-                }
-                restorer.publish_released_history();
+        };
+        let proof = match verifier.finish(&restorer, original) {
+            Ok(proof) => proof,
+            Err((error, stage)) => {
+                yield Ok(responses_adapter::failed_sse_frame_at(error, stage));
+                return;
             }
-            Err(err) => yield Ok(super::response_restoration::failed_sse_frame_at(err, restorer.failure_stage())),
+        };
+        match restorer.finalize(proof) {
+            Ok(batch) => {
+                let mut delivery = batch.into_delivery_stream();
+                while let Some(item) = delivery.next().await {
+                    yield item;
+                }
+            }
+            Err((error, stage)) => yield Ok(responses_adapter::failed_sse_frame_at(error, stage)),
         }
     })
 }
@@ -3836,12 +4569,16 @@ mod private_correctness_tests {
         let store = DlpTokenStore::new();
         let request_body = json!({"input":"synthetic source copy", "nested":["quoted\nvalue"]});
         DlpHttpRequest {
-            base_lease: store.admit("codex", None, 1).expect("synthetic lease"),
+            authority: RequestAuthority::from_test_lease(
+                store.admit("codex", None, 1).expect("synthetic lease"),
+                budget.clone(),
+            ),
             runtime: SecurityRuntimeConfig::default(),
             restore_rules: StoreVec::new(store.allocation_ledger().expect("ledger"), 4096),
             source_body: PayloadJson::try_from_value(&request_body, budget.clone(), budget.limit())
                 .expect("synthetic source"),
             pretokenized: false,
+            native_protocol: None,
             endpoint_is_compact: false,
             audit_state: std::sync::Arc::new(
                 RequestAuditState::new(&AppType::Codex, None, budget.clone())
@@ -3850,7 +4587,6 @@ mod private_correctness_tests {
             initial_audit: std::sync::Arc::new(
                 PendingRequestAudit::empty(budget.clone()).expect("synthetic summary"),
             ),
-            budget,
         }
     }
 
@@ -3886,7 +4622,8 @@ mod private_correctness_tests {
                         }
                         if leased {
                             request
-                                .base_lease
+                                .authority
+                                .lease_mut_for_responses()
                                 .prepare(
                                     &[TokenFragment {
                                         raw: "synthetic-secret",
@@ -4103,6 +4840,8 @@ mod private_correctness_tests {
 
     #[test]
     fn guarded_transform_input_owned_attempts_keep_independent_reservations() {
+        let provenance_charge = std::mem::size_of::<super::super::payload_budget::Reservation>()
+            + 2 * std::mem::size_of::<usize>();
         let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
         let request = source_copy_request(budget.clone());
         let original = json!({"input":"synthetic safe input", "padding":"p".repeat(4096)});
@@ -4132,7 +4871,7 @@ mod private_correctness_tests {
             .expect("first owned attempt");
         first_owner = owner;
         assert_eq!(first_body, original);
-        assert_eq!(budget.used(), baseline + charge);
+        assert_eq!(budget.used(), baseline + charge + provenance_charge);
         let second_owner;
         let mut second_body = original.clone();
         let (second_attempt, owner) = request
@@ -4146,7 +4885,7 @@ mod private_correctness_tests {
             )
             .expect("second owned attempt");
         second_owner = owner;
-        assert_eq!(budget.used(), baseline + 2 * charge);
+        assert_eq!(budget.used(), baseline + 2 * (charge + provenance_charge));
         assert_ne!(
             first_body["padding"].as_str().expect("padding").as_ptr(),
             second_body["padding"].as_str().expect("padding").as_ptr()
@@ -4364,6 +5103,97 @@ mod private_correctness_tests {
             json!({"env":{"ANTHROPIC_MODEL":format!("{} [1M]", "m".repeat(4096))}}),
             None,
         )
+    }
+
+    #[test]
+    fn m3_desktop_mapping_capacity_failure_and_drop_refund_every_charge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::payload_json::test_support::{self, Action, Phase};
+        for normalize in [false, true] {
+            let budget = PayloadBudget::with_limit(1024 * 1024);
+            let request = source_copy_request(budget.clone());
+            let body = json!({"model":"claude-sonnet-fixture","messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"synthetic-call","name":"synthetic_lookup","input":{}}]}]});
+            let original = body.to_string();
+            let before = budget.used();
+            let owner;
+            let mapped = {
+                let (mapped, reservation) = request
+                    .build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize)
+                    .map_err(|_| "m3_desktop_mapping_fixture_failed")?;
+                owner = reservation;
+                mapped
+            };
+            let charge = budget.used() - before;
+            assert!(
+                charge > 0 && mapped["model"] == "synthetic-mimo-model",
+                "m3_desktop_mapping_not_charged"
+            );
+            drop(mapped);
+            assert!(
+                budget.used() == before + charge,
+                "m3_desktop_mapping_charge_released_before_owner"
+            );
+            drop(owner);
+            assert!(
+                budget.used() == before,
+                "m3_desktop_mapping_drop_not_refunded"
+            );
+            let fill = budget.reserve(budget.limit() - before - charge + 1)?;
+            assert!(
+                matches!(
+                    request.build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize),
+                    Err(DlpForwardError::CapacityExceeded)
+                ),
+                "m3_desktop_mapping_short_capacity_not_rejected"
+            );
+            assert!(
+                budget.used() == before + fill.bytes(),
+                "m3_desktop_mapping_capacity_failure_leaked_charge"
+            );
+            drop(fill);
+            let fill = budget.reserve(budget.limit() - before - charge)?;
+            let owner;
+            let mapped = {
+                let (value, reservation) = request
+                    .build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize)
+                    .map_err(|_| "m3_desktop_mapping_fixture_failed")?;
+                owner = reservation;
+                value
+            };
+            assert!(
+                budget.used() == budget.limit(),
+                "m3_desktop_mapping_exact_capacity_failed"
+            );
+            drop(mapped);
+            drop(owner);
+            drop(fill);
+            let hook = test_support::install(|event| {
+                if event.phase == Phase::AfterBuild {
+                    Action::Fail
+                } else {
+                    Action::Continue
+                }
+            });
+            assert!(
+                matches!(
+                    request.build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize),
+                    Err(DlpForwardError::Unavailable)
+                ),
+                "m3_desktop_mapping_build_failure_not_propagated"
+            );
+            drop(hook);
+            // Compare the serialized source, not `Value` equality: map order is preserved
+            // on the wire, so only the encoded form proves the source stayed untouched.
+            let restored_source = body.to_string();
+            assert!(
+                budget.used() == before && restored_source == original,
+                "m3_desktop_mapping_failure_mutated_source_or_leaked"
+            );
+            drop(request);
+            assert!(budget.used() == 0, "m3_desktop_mapping_request_drop_leaked");
+        }
+        Ok(())
     }
 
     #[test]
@@ -4613,10 +5443,12 @@ mod private_correctness_tests {
         let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
         let request_body = json!({"input": "hello"});
         let request = DlpHttpRequest {
-            base_lease: store.admit("codex", session, 1).expect("admit fixture"),
+            authority: RequestAuthority::from_test_lease(
+                store.admit("codex", session, 1).expect("admit fixture"),
+                budget.clone(),
+            ),
             runtime: SecurityRuntimeConfig::default(),
             restore_rules: StoreVec::new(store.allocation_ledger().expect("ledger"), 4096),
-            budget: budget.clone(),
             source_body: PayloadJson::try_from_value(
                 &request_body,
                 budget.clone(),
@@ -4624,6 +5456,7 @@ mod private_correctness_tests {
             )
             .expect("source fixture"),
             pretokenized: false,
+            native_protocol: None,
             endpoint_is_compact: false,
             audit_state: std::sync::Arc::new(
                 RequestAuditState::new(&AppType::Codex, session, budget.clone())
@@ -4680,7 +5513,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
@@ -4699,7 +5532,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
@@ -4712,7 +5545,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 Some(&CompletionObservation::InvalidJson)
             )
@@ -4729,7 +5562,7 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
@@ -4746,12 +5579,249 @@ mod private_correctness_tests {
         assert!(attempt
             .restore_json_response(
                 200,
-                &mut completed_response(),
+                &completed_response(),
                 ArgumentNormalizationMode::Exact,
                 None
             )
             .is_ok());
     }
+    fn c3_json_attempt(
+        fixture: &super::super::unified_test_support::ResponsesFixture,
+        mapped: bool,
+    ) -> super::super::unified_test_support::TestResult<(DlpPreparedAttempt, Value)> {
+        use super::super::unified_test_support::{CONTACT, PRINCIPAL, PROVIDER, SESSION};
+        let mut body = json!({"input": if mapped { CONTACT } else { "Synthetic ordinary input" }});
+        let request = fixture.admit(&mut body, false, Some(SESSION))?;
+        let attempt = request
+            .prepare_attempt(
+                PROVIDER,
+                "openai_chat",
+                "https://synthetic.invalid/v1/chat/completions",
+                Some(PRINCIPAL),
+                &mut body,
+                |candidate| Ok(candidate.clone()),
+            )
+            .map_err(|_| "c3_json_preparation_failed")?;
+        assert_eq!(attempt.has_active_tokens(), mapped);
+        let arguments = json!({"value":body["input"]}).to_string();
+        let original = json!({"id":"synthetic-c3-chat", "choices":[{
+            "finish_reason":"tool_calls", "message":{"role":"assistant", "tool_calls":[{
+                "id":"synthetic-c3-call", "type":"function", "function":{
+                    "name":"synthetic_nonexecuting_tool", "arguments":arguments
+                }
+            }]}
+        }]});
+        attempt
+            .verify_upstream_json_completion(
+                JsonCompletionProtocol::ChatCompletions,
+                &original.to_string(),
+            )
+            .map_err(|_| "c3_json_original_observation_failed")?;
+        let response = json!({"id":"synthetic-c3-response", "status":"completed", "output":[{
+            "id":"synthetic-c3-item", "type":"function_call", "status":"completed",
+            "call_id":"synthetic-c3-call", "name":"synthetic_nonexecuting_tool", "arguments":arguments
+        }]});
+        Ok((attempt, response))
+    }
+
+    async fn c3_json_invalid_final_client(
+        mapped: bool,
+        field: &str,
+    ) -> super::super::unified_test_support::TestResult {
+        use super::super::{
+            tokenization::publication_test_support,
+            unified_test_support::{ResponsesFixture, CONTACT},
+        };
+        use http_body_util::BodyExt;
+        let fixture = ResponsesFixture::new();
+        let (attempt, mut response) = c3_json_attempt(&fixture, mapped)?;
+        response[field] = match field {
+            "status" => json!("incomplete"),
+            "error" => json!({"code":"synthetic-final-error"}),
+            _ => json!({"reason":"synthetic-final-incomplete"}),
+        };
+        let delivered = attempt
+            .restore_client_http_response(
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&response)?))?,
+                ArgumentNormalizationMode::Exact,
+                None,
+            )
+            .await;
+        let status = delivered.status();
+        let bytes = delivered.into_body().collect().await?.to_bytes();
+        let value: Value = serde_json::from_slice(&bytes)?;
+        let (published, pending, pins, ..) = publication_test_support::counts(&fixture.store)?;
+        assert!(
+            published == 0 && pending == 0 && pins == 0,
+            "c3_json_invalid_final_completion_published"
+        );
+        assert!(
+            status == StatusCode::INTERNAL_SERVER_ERROR
+                && value["error"]["message"] == CLIENT_PROCESSING_ERROR_MESSAGE
+                && value.get("output").is_none(),
+            "c3_json_invalid_final_completion_released_tool"
+        );
+        assert!(
+            !std::str::from_utf8(&bytes)?.contains(CONTACT),
+            "c3_json_invalid_final_completion_leaked_text"
+        );
+        Ok(())
+    }
+
+    macro_rules! c3_json_final_tests {
+        ($($name:ident => ($mapped:expr, $field:expr)),+ $(,)?) => { $(
+            #[tokio::test(flavor = "current_thread")]
+            #[serial_test::serial]
+            async fn $name() -> super::super::unified_test_support::TestResult {
+                c3_json_invalid_final_client($mapped, $field).await
+            }
+        )+ };
+    }
+    c3_json_final_tests!(
+        private_c3_json_final_status_mapped => (true, "status"),
+        private_c3_json_final_error_mapped => (true, "error"),
+        private_c3_json_final_incomplete_mapped => (true, "incomplete_details"),
+        private_c3_json_final_status_zero => (false, "status"),
+        private_c3_json_final_error_zero => (false, "error"),
+        private_c3_json_final_incomplete_zero => (false, "incomplete_details"),
+    );
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn private_c3_json_valid_final_control_preserves_delivery_and_publication(
+    ) -> super::super::unified_test_support::TestResult {
+        use super::super::{
+            tokenization::publication_test_support,
+            unified_test_support::{ResponsesFixture, CONTACT},
+        };
+        use http_body_util::BodyExt;
+        for mapped in [false, true] {
+            let fixture = ResponsesFixture::new();
+            let (attempt, response) = c3_json_attempt(&fixture, mapped)?;
+            let delivered = attempt
+                .restore_client_http_response(
+                    Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response)?))?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            assert!(
+                delivered.status() == StatusCode::OK,
+                "c3_json_valid_final_rejected"
+            );
+            let bytes = delivered.into_body().collect().await?.to_bytes();
+            let value: Value = serde_json::from_slice(&bytes)?;
+            let arguments: Value = serde_json::from_str(
+                value["output"][0]["arguments"]
+                    .as_str()
+                    .ok_or("c3_json_control_arguments_missing")?,
+            )?;
+            assert!(
+                arguments["value"]
+                    == if mapped {
+                        CONTACT
+                    } else {
+                        "Synthetic ordinary input"
+                    },
+                "c3_json_valid_final_delivery_changed"
+            );
+            let (published, pending, pins, ..) = publication_test_support::counts(&fixture.store)?;
+            assert!(
+                published > 0 && pending == 0 && pins == 0,
+                "c3_json_valid_final_not_published"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn private_c3_json_donor_proof_rejects_same_binding_foreign_attempt_before_encoding(
+    ) -> super::super::unified_test_support::TestResult {
+        use super::super::{
+            payload_buffer::test_support::{self, Action},
+            tokenization::publication_test_support,
+            unified_test_support::ResponsesFixture,
+        };
+        use std::{cell::Cell, rc::Rc};
+        let fixture = ResponsesFixture::new();
+        let (mut recipient, source) = c3_json_attempt(&fixture, true)?;
+        let (donor, donor_source) = c3_json_attempt(&fixture, true)?;
+        assert!(source == donor_source, "c3_json_donor_source_differs");
+        assert!(!donor.provenance.matches(&recipient.provenance));
+        assert!(
+            donor.binding.store_id == recipient.binding.store_id
+                && donor.binding.namespace == recipient.binding.namespace
+                && donor.binding.generation == recipient.binding.generation
+                && donor.binding.policy_revision == recipient.binding.policy_revision
+                && donor.binding.provider_fingerprint == recipient.binding.provider_fingerprint
+                && donor.binding.reusable_principal == recipient.binding.reusable_principal
+                && donor.binding.operation_lineage == recipient.binding.operation_lineage,
+            "c3_json_donor_binding_differs"
+        );
+        let pair = recipient
+            .response_protocol_pair()
+            .map_err(|_| "c3_json_pair_failed")?;
+        let (proof, donor_inspection) = donor
+            .json_completion
+            .finish(&source, &donor.binding, 200)
+            .map_err(|_| "c3_json_donor_finish_failed")?;
+        drop(donor_inspection);
+        let verifier = std::mem::replace(
+            &mut recipient.json_completion,
+            completion_verifier::JsonCompletionVerifier::new(),
+        );
+        let (recipient_proof, inspection) = verifier
+            .finish(&source, &recipient.binding, 200)
+            .map_err(|_| "c3_json_recipient_finish_failed")?;
+        drop(recipient_proof);
+        let budget = recipient.budget.clone();
+        let baseline = budget.used();
+        let staged = stage_json_response_bound(
+            &source,
+            false,
+            &recipient.lease,
+            &recipient.binding,
+            &budget,
+            pair,
+            &recipient.provenance,
+            inspection,
+        )
+        .map_err(|_| "c3_json_recipient_stage_failed")?;
+        let events = Rc::new(Cell::new(0));
+        let observed = events.clone();
+        let guard = test_support::install(move |_| {
+            observed.set(observed.get() + 1);
+            Action::Continue
+        });
+        let result = staged.encode_and_publish(
+            &recipient.lease,
+            &recipient.binding,
+            proof,
+            &budget,
+            1024 * 1024,
+        );
+        drop(guard);
+        let rejected = result.is_err();
+        drop(result);
+        let (published, pending, pins, ..) = publication_test_support::counts(&fixture.store)?;
+        assert!(rejected, "c3_json_foreign_attempt_proof_accepted");
+        assert_eq!(events.get(), 0, "c3_json_foreign_attempt_reached_encoding");
+        assert!(
+            published == 0 && pending == 0 && pins == 0,
+            "c3_json_foreign_attempt_published"
+        );
+        assert!(
+            budget.used() <= baseline,
+            "c3_json_foreign_attempt_retained_staging_charge"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn private_sse_wrapper_charges_pending_frame_and_releases_on_cancel() {
         use futures::{poll, stream};
@@ -4770,7 +5840,21 @@ mod private_correctness_tests {
             "pending frame must retain its charge"
         );
         drop(wrapped);
-        assert_eq!(budget.used(), baseline, "cancel releases frame reservation");
+        let identity_charge = std::mem::size_of::<super::super::payload_budget::Reservation>()
+            + 2 * std::mem::size_of::<usize>();
+        let provenance_charge = identity_charge;
+        let lifecycle_charge = identity_charge;
+        let deferred_owner_charge = identity_charge;
+        assert_eq!(
+            baseline,
+            provenance_charge + lifecycle_charge + deferred_owner_charge,
+            "framing retains attempt provenance, lifecycle identity and deferred owner"
+        );
+        assert_eq!(
+            budget.used(),
+            0,
+            "cancel releases frame and provenance reservations"
+        );
     }
 
     #[tokio::test]
@@ -4856,7 +5940,9 @@ mod private_http_exit_tests {
             budget: budget.clone(),
             endpoint_is_compact: false,
             upstream_json_protocol: Some(JsonCompletionProtocol::NativeResponses),
-            json_completion: std::sync::atomic::AtomicU8::new(0),
+            provenance: super::super::restoration_core::AttemptProvenance::new(&budget)
+                .expect("attempt provenance fixture"),
+            json_completion: completion_verifier::JsonCompletionVerifier::new(),
             audit_state: std::sync::Arc::new(
                 RequestAuditState::new(&AppType::Codex, None, budget.clone())
                     .expect("audit state fixture"),
@@ -4866,6 +5952,11 @@ mod private_http_exit_tests {
             ),
             upstream_payload_owner: None,
             history_mapping: None,
+            native_history_digest: None,
+            native_protocol: None,
+            native_original: None,
+            native_error_safety: None,
+            sse_evidence: std::sync::Mutex::new(None),
             pending_audit: PendingRequestAudit::empty(budget.clone())
                 .expect("audit summary fixture"),
         };
@@ -4940,6 +6031,7 @@ mod private_production_activation_tests {
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut body,
                 &HeaderMap::new(),
             )
@@ -4955,6 +6047,7 @@ mod private_production_activation_tests {
             let admission = admit_http_request(
                 &gateway,
                 &AppType::Codex,
+                false,
                 false,
                 false,
                 &mut unsupported,
@@ -4973,6 +6066,7 @@ mod private_production_activation_tests {
                     &gateway,
                     &AppType::Codex,
                     true,
+                    false,
                     false,
                     &mut ordinary,
                     &HeaderMap::new()
@@ -5487,7 +6581,7 @@ pub(super) async fn prepare_text_projection_http_for_test(
     lease: DlpRequestLease,
     budget: PayloadBudget,
 ) -> Result<Response, RestoreError> {
-    use super::response_restoration::{prepare_text_projection, TextProjectionStream};
+    use responses_adapter::{prepare_text_projection, TextProjectionStream};
 
     let (mut parts, body) = response.into_parts();
     if !parts.status.is_success()
@@ -5522,6 +6616,7 @@ pub(super) async fn prepare_text_projection_http_for_test(
     let mut stream = body.into_data_stream();
     if is_sse {
         let mut projection = TextProjectionStream::new(lease, budget.clone())?;
+        projection.initialize()?;
         let mut frame = PayloadBuffer::new(budget, 1024 * 1024).map_err(capacity_error)?;
         let mut line_start = 0;
         while let Some(chunk) = stream.next().await {
@@ -5577,7 +6672,7 @@ pub(super) async fn prepare_text_projection_http_for_test(
     let parsed =
         PayloadJson::try_from_str(raw, budget.clone(), budget.limit()).map_err(capacity_error)?;
     let projected = prepare_text_projection(parsed.as_value(), &lease, &budget)?;
-    let output = super::response_restoration::serialize_json_with_budget(
+    let output = responses_adapter::serialize_json_with_budget(
         projected.as_value(),
         &budget,
         crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
@@ -5618,4 +6713,220 @@ pub(super) mod completion_selection_test_support {
             });
         }
     }
+}
+
+#[cfg(test)]
+mod c3_early_inspection_tests {
+    use super::super::tokenization::publication_test_support;
+    use super::*;
+    use http_body_util::BodyExt;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    async fn early_exit(mode: &str) -> TestResult {
+        let _runtime = super::super::unified_test_support::ResponsesFixture::new();
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+        let gateway = RestorationGateway::with_test_store_and_rules(
+            store.clone(),
+            &["chinese_phone_number"],
+            budget.clone(),
+        );
+        let mut body = json!({"model":"synthetic-model","input":"13800138000","stream":true});
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "session-id",
+            HeaderValue::from_static("synthetic-early-session"),
+        );
+        let request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            false,
+            &mut body,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("synthetic early-inspection admission failed".into()),
+        };
+        let (attempt, owner) = request.prepare_owned_attempt_for_proxy(
+            "synthetic-provider",
+            "anthropic",
+            "https://synthetic.invalid/v1/messages",
+            Some("synthetic-principal"),
+            &mut body,
+            Ok,
+        )?;
+        let tracker = attempt
+            .upstream_sse_evidence_tracker()
+            .ok_or("synthetic tracker missing")?;
+        assert!(
+            tracker
+                .lock()
+                .map_err(|_| "synthetic tracker poisoned")?
+                .inspection
+                .is_some(),
+            "c3_early_inspection_precondition"
+        );
+        match mode {
+            "attempt_drop" => drop(attempt),
+            "unpolled_wrapper" => {
+                let response = Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::empty())?;
+                drop(attempt.restore_client_http_response(
+                    response,
+                    ArgumentNormalizationMode::Exact,
+                    Some(tracker.clone()),
+                ));
+            }
+            "pending_wrapper" | "unpolled_body" | "repeat_tracker" => {
+                if mode == "repeat_tracker" {
+                    let baseline =
+                        super::super::restoration_core::ResponseLifecycle::begin_count_for_test();
+                    let repeated = attempt
+                        .upstream_sse_evidence_tracker()
+                        .ok_or("synthetic repeat missing")?;
+                    assert!(
+                        std::sync::Arc::ptr_eq(&tracker, &repeated),
+                        "c3_early_exit_replaced_tracker"
+                    );
+                    assert_eq!(
+                        super::super::restoration_core::ResponseLifecycle::begin_count_for_test(),
+                        baseline,
+                        "c3_early_exit_created_second_owner"
+                    );
+                }
+                let response = Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(futures::stream::pending::<
+                        Result<Bytes, std::io::Error>,
+                    >()))?;
+                let delivered = attempt
+                    .restore_client_http_response(
+                        response,
+                        ArgumentNormalizationMode::Exact,
+                        Some(tracker.clone()),
+                    )
+                    .await;
+                if mode == "pending_wrapper" {
+                    let mut stream = delivered.into_body().into_data_stream();
+                    assert!(
+                        futures::poll!(stream.next()).is_pending(),
+                        "c3_pending_precondition"
+                    );
+                    assert!(
+                        tracker
+                            .lock()
+                            .map_err(|_| "synthetic tracker poisoned")?
+                            .inspection
+                            .is_some(),
+                        "c3_pending_owner_not_lent"
+                    );
+                    drop(stream);
+                } else {
+                    drop(delivered);
+                }
+            }
+            "poisoned_attempt_drop" | "poisoned_wrapper" => {
+                let other = tracker.clone();
+                let _ = std::thread::spawn(move || {
+                    if let Ok(_lock) = other.lock() {
+                        panic!("synthetic cleanup poison");
+                    }
+                })
+                .join();
+                if mode == "poisoned_wrapper" {
+                    let response = Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::empty())?;
+                    let delivered = attempt
+                        .restore_client_http_response(
+                            response,
+                            ArgumentNormalizationMode::Exact,
+                            Some(tracker.clone()),
+                        )
+                        .await;
+                    assert_eq!(delivered.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                    drop(delivered);
+                } else {
+                    drop(attempt);
+                }
+            }
+            "upstream_error" | "encoded" => {
+                let mut builder = Response::builder().header("content-type", "text/event-stream");
+                if mode == "encoded" {
+                    builder = builder.header("content-encoding", "gzip");
+                } else {
+                    builder = builder.status(429);
+                }
+                let response = builder.body(Body::from("synthetic upstream body"))?;
+                let delivered = attempt
+                    .restore_client_http_response(
+                        response,
+                        ArgumentNormalizationMode::Exact,
+                        Some(tracker.clone()),
+                    )
+                    .await;
+                assert_eq!(
+                    delivered.status().as_u16(),
+                    if mode == "encoded" { 500 } else { 429 }
+                );
+                if mode == "upstream_error" {
+                    assert_eq!(
+                        delivered.into_body().collect().await?.to_bytes().as_ref(),
+                        b"synthetic upstream body",
+                        "c3_early_exit_changed_upstream_error"
+                    );
+                } else {
+                    drop(delivered);
+                }
+            }
+            _ => return Err("synthetic early-inspection mode unknown".into()),
+        }
+        {
+            let retained = match tracker.lock() {
+                Ok(lock) => lock,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            assert!(
+                retained.inspection.is_none(),
+                "c3_early_exit_stranded_inspection"
+            );
+            assert!(
+                retained.state.is_none(),
+                "c3_early_exit_stranded_original_evidence"
+            );
+        }
+        assert_eq!(
+            publication_test_support::counts(&store)?,
+            (0, 0, 0, 0),
+            "c3_early_exit_published_context"
+        );
+        drop(owner);
+        drop(request);
+        drop(gateway);
+        assert_eq!(budget.used(), 0, "c3_early_exit_retained_payload_charge");
+        drop(tracker);
+        Ok(())
+    }
+
+    macro_rules! early_cases {
+        ($($name:ident => $mode:literal),+ $(,)?) => {$(
+            #[tokio::test(flavor = "current_thread")]
+            #[serial_test::serial]
+            async fn $name() -> TestResult { early_exit($mode).await }
+        )+};
+    }
+    early_cases!(
+        c3_early_inspection_attempt_drop => "attempt_drop",
+        c3_early_inspection_unpolled_wrapper => "unpolled_wrapper",
+        c3_early_inspection_poisoned_attempt_drop => "poisoned_attempt_drop",
+        c3_early_inspection_upstream_error => "upstream_error",
+        c3_early_inspection_encoded => "encoded",
+        c3_early_inspection_pending_wrapper => "pending_wrapper",
+        c3_early_inspection_unpolled_body => "unpolled_body",
+        c3_early_inspection_repeat_tracker => "repeat_tracker",
+        c3_early_inspection_poisoned_wrapper => "poisoned_wrapper",
+    );
 }

@@ -23,227 +23,6 @@ struct Stored {
     bytes: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn anthropic_deferred_tool_discovery_stays_callable_on_official_responses(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let body = json!({
-            "model":"synthetic-model",
-            "messages":[
-                {"role":"assistant","content":[{"type":"tool_use","id":"synthetic-search","name":"ToolSearch","input":{"query":"lookup"}}]},
-                {"role":"user","content":[{"type":"tool_result","tool_use_id":"synthetic-search","content":[{"type":"tool_reference","tool_name":"lookup"}]}]}
-            ],
-            "tools":[
-                {"name":"ToolSearch","input_schema":{"type":"object"}},
-                {"name":"lookup","defer_loading":true,"input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}
-            ]
-        });
-        let wire = request_wire(
-            &serde_json::to_vec(&body)?,
-            Protocol::Anthropic,
-            "/v1/messages",
-            "synthetic-model",
-            &History::default(),
-            0,
-            false,
-        )?;
-        let sent: Value = serde_json::from_slice(&wire)?;
-        assert_eq!(sent["tools"][1]["name"], "lookup");
-        assert_eq!(
-            sent["tools"][1]["parameters"],
-            body["tools"][1]["input_schema"]
-        );
-        assert!(sent["tools"][1].get("defer_loading").is_none());
-        assert!(sent["input"].to_string().contains("Tool available: lookup"));
-
-        let parsed = ir::parse::request(Protocol::Anthropic, &body, "/v1/messages")?;
-        assert!(
-            ir::build::request(&parsed, Protocol::Responses)?["tools"][1]
-                .get("defer_loading")
-                .is_none()
-        );
-        assert_eq!(
-            ir::build::request(&parsed, Protocol::Anthropic)?["tools"][1]["defer_loading"],
-            true
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn native_responses_keep_their_explicit_deferred_tool_search_contract(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let body = json!({
-            "model":"synthetic-model","input":"Synthetic question",
-            "tools":[
-                {"type":"tool_search"},
-                {"type":"function","name":"lookup","defer_loading":true,"parameters":{"type":"object"}}
-            ]
-        });
-        let wire = request_wire(
-            &serde_json::to_vec(&body)?,
-            Protocol::Responses,
-            "/v1/responses",
-            "synthetic-model",
-            &History::default(),
-            0,
-            false,
-        )?;
-        let sent: Value = serde_json::from_slice(&wire)?;
-        assert_eq!(sent["tools"][0], body["tools"][0]);
-        assert_eq!(sent["tools"][1]["defer_loading"], true);
-        assert_eq!(
-            sent["tools"][1]["parameters"],
-            body["tools"][1]["parameters"]
-        );
-        Ok(())
-    }
-
-    fn reply() -> ir::Reply {
-        ir::Reply {
-            id: "synthetic-official-reply".into(),
-            model: "synthetic-model".into(),
-            stop: "tool".into(),
-            usage: Default::default(),
-            parts: vec![
-                ir::Part::Thinking {
-                    text: "Synthetic visible thought".into(),
-                    signature: None,
-                    source: Protocol::Responses,
-                    sealed: Some(
-                        json!({"id":"synthetic-reasoning","type":"reasoning","summary":[{"type":"summary_text","text":"Synthetic visible thought"}],"encrypted_content":"synthetic-private-seal"}),
-                    ),
-                },
-                ir::Part::ToolCall {
-                    id: "synthetic-call".into(),
-                    name: "synthetic_tool".into(),
-                    arguments: json!({"value":7}),
-                    signature: None,
-                },
-            ],
-        }
-    }
-    fn payload(thought: &str, argument: u64) -> Vec<u8> {
-        json!({"model":"synthetic-model","messages":[{"role":"assistant","content":null,"reasoning_content":thought,"tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic_tool","arguments":json!({"value":argument}).to_string()}}]},{"role":"tool","tool_call_id":"synthetic-call","content":"Synthetic result"}]}).to_string().into_bytes()
-    }
-    #[test]
-    fn opaque_state_only_returns_to_its_exact_scope_target_and_inspected_call(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let history = History::default();
-        history.record(&reply(), 0);
-        let wire = request(
-            &payload("Synthetic visible thought", 7),
-            "/v1/chat/completions",
-            &history,
-            0,
-        )?;
-        let value: Value = serde_json::from_slice(&wire)?;
-        assert!(value["input"]
-            .as_array()
-            .ok_or("missing input")?
-            .iter()
-            .any(|item| item["encrypted_content"] == "synthetic-private-seal"));
-        for (store, target, thought, argument) in [
-            (&history, 1, "Synthetic visible thought", 7),
-            (&history, 0, "Synthetic inspected replacement", 7),
-            (&history, 0, "Synthetic visible thought", 8),
-        ] {
-            let wire = request(
-                &payload(thought, argument),
-                "/v1/chat/completions",
-                store,
-                target,
-            )?;
-            assert!(!String::from_utf8(wire)?.contains("synthetic-private-seal"));
-        }
-        let wire = request(
-            &payload("Synthetic visible thought", 7),
-            "/v1/chat/completions",
-            &History::default(),
-            0,
-        )?;
-        assert!(!String::from_utf8(wire)?.contains("synthetic-private-seal"));
-        Ok(())
-    }
-    #[test]
-    fn conflicting_opaque_replies_do_not_guess_a_state() -> Result<(), Box<dyn std::error::Error>> {
-        let history = History::default();
-        let original = reply();
-        history.record(&original, 0);
-        let mut changed = original;
-        if let ir::Part::Thinking {
-            sealed: Some(item), ..
-        } = &mut changed.parts[0]
-        {
-            item["encrypted_content"] = json!("synthetic-other-seal");
-        }
-        history.record(&changed, 0);
-        let wire = request(
-            &payload("Synthetic visible thought", 7),
-            "/v1/chat/completions",
-            &history,
-            0,
-        )?;
-        assert!(!String::from_utf8(wire)?.contains("encrypted_content\":\"synthetic"));
-        Ok(())
-    }
-    #[test]
-    fn adding_a_visible_summary_does_not_restore_a_previously_hidden_one(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let history = History::default();
-        let mut original = reply();
-        if let ir::Part::Thinking {
-            text,
-            sealed: Some(item),
-            ..
-        } = &mut original.parts[0]
-        {
-            text.clear();
-            item["summary"] = json!([]);
-        }
-        history.record(&original, 0);
-        let valid = request(&payload("", 7), "/v1/chat/completions", &history, 0)?;
-        assert!(String::from_utf8(valid)?.contains("synthetic-private-seal"));
-        let changed = request(
-            &payload("Synthetic added summary", 7),
-            "/v1/chat/completions",
-            &history,
-            0,
-        )?;
-        assert!(!String::from_utf8(changed)?.contains("synthetic-private-seal"));
-        Ok(())
-    }
-    #[test]
-    fn old_private_tool_state_is_evicted_without_affecting_newer_state(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let history = History::default();
-        for index in 0..65 {
-            let mut next = reply();
-            if let ir::Part::ToolCall { id, .. } = &mut next.parts[1] {
-                *id = format!("synthetic-call-{index}");
-            }
-            history.record(&next, 0);
-        }
-        for (index, retained) in [(0, false), (64, true)] {
-            let mut body: Value = serde_json::from_slice(&payload("Synthetic visible thought", 7))?;
-            body["messages"][0]["tool_calls"][0]["id"] = json!(format!("synthetic-call-{index}"));
-            body["messages"][1]["tool_call_id"] = json!(format!("synthetic-call-{index}"));
-            let wire = request(
-                &serde_json::to_vec(&body)?,
-                "/v1/chat/completions",
-                &history,
-                0,
-            )?;
-            assert_eq!(
-                String::from_utf8(wire)?.contains("synthetic-private-seal"),
-                retained
-            );
-        }
-        Ok(())
-    }
-}
 fn call_key(id: &str, name: &str, arguments: &Value) -> Option<String> {
     if id.len() > 256 || name.len() > 1024 {
         return None;
@@ -533,4 +312,226 @@ pub(super) fn request_wire(
     history.restore(&mut body, target);
     serde_json::to_vec(&body)
         .map_err(|_| ProxyError::InvalidRequest("Invalid official request".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_deferred_tool_discovery_stays_callable_on_official_responses(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body = json!({
+            "model":"synthetic-model",
+            "messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"synthetic-search","name":"ToolSearch","input":{"query":"lookup"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"synthetic-search","content":[{"type":"tool_reference","tool_name":"lookup"}]}]}
+            ],
+            "tools":[
+                {"name":"ToolSearch","input_schema":{"type":"object"}},
+                {"name":"lookup","defer_loading":true,"input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}
+            ]
+        });
+        let wire = request_wire(
+            &serde_json::to_vec(&body)?,
+            Protocol::Anthropic,
+            "/v1/messages",
+            "synthetic-model",
+            &History::default(),
+            0,
+            false,
+        )?;
+        let sent: Value = serde_json::from_slice(&wire)?;
+        assert_eq!(sent["tools"][1]["name"], "lookup");
+        assert_eq!(
+            sent["tools"][1]["parameters"],
+            body["tools"][1]["input_schema"]
+        );
+        assert!(sent["tools"][1].get("defer_loading").is_none());
+        assert!(sent["input"].to_string().contains("Tool available: lookup"));
+
+        let parsed = ir::parse::request(Protocol::Anthropic, &body, "/v1/messages")?;
+        assert!(
+            ir::build::request(&parsed, Protocol::Responses)?["tools"][1]
+                .get("defer_loading")
+                .is_none()
+        );
+        assert_eq!(
+            ir::build::request(&parsed, Protocol::Anthropic)?["tools"][1]["defer_loading"],
+            true
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_responses_keep_their_explicit_deferred_tool_search_contract(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body = json!({
+            "model":"synthetic-model","input":"Synthetic question",
+            "tools":[
+                {"type":"tool_search"},
+                {"type":"function","name":"lookup","defer_loading":true,"parameters":{"type":"object"}}
+            ]
+        });
+        let wire = request_wire(
+            &serde_json::to_vec(&body)?,
+            Protocol::Responses,
+            "/v1/responses",
+            "synthetic-model",
+            &History::default(),
+            0,
+            false,
+        )?;
+        let sent: Value = serde_json::from_slice(&wire)?;
+        assert_eq!(sent["tools"][0], body["tools"][0]);
+        assert_eq!(sent["tools"][1]["defer_loading"], true);
+        assert_eq!(
+            sent["tools"][1]["parameters"],
+            body["tools"][1]["parameters"]
+        );
+        Ok(())
+    }
+
+    fn reply() -> ir::Reply {
+        ir::Reply {
+            id: "synthetic-official-reply".into(),
+            model: "synthetic-model".into(),
+            stop: "tool".into(),
+            usage: Default::default(),
+            parts: vec![
+                ir::Part::Thinking {
+                    text: "Synthetic visible thought".into(),
+                    signature: None,
+                    source: Protocol::Responses,
+                    sealed: Some(
+                        json!({"id":"synthetic-reasoning","type":"reasoning","summary":[{"type":"summary_text","text":"Synthetic visible thought"}],"encrypted_content":"synthetic-private-seal"}),
+                    ),
+                },
+                ir::Part::ToolCall {
+                    id: "synthetic-call".into(),
+                    name: "synthetic_tool".into(),
+                    arguments: json!({"value":7}),
+                    signature: None,
+                },
+            ],
+        }
+    }
+    fn payload(thought: &str, argument: u64) -> Vec<u8> {
+        json!({"model":"synthetic-model","messages":[{"role":"assistant","content":null,"reasoning_content":thought,"tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic_tool","arguments":json!({"value":argument}).to_string()}}]},{"role":"tool","tool_call_id":"synthetic-call","content":"Synthetic result"}]}).to_string().into_bytes()
+    }
+    #[test]
+    fn opaque_state_only_returns_to_its_exact_scope_target_and_inspected_call(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let history = History::default();
+        history.record(&reply(), 0);
+        let wire = request(
+            &payload("Synthetic visible thought", 7),
+            "/v1/chat/completions",
+            &history,
+            0,
+        )?;
+        let value: Value = serde_json::from_slice(&wire)?;
+        assert!(value["input"]
+            .as_array()
+            .ok_or("missing input")?
+            .iter()
+            .any(|item| item["encrypted_content"] == "synthetic-private-seal"));
+        for (store, target, thought, argument) in [
+            (&history, 1, "Synthetic visible thought", 7),
+            (&history, 0, "Synthetic inspected replacement", 7),
+            (&history, 0, "Synthetic visible thought", 8),
+        ] {
+            let wire = request(
+                &payload(thought, argument),
+                "/v1/chat/completions",
+                store,
+                target,
+            )?;
+            assert!(!String::from_utf8(wire)?.contains("synthetic-private-seal"));
+        }
+        let wire = request(
+            &payload("Synthetic visible thought", 7),
+            "/v1/chat/completions",
+            &History::default(),
+            0,
+        )?;
+        assert!(!String::from_utf8(wire)?.contains("synthetic-private-seal"));
+        Ok(())
+    }
+    #[test]
+    fn conflicting_opaque_replies_do_not_guess_a_state() -> Result<(), Box<dyn std::error::Error>> {
+        let history = History::default();
+        let original = reply();
+        history.record(&original, 0);
+        let mut changed = original;
+        if let ir::Part::Thinking {
+            sealed: Some(item), ..
+        } = &mut changed.parts[0]
+        {
+            item["encrypted_content"] = json!("synthetic-other-seal");
+        }
+        history.record(&changed, 0);
+        let wire = request(
+            &payload("Synthetic visible thought", 7),
+            "/v1/chat/completions",
+            &history,
+            0,
+        )?;
+        assert!(!String::from_utf8(wire)?.contains("encrypted_content\":\"synthetic"));
+        Ok(())
+    }
+    #[test]
+    fn adding_a_visible_summary_does_not_restore_a_previously_hidden_one(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let history = History::default();
+        let mut original = reply();
+        if let ir::Part::Thinking {
+            text,
+            sealed: Some(item),
+            ..
+        } = &mut original.parts[0]
+        {
+            text.clear();
+            item["summary"] = json!([]);
+        }
+        history.record(&original, 0);
+        let valid = request(&payload("", 7), "/v1/chat/completions", &history, 0)?;
+        assert!(String::from_utf8(valid)?.contains("synthetic-private-seal"));
+        let changed = request(
+            &payload("Synthetic added summary", 7),
+            "/v1/chat/completions",
+            &history,
+            0,
+        )?;
+        assert!(!String::from_utf8(changed)?.contains("synthetic-private-seal"));
+        Ok(())
+    }
+    #[test]
+    fn old_private_tool_state_is_evicted_without_affecting_newer_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let history = History::default();
+        for index in 0..65 {
+            let mut next = reply();
+            if let ir::Part::ToolCall { id, .. } = &mut next.parts[1] {
+                *id = format!("synthetic-call-{index}");
+            }
+            history.record(&next, 0);
+        }
+        for (index, retained) in [(0, false), (64, true)] {
+            let mut body: Value = serde_json::from_slice(&payload("Synthetic visible thought", 7))?;
+            body["messages"][0]["tool_calls"][0]["id"] = json!(format!("synthetic-call-{index}"));
+            body["messages"][1]["tool_call_id"] = json!(format!("synthetic-call-{index}"));
+            let wire = request(
+                &serde_json::to_vec(&body)?,
+                "/v1/chat/completions",
+                &history,
+                0,
+            )?;
+            assert_eq!(
+                String::from_utf8(wire)?.contains("synthetic-private-seal"),
+                retained
+            );
+        }
+        Ok(())
+    }
 }

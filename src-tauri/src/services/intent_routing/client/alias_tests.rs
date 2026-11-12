@@ -82,7 +82,7 @@ fn provider_migration_preserves_current_retired_and_unknown_model_identities(
                 .find(|wire| receipt.model_map.get(*wire) == Some(&canonical))
                 .ok_or("missing current alias")?
                 .clone();
-            assert_ne!(original, current);
+            assert_eq!(original, current);
             assert!(!receipt.model_aliases.contains(&retired_name));
             for (id, model) in [
                 ("canonical", canonical.as_str()),
@@ -218,7 +218,7 @@ fn alias_integration_legacy_receipts_keep_exact_canonical_history_support(
     let (dir, manager) = tests::setup();
     fs::write(&manager.config, "model_provider='fixture-source'\n")?;
     let group = tests::group();
-    publish(&manager, &[group.clone()], false)?;
+    publish(&manager, std::slice::from_ref(&group), false)?;
     let mut receipt = manager.load()?.ok_or("missing receipt")?;
     let canonical = group.alias();
     receipt.model_map.clear();
@@ -253,7 +253,7 @@ fn provider_migration_preserves_history_when_runtime_credentials_rotate(
     let (dir, manager) = tests::setup();
     fs::write(&manager.config, "model_provider='fixture-source'\n")?;
     let group = tests::group();
-    publish(&manager, &[group.clone()], true)?;
+    publish(&manager, std::slice::from_ref(&group), true)?;
     let receipt = manager.load()?.ok_or("missing receipt")?;
     let mut menu = (*manager.runtime.menu_snapshot()?.ok_or("menu")?).clone();
     menu.token = "different-fixture-token".into();
@@ -310,7 +310,7 @@ fn alias_integration_catalog_repair_rejects_stale_or_unpublished_mapping(
     for tamper in ["token", "mapping", "visible", "menu", "owner"] {
         let (_dir, manager) = tests::setup();
         let group = tests::group();
-        publish(&manager, &[group.clone()], true)?;
+        publish(&manager, std::slice::from_ref(&group), true)?;
         let mut receipt = manager.load()?.ok_or("missing receipt")?;
         let path = receipt.catalogs.last().ok_or("missing catalog")?.clone();
         match tamper {
@@ -362,12 +362,12 @@ fn readable_selection_survives_rename_restart_and_legacy_selection() -> Result<(
             .unwrap();
         doc["model"].as_str().unwrap().to_owned()
     };
-    let original_name = format!("{}-routing-group", group.name.replace(' ', "-"));
+    let original_name = format!("group/{}", group.id);
     assert_eq!(configured(), original_name);
     assert_eq!(manager.selected_model()?, Some(canonical.clone()));
     group.name = "Renamed synthetic".into();
     manager.write_projection(std::slice::from_ref(&group), "synthetic-token", base)?;
-    let renamed = format!("{}-routing-group", group.name.replace(' ', "-"));
+    let renamed = original_name.clone();
     assert_eq!(configured(), renamed);
     let restarted = Manager::new(
         manager.config.clone(),

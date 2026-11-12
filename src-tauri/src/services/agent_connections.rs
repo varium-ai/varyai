@@ -11,6 +11,7 @@ pub(crate) mod model_control;
 pub(crate) mod native;
 #[cfg(test)]
 mod parity_tests;
+mod picker;
 mod projections;
 #[cfg(test)]
 mod readable_tests;
@@ -20,6 +21,7 @@ pub(crate) mod t3code;
 mod visibility;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
 use document::Format;
+pub(crate) use picker::{picker_models, PickerModel};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{

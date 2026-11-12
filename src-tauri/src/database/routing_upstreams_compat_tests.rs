@@ -31,6 +31,75 @@ fn custom() -> RoutingUpstream {
     }
 }
 
+#[test]
+fn provider_copy_ids_follow_magpie_name_slug_and_collision_rules(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let mut original = custom();
+    original.id = "gs".into();
+    original.name = "gs".into();
+    let original = db.save_routing_upstream(original)?;
+    for (name, expected, expected_name) in [
+        ("gs 副本", "gs-2", "gs 副本"),
+        ("gs 副本", "gs-3", "gs 副本 2"),
+        ("GS 副本", "gs-4", "GS 副本 3"),
+        ("gs 複本", "gs-5", "gs 複本"),
+        ("gs コピー", "gs-6", "gs コピー"),
+        ("gs copy", "gs-copy", "gs copy"),
+        ("GS  -- copy", "gs-copy-2", "GS  -- copy"),
+        ("Renamed relay", "renamed-relay", "Renamed relay"),
+        ("gs", "gs-7", "gs 2"),
+    ] {
+        let mut draft = original.clone();
+        draft.id.clear();
+        draft.revision = 0;
+        draft.name = name.into();
+        let saved = db.save_routing_upstream_copy(draft, &original.id, original.revision)?;
+        assert_eq!(saved.id, expected);
+        assert_eq!(saved.name, expected_name);
+        assert!(saved.has_api_key);
+        let provider = db
+            .private_routing_upstreams()?
+            .into_iter()
+            .find(|provider| provider.id == saved.id)
+            .ok_or("copy missing")?;
+        assert!(serde_json::to_value(provider.source)? == serde_json::to_value(custom().source)?);
+    }
+    assert_eq!(
+        db.routing_upstream_editor("gs", original.revision)?.name,
+        "gs"
+    );
+    Ok(())
+}
+
+#[test]
+fn provider_copy_ids_without_ascii_names_follow_magpie_host_fallback(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (endpoint, expected) in [
+        ("https://api.relay.example/v1", "relay"),
+        ("https://www.api.relay.example:8443/v1", "relay"),
+        ("https://api.sub.relay.example/v1", "sub-relay"),
+        ("https://localhost:8443/v1", "localhost"),
+        ("https://127.0.0.1:8443/v1", "custom"),
+        ("https://[::1]:8443/v1", "custom"),
+    ] {
+        let db = Database::memory()?;
+        let mut original = custom();
+        original.id = "source".into();
+        if let UpstreamSource::Api { base_url, .. } = &mut original.source {
+            *base_url = endpoint.into();
+        }
+        let original = db.save_routing_upstream(original)?;
+        let mut draft = original.clone();
+        draft.id.clear();
+        draft.revision = 0;
+        draft.name = "中转站 副本".into();
+        let saved = db.save_routing_upstream_copy(draft, &original.id, original.revision)?;
+        assert_eq!(saved.id, expected);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn api_provider_id_rename_moves_references_and_preserves_agent_and_transport_identity(
 ) -> Result<(), Box<dyn std::error::Error>> {

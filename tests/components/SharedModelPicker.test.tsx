@@ -2,6 +2,166 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
 
+it("updates provider icons in model rows and the provider rail", () => {
+  const first =
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle fill='red' r='8'/%3E%3C/svg%3E";
+  const second =
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle fill='blue' r='8'/%3E%3C/svg%3E";
+  const props = {
+    variant: "agent" as const,
+    selected: [],
+    models: [
+      { id: "gs/model", name: "Synthetic model", group: "gs", icon: first },
+    ],
+  };
+  const { rerender } = render(<SharedModelPicker {...props} />);
+  const row = () => screen.getByRole("radio", { name: "Synthetic model" });
+  const rail = () =>
+    within(screen.getByRole("navigation")).getByRole("button", { name: "gs" });
+  expect(row().querySelector(".mp-am-logo img")).toHaveAttribute("src", first);
+  expect(rail().querySelector("img")).toHaveAttribute("src", first);
+  rerender(
+    <SharedModelPicker
+      {...props}
+      models={[{ ...props.models[0], icon: second }]}
+    />,
+  );
+  expect(row().querySelector(".mp-am-logo img")).toHaveAttribute("src", second);
+  expect(rail().querySelector("img")).toHaveAttribute("src", second);
+  fireEvent.error(row().querySelector(".mp-am-logo img")!);
+  expect(row().querySelector(".mp-am-logo img")).toBeNull();
+  expect(row().querySelector(".mp-am-logo svg")).toBeInTheDocument();
+});
+
+it("uses the selected built-in or letter provider icon in model rows", () => {
+  const props = {
+    variant: "agent" as const,
+    selected: [],
+    models: [
+      {
+        id: "gs/model",
+        name: "Synthetic model",
+        group: "gs",
+        icon: "generic-api",
+      },
+    ],
+  };
+  const { rerender } = render(<SharedModelPicker {...props} />);
+  const row = () => screen.getByRole("radio", { name: "Synthetic model" });
+  expect(
+    row().querySelector('.mp-am-logo path[fill="#3F70FF"]'),
+  ).toBeInTheDocument();
+  rerender(
+    <SharedModelPicker
+      {...props}
+      models={[{ ...props.models[0], icon: "letter" }]}
+    />,
+  );
+  expect(row().querySelector(".mp-am-logo")).toHaveTextContent(/^GS$/);
+});
+
+it("keeps an explicit native model logo ahead of the provider icon", () => {
+  render(
+    <SharedModelPicker
+      variant="agent"
+      models={[
+        {
+          id: "native",
+          name: "Native model",
+          logo: "openai",
+          icon: "letter",
+          group: "gs",
+          source: "native",
+        },
+      ]}
+      selected={[]}
+    />,
+  );
+  const row = screen.getByRole("radio", { name: "Native model" });
+  expect(row.querySelector(".mp-am-logo svg")).toBeInTheDocument();
+  expect(row.querySelector(".mp-am-logo")).not.toHaveTextContent("GS");
+});
+
+it.each([
+  { variant: "agent" as const },
+  {},
+  { multiple: true },
+  { readOnly: true },
+])(
+  "distinguishes same-name provider copies like Magpie with picker options %j",
+  (options) => {
+    const pick = vi.fn();
+    render(
+      <SharedModelPicker
+        {...options}
+        models={[
+          {
+            id: "vary-provider/model-original",
+            reference: "gs/vendor/glm-5.3-flash",
+            name: "GLM-5.3-Flash",
+            group: "gs",
+          },
+          {
+            id: "vary-provider/model-copy",
+            reference: "gs-2/vendor/glm-5.3-flash",
+            name: "GLM-5.3-Flash",
+            group: "gs",
+          },
+        ]}
+        selected={[]}
+        onPick={pick}
+      />,
+    );
+    const original = screen.getByTitle("GLM-5.3-Flash · gs");
+    const copy = screen.getByTitle("GLM-5.3-Flash · gs-2");
+    expect(original.querySelector(".mp-am-tell")).toHaveTextContent(/^gs$/);
+    expect(copy.querySelector(".mp-am-tell")).toHaveTextContent(/^gs-2$/);
+    if (!options.readOnly) {
+      fireEvent.click(copy);
+      expect(pick).toHaveBeenCalledWith("vary-provider/model-copy");
+    }
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "gs-2" },
+    });
+    expect(screen.queryByTitle("GLM-5.3-Flash · gs")).not.toBeInTheDocument();
+    expect(screen.getByTitle("GLM-5.3-Flash · gs-2")).toBeVisible();
+  },
+);
+
+it("only adds Magpie identity hints for equal labels within the same provider group", () => {
+  const { container } = render(
+    <SharedModelPicker
+      variant="agent"
+      models={[
+        { id: "relay/a", name: "Shared", group: "One" },
+        { id: "other/a", name: "Shared", group: "Two" },
+        { id: "relay/b", name: "SHARED", group: "One" },
+      ]}
+      selected={[]}
+    />,
+  );
+  expect(container.querySelector(".mp-am-tell")).toBeNull();
+});
+
+it("keeps encoded classifier selections while displaying public model references", () => {
+  const pick = vi.fn();
+  const original = JSON.stringify(["gs", "vendor/glm"]);
+  const copy = JSON.stringify(["gs-2", "vendor/glm"]);
+  render(
+    <SharedModelPicker
+      models={[
+        { id: original, reference: "gs/vendor/glm", name: "GLM", group: "gs" },
+        { id: copy, reference: "gs-2/vendor/glm", name: "GLM", group: "gs" },
+      ]}
+      selected={[]}
+      onPick={pick}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "GLM · gs-2" }));
+  expect(pick).toHaveBeenCalledExactlyOnceWith(copy);
+  expect(screen.queryByText(copy)).not.toBeInTheDocument();
+});
+
 it.each([
   { variant: "agent" as const },
   {},

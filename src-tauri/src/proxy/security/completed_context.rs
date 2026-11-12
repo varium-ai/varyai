@@ -72,10 +72,12 @@ impl OperationLineage {
     }
 }
 
+#[cfg(test)]
 pub(super) struct CompletionWitness {
     _private: (),
 }
 
+#[cfg(test)]
 impl CompletionWitness {
     pub(super) fn from_verified_completion(permitted: bool) -> Result<Self, TokenError> {
         if !permitted {
@@ -102,7 +104,7 @@ pub(super) struct CompletedContextHandle {
     pub(super) generation: [u8; 16],
     pub(super) policy_revision: u64,
     pub(super) provider_fingerprint: [u8; 32],
-    pub(super) response_digest: [u8; 32],
+    pub(super) evidence: CompletedEvidenceIdentity,
 }
 
 /// Exact delivered variants share the original call identity and immutable completion.
@@ -126,25 +128,126 @@ pub(super) struct CompletedCallPublications<'a> {
     pub(super) delivered: &'a [CompletedCallSpec<'a>],
 }
 
-pub(super) struct CompletedContextRecord {
+/// Protocol evidence is not interchangeable with namespace binding or call pairing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletedEvidenceIdentity {
+    Responses([u8; 32]),
+    Chat([u8; 32]),
+    Anthropic([u8; 32]),
+    Gemini([u8; 32]),
+}
+
+pub(super) enum CompletedEvidence {
+    Responses(ResponsesEvidence),
+    Chat(ChatEvidence),
+    Anthropic(AnthropicEvidence),
+    Gemini(GeminiEvidence),
+}
+
+pub(super) struct ResponsesEvidence {
     pub(super) response_digest: [u8; 32],
+    pub(super) calls: Option<StoreVec<CompletedCallEntry>>,
+    pub(super) opaques: Option<StoreVec<[u8; 32]>>,
+}
+
+/// The MAC binds the exact ordered native array, not a Responses cursor or result body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeDeliveredEvidence {
+    pub(super) digest: [u8; 32],
+    pub(super) item_count: usize,
+}
+
+pub(super) struct ChatEvidence(pub(super) NativeDeliveredEvidence);
+pub(super) struct AnthropicEvidence(pub(super) NativeDeliveredEvidence);
+pub(super) struct GeminiEvidence(pub(super) NativeDeliveredEvidence);
+
+impl CompletedEvidence {
+    pub(super) fn identity(&self) -> CompletedEvidenceIdentity {
+        match self {
+            Self::Responses(evidence) => {
+                CompletedEvidenceIdentity::Responses(evidence.response_digest)
+            }
+            Self::Chat(evidence) => CompletedEvidenceIdentity::Chat(evidence.0.digest),
+            Self::Anthropic(evidence) => CompletedEvidenceIdentity::Anthropic(evidence.0.digest),
+            Self::Gemini(evidence) => CompletedEvidenceIdentity::Gemini(evidence.0.digest),
+        }
+    }
+
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Responses(a), Self::Responses(b)) => {
+                a.response_digest == b.response_digest
+                    && a.calls.as_ref().map(StoreVec::as_slice).unwrap_or(&[])
+                        == b.calls.as_ref().map(StoreVec::as_slice).unwrap_or(&[])
+                    && a.opaques.as_ref().map(StoreVec::as_slice).unwrap_or(&[])
+                        == b.opaques.as_ref().map(StoreVec::as_slice).unwrap_or(&[])
+            }
+            (Self::Chat(a), Self::Chat(b)) => a.0 == b.0,
+            (Self::Anthropic(a), Self::Anthropic(b)) => a.0 == b.0,
+            (Self::Gemini(a), Self::Gemini(b)) => a.0 == b.0,
+            _ => false,
+        }
+    }
+}
+
+pub(super) struct CompletedContextRecord {
+    pub(super) evidence: CompletedEvidence,
     pub(super) provider_fingerprint: [u8; 32],
     pub(super) operation_lineage: Option<OperationLineage>,
     pub(super) policy_revision: u64,
     pub(super) dependencies: Option<StoreVec<MappingEntry>>,
-    pub(super) calls: Option<StoreVec<CompletedCallEntry>>,
-    pub(super) opaques: Option<StoreVec<[u8; 32]>>,
     pub(super) context_entries: usize,
     pub(super) metadata_bytes: usize,
 }
 
 impl CompletedContextRecord {
+    pub(super) fn responses_evidence(&self) -> Option<&ResponsesEvidence> {
+        match &self.evidence {
+            CompletedEvidence::Responses(evidence) => Some(evidence),
+            _ => None,
+        }
+    }
+
+    pub(super) fn response_digest(&self) -> Option<[u8; 32]> {
+        self.responses_evidence()
+            .map(|evidence| evidence.response_digest)
+    }
+
     pub(super) fn authorizes_attempt(&self, binding: &ActualAttemptBinding) -> bool {
         self.provider_fingerprint == binding.provider_fingerprint
             || self
                 .operation_lineage
                 .zip(binding.operation_lineage)
                 .is_some_and(|(source, target)| source.allows_transfer_to(target))
+    }
+
+    /// Native replay requires an exact binding; Responses operation transfer is excluded.
+    pub(super) fn validate_native_replay(
+        &self,
+        binding: &ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        evidence: &CompletedEvidence,
+    ) -> Result<(), TokenError> {
+        use crate::proxy::protocol_bridge::Protocol;
+
+        let native_variant = matches!(
+            (&self.evidence, client.protocol()),
+            (CompletedEvidence::Chat(_), Protocol::Chat)
+                | (CompletedEvidence::Anthropic(_), Protocol::Anthropic)
+                | (CompletedEvidence::Gemini(_), Protocol::Gemini)
+        );
+        if !native_variant
+            || !binding.reusable_principal
+            || binding.operation_lineage.is_some()
+            || self.operation_lineage.is_some()
+            || self.provider_fingerprint != binding.provider_fingerprint
+            || self.policy_revision != binding.policy_revision
+            || self.context_entries != 1
+            || !self.evidence.matches(evidence)
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
     }
 
     pub(super) fn deps_slice(&self) -> &[MappingEntry] {
@@ -155,11 +258,17 @@ impl CompletedContextRecord {
     }
 
     pub(super) fn calls_slice(&self) -> &[CompletedCallEntry] {
-        self.calls.as_ref().map(StoreVec::as_slice).unwrap_or(&[])
+        self.responses_evidence()
+            .and_then(|evidence| evidence.calls.as_ref())
+            .map(StoreVec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub(super) fn opaques_slice(&self) -> &[[u8; 32]] {
-        self.opaques.as_ref().map(StoreVec::as_slice).unwrap_or(&[])
+        self.responses_evidence()
+            .and_then(|evidence| evidence.opaques.as_ref())
+            .map(StoreVec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub(super) fn find_call(&self, call_digest: &[u8; 32]) -> Option<&CompletedCallEntry> {
@@ -263,6 +372,186 @@ pub(super) fn opaque_content_digest(
     )
 }
 
+/// Inspect a bounded ordered array without copying or retaining native plaintext.
+/// Namespace keys are derived independently of mapping and provider-binding keys.
+pub(super) fn native_delivered_evidence(
+    store_key: &[u8; 32],
+    binding: &ActualAttemptBinding,
+    client: super::restoration_contract::ClientProtocol,
+    ingress: super::restoration_contract::IngressNamespace,
+    delivered: &serde_json::Value,
+    fragment_limit: usize,
+) -> Result<CompletedEvidence, TokenError> {
+    use crate::proxy::protocol_bridge::Protocol;
+    use std::io::{self, Write};
+
+    struct DigestWriter<'a> {
+        mac: Option<&'a mut Hmac<Sha256>>,
+        bytes: usize,
+        limit: usize,
+    }
+    impl Write for DigestWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let total = self
+                .bytes
+                .checked_add(bytes.len())
+                .filter(|total| *total <= self.limit)
+                .ok_or_else(|| io::Error::other("Native evidence capacity exceeded."))?;
+            if let Some(mac) = self.mac.as_mut() {
+                mac.update(bytes);
+            }
+            self.bytes = total;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    fn field(mac: &mut Hmac<Sha256>, bytes: &[u8]) -> Result<(), TokenError> {
+        let len = u64::try_from(bytes.len()).map_err(|_| TokenError::CapacityExceeded)?;
+        mac.update(&len.to_be_bytes());
+        mac.update(bytes);
+        Ok(())
+    }
+
+    let protocol: &[u8] = match client.protocol() {
+        Protocol::Chat => b"openai_chat",
+        Protocol::Anthropic => b"anthropic",
+        Protocol::Gemini => b"gemini_native",
+        Protocol::Responses => return Err(TokenError::ContextUnavailable),
+    };
+    let items = delivered.as_array().ok_or(TokenError::ContextUnavailable)?;
+    if items.is_empty() || items.len() > MAX_CALLS_PER_CONTEXT {
+        return Err(TokenError::CapacityExceeded);
+    }
+    // Count every serialized native item before the MAC pass. The bracket and
+    // separator arithmetic is checked, and every item obeys the fragment ceiling.
+    let mut array_bytes = 2usize;
+    for (index, item) in items.iter().enumerate() {
+        let mut counter = DigestWriter {
+            mac: None,
+            bytes: 0,
+            limit: fragment_limit,
+        };
+        serde_json::to_writer(&mut counter, item).map_err(|_| TokenError::CapacityExceeded)?;
+        array_bytes = array_bytes
+            .checked_add(counter.bytes)
+            .and_then(|total| total.checked_add(usize::from(index > 0)))
+            .ok_or(TokenError::CapacityExceeded)?;
+    }
+    let namespace_key = keyed_digest(
+        store_key,
+        b"",
+        &[
+            b"native-evidence-key-v1\0",
+            &binding.namespace.to_be_bytes(),
+            &binding.generation,
+        ],
+    )?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&namespace_key).map_err(|_| TokenError::Unavailable)?;
+    field(&mut mac, b"native-delivered-v1\0")?;
+    field(&mut mac, protocol)?;
+    field(
+        &mut mac,
+        match ingress {
+            super::restoration_contract::IngressNamespace::Direct => b"direct",
+            super::restoration_contract::IngressNamespace::Gateway => b"gateway",
+        },
+    )?;
+    mac.update(
+        &u64::try_from(array_bytes)
+            .map_err(|_| TokenError::CapacityExceeded)?
+            .to_be_bytes(),
+    );
+    {
+        let mut writer = DigestWriter {
+            mac: Some(&mut mac),
+            bytes: 0,
+            limit: array_bytes,
+        };
+        serde_json::to_writer(&mut writer, delivered).map_err(|_| TokenError::CapacityExceeded)?;
+        if writer.bytes != array_bytes {
+            return Err(TokenError::ContextUnavailable);
+        }
+    }
+    let evidence = NativeDeliveredEvidence {
+        digest: mac.finalize().into_bytes().into(),
+        item_count: items.len(),
+    };
+    Ok(match client.protocol() {
+        Protocol::Chat => CompletedEvidence::Chat(ChatEvidence(evidence)),
+        Protocol::Anthropic => CompletedEvidence::Anthropic(AnthropicEvidence(evidence)),
+        Protocol::Gemini => CompletedEvidence::Gemini(GeminiEvidence(evidence)),
+        Protocol::Responses => return Err(TokenError::ContextUnavailable),
+    })
+}
+
+/// Replay has no adapter-owned budget, so bound traversal before serialization and MAC work.
+/// Reuse the publication evidence format without copying native strings or widening authority.
+pub(super) fn native_replay_evidence(
+    store_key: &[u8; 32],
+    binding: &ActualAttemptBinding,
+    client: super::restoration_contract::ClientProtocol,
+    ingress: super::restoration_contract::IngressNamespace,
+    delivered: &serde_json::Value,
+    fragment_limit: usize,
+) -> Result<CompletedEvidence, TokenError> {
+    use serde_json::Value;
+
+    fn inspect(value: &Value, depth: usize, remaining: &mut usize) -> Result<(), TokenError> {
+        if depth > 64 {
+            return Err(TokenError::CapacityExceeded);
+        }
+        *remaining = remaining
+            .checked_sub(1)
+            .ok_or(TokenError::CapacityExceeded)?;
+        match value {
+            Value::String(text) => {
+                *remaining = remaining
+                    .checked_sub(text.len())
+                    .ok_or(TokenError::CapacityExceeded)?;
+            }
+            Value::Array(items) => {
+                for item in items {
+                    inspect(item, depth + 1, remaining)?;
+                }
+            }
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    *remaining = remaining
+                        .checked_sub(key.len())
+                        .ok_or(TokenError::CapacityExceeded)?;
+                    inspect(value, depth + 1, remaining)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    if client.protocol() == crate::proxy::protocol_bridge::Protocol::Responses {
+        return Err(TokenError::ContextUnavailable);
+    }
+    let items = delivered.as_array().ok_or(TokenError::ContextUnavailable)?;
+    if items.is_empty() {
+        return Err(TokenError::ContextUnavailable);
+    }
+    if items.len() > MAX_CALLS_PER_CONTEXT {
+        return Err(TokenError::CapacityExceeded);
+    }
+    let mut remaining = 4 * 1024 * 1024;
+    inspect(delivered, 0, &mut remaining)?;
+    native_delivered_evidence(
+        store_key,
+        binding,
+        client,
+        ingress,
+        delivered,
+        fragment_limit,
+    )
+}
+
 impl DlpRequestLease {
     pub(super) fn fork_attempt(&self) -> Result<DlpRequestLease, TokenError> {
         self.fork_attempt_extracted()
@@ -318,6 +607,7 @@ impl DlpRequestLease {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn publish_completed_context_variants(
         &self,
         binding: &ActualAttemptBinding,
@@ -334,6 +624,26 @@ impl DlpRequestLease {
             calls,
             opaques,
         )
+    }
+
+    /// Inspect exact native delivery without importing dependencies or cursor authority.
+    pub(super) fn verify_native_delivered(
+        &self,
+        binding: &ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        delivered: &serde_json::Value,
+    ) -> Result<CompletedContextHandle, TokenError> {
+        self.verify_native_delivered_extracted(binding, client, delivered)
+    }
+
+    /// Explicitly import only the immutable dependencies of exact visible native evidence.
+    pub(super) fn import_native_completed_context(
+        &mut self,
+        binding: &ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        handle: &CompletedContextHandle,
+    ) -> Result<(), TokenError> {
+        self.import_native_completed_context_extracted(binding, client, handle)
     }
 
     pub(super) fn resume_completed_context(

@@ -1172,6 +1172,9 @@
     "portableMode": "ポータブルモード: 更新は手動ダウンロードが必要です。",
     "updateAvailable": "新しいバージョンがあります: {{version}}",
     "updateCurrentVersion": "現在のバージョン v{{version}}",
+    "releaseHistoryRange": "v{{from}} から v{{to}} までの更新内容",
+    "releaseHistoryLoading": "以前のバージョンの更新履歴を読み込み中…",
+    "releaseHistoryIncomplete": "一部の更新履歴を読み込めないか、最新40バージョンを超えています。取得できた内容を表示しています。更新は引き続き可能です。",
     "restartToUpdate": "再起動して更新",
     "updateRestartHint": "更新のインストール後にアプリが再起動します。",
     "releaseNotesUnavailable": "更新内容はまだ公開されていません。リリースページで詳細を確認できます。",
@@ -3278,6 +3281,23 @@
       "cloud": "クラウドプラットフォーム",
       "tool": "開発ツール",
       "other": "その他"
+    },
+    "icons": {
+      "generic-model-y": "モデル Y",
+      "generic-model-meta": "モデル Meta",
+      "generic-model-cube": "キューブモデル",
+      "generic-component": "コンポーネント",
+      "generic-code": "コード",
+      "generic-knowledge": "ナレッジベース",
+      "generic-api": "API",
+      "generic-model": "大規模言語モデル",
+      "generic-output": "出力",
+      "generic-tools": "ツール",
+      "generic-text": "テキスト処理",
+      "generic-http": "HTTP",
+      "generic-model-network": "ネットワークモデル",
+      "generic-intent": "意図認識",
+      "generic-memory": "メモリ"
     }
   },
   "providerIcon": {
@@ -4705,7 +4725,7 @@
     "details": "詳細",
     "ruleCount": "{{count}} 件のルール",
     "autoCreateCompact": "2つ以上のプロバイダーが提供する同じモデルをグループ化します（auto/…）。オフにすると、作成・編集したグループだけを表示して使用します。",
-    "title": "グローバルルーティンググループ",
+    "title": "ルーティンググループ",
     "create": "グループを作成",
     "foldHint": "見出しをクリックして折りたたむ",
     "saveOrCancel": "折りたたむ前に変更を保存するか、キャンセルしてください。",
@@ -5020,6 +5040,10 @@
     "sameAsHint": "グループ検出と不足したカタログ情報の補完で、このモデルを指定したモデルとして扱います。送信するモデル ID は変わりません。"
   },
   "agentConnections": {
+    "cursorLocalHint": "Cursor Private Inference が必要です。接続後に完全に終了して再起動してください。Cursor に保存したゲートウェイ設定が環境の既定値より優先されます。",
+    "cursorCliHint": "Cursor のネイティブモデル選択を管理します。CLI リクエストは引き続き Cursor のサービスを使用します。",
+    "cursorAuto": "Auto · Cursor ネイティブ",
+    "t3codeHint": "独立した VaryAI Codex インスタンスを使用します。T3 Code でこのインスタンスを選び、新しいスレッドを開始してください。",
     "desktopStartingModelHint": "クライアントが設定を再読み込みした後、新しいチャットとタスクに使用します。表示中のモデルを選んでください。既存の会話の選択は保持されます。",
     "modelControlHint": "ローカルの新規チャットの既定モデルを保存し、Vary AI からクライアントを再起動して適用します。既存の会話とリモート実行環境の選択は保持されます。",
     "modelControlTitle": "{{app}} の既定モデルの管理を許可しますか？",
@@ -5048,7 +5072,7 @@
       "manualChanges": "プロキシや環境変数はご自身で変更してください。Vary はシェル設定やシステムのプロキシ設定を編集しません。「確認しました」は接続を維持します。「接続を解除して復元」は Vary が保存した接続項目の復元を確認する別のダイアログを開きます。",
       "unavailable": "プロキシの確認を利用できません。現在のプロキシ問題は確認されていません。もう一度確認してください。"
     },
-    "viaVary": "Vary 経由",
+    "viaVary": "magpie 経由",
     "nativeConfiguration": "ネイティブ設定",
     "sorting": {
       "role": "並べ替え可能なツール",
@@ -5190,7 +5214,7 @@
     "china": "中国",
     "sheet": "プロバイダーを追加",
     "first": "最初のプロバイダーを追加",
-    "findVendor": "ベンダーまたは API リレーを検索",
+    "findVendor": "サブスクリプションやベンダーを検索",
     "import": "インポート",
     "importHint": "既存の設定を共有カタログに追加します。Agent の選択は変更しません。",
     "vendor": "ベンダー",
@@ -5201,7 +5225,12 @@
     "discardTitle": "変更を破棄しますか？",
     "discardHint": "未保存の変更は失われます。",
     "discard": "変更を破棄",
-    "plan": "プラン"
+    "plan": "プラン",
+    "chooseMethod": "モデルサービスへの接続方法を選択してください。",
+    "commonProviders": "よく使うプロバイダー",
+    "subscriptionDescription": "既存のサブスクリプションでログイン。API キーは不要です。",
+    "vendorDescription": "OpenAI、Anthropic、DeepSeek などの公式サービスに接続します。",
+    "importDescription": "既存のツールや設定ファイルからプロバイダーをインポートします。"
   },
   "modelPicker": {
     "search": "モデルまたはプロバイダーを検索",
@@ -5225,6 +5254,22 @@
     "groupSettings": "グループ設定"
   },
   "routingPage": {
+    "more": "その他",
+    "groupCount": "{{count}} グループ",
+    "groupName": "グループ名",
+    "groupStatus": "状態",
+    "upstreamCount": "上流数",
+    "requestCount": "リクエスト数",
+    "switchCount": "切替回数",
+    "agentErrorCount": "Agent エラー数",
+    "actions": "操作",
+    "allStatuses": "すべての状態",
+    "groupEnabled": "有効",
+    "groupDisabled": "無効",
+    "refresh": "更新",
+    "groupStatsUnavailable": "グループの累計統計はまだ利用できません。",
+    "noGroups": "ルーティンググループはありません。新規作成またはインポートして開始してください。",
+
     "apiKey": "API キー",
     "oneKey": "単一キー",
     "accountQuotaLeft": "残りの利用枠",
@@ -5478,6 +5523,8 @@
     "manage": "管理"
   },
   "providerEditor": {
+    "getApiKey": "キーを取得",
+    "endpoints": "エンドポイント",
     "holdsTokens": "{{n}} トークンまで",
     "idReference": "Agent は {{id}}/… でモデルを選択します",
     "idMovesReferences": "{{id}} を使う Agent とルーティンググループも移行します。",
@@ -5514,6 +5561,7 @@
     "streamVerified": "ストリーム検証済み",
     "streamUnverified": "ストリーム未検証",
     "accounts": "アカウント",
+    "keyLimits": "制限",
     "inUse": "使用中",
     "keyPlaceholder": "API キーを貼り付け",
     "keyModels": "{{count}} モデル",

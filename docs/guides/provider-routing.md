@@ -27,6 +27,69 @@ Checking versions does not launch or update a client. Selecting an update uses t
 
 See [Codex model catalogs](codex-model-catalog.md) for import behavior. Do not use an internal gateway address or a usable key in a shared example.
 
+Each built-in API preset shows **Get key** beside the API key input and a
+read-only **Endpoints** list with one row per supported protocol. The header
+opens the vendor's console or documentation page. These links and endpoint rows
+follow the selected region or plan; switching them keeps the key already typed.
+This covers all 21 API presets, including relay presets. The links open through
+the desktop's existing external-browser action, and typed keys are never added
+to those URLs. Endpoint display does not change which transport is saved.
+
+The shared API provider editor places **Select all** and **Fetch models** together above
+the model chips. The checkbox is checked when all currently filtered chat
+models are selected and shows a mixed state for a partial selection. Checking
+it selects those models within the existing 256-model limit; unchecking it
+clears those models while preserving hidden selections and image models.
+Saved providers that follow the supplier catalog show a checked box so a single
+click can switch to an empty manual selection.
+Before a catalog is available, selection is disabled and discovery remains
+available when the provider has an endpoint and credentials.
+Fetching the API model catalog only puts the fetch button into a loading state.
+The form, model selection, save and cancel controls remain available. Results
+merge into the current catalog without reverting edits made during the request.
+Responses from a closed or replaced editor, or from a changed endpoint, protocol
+or credential, are ignored.
+
+The custom API editor places **Detect protocol** as a text button inside the
+right end of the Base URL field. Detection only loads that button; fields,
+model selection, Save and Cancel remain available. It tests the first selected
+chat model, or discovers a chat model when none is selected. There is no separate
+test-model input. Changing the URL, protocol or credential, or closing the
+editor, invalidates the pending result and any pending model-discovery step.
+
+Account selection and model select-all use the same 18px checkbox, including
+checked, mixed, disabled and keyboard-focus states. Color and checkmark
+transitions run in both directions and respect the system reduced-motion setting.
+Model chips also animate their selection color and checkmark in both directions,
+with subtle press feedback. The checkmark keeps its layout space when deselected,
+so toggling does not shift model labels or neighboring chips. These transitions
+also respect reduced motion.
+
+Provider rows place Copy immediately to the left of Delete, between the enable
+switch and navigation arrow. Copy opens a new draft of a saved API provider;
+credentials are copied privately only when that draft is saved. Subscription
+copying remains unavailable. The editor footer contains only Save/Add and Cancel.
+Delete remains available for disabled and subscription providers and opens the existing
+confirmation dialog with the provider name and uses the current saved revision.
+Canceling leaves the provider intact; referenced-provider and revision conflicts
+retain the row and show the existing error message.
+
+The account table's action heading and row controls align to the left of their
+column, so the edit action starts at the same position in rows with and without
+a delete action. The action column reserves a compact 56px instead of a
+percentage of the table; the remaining width is available to account details.
+Auxiliary action labels wrap within the column when needed.
+
+Provider copies follow Magpie's ID rules: the final name is lowercased, runs of
+characters outside `a-z` and `0-9` become a single dash, and leading/trailing
+dashes are removed. An occupied ID gets the first available suffix starting at
+`-2`. For example, copying `gs` with the Chinese name `gs 副本` produces `gs-2`
+when `gs` already exists; the English name `gs copy` produces `gs-copy`.
+Names with no ASCII letters or digits use the endpoint hostname, dropping the
+last domain label and leading `api`/`www` labels; IP endpoints use `custom`.
+Repeated display names receive a space and the first available number starting
+at `2`. Existing saved IDs remain unchanged.
+
 ## Replace managed model catalogs
 
 The shared provider editor includes optional notes for every Agent. Notes are preserved when editing and saved as provider metadata; they are not sent as model parameters or included in provider diagnostics.

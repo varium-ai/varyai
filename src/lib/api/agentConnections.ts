@@ -40,6 +40,7 @@ export interface CodexProxyIssue {
 }
 export interface AgentModel {
   id: string;
+  reference?: string;
   name: string;
   contextWindow: number | null;
   group?: string;

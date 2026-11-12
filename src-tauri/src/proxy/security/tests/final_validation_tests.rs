@@ -22,12 +22,15 @@ fn request_in_store(source: &Value, store: &DlpTokenStore) -> Result<DlpHttpRequ
         enabled: true,
     });
     Ok(DlpHttpRequest {
-        base_lease: store.admit("codex", Some("final-fixture-session"), 1)?,
+        authority: RequestAuthority::from_test_lease(
+            store.admit("codex", Some("final-fixture-session"), 1)?,
+            budget.clone(),
+        ),
         runtime,
         restore_rules: StoreVec::new(store.allocation_ledger()?, 4096),
-        budget: budget.clone(),
         source_body: PayloadJson::try_from_value(source, budget.clone(), budget.limit())?,
         pretokenized: false,
+        native_protocol: None,
         endpoint_is_compact: false,
         audit_state: std::sync::Arc::new(RequestAuditState::new(
             &AppType::Codex,
@@ -419,7 +422,7 @@ fn final_validation_actual_body_immutable_keys_refuse_authorized_references() ->
             let mut source = json!({"input":"private-a"});
             let original = source.clone();
             let request = request(&source)?;
-            let budget = request.budget.clone();
+            let budget = request.authority.budget();
             let result = request.prepare_attempt_for_proxy(
                 "final-fixture-provider", protocol,
                 "https://synthetic.invalid/v1/responses", Some("synthetic-account"),
@@ -470,7 +473,7 @@ fn final_validation_actual_body_unknown_key_literal_preserves_encoding() -> Test
     for protocol in ["openai_chat", "anthropic", "openai_responses"] {
         let mut source = json!({"input":"private-a"});
         let request = request(&source)?;
-        let budget = request.budget.clone();
+        let budget = request.authority.budget();
         let mut body = if protocol == "openai_responses" {
             json!({"input":"safe"})
         } else {
@@ -539,7 +542,7 @@ fn final_validation_password_context_is_preserved_in_refusal_audit() -> TestResu
 fn final_validation_exhausted_budget_is_propagated_without_publication() -> TestResult {
     let mut source = json!({"input":"safe"});
     let request = request(&source)?;
-    let budget = request.budget.clone();
+    let budget = request.authority.budget();
     let mut held = None;
     let result = request.prepare_attempt_for_proxy(
         "final-fixture-provider",
@@ -706,7 +709,7 @@ async fn reasoning_tool_publication_preserves_literal_leaf_and_required_context(
             delivered["output"][0]["reasoning_content"].as_str() == Some(literal.as_str()),
             "tool reasoning must remain byte-identical after publication"
         );
-        let mut continuation = request.base_lease.fork_attempt()?;
+        let mut continuation = request.authority.lease().fork_attempt()?;
         let binding = continuation.bind_actual_attempt(
             "final-fixture-provider",
             "openai_responses",
@@ -821,7 +824,8 @@ async fn reasoning_delivered_history_json_requires_final_success() -> TestResult
             let replay = json!({"input":raw["output"]});
             assert!(
                 request
-                    .base_lease
+                    .authority
+                    .lease()
                     .history_projection(&binding, &replay)
                     .is_none(),
                 "unpublished response must not issue delivered history authority"
@@ -844,7 +848,8 @@ async fn reasoning_delivered_history_json_requires_final_success() -> TestResult
                 .map_err(|_| "synthetic delivered response must be valid JSON")?;
             let replay = json!({"input":delivered["output"]});
             let projection = request
-                .base_lease
+                .authority
+                .lease()
                 .history_projection(&binding, &replay)
                 .ok_or("successful final delivery must publish optional history proof")?;
             let field = if reasoning {
@@ -894,7 +899,8 @@ async fn reasoning_delivered_history_json_failed_completion_never_publishes() ->
         );
         assert!(
             request
-                .base_lease
+                .authority
+                .lease()
                 .history_projection(&binding, &replay)
                 .is_none(),
             "failed completion must never publish optional history proof"
@@ -958,7 +964,8 @@ async fn reasoning_delivered_history_sse_requires_terminal_release() -> TestResu
         );
         assert!(
             request
-                .base_lease
+                .authority
+                .lease()
                 .history_projection(&binding, &replay)
                 .is_none(),
             "unpolled SSE must not publish proof"
@@ -975,7 +982,8 @@ async fn reasoning_delivered_history_sse_requires_terminal_release() -> TestResu
             "valid SSE must release the completion barrier"
         );
         let projection = request
-            .base_lease
+            .authority
+            .lease()
             .history_projection(&binding, &replay)
             .ok_or("released terminal SSE must publish optional history")?;
         for (index, field) in [
@@ -1062,7 +1070,7 @@ async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -
             };
             let mut source = json!({"input":if active_tokens {"private-a"} else {"safe"}});
             let request = request_in_store(&source, &store)?;
-            let budget = request.budget.clone();
+            let budget = request.authority.budget();
             let attempt = request.prepare_attempt_for_proxy(
                 "final-fixture-provider",
                 "openai_responses",
@@ -1080,7 +1088,8 @@ async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -
             let replay = json!({"input":response["output"]});
             assert!(
                 request
-                    .base_lease
+                    .authority
+                    .lease()
                     .history_projection(&binding, &replay)
                     .is_none(),
                 "undelivered SSE fixture must start without history proof"
@@ -1124,7 +1133,8 @@ async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -
                 );
                 assert!(
                     request
-                        .base_lease
+                        .authority
+                        .lease()
                         .history_projection(&binding, &replay)
                         .is_none(),
                     "no yielded frame may publish proof before the wrapper resumes"
@@ -1145,7 +1155,8 @@ async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -
                     "resuming past the terminal yield must finish the wrapper"
                 );
                 let projection = request
-                    .base_lease
+                    .authority
+                    .lease()
                     .history_projection(&binding, &replay)
                     .ok_or("resumed terminal release must publish proof")?;
                 for (index, field) in [
@@ -1187,7 +1198,8 @@ async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -
                 drop(body);
                 assert!(
                     request
-                        .base_lease
+                        .authority
+                        .lease()
                         .history_projection(&binding, &replay)
                         .is_none(),
                     "cancellation at the final yield must discard the pending proof"
@@ -1255,7 +1267,7 @@ async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> T
             };
             let mut source = json!({"input":if active_tokens {"private-a"} else {"safe"}});
             let request = request_in_store(&source, &store)?;
-            let budget = request.budget.clone();
+            let budget = request.authority.budget();
             let attempt = request.prepare_attempt_for_proxy(
                 "final-fixture-provider",
                 "openai_responses",
@@ -1272,7 +1284,8 @@ async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> T
             let response = synthetic_history_sse_response();
             let replay = json!({"input":response["output"]});
             let pending = request
-                .base_lease
+                .authority
+                .lease()
                 .capture_delivered_history(&binding, &response)
                 .ok_or("synthetic SSE failure accounting warmup unavailable")?;
             drop(pending);
@@ -1281,7 +1294,8 @@ async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> T
                 .ok_or("synthetic SSE failure accounting unavailable")?;
             assert!(
                 request
-                    .base_lease
+                    .authority
+                    .lease()
                     .history_projection(&binding, &replay)
                     .is_none(),
                 "discarded warmup capture must not authorize undelivered SSE history"
@@ -1357,7 +1371,8 @@ async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> T
                     );
                     assert!(
                         request
-                            .base_lease
+                            .authority
+                            .lease()
                             .history_projection(&binding, &replay)
                             .is_none(),
                         "terminal yield alone must not publish optional proof"
@@ -1392,7 +1407,8 @@ async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> T
             }
             assert!(
                 request
-                    .base_lease
+                    .authority
+                    .lease()
                     .history_projection(&binding, &replay)
                     .is_none(),
                 "cancelled or failed SSE must not publish optional proof"
@@ -1499,6 +1515,7 @@ async fn reasoning_history_admission_candidate_preserves_mandatory_budget() -> T
         &AppType::Codex,
         true,
         false,
+        false,
         &mut source,
         &headers,
     )?;
@@ -1587,6 +1604,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &AppType::Codex,
             true,
             false,
+            false,
             &mut source,
             &headers,
         )? {
@@ -1643,6 +1661,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &AppType::Codex,
             true,
             false,
+            false,
             &mut replay,
             &headers,
         )? {
@@ -1685,6 +1704,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut uncompleted,
             &headers,
@@ -1744,6 +1764,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut candidate,
                 &headers,
             )? {
@@ -1776,6 +1797,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut candidate,
                 &headers,
@@ -1820,6 +1842,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut literal_sibling,
             &headers,
@@ -1948,6 +1971,7 @@ async fn check_history_http_isolation(
         &AppType::Codex,
         true,
         false,
+        false,
         &mut source,
         &headers,
     )? {
@@ -2005,6 +2029,7 @@ async fn check_history_http_isolation(
         &AppType::Codex,
         true,
         false,
+        false,
         &mut replay,
         &headers,
     )? {
@@ -2057,6 +2082,7 @@ async fn check_history_http_isolation(
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut candidate,
                 candidate_headers,
@@ -2140,6 +2166,7 @@ async fn check_history_http_isolation(
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut candidate,
             &headers,
@@ -2230,7 +2257,7 @@ fn reasoning_history_roundtrip_chat_conversion_keeps_private_source_chain() -> T
     ]});
     let mut body = json!({"input":delivered["output"]});
     let request = request(&body)?;
-    let issuer = request.base_lease.fork_attempt()?;
+    let issuer = request.authority.lease().fork_attempt()?;
     let binding = issuer.bind_actual_attempt(
         "final-fixture-provider",
         "openai_chat",
@@ -2278,7 +2305,7 @@ fn assert_chat_target_identity_boundary(late: bool) -> TestResult {
     ]});
     let source = json!({"input":delivered["output"]});
     let request = request(&source)?;
-    let issuer = request.base_lease.fork_attempt()?;
+    let issuer = request.authority.lease().fork_attempt()?;
     let binding = issuer.bind_actual_attempt(
         "final-fixture-provider",
         "openai_chat",
@@ -2401,7 +2428,7 @@ fn history_client_refusal_chat_fixture(
     ]});
     let source = json!({"input":delivered["output"]});
     let request = request(&source)?;
-    let issuer = request.base_lease.fork_attempt()?;
+    let issuer = request.authority.lease().fork_attempt()?;
     let binding = issuer.bind_actual_attempt(
         "final-fixture-provider",
         "openai_chat",
@@ -2569,7 +2596,7 @@ fn reasoning_history_refusal_audit_uses_bound_eligible_leaves() -> TestResult {
         "summary":[{"type":"summary_text","text":"private-a"}]}]});
     let source = json!({"input":delivered["output"]});
     let request = request(&source)?;
-    let issuer = request.base_lease.fork_attempt()?;
+    let issuer = request.authority.lease().fork_attempt()?;
     let binding = issuer.bind_actual_attempt(
         "final-fixture-provider",
         "openai_responses",
@@ -2622,7 +2649,7 @@ fn reasoning_history_chat_mapping_overrides_strict_fallback_and_optional_miss() 
     ]});
     let source = json!({"model":"synthetic-original", "prompt_cache_key":"synthetic-cache", "input":delivered["output"]});
     let request = request(&source)?;
-    let issuer = request.base_lease.fork_attempt()?;
+    let issuer = request.authority.lease().fork_attempt()?;
     let binding = issuer.bind_actual_attempt(
         "final-fixture-provider",
         "openai_chat",
@@ -2716,7 +2743,7 @@ fn reasoning_history_output_complete_references_keep_request_local_authority() -
     use super::super::tokenization::{TokenCategory, TokenFragment};
     for authorized in [true, false] {
         let mut request = request(&json!({"input":"safe"}))?;
-        let mut issuer = request.base_lease.fork_attempt()?;
+        let mut issuer = request.authority.lease().fork_attempt()?;
         let token = issuer.prepare(
             &[TokenFragment {
                 raw: "synthetic-complete-reference-source",
@@ -2726,7 +2753,7 @@ fn reasoning_history_output_complete_references_keep_request_local_authority() -
             |tokens| tokens.first().cloned().ok_or(TokenError::RedactionFailed),
         )?;
         if authorized {
-            request.base_lease.prepare(
+            request.authority.lease_mut_for_responses().prepare(
                 &[TokenFragment {
                     raw: "synthetic-complete-reference-source",
                     whole_span_categories: &[TokenCategory::Custom],
@@ -2751,8 +2778,11 @@ fn reasoning_history_output_complete_references_keep_request_local_authority() -
             "synthetic complete output publication failed"
         );
         let mut body = json!({"input":delivered["output"]});
-        request.source_body =
-            PayloadJson::try_from_value(&body, request.budget.clone(), request.budget.limit())?;
+        request.source_body = PayloadJson::try_from_value(
+            &body,
+            request.authority.budget(),
+            request.authority.budget().limit(),
+        )?;
         let result = request.prepare_attempt_for_proxy(
             "final-fixture-provider",
             "openai_responses",
@@ -2806,7 +2836,8 @@ fn assert_restored_history_matches_delivered_not_raw(
     );
     let replay = json!({"input":delivered["output"]});
     let projection = request
-        .base_lease
+        .authority
+        .lease()
         .history_projection(binding, &replay)
         .ok_or("restored delivered item must acquire exact history proof")?;
     for part in 0..2 {
@@ -2820,7 +2851,8 @@ fn assert_restored_history_matches_delivered_not_raw(
     let raw_replay = json!({"input":raw["output"]});
     assert!(
         request
-            .base_lease
+            .authority
+            .lease()
             .history_projection(binding, &raw_replay)
             .is_none(),
         "raw tokenized output must not substitute for delivered history"
@@ -2836,7 +2868,8 @@ fn assert_restored_history_matches_delivered_not_raw(
         }
         assert!(
             request
-                .base_lease
+                .authority
+                .lease()
                 .history_projection(binding, &changed)
                 .is_none(),
             "matching text alone must not authorize a changed typed item"
@@ -2873,7 +2906,8 @@ async fn history_provenance_json_restored_output_matches_delivered_not_raw() -> 
     let raw_replay = json!({"input":raw["output"]});
     assert!(
         request
-            .base_lease
+            .authority
+            .lease()
             .history_projection(&binding, &raw_replay)
             .is_none(),
         "unpublished raw output must not carry proof"
@@ -2953,7 +2987,8 @@ async fn history_provenance_sse_restored_output_matches_delivered_not_raw() -> T
     for candidate in [&raw, &synthetic_restored_history_response("private-a")] {
         assert!(
             request
-                .base_lease
+                .authority
+                .lease()
                 .history_projection(&binding, &json!({"input":candidate["output"]}))
                 .is_none(),
             "unpolled SSE must not publish either raw or delivered proof"
@@ -3151,6 +3186,7 @@ async fn check_synthetic_repeat_pii(
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut outbound,
                 &headers,
             )
@@ -3161,7 +3197,7 @@ async fn check_synthetic_repeat_pii(
             };
             if reasoning_history && turn == 1 {
                 use super::super::history_provenance::{DlpHistoryLeafField, DlpHistoryTarget};
-                let issuer = request.base_lease.fork_attempt()?;
+                let issuer = request.authority.lease().fork_attempt()?;
                 let binding = issuer.bind_actual_attempt(
                     "synthetic-repeat-provider",
                     protocol,
@@ -3185,7 +3221,7 @@ async fn check_synthetic_repeat_pii(
             }
             if literal_history && turn == 1 {
                 use super::super::history_provenance::DlpHistoryLeafField;
-                let issuer = request.base_lease.fork_attempt()?;
+                let issuer = request.authority.lease().fork_attempt()?;
                 let binding = issuer.bind_actual_attempt(
                     "synthetic-repeat-provider",
                     protocol,
@@ -3242,9 +3278,10 @@ async fn check_synthetic_repeat_pii(
                 let after = projection
                     .responses_mapping(&changed)
                     .ok_or("synthetic_repeat stage=proof category=missing_changed_mapping")?;
+                let context_budget = request.authority.budget();
                 let context = |history| FinalOutboundContext {
                     runtime: &request.runtime,
-                    budget: &request.budget,
+                    budget: &context_budget,
                     audit_state: &request.audit_state,
                     provider_id: "synthetic-repeat-provider",
                     binding: Some(&binding),

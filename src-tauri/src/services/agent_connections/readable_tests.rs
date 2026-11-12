@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 #[serial_test::serial]
-async fn readable_models_replace_opaque_defaults_and_preserve_legacy_choices(
+async fn model_identities_preserve_legacy_choices_and_survive_display_label_changes(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     struct Home(Option<std::ffi::OsString>);
@@ -90,17 +90,22 @@ async fn readable_models_replace_opaque_defaults_and_preserve_legacy_choices(
         let upgraded = manager
             .refresh(app, &menu, "http://127.0.0.1:1")?
             .ok_or("missing receipt")?;
-        let name = upgraded
-            .model_map
-            .iter()
-            .find(|(wire, alias)| {
-                *alias == second && *wire != second && **wire != projections::wire_id(second)
-            })
-            .map(|(wire, _)| wire.as_str())
-            .ok_or_else(|| format!("{app} missing readable name"))?;
-        assert!(name.contains("Zeta"), "{app} unreadable model");
-        if app == "gemini" {
+        let name = model_wire(
+            &upgraded.model_map,
+            upgraded.visible_models.as_deref(),
+            second,
+        );
+        assert_eq!(upgraded.model_map.get(name), Some(second));
+        if matches!(app, "gemini" | "t3code") {
+            assert_eq!(
+                &name, second,
+                "stable native identity must not use a display label"
+            );
             assert!(name.is_ascii() && !name.contains(char::is_whitespace));
+        } else {
+            assert!(name.contains("Zeta"), "{app} unreadable model");
+        }
+        if app == "gemini" {
             assert_eq!(upgraded.model_map.get(&legacy), Some(second));
         }
         for file in &upgraded.files {
@@ -154,9 +159,10 @@ async fn readable_models_replace_opaque_defaults_and_preserve_legacy_choices(
                 .ok_or("missing visible names")?;
             assert_eq!(visible.len(), 2);
             assert_ne!(visible[0], visible[1]);
-            assert!(visible.iter().all(|wire| wire.starts_with("Renamed")
-                && wire.is_ascii()
-                && !wire.contains(char::is_whitespace)));
+            assert_eq!(Some(visible), upgraded.visible_models.as_deref());
+            assert!(visible
+                .iter()
+                .all(|wire| wire.is_ascii() && !wire.contains(char::is_whitespace)));
             let selected = model_wire(&current.model_map, Some(visible), second);
             for file in &current.files {
                 if matches!(file.format, Format::Toml) {

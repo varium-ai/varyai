@@ -24,6 +24,28 @@ This degradation is limited to missing recovery context. Supported ordinary text
 
 Non-blocking internal processing failures use HTTP 500 with `server_error` / `proxy_processing_failed` and the fixed message `The local proxy could not process the request. Please retry.` Codex SSE failures retain the `response.failed` envelope with the same generic projection and neutral `resp_proxy_failed` ID. Explicit policy blocks retain HTTP 400, `dlp_blocked`, and `Request blocked by local security policy.` Internal codes, checkpoints, stages, and reasons are diagnostic-only and are not projected to the Agent.
 
+## Direct native routes
+
+The unified native restoration path handles only these direct native routes: Codex `/chat/completions` as `openai_chat`, Claude and Claude Desktop `/v1/messages` as `anthropic`, and Gemini `:generateContent` or `:streamGenerateContent?alt=sse` as `gemini_native`. Routes outside it keep whatever behavior they already had. In particular, the existing Codex Responses facade and gateway Responses recovery continue to restore their own supported text; neither they nor any other route gain authority from this path.
+
+Identity is taken only from the client's own session signal: Codex session headers or body fields, Anthropic session headers or `metadata` session values, and the Gemini `x-session-id` header. A missing or invalid identity still restores the current request, but grants no historical privilege. Gemini framing comes from the method, path and query only; `body.stream` is never a Gemini streaming signal.
+
+Signed reasoning units are immutable. Anthropic `thinking` signatures and `redacted_thinking` blocks, and Gemini Parts carrying `thoughtSignature` or `thought_signature`, are replayed unchanged or the request is refused; they are never edited to satisfy a redaction or placeholder. Vendor history normalization for MiMo/DeepSeek is therefore refused for native Anthropic requests that carry such units.
+
+Gemini supports only `POST` generation RPCs: `:generateContent` with an absent or `json` `alt`, and `:streamGenerateContent` with exactly one `alt=sse`. Media Parts, `countTokens`, model listing, duplicated or bare `alt` keys and other framings are not restored. When a rule would require restoration, such a request is refused instead of being forwarded unredacted.
+
+Failures are fixed and sanitized. Internal codes, checkpoints, stage labels, matched values and credentials never reach the client.
+
+- **Degraded, not failed.** A Gemini answer that contains no restoration placeholder cannot need restoration. Shapes the strict checker does not model (an unsupported terminal reason such as `MAX_TOKENS`, media Parts, or an upstream safety block) are returned to the caller verbatim instead of being replaced by a proxy error. Nothing is published for them, so no completion authority is created. Restoration is likewise never a gate on an answer that carries no local placeholder: forwarding that body delivers exactly what restoration would have delivered, so the redacted upstream bytes are used unchanged.
+- **Actionable refusal.** Refusals whose cause is provable report it instead of a generic failure.
+  - Request side, nothing was sent: HTTP 400 with `invalid_request_error` and `dlp_restore_unsupported`, for a direct native route or framing reversible DLP cannot restore, and for signed or otherwise immutable content that a mandatory edit would have to change. This covers both mandatory rules and authorized references landing on a signed carrier.
+  - Response side, the upstream already answered but its answer cannot be delivered: HTTP 502 for the native Anthropic and Gemini routes with `server_error` / `proxy_processing_failed` and the fixed processing message. This covers an answer that never verified, one that carries local placeholders that could not be restored safely, and a real local resource limit.
+  - These messages never name a cause. A restoration limitation is not a DLP-module fault, and a placeholder that could not be restored is not a caller mistake, so the projection stays generic and the failing stage appears only in sanitized diagnostics. No message includes a rule name, matched value, credential or internal label.
+
+- **Failure framing.** Nothing is yielded before these failures, so a native Anthropic stream ends with one fixed `event: error` frame and a native Gemini stream ends with one fixed `data: {"error":...}` frame instead of a silently broken stream. Chat keeps its accepted transport-error delivery. Unclassified local failures outside the response path keep HTTP 500 with `server_error` / `proxy_processing_failed` and the fixed message `The local proxy could not process the request. Please retry.` Explicit `Block` keeps HTTP 400 with `dlp_blocked`.
+
+These statements describe the tested local contract. They are not a claim of provider compatibility, live-service behavior, installer acceptance or release readiness.
+
 ## Prepared-request target boundary
 
 A prepared DLP attempt is bound to its final upstream target and sending authority, even when it has no active token mappings. The reqwest path disables automatic redirects for these attempts. Both reqwest and Hyper reject upstream 3xx responses with a fixed status-only DLP error before parsing the response body; neither follows `Location` with the original request body or inherited history permission. Configure the final upstream endpoint directly. Requests without a prepared DLP attempt retain the existing redirect behavior.

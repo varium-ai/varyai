@@ -15,7 +15,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
     thread,
 };
 
@@ -383,11 +383,6 @@ fn immutable_arc_sharing_releases_the_charge_only_on_last_drop() -> Result<(), T
     Ok(())
 }
 
-struct NoopWake;
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 #[test]
 fn cancelling_a_polled_future_releases_the_buffer_and_charge() -> Result<(), TokenError> {
     let budget = PayloadBudget::with_limit(4);
@@ -396,9 +391,9 @@ fn cancelling_a_polled_future_releases_the_buffer_and_charge() -> Result<(), Tok
         let _owner = owner;
         pending::<()>().await;
     });
-    let waker = Waker::from(Arc::new(NoopWake));
+    let waker = Waker::noop();
     assert!(matches!(
-        operation.as_mut().poll(&mut Context::from_waker(&waker)),
+        operation.as_mut().poll(&mut Context::from_waker(waker)),
         Poll::Pending
     ));
     assert_eq!(budget.used(), 4);

@@ -7671,7 +7671,7 @@ mod tests {
         service.disable_intent_client().await.expect("restore");
         crate::services::intent_routing::client::tests::assert_restored_config(
             &service.intent_client,
-            &original,
+            original,
         );
     }
 
@@ -7943,7 +7943,7 @@ mod tests {
         assert_eq!(refreshed.model, direct);
         codex.activate_menu_with_selection(off.clone(), origin, None, false, None)?;
         let projection = std::fs::read_to_string(&config)?.parse::<toml::Value>()?;
-        assert_eq!(projection["model"].as_str(), Some("shared-model-First"));
+        assert_eq!(projection["model"].as_str(), Some("first/shared-model"));
         assert_eq!(codex.selected_model()?.as_deref(), Some(direct));
         service.agent_connections.disconnect("claude")?;
         codex.restore()?;
@@ -8357,7 +8357,7 @@ mod tests {
         assert!(!service.get_takeover_status().await.expect("state").codex);
         crate::services::intent_routing::client::tests::assert_restored_config(
             &service.intent_client,
-            &original,
+            original,
         );
         assert_eq!(
             crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())

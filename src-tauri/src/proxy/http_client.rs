@@ -414,7 +414,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            let read = socket.read(&mut request).await.unwrap();
+            assert!(read > 0, "fixture must receive the request line");
             socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 15\r\n\r\ndata: first\n\n").await.unwrap();
             wait.await.unwrap();
             socket.write_all(b"\n\n").await.unwrap();
@@ -487,7 +488,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = [0; 4096];
-            socket.read(&mut bytes).await.unwrap();
+            let read = socket.read(&mut bytes).await.unwrap();
+            assert!(read > 0, "fixture must receive the request line");
             socket
                 .write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{redirect}/\r\nContent-Length: 0\r\n\r\n").as_bytes())
                 .await

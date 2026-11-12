@@ -252,8 +252,22 @@ it("supports selecting and clearing all discovered subscription models", async (
     screen.getByRole("button", { name: "codexProvider.fetchModels" }),
   );
   await screen.findByRole("button", { name: "One" });
+  fireEvent.click(screen.getByRole("button", { name: "One" }));
+  expect(
+    screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
+  ).toHaveAttribute("aria-checked", "mixed");
+  expect(
+    screen.queryByRole("button", { name: "providerEditor.selectNone" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen
+      .getByRole("button", { name: "codexProvider.fetchModels" })
+      .closest(".pv-model-actions"),
+  ).toContainElement(
+    screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
+  );
   fireEvent.click(
-    screen.getByRole("button", { name: "providerEditor.selectAll" }),
+    screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
   );
   expect(screen.getByRole("button", { name: "One" })).toHaveAttribute(
     "aria-pressed",
@@ -267,15 +281,16 @@ it("supports selecting and clearing all discovered subscription models", async (
     "true",
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "providerEditor.selectNone" }),
+    screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
   );
   expect(screen.getByRole("button", { name: "One" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
-  expect(
-    screen.getByRole("button", { name: "One" }).querySelector("svg"),
-  ).toHaveStyle({ visibility: "hidden" });
+  expect(screen.getByRole("button", { name: "Two" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 it("keeps manual model entry removed and preserves exact discovered subscription IDs", async () => {

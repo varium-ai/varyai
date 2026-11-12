@@ -86,6 +86,13 @@ impl Native {
         });
         Ok(())
     }
+    pub(crate) fn matches_catalog(&self, catalog: &Value) -> bool {
+        self.projection.read().ok().is_some_and(|projection| {
+            projection
+                .as_ref()
+                .is_some_and(|published| &published.catalog == catalog)
+        })
+    }
     pub fn clear_menu(&self) {
         if let Ok(mut projection) = self.projection.write() {
             *projection = None;
@@ -1864,13 +1871,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(response.bytes().await?, raw);
         assert_eq!(runtime.native.status(), "active");
-        let requests = seen.lock().expect("fixture");
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].1, raw);
-        assert_eq!(requests[0].0[header::AUTHORIZATION], "Bearer fixture-token");
-        assert!(!requests[0].0.contains_key("chatgpt-account-id"));
-        assert_eq!(requests[0].0["x-native-test"], "preserved");
-        drop(requests);
+        {
+            let requests = seen.lock().expect("fixture");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].1, raw);
+            assert_eq!(requests[0].0[header::AUTHORIZATION], "Bearer fixture-token");
+            assert!(!requests[0].0.contains_key("chatgpt-account-id"));
+            assert_eq!(requests[0].0["x-native-test"], "preserved");
+        }
 
         crate::proxy::security::runtime::set_security_runtime_for_test(
             crate::proxy::security::SecurityRuntimeConfig {

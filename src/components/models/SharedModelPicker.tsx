@@ -11,13 +11,15 @@ import {
   Unplug,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { UpstreamIcon } from "@/components/providers/UpstreamIcon";
 import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
-import { getIconUrl, hasIcon } from "@/icons/extracted";
+import { modelTells } from "@/lib/modelTells";
 import "./model-picker.css";
 
 export interface ModelChoice {
   id: string;
+  reference?: string;
   name: string;
   group?: string;
   modelId?: string;
@@ -109,6 +111,15 @@ export function SharedModelPicker({
   const { t } = useTranslation();
   const accountText = useAccountText();
   const agentMenu = variant === "agent" && !visibility;
+  const reference = (model: ModelChoice) => model.reference || model.id;
+  const tells = modelTells(models, modelName, reference, (model) =>
+    model.source === "native" ? "native" : (model.group ?? ""),
+  );
+  const tell = (model: ModelChoice) => tells.get(reference(model));
+  const choiceLabel = (model: ModelChoice) =>
+    tell(model) ? `${modelName(model)} · ${tell(model)}` : modelName(model);
+  const identityHint = (model: ModelChoice) =>
+    tell(model) ? <span className="mp-am-tell">{tell(model)}</span> : null;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"all" | "shown" | "order">("all");
   const [provider, setProvider] = useState<string | null>(null);
@@ -158,30 +169,12 @@ export function SharedModelPicker({
   const groupIcon = (group: string) => {
     if (group === "routing") return <RoutingMark />;
     const icon = groups.get(group)?.[0]?.icon;
-    return icon && (hasIcon(icon) || getIconUrl(icon)) ? (
-      <ProviderIcon
-        icon={icon}
+    return (
+      <UpstreamIcon
+        icon={icon ?? undefined}
         name={accountText(groupName(group))}
         size={14}
-        showFallback={false}
       />
-    ) : (
-      <svg
-        className="mp-am-provider-icon"
-        viewBox="0 0 16 16"
-        width={14}
-        height={14}
-        aria-hidden
-      >
-        <path
-          d="M8 2.2 13.2 5.1v5.8L8 13.8 2.8 10.9V5.1Z M8 8v5.8 M2.8 5.1 8 8l5.2-2.9"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.4}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
     );
   };
   const modelIcon = (model: ModelChoice) =>
@@ -195,6 +188,12 @@ export function SharedModelPicker({
         name={modelName(model)}
         size={16}
         showFallback={false}
+      />
+    ) : model.icon ? (
+      <UpstreamIcon
+        icon={model.icon}
+        name={accountText(groupName(model.group ?? ""))}
+        size={16}
       />
     ) : agentMenu ? (
       <Box size={16} aria-hidden />
@@ -234,7 +233,7 @@ export function SharedModelPicker({
   const term = query.trim().toLocaleLowerCase();
   const matches = (model: ModelChoice) =>
     (!term ||
-      `${model.name} ${model.modelId ?? model.id} ${groupName(model.group ?? "")}`
+      `${model.name} ${model.modelId ?? model.id} ${reference(model)} ${groupName(model.group ?? "")}`
         .toLocaleLowerCase()
         .includes(term)) &&
     (view !== "shown" || selected.includes(model.id) || kept.has(model.id));
@@ -421,7 +420,7 @@ export function SharedModelPicker({
                 <div
                   role="listitem"
                   tabIndex={0}
-                  aria-label={modelName(model)}
+                  aria-label={choiceLabel(model)}
                   key={model.id}
                   data-agent-model={model.id}
                   className="mp-am-row mp-am-order-row"
@@ -445,7 +444,7 @@ export function SharedModelPicker({
                     className="mp-am-grip"
                     type="button"
                     disabled={disabled}
-                    aria-label={`${t("agentConnections.dragModel")} ${modelName(model)}`}
+                    aria-label={`${t("agentConnections.dragModel")} ${choiceLabel(model)}`}
                     onClick={() => drag.consumeClick(model.id)}
                   >
                     <GripVertical size={12} />
@@ -454,7 +453,10 @@ export function SharedModelPicker({
                   <span className="mp-am-logo" aria-hidden>
                     {modelIcon(model)}
                   </span>
-                  <span className="mp-am-name">{modelName(model)}</span>
+                  <span className="mp-am-words">
+                    <span className="mp-am-name">{modelName(model)}</span>
+                    {identityHint(model)}
+                  </span>
                   <span className="mp-am-context">
                     <AccountLabel>{groupName(model.group ?? "")}</AccountLabel>
                   </span>
@@ -562,9 +564,9 @@ export function SharedModelPicker({
                                       : "radio"
                               }
                               aria-checked={readOnly ? undefined : visible}
-                              aria-label={modelName(model)}
+                              aria-label={choiceLabel(model)}
                               key={model.id}
-                              title={modelName(model)}
+                              title={choiceLabel(model)}
                               data-model-choice={readOnly ? undefined : true}
                               className={`mp-am-row${visibility && !visible ? " off" : ""}`}
                               disabled={
@@ -597,6 +599,7 @@ export function SharedModelPicker({
                                   <span className="mp-am-name">
                                     {modelName(model)}
                                   </span>
+                                  {identityHint(model)}
                                   <span
                                     className={`mp-am-path${model.source === "native" ? " native" : ""}`}
                                   >
@@ -615,8 +618,11 @@ export function SharedModelPicker({
                                   )}
                                 </span>
                               ) : (
-                                <span className="mp-am-name">
-                                  {modelName(model)}
+                                <span className="mp-am-words">
+                                  <span className="mp-am-name">
+                                    {modelName(model)}
+                                  </span>
+                                  {identityHint(model)}
                                 </span>
                               )}
                               {!agentMenu && model.contextWindow != null && (

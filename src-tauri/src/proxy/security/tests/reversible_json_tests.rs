@@ -833,7 +833,7 @@ fn json_replacement_rebuilds_sparse_source_and_replacement_by_logical_length(
     fields.insert("input".into(), Value::Array(values));
     let body = Value::Object(fields);
     let mut replacement = String::with_capacity(4096);
-    replacement.push_str("中");
+    replacement.push('中');
     let edits = [JsonStringReplacement {
         target: &body["input"][0],
         text: &replacement,

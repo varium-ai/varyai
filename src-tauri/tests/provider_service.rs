@@ -3547,6 +3547,9 @@ fn provider_service_delete_current_provider_returns_error() {
     }
 }
 
+// The guard deliberately serializes this whole test over the shared filesystem, and the
+// current-thread runtime cannot resume another task while it is held.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn recover_owned_client_without_backup_cleans_placeholder_instead_of_writing_it_back() {
     let _guard = test_mutex().lock().expect("acquire test mutex");

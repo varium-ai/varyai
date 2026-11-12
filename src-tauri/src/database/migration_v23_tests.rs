@@ -26,7 +26,6 @@ fn v23_migration_creates_empty_command_lists_without_changing_existing_policy(
     Database::apply_schema_migrations_on_conn(&conn)?;
 
     assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
-    assert!(SCHEMA_VERSION >= 23);
     assert!(Database::table_exists(&conn, "tool_risk_command_lists")?);
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tool_risk_command_lists", [], |row| {
         row.get(0)

@@ -580,14 +580,14 @@ pub(crate) async fn reapply_agent_connection(
 #[tauri::command]
 pub(crate) async fn get_agent_model_catalog(
     state: State<'_, AppState>,
-) -> Result<Vec<agent_connections::Model>, String> {
+) -> Result<Vec<agent_connections::PickerModel>, String> {
     state.proxy_service.ensure_global_routing().await?;
     Ok(state
         .proxy_service
         .intent_runtime
         .global_snapshot()?
         .as_ref()
-        .map(|menu| agent_connections::models(menu))
+        .map(|menu| agent_connections::picker_models(menu))
         .unwrap_or_default())
 }
 #[tauri::command]
@@ -1256,6 +1256,13 @@ mod tests {
             crate::services::intent_routing::menu::prepare(manager, vec![provider], vec![], None)
                 .await?;
         let alias = menu.default_model.as_deref().ok_or("missing model")?;
+        let catalog = agent_connections::models(&menu);
+        let model = catalog
+            .iter()
+            .find(|model| model.id == alias)
+            .ok_or("missing catalog model")?;
+        assert_eq!(model.name, "synthetic");
+        assert_eq!(model.group, "Synthetic");
         let connections = agent_connections::Manager {
             root: _home.dir.path().join("receipts"),
         };
@@ -1266,7 +1273,7 @@ mod tests {
             match app {
                 "claude" => assert_eq!(
                     installed["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
-                    "synthetic · synthetic=effort,xhigh_effort,max_effort"
+                    "synthetic=effort,xhigh_effort,max_effort"
                 ),
                 "pi" => assert_eq!(
                     installed["providers"]["varyai"]["models"][0]["thinkingLevelMap"]["max"],

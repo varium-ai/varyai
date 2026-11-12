@@ -341,7 +341,7 @@ mod retry_tests {
         assert!(
             !flush_pending_with(
                 &mut state,
-                &[item.clone()],
+                std::slice::from_ref(&item),
                 |writes| {
                     attempts += 1;
                     assert!(matches!(

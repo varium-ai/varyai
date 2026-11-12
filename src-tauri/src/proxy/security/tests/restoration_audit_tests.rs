@@ -42,21 +42,22 @@ use super::{
 };
 
 fn policy(rules: &[(&str, &str, AuditAction)]) -> SecurityRuntimeConfig {
-    let mut runtime = SecurityRuntimeConfig::default();
-    runtime.custom_rules = rules
-        .iter()
-        .map(|(id, pattern, action)| CompiledCustomRule {
-            id: (*id).into(),
-            name: "Synthetic policy".into(),
-            rule_type: "regex".into(),
-            pattern: (*pattern).into(),
-            regex: regex::Regex::new(pattern).ok(),
-            risk_level: RiskLevel::High,
-            action: *action,
-            enabled: true,
-        })
-        .collect();
-    runtime
+    SecurityRuntimeConfig {
+        custom_rules: rules
+            .iter()
+            .map(|(id, pattern, action)| CompiledCustomRule {
+                id: (*id).into(),
+                name: "Synthetic policy".into(),
+                rule_type: "regex".into(),
+                pattern: (*pattern).into(),
+                regex: regex::Regex::new(pattern).ok(),
+                risk_level: RiskLevel::High,
+                action: *action,
+                enabled: true,
+            })
+            .collect(),
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -297,6 +298,7 @@ fn restoration_audit_http_pretokenized_and_history_wait_for_actual_attempt() -> 
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &Default::default(),

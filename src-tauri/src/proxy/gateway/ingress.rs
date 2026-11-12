@@ -1,5 +1,5 @@
 use super::*;
-use crate::proxy::server::ProxyState;
+use crate::proxy::{handler_context::RequestIngress, server::ProxyState};
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
@@ -191,17 +191,39 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         };
     }
     let response = if gemini {
-        crate::proxy::handlers::handle_gemini(State(state.clone()), request.uri().clone(), request)
-            .await
+        crate::proxy::handlers::handle_gemini_with_ingress(
+            state.clone(),
+            request.uri().clone(),
+            request,
+            RequestIngress::Gateway,
+        )
+        .await
     } else {
         match path.as_str() {
             "/v1/messages" => {
-                crate::proxy::handlers::handle_messages(State(state.clone()), request).await
+                crate::proxy::handlers::handle_messages_with_ingress(
+                    state.clone(),
+                    request,
+                    RequestIngress::Gateway,
+                )
+                .await
             }
             "/v1/chat/completions" => {
-                crate::proxy::handlers::handle_chat_completions(State(state.clone()), request).await
+                crate::proxy::handlers::handle_chat_completions_with_ingress(
+                    state.clone(),
+                    request,
+                    RequestIngress::Gateway,
+                )
+                .await
             }
-            _ => crate::proxy::handlers::handle_responses(State(state.clone()), request).await,
+            _ => {
+                crate::proxy::handlers::handle_responses_with_ingress(
+                    state.clone(),
+                    request,
+                    RequestIngress::Gateway,
+                )
+                .await
+            }
         }
     }
     .unwrap_or_else(IntoResponse::into_response);

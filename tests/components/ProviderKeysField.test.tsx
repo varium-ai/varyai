@@ -1,6 +1,9 @@
 import { useState } from "react";
+import { readFileSync } from "node:fs";
+import postcss from "postcss";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -77,6 +80,68 @@ beforeEach(() => {
     { id: "backup", label: "sk-b…2222", running: 3 },
   ]);
 });
+it("uses the shared native checkbox for account selection", async () => {
+  mount();
+  await screen.findByText("sk-p…1111");
+  const checkbox = screen.getAllByRole("checkbox")[0];
+  expect(checkbox.tagName).toBe("INPUT");
+  expect(checkbox).toHaveClass("pv-checkbox-input");
+  expect(checkbox).toBeChecked();
+  fireEvent.click(checkbox);
+  expect(checkbox).not.toBeChecked();
+});
+it("left-aligns the account action heading and rows with different button counts", async () => {
+  const sheet = document.createElement("style");
+  sheet.textContent = postcss
+    .parse(readFileSync("src/components/providers/providers.css", "utf8"))
+    .nodes.filter((node) => node.type === "rule")
+    .map((node) => node.toString())
+    .join("\n");
+  document.head.appendChild(sheet);
+  try {
+    render(
+      <div className="pv-provider-dialog">
+        <div className="pv-editor">
+          <QueryClientProvider
+            client={
+              new QueryClient({ defaultOptions: { queries: { retry: false } } })
+            }
+          >
+            <Harness />
+          </QueryClientProvider>
+        </div>
+      </div>,
+    );
+    await screen.findByText("sk-p…1111");
+    const actionsColumn = screen
+      .getByRole("table")
+      .querySelector(".pv-key-actions-column")!;
+    const actionsWidth = getComputedStyle(actionsColumn).width;
+    expect(actionsWidth).toMatch(/px$/);
+    expect(Number.parseFloat(actionsWidth)).toBeLessThanOrEqual(64);
+    const preference = screen.getByRole("button", {
+      name: "providerEditor.makePreferred",
+    });
+    expect(getComputedStyle(preference).maxWidth).toBe("100%");
+    expect(getComputedStyle(preference).whiteSpace).toBe("normal");
+    expect(
+      getComputedStyle(
+        screen.getByRole("columnheader", { name: "common.actions" }),
+      ).textAlign,
+    ).toBe("left");
+    const editors = screen.getAllByRole("button", {
+      name: "providerEditor.editKey",
+    });
+    expect(editors).toHaveLength(2);
+    for (const button of editors) {
+      expect(getComputedStyle(button.parentElement!).justifyContent).toBe(
+        "flex-start",
+      );
+    }
+  } finally {
+    sheet.remove();
+  }
+});
 it("shows Magpie's per-key model and unlimited statuses with row actions", async () => {
   vi.mocked(routingUpstreamsApi.keys).mockResolvedValue([
     { id: "", label: "sk-p…1111", running: 0 },
@@ -92,8 +157,19 @@ it("shows Magpie's per-key model and unlimited statuses with row actions", async
       ],
     },
   });
-  const primary = (await screen.findByText("sk-p…1111")).closest("li")!;
-  const backup = screen.getByText("sk-b…2222").closest("li")!;
+  expect(screen.getByRole("table")).toHaveAccessibleName(
+    "providerEditor.savedKeys",
+  );
+  expect(
+    screen.getAllByRole("columnheader").map((header) => header.textContent),
+  ).toEqual([
+    "modelProviders.apiKey",
+    "modelPicker.models",
+    "providerEditor.keyLimits",
+    "common.actions",
+  ]);
+  const primary = (await screen.findByText("sk-p…1111")).closest("tbody")!;
+  const backup = screen.getByText("sk-b…2222").closest("tbody")!;
   expect(
     within(primary).getByRole("button", { name: "providerEditor.keyModels" }),
   ).toBeVisible();
@@ -103,17 +179,25 @@ it("shows Magpie's per-key model and unlimited statuses with row actions", async
   expect(
     within(primary).getByText("providerEditor.keyNoSpendCap"),
   ).toBeVisible();
-  expect(within(primary).getByText("providerEditor.inUse")).toBeVisible();
+  expect(screen.queryByText("providerEditor.inUse")).toBeNull();
   expect(screen.queryByText("providerEditor.preferredKey")).toBeNull();
   expect(
     within(backup).queryByRole("button", {
       name: "providerEditor.makePreferred",
     }),
   ).toBeNull();
-  fireEvent.click(
-    within(backup).getByRole("button", { name: "common.enable" }),
+  expect(screen.queryByRole("button", { name: "common.enable" })).toBeNull();
+  expect(within(backup).getByRole("checkbox")).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  fireEvent.click(within(backup).getByRole("checkbox"));
+  expect(within(backup).getByRole("checkbox")).toHaveAttribute(
+    "aria-checked",
+    "true",
   );
   expect(changed.mock.lastCall?.[0].transport.keys[0].enabled).toBe(true);
+  expect(within(primary).getByText("providerEditor.firstKey")).toBeVisible();
   fireEvent.click(
     within(backup).getByRole("button", { name: "providerEditor.removeKey" }),
   );
@@ -134,7 +218,7 @@ it("stages independent key model scopes without changing provider-wide picks", a
     },
     transport: { ...record.transport!, primaryModels: ["chat-a"] },
   });
-  const primary = (await screen.findByText("sk-p…1111")).closest("li")!;
+  const primary = (await screen.findByText("sk-p…1111")).closest("tbody")!;
   fireEvent.click(
     within(primary).getByRole("button", { name: "providerEditor.keyModels" }),
   );
@@ -186,13 +270,16 @@ it("shows masked credentials and live request counts without revealing secrets",
 });
 it("stages enabling, preferred-key selection, edits and additions in the provider draft", async () => {
   mount();
-  const row = (await screen.findByText("sk-b…2222")).closest("li")!;
+  const row = (await screen.findByText("sk-b…2222")).closest("tbody")!;
+  expect(
+    screen.queryByRole("button", { name: "providerEditor.keySwitchOff" }),
+  ).toBeNull();
   fireEvent.click(within(row).getByRole("checkbox"));
   expect(changed.mock.lastCall?.[0].transport.keys[0].enabled).toBe(false);
   expect(
     within(row).queryByRole("button", { name: "providerEditor.makePreferred" }),
   ).toBeNull();
-  fireEvent.click(within(row).getByRole("button", { name: "common.enable" }));
+  fireEvent.click(within(row).getByRole("checkbox"));
   fireEvent.click(
     within(row).getByRole("button", { name: "providerEditor.makePreferred" }),
   );
@@ -221,8 +308,8 @@ it("stages enabling, preferred-key selection, edits and additions in the provide
 });
 it("replaces the selected key label with a focused editor in its own row", async () => {
   mount();
-  const primary = (await screen.findByText("sk-p…1111")).closest("li")!;
-  const backup = screen.getByText("sk-b…2222").closest("li")!;
+  const primary = (await screen.findByText("sk-p…1111")).closest("tbody")!;
+  const backup = screen.getByText("sk-b…2222").closest("tbody")!;
   fireEvent.click(
     within(backup).getByRole("button", { name: "providerEditor.editKey" }),
   );
@@ -265,7 +352,7 @@ it("adds, names and removes a key in the new key's row", async () => {
   fireEvent.click(
     screen.getByRole("button", { name: "providerEditor.addKey" }),
   );
-  const rows = screen.getAllByRole("listitem");
+  const rows = screen.getByRole("table").querySelectorAll("tbody");
   expect(rows).toHaveLength(3);
   const added = rows[2];
   expect(within(added).getByLabelText("modelProviders.apiKey")).toHaveFocus();
@@ -278,7 +365,7 @@ it("adds, names and removes a key in the new key's row", async () => {
   fireEvent.click(
     within(added).getByRole("button", { name: "providerEditor.removeKey" }),
   );
-  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  expect(screen.getByRole("table").querySelectorAll("tbody")).toHaveLength(2);
   expect(screen.queryByLabelText("modelProviders.apiKey")).toBeNull();
 });
 it("copies only the explicitly selected stored key and never fills the editor with it", async () => {
@@ -287,7 +374,7 @@ it("copies only the explicitly selected stored key and never fills the editor wi
     "synthetic-copy-key",
   );
   mount();
-  const row = (await screen.findByText("sk-b…2222")).closest("li")!;
+  const row = (await screen.findByText("sk-b…2222")).closest("tbody")!;
   fireEvent.click(
     within(row).getByRole("button", { name: "providerEditor.copyKey" }),
   );
@@ -303,6 +390,103 @@ it("copies only the explicitly selected stored key and never fills the editor wi
   expect(
     screen.queryByDisplayValue("synthetic-copy-key"),
   ).not.toBeInTheDocument();
+});
+
+it("resets copy feedback two seconds after the latest successful primary-key copy", async () => {
+  vi.mocked(copyText).mockResolvedValue(undefined);
+  vi.mocked(routingUpstreamsApi.revealKey).mockResolvedValue(
+    "synthetic-copy-key",
+  );
+  const view = mount();
+  const row = (await screen.findByText("sk-p…1111")).closest("tbody")!;
+  const button = within(row).getByRole("button", {
+    name: "providerEditor.copyKey",
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(button));
+    expect(button).toHaveAccessibleName("common.copied");
+    act(() => vi.advanceTimersByTime(1500));
+    await act(async () => fireEvent.click(button));
+    act(() => vi.advanceTimersByTime(1999));
+    expect(button).toHaveAccessibleName("common.copied");
+    act(() => vi.advanceTimersByTime(1));
+    expect(button).toHaveAccessibleName("providerEditor.copyKey");
+    expect(copyText).toHaveBeenCalledTimes(2);
+    expect(routingUpstreamsApi.revealKey).toHaveBeenLastCalledWith(
+      "fixture",
+      4,
+      "",
+    );
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("moves copy feedback to another key without the previous timeout clearing it", async () => {
+  vi.mocked(copyText).mockResolvedValue(undefined);
+  vi.mocked(routingUpstreamsApi.revealKey).mockResolvedValue(
+    "synthetic-copy-key",
+  );
+  const view = mount();
+  const primary = (await screen.findByText("sk-p…1111")).closest("tbody")!;
+  const backup = screen.getByText("sk-b…2222").closest("tbody")!;
+  const primaryCopy = within(primary).getByRole("button", {
+    name: "providerEditor.copyKey",
+  });
+  const backupCopy = within(backup).getByRole("button", {
+    name: "providerEditor.copyKey",
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(primaryCopy));
+    act(() => vi.advanceTimersByTime(1500));
+    await act(async () => fireEvent.click(backupCopy));
+    expect(primaryCopy).toHaveAccessibleName("providerEditor.copyKey");
+    act(() => vi.advanceTimersByTime(500));
+    expect(backupCopy).toHaveAccessibleName("common.copied");
+    act(() => vi.advanceTimersByTime(1499));
+    expect(backupCopy).toHaveAccessibleName("common.copied");
+    act(() => vi.advanceTimersByTime(1));
+    expect(backupCopy).toHaveAccessibleName("providerEditor.copyKey");
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("shows copy feedback only after the clipboard write succeeds", async () => {
+  vi.mocked(copyText).mockRejectedValueOnce(
+    new Error("Synthetic private detail"),
+  );
+  vi.mocked(routingUpstreamsApi.revealKey).mockResolvedValue(
+    "synthetic-copy-key",
+  );
+  const view = mount();
+  const row = (await screen.findByText("sk-b…2222")).closest("tbody")!;
+  const button = within(row).getByRole("button", {
+    name: "providerEditor.copyKey",
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(button));
+    expect(button).toHaveAccessibleName("providerEditor.copyKey");
+    expect(screen.queryByRole("button", { name: "common.copied" })).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "providerEditor.copyKeyFailed",
+    );
+    expect(screen.queryByText("Synthetic private detail")).toBeNull();
+    vi.mocked(copyText).mockResolvedValue(undefined);
+    await act(async () => fireEvent.click(button));
+    expect(button).toHaveAccessibleName("common.copied");
+    expect(screen.queryByRole("alert")).toBeNull();
+    act(() => vi.advanceTimersByTime(2000));
+    expect(button).toHaveAccessibleName("providerEditor.copyKey");
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
 });
 
 it("stops adding keys at the backend limit", async () => {
