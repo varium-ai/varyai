@@ -1,0 +1,396 @@
+.mp-checkin {
+  container-type: inline-size;
+  margin-top: 10px;
+  border: 1px solid var(--mp-line);
+  border-radius: 10px;
+  background: var(--mp-card-2);
+  color: var(--mp-fg-2);
+  font-size: 12px;
+}
+.mp-checkin .mp-checkin-heading {
+  margin: 0;
+  padding: 10px 14px;
+}
+.mp-checkin-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  color: var(--mp-fg);
+  font-weight: 600;
+  text-align: left;
+}
+.mp-checkin-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+.mp-checkin-toggle[aria-expanded="true"] svg,
+.mp-agent-checkin-trigger[aria-expanded="true"] > svg:last-child {
+  transform: rotate(180deg);
+}
+.mp-checkin-body:not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(280px, 2fr) minmax(
+      180px,
+      1.2fr
+    );
+  align-items: center;
+  column-gap: 24px;
+  row-gap: 16px;
+  padding: 12px 24px 14px;
+}
+.mp-checkin-body > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.mp-checkin-accounts {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+  order: -3;
+  margin: -12px -24px 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--mp-line-2);
+  background: var(--mp-pill);
+  border-radius: 10px 10px 0 0;
+}
+.mp-checkin-field {
+  min-width: 0;
+  width: min(100%, 240px);
+}
+.mp-checkin-field label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.mp-checkin-field select {
+  display: block;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--mp-line);
+  border-radius: 7px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  font: inherit;
+  text-overflow: ellipsis;
+}
+.mp-checkin-field select:disabled {
+  opacity: 0.65;
+}
+.mp-checkin-manage {
+  position: relative;
+}
+.mp-checkin-manage summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  list-style: none;
+  color: var(--mp-accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+.mp-checkin-manage summary::-webkit-details-marker {
+  display: none;
+}
+.mp-checkin-manage-body {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: min(320px, 75cqi);
+  padding: 14px;
+  border: 1px solid var(--mp-line);
+  border-radius: 8px;
+  background: var(--mp-card);
+  box-shadow: 0 6px 20px #00000012;
+}
+.mp-checkin-manage-body > p {
+  flex: 0 0 100%;
+  line-height: 1.6;
+}
+.mp-checkin-progress {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / 3;
+  align-self: stretch;
+  align-items: center;
+  order: -2;
+}
+.mp-checkin h4,
+.mp-checkin-auto label {
+  color: var(--mp-fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+.mp-checkin-streak {
+  align-self: stretch;
+  padding-right: 20px;
+  border-right: 1px solid var(--mp-line);
+}
+.mp-checkin-streak-value {
+  margin: 7px 0 4px;
+  color: var(--mp-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.mp-checkin-streak-value[data-known="true"] {
+  color: var(--mp-green);
+  font-size: 24px;
+  line-height: 1.25;
+}
+.mp-checkin-week h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.mp-checkin-week h4 svg {
+  color: var(--mp-muted);
+}
+.mp-checkin-week ol {
+  display: flex;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.mp-checkin-week li {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.mp-checkin-week li:not(:last-child)::before {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--mp-line);
+  content: "";
+}
+.mp-checkin-week
+  li[data-state="complete"]:has(+ [data-state="complete"])::before {
+  background: var(--mp-green);
+}
+.mp-checkin-step {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--mp-line);
+  border-radius: 50%;
+  background: var(--mp-card);
+}
+.mp-checkin-week [data-state="complete"] .mp-checkin-step {
+  border-color: var(--mp-green);
+  background: var(--mp-green);
+  color: white;
+}
+.mp-checkin-week [data-state="unknown"] .mp-checkin-step {
+  border-style: dashed;
+}
+.mp-checkin-auto {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-self: stretch;
+  align-content: center;
+  align-items: start;
+  grid-column: 3;
+  gap: 10px;
+  order: -1;
+  padding-left: 24px;
+  border-left: 1px solid var(--mp-line);
+}
+.mp-checkin-auto .mp-checkin-muted {
+  margin-top: 6px;
+  line-height: 1.6;
+}
+.mp-checkin-auto .mp-switch {
+  grid-column: 2;
+  grid-row: 1;
+  margin-top: 0;
+}
+.mp-checkin-intro,
+.mp-checkin-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mp-checkin-intro {
+  grid-column: 1;
+}
+.mp-checkin .mp-checkin-button {
+  height: 30px;
+  padding: 0 10px;
+  border-color: var(--mp-line);
+  border-radius: 7px;
+  background: var(--mp-card);
+  color: var(--mp-fg-2);
+  box-shadow: none;
+  font-size: 12px;
+}
+.mp-checkin .mp-checkin-quiet {
+  background: transparent;
+}
+.mp-checkin .mp-checkin-button:hover:not(:disabled) {
+  background: var(--mp-pill);
+  color: var(--mp-fg);
+}
+.mp-checkin .mp-checkin-primary {
+  border-color: var(--mp-accent);
+  background: var(--mp-accent);
+  color: white;
+}
+.mp-checkin .mp-checkin-primary[data-complete="true"] {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--mp-green) 12%, var(--mp-card));
+  color: var(--mp-green);
+  opacity: 1;
+}
+.mp-checkin-toggle:focus-visible,
+.mp-checkin-field select:focus-visible,
+.mp-checkin-manage summary:focus-visible,
+.mp-agent-checkin-trigger:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
+}
+.mp-checkin-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 11px;
+  order: 2;
+}
+.mp-checkin-outcome {
+  font-weight: 500;
+}
+.mp-checkin-outcome[data-complete="true"] {
+  color: var(--mp-green);
+}
+.mp-checkin-muted {
+  color: var(--mp-muted);
+  font-size: 11px;
+}
+.mp-checkin-notice {
+  display: flex;
+  grid-column: 2 / -1;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--mp-muted);
+  font-size: 11px;
+}
+.mp-checkin-notice svg {
+  flex: none;
+}
+.mp-checkin-error {
+  color: var(--mp-red);
+  overflow-wrap: anywhere;
+}
+.mp-agent-start.mp-agent-checkin-trigger {
+  width: auto;
+  max-width: 100%;
+  height: 28px;
+  justify-content: center;
+  gap: 6px;
+  border-color: transparent;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--mp-accent) 9%, var(--mp-card));
+  color: var(--mp-accent);
+  font-weight: 500;
+}
+.mp-agent-checkin-trigger[data-complete="true"] > svg:first-child {
+  color: var(--mp-green);
+}
+.mp-agent-checkin-trigger > svg {
+  flex: none;
+}
+.mp-agent-checkin:has(> .mp-checkin) {
+  padding-left: 0;
+}
+.mp-agent-checkin[hidden] {
+  display: none;
+}
+@container (max-width: 760px) {
+  .mp-checkin-body:not([hidden]) {
+    grid-template-columns: minmax(100px, 1fr) minmax(220px, 2fr);
+    column-gap: 16px;
+    padding: 12px 16px;
+  }
+  .mp-checkin-accounts {
+    margin: -12px -16px 0;
+  }
+  .mp-checkin-progress {
+    grid-column: 1 / -1;
+  }
+  .mp-checkin-auto {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--mp-line-2);
+    padding: 12px 0 0;
+  }
+  .mp-checkin-notice {
+    grid-column: 2;
+  }
+}
+@container (max-width: 420px) {
+  .mp-checkin-body:not([hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mp-checkin-progress {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .mp-checkin-streak {
+    border-right: 0;
+    padding-right: 0;
+  }
+  .mp-checkin-accounts {
+    gap: 8px;
+  }
+  .mp-checkin-field {
+    flex: 1 1 150px;
+  }
+  .mp-checkin-notice {
+    grid-column: 1;
+    justify-content: flex-start;
+  }
+}
+.mp-checkin-body::before {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--mp-line-2);
+  content: "";
+}
+.mp-checkin-intro,
+.mp-checkin-notice {
+  order: 1;
+}
+.mp-checkin-status[data-complete="true"] {
+  display: contents;
+}
+.mp-checkin-status[data-complete="true"] .mp-checkin-outcome {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}

@@ -12,6 +12,7 @@ Vary AI is a Tauri application using Rust, React, and TypeScript. The historical
 - The local proxy defaults to `127.0.0.1:15722`. Tests must use temporary directories, in-memory databases, and dynamic ports instead of competing with a running application.
 - The single-instance plugin may foreground an existing app and exit a new process. Do not launch, install, or replace the user's running application as a routine check.
 - Use test-first changes for new behavior and reproducible bugs. Keep implementation changes focused and update the applicable documentation.
+- Implement logic changes for both macOS and Windows in the same change, including any required platform-specific implementations, so behavior stays consistent across both platforms.
 - Write commit messages in English.
 
 ## Modules
@@ -61,4 +62,13 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Before committing, keep the working tree clean, track intended source/documentation changes, and exclude generated binaries, debug files and local secrets. A passing unit test does not establish installer, signing, notarization or live release acceptance.
+### Commit and CI acceptance
+
+- Treat `.github/workflows/ci.yml` and [Development checks](docs/development.md#checks) as the verification contract. Before committing, run the applicable local checks against the final changes, including helper tests and the production dependency audit. Focused tests during development do not replace the required checks.
+- Record the checked revision or working-tree changes, host OS, toolchain, commands, results and any checks that could not run. If relevant files change afterward, rerun the affected checks. Results from another checkout do not validate a different final tree.
+- Fix relevant local check failures before committing. If a required check cannot run, disclose the gap before committing; do not silently treat it as passed.
+- After pushing, inspect CI for the exact pushed revision and follow it through completion. A push is not verification acceptance. Report pending, skipped and failed jobs explicitly; do not describe CI as passed until all required jobs pass.
+- Backend acceptance requires the applicable Linux, Windows and macOS jobs, plus the Windows-to-WSL2 contract when required by the workflow. Local macOS success does not establish cross-platform success. Investigate failures using job logs before assigning a cause; do not disable checks or weaken assertions merely to obtain a green run.
+- Before merging, all required CI checks must pass for the revision being merged. If remote results are unavailable, report verification as incomplete.
+
+Before committing, inspect staged and unstaged changes, track only intended source/documentation changes, and exclude generated binaries, debug files and local secrets. Preserve unrelated work. A passing unit test does not establish installer, signing, notarization or live release acceptance.

@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { TrayPanel } from "./components/tray/TrayPanel";
+import { connectWorkspaceQueries, isTrayPanel } from "./lib/trayPanel";
 import { DatabaseUpgrade } from "./components/DatabaseUpgrade";
 import { StorageSetup } from "./components/StorageSetup";
 import "./index.css";
@@ -128,6 +130,8 @@ async function bootstrap() {
   }
 
   initializeWindowActivity();
+  const panel = isTrayPanel(window.location.search);
+  connectWorkspaceQueries(queryClient);
 
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
@@ -135,10 +139,10 @@ async function bootstrap() {
         <QueryClientProvider client={queryClient}>
           <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
             <UpdateProvider>
-              <App />
+              {panel ? <TrayPanel /> : <App />}
               <AppUpdateDialog />
-              <SecuritySystemNotifier />
-              <ToolRiskNotifier />
+              {!panel && <SecuritySystemNotifier />}
+              {!panel && <ToolRiskNotifier />}
               <Toaster />
             </UpdateProvider>
           </ThemeProvider>
@@ -147,24 +151,25 @@ async function bootstrap() {
     </React.StrictMode>,
   );
 
-  void syncModelsDevPricingOnStartup()
-    .then((result) => {
-      if (!result.skipped) {
-        return Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["usage"] }),
-          queryClient.invalidateQueries({
-            queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
-          }),
-        ]);
-      }
-    })
-    .catch((error) => {
-      // 离线或 models.dev 暂时不可用不应阻塞应用启动。
-      reportFrontendError("models_dev_startup_sync", error);
-      void queryClient.invalidateQueries({
-        queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+  if (!panel)
+    void syncModelsDevPricingOnStartup()
+      .then((result) => {
+        if (!result.skipped) {
+          return Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["usage"] }),
+            queryClient.invalidateQueries({
+              queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+            }),
+          ]);
+        }
+      })
+      .catch((error) => {
+        // 离线或 models.dev 暂时不可用不应阻塞应用启动。
+        reportFrontendError("models_dev_startup_sync", error);
+        void queryClient.invalidateQueries({
+          queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+        });
       });
-    });
 }
 
 void bootstrap();

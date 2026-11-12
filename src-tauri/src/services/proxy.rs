@@ -402,26 +402,10 @@ pub struct ProxyService {
     pub(crate) agent_connections: Arc<super::agent_connections::Manager>,
     global_routing_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) intent_client: Arc<super::intent_routing::client::Manager>,
-    native_auth_marker: std::path::PathBuf,
     native_checkpoint_key: std::path::PathBuf,
-    native_lifecycle: Arc<std::sync::Mutex<NativeLifecycle>>,
-}
-
-#[derive(Default)]
-struct NativeLifecycle {
-    generation: u64,
-    worker: Option<NativeReconciliation>,
-}
-
-struct NativeReconciliation {
-    lease: std::sync::Weak<crate::proxy::intent::native::Lease>,
-    abort: tokio::task::AbortHandle,
-}
-
-impl Drop for NativeReconciliation {
-    fn drop(&mut self) {
-        self.abort.abort();
-    }
+    codex_thread_worker: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
+    #[cfg(any(target_os = "macos", windows))]
+    codex_app_server_worker: Arc<std::sync::Mutex<Option<super::codex_app_server::Worker>>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -452,6 +436,11 @@ impl ProxyService {
         let mut runtime = crate::proxy::intent::Runtime::default();
         #[cfg(not(test))]
         {
+            runtime.connections = crate::proxy::connections::Connections::with_desktop(
+                crate::config::get_app_config_dir().join("claude-desktop.model"),
+                crate::claude_desktop_config::selector_roots(),
+            )
+            .unwrap_or_default();
             runtime.traces = Arc::new(
                 crate::proxy::intent::trace::Store::with_history(
                     crate::config::get_app_config_dir().join("routing-history"),
@@ -470,16 +459,13 @@ impl ProxyService {
             pi_path.with_file_name("codex.toml"),
             pi_path.with_file_name("intent-routing-client.json"),
         );
-        #[cfg(not(test))]
-        let native_auth_marker =
-            crate::codex_config::get_codex_managed_oauth_live_auth_marker_path();
-        #[cfg(test)]
-        let native_auth_marker =
-            intent_receipt.with_file_name("codex_managed_oauth_live_auth.json");
         let native_checkpoint_key = intent_receipt.with_file_name("intent-routing-checkpoint.key");
         let agent_connections = Arc::new(super::agent_connections::Manager {
             root: intent_receipt.with_file_name("agent-connections"),
         });
+        if super::agent_connections::cursor::resume_after_reboot(&agent_connections).is_err() {
+            log::warn!("Cursor environment could not be restored; reconnect is required");
+        }
         for app in super::agent_connections::APPS
             .iter()
             .filter(|app| **app != "codex")
@@ -506,9 +492,10 @@ impl ProxyService {
             agent_connections,
             global_routing_lock: Arc::default(),
             intent_client,
-            native_auth_marker,
             native_checkpoint_key,
-            native_lifecycle: Arc::default(),
+            codex_thread_worker: Arc::default(),
+            #[cfg(any(target_os = "macos", windows))]
+            codex_app_server_worker: Arc::default(),
             qoder: Arc::new(super::qoder_proxy::Manager::new(db.clone())),
             doubaowork: Arc::new(super::doubao_work::Manager::default()),
             db,
@@ -1044,6 +1031,51 @@ impl ProxyService {
         });
     }
 
+    pub(crate) fn start_codex_app_server_worker(&self) {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Ok(mut worker) = self.codex_app_server_worker.lock() {
+            if worker.is_none() {
+                *worker = Some(super::codex_app_server::start(
+                    Arc::downgrade(&self.intent_client),
+                    self.switch_locks.clone(),
+                    self.intent_runtime.codex_activity.clone(),
+                    self.agent_connections.clone(),
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn codex_reload_state(&self) -> Option<super::agent_connections::ReloadState> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.codex_app_server_worker
+                .lock()
+                .ok()?
+                .as_ref()
+                .map(|worker| worker.snapshot())
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            None
+        }
+    }
+
+    pub(crate) fn request_codex_reload(&self) -> Result<(), String> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.codex_app_server_worker
+                .lock()
+                .map_err(|_| "agentConnections.restartFailed")?
+                .as_ref()
+                .ok_or("agentConnections.restartUnsupported")?
+                .request_restart()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            Err("agentConnections.restartUnsupported".into())
+        }
+    }
+
     pub(crate) async fn lock_switch_for_app(
         &self,
         app_type: &str,
@@ -1363,10 +1395,14 @@ impl ProxyService {
                     .db
                     .get_bool_flag(super::trae_bridge::CONSENT_KEY)
                     .unwrap_or(false),
+            cursor: self.is_running().await && self.intent_runtime.connections.active("cursor"),
+            t3code: self.is_running().await && self.intent_runtime.connections.active("t3code"),
             kimi: self.native_agent_active("kimi").await,
             qwen: self.native_agent_active("qwen").await,
             zcode: self.native_agent_active("zcode").await,
+            deepseek_harness: self.native_agent_active("deepseek-harness").await,
             trae,
+            trae_intl: self.intent_runtime.connections.active("trae-intl"),
             pi: self.pi_routing.enabled()?,
             qoder: self.qoder.is_active()
                 && self
@@ -1374,6 +1410,8 @@ impl ProxyService {
                     .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                     .map_err(|e| e.to_string())?,
             workbuddy: self.workbuddy_active().await,
+            workbuddy_ai: self.is_running().await
+                && self.intent_runtime.connections.active("workbuddy-ai"),
             claude: claude_enabled,
             codex: codex_enabled,
             gemini: gemini_enabled,
@@ -1403,19 +1441,72 @@ impl ProxyService {
                     .enabled
             }
             "pi" => self.pi_routing.enabled()?,
-            "workbuddy" => self.workbuddy_active().await,
-            "kimi" | "qwen" | "zcode" => self.native_agent_active(app).await,
-            "qoder" => {
-                self.qoder.is_active()
-                    && self
-                        .db
-                        .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
-                        .map_err(|_| super::agent_connections::FAILED)?
-            }
+            "workbuddy" => self
+                .db
+                .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?,
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => self
+                .db
+                .get_bool_flag(&super::agent_clients::enabled_key(app))
+                .map_err(|_| super::agent_connections::FAILED)?,
+            "qoder" => self
+                .db
+                .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
-            "claude-desktop" | "opencode" | "openclaw" | "hermes" => false,
+            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" | "cursor"
+            | "t3code" => false,
             _ => return Err(super::agent_connections::FAILED.into()),
         })
+    }
+
+    // Caller holds this Agent's switch lock and has validated the shared projection.
+    pub(crate) async fn release_legacy_agent_connection(&self, app: &str) -> Result<(), String> {
+        match app {
+            "claude" | "gemini" | "grokbuild" => {
+                let kind = AppType::from_str(app).map_err(|_| super::agent_connections::FAILED)?;
+                if self
+                    .db
+                    .get_proxy_config_for_app(app)
+                    .await
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    .enabled
+                {
+                    self.set_ordinary_takeover_inner(&kind, false, false)
+                        .await?;
+                } else {
+                    self.restore_live_config_for_app_with_fallback_inner(&kind)
+                        .await?;
+                    self.db
+                        .delete_live_backup(app)
+                        .await
+                        .map_err(|_| super::agent_connections::FAILED)?;
+                }
+            }
+            "workbuddy" => {
+                self.restore_workbuddy_live_inner().await?;
+                self.db
+                    .set_setting(super::workbuddy_proxy::ENABLED_KEY, "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
+                super::agent_clients::restore(&self.db, app)
+                    .await
+                    .map_err(|_| super::agent_connections::FAILED)?;
+                self.db
+                    .set_setting(&super::agent_clients::enabled_key(app), "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "qoder" => {
+                self.qoder.restore().await?;
+                self.db
+                    .set_setting(super::qoder_proxy::ENABLED_KEY, "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "pi" => self.pi_routing.disable()?,
+            _ => return Err(super::agent_connections::CONFLICT.into()),
+        }
+        Ok(())
     }
 
     async fn workbuddy_active(&self) -> bool {
@@ -1601,6 +1692,7 @@ impl ProxyService {
     }
 
     pub(crate) async fn refresh_trae_takeover(&self) {
+        self.sync_shared_trae_intl(false).await;
         if self.agent_connections.bridge_owned() {
             self.sync_shared_trae(false).await;
         }
@@ -1635,6 +1727,63 @@ impl ProxyService {
                         .await;
             }
         }
+        let pending = super::trae_bridge::selection::ROUTE_PENDING_KEY;
+        if !self.agent_connections.bridge_owned() && self.db.get_bool_flag(pending).unwrap_or(false)
+        {
+            let _guard = self.lock_switch_for_app("trae").await;
+            if self.db.get_bool_flag(pending).unwrap_or(false) {
+                let db = self.db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if super::trae_bridge::selection::sync_response_route(&db)
+                        && !db
+                            .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                            .unwrap_or(true)
+                    {
+                        // Preserve the existing connection setup until an offline
+                        // client's native endpoint has been restored.
+                        let _ = super::trae_bridge::finish_disconnect();
+                    }
+                })
+                .await;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn select_shared_trae_connection(&self, enabled: bool) -> Result<(), String> {
+        self.select_shared_trae_connection_model(enabled, None)
+            .await
+    }
+
+    pub(crate) async fn select_shared_trae_connection_model(
+        &self,
+        enabled: bool,
+        model: Option<String>,
+    ) -> Result<(), String> {
+        let _guard = self.lock_switch_for_app("trae").await;
+        let _audit_guard = self.lock_trae_audit().await;
+        self.agent_connections.bridge_status()?;
+        if enabled
+            && self
+                .db
+                .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?
+        {
+            tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
+                .await
+                .map_err(|_| super::agent_connections::FAILED)?
+                .map_err(|_| super::agent_connections::CONFLICT)?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|_| super::agent_connections::FAILED)?;
+            self.db
+                .set_setting(super::trae_bridge::ENABLED_KEY, "false")
+                .map_err(|_| super::agent_connections::FAILED)?;
+        }
+        let manager = self.agent_connections.clone();
+        tokio::task::spawn_blocking(move || manager.bridge_select_model(enabled, model))
+            .await
+            .map_err(|_| super::agent_connections::FAILED)?
     }
 
     pub(crate) async fn sync_shared_trae(&self, suspend: bool) {
@@ -1661,6 +1810,8 @@ impl ProxyService {
             if running {
                 super::trae_bridge::prepare_shared()
                     .map_err(|_| super::agent_connections::FAILED)?;
+                // Shared delivery owns only its additive namespace. Legacy replacement
+                // must not block or rewrite the active shared connection's catalog.
             }
             if let Some(receipt) = manager.bridge_sync(
                 menu.as_deref(),
@@ -1676,6 +1827,55 @@ impl ProxyService {
         .await;
         if !matches!(result, Ok(Ok(()))) {
             self.intent_runtime.connections.revoke("trae");
+        }
+    }
+
+    pub(crate) async fn sync_shared_trae_intl(&self, suspend: bool) {
+        use super::trae_bridge::shared::{Client, Edition};
+        let edition = Edition::International;
+        let _guard = self.lock_switch_for_app(edition.app()).await;
+        if !self.agent_connections.bridge_for(edition).bridge_owned() {
+            return;
+        }
+        if !self
+            .db
+            .get_bool_flag(edition.consent_key())
+            .unwrap_or(false)
+        {
+            self.intent_runtime.connections.revoke(edition.app());
+            return;
+        }
+        let running = self.is_running().await && !suspend;
+        let menu = running
+            .then(|| self.intent_runtime.global_snapshot().ok().flatten())
+            .flatten();
+        let port = self
+            .get_status()
+            .await
+            .map(|status| status.port)
+            .unwrap_or(0);
+        let manager = self.agent_connections.clone();
+        let runtime = self.intent_runtime.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if running {
+                Client(edition)
+                    .prepare()
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            if let Some(receipt) = manager.bridge_for(edition).bridge_sync(
+                menu.as_deref(),
+                &format!("http://127.0.0.1:{port}"),
+                !running,
+            )? {
+                runtime.connections.install(&receipt)?;
+            } else {
+                runtime.connections.revoke(edition.app());
+            }
+            Ok(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            self.intent_runtime.connections.revoke(edition.app());
         }
     }
 
@@ -1753,8 +1953,18 @@ impl ProxyService {
                     self.start().await?;
                 }
                 self.doubaowork.enable().await;
+                let manager = self.agent_connections.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    manager.record_doubaowork_desktop_application()
+                })
+                .await;
             } else {
                 self.doubaowork.disable().await;
+                let manager = self.agent_connections.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    manager.record_doubaowork_desktop_application()
+                })
+                .await;
             }
             self.db
                 .set_setting(
@@ -1766,6 +1976,9 @@ impl ProxyService {
         }
         if app_type == "trae" {
             let _guard = self.lock_trae_audit().await;
+            if self.agent_connections.bridge_owned() {
+                return Err(super::agent_connections::CONFLICT.into());
+            }
             if enabled {
                 if !self
                     .db
@@ -1783,7 +1996,7 @@ impl ProxyService {
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
             } else {
-                tokio::task::spawn_blocking(super::trae_bridge::disable)
+                tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
                     .await
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
@@ -1794,6 +2007,11 @@ impl ProxyService {
                     if enabled { "true" } else { "false" },
                 )
                 .map_err(|e| e.to_string())?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|e| e.to_string())?;
+            drop(_guard);
+            self.refresh_trae_takeover().await;
             return Ok(());
         }
         if super::agent_clients::supported(app_type) {
@@ -2504,7 +2722,7 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
-        self.revoke_native_compatibility();
+        self.reset_native_status();
         self.intent_runtime.flush_continuations().await;
         let client = self.intent_client.clone();
         let manager = self.agent_connections.clone();
@@ -2557,6 +2775,16 @@ impl ProxyService {
     }
 
     async fn restore_shared_connections(&self, preserve_intent: bool) -> Result<(), String> {
+        let edition = super::trae_bridge::shared::Edition::International;
+        if self.agent_connections.bridge_for(edition).bridge_owned() {
+            self.intent_runtime.connections.revoke(edition.app());
+            if !preserve_intent {
+                self.agent_connections
+                    .bridge_for(edition)
+                    .bridge_select(false)?;
+            }
+            self.sync_shared_trae_intl(true).await;
+        }
         if self.agent_connections.bridge_owned() {
             self.intent_runtime.connections.revoke("trae");
             if !preserve_intent {
@@ -2598,24 +2826,67 @@ impl ProxyService {
         }
     }
 
-    pub(crate) fn revoke_native_compatibility(&self) {
-        if let Ok(mut lifecycle) = self.native_lifecycle.lock() {
-            lifecycle.generation = lifecycle.generation.wrapping_add(1);
-            lifecycle.worker = None;
-            self.intent_runtime.native.revoke();
-        } else {
-            self.intent_runtime.native.revoke();
-        }
+    pub(crate) fn reset_native_status(&self) {
+        self.intent_runtime.native.reset_status();
     }
 
     pub(crate) async fn disable_intent_client(&self) -> Result<(), String> {
-        self.revoke_native_compatibility();
+        self.restore_codex_connection(false).await
+    }
+
+    pub(crate) async fn disconnect_codex_agent(&self) -> Result<(), String> {
+        self.restore_codex_connection(true).await
+    }
+
+    async fn restore_codex_connection(&self, explicit: bool) -> Result<(), String> {
+        self.reset_native_status();
         self.intent_runtime.flush_continuations().await;
         let _guard = self.lock_switch_for_app("codex").await;
         let manager = self.intent_client.clone();
-        tokio::task::spawn_blocking(move || manager.restore())
-            .await
-            .map_err(|_| "intentRouting.clientFailed")?
+        let result = tokio::task::spawn_blocking(move || {
+            if explicit {
+                manager.disconnect()
+            } else {
+                manager.restore()
+            }
+        })
+        .await
+        .map_err(|_| "intentRouting.clientFailed")?;
+        self.schedule_codex_thread_sync();
+        result
+    }
+
+    fn schedule_codex_thread_sync(&self) {
+        let Ok(mut worker) = self.codex_thread_worker.lock() else {
+            return;
+        };
+        if worker.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        let manager = self.intent_client.clone();
+        let locks = self.switch_locks.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(65)).await;
+                let _guard = locks.lock_for_app("codex").await;
+                let manager = manager.clone();
+                let pending = tokio::task::spawn_blocking(move || {
+                    if !manager.thread_sync_pending() {
+                        return false;
+                    }
+                    if manager.sync_threads().is_err() {
+                        log::warn!("Codex conversation provider recovery remains pending");
+                    }
+                    manager.thread_sync_pending()
+                })
+                .await
+                .unwrap_or(false);
+                if !pending {
+                    break;
+                }
+            }
+        });
+        *worker = Some(task.abort_handle());
     }
 
     /// Publish enabled global resources without changing any client's live configuration.
@@ -2683,37 +2954,66 @@ impl ProxyService {
         result
     }
 
+    pub(crate) async fn sync_codex_configuration(&self) {
+        // Recovery must also resume after startup, including a stopped gateway.
+        self.schedule_codex_thread_sync();
+        if !self.is_running().await {
+            return;
+        }
+        let _guard = self.lock_switch_for_app("codex").await;
+        let Ok(status) = self.get_status().await else {
+            return;
+        };
+        let manager = self.intent_client.clone();
+        let base = format!("http://127.0.0.1:{}/intent/v1", status.port);
+        if !matches!(
+            tokio::task::spawn_blocking(move || manager.sync_configuration(&base)).await,
+            Ok(Ok(()))
+        ) {
+            log::warn!("Codex configuration repair could not complete; check connection status");
+        }
+    }
+
     pub(crate) async fn sync_shared_agent_catalogs(&self) {
         if !self.is_running().await {
             return;
         }
+        self.sync_codex_configuration().await;
         self.sync_shared_trae(false).await;
-        let menu = self.intent_runtime.global_snapshot().ok().flatten();
-        let port = match self.get_status().await {
-            Ok(status) => status.port,
-            Err(_) => return,
-        };
+        self.sync_shared_trae_intl(false).await;
         for app in super::agent_connections::APPS
             .iter()
             .copied()
             .filter(|app| *app != "codex")
         {
-            let _guard = self.lock_switch_for_app(app).await;
-            let Some(menu) = menu.clone() else {
+            self.sync_shared_agent_catalog(app).await;
+        }
+    }
+
+    pub(crate) async fn sync_shared_agent_catalog(&self, app: &str) {
+        if !self.is_running().await {
+            return;
+        }
+        let _guard = self.lock_switch_for_app(app).await;
+        let Some(menu) = self.intent_runtime.global_snapshot().ok().flatten() else {
+            self.intent_runtime.connections.revoke(app);
+            return;
+        };
+        let port = match self.get_status().await {
+            Ok(status) => status.port,
+            Err(_) => return,
+        };
+        let manager = self.agent_connections.clone();
+        let origin = format!("http://127.0.0.1:{port}");
+        let app_id = app.to_owned();
+        match tokio::task::spawn_blocking(move || manager.refresh(&app_id, &menu, &origin)).await {
+            Ok(Ok(Some(receipt))) => {
+                let _ = self.intent_runtime.connections.install(&receipt);
+            }
+            Ok(Ok(None)) => {}
+            _ => {
                 self.intent_runtime.connections.revoke(app);
-                continue;
-            };
-            let manager = self.agent_connections.clone();
-            let origin = format!("http://127.0.0.1:{port}");
-            match tokio::task::spawn_blocking(move || manager.refresh(app, &menu, &origin)).await {
-                Ok(Ok(Some(receipt))) => {
-                    let _ = self.intent_runtime.connections.install(&receipt);
-                }
-                Ok(Ok(None)) => {}
-                _ => {
-                    self.intent_runtime.connections.revoke(app);
-                    log::warn!("Agent catalog could not be synchronized; reconnect is required");
-                }
+                log::warn!("Agent catalog could not be synchronized; reconnect is required");
             }
         }
     }
@@ -2760,8 +3060,7 @@ impl ProxyService {
             .or_else(|| catalog.first().map(|entry| entry.id.clone()))
             .ok_or(EMPTY)?;
         if app == "codex" {
-            self.disable_intent_client().await?;
-            self.connect_codex_agent(true, false, Some(selected.clone()))
+            self.connect_codex_agent_inner(true, false, Some(selected.clone()), true)
                 .await?;
             let manager = self.agent_connections.clone();
             return tokio::task::spawn_blocking(move || {
@@ -2807,8 +3106,18 @@ impl ProxyService {
         refresh: bool,
         selected: Option<String>,
     ) -> Result<super::intent_routing::client::Status, String> {
+        self.connect_codex_agent_inner(consent, refresh, selected, false)
+            .await
+    }
+
+    async fn connect_codex_agent_inner(
+        &self,
+        consent: bool,
+        refresh: bool,
+        selected: Option<String>,
+        reapply: bool,
+    ) -> Result<super::intent_routing::client::Status, String> {
         use super::intent_routing::{catalog, menu};
-        let generation = self.native_generation();
         let _guard = self.lock_switch_for_app("codex").await;
         let result = async {
             if !consent && !self.intent_runtime.menu_active() {
@@ -2867,8 +3176,8 @@ impl ProxyService {
                 Arc::new(menu),
                 format!("http://127.0.0.1:{port}/intent/v1"),
                 consent,
-                generation,
                 selected,
+                reapply,
             )
             .await?;
             let manager = self.intent_client.clone();
@@ -2878,7 +3187,7 @@ impl ProxyService {
         }
         .await;
         if result.is_err() {
-            self.revoke_native_compatibility();
+            self.reset_native_status();
             if !consent {
                 // Revoke stale targets before releasing the configuration switch lock.
                 self.intent_runtime.clear_menu();
@@ -2893,15 +3202,8 @@ impl ProxyService {
         menu: Arc<crate::proxy::intent::Menu>,
         base: String,
     ) -> Result<(), String> {
-        self.activate_codex_groups_inner(menu, base, true, self.native_generation(), None)
+        self.activate_codex_groups_inner(menu, base, true, None, false)
             .await
-    }
-
-    fn native_generation(&self) -> Option<u64> {
-        self.native_lifecycle
-            .lock()
-            .ok()
-            .map(|state| state.generation)
     }
 
     // The caller owns Codex's switch lock and has already prepared every target.
@@ -2910,8 +3212,8 @@ impl ProxyService {
         menu: Arc<crate::proxy::intent::Menu>,
         base: String,
         reconnect: bool,
-        generation: Option<u64>,
         selected: Option<String>,
+        reapply: bool,
     ) -> Result<(), String> {
         use crate::proxy::intent::native;
         let ordinary = self
@@ -2929,21 +3231,20 @@ impl ProxyService {
                 .map_err(|_| "intentRouting.clientFailed")?;
         }
         let manager = self.intent_client.clone();
-        let restored = tokio::task::spawn_blocking(move || manager.config_snapshot())
-            .await
-            .map_err(|_| "intentRouting.clientFailed")??;
+        let repair_base = base.clone();
+        let restored = tokio::task::spawn_blocking(move || {
+            manager.sync_configuration(&repair_base)?;
+            manager.config_snapshot()
+        })
+        .await
+        .map_err(|_| "intentRouting.clientFailed")??;
         let manager = self.intent_client.clone();
         let runtime = self.intent_runtime.clone();
-        let marker = self.native_auth_marker.clone();
         let checkpoint_key = self.native_checkpoint_key.clone();
         let native_url = Self::native_codex_url(&base);
         let candidate = tokio::task::spawn_blocking(move || {
             let url = native_url.ok_or("unsupported")?;
-            if !native::environment_supported(manager.config_path()) {
-                return Err("unsupported");
-            }
-            let credentials = native::read_credentials(manager.config_path(), &marker)
-                .map_err(|_| "unsupported")?;
+            // Validate the selected Codex files, not Vary's inherited launcher environment.
             let snapshot = manager
                 .config_snapshot()
                 .map_err(|_| "reconnect_required")?;
@@ -2955,46 +3256,54 @@ impl ProxyService {
             let owned = manager
                 .native_owned_url()
                 .map_err(|_| "reconnect_required")?;
-            if doc.get("openai_base_url").is_some()
-                && (owned.is_none()
-                    || doc.get("openai_base_url").and_then(toml::Value::as_str) != owned.as_deref())
-            {
+            let was_native = owned.is_some()
+                || doc.get("openai_base_url").and_then(toml::Value::as_str) == Some(url.as_str());
+            if !native::signed_in(manager.config_path()).unwrap_or(was_native) {
+                return Err("unsupported");
+            }
+            if !reapply && doc.get("openai_base_url").is_some() && !was_native {
                 return Err("reconnect_required");
             }
             runtime
                 .native
                 .prepare_checkpoints(&checkpoint_key)
                 .map_err(|_| "unsupported")?;
-            Ok((credentials, url))
+            Ok(url)
         })
         .await
         .unwrap_or(Err("reconnect_required"));
         if let Err(status) = &candidate {
-            self.native_unavailable(generation, status);
+            self.intent_runtime.native.set_status(status);
         }
         let manager = self.intent_client.clone();
-        let requested_native = candidate.as_ref().ok().map(|(_, url)| url.clone());
+        let requested_native = candidate.as_ref().ok().cloned();
         let activation_base = base.clone();
         let activation_menu = menu.clone();
         let activation = tokio::task::spawn_blocking(move || {
-            match manager.activate_menu_with_selection(
-                activation_menu,
-                &activation_base,
-                requested_native.as_deref(),
-                reconnect,
-                selected.as_deref(),
-            ) {
+            let apply = |menu, native_url: Option<&str>| {
+                if reapply {
+                    manager.reapply_menu_with_selection(
+                        menu,
+                        &activation_base,
+                        native_url,
+                        selected.as_deref(),
+                    )
+                } else {
+                    manager.activate_menu_with_selection(
+                        menu,
+                        &activation_base,
+                        native_url,
+                        reconnect,
+                        selected.as_deref(),
+                    )
+                }
+            };
+            match apply(activation_menu, requested_native.as_deref()) {
                 Err(error)
                     if requested_native.is_some() && error == "intentRouting.nativeConflict" =>
                 {
                     // This conflict is reported before any catalog or receipt writes.
-                    manager.activate_menu_with_selection(
-                        menu,
-                        &activation_base,
-                        None,
-                        reconnect,
-                        selected.as_deref(),
-                    )?;
+                    apply(menu, None)?;
                     Ok(false)
                 }
                 result => result.map(|()| requested_native.is_some()),
@@ -3004,51 +3313,11 @@ impl ProxyService {
         .map_err(|_| "intentRouting.clientFailed".to_string())
         .and_then(|r| r);
         match &activation {
-            Ok(true) => {
-                if let Ok((previous, desired)) = candidate {
-                    let manager = self.intent_client.clone();
-                    let marker = self.native_auth_marker.clone();
-                    let verify_url = desired.clone();
-                    let verified = tokio::task::spawn_blocking(move || {
-                        let current =
-                            Self::reconcile_native_credentials(&manager, &marker, &verify_url)?;
-                        if !previous.same_identity(&current) {
-                            return Err("reconnect_required");
-                        }
-                        Ok(current)
-                    })
-                    .await
-                    .unwrap_or(Err("reconnect_required"));
-                    match verified {
-                        Ok(credentials) => {
-                            // Stop/disable may have revoked while configuration IO was in flight.
-                            if let Ok(mut lifecycle) = self.native_lifecycle.lock() {
-                                if Some(lifecycle.generation) == generation {
-                                    match self.intent_runtime.native.bind(credentials, reconnect) {
-                                        Ok(lease) => self.start_native_reconciliation(
-                                            &mut lifecycle,
-                                            lease,
-                                            desired,
-                                        ),
-                                        Err(_) => {
-                                            lifecycle.worker = None;
-                                            self.intent_runtime.native.revoke();
-                                            self.intent_runtime
-                                                .native
-                                                .set_status("reconnect_required");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(status) => self.native_unavailable(generation, status),
-                    }
-                }
-            }
+            Ok(true) => self.intent_runtime.native.set_status("pending"),
             Ok(false) if candidate.is_ok() => {
-                self.native_unavailable(generation, "reconnect_required")
+                self.intent_runtime.native.set_status("reconnect_required")
             }
-            Err(_) => self.native_unavailable(generation, "reconnect_required"),
+            Err(_) => self.intent_runtime.native.set_status("reconnect_required"),
             _ => {}
         }
         if activation.is_err() && ordinary {
@@ -3067,7 +3336,14 @@ impl ProxyService {
                 .await
                 .map_err(|_| "intentRouting.modeRecoveryRequired")?;
         }
-        activation.map(|_| ())
+        self.schedule_codex_thread_sync();
+        let result = activation.map(|_| ());
+        if result.is_ok() {
+            let manager = self.agent_connections.clone();
+            let _ = tokio::task::spawn_blocking(move || manager.record_codex_desktop_application())
+                .await;
+        }
+        result
     }
 
     fn native_codex_url(base: &str) -> Option<String> {
@@ -3087,119 +3363,11 @@ impl ProxyService {
         Some(url.to_string())
     }
 
-    fn native_unavailable(&self, generation: Option<u64>, status: &'static str) {
-        if let Ok(mut lifecycle) = self.native_lifecycle.lock() {
-            if Some(lifecycle.generation) == generation {
-                lifecycle.worker = None;
-                self.intent_runtime.native.revoke();
-                self.intent_runtime.native.set_status(status);
-            }
-        }
-    }
-
-    fn reconcile_native_credentials(
-        manager: &super::intent_routing::client::Manager,
-        marker: &std::path::Path,
-        desired: &str,
-    ) -> Result<crate::proxy::intent::native::Credentials, &'static str> {
-        use crate::proxy::intent::native;
-        if !native::environment_supported(manager.config_path()) {
-            return Err("reconnect_required");
-        }
-        let before = manager
-            .config_snapshot()
-            .map_err(|_| "reconnect_required")?;
-        let credentials = native::read_credentials(manager.config_path(), marker)
-            .map_err(|_| "reconnect_required")?;
-        if manager
-            .native_owned_url()
-            .map_err(|_| "reconnect_required")?
-            .as_deref()
-            != Some(desired)
-            || !manager.status().map_err(|_| "reconnect_required")?.enabled
-            || manager
-                .config_snapshot()
-                .map_err(|_| "reconnect_required")?
-                != before
-        {
-            return Err("reconnect_required");
-        }
-        Ok(credentials)
-    }
-
-    fn start_native_reconciliation(
-        &self,
-        lifecycle: &mut NativeLifecycle,
-        lease: Arc<crate::proxy::intent::native::Lease>,
-        desired: String,
-    ) {
-        if lifecycle.worker.as_ref().is_some_and(|worker| {
-            !worker.abort.is_finished()
-                && worker
-                    .lease
-                    .upgrade()
-                    .is_some_and(|old| Arc::ptr_eq(&old, &lease))
-        }) {
-            return;
-        }
-        lifecycle.worker = None;
-        let runtime = self.intent_runtime.clone();
-        let manager = self.intent_client.clone();
-        let marker = self.native_auth_marker.clone();
-        let switch_locks = self.switch_locks.clone();
-        let weak = Arc::downgrade(&lease);
-        let task = tokio::spawn(async move {
-            let cadence = std::time::Duration::from_secs(2);
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = lease.cancelled() => break,
-                    _ = tokio::time::sleep(cadence) => {}
-                }
-                if !lease.valid() {
-                    runtime.native.revoke_if(&lease);
-                    break;
-                }
-                let read = async {
-                    // Reconcile between local writers, not in the middle of a menu replacement.
-                    let guard = switch_locks.lock_for_app("codex").await;
-                    let manager = manager.clone();
-                    let marker = marker.clone();
-                    let desired = desired.clone();
-                    let credentials = tokio::task::spawn_blocking(move || {
-                        Self::reconcile_native_credentials(&manager, &marker, &desired)
-                    })
-                    .await
-                    .map_err(|_| "reconnect_required")??;
-                    Ok::<_, &'static str>((credentials, guard))
-                };
-                let verified = tokio::select! {
-                    biased;
-                    _ = lease.cancelled() => break,
-                    result = tokio::time::timeout(cadence, read) => result,
-                };
-                let refreshed = match verified {
-                    Ok(Ok((credentials, _guard))) => runtime.native.refresh(&lease, credentials),
-                    _ => false,
-                };
-                if !refreshed {
-                    // A stale worker must never revoke a newer explicitly connected lease.
-                    runtime.native.revoke_if(&lease);
-                    break;
-                }
-            }
-        });
-        lifecycle.worker = Some(NativeReconciliation {
-            lease: weak,
-            abort: task.abort_handle(),
-        });
-    }
-
     /// 停止代理服务器（恢复 Live 配置，用户手动关闭时使用）
     ///
     /// 会清除 settings 表中的代理状态，下次启动不会自动恢复。
     pub async fn stop_with_restore(&self) -> Result<(), String> {
-        self.revoke_native_compatibility();
+        self.reset_native_status();
         self.intent_runtime.flush_continuations().await;
         self.update_security_audit_settings(&crate::database::SecurityAuditSettings {
             enabled: false,
@@ -3768,7 +3936,19 @@ impl ProxyService {
         }
         {
             let _guard = self.lock_trae_audit().await;
-            match tokio::task::spawn_blocking(super::trae_bridge::disable).await {
+            let pending = self
+                .db
+                .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                .unwrap_or(true);
+            match tokio::task::spawn_blocking(move || {
+                if pending {
+                    super::trae_bridge::suspend_inspection()
+                } else {
+                    super::trae_bridge::disable()
+                }
+            })
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => errors.push(format!("TRAE bridge recovery: {error}")),
                 Err(error) => errors.push(format!("TRAE bridge recovery: {error}")),
@@ -5986,6 +6166,7 @@ mod tests {
                     }
                     Err(_) => break,
                 };
+                socket.set_nonblocking(false).unwrap();
                 let mut line = String::new();
                 BufReader::new(socket.try_clone().unwrap())
                     .read_line(&mut line)
@@ -5994,7 +6175,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":2,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":18,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {
@@ -6025,7 +6206,12 @@ mod tests {
         impl Drop for Stop {
             fn drop(&mut self) {
                 self.0.store(false, Ordering::Relaxed);
-                self.1.take().unwrap().join().unwrap();
+                if let Some(worker) = self.1.take() {
+                    let result = worker.join();
+                    if !std::thread::panicking() {
+                        assert!(result.is_ok(), "synthetic bridge worker failed");
+                    }
+                }
             }
         }
         let _stop = Stop(run, Some(worker));
@@ -6346,6 +6532,8 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let mut upstream = RoutingUpstream {
+            notes: None,
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6393,7 +6581,7 @@ mod tests {
         assert_eq!(
             receipt
                 .model_map
-                .get(&crate::claude_desktop_config::shared_model_name(
+                .get(&crate::claude_desktop_config::shared_plain_model_name(
                     &catalog[1].id
                 )),
             Some(&catalog[1].id)
@@ -6555,6 +6743,218 @@ mod tests {
         Ok(())
     }
 
+    // Profile commands run on a blocking pool while gateway tasks keep progressing.
+    #[tokio::test]
+    #[serial]
+    async fn shared_catalog_profiles_capture_apply_and_undo_without_legacy_providers(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tokio::task::spawn_blocking(|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            use super::super::{
+                agent_connections, profile_bundle,
+                routing_upstreams::{RoutingUpstream, UpstreamSource},
+            };
+            let _home = TempHome::new();
+            crate::settings::reload_settings()?;
+            let db = Arc::new(Database::memory()?);
+            futures::executor::block_on(use_ephemeral_proxy_port(&db));
+            db.save_routing_upstream(RoutingUpstream {
+                notes: None,
+                icon: None,
+                transport: None,
+                schema_version: 1,
+                preset_id: None,
+                region: None,
+                codex_settings: None,
+                id: String::new(),
+                name: "Profile fixture".into(),
+                revision: 0,
+                has_api_key: false,
+                enabled: true,
+                source: UpstreamSource::Api {
+                    catalog: vec![],
+                    mode: crate::services::codex_provider::ModelMode::Picked,
+                    groups_only: false,
+                    base_url: "https://synthetic.invalid/v1".into(),
+                    api_key: Some("synthetic-profile-secret".into()),
+                    api_format: "openai_responses".into(),
+                    models: vec![json!({"model":"fixture-a"}), json!({"model":"fixture-b"})],
+                    auth_type: None,
+                },
+            })?;
+            let state = crate::store::AppState::new(db);
+            let service = &state.proxy_service;
+            let info = futures::executor::block_on(service.start())?;
+            let menu = service
+                .intent_runtime
+                .global_snapshot()?
+                .ok_or("missing menu")?;
+            let models = agent_connections::models(&menu);
+            let model_a = &models[0].id;
+            let model_b = &models[1].id;
+            let origin = format!("http://127.0.0.1:{}", info.port);
+            let mut apps = vec![
+                "deepseek-harness",
+                "opencode",
+                "openclaw",
+                "hermes",
+                "pi",
+                "workbuddy",
+                "workbuddy-ai",
+            ];
+            if !cfg!(target_os = "linux") {
+                apps.push("claude-desktop");
+            }
+            for app in &apps {
+                assert!(state.db.get_all_providers(app)?.is_empty());
+                let receipt = service
+                    .agent_connections
+                    .build(app, &menu, &origin, model_a)?;
+                service.agent_connections.install(receipt.clone())?;
+                service.intent_runtime.connections.install(&receipt)?;
+                assert!(
+                    profile_bundle::agents(&state)?
+                        .iter()
+                        .any(|agent| agent.app.as_str() == *app && agent.available),
+                    "shared connection must be selectable: {app}"
+                );
+            }
+            let visibility = |id: &str| agent_connections::ModelVisibility {
+                only: true,
+                ids: vec![id.into()],
+                order: vec![],
+            };
+            if apps.contains(&"claude-desktop") {
+                service.agent_connections.set_model_visibility(
+                    "claude-desktop",
+                    &visibility(model_a),
+                    &menu,
+                    &origin,
+                )?;
+            }
+            let saved = profile_bundle::ProfileBundleService::capture(
+                &state,
+                "Shared fixture",
+                &apps.iter().map(|app| (*app).into()).collect::<Vec<_>>(),
+                None,
+            )?;
+            assert!(!saved.payload.contains("synthetic-profile-secret"));
+            assert!(!saved.payload.contains("127.0.0.1"));
+            for app in &apps {
+                let receipt = service
+                    .agent_connections
+                    .update(app, &menu, &origin, Some(model_b))?
+                    .ok_or("missing receipt")?;
+                assert!(!saved.payload.contains(&receipt.token));
+                service.intent_runtime.connections.install(&receipt)?;
+            }
+            if apps.contains(&"claude-desktop") {
+                service.agent_connections.set_model_visibility(
+                    "claude-desktop",
+                    &visibility(model_b),
+                    &menu,
+                    &origin,
+                )?;
+            }
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert_eq!(preview.changes.len(), apps.len());
+            let harness_path = crate::services::agent_clients::config_path("deepseek-harness")?;
+            let live = std::fs::read_to_string(&harness_path)?;
+            std::fs::write(&harness_path, format!("# Synthetic external edit\n{live}"))?;
+            assert!(profile_bundle::ProfileBundleService::apply(
+                &state,
+                &saved.id,
+                &preview.revision
+            )
+            .is_err());
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let result =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(result.success);
+            for app in &apps {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .load(app)?
+                        .ok_or("missing receipt")?
+                        .model,
+                    *model_a
+                );
+                assert!(service.intent_runtime.connections.active(app));
+                assert!(state.db.get_all_providers(app)?.is_empty());
+            }
+            if apps.contains(&"claude-desktop") {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .model_visibility("claude-desktop")?,
+                    visibility(model_a)
+                );
+            }
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                result.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            for app in &apps {
+                if *app != "claude-desktop" {
+                    assert_eq!(
+                        service
+                            .agent_connections
+                            .load(app)?
+                            .ok_or("missing receipt")?
+                            .model,
+                        *model_b,
+                        "restored starting model for {app}"
+                    );
+                }
+                assert!(service.agent_connections.status(app)?.configured);
+            }
+            if apps.contains(&"claude-desktop") {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .model_visibility("claude-desktop")?,
+                    visibility(model_b)
+                );
+            }
+            service.agent_connections.disconnect("deepseek-harness")?;
+            service
+                .intent_runtime
+                .connections
+                .revoke("deepseek-harness");
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let restored =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(restored.success);
+            assert!(state.db.get_all_providers("deepseek-harness")?.is_empty());
+            assert!(service
+                .intent_runtime
+                .connections
+                .active("deepseek-harness"));
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                restored.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            assert!(service
+                .agent_connections
+                .load("deepseek-harness")?
+                .is_none());
+            assert!(!service
+                .intent_runtime
+                .connections
+                .active("deepseek-harness"));
+            let mut upstream = state.db.list_routing_upstreams()?.remove(0);
+            upstream.enabled = false;
+            state.db.save_routing_upstream(upstream)?;
+            futures::executor::block_on(service.refresh_global_routing())?;
+            let missing = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert!(missing.changes.is_empty());
+            assert_eq!(missing.skipped.len(), apps.len());
+            futures::executor::block_on(service.stop())?;
+            Ok(())
+        })
+        .await?
+    }
+
     #[tokio::test]
     #[serial]
     async fn shared_agents_suspend_resume_and_restore_without_legacy_provider_projection() {
@@ -6567,6 +6967,8 @@ mod tests {
         let db = Arc::new(Database::memory().expect("database"));
         use_ephemeral_proxy_port(&db).await;
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6584,12 +6986,16 @@ mod tests {
                 base_url: "https://synthetic.invalid/v1".into(),
                 api_key: Some("synthetic-only".into()),
                 api_format: "openai_responses".into(),
-                models: vec![json!({"model":"synthetic","contextWindow":1_000_000})],
+                models: vec![
+                    json!({"model":"synthetic","contextWindow":1_000_000}),
+                    json!({"model":"synthetic-second"}),
+                ],
                 auth_type: None,
             },
         })
         .expect("global provider");
-        let service = ProxyService::new(db.clone());
+        let state = crate::store::AppState::new(db.clone());
+        let service = &state.proxy_service;
         let original = r#"{"env":{"USER_SETTING":"keep"},"theme":"light"}"#;
         let path = crate::config::get_claude_settings_path();
         std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
@@ -6617,6 +7023,72 @@ mod tests {
             .connections
             .install(&receipt)
             .expect("auth");
+        for app in ["kimi", "qwen"] {
+            let receipt = service
+                .agent_connections
+                .build(
+                    app,
+                    &menu,
+                    &format!("http://127.0.0.1:{}", info.port),
+                    &alias,
+                )
+                .expect("native projection");
+            let chosen = receipt
+                .model_map
+                .iter()
+                .find(|(_, id)| **id != alias)
+                .map(|(name, _)| name.clone())
+                .expect("second model");
+            service
+                .agent_connections
+                .install(receipt.clone())
+                .expect("native install");
+            service
+                .intent_runtime
+                .connections
+                .install(&receipt)
+                .expect("native auth");
+            let path = super::super::agent_clients::config_path(app).expect("native path");
+            let mut doc = super::super::agent_clients::Document::read(app, &path)
+                .expect("native configuration");
+            let selection = if app == "kimi" {
+                json!(chosen)
+            } else {
+                let mut selection = doc.selection(app);
+                selection["model"] = json!(chosen);
+                selection
+            };
+            doc.set_selection(app, &selection)
+                .expect("native model switch");
+            doc.write(&path).expect("persist native choice");
+            let mut upstream = db.list_routing_upstreams().expect("upstreams").remove(0);
+            if let UpstreamSource::Api { models, .. } = &mut upstream.source {
+                models.push(json!({"model":format!("new-{app}")}));
+            }
+            db.save_routing_upstream(upstream).expect("catalog update");
+            service
+                .refresh_global_routing()
+                .await
+                .expect("refresh menu");
+            service.sync_shared_agent_catalogs().await;
+            assert!(
+                service
+                    .agent_connections
+                    .status(app)
+                    .expect("status")
+                    .configured
+            );
+            assert!(service.intent_runtime.connections.active(app));
+            assert_eq!(
+                super::super::agent_clients::Document::read(app, &path)
+                    .expect("updated configuration")
+                    .selection(app),
+                selection
+            );
+            assert!(std::fs::read_to_string(&path)
+                .expect("updated catalog")
+                .contains(&format!("new-{app}")));
+        }
         assert!(service.set_takeover_for_app("claude", true).await.is_err());
         service.stop().await.expect("suspend without deadlock");
         assert_eq!(std::fs::read_to_string(&path).expect("restored"), original);
@@ -6630,8 +7102,7 @@ mod tests {
         );
         let changed = r#"{"env":{"USER_SETTING":"new"},"theme":"dark"}"#;
         std::fs::write(&path, changed).expect("edit while suspended");
-        service.start().await.expect("restart");
-        service.sync_shared_agent_catalogs().await;
+        crate::restore_proxy_state_on_startup(&state).await;
         assert!(
             service
                 .agent_connections
@@ -6662,6 +7133,8 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let upstream = db.save_routing_upstream(RoutingUpstream {
+            notes: None,
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6700,16 +7173,23 @@ mod tests {
         service.agent_connections.install(receipt)?;
         let mut edited: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         edited["env"]["ANTHROPIC_MODEL"] = json!("external-choice");
+        edited["env"]["ANTHROPIC_BASE_URL"] = json!("https://synthetic-external.invalid");
         edited["env"]["USER_SETTING"] = json!("keep-external");
         std::fs::write(&path, edited.to_string())?;
         assert!(service
             .agent_connections
             .refresh("claude", &menu, "http://127.0.0.1:1234")
             .is_err());
-        service.reapply_agent_connection("claude").await?;
+        service
+            .reapply_agent_connection("claude")
+            .await
+            .map_err(|error| format!("synthetic Claude reapply: {error}"))?;
         assert!(service.agent_connections.status("claude")?.configured);
         assert!(service.intent_runtime.connections.active("claude"));
-        service.agent_connections.disconnect("claude")?;
+        service
+            .agent_connections
+            .disconnect("claude")
+            .map_err(|error| format!("synthetic Claude disconnect: {error}"))?;
         let restored: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         assert_eq!(restored["env"]["ANTHROPIC_MODEL"], "external-choice");
         assert_eq!(restored["env"]["USER_SETTING"], "keep-external");
@@ -6726,10 +7206,30 @@ mod tests {
         service
             .agent_connections
             .set_codex_intent(Some(&model), true)?;
+        let codex_home = codex.parent().ok_or("fixture home")?;
+        let sessions = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions)?;
+        let rollout = sessions.join("rollout-synthetic-reapply-chat.jsonl");
+        let history = json!({"type":"session_meta","payload":{"id":"synthetic-reapply-chat","model_provider":"varyai"}}).to_string();
+        std::fs::write(&rollout, &history)?;
+        let thread_db = rusqlite::Connection::open(codex_home.join("state_5.sqlite"))?;
+        thread_db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL)", [])?;
+        thread_db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "synthetic-reapply-chat",
+                rollout.to_string_lossy(),
+                "varyai"
+            ],
+        )?;
         service.intent_runtime.clear_menu();
         assert!(service.intent_client.status()?.configuration_owned);
-        service.reapply_agent_connection("codex").await?;
+        service
+            .reapply_agent_connection("codex")
+            .await
+            .map_err(|error| format!("synthetic Codex reapply: {error}"))?;
         assert!(service.intent_client.status()?.enabled);
+        assert_eq!(std::fs::read_to_string(&rollout)?, history);
         let mut edited: toml_edit::DocumentMut = std::fs::read_to_string(&codex)?.parse()?;
         edited["model_provider"] = toml_edit::value("external");
         edited["model"] = toml_edit::value("external-choice");
@@ -6740,9 +7240,13 @@ mod tests {
             .connect_codex_agent(true, false, Some(model.clone()))
             .await
             .is_err());
-        service.reapply_agent_connection("codex").await?;
+        service
+            .reapply_agent_connection("codex")
+            .await
+            .map_err(|error| format!("synthetic Codex reapply: {error}"))?;
         assert!(service.intent_client.status()?.enabled);
         assert_eq!(std::fs::read(&auth)?, auth_before);
+        assert_eq!(std::fs::read_to_string(&rollout)?, history);
 
         let mut disabled = upstream;
         disabled.enabled = false;
@@ -6757,12 +7261,24 @@ mod tests {
             Some(agent_connections::EMPTY)
         );
         assert_eq!(std::fs::read(&codex)?, before);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&rollout)?
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(120),
+            ))?;
         service.stop_with_restore().await?;
         let restored: toml::Value = std::fs::read_to_string(&codex)?.parse()?;
         assert_eq!(restored["model"].as_str(), Some("external-choice"));
         assert_eq!(restored["model_provider"].as_str(), Some("external"));
         assert_eq!(restored["theme"].as_str(), Some("keep-external"));
         assert_eq!(std::fs::read(&auth)?, auth_before);
+        let restored_provider: String = thread_db.query_row(
+            "SELECT model_provider FROM threads WHERE id = ?1",
+            ["synthetic-reapply-chat"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(restored_provider, "external");
         Ok(())
     }
 
@@ -6814,9 +7330,39 @@ mod tests {
             dir.path().join("receipt.json"),
             service.intent_runtime.clone(),
         ));
-        service.native_auth_marker = dir.path().join("managed-marker.json");
         service.native_checkpoint_key = dir.path().join("checkpoint.key");
         (dir, service, config)
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn disconnected_codex_identity_does_not_enable_routing_on_startup(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = TempHome::new();
+        crate::settings::reload_settings()?;
+        let db = Arc::new(Database::memory()?);
+        use_ephemeral_proxy_port(&db).await;
+        let state = crate::store::AppState::new(db);
+        let service = &state.proxy_service;
+        let config = service.intent_client.config_path();
+        std::fs::create_dir_all(config.parent().ok_or("fixture parent")?)?;
+        std::fs::write(config, "model='original'\n")?;
+        let info = service.start().await?;
+        service
+            .activate_codex_groups(
+                synthetic_codex_menu(),
+                format!("http://127.0.0.1:{}/intent/v1", info.port),
+            )
+            .await?;
+        service.agent_connections.set_codex_intent(None, true)?;
+        service.disconnect_codex_agent().await?;
+        service.agent_connections.set_codex_intent(None, false)?;
+        service.stop().await?;
+        crate::restore_proxy_state_on_startup(&state).await;
+        assert!(!service.is_running().await);
+        assert!(!service.intent_runtime.menu_active());
+        assert!(!service.intent_client.status()?.enabled);
+        Ok(())
     }
 
     fn native_lifecycle_auth(user: &str, token: &str) -> Value {
@@ -6863,15 +7409,6 @@ mod tests {
         }
     }
 
-    fn native_lifecycle_headers(token: &str) -> http::HeaderMap {
-        let mut headers = http::HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().expect("fixture header"),
-        );
-        headers
-    }
-
     #[test]
     fn native_codex_url_uses_only_explicit_loopback_origin() {
         for base in [
@@ -6896,7 +7433,7 @@ mod tests {
     #[serial]
     async fn native_codex_takeover_and_restore_preserve_auth_rollout_and_conversation_files() {
         let _environment = NativeTestEnvironment::isolated();
-        let (dir, service, config) = native_lifecycle_fixture(
+        let (dir, service, _config) = native_lifecycle_fixture(
             "# synthetic config\n",
             native_lifecycle_auth("synthetic-user", "synthetic-token"),
         );
@@ -6925,9 +7462,9 @@ mod tests {
             assert_eq!(&std::fs::read(path).expect("unchanged fixture"), bytes);
         }
         service.disable_intent_client().await.expect("restore");
-        assert_eq!(
-            std::fs::read_to_string(config).expect("restored"),
-            "# synthetic config\n"
+        crate::services::intent_routing::client::tests::assert_restored_config(
+            &service.intent_client,
+            "# synthetic config\n",
         );
         for (path, bytes) in paths.iter().zip(&before) {
             assert_eq!(&std::fs::read(path).expect("unchanged fixture"), bytes);
@@ -6938,6 +7475,8 @@ mod tests {
     #[serial]
     async fn native_codex_unowned_url_keeps_custom_menu_without_overwriting_native_field() {
         let _environment = NativeTestEnvironment::isolated();
+        // The gateway process environment is not the separately running Codex client's.
+        env::set_var("OPENAI_BASE_URL", "https://synthetic-launcher.example/v1");
         let original = "openai_base_url='https://synthetic.example/backend-api/codex'\n";
         let (_dir, service, config) = native_lifecycle_fixture(
             original,
@@ -6952,11 +7491,6 @@ mod tests {
             .expect("custom activation");
         assert!(service.intent_client.status().expect("status").enabled);
         assert_eq!(service.intent_runtime.native.status(), "reconnect_required");
-        assert!(service
-            .intent_runtime
-            .native
-            .authenticate(&native_lifecycle_headers("synthetic-token"))
-            .is_err());
         let doc: toml::Value = std::fs::read_to_string(&config)
             .expect("projection")
             .parse()
@@ -6965,118 +7499,82 @@ mod tests {
             doc["openai_base_url"].as_str(),
             Some("https://synthetic.example/backend-api/codex")
         );
+        service
+            .activate_codex_groups_inner(
+                synthetic_codex_menu(),
+                "http://127.0.0.1:32123/intent/v1".into(),
+                true,
+                None,
+                true,
+            )
+            .await
+            .expect("explicit native reapply");
+        let applied: toml::Value = std::fs::read_to_string(&config)
+            .expect("applied config")
+            .parse()
+            .expect("toml");
+        assert_eq!(
+            applied["openai_base_url"].as_str(),
+            Some("http://127.0.0.1:32123/backend-api/codex")
+        );
         service.disable_intent_client().await.expect("restore");
-        assert_eq!(std::fs::read_to_string(config).expect("original"), original);
+        crate::services::intent_routing::client::tests::assert_restored_config(
+            &service.intent_client,
+            original,
+        );
     }
 
     #[tokio::test]
     #[serial]
-    async fn native_codex_refresh_preserves_lease_and_worker_tracks_auth_identity() {
+    async fn native_codex_refresh_preserves_routing_during_auth_rewrites_and_rotation() {
         let _environment = NativeTestEnvironment::isolated();
         let (_dir, service, config) = native_lifecycle_fixture(
             "",
-            native_lifecycle_auth("synthetic-user", "synthetic-token"),
+            native_lifecycle_auth("synthetic-user", "synthetic-first"),
         );
         let base = "http://127.0.0.1:32123/intent/v1";
         service
             .activate_codex_groups(synthetic_codex_menu(), base.into())
             .await
-            .expect("activation");
-        let headers = native_lifecycle_headers("synthetic-token");
-        let first = service
-            .intent_runtime
-            .native
-            .authenticate(&headers)
-            .expect("native lease");
-        service
-            .activate_codex_groups_inner(
-                synthetic_codex_menu(),
-                base.into(),
-                false,
-                service.native_generation(),
-                None,
-            )
-            .await
-            .expect("menu refresh");
-        let second = service
-            .intent_runtime
-            .native
-            .authenticate(&headers)
-            .expect("refreshed lease");
-        assert!(
-            Arc::ptr_eq(&first, &second),
-            "menu refresh reset the native continuation epoch"
-        );
-        let auth_path = config.with_file_name("auth.json");
-        std::fs::write(
-            &auth_path,
-            native_lifecycle_auth("synthetic-user", "synthetic-rotated-token").to_string(),
-        )
-        .expect("rotate fixture token");
-        let rotated = native_lifecycle_headers("synthetic-rotated-token");
-        tokio::time::timeout(std::time::Duration::from_secs(4), async {
-            while service
-                .intent_runtime
-                .native
-                .authenticate(&rotated)
-                .is_err()
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("worker refreshes token proof");
-        assert!(service
-            .intent_runtime
-            .native
-            .authenticate(&headers)
-            .is_err());
-        let after_rotation = service
-            .intent_runtime
-            .native
-            .authenticate(&rotated)
-            .expect("rotated lease");
-        assert!(Arc::ptr_eq(&first, &after_rotation));
-        std::fs::write(
-            &auth_path,
+            .expect("initial connection");
+        for auth in [
+            String::new(),
+            "{\"tokens\":".into(),
+            native_lifecycle_auth("synthetic-user", "synthetic-rotated").to_string(),
             native_lifecycle_auth("synthetic-other-user", "synthetic-other-token").to_string(),
-        )
-        .expect("replace fixture identity");
-        tokio::time::timeout(std::time::Duration::from_secs(4), first.cancelled())
-            .await
-            .expect("identity change revokes");
-        assert_eq!(service.intent_runtime.native.status(), "reconnect_required");
-        service
-            .activate_codex_groups_inner(
-                synthetic_codex_menu(),
-                base.into(),
-                false,
-                service.native_generation(),
-                None,
-            )
-            .await
-            .expect("custom menu refresh still succeeds");
-        let other = native_lifecycle_headers("synthetic-other-token");
-        assert!(
-            service.intent_runtime.native.authenticate(&other).is_err(),
-            "automatic refresh rebound another identity"
-        );
-        service
-            .activate_codex_groups(synthetic_codex_menu(), base.into())
-            .await
-            .expect("explicit reconnect");
-        let reconnected = service
-            .intent_runtime
-            .native
-            .authenticate(&other)
-            .expect("explicit new lease");
-        assert!(!Arc::ptr_eq(&first, &reconnected));
+        ] {
+            std::fs::write(config.with_file_name("auth.json"), &auth)
+                .expect("synthetic auth rewrite");
+            service
+                .activate_codex_groups_inner(
+                    synthetic_codex_menu(),
+                    base.into(),
+                    false,
+                    None,
+                    false,
+                )
+                .await
+                .expect("menu refresh");
+            let current: toml::Value = std::fs::read_to_string(&config)
+                .expect("synthetic config")
+                .parse()
+                .expect("TOML");
+            assert_eq!(
+                current["openai_base_url"].as_str(),
+                Some("http://127.0.0.1:32123/backend-api/codex")
+            );
+            assert!(service.intent_client.status().expect("status").enabled);
+            assert_eq!(
+                std::fs::read_to_string(config.with_file_name("auth.json")).expect("auth"),
+                auth
+            );
+        }
         service.disable_intent_client().await.expect("restore");
     }
 
     #[tokio::test]
     #[serial]
-    async fn native_codex_disable_revokes_despite_restore_conflict() {
+    async fn native_codex_disable_preserves_restore_conflict_evidence() {
         let _environment = NativeTestEnvironment::isolated();
         let (dir, service, config) = native_lifecycle_fixture(
             "",
@@ -7089,15 +7587,9 @@ mod tests {
             )
             .await
             .expect("activation");
-        let lease = service
-            .intent_runtime
-            .native
-            .authenticate(&native_lifecycle_headers("synthetic-token"))
-            .expect("lease");
         let external = "model_provider='external'\nopenai_base_url='unterminated\n";
         std::fs::write(&config, external).expect("external edit");
         assert!(service.disable_intent_client().await.is_err());
-        assert!(!lease.valid());
         assert!(
             dir.path().join("receipt.json").exists(),
             "restore conflict erased recovery evidence"
@@ -7106,35 +7598,6 @@ mod tests {
             std::fs::read_to_string(config).expect("external config"),
             external
         );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn native_codex_stale_activation_generation_cannot_restore_admission() {
-        let _environment = NativeTestEnvironment::isolated();
-        let (_dir, service, _config) = native_lifecycle_fixture(
-            "",
-            native_lifecycle_auth("synthetic-user", "synthetic-token"),
-        );
-        let generation = service.native_generation();
-        service.revoke_native_compatibility();
-        service
-            .activate_codex_groups_inner(
-                synthetic_codex_menu(),
-                "http://127.0.0.1:32123/intent/v1".into(),
-                true,
-                generation,
-                None,
-            )
-            .await
-            .expect("custom menu can still publish");
-        assert!(service
-            .intent_runtime
-            .native
-            .authenticate(&native_lifecycle_headers("synthetic-token"))
-            .is_err());
-        assert_eq!(service.intent_runtime.native.status(), "revoked");
-        service.disable_intent_client().await.expect("restore");
     }
 
     #[tokio::test]
@@ -7170,91 +7633,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_codex_stop_revokes_without_client_receipt_or_running_listener() {
-        let (_dir, service, config) = native_lifecycle_fixture(
-            "",
-            native_lifecycle_auth("synthetic-user", "synthetic-token"),
-        );
-        let credentials =
-            crate::proxy::intent::native::read_credentials(&config, &service.native_auth_marker)
-                .expect("fixture credentials");
-        let lease = service
-            .intent_runtime
-            .native
-            .install(credentials)
-            .expect("fixture lease");
-        assert!(!service.intent_client.active_or_pending());
-        assert!(service.stop().await.is_err());
-        assert!(
-            !lease.valid(),
-            "shutdown must not depend on listener or receipt state"
-        );
-    }
-
-    #[tokio::test]
-    async fn native_codex_shutdown_revokes_before_fallible_settings_update() {
-        let (_dir, service, config) = native_lifecycle_fixture(
-            "",
-            native_lifecycle_auth("synthetic-user", "synthetic-token"),
-        );
-        let credentials =
-            crate::proxy::intent::native::read_credentials(&config, &service.native_auth_marker)
-                .expect("fixture credentials");
-        let lease = service
-            .intent_runtime
-            .native
-            .install(credentials)
-            .expect("fixture lease");
-        service
-            .db
-            .extension_connection()
-            .lock()
-            .expect("fixture database")
-            .execute_batch("DROP TABLE security_settings;")
-            .expect("synthetic storage failure");
-        assert!(service.stop_with_restore().await.is_err());
-        assert!(
-            !lease.valid(),
-            "settings failure left native ingress authorized"
-        );
-    }
-
-    #[tokio::test]
-    async fn native_codex_disable_revokes_before_waiting_for_switch_lock() {
-        let (_dir, service, config) = native_lifecycle_fixture(
-            "",
-            native_lifecycle_auth("synthetic-user", "synthetic-token"),
-        );
-        let credentials =
-            crate::proxy::intent::native::read_credentials(&config, &service.native_auth_marker)
-                .expect("fixture credentials");
-        let lease = service
-            .intent_runtime
-            .native
-            .install(credentials)
-            .expect("fixture lease");
-        let guard = service.lock_switch_for_app("codex").await;
-        let cloned = service.clone();
-        let disable = tokio::spawn(async move { cloned.disable_intent_client().await });
-        let cancelled =
-            tokio::time::timeout(std::time::Duration::from_millis(100), lease.cancelled()).await;
-        drop(guard);
-        disable
-            .await
-            .expect("disable task")
-            .expect("no receipt restore");
-        assert!(
-            cancelled.is_ok(),
-            "disable waited for the switch lock before revoking"
-        );
-        assert!(!lease.valid());
-    }
-
-    #[tokio::test]
     #[serial]
     async fn global_refresh_requires_explicit_import_and_preserves_deletions() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         let mut provider = crate::provider::Provider::with_id(
             "fixture".into(),
             "Synthetic source".into(),
@@ -7325,9 +7708,12 @@ mod tests {
         use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
         let _home = TempHome::new();
         let db = Arc::new(Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         let mut upstreams = Vec::new();
         for name in ["First", "Second"] {
             upstreams.push(db.save_routing_upstream(RoutingUpstream {
+                notes: None,
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 preset_id: None,
@@ -7406,7 +7792,8 @@ mod tests {
         assert_eq!(refreshed.model, direct);
         codex.activate_menu_with_selection(off.clone(), origin, None, false, None)?;
         let projection = std::fs::read_to_string(&config)?.parse::<toml::Value>()?;
-        assert_eq!(projection["model"].as_str(), Some(direct));
+        assert_eq!(projection["model"].as_str(), Some("shared-model-First"));
+        assert_eq!(codex.selected_model()?.as_deref(), Some(direct));
         service.agent_connections.disconnect("claude")?;
         codex.restore()?;
         assert!(!service.is_running().await);
@@ -7417,7 +7804,10 @@ mod tests {
     async fn global_groups_publish_without_codex_activation_and_revoke_on_resource_changes() {
         use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -7517,6 +7907,7 @@ mod tests {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("settings");
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         use_ephemeral_proxy_port(&db).await;
         let mut provider = crate::provider::Provider::with_id(
             "fixture".into(),
@@ -7669,7 +8060,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn codex_unified_menu_switch_preserves_group_projection_and_restores_original() {
+    async fn codex_unified_native_menu_keeps_current_model_and_restores_original() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("settings");
         let db = Arc::new(Database::memory().expect("db"));
@@ -7712,7 +8103,12 @@ mod tests {
         assert!(service.get_takeover_status().await.expect("state").codex);
         let projection = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("group config");
-        assert!(projection.contains("vary-auto/fixture"));
+        let configured: toml::Value = projection.parse().expect("config");
+        assert_eq!(configured["model"].as_str(), Some("fixture-model"));
+        assert_eq!(
+            configured["openai_base_url"].as_str(),
+            Some(format!("http://127.0.0.1:{port}/backend-api/codex").as_str())
+        );
         service
             .set_takeover_for_app("codex", true)
             .await
@@ -7726,10 +8122,9 @@ mod tests {
             .await
             .expect("unified disable");
         assert!(!service.get_takeover_status().await.expect("state").codex);
-        assert_eq!(
-            std::fs::read_to_string(crate::codex_config::get_codex_config_path())
-                .expect("restored"),
-            original
+        crate::services::intent_routing::client::tests::assert_restored_config(
+            &service.intent_client,
+            original,
         );
         assert_eq!(
             crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())

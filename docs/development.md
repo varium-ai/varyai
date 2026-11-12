@@ -23,7 +23,7 @@ Console and file logs display application module targets as `vary_ai_lib` or `va
 
 The optional `setup.sh` changes the host environment: it can install system packages, activate global tools and select a Rust toolchain. Review it before running it. Manual setup is sufficient for contribution checks; this guide does not claim that every installer path has been validated.
 
-A temporary test home also redirects native client paths. An empty test home represents a machine without configured clients, not just a fresh VaryAI installation. To verify an existing-client installation, prepare private client configuration copies or synthetic existing-client fixtures inside that home. Do not copy rotating OAuth sessions into parallel test clients; use a test API-key provider or a separate authorization. Changing the VaryAI application data root must leave native client paths unchanged. Do not create empty production client files as a substitute for setup, and do not grant OS trust or connection authorization as part of routine checks.
+A temporary test home also redirects native client paths. A nonempty `CC_SWITCH_TEST_HOME` takes priority over an inherited `DSH_HOME` for Harness configuration so tests launched inside Harness stay isolated. An empty test home represents a machine without configured clients, not just a fresh VaryAI installation. To verify an existing-client installation, prepare private client configuration copies or synthetic existing-client fixtures inside that home. Do not copy rotating OAuth sessions into parallel test clients; use a test API-key provider or a separate authorization. Changing the VaryAI application data root must leave native client paths unchanged. Do not create empty production client files as a substitute for setup, and do not grant OS trust or connection authorization as part of routine checks.
 
 ## Checks
 
@@ -32,7 +32,12 @@ pnpm typecheck
 pnpm build:renderer
 pnpm test:unit
 pnpm test:dev
+pnpm test:macos-dmg
 pnpm test:trae-bridge
+pnpm test:model-default
+pnpm test:workbuddy-checkin-auth
+pnpm test:doubao-checkin
+pnpm test:agent-rewards
 pnpm test:qoder-codec
 python3 -B scripts/tests/recover-shared-v23.test.py
 pnpm audit --prod
@@ -49,16 +54,36 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Use `pnpm exec vitest run <test-files>` to select frontend tests. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
+### Commit and CI acceptance
 
-Claude Desktop process inspection and restart are supported only on macOS. Keep native restart helpers behind `#[cfg(target_os = "macos")]`; the pure configuration freshness assessment also compiles under `cfg(test)` so its synthetic fixtures run on every CI platform. Linux and Windows report `unsupported` and reject desktop restart requests. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
+Before committing, run the applicable checks above on the final changes and compare them with `.github/workflows/ci.yml`. Include the helper tests and production dependency audit, rather than reporting only renderer and Rust unit tests. Record the checked revision or working-tree changes, OS, toolchain, commands, outcomes and unavailable checks. Fix relevant failures before committing; disclose any required check that cannot run. Changes made after verification require rerunning the affected checks.
+
+After pushing, inspect the workflow for the exact pushed revision and follow it until the required jobs finish. Report pending, skipped and failed jobs explicitly. Backend acceptance includes the applicable Linux, Windows and macOS jobs and the Windows-to-WSL2 contract when the workflow requires it. Local success on one platform is not cross-platform CI acceptance. Use failed job logs to establish the cause; do not bypass a check or weaken an assertion merely to make CI green. All required checks must pass for the revision being merged. If remote results cannot be obtained, report verification as incomplete.
+
+Use `pnpm exec vitest run <test-files>` to select frontend tests during development; focused tests do not replace the required checks before committing. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
+
+Claude Desktop, WorkBuddy, WorkBuddy AI and Qoder CN process inspection and confirmed restart support macOS and verified Windows installations. Keep native helpers behind their platform guards; pure freshness, selection and lifecycle orchestration compile under `cfg(test)` so synthetic fixtures run on every CI platform. Desktop integrations on Linux report `unsupported`. macOS requests a normal quit; Windows asks windows to close before ending verified remaining processes when necessary. Restart confirmation text shows only the current operating system's guidance, including the Windows-only Codex recovery warning. Tests must use fake runtimes and never inspect, quit, signal or launch installed applications. Codex has a separate idle-aware app-server worker: route changes reload automatically, while model-catalog changes require confirmation. Its gateway activity guard covers the response body lifetime and a ten-second quiet period without modifying frames or trailers. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
 
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
+
+Codex rollout activity reads the modification time and bounded event suffix from
+the same open file handle. Windows can retain an old modification time even on
+that handle while a writer keeps the rollout open, so freshness also considers
+timestamps recorded in the bounded suffix. Recent events keep active turns
+protected; completed turns and expired archives remain idle. Malformed recent
+suffixes block restart, while malformed expired archives remain expired. Keep
+the held-open writer and stale-metadata regressions in the cross-platform suite.
 
 Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
 `LOCALAPPDATA` alongside the temporary home directory, and restore their previous
 values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
 can leave providers from earlier tests visible to later tests.
+
+Shared Agent projection tests run portable client assertions on every platform.
+Claude Desktop fixtures use `Library/Application Support` on macOS and separate
+`AppData/Roaming/Claude` input files from `AppData/Local/Claude-3p` output files on
+Windows, all under the temporary test home. Linux must assert that Desktop
+projection is rejected while retaining the portable client coverage.
 
 The Qoder TLS listener owns its accepted connection tasks and cancels and joins
 them during shutdown. Its certificate test keeps both an immediate same-address
@@ -86,6 +111,9 @@ Ordinary source builds have no statistics destination and do not report installa
 - Keep tests isolated from real client configuration, credentials, running apps and the default proxy port.
 - Use synthetic provider endpoints, keys and sample content. Sanitize logs and screenshots before sharing.
 - Keep the four runtime locale files aligned; the application remains multilingual.
+- Provider editor operation failures use the shared Sonner toast with an action-specific message (save, model discovery, model test, account import, enable/disable or delete). Do not render a generic catalog-update error inside the form. Preserve the draft after a failed save; show only recognized, localized error codes and never raw backend error details. Account availability, sign-in guidance and empty/loading states remain contextual.
+- Provider duplication follows Magpie's `duplicateProvider`: open the Add form directly from the saved provider, show its copy title, and keep stored credentials private until saving. Ignore deferred focus cleanup from an editor that has been replaced by that draft; only the matching closed editor may clear the active draft. Regression tests must let the old dialog's deferred cleanup run before checking the copy.
+- Single-choice native selects share `src/components/ui/native-select.css` for a flat surface, theme-aware chevron, keyboard focus and disabled states. Keep page-specific heights, and avoid resetting the chevron or its reserved end padding with equally specific background/padding shorthands. The compact login proxy retains its own SVG indicator; multiple and sized list boxes retain native rendering. Forced-color mode restores the system select indicator.
 - Read the [storage design](architecture/storage.md) before changing migrations or backup formats.
 - Use the [platform build guides](README.md) for local packaging. Production release infrastructure is separate.
 

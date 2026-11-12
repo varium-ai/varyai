@@ -1,15 +1,8 @@
 import { useEffect, useState } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Loader2 } from "lucide-react";
+import { AppDialog } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { AlertTriangle, Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 interface ConfirmDialogProps {
@@ -25,6 +18,7 @@ interface ConfirmDialogProps {
   checkboxLabel?: string;
   checkboxDefaultChecked?: boolean;
   pending?: boolean;
+  errorMessage?: string;
   onConfirm: (checkboxChecked: boolean) => void;
   onCancel: () => void;
   onExited?: () => void;
@@ -42,6 +36,7 @@ export function ConfirmDialog({
   checkboxLabel,
   checkboxDefaultChecked = false,
   pending = false,
+  errorMessage,
   onConfirm,
   onCancel,
   onExited,
@@ -57,60 +52,59 @@ export function ConfirmDialog({
     }
   }, [isOpen, checkboxDefaultChecked]);
 
-  const IconComponent = variant === "info" ? Info : AlertTriangle;
-  const iconClass =
-    variant === "info" ? "h-5 w-5 text-blue-500" : "h-5 w-5 text-destructive";
-
   return (
-    <Dialog
+    <AppDialog
       open={isOpen}
       onOpenChange={(open) => {
         if (!open && !pending) {
           onCancel();
         }
       }}
-    >
-      <DialogContent
-        className={`max-w-sm ${className ?? ""}`}
-        zIndex={zIndex}
-        onCloseAutoFocus={onExited}
-      >
-        <DialogHeader className="space-y-3 border-b-0 bg-transparent pb-0">
-          <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
-            <IconComponent className={iconClass} />
-            {title}
-          </DialogTitle>
-          <DialogDescription className="max-h-[50vh] overflow-y-auto whitespace-pre-line break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-            {message}
-          </DialogDescription>
-        </DialogHeader>
-        {checkboxLabel ? (
-          <label className="flex cursor-pointer select-none items-start gap-2 px-6 pt-3">
-            <Checkbox
-              checked={checkboxChecked}
-              disabled={pending}
-              onCheckedChange={(value) => setCheckboxChecked(value === true)}
-              className="mt-0.5"
-            />
-            <span className="text-sm leading-relaxed">{checkboxLabel}</span>
-          </label>
-        ) : null}
-        <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">
+      title={title}
+      description={message}
+      pending={pending}
+      className={className}
+      zIndex={zIndex}
+      onCloseAutoFocus={onExited}
+      footer={
+        <>
           <Button variant="outline" onClick={onCancel} disabled={pending}>
             {cancelText || t("common.cancel")}
           </Button>
           <Button
             variant={variant === "info" ? "default" : "destructive"}
             disabled={pending}
-            onClick={() =>
-              // 未渲染勾选框时不得回传 defaultChecked 残留值
-              onConfirm(checkboxLabel ? checkboxChecked : false)
-            }
+            aria-busy={pending || undefined}
+            onClick={() => onConfirm(checkboxLabel ? checkboxChecked : false)}
           >
+            {pending && (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            )}
             {confirmText || t("common.confirm")}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      {errorMessage || checkboxLabel ? (
+        <div className="space-y-3">
+          {errorMessage && (
+            <p role="alert" className="text-sm text-destructive">
+              {errorMessage}
+            </p>
+          )}
+          {checkboxLabel && (
+            <label className="vary-dialog-checkbox cursor-pointer select-none">
+              <Checkbox
+                checked={checkboxChecked}
+                disabled={pending}
+                onCheckedChange={(value) => setCheckboxChecked(value === true)}
+                className="mt-0.5"
+              />
+              <span>{checkboxLabel}</span>
+            </label>
+          )}
+        </div>
+      ) : null}
+    </AppDialog>
   );
 }

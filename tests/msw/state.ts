@@ -75,12 +75,18 @@ const createDefaultProviders = (): ProvidersByApp => ({
   hermes: {},
   pi: {},
   workbuddy: {},
+  "workbuddy-ai": {},
   qoder: {},
   doubaowork: {},
   trae: {},
+  "trae-intl": {},
   kimi: {},
   qwen: {},
   zcode: {},
+  "deepseek-harness": {},
+  cursor: {},
+  "cursor-cli": {},
+  t3code: {},
 });
 
 const createDefaultCurrent = (): CurrentProviderState => ({
@@ -94,12 +100,18 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   hermes: "",
   pi: "",
   workbuddy: "",
+  "workbuddy-ai": "",
   qoder: "",
   doubaowork: "",
   trae: "",
+  "trae-intl": "",
   kimi: "",
   qwen: "",
   zcode: "",
+  "deepseek-harness": "",
+  cursor: "",
+  "cursor-cli": "",
+  t3code: "",
 });
 
 let providers = createDefaultProviders();
@@ -215,12 +227,18 @@ let mcpConfigs: McpConfigState = {
   hermes: {},
   pi: {},
   workbuddy: {},
+  "workbuddy-ai": {},
   qoder: {},
   doubaowork: {},
   trae: {},
+  "trae-intl": {},
   kimi: {},
   qwen: {},
   zcode: {},
+  "deepseek-harness": {},
+  cursor: {},
+  "cursor-cli": {},
+  t3code: {},
 };
 
 const cloneProviders = (value: ProvidersByApp) =>
@@ -292,12 +310,18 @@ export const resetProviderState = () => {
     hermes: {},
     pi: {},
     workbuddy: {},
+    "workbuddy-ai": {},
     qoder: {},
     doubaowork: {},
     trae: {},
+    "trae-intl": {},
     kimi: {},
     qwen: {},
     zcode: {},
+    "deepseek-harness": {},
+    cursor: {},
+    "cursor-cli": {},
+    t3code: {},
   };
 };
 

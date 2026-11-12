@@ -94,7 +94,7 @@ fn browser_endpoint(source: &str) -> Option<String> {
     }
     Some(format!("ws://127.0.0.1:{port}{path}"))
 }
-async fn discover() -> Option<String> {
+pub(crate) async fn discover() -> Option<String> {
     let source = tokio::fs::read_to_string(port_file()?).await.ok()?;
     let endpoint = browser_endpoint(&source)?;
     let port = url::Url::parse(&endpoint).ok()?.port()?;

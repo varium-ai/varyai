@@ -43,6 +43,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  useToolRiskCommandLists,
   useToolRiskRules,
   useToolRiskSandbox,
   useToolRiskSettings,
@@ -196,6 +197,7 @@ export function ToolRiskRulesPanel({
     isSaving,
   } = useToolRiskRules();
   const sandbox = useToolRiskSandbox();
+  const { entries: commandEntries } = useToolRiskCommandLists();
 
   const [showPolicyChanges, setShowPolicyChanges] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -803,7 +805,10 @@ export function ToolRiskRulesPanel({
           </p>
         )}
         {sandbox.result && (
-          <div className="mt-3 rounded-xl border border-border/80 bg-muted/40 p-3 text-xs">
+          <div
+            data-testid="tool-risk-sandbox-result"
+            className="mt-3 rounded-xl border border-border/80 bg-muted/40 p-3 text-xs"
+          >
             <div className="flex flex-wrap gap-3">
               <span>
                 {t("toolRisk.sandboxScope", { defaultValue: "范围" })}:{" "}
@@ -820,11 +825,34 @@ export function ToolRiskRulesPanel({
             </div>
             {sandbox.result.matchedRuleIds.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
-                {sandbox.result.matchedRuleIds.map((id) => (
-                  <Badge key={id} variant="destructive" className="text-[10px]">
-                    {id}
-                  </Badge>
-                ))}
+                {sandbox.result.matchedRuleIds.map((id) => {
+                  const rule = rules.find((item) => item.id === id);
+                  const entry = commandEntries.find((item) => item.id === id);
+                  const name = rule
+                    ? getToolRiskRuleName(t, rule)
+                    : entry
+                      ? `${t(`toolRisk.commandLists.${entry.listType}`)} · ${t(`toolRisk.commandLists.kind.${entry.matchKind}`)} · ${entry.pattern}`
+                      : getToolRiskRuleName(t, {
+                          id,
+                          origin: "builtin",
+                          name: id,
+                        });
+                  return (
+                    <div key={id} className="min-w-0 max-w-full">
+                      <Badge
+                        variant="destructive"
+                        className="max-w-full whitespace-normal break-all text-left text-[10px]"
+                      >
+                        {name}
+                      </Badge>
+                      {name !== id && (
+                        <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground">
+                          {id}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

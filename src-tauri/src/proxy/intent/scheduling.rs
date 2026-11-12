@@ -27,6 +27,8 @@ pub(crate) struct Health {
     windows: Vec<Window>,
     rest_until: i64,
     account: bool,
+    plan: Option<String>,
+    plan_at: i64,
     credits: bool,
     credits_at: i64,
     tokens: f64,
@@ -90,6 +92,7 @@ impl Scheduling {
         let state = self.account.try_lock().ok()?;
         let speed = self.speed.try_lock().ok()?;
         Some(super::trace::Telemetry {
+            plan: state.plan.clone(),
             rest_until: speed.rest_until,
             sunk_at: (state.sunk > 0).then_some(state.sunk_at),
             windows: state
@@ -147,6 +150,10 @@ impl Scheduling {
             if other.credits_at > state.credits_at {
                 state.credits = other.credits;
                 state.credits_at = other.credits_at;
+            }
+            if other.plan_at > state.plan_at {
+                state.plan = other.plan;
+                state.plan_at = other.plan_at;
             }
         }
     }
@@ -231,6 +238,7 @@ impl Scheduling {
         {
             return;
         }
+        self.observe_plan(value.get("plan_type"), now);
         self.observe_windows(
             &value["rate_limits"],
             ["primary", "secondary"],
@@ -244,6 +252,24 @@ impl Scheduling {
                 .or_else(|| value["rate_limits"].get("credits")),
             now,
         );
+    }
+    // Publish only recognized subscription names, never arbitrary upstream strings.
+    fn observe_plan(&self, value: Option<&Value>, now: i64) {
+        let plan = match value.and_then(Value::as_str) {
+            Some("free") => "ChatGPT Free",
+            Some("plus") => "ChatGPT Plus",
+            Some("pro") => "ChatGPT Pro",
+            Some("team" | "business") => "ChatGPT Business",
+            Some("enterprise") => "ChatGPT Enterprise",
+            Some("edu") => "ChatGPT Edu",
+            _ => return,
+        };
+        if let Ok(mut state) = self.account.try_lock() {
+            if state.account && now >= state.plan_at {
+                state.plan = Some(plan.into());
+                state.plan_at = now;
+            }
+        }
     }
     fn observe_windows(&self, value: &Value, fields: [&str; 2], span: &str, scale: i64, now: i64) {
         let mut windows = Vec::new();
@@ -370,6 +396,7 @@ impl Scheduling {
         }
         if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
             let now = chrono::Utc::now().timestamp();
+            self.observe_plan(value.get("plan_type"), now);
             self.observe_windows(
                 &value["rate_limit"],
                 ["primary_window", "secondary_window"],
@@ -392,8 +419,11 @@ pub(crate) struct Pool {
 }
 impl Pool {
     /// Charge the route that actually answered, including affinity and failover.
-    pub fn reassign(&mut self, kept: usize) {
-        if let Some((picked, total)) = self.charged.take() {
+    pub fn take_charge(&mut self) -> Option<(usize, i64)> {
+        self.charged.take()
+    }
+    pub fn reassign(&mut self, charge: Option<(usize, i64)>, kept: usize) {
+        if let Some((picked, total)) = charge {
             if picked != kept && self.current.contains_key(&kept) {
                 if let Some(v) = self.current.get_mut(&picked) {
                     *v += total;
@@ -433,6 +463,9 @@ impl Pool {
 }
 struct Seat {
     used: f64,
+    known: bool,
+    learns: bool,
+    week_low: bool,
     soon: Vec<i64>,
     pace: f64,
     tokens: f64,
@@ -466,6 +499,10 @@ impl Seat {
             .unwrap_or(if s.account { 100.0 / 168.0 } else { 0.0 });
         Self {
             used,
+            known: !windows.is_empty(),
+            learns: s.account && windows.is_empty(),
+            week_low: windows.iter().any(|w| w.seconds >= 86400 && w.used >= 90.0)
+                && !windows.iter().any(|w| w.seconds < 86400 && w.used >= 90.0),
             soon: windows.iter().map(|w| w.reset / 3600).collect(),
             pace,
             tokens: s.tokens,
@@ -492,21 +529,29 @@ fn spent(a: &Seat, b: &Seat) -> Ordering {
         .cmp(&a.credits)
         .then_with(|| a.used.total_cmp(&b.used))
 }
+fn seat_tier(s: &Seat) -> u8 {
+    match tier(s.used) {
+        1 if s.week_low => 0,
+        t => t,
+    }
+}
 fn smart(a: &Seat, b: &Seat) -> Ordering {
-    tier(a.used)
-        .cmp(&tier(b.used))
-        .then_with(|| match tier(a.used) {
+    seat_tier(a)
+        .cmp(&seat_tier(b))
+        .then_with(|| match seat_tier(a) {
             2 => spent(a, b),
             1 => a.used.total_cmp(&b.used),
-            _ => (0..a.soon.len().max(b.soon.len()))
-                .map(|i| {
-                    a.soon
-                        .get(i)
-                        .unwrap_or(&i64::MAX)
-                        .cmp(b.soon.get(i).unwrap_or(&i64::MAX))
-                })
-                .find(|o| *o != Ordering::Equal)
-                .unwrap_or(Ordering::Equal),
+            _ => b.learns.cmp(&a.learns).then_with(|| {
+                (0..a.soon.len().max(b.soon.len()))
+                    .map(|i| {
+                        a.soon
+                            .get(i)
+                            .unwrap_or(&i64::MAX)
+                            .cmp(b.soon.get(i).unwrap_or(&i64::MAX))
+                    })
+                    .find(|o| *o != Ordering::Equal)
+                    .unwrap_or(Ordering::Equal)
+            }),
         })
 }
 
@@ -555,12 +600,27 @@ pub(crate) fn arrange(
         RoutingStrategy::Smart => order.sort_by(|a, b| smart(&seats[*a], &seats[*b])),
         RoutingStrategy::LeastUsed => order.sort_by(|a, b| {
             let (a, b) = (&seats[*a], &seats[*b]);
+            let place = |s: &Seat| {
+                if s.learns {
+                    0
+                } else if tier(s.used) == 0 {
+                    if s.known {
+                        1
+                    } else {
+                        2
+                    }
+                } else {
+                    tier(s.used) + 2
+                }
+            };
             let credits = if tier(a.used) == 2 && tier(b.used) == 2 {
                 b.credits.cmp(&a.credits)
             } else {
                 Ordering::Equal
             };
-            credits
+            place(a)
+                .cmp(&place(b))
+                .then(credits)
                 .then_with(|| a.used.total_cmp(&b.used))
                 .then_with(|| a.tokens.total_cmp(&b.tokens))
         }),
@@ -568,7 +628,7 @@ pub(crate) fn arrange(
             let mut by_pace: Vec<_> = order
                 .iter()
                 .copied()
-                .filter(|i| tier(seats[*i].used) == 0)
+                .filter(|i| seat_tier(&seats[*i]) == 0 && !seats[*i].learns)
                 .collect();
             by_pace.sort_by(|a, b| seats[*b].pace.total_cmp(&seats[*a].pace));
             let mut bands = vec![0; seats.len()];
@@ -583,12 +643,15 @@ pub(crate) fn arrange(
                 bands[i] = band;
             }
             order.sort_by(|a, b| {
-                tier(seats[*a].used)
-                    .cmp(&tier(seats[*b].used))
-                    .then_with(|| match tier(seats[*a].used) {
+                seat_tier(&seats[*a])
+                    .cmp(&seat_tier(&seats[*b]))
+                    .then_with(|| match seat_tier(&seats[*a]) {
                         2 => spent(&seats[*a], &seats[*b]),
                         1 => seats[*a].used.total_cmp(&seats[*b].used),
-                        _ => bands[*a].cmp(&bands[*b]),
+                        _ => seats[*b]
+                            .learns
+                            .cmp(&seats[*a].learns)
+                            .then_with(|| bands[*a].cmp(&bands[*b])),
                     })
                     .then_with(|| seats[*a].tokens.total_cmp(&seats[*b].tokens))
             });
@@ -689,6 +752,109 @@ fn order(
 mod tests {
     use super::*;
     use crate::services::intent_routing::RoutingStrategy;
+
+    #[test]
+    fn parity_weighted_overlapping_completions_do_not_change_another_pick() {
+        let states = [Health::default(), Health::default()];
+        let mut pool = Pool::default();
+        let first = arrange(RoutingStrategy::Weighted, &[0, 1], &states, &mut pool, 100)[0];
+        let first_charge = pool.take_charge();
+        let second = arrange(RoutingStrategy::Weighted, &[0, 1], &states, &mut pool, 100)[0];
+        let second_charge = pool.take_charge();
+        assert_eq!((first, second), (0, 1));
+        pool.reassign(first_charge, first);
+        pool.reassign(second_charge, second);
+        assert_eq!(
+            arrange(RoutingStrategy::Weighted, &[0, 1], &states, &mut pool, 100)[0],
+            0
+        );
+    }
+
+    #[test]
+    fn parity_unknown_paid_usage_does_not_outrank_available_subscription_quota() {
+        let known = Health {
+            account: true,
+            windows: vec![Window {
+                used: 20.0,
+                seconds: 604800,
+                reset: 3700,
+                sampled: 100,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            order(
+                RoutingStrategy::LeastUsed,
+                &[0, 1],
+                &[known, Health::default()],
+                0,
+                100
+            )[0],
+            0
+        );
+    }
+
+    #[test]
+    fn parity_weekly_budget_near_reset_is_not_a_short_term_rate_cap() {
+        let states = [
+            Health {
+                account: true,
+                windows: vec![Window {
+                    used: 95.0,
+                    seconds: 604800,
+                    reset: 3700,
+                    sampled: 100,
+                }],
+                ..Default::default()
+            },
+            Health {
+                account: true,
+                windows: vec![Window {
+                    used: 20.0,
+                    seconds: 604800,
+                    reset: 86500,
+                    sampled: 100,
+                }],
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            order(RoutingStrategy::Smart, &[0, 1], &states, 0, 100)[0],
+            0
+        );
+        assert_eq!(order(RoutingStrategy::Pace, &[0, 1], &states, 0, 100)[0], 0);
+    }
+
+    #[test]
+    fn subscription_plan_observation_uses_only_known_account_metadata() {
+        let state = Scheduling::new(true);
+        state.observe_event(
+            &serde_json::json!({
+                "type":"codex.rate_limits", "plan_type":"plus", "rate_limits":{}
+            }),
+            100,
+        );
+        let observed = serde_json::to_value(state.trace_account()).unwrap();
+        assert_eq!(observed["plan"], "ChatGPT Plus");
+        state.observe_event(&serde_json::json!({
+            "type":"codex.rate_limits", "plan_type":"synthetic-private-unknown", "rate_limits":{}
+        }), 200);
+        assert_eq!(
+            serde_json::to_value(state.trace_account()).unwrap()["plan"],
+            "ChatGPT Plus"
+        );
+        let key = Scheduling::new(false);
+        key.observe_event(
+            &serde_json::json!({
+                "type":"codex.rate_limits", "plan_type":"pro", "rate_limits":{}
+            }),
+            100,
+        );
+        assert!(serde_json::to_value(key.trace_account())
+            .unwrap()
+            .get("plan")
+            .is_none());
+    }
 
     #[test]
     fn trace_observation_never_waits_for_scheduler_locks() -> Result<(), Box<dyn std::error::Error>>
@@ -823,7 +989,8 @@ mod tests {
             arrange(RoutingStrategy::Weighted, &[0, 1], &states, &mut pool, 100)[0],
             0
         );
-        pool.reassign(1);
+        let charge = pool.take_charge();
+        pool.reassign(charge, 1);
         assert_eq!(
             arrange(RoutingStrategy::Weighted, &[0, 1], &states, &mut pool, 100)[0],
             0
@@ -878,7 +1045,11 @@ mod tests {
                 ..Default::default()
             },
             Health {
-                windows: windows(95.0, 1),
+                windows: {
+                    let mut low = windows(95.0, 1);
+                    low[0].seconds = 18000;
+                    low
+                },
                 ..Default::default()
             },
             Health {
@@ -1045,7 +1216,7 @@ mod tests {
         }];
         states[2].windows = vec![Window {
             used: 95.0,
-            seconds: 604800,
+            seconds: 18000,
             reset: now + 600,
             sampled: now,
         }];

@@ -2,6 +2,21 @@
 
 Select the target client before adding or editing an existing per-agent provider. Its settings remain client-specific; a preset does not establish account access or model availability. **Settings → Routing → Routing groups** automatically uses the saved provider lists from all agents, without a separate upstream list or import. Manage each connection in its source agent's provider editor; see [shared providers and routing groups](intent-routing.md).
 
+## Agent versions and updates
+
+The home **Tools / Agent** list checks installed CLI and desktop versions. Supported macOS desktop update feeds include Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Code, ZCode and the supported DeepSeek Harness desktop channel. Desktop updates appear alongside CLI updates in the per-agent controls and **Update all**. Codex continues to show and update its CLI version in this list. An unknown latest version, unreadable installed version or unmatched release channel does not establish that an app is current and does not offer an automatic update.
+
+See [DeepSeek Harness Desktop](deepseek-harness.md) for its profile, native model selection and inspection boundaries.
+
+Tools confirmed as uninstalled appear under **More tools**, including tools with a
+saved connection. These entries show only installation and website shortcuts;
+check-in, model selection, routing switches and connection status are hidden.
+Saved connection records remain local for recovery after reinstallation. Installed
+tools stay in the main list; an unavailable installation check does not discard a
+saved connection from that list.
+
+Checking versions does not launch or update a client. Selecting an update uses the existing official installer flow; a desktop update can close and reopen that client. Each result is verified against a fresh installed version from the same desktop or CLI source. Kimi installations detected only as a CLI show their CLI version without using the desktop update feed.
+
 ## Configure a provider
 
 1. Install and initialize the client separately. Back up existing client configuration.
@@ -13,6 +28,10 @@ Select the target client before adding or editing an existing per-agent provider
 See [Codex model catalogs](codex-model-catalog.md) for import behavior. Do not use an internal gateway address or a usable key in a shared example.
 
 ## Replace managed model catalogs
+
+The shared provider editor includes optional notes for every Agent. Notes are preserved when editing and saved as provider metadata; they are not sent as model parameters or included in provider diagnostics.
+
+On the **Tools** page, WorkBuddy, Qoder and TRAE expose a searchable **Model list** containing the shared catalog. This is a preview while disconnected or waiting for TRAE's bridge, not confirmation that the client has loaded it. Browsing the list does not enable a connection or select a starting model; choose the chat model inside the client after connecting and loading its catalog. Doubao Work shows **Official models** because it supports official-session auditing only.
 
 Selecting a supplier in Kimi, Qwen, ZCode, Qoder or WorkBuddy replaces the models managed by VaryAI with the target supplier's complete saved catalog. Selecting the official entry withdraws those managed models. File adapters stage validation and replacement before writing; native login state, MCP configuration and unrelated providers remain intact. Recognizable ownership markers also cover models left after deletion of the shared database. Unmarked historical native configurations cannot be distinguished from user-created configurations and remain protected.
 
@@ -93,6 +112,8 @@ Custom HTTP provider forms use **Upstream protocol** for the supplier-facing for
 The detection model is used only to probe protocol support. Selecting it does not change saved model IDs, mappings or display names. Detection and model configuration share the discovered catalog within the same editor: model-fetch and fill actions reuse that list for the current connection. Changing the URL or credentials invalidates it, and stale responses cannot populate the new connection. Model configuration changes only through its own controls or an explicit fill action.
 
 Qoder, Kimi, Qwen, ZCode and TRAE retain a supported native client protocol when Gemini is selected and convert through local routing. WorkBuddy keeps its native Chat Completions requests and can convert to any of the other three upstream formats. Hermes exposes **Client protocol** separately; its HTTP modes can use any of the four upstream formats, while Bedrock Converse retains its native configuration. Hermes and TRAE receive a provider-specific loopback endpoint when conversion is required; their saved provider keeps the original supplier URL and key. Keep the local gateway running while using these projected configurations. Official account configurations retain their existing authentication and routing paths.
+
+With TRAE routing enabled, managed native Responses models also use this loopback endpoint for multi-turn request compatibility, even when security auditing is disabled. The route supplies a missing reasoning `summary` array while preserving the original history and native Responses protocol. Routing changes update existing native model IDs in place; disabling routing restores the saved upstream configuration. Client delivery remains pending while TRAE is disconnected. See [TRAE multi-turn HTTP 502 troubleshooting](../troubleshooting.md#trae-cn-reports-http-502-with-security-auditing-off).
 
 Do not set Codex's wire protocol to Chat Completions to work around an upstream mismatch: its client-facing path remains Responses, with the upstream format selected in Vary AI. Authentication and model catalog behavior also differ between official account integrations and API-key providers.
 

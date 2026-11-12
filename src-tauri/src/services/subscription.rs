@@ -51,6 +51,52 @@ pub struct ExtraUsage {
     pub currency: Option<String>,
 }
 
+/// Explicit controls are observations, never permission to spend credits.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexQuotaDetails {
+    pub allowed: Option<bool>,
+    pub limit_reached: Option<bool>,
+    pub model_usage: HashMap<String, CodexModelUsage>,
+    pub credits: Option<CodexCredits>,
+    pub reset_credits: Option<CodexResetCredits>,
+    pub spend_control: Option<CodexSpendControl>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexModelUsage {
+    pub available: Option<bool>,
+    pub available_at: Option<serde_json::Value>,
+    pub credits_would_enable: Option<bool>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexCredits {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub overage_limit_reached: Option<bool>,
+    #[serde(default, deserialize_with = "credit_balance")]
+    pub balance: Option<String>,
+}
+fn credit_balance<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let text = value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_number().map(ToString::to_string));
+    Ok(text.filter(|s| s.len() <= 64 && s.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)))
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexResetCredits {
+    pub available_count: Option<u64>,
+    pub applicable_available_count: Option<u64>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexSpendControl {
+    pub reached: Option<bool>,
+    pub individual_limit: Option<f64>,
+}
+
 /// 订阅额度查询结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +107,8 @@ pub struct SubscriptionQuota {
     pub success: bool,
     pub tiers: Vec<QuotaTier>,
     pub extra_usage: Option<ExtraUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexQuotaDetails>,
     pub error: Option<String>,
     pub queried_at: Option<i64>,
 }
@@ -74,6 +122,7 @@ impl SubscriptionQuota {
             success: false,
             tiers: vec![],
             extra_usage: None,
+            codex: None,
             error: None,
             queried_at: None,
         }
@@ -87,6 +136,7 @@ impl SubscriptionQuota {
             success: false,
             tiers: vec![],
             extra_usage: None,
+            codex: None,
             error: Some(message),
             queried_at: Some(now_millis()),
         }
@@ -408,7 +458,7 @@ async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, Str
 }
 
 /// 兼容旧顶层窗口与新版模型专属周限额，保持查询、缓存和 UI 共用 QuotaTier。
-fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
+pub(crate) fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
     // 解析已知的 tier 窗口
     let mut tiers = Vec::new();
     for &tier_name in KNOWN_TIERS {
@@ -522,6 +572,7 @@ fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
         success: true,
         tiers,
         extra_usage,
+        codex: None,
         error: None,
         queried_at: Some(now_millis()),
     }
@@ -550,29 +601,90 @@ type CodexCredentials = (
     Option<String>,
 );
 
-/// 读取 Codex OAuth 凭据
-///
-/// 按优先级尝试以下来源：
-/// 1. macOS Keychain (service: "Codex Auth")
-/// 2. 凭据文件 ~/.codex/auth.json
-///
-/// 仅 auth_mode == "chatgpt" (OAuth) 时有效，API key 模式不支持用量查询。
-fn read_codex_credentials() -> CodexCredentials {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(result) = read_codex_credentials_from_keychain() {
-            return result;
-        }
-    }
-
-    read_codex_credentials_from_file()
+/// Read the credential store selected by Codex, following Magpie's readCodexLogin.
+/// File mode never consults the keychain; auto alone may fall back to the file.
+fn read_codex_credentials() -> Result<CodexCredentials, String> {
+    let config =
+        std::fs::read_to_string(crate::codex_config::get_codex_config_path()).unwrap_or_default();
+    read_codex_credentials_for_store(
+        &config,
+        cfg!(target_os = "macos"),
+        cfg!(windows),
+        read_codex_credentials_from_file,
+        || {
+            #[cfg(target_os = "macos")]
+            {
+                read_codex_credentials_from_keychain()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        },
+    )
 }
 
-/// 从 macOS Keychain 读取 Codex 凭据
+fn read_codex_credentials_for_store(
+    config: &str,
+    keychain_supported: bool,
+    secret_storage_default: bool,
+    file: impl FnOnce() -> CodexCredentials,
+    keychain: impl FnOnce() -> Option<CodexCredentials>,
+) -> Result<CodexCredentials, String> {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+    let secrets = config
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|doc| doc.get("features")?.get("secret_auth_storage")?.as_bool())
+        .unwrap_or(secret_storage_default);
+    match codex_config_auth_store_mode(config) {
+        // Magpie falls back to auth.json when it cannot read the store setting.
+        CodexAuthStoreMode::File | CodexAuthStoreMode::Unknown => Ok(file()),
+        CodexAuthStoreMode::Auto => {
+            if keychain_supported && !secrets {
+                if let Some(credentials) = keychain() {
+                    return Ok(credentials);
+                }
+            }
+            Ok(file())
+        }
+        CodexAuthStoreMode::Keyring => {
+            if keychain_supported && !secrets {
+                if let Some(credentials) = keychain() {
+                    return Ok(credentials);
+                }
+            }
+            Err("Codex credential store unavailable".into())
+        }
+        CodexAuthStoreMode::Ephemeral => Err("Codex credential store unavailable".into()),
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn codex_keychain_account(home: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = home.canonicalize().unwrap_or_else(|_| home.to_owned());
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(canonical.to_string_lossy().as_bytes())
+    );
+    format!("cli|{}", &digest[..16])
+}
+
+/// Codex keys its macOS keychain item by the canonical credential home.
 #[cfg(target_os = "macos")]
 fn read_codex_credentials_from_keychain() -> Option<CodexCredentials> {
+    let auth = crate::codex_config::get_codex_auth_path();
+    let account = codex_keychain_account(auth.parent()?);
     let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Codex Auth", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Codex Auth",
+            "-a",
+            &account,
+            "-w",
+        ])
         .output()
         .ok()?;
 
@@ -626,8 +738,8 @@ fn parse_codex_credentials_json(content: &str) -> CodexCredentials {
         }
     };
 
-    // 仅 OAuth 模式有用量数据
-    if auth.auth_mode.as_deref() != Some("chatgpt") {
+    // Magpie accepts token records without a mode marker, excluding explicit API-key mode.
+    if auth.auth_mode.as_deref() == Some("apikey") {
         return (
             None,
             None,
@@ -706,6 +818,8 @@ struct CodexRateLimitWindow {
 
 #[derive(Deserialize)]
 struct CodexRateLimit {
+    allowed: Option<bool>,
+    limit_reached: Option<bool>,
     primary_window: Option<CodexRateLimitWindow>,
     secondary_window: Option<CodexRateLimitWindow>,
 }
@@ -713,6 +827,24 @@ struct CodexRateLimit {
 #[derive(Deserialize)]
 struct CodexUsageResponse {
     rate_limit: Option<CodexRateLimit>,
+    #[serde(default)]
+    model_usage: Option<HashMap<String, CodexModelUsage>>,
+    credits: Option<CodexCredits>,
+    rate_limit_reset_credits: Option<CodexResetCredits>,
+    spend_control: Option<CodexSpendControl>,
+}
+
+impl CodexUsageResponse {
+    fn details(&self) -> CodexQuotaDetails {
+        CodexQuotaDetails {
+            allowed: self.rate_limit.as_ref().and_then(|r| r.allowed),
+            limit_reached: self.rate_limit.as_ref().and_then(|r| r.limit_reached),
+            model_usage: self.model_usage.clone().unwrap_or_default(),
+            credits: self.credits.clone(),
+            reset_credits: self.rate_limit_reset_credits.clone(),
+            spend_control: self.spend_control.clone(),
+        }
+    }
 }
 
 /// 根据窗口秒数映射到 tier 名称（与 Claude 的命名兼容以复用前端 i18n）
@@ -753,13 +885,38 @@ pub(crate) async fn query_codex_quota(
 ) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
+    query_codex_quota_with_client(
+        &client,
+        access_token,
+        account_id,
+        tool_label,
+        expired_message,
+    )
+    .await
+}
+
+pub(crate) async fn query_codex_quota_with_client(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: Option<&str>,
+    tool_label: &str,
+    expired_message: &str,
+) -> Result<SubscriptionQuota, String> {
+    crate::codex_client::resolve_version().await;
     let mut req = client
         .get("https://chatgpt.com/backend-api/wham/usage")
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("User-Agent", "codex-cli")
+        .header(
+            "originator",
+            crate::proxy::providers::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR,
+        )
+        .header(
+            "User-Agent",
+            crate::codex_client::user_agent(&crate::codex_client::current_version()),
+        )
         .header("Accept", "application/json");
 
-    if let Some(id) = account_id {
+    if let Some(id) = account_id.filter(|id| !id.is_empty()) {
         req = req.header("ChatGPT-Account-Id", id);
     }
 
@@ -770,21 +927,8 @@ pub(crate) async fn query_codex_quota(
 
     let status = resp.status();
 
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Ok(SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Expired,
-            format!("{expired_message} (HTTP {status})"),
-        ));
-    }
-
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Ok(SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Valid,
-            format!("API error (HTTP {status}): {body}"),
-        ));
+        return Ok(codex_quota_http_error(status, tool_label, expired_message));
     }
 
     let raw = match resp.bytes().await {
@@ -802,6 +946,7 @@ pub(crate) async fn query_codex_quota(
         }
     };
 
+    let details = body.details();
     let mut tiers = Vec::new();
 
     if let Some(rate_limit) = body.rate_limit {
@@ -831,9 +976,29 @@ pub(crate) async fn query_codex_quota(
         success: true,
         tiers,
         extra_usage: None,
+        codex: Some(details),
         error: None,
         queried_at: Some(now_millis()),
     })
+}
+
+fn codex_quota_http_error(
+    status: reqwest::StatusCode,
+    tool: &str,
+    expired_message: &str,
+) -> SubscriptionQuota {
+    let (credential_status, message) = if status == reqwest::StatusCode::UNAUTHORIZED {
+        (
+            CredentialStatus::Expired,
+            format!("{expired_message} (HTTP {status})"),
+        )
+    } else {
+        (
+            CredentialStatus::Valid,
+            format!("Allowance unavailable (HTTP {status})"),
+        )
+    };
+    SubscriptionQuota::error(tool, credential_status, message)
 }
 
 // ── Gemini 凭据读取 ──────────────────────────────────────
@@ -1038,9 +1203,9 @@ fn parse_gemini_file_json(content: &str) -> GeminiCredentials {
 // ── Gemini Token 刷新 ──────────────────────────────────────
 
 /// Gemini OAuth Client 凭据（公开值，来自 Gemini CLI 源码 google-gemini/gemini-cli）
-const GEMINI_OAUTH_CLIENT_ID: &str =
+pub(crate) const GEMINI_OAUTH_CLIENT_ID: &str =
     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
+pub(crate) const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
 
 /// 使用 refresh_token 刷新 Gemini access token
 ///
@@ -1294,6 +1459,7 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         success: true,
         tiers,
         extra_usage: None,
+        codex: None,
         error: None,
         queried_at: Some(now_millis()),
     })
@@ -1339,7 +1505,10 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
             }
         }
         "codex" => {
-            let (token, account_id, status, message) = read_codex_credentials();
+            let (token, account_id, status, message) =
+                tokio::task::spawn_blocking(read_codex_credentials)
+                    .await
+                    .map_err(|_| "Codex credential store unavailable".to_string())??;
 
             match status {
                 CredentialStatus::NotFound => Ok(SubscriptionQuota::not_found("codex")),
@@ -1433,6 +1602,202 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_login_tokens_do_not_require_an_auth_mode_marker() {
+        for mode in [None, Some("chatgpt"), Some("chatgptAuthTokens")] {
+            let mut auth = serde_json::json!({"tokens": {
+                "access_token": "synthetic-access", "account_id": "synthetic-workspace"
+            }});
+            if let Some(mode) = mode {
+                auth["auth_mode"] = serde_json::json!(mode);
+            }
+            let (token, _, status, _) = parse_codex_credentials_json(&auth.to_string());
+            assert!(matches!(status, CredentialStatus::Valid));
+            assert_eq!(token.as_deref(), Some("synthetic-access"));
+        }
+        let (_, _, status, _) = parse_codex_credentials_json(
+            r#"{"auth_mode":"apikey","tokens":{"access_token":"synthetic-access"}}"#,
+        );
+        assert!(matches!(status, CredentialStatus::NotFound));
+    }
+
+    #[test]
+    fn codex_file_store_ignores_an_unrelated_legacy_keychain_login() {
+        for config in ["", "cli_auth_credentials_store = \"file\"\n"] {
+            let (token, workspace, status, _) = read_codex_credentials_for_store(
+                config,
+                true,
+                false,
+                || parse_codex_credentials_json(r#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-new-file","account_id":"synthetic-file-workspace"}}"#),
+                || panic!("File mode must never ask the keychain"),
+            ).expect("synthetic file login");
+            assert!(matches!(status, CredentialStatus::Valid));
+            assert_eq!(token.as_deref(), Some("synthetic-new-file"));
+            assert_eq!(workspace.as_deref(), Some("synthetic-file-workspace"));
+        }
+    }
+
+    fn synthetic_codex_credentials(source: &str) -> CodexCredentials {
+        (
+            Some(source.into()),
+            Some("synthetic-workspace".into()),
+            CredentialStatus::Valid,
+            None,
+        )
+    }
+
+    #[test]
+    fn codex_auto_store_prefers_its_keychain_and_falls_back_to_file() {
+        let config = "cli_auth_credentials_store = \"auto\"\n";
+        let credentials = read_codex_credentials_for_store(
+            config,
+            true,
+            false,
+            || panic!("Available keychain login must win in auto mode"),
+            || Some(synthetic_codex_credentials("synthetic-keychain")),
+        )
+        .expect("synthetic keychain login");
+        assert_eq!(credentials.0.as_deref(), Some("synthetic-keychain"));
+        for supported in [false, true] {
+            let credentials = read_codex_credentials_for_store(
+                config,
+                supported,
+                false,
+                || synthetic_codex_credentials("synthetic-file"),
+                || None,
+            )
+            .expect("synthetic fallback login");
+            assert_eq!(credentials.0.as_deref(), Some("synthetic-file"));
+        }
+    }
+
+    #[test]
+    fn codex_keyring_and_ephemeral_never_fall_back_to_a_stale_file() {
+        let keyring = "cli_auth_credentials_store = \"keyring\"\n";
+        let credentials = read_codex_credentials_for_store(
+            keyring,
+            true,
+            false,
+            || panic!("Keyring must never consult auth.json"),
+            || Some(synthetic_codex_credentials("synthetic-keychain")),
+        )
+        .expect("synthetic keychain login");
+        assert_eq!(credentials.0.as_deref(), Some("synthetic-keychain"));
+        for (config, supported, secrets) in [
+            (keyring, true, false),
+            (keyring, false, false),
+            (keyring, true, true),
+            ("cli_auth_credentials_store = \"ephemeral\"\n", true, false),
+        ] {
+            let result = read_codex_credentials_for_store(
+                config,
+                supported,
+                secrets,
+                || panic!("Unavailable stores must never use auth.json"),
+                || None,
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn codex_encrypted_auto_store_uses_the_file_fallback_on_windows_and_macos() {
+        for (config, supported, secrets) in [
+            ("cli_auth_credentials_store = \"auto\"\n", false, true),
+            (
+                "cli_auth_credentials_store = \"auto\"\n[features]\nsecret_auth_storage = true\n",
+                true,
+                false,
+            ),
+            ("cli_auth_credentials_store = \"auto\"\n", true, true),
+        ] {
+            let credentials = read_codex_credentials_for_store(
+                config,
+                supported,
+                secrets,
+                || synthetic_codex_credentials("synthetic-file"),
+                || panic!("Encrypted storage must never read the legacy keychain"),
+            )
+            .expect("synthetic file fallback");
+            assert_eq!(credentials.0.as_deref(), Some("synthetic-file"));
+        }
+        let credentials = read_codex_credentials_for_store(
+            "cli_auth_credentials_store = \"auto\"\n[features]\nsecret_auth_storage = false\n",
+            true,
+            true,
+            || panic!("Explicitly disabled encrypted storage uses the keychain"),
+            || Some(synthetic_codex_credentials("synthetic-keychain")),
+        )
+        .expect("synthetic keychain login");
+        assert_eq!(credentials.0.as_deref(), Some("synthetic-keychain"));
+    }
+
+    #[test]
+    fn codex_unreadable_store_setting_uses_magpies_file_fallback() {
+        for config in [
+            "cli_auth_credentials_store = \"future\"\n",
+            "cli_auth_credentials_store = [",
+        ] {
+            let credentials = read_codex_credentials_for_store(
+                config,
+                true,
+                false,
+                || synthetic_codex_credentials("synthetic-file"),
+                || panic!("Unreadable settings use the file"),
+            )
+            .expect("synthetic file fallback");
+            assert_eq!(credentials.0.as_deref(), Some("synthetic-file"));
+        }
+    }
+
+    #[test]
+    fn codex_keychain_item_is_scoped_to_its_canonical_home() {
+        assert_eq!(
+            codex_keychain_account(std::path::Path::new("synthetic-codex-home-not-created")),
+            "cli|042bdf4924875699",
+        );
+        let temp = tempfile::tempdir().expect("synthetic home");
+        let home = temp
+            .path()
+            .canonicalize()
+            .expect("canonical synthetic home");
+        assert_ne!(
+            codex_keychain_account(&home),
+            codex_keychain_account(&home.join("another"))
+        );
+        #[cfg(unix)]
+        {
+            let alias = temp.path().join("alias");
+            std::os::unix::fs::symlink(&home, &alias).expect("synthetic alias");
+            assert_eq!(
+                codex_keychain_account(&home),
+                codex_keychain_account(&alias)
+            );
+        }
+    }
+
+    #[test]
+    fn codex_allowance_http_denials_do_not_all_mean_expired_sign_in() {
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::BAD_GATEWAY,
+        ] {
+            let quota = codex_quota_http_error(status, "codex", "Sign-in rejected");
+            assert!(matches!(quota.credential_status, CredentialStatus::Valid));
+            assert!(!quota.success);
+        }
+        assert!(matches!(
+            codex_quota_http_error(
+                reqwest::StatusCode::UNAUTHORIZED,
+                "codex",
+                "Sign-in rejected"
+            )
+            .credential_status,
+            CredentialStatus::Expired
+        ));
+    }
 
     fn scoped_limit(model: &str, percent: f64) -> serde_json::Value {
         serde_json::json!({
@@ -1593,5 +1958,45 @@ mod tests {
         // 其他窗口按小时/天回退命名
         assert_eq!(window_seconds_to_tier_name(3600), "1_hour");
         assert_eq!(window_seconds_to_tier_name(86400), "1_day");
+    }
+}
+
+#[cfg(test)]
+mod subscription_controls_tests {
+    use super::*;
+    #[test]
+    fn null_model_usage_and_numeric_balances_do_not_discard_valid_windows() {
+        let body:CodexUsageResponse=serde_json::from_value(serde_json::json!({"rate_limit":{"allowed":true,"primary_window":{"used_percent":12}},"model_usage":null,"credits":{"balance":25.5}})).expect("nullable usage");
+        assert!(body.details().model_usage.is_empty());
+        assert_eq!(
+            body.details().credits.and_then(|c| c.balance),
+            Some("25.5".into())
+        );
+    }
+    #[test]
+    fn account_holds_and_model_credits_survive_without_fabricated_windows() {
+        let body: CodexUsageResponse = serde_json::from_value(serde_json::json!({
+            "rate_limit":{"allowed":false,"limit_reached":true},
+            "model_usage":{"fixture":{"available":false,"credits_would_enable":true}},
+            "credits":{"has_credits":true,"balance":"62500.0","unlimited":false},
+            "rate_limit_reset_credits":{"available_count":2,"applicable_available_count":1},
+            "spend_control":{"reached":true,"individual_limit":100}
+        }))
+        .expect("supported quota controls");
+        let details = body.details();
+        assert_eq!(details.allowed, Some(false));
+        assert_eq!(details.limit_reached, Some(true));
+        assert_eq!(
+            details.credits.as_ref().and_then(|c| c.balance.as_deref()),
+            Some("62500.0")
+        );
+        assert_eq!(details.model_usage["fixture"].available, Some(false));
+        assert_eq!(
+            details
+                .reset_credits
+                .as_ref()
+                .and_then(|c| c.available_count),
+            Some(2)
+        );
     }
 }

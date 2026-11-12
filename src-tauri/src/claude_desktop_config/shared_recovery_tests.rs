@@ -40,7 +40,15 @@ impl Fixture {
     }
 
     fn receipt(&self) -> Result<Receipt, String> {
+        self.receipt_with_token("synthetic-local")
+    }
+
+    fn receipt_with_token(&self, token: &str) -> Result<Receipt, String> {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
             icon: None,
             id: "synthetic/first".into(),
             name: "First".into(),
@@ -52,15 +60,17 @@ impl Fixture {
             default_reasoning_level: None,
             images: true,
         };
+        let previous = self.manager.load("claude-desktop")?;
         let (files, mapping) = shared_catalog_edits_at(
             self.paths.clone(),
             "http://127.0.0.1:1/connections/claude-desktop",
-            "synthetic-local",
+            token,
+            previous.as_ref().map(|receipt| receipt.token.as_str()),
             &[model],
         )?;
         Ok(Receipt {
             app: "claude-desktop".into(),
-            token: "synthetic-local".into(),
+            token: token.into(),
             model: "synthetic/first".into(),
             model_map: mapping,
             visible_models: None,
@@ -92,6 +102,33 @@ impl Fixture {
             ))
         })
     }
+}
+
+#[test]
+fn desktop_new_connection_replaces_an_opaque_key_from_a_retired_connection() -> Result<(), String> {
+    let f = Fixture::new(false)?;
+    f.install()?;
+    f.seal()?;
+    f.edit_profile(|v| v["customSetting"] = json!("retained"))?;
+    let before = fs::read(&f.paths.profile_path).map_err(|_| "fixture")?;
+    let next = f.receipt_with_token("synthetic-reconnected")?;
+    let prepared = serde_json::to_value(&next).map_err(|_| "fixture")?;
+    assert!(
+        prepared["files"][2]["installed"]["inferenceGatewayApiKey"] == "synthetic-reconnected",
+        "an unreadable seal cannot establish ownership of a new connection credential"
+    );
+    assert_eq!(
+        prepared["files"][2]["installed"]["customSetting"],
+        "retained"
+    );
+    assert!(fs::read(&f.paths.profile_path).map_err(|_| "fixture")? == before);
+    let replacement = Manager {
+        root: f._home.path().join("new-connection-receipts"),
+    };
+    replacement.install(next)?;
+    assert!(f.profile()?["inferenceGatewayApiKey"] == "synthetic-reconnected");
+    assert!(replacement.status("claude-desktop")?.configured);
+    Ok(())
 }
 
 #[test]
@@ -330,5 +367,64 @@ fn desktop_sealed_key_restores_a_partial_legacy_profile_without_leaking_projecti
         f.profile()? == original,
         "key ownership must be assessed before restoring its gateway address"
     );
+    Ok(())
+}
+
+#[test]
+fn parity_desktop_carries_native_settings_and_preserves_later_user_edits() -> Result<(), String> {
+    let f = Fixture::new(false)?;
+    write_json_file(&f.paths.normal_config_path,&json!({"mcpServers":{"copied":{"command":"synthetic-a","args":["synthetic"]},"same":{"command":"normal"}}})).map_err(|_|"fixture")?;
+    write_json_file(
+        &f.paths.threep_config_path,
+        &json!({"mcpServers":{"same":{"command":"threep"}}}),
+    )
+    .map_err(|_| "fixture")?;
+    let normal_locale = f.paths.normal_config_path.with_file_name("config.json");
+    let threep_locale = f.paths.threep_config_path.with_file_name("config.json");
+    write_json_file(&normal_locale, &json!({"locale":"ja-JP","unrelated":true}))
+        .map_err(|_| "fixture")?;
+    f.install()?;
+    assert_eq!(f.profile()?["toolSearchEnabled"], true);
+    let mut native: Value = read_json_file(&f.paths.threep_config_path).map_err(|_| "fixture")?;
+    assert_eq!(native["mcpServers"]["copied"]["command"], "synthetic-a");
+    assert_eq!(native["mcpServers"]["same"]["command"], "threep");
+    let locale: Value = read_json_file(&threep_locale).map_err(|_| "fixture")?;
+    assert_eq!(locale["locale"], "ja-JP");
+    native["mcpServers"]["copied"]["command"] = json!("user-changed");
+    write_json_file(&f.paths.threep_config_path, &native).map_err(|_| "fixture")?;
+    f.edit_profile(|v| {
+        v.as_object_mut().map(|v| v.remove("toolSearchEnabled"));
+    })?;
+    let refreshed = f.receipt()?;
+    let projected = serde_json::to_value(refreshed).map_err(|_| "fixture")?;
+    assert!(projected["files"][2]["installed"]
+        .get("toolSearchEnabled")
+        .is_none());
+    f.manager.disconnect("claude-desktop")?;
+    let restored: Value = read_json_file(&f.paths.threep_config_path).map_err(|_| "fixture")?;
+    assert_eq!(restored["mcpServers"]["copied"]["command"], "user-changed");
+    assert_eq!(
+        restored["mcpServers"]["copied"]["args"],
+        json!(["synthetic"])
+    );
+    assert!(!threep_locale.exists());
+    Ok(())
+}
+
+#[test]
+fn parity_windows_packages_include_both_native_directory_sets() -> Result<(), String> {
+    let root = tempfile::tempdir().map_err(|_| "fixture")?;
+    let local = root.path().join("Local");
+    let package = local.join("Packages/AnthropicPBC.Claude_synthetic/LocalCache");
+    fs::create_dir_all(package.join("Roaming/Claude")).map_err(|_| "fixture")?;
+    fs::create_dir_all(package.join("Local/Claude-3p")).map_err(|_| "fixture")?;
+    let paths = windows_path_sets(&local, &root.path().join("Roaming"));
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().any(|paths| paths
+        .threep_config_path
+        .starts_with(package.join("Local/Claude-3p"))));
+    assert!(paths.iter().any(|paths| paths
+        .threep_config_path
+        .starts_with(local.join("Claude-3p"))));
     Ok(())
 }

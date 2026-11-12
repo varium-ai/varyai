@@ -47,6 +47,7 @@ mod telemetry;
 mod tool_risk_events;
 
 mod tray;
+mod tray_panel;
 mod usage_events;
 mod usage_script;
 mod workbuddy_config;
@@ -436,6 +437,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
+            if window.label() == tray_panel::LABEL {
+                tray_panel::window_event(window, event);
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // 数据库版本过新的恢复模式下没有托盘可唤回，关闭即退出，避免应用隐身后台
                 let in_db_recovery = crate::init_status::get_init_error().is_some();
@@ -473,6 +478,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .with_denylist(&[tray_panel::LABEL])
                 .with_state_flags(window_state_flags())
                 .build(),
         )
@@ -1091,28 +1097,30 @@ pub fn run() {
             macos_quit::install(app.handle())?;
 
             // 创建动态托盘菜单
+            app.manage(tray_panel::PanelState::default());
             let menu = tray::create_tray_menu(app.handle(), &app_state)?;
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
                 .tooltip("Vary AI") // 鼠标悬停提示
-                .on_tray_icon_event(|tray, event| match event {
-                    // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-                    // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-                    // refresh_all_usage_in_tray 内部有 10 秒防抖。
-                    TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
-                        let app = tray.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            crate::tray::refresh_all_usage_in_tray(&app).await;
-                        });
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        }
+                    ) && tray_panel::toggle(tray.app_handle()).is_err()
+                    {
+                        log::warn!("Unable to open tray panel");
                     }
-                    _ => log::debug!("unhandled event {event:?}"),
                 })
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             #[cfg(target_os = "macos")]
             {
@@ -1165,6 +1173,26 @@ pub fn run() {
             let telemetry = Arc::new(crate::telemetry::TelemetryManager::load(telemetry_path));
             app.manage(telemetry.clone());
             telemetry.clone().start_worker();
+
+            if let Ok(directory) = app.path().app_local_data_dir() {
+                let checkin = Arc::new(services::workbuddy_checkin::Manager::new(
+                    directory.join("workbuddy-checkin.json"),
+                ));
+                app.manage(checkin.clone());
+                checkin.start_worker();
+                let doubao_checkin = Arc::new(services::doubao_checkin::Manager::new(
+                    directory.join("doubao-checkin.json"),
+                    app.state::<AppState>().db.clone(),
+                ));
+                app.manage(doubao_checkin.clone());
+                doubao_checkin.start_worker();
+                let rewards = Arc::new(services::agent_rewards::Manager::new(
+                    directory.join("agent-rewards.json"),
+                    app.state::<AppState>().db.clone(),
+                ));
+                app.manage(rewards.clone());
+                rewards.start_worker();
+            }
 
             // 初始化 SkillService
             let skill_service = SkillService::new();
@@ -1261,6 +1289,23 @@ pub fn run() {
                     }
                 }
 
+                // Rename legacy Kimi groups after recovery and before routes are rebuilt.
+                {
+                    let _guard = state.proxy_service.lock_switch_for_app("kimi").await;
+                    let db = state.db.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        crate::services::agent_clients::migrate_legacy_kimi_provider_names(&db)
+                    })
+                    .await
+                    {
+                        Ok(Ok(count)) if count > 0 => {
+                            log::info!("[Kimi] Migrated {count} legacy provider group names");
+                        }
+                        Ok(Ok(_)) => {}
+                        _ => log::warn!("[Kimi] Legacy provider name migration deferred"),
+                    }
+                }
+
                 // 必须排在 auto-extract 之前：先把历史泄漏进 Gemini 共享片段的凭据
                 // 清干净，否则紧接着的提取会基于被污染的 live 再写一遍。
                 if let Err(e) =
@@ -1279,6 +1324,9 @@ pub fn run() {
                 if let Err(code) = state.proxy_service.restore_pi_routing().await {
                     log::warn!("[Pi] startup restoration failed: {code}");
                 }
+                // Observe the restored configuration as the initial baseline;
+                // startup cleanup is not a live client route change.
+                state.proxy_service.start_codex_app_server_worker();
 
                 // TRAE may be closed at startup or recreate its chat windows later.
                 let trae_proxy = state.proxy_service.clone();
@@ -1416,7 +1464,18 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            tray_panel::tray_panel_resize,
+            tray_panel::tray_panel_hide,
+            tray_panel::tray_panel_open,
+            tray_panel::take_workspace_navigation,
+            tray_panel::broadcast_workspace_change,
+            tray_panel::tray_panel_quit,
             commands::list_agent_connections,
+            commands::get_agent_connection,
+            commands::diagnose_codex_proxy,
+            commands::get_agent_native_model,
+            commands::get_agent_model_control,
+            commands::authorize_agent_model_control,
             commands::get_agent_model_catalog,
             commands::get_agent_native_models,
             commands::get_agent_model_visibility,
@@ -1426,11 +1485,28 @@ pub fn run() {
             commands::restart_agent_connection,
             commands::list_gateway_keys,
             commands::list_routing_upstreams,
+            commands::native_subscription_accounts,
+            commands::native_subscription_start,
+            commands::native_subscription_poll,
+            commands::native_subscription_cancel,
+            commands::native_subscription_callback,
+            commands::native_subscription_import,
+            commands::native_subscription_remove,
+            commands::native_subscription_project,
+            commands::native_subscription_models,
+            commands::native_subscription_quota,
             commands::preview_provider_import,
             commands::import_provider_sources,
             commands::routing_upstream_editor,
+            commands::routing_upstream_keys,
+            commands::routing_upstream_quota,
+            commands::reveal_routing_upstream_key,
             commands::save_codex_provider,
             commands::create_codex_provider,
+            commands::codex_browser_login_start,
+            commands::codex_browser_login_poll,
+            commands::codex_browser_login_callback,
+            commands::codex_browser_login_cancel,
             commands::codex_provider_models,
             commands::codex_provider_quota,
             commands::import_codex_provider_account,
@@ -1438,6 +1514,7 @@ pub fn run() {
             commands::discover_routing_upstream_models,
             commands::probe_routing_upstream,
             commands::save_routing_upstream,
+            commands::fetch_provider_icon,
             commands::delete_routing_upstream,
             commands::list_intent_routing_providers,
             commands::routing_trace_snapshot,
@@ -1599,6 +1676,7 @@ pub fn run() {
             commands::undo_profile_bundle,
             // Fetch OpenAI-compatible and Anthropic model lists. Response data structure:
             // data[].id, data[]?.owned_by. Special: supports Zhipu OpenAI Responses models[].slug.
+            commands::get_model_context_windows,
             commands::fetch_models_for_config,
             commands::detect_provider_protocols,
             commands::get_opencode_models,
@@ -1769,6 +1847,25 @@ pub fn run() {
             commands::save_qoder_settings,
             commands::get_workbuddy_live_provider_ids,
             commands::get_workbuddy_settings,
+            commands::get_workbuddy_checkin_status,
+            commands::check_in_workbuddy,
+            commands::set_workbuddy_auto_checkin,
+            commands::get_workbuddy_checkin_accounts,
+            commands::start_workbuddy_checkin_login,
+            commands::poll_workbuddy_checkin_login,
+            commands::cancel_workbuddy_checkin_login,
+            commands::remove_workbuddy_checkin_account,
+            commands::get_doubao_checkin_accounts,
+            commands::get_agent_rewards,
+            commands::connect_qoder_native_rewards,
+            commands::claim_agent_rewards,
+            commands::set_agent_rewards_auto,
+            commands::start_agent_rewards_login,
+            commands::poll_agent_rewards_login,
+            commands::cancel_agent_rewards_login,
+            commands::forget_agent_rewards_account,
+            commands::check_in_doubao,
+            commands::set_doubao_auto_checkin,
             commands::save_workbuddy_settings,
             commands::get_workbuddy_default_config_dir,
             // OpenClaw specific
@@ -2202,6 +2299,17 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
     apps
 }
 
+fn shared_connections_need_resume(manager: &services::agent_connections::Manager) -> bool {
+    manager.bridge_enabled()
+        || manager
+            .bridge_for(services::trae_bridge::shared::Edition::International)
+            .bridge_enabled()
+        || crate::services::agent_connections::APPS
+            .iter()
+            .filter(|app| **app != "codex")
+            .any(|app| manager.load(app).is_ok_and(|receipt| receipt.is_some()))
+}
+
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     if !claude_desktop_config::routing_enabled(&state.db).unwrap_or(false) {
         if let Err(error) = claude_desktop_config::suspend_routing(&state.db) {
@@ -2209,15 +2317,9 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
         }
     }
     let manager = state.proxy_service.agent_connections.clone();
-    let shared = tokio::task::spawn_blocking(move || {
-        manager.bridge_enabled()
-            || crate::services::agent_connections::APPS
-                .iter()
-                .filter(|app| **app != "codex")
-                .any(|app| manager.status(app).is_ok_and(|status| status.enabled))
-    })
-    .await
-    .unwrap_or(false);
+    let shared = tokio::task::spawn_blocking(move || shared_connections_need_resume(&manager))
+        .await
+        .unwrap_or(false);
     if shared {
         if state.proxy_service.start().await.is_ok() {
             state.proxy_service.sync_shared_agent_catalogs().await;
@@ -2725,6 +2827,24 @@ mod tests {
         db.set_setting(crate::services::workbuddy_proxy::ENABLED_KEY, "true")
             .expect("enable");
         assert_eq!(enabled_proxy_apps_on_startup(&db).await, vec!["workbuddy"]);
+    }
+    #[test]
+    fn startup_restore_includes_international_shared_bridge_without_domestic_bridge(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| "fixture directory")?;
+        let manager = crate::services::agent_connections::Manager {
+            root: dir.path().into(),
+        };
+        assert!(!super::shared_connections_need_resume(&manager));
+        manager
+            .bridge_for(crate::services::trae_bridge::shared::Edition::International)
+            .bridge_select(true)?;
+        assert!(super::shared_connections_need_resume(&manager));
+        manager
+            .bridge_for(crate::services::trae_bridge::shared::Edition::International)
+            .bridge_select(false)?;
+        assert!(!super::shared_connections_need_resume(&manager));
+        Ok(())
     }
     #[test]
     fn startup_skips_unselected_and_missing_agents() {

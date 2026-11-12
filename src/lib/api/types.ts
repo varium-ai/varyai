@@ -10,9 +10,15 @@ export type AppId =
   | "hermes"
   | "pi"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
-  | "zcode";
+  | "zcode"
+  | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code";

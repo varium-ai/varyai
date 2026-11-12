@@ -301,7 +301,9 @@ async fn handle_messages_for_app(
             app_type.as_str()
         ))
     })?;
-    let needs_transform = adapter.needs_transform(&ctx.provider);
+    let provider_needs_transform = adapter.needs_transform(&ctx.provider);
+    ctx.converted_output = provider_needs_transform && api_format == "anthropic";
+    let needs_transform = provider_needs_transform && api_format != "anthropic";
 
     // Claude 特有：格式转换处理
     if needs_transform {
@@ -1115,6 +1117,7 @@ async fn handle_responses_for_app(
         }
     };
 
+    let response_is_responses = result.claude_api_format.as_deref() == Some("openai_responses");
     let dlp_attempt = result.dlp_attempt.take();
     let leased_response = dlp_attempt.is_some();
     let evidence = if is_stream || result.response.is_sse() {
@@ -1130,7 +1133,9 @@ async fn handle_responses_for_app(
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint) {
+    if !response_is_responses
+        && super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint)
+    {
         let client_response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
@@ -1161,7 +1166,9 @@ async fn handle_responses_for_app(
         });
     }
 
-    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint) {
+    if !response_is_responses
+        && super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint)
+    {
         let client_response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
@@ -1461,6 +1468,7 @@ async fn handle_responses_compact_for_app(
         }
     };
 
+    let response_is_responses = result.claude_api_format.as_deref() == Some("openai_responses");
     let dlp_attempt = result.dlp_attempt.take();
     let leased_response = dlp_attempt.is_some();
     let evidence = if is_stream || result.response.is_sse() {
@@ -1471,11 +1479,14 @@ async fn handle_responses_compact_for_app(
         None
     };
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint) {
+    if !response_is_responses
+        && super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint)
+    {
         let client_response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
@@ -1506,7 +1517,9 @@ async fn handle_responses_compact_for_app(
         });
     }
 
-    if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint) {
+    if !response_is_responses
+        && super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint)
+    {
         let client_response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
@@ -4092,7 +4105,7 @@ mod tests {
                 assert_eq!(events[0].client_category.as_deref(), Some("codex"));
                 assert_eq!(events[0].verdict.as_deref(), Some("risky"));
                 assert!(events[0].rule_ids.iter().any(|id| id == rule));
-                assert!(events[0].command_summary.is_none());
+                assert_eq!(events[0].command_summary.as_deref(), Some(command));
                 let arguments: Value =
                     serde_json::from_str(client["output"][0]["arguments"].as_str().unwrap())
                         .unwrap();
@@ -4194,7 +4207,12 @@ mod tests {
                         run(req, wire, Some("text/event-stream"), true, true).await;
                     assert_eq!(observations.len(), 1);
                     assert_eq!(events.len(), 1);
-                    assert!(events[0].command_summary.is_none());
+                    assert_eq!(
+                        events[0].command_summary.as_deref(),
+                        (observations[0].input.status
+                            == crate::proxy::tool_observation::types::InputStatus::Complete)
+                            .then_some(command)
+                    );
                     assert_eq!(events[0].operation_category.as_deref(), Some("shell_exec"));
                     let expected = if command == "cat ~/.env" {
                         "risky"
@@ -4249,7 +4267,7 @@ mod tests {
                     assert_eq!(observations.len(), 1);
                     assert_eq!(events.len(), 1);
                     assert_eq!(events[0].verdict.as_deref(), Some("low_risk"));
-                    assert!(events[0].command_summary.is_none());
+                    assert_eq!(events[0].command_summary.as_deref(), Some(command));
                     let forwarded: Value =
                         serde_json::from_str(client["output"][0]["arguments"].as_str().unwrap())
                             .unwrap();
@@ -4455,7 +4473,7 @@ mod tests {
         }
         #[tokio::test]
         #[serial_test::serial]
-        async fn event_omits_command_summary_and_keeps_forwarded_command() {
+        async fn event_redacts_command_summary_and_keeps_forwarded_command() {
             let command = format!("{}={} sudo ls -la", "API_KEY", "TEST_PRIVATE_TOKEN");
             let (client, _, events) = run(
                 request(),
@@ -4466,7 +4484,10 @@ mod tests {
             )
             .await;
             assert_eq!(events.len(), 1);
-            assert!(events[0].command_summary.is_none());
+            assert_eq!(
+                events[0].command_summary.as_deref(),
+                Some("API_KEY=<redacted> sudo ls -la")
+            );
             assert!(!serde_json::to_string(&events)
                 .unwrap()
                 .contains("TEST_PRIVATE_TOKEN"));

@@ -41,16 +41,11 @@ fn signing_team(bundle: &Path) -> Result<String, String> {
 }
 
 fn installed_bundle(app: &str) -> Result<PathBuf, String> {
-    for root in [
-        PathBuf::from("/Applications"),
-        crate::config::get_home_dir().join("Applications"),
-    ] {
-        for name in agent_desktop_bundles(app) {
-            let path = root.join(name);
-            if path.is_dir() && !path.is_symlink() {
-                return Ok(path);
-            }
+    if let Some(path) = desktop_apps::find(app).filter(|path| !path.is_symlink()) {
+        if !desktop_apps::update_channel_matches(app, &path) {
+            return Err("unsupported".into());
         }
+        return Ok(path);
     }
     Err("notInstalled".to_owned())
 }
@@ -456,7 +451,9 @@ mod tests {
         for (app, id, team) in [
             ("qoder", "com.qodercn.app", "9DFNGU9AK5"),
             ("doubaowork", "com.work.pc.doubao", "96L78H6LMH"),
+            ("kimi", "com.kimi.code.desktop", "2J9472RW75"),
         ] {
+            eprintln!("Staging official {app} package without installing");
             let release = latest(&client, app, arch)
                 .await
                 .expect("public release metadata");

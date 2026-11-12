@@ -177,12 +177,15 @@ export type AppType =
   | "grokbuild"
   | "opencode"
   | "pi"
+  | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
   | "kimi"
   | "qwen"
-  | "zcode";
+  | "zcode"
+  | "deepseek-harness";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -193,12 +196,15 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "grokbuild",
   "opencode",
   "pi",
+  "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "doubaowork",
   "trae",
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ];
 
 /**
@@ -224,12 +230,15 @@ export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
 // Pi's fresh-input token semantics.
 const PARTIAL_CACHE_WRITE_APP_TYPES: ReadonlySet<string> = new Set([
   "pi",
+  "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "doubaowork",
   "trae",
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ]);
 
 export type CacheWriteAvailability = "ok" | "partial" | "na";

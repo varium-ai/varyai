@@ -39,6 +39,22 @@ impl<T> ToolRiskMutationReceipt<T> {
 
 static CONFIGURATION_LOCK: Mutex<()> = Mutex::new(());
 
+pub(crate) fn persist_events_for_generation(
+    db: &Database,
+    events: &[crate::database::ToolRiskEventInput],
+    generation: u64,
+) -> Result<usize, AppError> {
+    let _guard = CONFIGURATION_LOCK
+        .lock()
+        .map_err(|_| AppError::Database("Tool-risk configuration lock unavailable".into()))?;
+    if !super::runtime::collection_enabled()
+        || super::runtime::collection_generation() != generation
+    {
+        return Ok(0);
+    }
+    db.insert_current_tool_risk_events_batch(events)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveCommandListInput {
@@ -446,7 +462,7 @@ mod tests {
         .unwrap();
         let runtime = crate::services::tool_risk::runtime::get_tool_risk_runtime();
         assert!(runtime.enabled);
-        assert_eq!(runtime.policy_version, 3);
+        assert_eq!(runtime.policy_version, 2);
         assert!(runtime.rules.iter().any(|rule| rule.id == id));
         assert!(
             !runtime
@@ -645,7 +661,19 @@ mod command_list_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn command_lists_preview_uses_only_twenty_latest_sanitized_summaries_and_never_echoes_them() {
+        use crate::proxy::security::runtime::{
+            get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig,
+        };
+        struct SecurityReset(SecurityRuntimeConfig);
+        impl Drop for SecurityReset {
+            fn drop(&mut self) {
+                set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _reset = SecurityReset((*get_security_runtime()).clone());
+        set_security_runtime_for_test(SecurityRuntimeConfig::default());
         let db = Database::memory().unwrap();
         for timestamp in 0..25 {
             db.conn.lock().unwrap().execute("INSERT INTO tool_risk_events (timestamp, source, stage, detection_scope, integrity_status, policy_version, command_summary)
@@ -1353,7 +1381,7 @@ mod phase3_p0_4_publication_tests {
             .unwrap();
             let runtime = get_tool_risk_runtime();
             assert!(runtime.enabled);
-            assert_eq!(runtime.policy_version, before + 1);
+            assert_eq!(runtime.policy_version, before);
             assert_eq!(
                 runtime.policy_version,
                 db.get_tool_risk_settings().unwrap().policy_version
@@ -1706,7 +1734,7 @@ mod policy_receipt_tests {
             )
             .unwrap(),
             json!(null),
-            1,
+            0,
             "recorded",
             "applied",
         );
@@ -1718,35 +1746,35 @@ mod policy_receipt_tests {
         assert_receipt(
             save_custom_rule(&db, edit).unwrap(),
             json!(id),
-            3,
+            2,
             "recorded",
             "applied",
         );
         assert_receipt(
             toggle_rule(&db, &id, false, 2).unwrap(),
             json!(null),
-            4,
+            3,
             "recorded",
             "applied",
         );
         assert_receipt(
             delete_custom_rule(&db, &id, 3).unwrap(),
             json!(true),
-            5,
+            4,
             "recorded",
             "applied",
         );
         assert_receipt(
             toggle_rule(&db, "builtin.sensitive_read", false, 1).unwrap(),
             json!(null),
-            6,
+            5,
             "recorded",
             "applied",
         );
         assert_receipt(
             reset_builtin_rule(&db, "builtin.sensitive_read", 2).unwrap(),
             json!(null),
-            7,
+            6,
             "recorded",
             "applied",
         );
@@ -1758,20 +1786,20 @@ mod policy_receipt_tests {
         assert_receipt(
             save_command_list(&db, edit).unwrap(),
             json!(list_id),
-            9,
+            8,
             "recorded",
             "applied",
         );
         assert_receipt(
             delete_command_list(&db, &list_id, 2).unwrap(),
             json!(true),
-            10,
+            9,
             "recorded",
             "applied",
         );
         let conn = db.conn.lock().unwrap();
         let rows: (i64, i64, i64) = conn.query_row("SELECT COUNT(*), MIN(policy_version), MAX(policy_version) FROM tool_risk_policy_changes WHERE actor = 'local_ui'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-        assert_eq!(rows, (10, 1, 10));
+        assert_eq!(rows, (10, 0, 9));
         let audit: String = conn
             .query_row(
                 "SELECT GROUP_CONCAT(changed_fields) FROM tool_risk_policy_changes",
@@ -1780,7 +1808,7 @@ mod policy_receipt_tests {
             )
             .unwrap();
         assert!(!audit.contains("SECRET_"));
-        assert_eq!(get_tool_risk_runtime().policy_version, 10);
+        assert_eq!(get_tool_risk_runtime().policy_version, 9);
     }
 
     #[test]
@@ -1790,7 +1818,7 @@ mod policy_receipt_tests {
         assert_receipt(
             update_settings(&db, &ToolRiskSettings::default()).unwrap(),
             json!(null),
-            1,
+            0,
             "not_needed",
             "applied",
         );
@@ -1803,6 +1831,46 @@ mod policy_receipt_tests {
             })
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn observation_toggles_preserve_rule_version_and_rule_edits_still_advance_it() {
+        let db = Database::memory().unwrap();
+        for (enabled, expected_version, audit_status) in [
+            (true, 0, "recorded"),
+            (false, 0, "recorded"),
+            (false, 0, "not_needed"),
+            (false, 0, "not_needed"),
+            (false, 0, "not_needed"),
+            (true, 0, "recorded"),
+            (true, 0, "not_needed"),
+        ] {
+            assert_receipt(
+                update_settings(
+                    &db,
+                    &ToolRiskSettings {
+                        enabled,
+                        policy_version: u64::MAX,
+                    },
+                )
+                .unwrap(),
+                json!(null),
+                expected_version,
+                audit_status,
+                "applied",
+            );
+            assert_eq!(
+                db.get_tool_risk_settings().unwrap().policy_version,
+                expected_version
+            );
+            assert_eq!(get_tool_risk_runtime().policy_version, expected_version);
+            assert_eq!(collection_enabled(), enabled);
+        }
+        assert_eq!(db.get_tool_risk_policy_changes(50, 0).unwrap().len(), 3);
+        save_custom_rule(&db, rule_input()).unwrap();
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 1);
+        assert_eq!(get_tool_risk_runtime().policy_version, 1);
     }
 
     #[test]
@@ -1820,13 +1888,13 @@ mod policy_receipt_tests {
             )
             .unwrap(),
             json!(null),
-            1,
+            0,
             "audit_unavailable",
             "applied",
         );
         assert!(collection_enabled());
-        assert_eq!(get_tool_risk_runtime().policy_version, 1);
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 1);
+        assert_eq!(get_tool_risk_runtime().policy_version, 0);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 0);
         let count: i64 = db
             .conn
             .lock()
@@ -1866,13 +1934,13 @@ mod policy_receipt_tests {
             )
             .expect("committed write must not become an Err"),
             json!(null),
-            2,
+            0,
             "recorded",
             "apply_failed",
         );
         assert!(!collection_enabled());
         assert!(!get_tool_risk_runtime().enabled);
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 2);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 0);
         assert_eq!(
             reload_runtime(&db).unwrap_err(),
             "工具风险配置读取失败，采集已关闭"
@@ -1926,15 +1994,15 @@ mod policy_receipt_tests {
                     "DAO lock must be released before publishing"
                 );
                 assert!(snapshot.enabled);
-                assert_eq!(snapshot.policy_version, 1);
+                assert_eq!(snapshot.policy_version, 0);
                 calls += 1;
                 false
             },
         )
         .expect("publisher failure must retain committed receipt");
-        assert_receipt(receipt, json!(null), 1, "recorded", "apply_failed");
+        assert_receipt(receipt, json!(null), 0, "recorded", "apply_failed");
         assert_eq!(calls, 1);
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 1);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 0);
     }
 
     #[test]
@@ -2011,7 +2079,7 @@ mod receipt_boundary_tests {
         );
         let snapshot = &published[0].0;
         assert!(snapshot.enabled);
-        assert_eq!(snapshot.policy_version, 3);
+        assert_eq!(snapshot.policy_version, 2);
         assert!(snapshot
             .rules
             .iter()
@@ -2023,10 +2091,10 @@ mod receipt_boundary_tests {
         let wire = serde_json::to_value(receipt).unwrap();
         assert_eq!(
             wire,
-            json!({"value": null, "persistedPolicyVersion": 3, "auditStatus": "recorded", "runtimeStatus": "apply_failed"})
+            json!({"value": null, "persistedPolicyVersion": 2, "auditStatus": "recorded", "runtimeStatus": "apply_failed"})
         );
         assert!(!wire.to_string().contains("SECRET_"));
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 3);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 2);
     }
 
     #[test]

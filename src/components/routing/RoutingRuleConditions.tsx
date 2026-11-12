@@ -34,7 +34,7 @@ const pauseKinds: readonly Kind[] = [
   "exceptFolders",
   "time",
 ];
-const agents = [...APP_IDS, "external"];
+const agents = [...APP_IDS.filter((app) => app !== "cursor-cli"), "external"];
 
 export function pauseRoutingRule(rule: IntentRule, pause: boolean): IntentRule {
   if (!pause) return { ...rule, pause: false };

@@ -107,4 +107,68 @@ describe("updater manifest generation", () => {
     expect(manifest.version).toBe("1.2.3");
     expect(manifest.platforms["linux-aarch64"].signature).toBe("signature-4");
   });
+  it("embeds the supplied Markdown release notes instead of a placeholder", async () => {
+    artifactNames.forEach((name) => {
+      writeFileSync(path.join(assetsDir, name), "fixture");
+      writeFileSync(path.join(assetsDir, `${name}.sig`), "signature");
+    });
+    const scriptUrl = pathToFileURL(
+      path.resolve(process.cwd(), "scripts/create-updater-manifest.mjs"),
+    ).href;
+    const { buildUpdaterManifest } = await import(scriptUrl);
+    const notes =
+      "## New features\n\n- Add routing groups.\n\n## Fixes\n\n- Keep saved accounts.";
+    expect(
+      buildUpdaterManifest({
+        releaseAssetsDir: assetsDir,
+        repository: "example/varyai-releases",
+        tag,
+        notes,
+      }).notes,
+    ).toBe(notes);
+  });
+
+  it("includes a staged release-notes.md file in the generated manifest", async () => {
+    artifactNames.forEach((name) => {
+      writeFileSync(path.join(assetsDir, name), "fixture");
+      writeFileSync(path.join(assetsDir, `${name}.sig`), "signature");
+    });
+    const notes = "## Improvements\n\n- Display release notes.";
+    writeFileSync(path.join(assetsDir, "release-notes.md"), notes);
+    const scriptUrl = pathToFileURL(
+      path.resolve(process.cwd(), "scripts/create-updater-manifest.mjs"),
+    ).href;
+    const { buildUpdaterManifest } = await import(scriptUrl);
+    expect(
+      buildUpdaterManifest({
+        releaseAssetsDir: assetsDir,
+        repository: "example/varyai-releases",
+        tag,
+      }).notes,
+    ).toBe(notes);
+  });
+  it("uses an explicitly selected notes file and rejects ambiguous input", async () => {
+    artifactNames.forEach((name) => {
+      writeFileSync(path.join(assetsDir, name), "fixture");
+      writeFileSync(path.join(assetsDir, `${name}.sig`), "signature");
+    });
+    const notesFile = path.join(assetsDir, "selected-notes.md");
+    writeFileSync(notesFile, "## Fixes\n\n- Keep update actions available.");
+    const scriptUrl = pathToFileURL(
+      path.resolve(process.cwd(), "scripts/create-updater-manifest.mjs"),
+    ).href;
+    const { buildUpdaterManifest } = await import(scriptUrl);
+    const options = {
+      releaseAssetsDir: assetsDir,
+      repository: "example/varyai-releases",
+      tag,
+      notesFile,
+    };
+    expect(buildUpdaterManifest(options).notes).toContain(
+      "Keep update actions available.",
+    );
+    expect(() =>
+      buildUpdaterManifest({ ...options, notes: "Other notes" }),
+    ).toThrow("not both");
+  });
 });

@@ -3,6 +3,7 @@ import { Box } from "lucide-react";
 import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { hasIcon, isUrlIcon } from "@/icons/extracted";
+import { useAccountText } from "@/components/AccountLabel";
 
 export function RoutingGroupIcon({
   client,
@@ -11,6 +12,7 @@ export function RoutingGroupIcon({
   client?: string | null;
   icons?: Array<{ icon?: string | null; name: string }>;
 }) {
+  const accountText = useAccountText();
   const unique = [
     ...new Map(
       (icons ?? []).map((entry) => [entry.icon || entry.name, entry]),
@@ -27,7 +29,7 @@ export function RoutingGroupIcon({
                   ? entry.icon
                   : undefined
               }
-              name={entry.name}
+              name={accountText(entry.name)}
               size={unique.length === 1 ? 20 : 13}
             />
           </span>

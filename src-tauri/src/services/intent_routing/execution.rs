@@ -98,13 +98,20 @@ async fn prepare_inner(
             .get(&target.provider_id)
             .filter(|p| eligible_provider(p, true))
             .ok_or("intentRouting.providerUnavailable")?;
-        Some(provider.clone())
+        Some(
+            crate::services::routing_upstreams::variants_for_model(provider, &target.model_id)
+                .into_iter()
+                .find(|variant| eligible_provider(variant, true))
+                .ok_or("intentRouting.providerUnavailable")?,
+        )
     } else {
         None
     };
     let mut targets: Vec<Target> = Vec::new();
     for member in &group.members {
-        if !providers.contains_key(&member.provider_id) && !group.includes_in_menu(member) {
+        if !providers.contains_key(&member.provider_id)
+            && (group.routing != super::RoutingStrategy::Manual || !group.includes_in_menu(member))
+        {
             continue;
         }
         let source = providers
@@ -113,13 +120,20 @@ async fn prepare_inner(
         if !crate::services::codex_provider::serves(source, &member.model_id)
             || !crate::services::routing_upstreams::serves(source, &member.model_id)
         {
-            if group.includes_in_menu(member) {
+            if group.includes_in_menu(member) && group.routing == super::RoutingStrategy::Manual {
                 return Err("intentRouting.providerUnavailable".into());
             }
             continue;
         }
         let before = targets.len();
-        for provider in crate::services::routing_upstreams::variants(source) {
+        let variants = if enforce_account_models {
+            crate::services::routing_upstreams::variants_for_model(source, &member.model_id)
+        } else {
+            crate::services::routing_upstreams::variants(source)
+        };
+        for provider in variants {
+            let provider =
+                crate::services::subscription_provider::for_model(&provider, &member.model_id)?;
             if enforce_account_models
                 && !crate::services::codex_provider::account_serves(&provider, &member.model_id)
             {
@@ -194,12 +208,16 @@ async fn prepare_inner(
                 }
                 Ok::<Target, String>(Target {
                     fixed_effort: member.effort.clone(),
-                    provider_id: member.provider_id.clone(),
+                    provider_id: crate::services::routing_upstreams::execution_identity(provider)
+                        .into(),
                     model: member.model_id.clone(),
                     upstream: if official {
                         None
                     } else {
-                        Some(normalized_static_provider(provider)?)
+                        Some(normalized_static_provider(
+                            provider,
+                            !enforce_account_models,
+                        )?)
                     },
                     effort: super::effort::Capability::for_provider(provider, &member.model_id),
                     url: reqwest::Url::parse(&url)
@@ -226,17 +244,25 @@ async fn prepare_inner(
                         .settings_config
                         .get(crate::services::codex_provider::POLICY)
                         .is_some() => {}
+                Err(_) if group.routing != super::RoutingStrategy::Manual => {}
                 Err(error) => return Err(error),
             }
         }
-        if targets.len() == before && group.includes_in_menu(member) {
+        if targets.len() == before
+            && group.includes_in_menu(member)
+            && group.routing == super::RoutingStrategy::Manual
+        {
             return Err("intentRouting.providerUnavailable".into());
         }
     }
-    let client = tokio::task::spawn_blocking(crate::proxy::http_client::get_without_redirects)
-        .await
-        .map_err(|_| "intentRouting.failed")?
-        .map_err(|_| "intentRouting.failed")?;
+    if targets.is_empty() {
+        return Err("intentRouting.providerUnavailable".into());
+    }
+    let client =
+        tokio::task::spawn_blocking(crate::proxy::http_client::get_forwarding_without_redirects)
+            .await
+            .map_err(|_| "intentRouting.failed")?
+            .map_err(|_| "intentRouting.failed")?;
     #[cfg(not(test))]
     for (index, target) in targets.iter().enumerate() {
         if enforce_account_models
@@ -246,6 +272,8 @@ async fn prepare_inner(
             target.scheduling.prime(&client, &target.headers).await;
         }
     }
+    let mut group = group;
+    crate::services::routing_upstreams::execution_group(&mut group, providers.values());
     Ok(Session {
         group,
         targets,
@@ -258,8 +286,16 @@ async fn prepare_inner(
 
 fn normalized_static_provider(
     provider: &crate::provider::Provider,
+    preserve_key_scope: bool,
 ) -> Result<crate::provider::Provider, String> {
     let mut provider = provider.clone();
+    if !preserve_key_scope {
+        crate::services::routing_upstreams::strip_key_model_scope(&mut provider);
+    }
+    provider.id = crate::services::routing_upstreams::execution_identity(&provider).into();
+    if let Some(settings) = provider.settings_config.as_object_mut() {
+        settings.remove(crate::services::routing_upstreams::EXECUTION_IDENTITY);
+    }
     super::context::Metadata::strip_from_settings(&mut provider.settings_config);
     let format = provider
         .meta
@@ -287,15 +323,21 @@ fn normalized_static_provider(
 }
 
 pub(super) fn retarget(target: &mut Target, model: &str) -> Result<(), String> {
-    target.model = model.into();
     if let Some(provider) = &target.upstream {
-        let (url, _) = static_transport(provider, model)?;
+        if !crate::services::routing_upstreams::key_serves(provider, model) {
+            return Err("intentRouting.providerUnavailable".into());
+        }
+        let mut provider = crate::services::subscription_provider::for_model(provider, model)?;
+        crate::services::routing_upstreams::strip_key_model_scope(&mut provider);
+        let (url, _) = static_transport(&provider, model)?;
         target.url = reqwest::Url::parse(&url).map_err(|_| "intentRouting.providerUnavailable")?;
+        target.upstream = Some(provider);
     }
+    target.model = model.into();
     Ok(())
 }
 
-fn static_transport(
+pub(crate) fn static_transport(
     provider: &crate::provider::Provider,
     model: &str,
 ) -> Result<(String, http::HeaderMap), String> {
@@ -430,6 +472,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn copilot_shared_targets_and_retargeting_use_each_models_supported_endpoint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let record: crate::services::routing_upstreams::RoutingUpstream = serde_json::from_value(
+            serde_json::json!({"schemaVersion":1,"id":"fixture","name":"Fixture","revision":1,"source":{"kind":"subscription","provider":"github_copilot","accountId":"synthetic","mode":"vendor","catalog":[{"model":"responses-only","supported_endpoints":["/responses"]},{"model":"chat-only","supported_endpoints":["/chat/completions"]}]}}),
+        )?;
+        let provider = crate::services::routing_upstreams::resolve_provider(&record)?;
+        let mut group = super::super::tests::fixture();
+        group.members.truncate(1);
+        group.members[0].provider_id = "fixture".into();
+        group.members[0].model_id = "responses-only".into();
+        group.fallback_member_ids.clear();
+        group.rules.clear();
+        group.intent_recognition_enabled = false;
+        let mut session = prepare_with_providers(manager, group, vec![provider]).await?;
+        let target = &mut session.targets[0];
+        assert!(target.url.path().ends_with("/responses"));
+        assert_eq!(
+            target
+                .upstream
+                .as_ref()
+                .and_then(|p| p.meta.as_ref())
+                .and_then(|m| m.api_format.as_deref()),
+            Some("openai_responses")
+        );
+        retarget(target, "chat-only")?;
+        assert!(target.url.path().ends_with("/chat/completions"));
+        assert_eq!(
+            target
+                .upstream
+                .as_ref()
+                .and_then(|p| p.meta.as_ref())
+                .and_then(|m| m.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        Ok(())
+    }
+    #[tokio::test]
     async fn codex_editor_pools_keep_account_order_and_do_not_expand_a_disabled_model(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::services::codex_provider::{self, ModelMode, Settings};
@@ -495,8 +576,8 @@ mod tests {
             json!({"fixture-model":{"reasoningLevels":["low","high"]}});
         enriched.settings_config["routingPublicCapabilities"] =
             json!({"fixture-model":{"reasoning":true}});
-        let first = normalized_static_provider(&provider).expect("plain snapshot");
-        let next = normalized_static_provider(&enriched).expect("enriched snapshot");
+        let first = normalized_static_provider(&provider, false).expect("plain snapshot");
+        let next = normalized_static_provider(&enriched, false).expect("enriched snapshot");
         assert_eq!(first.settings_config, next.settings_config);
         let mut targets = synthetic_session().targets;
         targets[0].upstream = Some(first);
@@ -518,19 +599,19 @@ mod tests {
             json!({"apiFormat":"openai_chat","modelCatalog":{"models":[{"model":"exact-model","displayName":"Original","reasoningLevels":["high"]}]}}),
             None,
         );
-        let first = normalized_static_provider(&provider).expect("snapshot");
+        let first = normalized_static_provider(&provider, false).expect("snapshot");
         provider.settings_config["modelCatalog"]["models"][0]["displayName"] = json!("Changed");
         provider.settings_config["modelCatalog"]["models"][0]["modelPreferences"] =
             json!({"name":"Custom"});
-        let renamed = normalized_static_provider(&provider).expect("renamed");
+        let renamed = normalized_static_provider(&provider, false).expect("renamed");
         assert_eq!(first.settings_config, renamed.settings_config);
         provider.settings_config["modelCatalog"]["models"][0]["modelPreferences"]["sameAs"] =
             json!("canonical-model");
-        let equivalent = normalized_static_provider(&provider).expect("equivalent");
+        let equivalent = normalized_static_provider(&provider, false).expect("equivalent");
         assert_eq!(first.settings_config, equivalent.settings_config);
         provider.settings_config["modelCatalog"]["models"][0]["modelPreferences"]
             ["reasoningLevels"] = json!([]);
-        let changed = normalized_static_provider(&provider).expect("changed");
+        let changed = normalized_static_provider(&provider, false).expect("changed");
         assert_ne!(first.settings_config, changed.settings_config);
     }
 
@@ -583,6 +664,8 @@ mod tests {
             ),
         ] {
             let record = RoutingUpstream {
+                notes: None,
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 preset_id: None,
@@ -636,6 +719,8 @@ mod tests {
             resolve_provider, RoutingUpstream, UpstreamSource,
         };
         let record = RoutingUpstream {
+            notes: None,
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,

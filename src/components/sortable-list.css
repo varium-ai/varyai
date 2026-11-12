@@ -1,0 +1,99 @@
+.mp-sortable-row {
+  position: relative;
+}
+.mp-sortable-handle {
+  position: absolute;
+  top: 16px;
+  left: var(--mp-sortable-handle-left, 6px);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--mp-muted);
+  opacity: 0;
+  pointer-events: none;
+  cursor: grab;
+  touch-action: none;
+}
+.mp-sortable-row:hover > .mp-sortable-handle,
+.mp-sortable-row:focus-within > .mp-sortable-handle,
+.mp-sortable-row.dragging > .mp-sortable-handle {
+  opacity: 1;
+  pointer-events: auto;
+}
+.mp-sortable-handle:hover,
+.mp-sortable-handle:focus-visible {
+  background: var(--mp-hover);
+  color: var(--mp-fg);
+}
+.mp-sortable-handle:focus-visible {
+  outline: 2px solid var(--mp-control);
+  outline-offset: 2px;
+}
+.mp-list > .mp-sortable-row.dragging {
+  background: var(--mp-card-2);
+  border-radius: 8px;
+}
+.mp-list > .mp-sortable-row.dragging > * {
+  opacity: 0;
+  pointer-events: none;
+}
+.mp-sortable-overlay-scope.mp-sortable-overlay-scope {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+.mp-sortable-overlay-scope > .mp-sortable-preview {
+  border-radius: 10px;
+  background: var(--mp-card);
+  overflow: hidden;
+  box-shadow:
+    inset 0 0 0 1px var(--mp-line),
+    0 4px 12px rgb(20 22 30 / 12%);
+  cursor: grabbing;
+}
+.mp-sortable-preview > .mp-sortable-handle {
+  opacity: 1;
+}
+.mp-list > .mp-sortable-row[data-sorting] > .mp-sortable-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+.mp-sortable-preview .mp-agent-expanded {
+  animation: none;
+}
+.mp-sortable-row.dragging > .mp-sortable-handle,
+.mp-sortable-handle:active {
+  cursor: grabbing;
+}
+.mp-sortable-row[data-sortable] + .mp-sortable-row[data-sortable]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--mp-sortable-divider-left, 0);
+  right: var(--mp-sortable-divider-right, 0);
+  height: 1px;
+  background: var(--mp-list-divider);
+  pointer-events: none;
+}
+.mp-sortable-row.dragging::before,
+.mp-sortable-row.dragging + .mp-sortable-row::before {
+  opacity: 0;
+}
+@media (hover: none) {
+  .mp-sortable-handle {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mp-sortable-row {
+    transition: none !important;
+  }
+}

@@ -7998,10 +7998,13 @@ async fn run_closure_task_counterexample(mode: &'static str) -> TestResult {
             exposes_custom_plaintext,
             "in-memory proposed observations are raw, not persistence-safe; case={mode}"
         );
-        // Inspect the existing summary projection in memory without persisting it.
+        // Summary storage must hide custom-policy text even though raw in-memory
+        // observations above remain outside the persistence-safe boundary.
         let summary = crate::services::tool_risk::sanitize::summarize_command(value);
-        assert_eq!(summary.contains("private-first") || summary.contains("private-second"), exposes_custom_plaintext,
-            "custom DLP patterns are not covered by the independent built-in summary sanitizer; case={mode}");
+        assert!(
+            !summary.contains("private-first") && !summary.contains("private-second"),
+            "custom DLP plaintext must not reach the command summary; case={mode}"
+        );
         mock_observations.push(summary);
     }
     assert_eq!(

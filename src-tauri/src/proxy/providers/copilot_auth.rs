@@ -22,6 +22,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+pub(crate) mod provider_import;
 
 /// GitHub OAuth 客户端 ID（VS Code）- 用于 github.com
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
@@ -141,16 +142,43 @@ pub const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
 
 /// Copilot 使用量响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "CopilotUsageWire")]
 pub struct CopilotUsageResponse {
     /// Copilot 计划类型
     pub copilot_plan: String,
     /// 配额重置日期
+    #[serde(default)]
     pub quota_reset_date: String,
     /// 配额快照
     pub quota_snapshots: QuotaSnapshots,
     /// API 端点信息 (用于动态获取 API URL)
     #[serde(default)]
     pub endpoints: Option<CopilotEndpoints>,
+}
+
+#[derive(Deserialize)]
+struct CopilotUsageWire {
+    #[serde(default)]
+    copilot_plan: String,
+    quota_reset_date: Option<String>,
+    quota_reset_date_utc: Option<String>,
+    #[serde(default)]
+    quota_snapshots: QuotaSnapshots,
+    endpoints: Option<CopilotEndpoints>,
+}
+impl From<CopilotUsageWire> for CopilotUsageResponse {
+    fn from(wire: CopilotUsageWire) -> Self {
+        Self {
+            copilot_plan: wire.copilot_plan,
+            quota_reset_date: wire
+                .quota_reset_date_utc
+                .filter(|s| !s.is_empty())
+                .or(wire.quota_reset_date)
+                .unwrap_or_default(),
+            quota_snapshots: wire.quota_snapshots,
+            endpoints: wire.endpoints,
+        }
+    }
 }
 
 /// Copilot API 端点信息
@@ -164,27 +192,56 @@ pub struct CopilotEndpoints {
 }
 
 /// 配额快照
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QuotaSnapshots {
     /// Chat 配额
-    pub chat: QuotaDetail,
+    #[serde(default)]
+    pub chat: Option<QuotaDetail>,
     /// Completions 配额
-    pub completions: QuotaDetail,
+    #[serde(default)]
+    pub completions: Option<QuotaDetail>,
     /// Premium 交互配额
-    pub premium_interactions: QuotaDetail,
+    #[serde(default)]
+    pub premium_interactions: Option<QuotaDetail>,
 }
 
 /// 配额详情
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuotaDetail {
     /// 总配额
-    pub entitlement: i64,
+    #[serde(default, deserialize_with = "optional_quota_number")]
+    pub entitlement: Option<f64>,
     /// 剩余配额
-    pub remaining: i64,
+    #[serde(default, deserialize_with = "optional_quota_number")]
+    pub remaining: Option<f64>,
     /// 剩余百分比
-    pub percent_remaining: f64,
+    #[serde(default, deserialize_with = "optional_quota_percent")]
+    pub percent_remaining: Option<f64>,
     /// 是否无限
+    #[serde(default)]
     pub unlimited: bool,
+    #[serde(default)]
+    pub has_quota: Option<bool>,
+    #[serde(default)]
+    pub overage_permitted: Option<bool>,
+    #[serde(flatten)]
+    pub policy: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn optional_quota_number<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_f64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|n| n.is_finite() && *n >= 0.0 && *n <= 9_007_199_254_740_991.0))
+}
+
+fn optional_quota_percent<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    optional_quota_number(deserializer).map(|n| n.filter(|n| *n <= 100.0))
 }
 
 /// Copilot 可用模型
@@ -198,6 +255,8 @@ pub struct CopilotModel {
     pub vendor: String,
     /// 是否在模型选择器中显示
     pub model_picker_enabled: bool,
+    #[serde(flatten, default)]
+    pub facts: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Copilot Models API 响应
@@ -213,6 +272,50 @@ struct CopilotModelsResponseItem {
     name: String,
     vendor: String,
     model_picker_enabled: bool,
+    #[serde(flatten)]
+    facts: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl CopilotModel {
+    fn from_wire(m: CopilotModelsResponseItem) -> Self {
+        let mut facts = m.facts;
+        let raw = serde_json::to_value(&facts).unwrap_or(serde_json::Value::Null);
+        if let Some(value) = raw.pointer("/capabilities/limits/max_context_window_tokens") {
+            facts.insert("contextWindow".into(), value.clone());
+        }
+        if let Some(value) = raw.pointer("/capabilities/limits/max_output_tokens") {
+            facts.insert("maxOutputTokens".into(), value.clone());
+        }
+        if let Some(value) = raw
+            .pointer("/capabilities/supports/vision")
+            .and_then(serde_json::Value::as_bool)
+        {
+            facts.insert(
+                "inputModalities".into(),
+                serde_json::json!(if value {
+                    vec!["text", "image"]
+                } else {
+                    vec!["text"]
+                }),
+            );
+        }
+        if let Some(levels) = raw
+            .pointer("/capabilities/supports/reasoning_effort")
+            .filter(|v| v.is_array())
+        {
+            facts.insert("reasoningLevels".into(), levels.clone());
+        }
+        if let Some(value) = raw.pointer("/capabilities/supports/reasoning") {
+            facts.insert("reasoning".into(), value.clone());
+        }
+        Self {
+            id: m.id,
+            name: m.name,
+            vendor: m.vendor,
+            model_picker_enabled: m.model_picker_enabled,
+            facts,
+        }
+    }
 }
 
 /// Copilot 认证错误
@@ -340,8 +443,7 @@ pub struct GitHubAccount {
     /// GitHub 域名（github.com 或 GHES 域名）
     #[serde(default = "default_github_domain")]
     pub github_domain: String,
-    /// 托管账号是否需要重新登录以补全缺失的凭据。
-    /// Codex：缺少持久化 id_token 的旧账号为 true；Copilot 恒为 false。
+    /// Credentials were rejected or required account identity metadata is missing.
     #[serde(default)]
     pub reauth_required: bool,
 }
@@ -354,7 +456,7 @@ impl From<&GitHubAccountData> for GitHubAccount {
             avatar_url: data.user.avatar_url.clone(),
             authenticated_at: data.authenticated_at,
             github_domain: data.github_domain.clone(),
-            reauth_required: false,
+            reauth_required: data.reauth_required,
         }
     }
 }
@@ -384,6 +486,10 @@ struct GitHubAccountData {
     /// 安全说明：为了复用登录状态，本地会持久化该令牌。
     /// 当前实现未接入系统钥匙串，依赖私有文件权限（Unix 下 0600）保护。
     pub github_token: String,
+    #[serde(default)]
+    reauth_required: bool,
+    #[serde(default)]
+    plan: Option<String>,
     /// 用户信息
     pub user: GitHubUser,
     /// 认证时间戳
@@ -471,10 +577,67 @@ impl CopilotAuthManager {
         Self::sorted_accounts(&accounts, default_account_id.as_deref())
     }
 
+    /// Keep only local, redacted observations; never probe a vendor while listing.
+    pub(crate) async fn editor_plan(&self, account_id: &str) -> Option<String> {
+        self.accounts.read().await.get(account_id)?.plan.clone()
+    }
+
+    async fn observe_rejected_credential(&self, account_id: &str, token: &str) {
+        let changed = {
+            let mut accounts = self.accounts.write().await;
+            if let Some(account) = accounts
+                .get_mut(account_id)
+                .filter(|account| account.github_token == token)
+            {
+                let changed = !account.reauth_required;
+                account.reauth_required = true;
+                changed
+            } else {
+                false
+            }
+        };
+        if changed && self.save_to_disk().await.is_err() {
+            log::warn!("Could not persist Copilot authorization status");
+        }
+    }
+
+    async fn observe_plan(&self, account_id: &str, token: &str, plan: &str) {
+        let plan = match plan {
+            "individual" | "pro" => Some("Copilot Pro".into()),
+            "individual_pro" | "pro_plus" => Some("Copilot Pro+".into()),
+            "business" => Some("Copilot Business".into()),
+            "enterprise" => Some("Copilot Enterprise".into()),
+            "free" => Some("Copilot Free".into()),
+            _ => crate::services::subscription_plan::vendor_plan("Copilot", plan),
+        };
+        let Some(plan) = plan else {
+            return;
+        };
+        let changed = {
+            let mut accounts = self.accounts.write().await;
+            if let Some(account) = accounts
+                .get_mut(account_id)
+                .filter(|account| account.github_token == token)
+            {
+                let changed = account.plan.as_deref() != Some(plan.as_str());
+                account.plan = Some(plan);
+                changed
+            } else {
+                false
+            }
+        };
+        if changed {
+            let _ = self.save_to_disk().await;
+        }
+    }
+
     /// 获取指定账号信息
     pub async fn get_account(&self, account_id: &str) -> Option<GitHubAccount> {
         let accounts = self.accounts.read().await;
-        accounts.get(account_id).map(GitHubAccount::from)
+        accounts.get(account_id).map(|data| GitHubAccount {
+            id: account_id.to_owned(),
+            ..GitHubAccount::from(data)
+        })
     }
 
     /// 移除指定账号
@@ -532,14 +695,31 @@ impl CopilotAuthManager {
         user: GitHubUser,
         github_domain: String,
     ) -> Result<GitHubAccount, CopilotAuthError> {
-        let account_id = composite_account_id(&github_domain, user.id);
         let now = chrono::Utc::now().timestamp();
 
         let account_data = GitHubAccountData {
+            reauth_required: false,
+            plan: None,
             github_token,
             user: user.clone(),
             authenticated_at: now,
             github_domain: github_domain.clone(),
+        };
+
+        let account_id = {
+            let mut accounts = self.accounts.write().await;
+            let id = accounts
+                .iter()
+                .find(|(_, old)| {
+                    old.github_domain == github_domain
+                        && (old.user.id == user.id
+                            || (old.user.id == 0
+                                && old.user.login.eq_ignore_ascii_case(&user.login)))
+                })
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| composite_account_id(&github_domain, user.id));
+            accounts.insert(id.clone(), account_data);
+            id
         };
 
         let account = GitHubAccount {
@@ -550,11 +730,6 @@ impl CopilotAuthManager {
             github_domain,
             reauth_required: false,
         };
-
-        {
-            let mut accounts = self.accounts.write().await;
-            accounts.insert(account_id, account_data);
-        }
 
         {
             let mut default_account_id = self.default_account_id.write().await;
@@ -724,6 +899,15 @@ impl CopilotAuthManager {
         // 确保迁移完成
         self.ensure_migration_complete().await?;
 
+        if self
+            .accounts
+            .read()
+            .await
+            .get(account_id)
+            .is_some_and(|account| account.reauth_required)
+        {
+            return Err(CopilotAuthError::GitHubTokenInvalid);
+        }
         // GHES 账号直接使用 GitHub OAuth token，无需 Copilot token 交换
         let domain = self.get_account_domain(account_id).await;
         if is_ghes(&domain) {
@@ -800,13 +984,17 @@ impl CopilotAuthManager {
     ) -> Result<Vec<CopilotModel>, CopilotAuthError> {
         self.ensure_migration_complete().await?;
 
-        {
-            let models = self.copilot_models.read().await;
-            if let Some(cached) = models.get(account_id) {
-                return Ok(cached.clone());
-            }
+        if let Some(cached) = self.copilot_models.read().await.get(account_id) {
+            return Ok(cached.clone());
         }
+        self.refresh_models_for_account(account_id).await
+    }
 
+    pub async fn refresh_models_for_account(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<CopilotModel>, CopilotAuthError> {
+        self.ensure_migration_complete().await?;
         let models = self.fetch_models_for_account_uncached(account_id).await?;
         {
             let mut cache = self.copilot_models.write().await;
@@ -860,12 +1048,7 @@ impl CopilotAuthManager {
             .data
             .into_iter()
             .filter(|m| m.model_picker_enabled)
-            .map(|m| CopilotModel {
-                id: m.id,
-                name: m.name,
-                vendor: m.vendor,
-                model_picker_enabled: m.model_picker_enabled,
-            })
+            .map(CopilotModel::from_wire)
             .collect();
 
         log::info!("[CopilotAuth] 获取到 {} 个可用模型", models.len());
@@ -888,7 +1071,7 @@ impl CopilotAuthManager {
     /// 获取 Copilot 可用模型列表（向后兼容：使用第一个账号）
     pub async fn fetch_models(&self) -> Result<Vec<CopilotModel>, CopilotAuthError> {
         match self.resolve_default_account_id().await {
-            Some(id) => self.fetch_models_for_account(&id).await,
+            Some(id) => self.refresh_models_for_account(&id).await,
             None => Err(CopilotAuthError::GitHubTokenInvalid),
         }
     }
@@ -930,6 +1113,8 @@ impl CopilotAuthManager {
             .await?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            self.observe_rejected_credential(account_id, &github_token)
+                .await;
             return Err(CopilotAuthError::GitHubTokenInvalid);
         }
 
@@ -945,6 +1130,8 @@ impl CopilotAuthManager {
             .json()
             .await
             .map_err(|e| CopilotAuthError::ParseError(e.to_string()))?;
+        self.observe_plan(account_id, &github_token, &usage.copilot_plan)
+            .await;
 
         // 存储动态 API 端点（如果有）
         if let Some(ref endpoints) = usage.endpoints {
@@ -1044,6 +1231,8 @@ impl CopilotAuthManager {
             .await?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            self.observe_rejected_credential(account_id, &github_token)
+                .await;
             return Err(CopilotAuthError::GitHubTokenInvalid);
         }
 
@@ -1058,6 +1247,8 @@ impl CopilotAuthManager {
             .json()
             .await
             .map_err(|e| CopilotAuthError::ParseError(e.to_string()))?;
+        self.observe_plan(account_id, &github_token, &usage.copilot_plan)
+            .await;
 
         let endpoint = match usage.endpoints {
             Some(endpoints) => endpoints.api.clone(),
@@ -1191,8 +1382,13 @@ impl CopilotAuthManager {
         accounts: &HashMap<String, GitHubAccountData>,
         default_account_id: Option<&str>,
     ) -> Vec<GitHubAccount> {
-        let mut account_list: Vec<GitHubAccount> =
-            accounts.values().map(GitHubAccount::from).collect();
+        let mut account_list: Vec<GitHubAccount> = accounts
+            .iter()
+            .map(|(id, data)| GitHubAccount {
+                id: id.clone(),
+                ..GitHubAccount::from(data)
+            })
+            .collect();
         account_list.sort_by(|a, b| {
             let a_default = default_account_id == Some(a.id.as_str());
             let b_default = default_account_id == Some(b.id.as_str());
@@ -1351,6 +1547,8 @@ impl CopilotAuthManager {
             .await?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            self.observe_rejected_credential(account_id, github_token)
+                .await;
             return Err(CopilotAuthError::GitHubTokenInvalid);
         }
 
@@ -1517,6 +1715,79 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[tokio::test]
+    async fn rejected_github_credential_marks_only_its_generation_and_survives_reload(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let manager = CopilotAuthManager::new(temp.path().to_owned());
+        let account = manager
+            .add_account_internal(
+                "synthetic-github".into(),
+                GitHubUser {
+                    id: 42,
+                    login: "fixture".into(),
+                    avatar_url: None,
+                },
+                "github.com".into(),
+            )
+            .await?;
+        manager
+            .observe_plan(&account.id, "synthetic-github", "individual")
+            .await;
+        assert_eq!(
+            manager.editor_plan(&account.id).await.as_deref(),
+            Some("Copilot Pro")
+        );
+        manager
+            .observe_rejected_credential(&account.id, "stale-credential")
+            .await;
+        assert!(
+            !manager
+                .get_account(&account.id)
+                .await
+                .ok_or("missing")?
+                .reauth_required
+        );
+        manager
+            .observe_rejected_credential(&account.id, "synthetic-github")
+            .await;
+        assert!(
+            manager
+                .get_account(&account.id)
+                .await
+                .ok_or("missing")?
+                .reauth_required
+        );
+        drop(manager);
+        let manager = CopilotAuthManager::new(temp.path().to_owned());
+        assert!(
+            manager
+                .get_account(&account.id)
+                .await
+                .ok_or("missing")?
+                .reauth_required
+        );
+        manager
+            .add_account_internal(
+                "new-github".into(),
+                GitHubUser {
+                    id: 42,
+                    login: "fixture".into(),
+                    avatar_url: None,
+                },
+                "github.com".into(),
+            )
+            .await?;
+        assert!(
+            !manager
+                .get_account(&account.id)
+                .await
+                .ok_or("missing")?
+                .reauth_required
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_copilot_token_expiry() {
         let now = chrono::Utc::now().timestamp();
@@ -1579,6 +1850,8 @@ mod tests {
         accounts.insert(
             "12345".to_string(),
             GitHubAccountData {
+                reauth_required: false,
+                plan: None,
                 github_token: "gho_test_token".to_string(),
                 user: GitHubUser {
                     login: "alice".to_string(),
@@ -1592,6 +1865,8 @@ mod tests {
         accounts.insert(
             "67890".to_string(),
             GitHubAccountData {
+                reauth_required: false,
+                plan: None,
                 github_token: "gho_test_token_2".to_string(),
                 user: GitHubUser {
                     login: "bob".to_string(),
@@ -1640,6 +1915,8 @@ mod tests {
     #[test]
     fn test_github_account_from_data() {
         let data = GitHubAccountData {
+            reauth_required: false,
+            plan: None,
             github_token: "gho_test".to_string(),
             user: GitHubUser {
                 login: "testuser".to_string(),
@@ -1666,6 +1943,8 @@ mod tests {
         accounts.insert(
             "12345".to_string(),
             GitHubAccountData {
+                reauth_required: false,
+                plan: None,
                 github_token: "gho_test_token".to_string(),
                 user: GitHubUser {
                     login: "alice".to_string(),
@@ -1679,6 +1958,8 @@ mod tests {
         accounts.insert(
             "67890".to_string(),
             GitHubAccountData {
+                reauth_required: false,
+                plan: None,
                 github_token: "gho_test_token_2".to_string(),
                 user: GitHubUser {
                     login: "bob".to_string(),
@@ -1710,6 +1991,8 @@ mod tests {
             accounts.insert(
                 "12345".to_string(),
                 GitHubAccountData {
+                    reauth_required: false,
+                    plan: None,
                     github_token: "gho_test".to_string(),
                     user: GitHubUser {
                         login: "alice".to_string(),
@@ -1731,12 +2014,14 @@ mod tests {
                         name: "GPT-5.4".to_string(),
                         vendor: "OpenAI".to_string(),
                         model_picker_enabled: true,
+                        facts: Default::default(),
                     },
                     CopilotModel {
                         id: "claude-sonnet-4".to_string(),
                         name: "Claude Sonnet 4".to_string(),
                         vendor: "Anthropic".to_string(),
                         model_picker_enabled: true,
+                        facts: Default::default(),
                     },
                 ],
             );
@@ -1795,6 +2080,8 @@ mod tests {
             accounts.insert(
                 "12345".to_string(),
                 GitHubAccountData {
+                    reauth_required: false,
+                    plan: None,
                     github_token: "gho_test".to_string(),
                     user: GitHubUser {
                         login: "alice".to_string(),
@@ -1830,6 +2117,8 @@ mod tests {
             accounts.insert(
                 "12345".to_string(),
                 GitHubAccountData {
+                    reauth_required: false,
+                    plan: None,
                     github_token: "gho_test".to_string(),
                     user: GitHubUser {
                         login: "alice".to_string(),
@@ -1913,6 +2202,8 @@ mod tests {
             accounts.insert(
                 "12345".to_string(),
                 GitHubAccountData {
+                    reauth_required: false,
+                    plan: None,
                     github_token: "gho_test".to_string(),
                     user: GitHubUser {
                         login: "alice".to_string(),
@@ -2074,6 +2365,8 @@ mod tests {
     #[test]
     fn test_github_account_from_data_ghes_uses_composite_id() {
         let data = GitHubAccountData {
+            reauth_required: false,
+            plan: None,
             github_token: "gho_test".to_string(),
             user: GitHubUser {
                 login: "testuser".to_string(),
@@ -2086,5 +2379,62 @@ mod tests {
 
         let account = GitHubAccount::from(&data);
         assert_eq!(account.id, "company.ghe.com:99999");
+    }
+}
+
+#[cfg(test)]
+mod subscription_parity_tests {
+    use super::*;
+    #[test]
+    fn nested_model_capabilities_survive_discovery_and_publication() {
+        let wire:CopilotModelsResponseItem=serde_json::from_value(serde_json::json!({"id":"fixture","name":"Fixture","vendor":"synthetic","model_picker_enabled":true,"supported_endpoints":["/responses"],"policy":{"state":"enabled"},"capabilities":{"limits":{"max_context_window_tokens":200000,"max_output_tokens":32000},"supports":{"vision":true,"reasoning_effort":["low","high"]}}})).expect("model facts");
+        let value = serde_json::to_value(CopilotModel::from_wire(wire)).expect("public model");
+        assert_eq!(value["reasoningLevels"], serde_json::json!(["low", "high"]));
+        assert_eq!(
+            value["inputModalities"],
+            serde_json::json!(["text", "image"])
+        );
+        assert_eq!(value["contextWindow"], 200000);
+        assert_eq!(value["policy"]["state"], "enabled");
+        assert_eq!(
+            value["supported_endpoints"],
+            serde_json::json!(["/responses"])
+        );
+    }
+    #[test]
+    fn both_reset_date_fields_and_invalid_numbers_are_supported() {
+        let usage: CopilotUsageResponse = serde_json::from_value(serde_json::json!({
+            "copilot_plan":"enterprise", "quota_reset_date":"2026-12-01", "quota_reset_date_utc":"2026-12-01T00:00:00Z",
+            "quota_snapshots":{"premium_interactions":{"remaining":"NaN","entitlement":"9007199254740992","percent_remaining":101}}
+        })).expect("both reset date fields");
+        assert_eq!(usage.quota_reset_date, "2026-12-01T00:00:00Z");
+        let detail = usage.quota_snapshots.premium_interactions.expect("premium");
+        assert!(
+            detail.entitlement.is_none()
+                && detail.remaining.is_none()
+                && detail.percent_remaining.is_none()
+        );
+    }
+    #[test]
+    fn partial_enterprise_usage_accepts_strings_and_preserves_exhaustion() {
+        let usage: CopilotUsageResponse = serde_json::from_value(serde_json::json!({
+            "copilot_plan":"enterprise", "quota_reset_date_utc":"2026-12-01T00:00:00Z",
+            "quota_snapshots":{"premium_interactions":{"entitlement":"1000","percent_remaining":"0","unlimited":true,"has_quota":false,"overage_permitted":false}}
+        })).expect("supported enterprise response");
+        let value = serde_json::to_value(usage).expect("public usage");
+        assert_eq!(value["quota_reset_date"], "2026-12-01T00:00:00Z");
+        assert_eq!(
+            value["quota_snapshots"]["premium_interactions"]["has_quota"],
+            false
+        );
+        assert!(value["quota_snapshots"]["chat"].is_null());
+    }
+    #[test]
+    fn missing_allowance_does_not_become_zero_or_unlimited() {
+        let detail: QuotaDetail =
+            serde_json::from_value(serde_json::json!({})).expect("unknown allowance");
+        let value = serde_json::to_value(detail).expect("public quota");
+        assert!(value["remaining"].is_null());
+        assert!(value["percent_remaining"].is_null());
     }
 }

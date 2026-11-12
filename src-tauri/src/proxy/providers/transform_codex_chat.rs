@@ -46,7 +46,20 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 
-const TOOL_SEARCH_PROXY_NAME: &str = "tool_search";
+pub(crate) const TOOL_SEARCH_PROXY_NAME: &str = "tool_search";
+pub(crate) const TOOL_SEARCH_DESCRIPTION: &str =
+    "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.";
+
+pub(crate) fn tool_search_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {"type":"string","description":"Search query for tools or connectors to load."},
+            "limit": {"type":"integer","description":"Maximum number of tool groups to return."}
+        },
+        "required": ["query"]
+    })
+}
 const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 const CHAT_TOOL_NAME_MAX_LEN: usize = 64;
 const CUSTOM_TOOL_INPUT_DESCRIPTION: &str = "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description.";
@@ -177,21 +190,8 @@ impl CodexToolContext {
             "type": "function",
             "function": {
                 "name": TOOL_SEARCH_PROXY_NAME,
-                "description": "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query for tools or connectors to load."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of tool groups to return."
-                        }
-                    },
-                    "required": ["query"]
-                }
+                "description": TOOL_SEARCH_DESCRIPTION,
+                "parameters": tool_search_parameters()
             }
         });
         let spec = CodexToolSpec {

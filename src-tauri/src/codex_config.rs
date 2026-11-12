@@ -520,8 +520,16 @@ fn extract_codex_managed_oauth_account_id(auth: &Value) -> Option<String> {
     let account_id = tokens
         .get("account_id")
         .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|id| !id.is_empty())?;
+        .map(str::trim)?;
+    if account_id.is_empty()
+        && tokens
+            .get("id_token")
+            .and_then(Value::as_str)
+            .and_then(extract_codex_browser_user_identity)
+            .is_none()
+    {
+        return None;
+    }
     tokens
         .get("access_token")
         .and_then(|value| value.as_str())
@@ -534,7 +542,30 @@ fn extract_codex_managed_oauth_account_id(auth: &Value) -> Option<String> {
 /// 从原生 auth.json 的 id_token 提取跨刷新稳定的用户身份。
 fn extract_codex_auth_user_identity(auth: &Value) -> Option<String> {
     let id_token = auth.pointer("/tokens/id_token")?.as_str()?;
+    extract_codex_binding_user_identity(id_token)
+}
+
+/// Browser login follows Codex/Magpie's email identity without changing legacy import checks.
+fn extract_codex_browser_user_identity(id_token: &str) -> Option<String> {
+    let mut parts = id_token.split('.');
+    parts.next()?;
+    let payload = parts.next()?;
+    parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    let email = claims.get("email")?.as_str()?.trim();
+    if email.is_empty() {
+        return None;
+    }
+    Some(format!("email:{}", email.to_ascii_lowercase()))
+}
+
+pub(crate) fn extract_codex_binding_user_identity(id_token: &str) -> Option<String> {
     extract_codex_id_token_user_identity(id_token)
+        .or_else(|| extract_codex_browser_user_identity(id_token))
 }
 
 pub(crate) fn extract_codex_id_token_user_identity(id_token: &str) -> Option<String> {
@@ -654,7 +685,7 @@ fn migrate_legacy_codex_managed_oauth_live_auth_marker(
 
     let auth_account_id = extract_codex_managed_oauth_account_id(auth);
     let auth_user_identity = extract_codex_auth_user_identity(auth);
-    let managed_user_identity = managed_id_token.and_then(extract_codex_id_token_user_identity);
+    let managed_user_identity = managed_id_token.and_then(extract_codex_binding_user_identity);
     if auth_account_id.as_deref() != Some(managed_account_id)
         || auth_user_identity.as_deref() != managed_user_identity.as_deref()
         || managed_user_identity.is_none()
@@ -1588,8 +1619,15 @@ fn codex_catalog_model_entry(
     entry_obj.insert("context_window".to_string(), json!(context_window));
     entry_obj.insert("max_context_window".to_string(), json!(context_window));
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
-    entry_obj.insert("additional_speed_tiers".to_string(), json!([]));
-    entry_obj.insert("service_tiers".to_string(), json!([]));
+    let tiers = crate::services::intent_routing::speed::for_model(
+        spec.service_tiers.as_deref(),
+        &spec.model,
+    );
+    let mut speeds = json!({});
+    crate::services::intent_routing::speed::advertise(&mut speeds, &tiers);
+    if let Some(speeds) = speeds.as_object() {
+        entry_obj.extend(speeds.clone());
+    }
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
 
@@ -1689,6 +1727,7 @@ struct CodexCatalogModelSpec {
     /// template default is kept if it is still in the list, otherwise the last
     /// (highest) declared level wins.
     default_reasoning_level: Option<String>,
+    service_tiers: Option<Vec<crate::services::intent_routing::speed::Tier>>,
 }
 
 fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
@@ -1778,6 +1817,7 @@ fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
             .map(str::to_string);
 
         specs.push(CodexCatalogModelSpec {
+            service_tiers: crate::services::intent_routing::speed::parse(model_config),
             model: model.to_string(),
             display_name,
             context_window,
@@ -2176,6 +2216,17 @@ fn codex_vendor_catalog_model_entry(
         .filter(|text| !text.is_empty())
     {
         entry_obj.insert("base_instructions".to_string(), json!(base_instructions));
+    }
+
+    if let Some(tiers) = &spec.service_tiers {
+        let mut speeds = json!({});
+        crate::services::intent_routing::speed::advertise(&mut speeds, tiers);
+        if let Some(speeds) = speeds.as_object() {
+            entry_obj.extend(speeds.clone());
+        }
+    } else if matched.is_none() {
+        entry_obj.remove("service_tiers");
+        entry_obj.remove("additional_speed_tiers");
     }
 
     // Per-model reasoning levels win over the official vendor entry too.
@@ -4351,6 +4402,56 @@ mod tests {
     struct CodexLiveTestHome {
         _dir: tempfile::TempDir,
         original_test_home: Option<OsString>,
+    }
+
+    #[test]
+    #[serial]
+    fn browser_email_identity_without_workspace_has_scoped_native_ownership(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = CodexLiveTestHome::new();
+        let token = |email: &str| {
+            format!(
+                "opaque.{}=.",
+                URL_SAFE_NO_PAD.encode(json!({"email":email}).to_string())
+            )
+        };
+        let auth = codex_managed_oauth_auth_value(
+            "",
+            "synthetic-access",
+            Some(&token("user@example.test")),
+            "synthetic-refresh",
+            "2026-11-09T00:00:00Z",
+        );
+        record_codex_managed_oauth_live_auth(&auth, "local-browser-account")?;
+        assert!(codex_auth_matches_recorded_managed_oauth(
+            &auth,
+            "local-browser-account"
+        )?);
+        assert!(!codex_auth_matches_recorded_managed_oauth(
+            &auth,
+            "other-local-account"
+        )?);
+        let foreign = codex_managed_oauth_auth_value(
+            "",
+            "synthetic-access",
+            Some(&token("other@example.test")),
+            "synthetic-refresh",
+            "2026-11-09T00:00:00Z",
+        );
+        assert!(!codex_auth_matches_recorded_managed_oauth(
+            &foreign,
+            "local-browser-account"
+        )?);
+        // Legacy subject-only accounts still cannot claim an unknown workspace.
+        let old = codex_managed_oauth_auth_value(
+            "",
+            "synthetic-access",
+            Some(&test_codex_id_token("legacy-user")),
+            "synthetic-refresh",
+            "2026-11-09T00:00:00Z",
+        );
+        assert!(extract_codex_managed_oauth_account_id(&old).is_none());
+        Ok(())
     }
 
     impl CodexLiveTestHome {
@@ -6751,6 +6852,7 @@ base_url = "https://production.api/v1"
         let mut template = json!({ "slug": "gpt-5.5" });
         fill_template_fields_from_static(&mut template);
         let specs = vec![CodexCatalogModelSpec {
+            service_tiers: None,
             model: "k3".to_string(),
             display_name: Some("Kimi K3".to_string()),
             context_window: Some(262_144),
@@ -6845,6 +6947,35 @@ base_url = "https://production.api/v1"
             assert_eq!(catalog["models"][0]["priority"], 1000);
             assert_eq!(catalog["models"][1]["priority"], 1001);
         }
+    }
+
+    #[test]
+    fn speed_tiers_in_generated_catalog_follow_the_model_not_the_template() {
+        let settings = json!({"modelCatalog":{"models":[
+            {"model":"relay/gpt-6.1-sol"},
+            {"model":"synthetic-model", "service_tiers":[
+                {"id":"priority","name":"Fast","description":"Higher usage"}
+            ]},
+            {"model":"gpt-explicitly-disabled", "service_tiers":[]},
+            {"model":"synthetic-ordinary"}
+        ]}});
+        let catalog = codex_model_catalog_from_specs(
+            &codex_catalog_model_specs(&settings),
+            &json!({"service_tiers":[{"id":"ultrafast","name":"Ultrafast"}], "additional_speed_tiers":["ultrafast"]}),
+            CodexCatalogToolProfile::NativeResponses,
+            128_000,
+        );
+        assert_eq!(catalog["models"][0]["service_tiers"][0]["id"], "priority");
+        assert_eq!(
+            catalog["models"][0]["additional_speed_tiers"],
+            json!(["fast"])
+        );
+        assert_eq!(
+            catalog["models"][1]["service_tiers"][0]["description"],
+            "Higher usage"
+        );
+        assert_eq!(catalog["models"][2]["service_tiers"], json!([]));
+        assert_eq!(catalog["models"][3]["service_tiers"], json!([]));
     }
 
     #[test]
@@ -7282,6 +7413,7 @@ base_url = "https://production.api/v1"
         });
         let specs = vec![
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "gpt-5.4".to_string(),
                 display_name: Some("GPT 5.4".to_string()),
                 context_window: Some(128_000),
@@ -7292,6 +7424,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "qwen/qwen3-coder-plus".to_string(),
                 display_name: Some("Qwen3 Coder Plus".to_string()),
                 context_window: Some(128_000),
@@ -7302,6 +7435,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "glm-5.2v".to_string(),
                 display_name: Some("GLM 5.2V".to_string()),
                 context_window: Some(128_000),
@@ -7312,6 +7446,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "deepseek-v4-flash".to_string(),
                 display_name: Some("Explicit Visual Override".to_string()),
                 context_window: Some(128_000),
@@ -7322,6 +7457,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "custom-text-alias".to_string(),
                 display_name: Some("Explicit Text Override".to_string()),
                 context_window: Some(128_000),
@@ -7633,6 +7769,7 @@ wire_api = "responses"
         // freeform apply_patch tool (the proxy rewrites custom<->function).
         let template = load_codex_native_responses_template();
         let specs = vec![CodexCatalogModelSpec {
+            service_tiers: None,
             model: "x".to_string(),
             display_name: Some("x".to_string()),
             context_window: Some(128_000),

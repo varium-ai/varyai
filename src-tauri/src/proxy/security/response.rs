@@ -38,11 +38,17 @@ pub fn build_blocked_response(app_type: &AppType, reason: &str) -> Result<Respon
         | AppType::Hermes
         | AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {
             json!({
                 "error": {

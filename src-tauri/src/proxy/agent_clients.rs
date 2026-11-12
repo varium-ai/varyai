@@ -59,10 +59,11 @@ pub(crate) async fn handle(
             .and_then(|p| p.strip_prefix('/'))
             .ok_or_else(invalid)?
     };
-    let is_model = matches!(
+    let is_model = (matches!(
         suffix,
         "chat/completions" | "responses" | "messages" | "beta/messages" | "v1/messages"
-    ) && request.method() == http::Method::POST;
+    ) || (app == "qwen" && suffix == "v1/responses"))
+        && request.method() == http::Method::POST;
     if !is_model && !(suffix == "models" && request.method() == http::Method::GET) {
         return Err(invalid());
     }
@@ -532,9 +533,12 @@ mod tests {
                 let selected = if real {
                     config.clone()
                 } else {
-                    json!({"baseUrl":format!("http://{addr}{}", if protocol == "anthropic" { "" } else { "/v1" }),"apiKey":"synthetic-native-key","protocol":protocol,"models":[{"model":"alpha"}]})
+                    json!({"baseUrl":format!("http://{addr}{}", if protocol == "anthropic" || (app == "qwen" && protocol == "openai-responses") { "" } else { "/v1" }),"apiKey":"synthetic-native-key","protocol":protocol,"models":[{"model":"alpha"}]})
                 };
                 doc.apply(app, "test", "Test", &selected).expect("project");
+                if app == "qwen" {
+                    doc.value["general"] = json!({"enableAutoUpdate":false});
+                }
                 let routes = doc
                     .route(app, &format!("http://127.0.0.1:{}", info.port))
                     .expect("route");
@@ -680,6 +684,103 @@ mod tests {
         gateway.stop().await.expect("stop");
         super::super::security::runtime::set_security_runtime_for_test(Default::default());
     }
+    #[tokio::test]
+    async fn qwen_responses_accepts_native_v1_suffix_with_root_and_prefixed_base_urls() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let upstream = Router::new().fallback(post(|request: Request| async move {
+            assert!(matches!(request.uri().path(), "/v1/responses" | "/api/v1/responses"));
+            assert_eq!(request.headers()["authorization"], "Bearer synthetic-key");
+            let body: Value = serde_json::from_slice(
+                &to_bytes(request.into_body(), 1024 * 1024).await.expect("body"),
+            ).expect("payload");
+            assert_eq!(body["input"], "[REDACTED_PRIVATE_KEY]");
+            assert_eq!(body["future"], json!({"preserve":true}));
+            axum::Json(json!({"id":"synthetic-response","output":[],"usage":{"input_tokens":3,"output_tokens":2}}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("port");
+        let addr = listener.local_addr().expect("address");
+        let task =
+            tokio::spawn(async move { axum::serve(listener, upstream).await.expect("serve") });
+        let db = Arc::new(crate::database::Database::memory().expect("database"));
+        let gateway = super::super::server::ProxyServer::new(
+            crate::proxy::ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db.clone(),
+            None,
+        );
+        let info = gateway.start().await.expect("gateway");
+        let origin = format!("http://127.0.0.1:{}", info.port);
+        let client = reqwest::Client::new();
+        for base in ["", "/api", "/v1", "/api/v1"] {
+            let mut doc = native::Document::parse("qwen", "{}").expect("document");
+            doc.apply(
+                "qwen",
+                "saved",
+                "Synthetic",
+                &json!({
+                    "protocol":"openai-responses","baseUrl":format!("http://{addr}{base}"),
+                    "apiKey":"synthetic-key","models":[{"model":"alpha"}]
+                }),
+            )
+            .expect("apply");
+            let routes = doc.route("qwen", &origin).expect("route");
+            let local = routes[0].local.trim_end_matches('/').to_string();
+            let backup = Backup {
+                path: "unused-synthetic-config".into(),
+                routes,
+            };
+            db.save_live_backup("qwen", &serde_json::to_string(&backup).expect("backup"))
+                .await
+                .expect("save");
+            db.set_setting(&native::enabled_key("qwen"), "true")
+                .expect("enable");
+            // Qwen normalizes away a final /v1, then appends /v1/responses.
+            let url = format!("{}/v1/responses", local.trim_end_matches("/v1"));
+            let payload = json!({"model":"alpha","input":format!("{} RSA PRIVATE KEY{} SYNTHETIC_ONLY", "-----BEGIN", "-----"),"future":{"preserve":true}});
+            let response = client
+                .post(&url)
+                .bearer_auth("synthetic-key")
+                .json(&payload)
+                .send()
+                .await
+                .expect("request");
+            assert_eq!(response.status(), 200, "Qwen Responses base {base}");
+            assert_eq!(
+                response.json::<Value>().await.expect("response")["id"],
+                "synthetic-response"
+            );
+            let invalid_model = client
+                .post(&url)
+                .json(&json!({"model":"unconfigured","input":"synthetic"}))
+                .send()
+                .await
+                .expect("request");
+            assert_eq!(invalid_model.status(), 400);
+            let unknown_path = client
+                .post(format!("{local}/v1/embeddings"))
+                .json(&payload)
+                .send()
+                .await
+                .expect("request");
+            assert_eq!(unknown_path.status(), 400);
+            db.set_setting(&native::enabled_key("qwen"), "false")
+                .expect("disable");
+            let disabled = client
+                .post(&url)
+                .json(&payload)
+                .send()
+                .await
+                .expect("request");
+            assert_eq!(disabled.status(), 400);
+        }
+        gateway.stop().await.expect("stop");
+        task.abort();
+    }
+
     #[tokio::test]
     async fn native_agents_redact_before_forwarding_preserve_parameters_and_record_independent_usage(
     ) {

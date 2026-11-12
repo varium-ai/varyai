@@ -7,6 +7,9 @@ fn enabled(model: &Model) -> bool {
 }
 
 pub(super) fn workbuddy(row: &mut Value, model: &Model) {
+    if let Some(tokens) = super::output_limit(model) {
+        row["maxOutputTokens"] = json!(tokens);
+    }
     let levels = model
         .reasoning_levels
         .iter()
@@ -117,8 +120,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opencode_limits_always_include_both_required_fields() {
+        for (context_window, output_tokens, expected) in [
+            (Some(272000), None, json!({"context":272000,"output":0})),
+            (None, Some(32768), json!({"context":0,"output":32768})),
+            (None, None, Value::Null),
+        ] {
+            let model = Model {
+                api: "openai-completions",
+                native_model: None,
+                id: "synthetic".into(),
+                name: "Synthetic".into(),
+                context_window,
+                output_tokens,
+                cost: None,
+                compact_at: None,
+                group: "Synthetic".into(),
+                reasoning_levels: vec![],
+                reasoning: false,
+                default_reasoning_level: None,
+                images: false,
+                icon: None,
+            };
+            assert_eq!(super::super::opencode_model(&model)["limit"], expected);
+        }
+    }
+
+    #[test]
+    fn parity_known_output_and_cache_prices_reach_native_agents() {
+        let capability =
+            crate::services::intent_routing::effort::Capability::parse(&json!({"output":32768}));
+        assert_eq!(capability.output_tokens, Some(32768));
+        let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: Some(32768),
+            cost: Some(json!({"input":1,"output":2,"cacheRead":0.1,"cacheWrite":1.25})),
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            context_window: Some(128000),
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+            icon: None,
+        };
+        let pi = super::super::pi_model(&model);
+        assert_eq!(pi["maxTokens"], 32768);
+        assert_eq!(pi["cost"]["cacheRead"], 0.1);
+        let opencode = super::super::opencode_model(&model);
+        assert_eq!(opencode["limit"]["output"], 32768);
+        assert_eq!(opencode["cost"]["cache_write"], 1.25);
+        let mut buddy = json!({});
+        workbuddy(&mut buddy, &model);
+        assert_eq!(buddy["maxOutputTokens"], 32768);
+    }
+
+    #[test]
+    fn parity_opencode_publishes_image_modalities() {
+        let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
+            id: "vary-provider/synthetic".into(),
+            name: "Synthetic".into(),
+            context_window: None,
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: true,
+            icon: None,
+        };
+        assert_eq!(
+            super::super::opencode_model(&model)["modalities"]["input"],
+            json!(["text", "image"])
+        );
+    }
+
+    #[test]
     fn native_agents_receive_only_their_supported_reasoning_fields() {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
             id: "vary-provider/test".into(),
             name: "Synthetic".into(),
             context_window: None,
@@ -163,6 +253,10 @@ mod tests {
     #[test]
     fn toggle_only_models_do_not_acquire_fabricated_levels() {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
             id: "synthetic".into(),
             name: "Synthetic".into(),
             context_window: None,

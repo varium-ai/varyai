@@ -25,6 +25,9 @@ export interface CopilotModel {
   name: string;
   vendor: string;
   model_picker_enabled: boolean;
+  capabilities?: Record<string, unknown>;
+  supported_endpoints?: string[];
+  [key: string]: unknown;
 }
 
 /**
@@ -40,19 +43,21 @@ export async function copilotGetModels(): Promise<CopilotModel[]> {
  * 配额详情
  */
 export interface QuotaDetail {
-  entitlement: number;
-  remaining: number;
-  percent_remaining: number;
+  entitlement: number | null;
+  remaining: number | null;
+  percent_remaining: number | null;
   unlimited: boolean;
+  has_quota?: boolean | null;
+  overage_permitted?: boolean | null;
 }
 
 /**
  * 配额快照
  */
 export interface QuotaSnapshots {
-  chat: QuotaDetail;
-  completions: QuotaDetail;
-  premium_interactions: QuotaDetail;
+  chat?: QuotaDetail | null;
+  completions?: QuotaDetail | null;
+  premium_interactions?: QuotaDetail | null;
 }
 
 /**

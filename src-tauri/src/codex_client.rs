@@ -6,6 +6,8 @@ use std::{
 };
 
 pub(crate) const MIN_VERSION: &str = "0.165.0";
+mod identity;
+pub(crate) use identity::user_agent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Version([u32; 3]);
@@ -96,13 +98,14 @@ pub(crate) fn apply_identity(
     headers.insert("version", http::HeaderValue::from_str(&version)?);
     headers.insert(
         http::header::USER_AGENT,
-        http::HeaderValue::from_str(&format!("codex_cli_rs/{version}"))?,
+        http::HeaderValue::from_str(&user_agent(&version))?,
     );
     Ok(())
 }
 
 /// Passive discovery runs off the forwarding path and never starts a CLI.
 pub(crate) async fn resolve_version() -> String {
+    identity::prepare().await;
     static PREPARE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = PREPARE.lock().await;
     if cache().read().ok().is_some_and(|c| {
@@ -270,10 +273,13 @@ mod tests {
         headers.insert("version", "0.167.0".parse().unwrap());
         assert_eq!(observed_version(&headers).unwrap().text(), "0.167.0");
         apply_identity(&mut headers).unwrap();
-        assert_eq!(
-            headers[http::header::USER_AGENT],
-            format!("codex_cli_rs/{}", headers["version"].to_str().unwrap())
-        );
+        assert!(headers[http::header::USER_AGENT]
+            .to_str()
+            .unwrap()
+            .starts_with(&format!(
+                "codex_cli_rs/{} (",
+                headers["version"].to_str().unwrap()
+            )));
         assert!(
             Version::parse(headers["version"].to_str().unwrap()) >= Version::parse(MIN_VERSION)
         );

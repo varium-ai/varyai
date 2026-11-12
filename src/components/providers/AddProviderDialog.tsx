@@ -57,7 +57,7 @@ export function AddProviderDialog({
     appId !== "claude-desktop" &&
     appId !== "workbuddy" &&
     appId !== "qoder" &&
-    !["trae", "kimi", "qwen", "zcode"].includes(appId);
+    !["trae", "kimi", "qwen", "zcode", "deepseek-harness"].includes(appId);
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
   );

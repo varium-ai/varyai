@@ -36,12 +36,18 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
     hermes: "SOUL.md",
     pi: "AGENTS.md",
     workbuddy: "",
+    "workbuddy-ai": "",
     qoder: "qoder",
     doubaowork: "",
     trae: "",
+    "trae-intl": "",
     kimi: "",
     qwen: "",
     zcode: "",
+    "deepseek-harness": "",
+    cursor: "",
+    "cursor-cli": "",
+    t3code: "",
   };
   const filename = filenameMap[appId];
   const [name, setName] = useState("");

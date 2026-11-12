@@ -140,11 +140,17 @@ impl ConfigService {
             }
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {
                 // Pi owns its shared models/settings documents; this legacy
                 // single-provider live-sync path must not rewrite them.

@@ -26,7 +26,10 @@ fn direct_id(provider: &str, model: &str) -> String {
 }
 fn direct_group(provider: &Provider, model: &str) -> RoutingGroup {
     RoutingGroup {
-        id: direct_id(&provider.id, model),
+        id: direct_id(
+            crate::services::routing_upstreams::execution_identity(provider),
+            model,
+        ),
         name: "Direct model".into(),
         revision: 0,
         client: "codex".into(),
@@ -81,8 +84,14 @@ pub(crate) async fn prepare(
     current_provider: Option<String>,
 ) -> Result<Menu, String> {
     providers.sort_by(|a, b| {
-        (Some(&a.id) != current_provider.as_ref(), &a.id)
-            .cmp(&(Some(&b.id) != current_provider.as_ref(), &b.id))
+        (
+            Some(&a.id) != current_provider.as_ref(),
+            crate::services::routing_upstreams::execution_identity(a),
+        )
+            .cmp(&(
+                Some(&b.id) != current_provider.as_ref(),
+                crate::services::routing_upstreams::execution_identity(b),
+            ))
     });
     let mut omitted_groups = 0;
     let groups = groups
@@ -122,6 +131,7 @@ pub(crate) async fn prepare(
         .collect();
     let mut http_client = None;
     let mut accounts: Vec<Target> = Vec::new();
+    let mut direct_labels = HashMap::new();
     // Leave capacity for every saved/discovered routing group, even with large catalogs.
     let direct_limit = MAX_MENU_ENTRIES.saturating_sub(groups.len());
     for provider in &providers {
@@ -233,7 +243,10 @@ pub(crate) async fn prepare(
                 .filter_map(|template| {
                     let mut target = template.clone();
                     execution::retarget(&mut target, &model).ok()?;
-                    target.effort = declared_capability(provider, &model);
+                    target.effort = target.credentials.as_ref().map_or_else(
+                        || declared_capability(provider, &model),
+                        |credentials| credentials.capability(&model),
+                    );
                     target.scheduling = Arc::new(template.scheduling.for_model());
                     Some(target)
                 })
@@ -248,7 +261,8 @@ pub(crate) async fn prepare(
                 menu.omitted_entries += usize::from(direct);
                 continue;
             }
-            let group = direct_group(provider, &model);
+            let mut group = direct_group(provider, &model);
+            crate::services::routing_upstreams::execution_group(&mut group, providers.iter());
             let alias = format!("vary-provider/{}", group.id);
             let display = provider
                 .settings_config
@@ -262,6 +276,7 @@ pub(crate) async fn prepare(
                 .and_then(super::model_preferences::name)
                 .unwrap_or(&model);
             let label = format!("{} · {}", display, provider.name);
+            direct_labels.insert(group.id.clone(), (provider.id.clone(), display.to_owned()));
             if menu.default_model.is_none() || (current && Some(&model) == default.as_ref()) {
                 menu.default_model = Some(alias.clone());
             }
@@ -307,17 +322,25 @@ pub(crate) async fn prepare(
             .members
             .iter()
             .zip(&available)
-            .all(|(member, target)| !group.includes_in_menu(member) || target.is_some());
+            .all(|(member, target)| {
+                group.routing != super::RoutingStrategy::Manual
+                    || !group.includes_in_menu(member)
+                    || target.is_some()
+            })
+            && group
+                .members
+                .iter()
+                .zip(&available)
+                .any(|(member, target)| group.includes_in_menu(member) && target.is_some());
         let classifier = if group.uses_classifier() {
-            group
-                .classifier_target
-                .as_ref()
-                .and_then(|t| {
-                    providers
-                        .iter()
-                        .find(|p| p.id == t.provider_id && eligible_provider(p, true))
-                })
-                .cloned()
+            group.classifier_target.as_ref().and_then(|t| {
+                let provider = providers
+                    .iter()
+                    .find(|p| p.id == t.provider_id && eligible_provider(p, true))?;
+                crate::services::routing_upstreams::variants_for_model(provider, &t.model_id)
+                    .into_iter()
+                    .find(|variant| eligible_provider(variant, true))
+            })
         } else {
             None
         };
@@ -353,6 +376,8 @@ pub(crate) async fn prepare(
                 order: group_order.get(&group.id).copied().unwrap_or(usize::MAX),
             },
         );
+        let mut group = group;
+        crate::services::routing_upstreams::execution_group(&mut group, providers.iter());
         menu.groups.insert(
             alias,
             Arc::new(Session {
@@ -395,6 +420,22 @@ pub(crate) async fn prepare(
     if menu.groups.is_empty() {
         return Err("intentRouting.providerUnavailable".into());
     }
+    let visible_sources = direct_labels
+        .iter()
+        .filter(|(id, _)| menu.models.contains_key(*id))
+        .map(|(_, (provider, _))| provider.as_str())
+        .collect::<HashSet<_>>();
+    let source_names = super::menu_labels::provider_names(
+        providers
+            .iter()
+            .filter(|provider| visible_sources.contains(provider.id.as_str())),
+    );
+    for (id, (provider, display)) in direct_labels {
+        if let (Some(entry), Some(source)) = (menu.models.get_mut(&id), source_names.get(&provider))
+        {
+            entry.label = format!("{display} · {source}");
+        }
+    }
     Ok(menu)
 }
 
@@ -418,6 +459,15 @@ pub(crate) async fn prepare_with_stand_ins(
     current: Option<String>,
     stand_ins: Vec<RoutingGroup>,
 ) -> Result<Menu, String> {
+    let identities: HashMap<_, _> = providers
+        .iter()
+        .map(|p| {
+            (
+                p.id.clone(),
+                crate::services::routing_upstreams::execution_identity(p).to_owned(),
+            )
+        })
+        .collect();
     let mut menu = prepare(manager, providers, groups, current).await?;
     // Stand-ins remain executable for old sessions, never offered as routing groups.
     // Reuse direct destinations so compatibility aliases do not consume picker slots.
@@ -430,10 +480,22 @@ pub(crate) async fn prepare_with_stand_ins(
         let member = &group.members[0];
         let direct = format!(
             "vary-provider/{}",
-            direct_id(&member.provider_id, &member.model_id)
+            direct_id(
+                identities
+                    .get(&member.provider_id)
+                    .map(String::as_str)
+                    .unwrap_or(&member.provider_id),
+                &member.model_id
+            )
         );
         if let Some(source) = menu.groups.get(&direct) {
             let mut session = source.as_ref().clone();
+            let mut group = group;
+            for member in &mut group.members {
+                if let Some(id) = identities.get(&member.provider_id) {
+                    member.provider_id = id.clone();
+                }
+            }
             session.group = group;
             session.bindings = Arc::default();
             menu.groups.insert(alias, Arc::new(session));
@@ -446,6 +508,100 @@ pub(crate) async fn prepare_with_stand_ins(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn parity_each_account_retains_its_own_model_capabilities(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::codex_provider::{self, ModelMode, Settings};
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        for account in ["one", "two"] {
+            manager
+                .add_test_account_with_user_identity(
+                    account,
+                    &format!("synthetic-{account}"),
+                    account,
+                )
+                .await?;
+        }
+        let mut provider = provider("account-pool");
+        provider.name = "Codex · synthetic-personal-account@example.test".into();
+        provider.category = Some("official".into());
+        provider
+            .settings_config
+            .as_object_mut()
+            .ok_or("fixture")?
+            .remove("auth");
+        provider
+            .settings_config
+            .as_object_mut()
+            .ok_or("fixture")?
+            .remove("config");
+        codex_provider::attach(
+            &mut provider,
+            &Settings {
+                accounts: vec!["one".into(), "two".into()],
+                mode: ModelMode::Vendor,
+                models: vec![],
+                groups_only: false,
+            },
+        )?;
+        provider.settings_config[codex_provider::CATALOGS] = json!({
+            "one":[{"model":"shared-model","input_modalities":["text","image"],"reasoningLevels":["high"],"contextWindow":1000000}],
+            "two":[{"model":"shared-model","input_modalities":["text"],"reasoningLevels":["low"],"contextWindow":128000}]
+        });
+        provider.settings_config["modelCatalog"]["models"] =
+            provider.settings_config[codex_provider::CATALOGS]["one"].clone();
+        let menu = prepare(manager, vec![provider], vec![], None).await?;
+        let entry = menu.models.values().next().ok_or("fixture")?;
+        assert_eq!(entry.label, "shared-model · Codex");
+        assert_eq!(
+            entry.alias,
+            format!(
+                "vary-provider/{}",
+                direct_id("account-pool", "shared-model")
+            )
+        );
+        let targets = &menu.groups.values().next().ok_or("fixture")?.targets;
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].effort.images, Some(true));
+        assert_eq!(targets[1].effort.images, Some(false));
+        assert_eq!(targets[0].effort.context.context_window, Some(1000000));
+        assert_eq!(targets[1].effort.context.context_window, Some(128000));
+        assert_eq!(targets[1].effort.levels, vec!["low"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parity_saved_group_keeps_available_members_when_a_provider_is_disabled(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| "fixture")?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let a = provider("a");
+        let mut group = direct_group(&a, "shared-model");
+        group.enabled = true;
+        group.id = "saved-parity-group".into();
+        group.members.push(Member {
+            id: "disabled".into(),
+            provider_id: "disabled".into(),
+            model_id: "shared-model".into(),
+            weight: 1,
+            free: None,
+            effort: None,
+        });
+        let alias = group.alias();
+        let prepared = prepare(manager, vec![a], vec![group], None).await?;
+        assert_eq!(
+            prepared
+                .groups
+                .get(&alias)
+                .ok_or("group omitted")?
+                .targets
+                .len(),
+            1
+        );
+        Ok(())
+    }
     fn provider(id: &str) -> Provider {
         Provider::with_id(
             id.into(),
@@ -490,6 +646,7 @@ mod tests {
             .add_test_account_with_user_identity("account", "synthetic-access", "user")
             .await?;
         let db = Arc::new(crate::database::Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         for (name, source, codex_settings) in [
             (
                 "Subscription",
@@ -528,6 +685,8 @@ mod tests {
             ),
         ] {
             db.save_routing_upstream(RoutingUpstream {
+                notes: None,
+                icon: None,
                 schema_version: 1,
                 id: String::new(),
                 revision: 0,
@@ -671,10 +830,28 @@ mod tests {
         let catalog = db.intent_routing_catalog_with_providers(Some(providers.clone()))?;
         let menu = prepare(manager, providers, catalog.groups, None).await?;
         let models = agent_connections::models(&menu);
-        assert_eq!(models.len(), 17);
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.group != "routing")
+                .count(),
+            17
+        );
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.group == "routing")
+                .count(),
+            8
+        );
         assert!(models
             .iter()
-            .all(|model| matches!(model.group.as_str(), "Relay" | "Other vendor")));
+            .all(|model| matches!(model.group.as_str(), "Relay" | "Other vendor" | "routing")));
+        assert!(menu
+            .groups
+            .values()
+            .flat_map(|session| &session.targets)
+            .all(|target| !target.official && target.credentials.is_none()));
         Ok(())
     }
     #[tokio::test]
@@ -709,6 +886,7 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
+    #[serial_test::serial]
     async fn provider_model_preferences_reach_every_shared_client(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -726,6 +904,49 @@ mod tests {
         assert_eq!(pi["name"], "My model · a");
         assert_eq!(pi["reasoning"], false);
         assert_eq!(pi["input"], json!(["text"]));
+        {
+            let _agent = crate::pi_config::test_support::TestAgentDir::at(dir.path());
+            let path = crate::pi_config::get_pi_settings_path()?;
+            let original = json!({"enabledModels":["native/model",format!("varyai/{}", model.id)]});
+            std::fs::write(&path, original.to_string())?;
+            let manager = crate::services::agent_connections::Manager {
+                root: dir.path().join("pi-receipts"),
+            };
+            let receipt = manager.build("pi", &menu, "http://127.0.0.1:1", &model.id)?;
+            manager.install(receipt.clone())?;
+            let native: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(crate::pi_config::get_pi_models_path()?)?)?;
+            assert_eq!(native["providers"]["varyai"]["models"][0]["id"], model.name);
+            assert_eq!(receipt.model_map.get(&model.name), Some(&model.id));
+            let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+            assert_eq!(settings["defaultModel"], model.name);
+            assert_eq!(
+                settings["enabledModels"],
+                json!(["native/model", format!("varyai/{}", model.name)])
+            );
+            manager.disconnect("pi")?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path)?)?,
+                original
+            );
+        }
+        let codex = super::super::client::menu_catalog(&menu, "")?;
+        assert_eq!(codex["models"][0]["display_name"], model.name);
+        crate::qoder_config::with_test_dir(dir.path(), || -> Result<(), String> {
+            let manager = crate::services::agent_connections::Manager {
+                root: dir.path().join("receipts"),
+            };
+            manager.install(manager.build("qoder", &menu, "http://127.0.0.1:1", &model.id)?)?;
+            let config: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(crate::qoder_config::path()).map_err(|_| "fixture read")?,
+            )
+            .map_err(|_| "fixture JSON")?;
+            assert_eq!(
+                config["providers"]["varyai"]["models"][0]["displayName"],
+                model.name
+            );
+            manager.disconnect("qoder")
+        })?;
         let target = &menu
             .groups
             .values()
@@ -740,6 +961,84 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&wire)?;
         assert!(body.get("reasoning_effort").is_none());
         Ok(())
+    }
+    #[tokio::test]
+    async fn workbuddy_picker_uses_readable_names_and_preserves_distinct_routes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::agent_connections;
+        let dir = tempfile::tempdir()?;
+        let oauth = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut first = provider("first");
+        first.name = "Synthetic supplier".into();
+        let mut second = provider("second");
+        second.name = first.name.clone();
+        let menu = prepare(oauth, vec![first, second], vec![], None).await?;
+        let selected = menu.default_model.as_deref().ok_or("missing default")?;
+        crate::workbuddy_config::with_test_dir(
+            dir.path(),
+            || -> Result<(), Box<dyn std::error::Error>> {
+                let path = crate::workbuddy_config::get_workbuddy_config_path();
+                let native = json!({"id":"native","name":"Native","url":"https://synthetic.example/v1/chat/completions","apiKey":"synthetic"});
+                for original in [
+                    json!([native.clone()]),
+                    json!({"models":[native.clone()],"availableModels":["native"],"theme":"light"}),
+                ] {
+                    std::fs::write(&path, original.to_string())?;
+                    let manager = agent_connections::Manager {
+                        root: dir.path().join("receipts"),
+                    };
+                    let receipt =
+                        manager.build("workbuddy", &menu, "http://127.0.0.1:1", selected)?;
+                    manager.install(receipt.clone())?;
+                    let rows = crate::workbuddy_config::read_models()?;
+                    assert_eq!(rows[0], native);
+                    let expected = [
+                        "shared-model · Synthetic supplier",
+                        "shared-model · Synthetic supplier (2)",
+                    ];
+                    for (row, name) in rows[1..].iter().zip(expected) {
+                        assert_eq!(row["name"], name);
+                        assert_eq!(row["id"], name);
+                        let alias = receipt.model_map.get(name).ok_or("missing route")?;
+                        assert!(menu.groups.contains_key(alias));
+                        assert_eq!(row["supportsImages"], true);
+                        assert_eq!(
+                            row["reasoning"]["supportedEfforts"],
+                            json!(["low", "medium", "high"])
+                        );
+                    }
+                    assert_eq!(receipt.model_map.len(), 2);
+                    assert_eq!(
+                        receipt
+                            .model_map
+                            .values()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len(),
+                        2
+                    );
+                    let installed: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&path)?)?;
+                    if original.is_object() {
+                        assert_eq!(
+                            installed["availableModels"],
+                            json!(["native", expected[0], expected[1]])
+                        );
+                        assert_eq!(installed["theme"], "light");
+                    }
+                    let refreshed = manager
+                        .refresh("workbuddy", &menu, "http://127.0.0.1:1")?
+                        .ok_or("missing receipt")?;
+                    assert_eq!(refreshed.model_map, receipt.model_map);
+                    assert_eq!(crate::workbuddy_config::read_models()?, rows);
+                    manager.disconnect("workbuddy")?;
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path)?)?,
+                        original
+                    );
+                }
+                Ok(())
+            },
+        )
     }
     #[tokio::test]
     async fn named_reasoning_levels_reach_shared_clients_without_disabling_images(
@@ -1069,6 +1368,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let record = RoutingUpstream {
+            notes: None,
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -1352,10 +1653,7 @@ mod tests {
         assert_eq!(saved["display_name"], "Saved single member · routing group");
         assert_eq!(saved["description"], "VaryAI routing group");
         manager.restore().expect("restore");
-        assert_eq!(
-            std::fs::read_to_string(config).expect("restored config"),
-            original
-        );
+        crate::services::intent_routing::client::tests::assert_restored_config(&manager, original);
     }
 
     #[tokio::test]
@@ -1397,12 +1695,28 @@ mod tests {
         );
         let aliases = menu.groups.keys().cloned().collect::<BTreeSet<_>>();
         let default = menu.default_model.clone().unwrap();
+        let labels = menu
+            .models
+            .values()
+            .map(|model| model.label.replace(" · ", "-"))
+            .collect::<BTreeSet<_>>();
+        let default_label = menu
+            .models
+            .values()
+            .find(|model| model.alias == default)
+            .unwrap()
+            .label
+            .replace(" · ", "-");
         manager
             .activate_menu(Arc::new(menu), "http://127.0.0.1:1/intent/v1")
             .unwrap();
         let text = std::fs::read_to_string(&config).unwrap();
         let value = text.parse::<toml::Value>().unwrap();
-        assert_eq!(value["model"].as_str(), Some(default.as_str()));
+        assert_eq!(value["model"].as_str(), Some(default_label.as_str()));
+        assert_eq!(
+            manager.selected_model().unwrap().as_deref(),
+            Some(default.as_str())
+        );
         let catalog: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(value["model_catalog_json"].as_str().unwrap()).unwrap(),
         )
@@ -1413,7 +1727,15 @@ mod tests {
             .iter()
             .map(|m| m["slug"].as_str().unwrap().to_owned())
             .collect::<BTreeSet<_>>();
-        assert_eq!(actual, aliases);
+        assert_eq!(actual, aliases.union(&labels).cloned().collect());
+        let visible = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["visibility"] == "list")
+            .map(|model| model["slug"].as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(visible, labels);
         assert!(manager.status().unwrap().group_ids.is_empty());
         let chosen = aliases.iter().find(|alias| **alias != default).unwrap();
         let mut edited = text.parse::<toml_edit::DocumentMut>().unwrap();

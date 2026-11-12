@@ -8,6 +8,8 @@ The integration uses the supported client's endpoint/model configuration and sto
 
 Native official request bodies require the supported installed protocol component. The adapter validates the component before use, decodes supported text for inspection and re-encodes/signs a redacted request. Decode/signing failures must not silently forward sensitive plaintext. The repository does not contain a user's login credentials or the installed vendor application.
 
+The macOS codec recognizes the reviewed worker fingerprints for Qoder CN 0.4.8 and 0.5.3. Each fingerprint selects that version's SDK bindings; an unknown worker is rejected before evaluation. The installed 0.5.3 component passed the large-payload encode/decode check with account metadata preserved. This check does not establish live model routing or reward eligibility.
+
 ## Certificate lifecycle
 
 For the supported macOS path, explicit takeover can require local certificate trust. Explain its purpose and request system confirmation. The local CA is constrained to localhost/loopback; other applications using the user's trust store can also be affected by trust decisions. Do not claim that local trust is invisible to the rest of the system.
@@ -25,3 +27,9 @@ Certificate failures report a fixed operation stage and exit status, without exp
 Explicit supplier switches replace VaryAI-owned custom provider groups, including reserved provider IDs left after deletion of the shared database. Official account credentials, plugins and user-created provider groups remain intact. The file change is staged and rolls back if committing the corresponding database update fails.
 
 See [takeover service](../../src-tauri/src/services/qoder_proxy.rs), [certificate handling](../../src-tauri/src/services/qoder_certificate.rs), and [native codec](../../src-tauri/src/proxy/qoder_codec.rs). Synthetic codec tests are not a claim that every vendor version, account, model, installed package or system trust configuration has been accepted.
+
+The codec includes a hash-pinned binding for the official macOS Qoder CN 0.5.7
+worker, alongside the previously supported workers. Unknown worker contents
+remain unsupported. The installed-runtime regression verifies large synthetic
+payload round trips, preserved account context, and redaction followed by signing;
+it does not use live account credentials or send an upstream request.

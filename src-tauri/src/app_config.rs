@@ -34,11 +34,17 @@ impl McpApps {
             AppType::Hermes => self.hermes,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => false, // MCP is not managed for these apps.
             AppType::ClaudeDesktop => false,
         }
@@ -56,11 +62,17 @@ impl McpApps {
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {} // MCP is not managed for these apps.
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
         }
@@ -132,11 +144,17 @@ impl SkillApps {
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
             AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => false,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
             AppType::ClaudeDesktop => false,
@@ -154,11 +172,17 @@ impl SkillApps {
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi => self.pi = enabled,
             AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {}
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
             AppType::ClaudeDesktop => {} // Claude Desktop 3P profiles don't use Vary AI skill sync
@@ -421,11 +445,22 @@ pub enum AppType {
     Hermes,
     Pi,
     WorkBuddy,
+    #[serde(rename = "workbuddy-ai")]
+    WorkBuddyAi,
     Qoder,
     Kimi,
     Qwen,
     ZCode,
+    #[serde(rename = "deepseek-harness")]
+    DeepSeekHarness,
     Trae,
+    #[serde(rename = "trae-intl")]
+    TraeIntl,
+    Cursor,
+    #[serde(rename = "cursor-cli")]
+    CursorCli,
+    #[serde(rename = "t3code")]
+    T3Code,
     DoubaoWork,
 }
 
@@ -442,11 +477,17 @@ impl AppType {
             AppType::Hermes => "hermes",
             AppType::Pi => "pi",
             AppType::WorkBuddy => "workbuddy",
+            AppType::WorkBuddyAi => "workbuddy-ai",
             AppType::Qoder => "qoder",
             AppType::Kimi => "kimi",
             AppType::Qwen => "qwen",
             AppType::ZCode => "zcode",
+            AppType::DeepSeekHarness => "deepseek-harness",
             AppType::Trae => "trae",
+            AppType::TraeIntl => "trae-intl",
+            AppType::Cursor => "cursor",
+            AppType::CursorCli => "cursor-cli",
+            AppType::T3Code => "t3code",
             AppType::DoubaoWork => "doubaowork",
         }
     }
@@ -464,11 +505,14 @@ impl AppType {
                 | AppType::Hermes
                 | AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
         )
     }
 
@@ -492,11 +536,17 @@ impl AppType {
             AppType::Hermes,
             AppType::Pi,
             AppType::WorkBuddy,
+            AppType::WorkBuddyAi,
             AppType::Qoder,
             AppType::Kimi,
             AppType::Qwen,
             AppType::ZCode,
+            AppType::DeepSeekHarness,
             AppType::Trae,
+            AppType::TraeIntl,
+            AppType::Cursor,
+            AppType::CursorCli,
+            AppType::T3Code,
             AppType::DoubaoWork,
         ]
         .into_iter()
@@ -519,11 +569,17 @@ impl FromStr for AppType {
             "hermes" => Ok(AppType::Hermes),
             "pi" => Ok(AppType::Pi),
             "workbuddy" => Ok(AppType::WorkBuddy),
+            "workbuddy-ai" => Ok(AppType::WorkBuddyAi),
             "qoder" | "qoder-cn" => Ok(AppType::Qoder),
             "kimi" => Ok(AppType::Kimi),
             "qwen" => Ok(AppType::Qwen),
             "zcode" => Ok(AppType::ZCode),
+            "deepseek-harness" | "deepseek_harness" => Ok(AppType::DeepSeekHarness),
             "trae" => Ok(AppType::Trae),
+            "trae-intl" => Ok(AppType::TraeIntl),
+            "cursor" => Ok(AppType::Cursor),
+            "cursor-cli" | "cursor-agent" => Ok(AppType::CursorCli),
+            "t3code" | "t3-code" => Ok(AppType::T3Code),
             "doubaowork" => Ok(AppType::DoubaoWork),
             other => Err(AppError::localized(
                 "unsupported_app",
@@ -570,11 +626,17 @@ impl CommonConfigSnippets {
             AppType::Hermes => self.hermes.as_ref(),
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => None,
         }
     }
@@ -592,11 +654,17 @@ impl CommonConfigSnippets {
             AppType::Hermes => self.hermes = snippet,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {}
         }
     }
@@ -925,11 +993,17 @@ impl MultiAppConfig {
             // this legacy config avoids a second, unused prompt state.
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => return Ok(false),
         };
 
@@ -976,11 +1050,17 @@ impl MultiAppConfig {
                 AppType::Hermes => continue,   // Hermes didn't exist in v3.6.x, skip
                 AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
+                | AppType::Cursor
+                | AppType::CursorCli
+                | AppType::T3Code
                 | AppType::DoubaoWork => continue, // Pi didn't exist in v3.6.x, skip
             };
 

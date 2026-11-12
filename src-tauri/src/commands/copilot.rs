@@ -28,7 +28,7 @@ pub async fn copilot_get_models_for_account(
 ) -> Result<Vec<CopilotModel>, String> {
     let auth_manager = state.0.read().await;
     auth_manager
-        .fetch_models_for_account(&account_id)
+        .refresh_models_for_account(&account_id)
         .await
         .map_err(|e| e.to_string())
 }

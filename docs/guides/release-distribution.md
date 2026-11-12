@@ -38,3 +38,29 @@ Clients built with the previous `secure-typex/varyai-releases` endpoint continue
 Before changing the distribution repository, endpoint, signing key, or artifact naming, plan and test the update path for already installed clients. Do not assume older clients will automatically discover a new endpoint or public key.
 
 `src-tauri/tauri.no-updater.conf.json` disables updater artifact generation. It does not disable the application's runtime update checks or substitute a different update endpoint. Fork maintainers must review both runtime configuration and artifact signing before distributing their own packages.
+
+## In-app release notes
+
+The update dialog displays the target version's Markdown notes with headings,
+lists, inline code and external links. It keeps the installed version visible,
+scrolls the notes independently and keeps update actions fixed below them.
+Installation and portable-download behavior remain unchanged. Release notes do
+not execute HTML or load remote images. This view describes the target release;
+it does not claim to aggregate every release since the installed version.
+
+Stage the public Markdown description as `release-assets/release-notes.md` before
+running `scripts/create-updater-manifest.mjs`. The manifest builder embeds that
+file in `latest.json`'s `notes` field. Programmatic callers can instead provide
+`notes` or `notesFile`; the CLI accepts an explicit notes file after the platform
+list:
+
+```bash
+node scripts/create-updater-manifest.mjs release-assets v1.2.3 owner/repo macos,windows,linux path/to/release-notes.md
+```
+
+The renderer reads Tauri's `Update.body` property, which contains the manifest's
+`notes`. If an older manifest omits the notes or contains the former GitHub-page
+placeholder, it makes a bounded, unauthenticated request for the exact target
+release's GitHub description. Failure to fetch this optional description never
+blocks the update; the version-specific release-page link remains available.
+Keep the public release description and manifest notes consistent when publishing.

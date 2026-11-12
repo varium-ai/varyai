@@ -308,12 +308,18 @@ export interface VisibleApps {
   hermes: boolean;
   pi: boolean;
   workbuddy?: boolean;
+  "workbuddy-ai"?: boolean;
   qoder?: boolean;
   doubaowork?: boolean;
   trae?: boolean;
+  "trae-intl"?: boolean;
   kimi?: boolean;
   qwen?: boolean;
   zcode?: boolean;
+  "deepseek-harness"?: boolean;
+  cursor?: boolean;
+  "cursor-cli"?: boolean;
+  t3code?: boolean;
 }
 
 // WebDAV 同步状态

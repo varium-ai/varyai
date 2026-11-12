@@ -40,6 +40,7 @@ jobs:
             frontend:
               - "src/**"
               - "src-tauri/resources/trae-bridge/**"
+              - "src-tauri/resources/model-default/**"
               - "scripts/**"
               - "package-macos.sh"
               - ".node-version"
@@ -138,8 +139,19 @@ jobs:
       - name: Development launcher tests
         run: pnpm test:dev
 
+      - name: macOS DMG packaging helper tests
+        run: pnpm test:macos-dmg
+
       - name: Client bridge tests
         run: pnpm test:trae-bridge
+
+      - name: Desktop model default tests
+        run: pnpm test:model-default
+
+      - name: WorkBuddy credential helper tests
+        run: pnpm test:workbuddy-checkin-auth
+      - name: Doubao Work check-in helper tests
+        run: pnpm test:doubao-checkin
 
       - name: Qoder codec tests
         run: pnpm test:qoder-codec

@@ -33,6 +33,13 @@ pub(crate) async fn forward(
     history: Arc<CodexChatHistoryStore>,
     shadow: Arc<GeminiShadowStore>,
 ) -> Result<ProxyResponse, ProxyError> {
+    if crate::services::subscription_provider::binding(upstream).is_some()
+        && upstream.settings_config["routingSubscriptionResolved"] != true
+    {
+        return Err(ProxyError::AuthError(
+            "Subscription account is unavailable".into(),
+        ));
+    }
     if upstream.uses_managed_account_auth()
         || upstream
             .meta
@@ -366,6 +373,7 @@ mod tests {
     use axum::{
         body::Bytes,
         extract::{OriginalUri, State},
+        response::IntoResponse,
         routing::post,
         Json, Router,
     };
@@ -468,6 +476,155 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
+    async fn exact_group_bridge_observes_native_tool_calls_before_conversion() {
+        use super::super::tool_observation::{channel, mount::ClientToolObservation};
+        use crate::services::tool_risk::{response_parser::ResponseProcessor, runtime, worker};
+        let previous = (*runtime::get_tool_risk_runtime()).clone();
+        struct Restore(runtime::ToolRiskRuntime);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                runtime::set_tool_risk_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore(previous);
+        runtime::set_tool_risk_runtime_for_test(runtime::ToolRiskRuntime::build(
+            true,
+            1,
+            crate::services::tool_risk::builtin::builtin_rules(),
+            &HashMap::new(),
+        ));
+        let (_, mut receiver) = channel::test_channel().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let reply = json!({"id":"synthetic-chat","object":"chat.completion","model":"fixture",
+            "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                "id":"synthetic-call","type":"function","function":{"name":"exec_command",
+                "arguments":"{\"cmd\":\"echo SYNTHETIC_AUDIT_MARKER\"}"}}]},"finish_reason":"tool_calls"}]});
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, Router::new().route("/chat/completions", post(move |Json(request): Json<Value>| {
+                let reply=reply.clone();
+                async move {
+                    if request["stream"] == true {
+                        let chunk=json!({"id":"synthetic-chat","object":"chat.completion.chunk","choices":[{"index":0,"delta":{
+                            "tool_calls": [{"index":0,"id":"synthetic-call","type":"function","function":{"name":"exec_command","arguments":"{\"cmd\":\"echo SYNTHETIC_AUDIT_MARKER\"}"}}]
+                        },"finish_reason":null}]});
+                        let done=json!({"id":"synthetic-chat","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+                        ([("content-type","text/event-stream")],format!("data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n")).into_response()
+                    } else { Json(reply).into_response() }
+                }
+            }))).await;
+        });
+        let mut extensions = http::Extensions::new();
+        extensions.insert(ClientToolObservation("codex"));
+        let mut body = json!({"model":"selected-exact","input":"synthetic","tools":[{
+            "type":"function","name":"exec_command","parameters":{"type":"object",
+            "properties":{"cmd":{"type":"string"}},"required":["cmd"]}}]});
+        for streaming in [false, true] {
+            body["stream"] = json!(streaming);
+            let response = forward(
+                &state(),
+                Protocol::Responses,
+                &provider(&format!("http://{address}"), Protocol::Chat),
+                &http::Method::POST,
+                "/responses",
+                &body,
+                &HeaderMap::new(),
+                &extensions,
+                None,
+                Arc::default(),
+                Arc::default(),
+            )
+            .await
+            .unwrap();
+            assert!(response.status().is_success());
+            let forwarded = response.bytes_with_limit(1024 * 1024).await.unwrap();
+            assert!(String::from_utf8_lossy(&forwarded).contains("SYNTHETIC_AUDIT_MARKER"));
+            let mut processor = ResponseProcessor::default();
+            let observations = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let piece = receiver.recv().await.unwrap();
+                    let observations = processor.ingest(&piece);
+                    if !observations.is_empty() {
+                        break observations;
+                    }
+                }
+            })
+            .await
+            .expect("the native upstream tool observation must be delivered");
+            assert_eq!(observations.len(), 1);
+            assert_eq!(observations[0].tool.client.as_deref(), Some("codex"));
+            let event = worker::project_event(&observations[0])
+                .expect("recognized shell must be auditable");
+            assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
+            assert_eq!(event.integrity_status, "complete");
+            assert_eq!(
+                event.command_summary.as_deref(),
+                Some("echo SYNTHETIC_AUDIT_MARKER")
+            );
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn subscription_bridge_requires_resolution_and_preserves_bearer_and_client_headers() {
+        let (base, mut captured, task) = upstream(Protocol::Chat).await;
+        let mut provider = provider(&base, Protocol::Chat);
+        provider.settings_config["routingSubscription"] =
+            json!({"provider":"github_copilot","accountId":"fixture-account"});
+        let body = json!({"model":"exact-subscription-model","messages":[{"role":"user","content":"synthetic"}],"max_tokens":32});
+        let rejected = forward(
+            &state(),
+            Protocol::Anthropic,
+            &provider,
+            &http::Method::POST,
+            "/v1/messages",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await;
+        assert!(matches!(rejected, Err(ProxyError::AuthError(_))));
+        assert!(captured.try_recv().is_err());
+        provider.settings_config["routingSubscriptionResolved"] = json!(true);
+        provider
+            .meta
+            .as_mut()
+            .expect("fixture metadata")
+            .local_proxy_request_overrides = Some(crate::provider::LocalProxyRequestOverrides {
+            headers: [("copilot-integration-id".into(), "vscode-chat".into())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let response = forward(
+            &state(),
+            Protocol::Anthropic,
+            &provider,
+            &http::Method::POST,
+            "/v1/messages",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
+        .expect("resolved bridge");
+        assert!(response.status().is_success());
+        let (_, headers, sent) = captured.recv().await.expect("synthetic request");
+        assert_eq!(headers["authorization"], "Bearer synthetic-source-key");
+        assert_eq!(headers["copilot-integration-id"], "vscode-chat");
+        assert_eq!(sent["model"], "exact-subscription-model");
+        assert!(!headers.contains_key("x-api-key"));
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn explicit_bridge_keeps_exact_model_and_source_auth_without_app_mapping() {
         let (base, mut captured, task) = upstream(Protocol::Anthropic).await;
         let state = state();
@@ -511,6 +668,41 @@ mod tests {
         assert!(!headers.contains_key("anthropic-beta"));
         assert!(state.current_providers.read().await.is_empty());
         assert_eq!(state.status.read().await.total_requests, 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn workbuddy_gemini_reasoning_reaches_the_selected_upstream() {
+        let (base, mut captured, task) = upstream(Protocol::Gemini).await;
+        let provider = provider(&base, Protocol::Gemini);
+        let body = json!({"model":"gemini-3.6-flash","messages":[{"role":"user","content":"Synthetic prompt"}],"reasoning_effort":"high","tools":[{"type":"function","function":{"name":"synthetic_tool","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}}]});
+        let response = forward(
+            &state(),
+            Protocol::Chat,
+            &provider,
+            &http::Method::POST,
+            "/v1/chat/completions",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
+        .expect("WorkBuddy Gemini forwarding");
+        assert!(response.status().is_success());
+        let (uri, headers, sent) = captured.recv().await.expect("synthetic request");
+        assert!(uri.path().ends_with("gemini-3.6-flash:generateContent"));
+        assert_eq!(headers["x-goog-api-key"], SOURCE_KEY);
+        assert_eq!(
+            sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+        assert_eq!(
+            sent["tools"][0]["functionDeclarations"][0]["name"],
+            "synthetic_tool"
+        );
         task.abort();
     }
 
@@ -577,7 +769,7 @@ mod tests {
             &provider(&base, Protocol::Anthropic),
             &http::Method::POST,
             "/v1/chat/completions",
-            &json!({"model":"exact","messages":[],"response_format":{"type":"json_object"}}),
+            &json!({"model":"exact","messages":[{"role":"assistant","tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic_tool","arguments":"[]"}}]}]}),
             &HeaderMap::new(),
             &http::Extensions::new(),
             None,

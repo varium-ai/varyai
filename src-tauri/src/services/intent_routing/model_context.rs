@@ -643,3 +643,68 @@ mod tests {
             .is_none());
     }
 }
+
+fn editor_windows(ids: &[String], cached: &Catalog, fallback: &Catalog) -> BTreeMap<String, u64> {
+    ids.iter()
+        .filter_map(|id| {
+            cached
+                .window(id)
+                .or_else(|| fallback.window(id))
+                .map(|n| (id.clone(), n))
+        })
+        .collect()
+}
+
+/// Read public capacity facts without refreshing accounts or changing saved model selections.
+pub(crate) async fn model_windows(ids: &[String]) -> BTreeMap<String, u64> {
+    static FALLBACK: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    let fallback = FALLBACK.get_or_init(|| Catalog {
+        windows: serde_json::from_str(include_str!("../../resources/model-context-windows.json"))
+            .unwrap_or_default(),
+        ..Catalog::default()
+    });
+    #[cfg(not(test))]
+    let cached = catalog(false).await;
+    #[cfg(test)]
+    let cached = Catalog::default();
+    editor_windows(ids, &cached, fallback)
+}
+
+#[cfg(test)]
+mod editor_window_tests {
+    use super::*;
+    #[test]
+    fn capacity_observation_prefers_recent_facts_and_never_invents_unknowns() {
+        let cached = Catalog {
+            windows: BTreeMap::from([("known".into(), 128_000)]),
+            ..Catalog::default()
+        };
+        let fallback = Catalog {
+            windows: BTreeMap::from([("known".into(), 1_000_000), ("long".into(), 1_048_576)]),
+            ..Catalog::default()
+        };
+        let ids = ["known", "vendor/Long", "unknown"].map(str::to_owned);
+        let result = editor_windows(&ids, &cached, &fallback);
+        assert_eq!(result.get("known"), Some(&128_000));
+        assert_eq!(result.get("vendor/Long"), Some(&1_048_576));
+        assert!(!result.contains_key("unknown"));
+    }
+    #[tokio::test]
+    async fn id_only_relay_models_resolve_the_public_capacity_snapshot() {
+        let ids = [
+            "deepseek-ai/DeepSeek-V4.1-Flash",
+            "zai-org/GLM-5.3",
+            "zai-org/GLM-5.3-Flash",
+            "synthetic-unknown",
+        ]
+        .map(str::to_owned);
+        let windows = model_windows(&ids).await;
+        for id in &ids[..3] {
+            assert!(
+                windows.get(id).is_some_and(|n| *n >= 1_000_000),
+                "missing public capacity"
+            );
+        }
+        assert!(!windows.contains_key(&ids[3]));
+    }
+}

@@ -3,12 +3,15 @@ import { useTranslation } from "react-i18next";
 import {
   Check,
   ChevronDown,
+  Box,
   GripVertical,
-  Image,
+  LayoutGrid,
   List,
   Search,
+  Unplug,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
 import { getIconUrl, hasIcon } from "@/icons/extracted";
 import "./model-picker.css";
@@ -24,6 +27,7 @@ export interface ModelChoice {
   reasoningLevels?: string[];
   images?: boolean | null;
   disabled?: boolean;
+  source?: "native";
 }
 
 export interface ModelVisibilityControls {
@@ -65,57 +69,14 @@ function RoutingMark() {
   );
 }
 
-function ModelCapabilities({ model }: { model: ModelChoice }) {
-  const { t, i18n } = useTranslation();
-  const format = (value: number, compact = false) =>
-    Intl.NumberFormat(
-      i18n.resolvedLanguage ?? i18n.language ?? "en",
-      compact ? { notation: "compact", maximumFractionDigits: 1 } : {},
-    ).format(value);
-  return (
-    <span
-      className="mp-model-info"
-      title={[
-        model.reasoningLevels?.join(", "),
-        model.images
-          ? t("modelProviders.acceptsImages")
-          : model.images === false
-            ? t("modelProviders.textOnly")
-            : "",
-        model.contextWindow ? format(model.contextWindow) : "",
-      ]
-        .filter(Boolean)
-        .join("\n")}
-    >
-      {!!model.reasoningLevels?.length && (
-        <span className="mp-model-badge">
-          {model.reasoningLevels.length > 2
-            ? `${model.reasoningLevels[0]}–${model.reasoningLevels[model.reasoningLevels.length - 1]}`
-            : model.reasoningLevels.join(" / ")}
-        </span>
-      )}
-      {model.images && (
-        <Image
-          size={11}
-          role="img"
-          aria-label={t("modelProviders.acceptsImages")}
-        />
-      )}
-      {model.contextWindow != null && (
-        <span className="mp-am-context">
-          {format(model.contextWindow, true)}
-        </span>
-      )}
-    </span>
-  );
-}
-
 export function SharedModelPicker({
   models,
   selected,
   onPick,
+  onDismiss,
   multiple = false,
   disabled = false,
+  readOnly = false,
   visibility,
   title,
   description,
@@ -123,12 +84,17 @@ export function SharedModelPicker({
   name,
   error,
   saving,
+  variant = "standard",
+  onDisconnect,
+  disconnectLabel,
 }: {
   models: ModelChoice[];
   selected: string[];
-  onPick: (id: string) => void;
+  onPick?: (id: string) => void;
+  onDismiss?: () => void;
   multiple?: boolean;
   disabled?: boolean;
+  readOnly?: boolean;
   visibility?: ModelVisibilityControls;
   title?: string;
   description?: string;
@@ -136,8 +102,13 @@ export function SharedModelPicker({
   name?: string;
   error?: string | null;
   saving?: boolean;
+  variant?: "standard" | "agent";
+  onDisconnect?: () => void;
+  disconnectLabel?: string;
 }) {
   const { t } = useTranslation();
+  const accountText = useAccountText();
+  const agentMenu = variant === "agent" && !visibility;
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"all" | "shown" | "order">("all");
   const [provider, setProvider] = useState<string | null>(null);
@@ -147,11 +118,13 @@ export function SharedModelPicker({
   const list = useRef<HTMLDivElement>(null);
   const groups = new Map<string, ModelChoice[]>();
   for (const model of models) {
-    const group = model.group ?? "";
+    const group = model.source === "native" ? "native" : (model.group ?? "");
     groups.set(group, [...(groups.get(group) ?? []), model]);
   }
+  const groupOrder = (group: string) =>
+    agentMenu && group === "native" ? 0 : group === "routing" ? 1 : 2;
   const sections = [...groups].sort(
-    ([a], [b]) => +(b === "routing") - +(a === "routing"),
+    ([a], [b]) => groupOrder(a) - groupOrder(b),
   );
   const [folded, setFolded] = useState(() => {
     const providers = sections.filter(([group]) => group !== "routing").length;
@@ -167,7 +140,7 @@ export function SharedModelPicker({
         .map(([group]) => group),
     );
   });
-  const railed = groups.size > 2 && wide;
+  const railed = agentMenu ? models.length > 0 : groups.size > 2 && wide;
   useEffect(() => {
     const resize = () => setWide(window.innerWidth >= 600);
     window.addEventListener("resize", resize);
@@ -188,7 +161,7 @@ export function SharedModelPicker({
     return icon && (hasIcon(icon) || getIconUrl(icon)) ? (
       <ProviderIcon
         icon={icon}
-        name={groupName(group)}
+        name={accountText(groupName(group))}
         size={14}
         showFallback={false}
       />
@@ -212,7 +185,9 @@ export function SharedModelPicker({
     );
   };
   const modelIcon = (model: ModelChoice) =>
-    model.group === "routing" ? (
+    agentMenu && model.group === "routing" ? (
+      <Box size={16} aria-hidden />
+    ) : model.group === "routing" ? (
       <RoutingMark />
     ) : model.logo ? (
       <ProviderIcon
@@ -221,6 +196,8 @@ export function SharedModelPicker({
         size={16}
         showFallback={false}
       />
+    ) : agentMenu ? (
+      <Box size={16} aria-hidden />
     ) : null;
   function setShown(rows: ModelChoice[], visible: boolean) {
     if (!visibility || disabled) return;
@@ -274,12 +251,12 @@ export function SharedModelPicker({
   }
   return (
     <div
-      className={`mp-shared-picker${railed ? " railed" : ""}`}
+      className={`mp-shared-picker${railed ? " railed" : ""}${agentMenu ? " mp-agent-model-picker" : ""}`}
       onKeyDown={(event) => {
-        if (view === "order") return;
+        if (readOnly || view === "order") return;
         const rows = Array.from(
           list.current?.querySelectorAll<HTMLButtonElement>(
-            "[data-model-choice]:not(:disabled)",
+            "[data-model-choice]:not(:disabled), [data-model-action]:not(:disabled)",
           ) ?? [],
         );
         const at = rows.indexOf(event.target as HTMLButtonElement);
@@ -301,7 +278,7 @@ export function SharedModelPicker({
         }
       }}
     >
-      {(title || description) && (
+      {!agentMenu && (title || description) && (
         <header className="mp-am-head">
           {title && <h3>{title}</h3>}
           {description && <p title={descriptionTitle}>{description}</p>}
@@ -380,10 +357,16 @@ export function SharedModelPicker({
                 <button
                   type="button"
                   key={id === null ? "all" : `provider/${id}`}
+                  hidden={agentMenu && id === "native"}
+                  title={
+                    id !== null
+                      ? accountText(groupName(id))
+                      : t("agentConnections.allProviders")
+                  }
                   aria-pressed={provider === id}
                   aria-label={
                     id !== null
-                      ? groupName(id)
+                      ? accountText(groupName(id))
                       : t("agentConnections.allProviders")
                   }
                   onClick={() => {
@@ -393,16 +376,28 @@ export function SharedModelPicker({
                     list.current?.scrollTo?.({ top: 0 });
                   }}
                 >
-                  {id !== null ? groupIcon(id) : <List size={14} aria-hidden />}
-                  <span>
-                    {id !== null
-                      ? groupName(id)
-                      : t("agentConnections.allProviders")}
-                  </span>
-                  <small>
-                    {entries.filter((m) => selected.includes(m.id)).length}/
-                    {entries.length}
-                  </small>
+                  {id !== null ? (
+                    groupIcon(id)
+                  ) : agentMenu ? (
+                    <LayoutGrid size={16} aria-hidden />
+                  ) : (
+                    <List size={14} aria-hidden />
+                  )}
+                  {!agentMenu && (
+                    <span>
+                      <AccountLabel>
+                        {id !== null
+                          ? groupName(id)
+                          : t("agentConnections.allProviders")}
+                      </AccountLabel>
+                    </span>
+                  )}
+                  {!agentMenu && (
+                    <small>
+                      {entries.filter((m) => selected.includes(m.id)).length}/
+                      {entries.length}
+                    </small>
+                  )}
                 </button>
               );
             })}
@@ -411,7 +406,13 @@ export function SharedModelPicker({
         <div
           className="mp-am-list"
           ref={list}
-          role={!multiple && !visibility ? "radiogroup" : undefined}
+          role={
+            readOnly
+              ? "list"
+              : !multiple && !visibility
+                ? "radiogroup"
+                : undefined
+          }
           aria-label={t("modelPicker.models")}
         >
           {view === "order" ? (
@@ -455,7 +456,7 @@ export function SharedModelPicker({
                   </span>
                   <span className="mp-am-name">{modelName(model)}</span>
                   <span className="mp-am-context">
-                    {groupName(model.group ?? "")}
+                    <AccountLabel>{groupName(model.group ?? "")}</AccountLabel>
                   </span>
                 </div>
               ))}
@@ -465,105 +466,172 @@ export function SharedModelPicker({
             </div>
           ) : (
             <>
+              {agentMenu && onDisconnect && !term && (
+                <button
+                  type="button"
+                  className="mp-am-row mp-am-disconnect"
+                  data-model-action
+                  disabled={disabled}
+                  onClick={onDisconnect}
+                >
+                  <span className="mp-am-logo" aria-hidden>
+                    <Unplug size={16} />
+                  </span>
+                  <span className="mp-am-name">
+                    {disconnectLabel ?? t("agentConnections.restore")}
+                  </span>
+                </button>
+              )}
               {visibleSections.map(([group, rows]) => {
                 const all = groups.get(group)!;
                 const isFolded =
-                  !term && provider === null && folded.has(group);
+                  !agentMenu && !term && provider === null && folded.has(group);
                 const count = all.filter((m) => selected.includes(m.id)).length;
                 return (
                   <section key={group} className="mp-am-group">
-                    <div className="mp-am-group-head">
-                      <button
-                        type="button"
-                        className="mp-am-fold"
-                        aria-expanded={!isFolded}
-                        aria-label={groupName(group)}
-                        onClick={() => {
-                          setFolded((old) => {
-                            const next = new Set(old);
-                            next.has(group)
-                              ? next.delete(group)
-                              : next.add(group);
-                            return next;
-                          });
-                          setArmed(null);
-                        }}
-                      >
-                        <ChevronDown
-                          size={10}
-                          className={isFolded ? "folded" : ""}
-                          aria-hidden
-                        />
-                        {groupIcon(group)}
-                        <span>{groupName(group)}</span>
-                        <small>
-                          {count} / {all.length}
-                        </small>
-                      </button>
-                      {visibility && (
+                    {agentMenu ? (
+                      group !== "native" &&
+                      !term && (
+                        <div className="mp-am-section-label">
+                          <AccountLabel>{groupName(group)}</AccountLabel>
+                        </div>
+                      )
+                    ) : (
+                      <div className="mp-am-group-head">
                         <button
-                          className="mp-am-group-all"
                           type="button"
-                          aria-label={`${t(count === all.length ? "agentConnections.hideAll" : "agentConnections.showAll")} ${groupName(group)}`}
-                          disabled={disabled}
-                          onClick={() => setShown(all, count !== all.length)}
+                          className="mp-am-fold"
+                          aria-expanded={!isFolded}
+                          aria-label={accountText(groupName(group))}
+                          onClick={() => {
+                            setFolded((old) => {
+                              const next = new Set(old);
+                              next.has(group)
+                                ? next.delete(group)
+                                : next.add(group);
+                              return next;
+                            });
+                            setArmed(null);
+                          }}
                         >
-                          {t(
-                            count === all.length
-                              ? "agentConnections.hideAll"
-                              : "agentConnections.showAll",
-                          )}
+                          <ChevronDown
+                            size={10}
+                            className={isFolded ? "folded" : ""}
+                            aria-hidden
+                          />
+                          {groupIcon(group)}
+                          <span>
+                            <AccountLabel>{groupName(group)}</AccountLabel>
+                          </span>
+                          <small>
+                            {count} / {all.length}
+                          </small>
                         </button>
-                      )}
-                    </div>
+                        {visibility && (
+                          <button
+                            className="mp-am-group-all"
+                            type="button"
+                            aria-label={`${t(count === all.length ? "agentConnections.hideAll" : "agentConnections.showAll")} ${accountText(groupName(group))}`}
+                            disabled={disabled}
+                            onClick={() => setShown(all, count !== all.length)}
+                          >
+                            {t(
+                              count === all.length
+                                ? "agentConnections.hideAll"
+                                : "agentConnections.showAll",
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {!isFolded && (
                       <div>
                         {rows.map((model) => {
                           const visible = selected.includes(model.id);
+                          const Choice = readOnly ? "div" : "button";
                           return (
-                            <button
-                              type="button"
+                            <Choice
+                              type={readOnly ? undefined : "button"}
                               role={
-                                visibility
-                                  ? "menuitemcheckbox"
-                                  : multiple
-                                    ? "checkbox"
-                                    : "radio"
+                                readOnly
+                                  ? "listitem"
+                                  : visibility
+                                    ? "menuitemcheckbox"
+                                    : multiple
+                                      ? "checkbox"
+                                      : "radio"
                               }
-                              aria-checked={visible}
+                              aria-checked={readOnly ? undefined : visible}
                               aria-label={modelName(model)}
                               key={model.id}
-                              title={model.modelId ?? model.id}
-                              data-model-choice
+                              title={modelName(model)}
+                              data-model-choice={readOnly ? undefined : true}
                               className={`mp-am-row${visibility && !visible ? " off" : ""}`}
-                              disabled={disabled || model.disabled}
-                              onClick={() => {
-                                if (!multiple && !visibility && visible) return;
-                                if (visibility && visible)
-                                  setKept((old) => new Set([...old, model.id]));
-                                setArmed(null);
-                                onPick(model.id);
-                              }}
+                              disabled={
+                                readOnly
+                                  ? undefined
+                                  : disabled || model.disabled
+                              }
+                              onClick={
+                                readOnly
+                                  ? undefined
+                                  : () => {
+                                      if (!multiple && !visibility && visible) {
+                                        onDismiss?.();
+                                        return;
+                                      }
+                                      if (visibility && visible)
+                                        setKept(
+                                          (old) => new Set([...old, model.id]),
+                                        );
+                                      setArmed(null);
+                                      onPick?.(model.id);
+                                    }
+                              }
                             >
                               <span className="mp-am-logo" aria-hidden>
                                 {modelIcon(model)}
                               </span>
-                              <span className="mp-am-name">
-                                {modelName(model)}
-                              </span>
-                              {visibility ? (
+                              {agentMenu ? (
+                                <span className="mp-am-words">
+                                  <span className="mp-am-name">
+                                    {modelName(model)}
+                                  </span>
+                                  <span
+                                    className={`mp-am-path${model.source === "native" ? " native" : ""}`}
+                                  >
+                                    {t(
+                                      model.source === "native"
+                                        ? "agentConnections.nativeConfiguration"
+                                        : "agentConnections.viaVary",
+                                    )}
+                                  </span>
+                                  {model.source !== "native" && (
+                                    <span className="mp-am-source">
+                                      <AccountLabel>
+                                        {groupName(model.group ?? "")}
+                                      </AccountLabel>
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="mp-am-name">
+                                  {modelName(model)}
+                                </span>
+                              )}
+                              {!agentMenu && model.contextWindow != null && (
                                 <span className="mp-am-context">
                                   {context(model.contextWindow)}
                                 </span>
-                              ) : (
-                                <ModelCapabilities model={model} />
                               )}
-                              <span className="mp-am-check" aria-hidden>
-                                {visible && (
-                                  <Check size={12} strokeWidth={1.9} />
-                                )}
-                              </span>
-                            </button>
+                              {!readOnly && (
+                                <span className="mp-am-check" aria-hidden>
+                                  {visible && (
+                                    <Check size={12} strokeWidth={1.9} />
+                                  )}
+                                </span>
+                              )}
+                            </Choice>
                           );
                         })}
                       </div>
@@ -578,6 +646,11 @@ export function SharedModelPicker({
           )}
         </div>
       </div>
+      {agentMenu && description && (
+        <p className="mp-am-menu-note" title={descriptionTitle}>
+          {description}
+        </p>
+      )}
       {error && (
         <p role="alert" className="mp-am-error">
           {t(error)}
@@ -660,7 +733,7 @@ export function SharedModelPicker({
         </footer>
       )}
 
-      {multiple && !visibility && (
+      {multiple && !visibility && !readOnly && (
         <p className="mp-am-foot">
           {t("modelPicker.multiHint", { count: selected.length })}
         </p>

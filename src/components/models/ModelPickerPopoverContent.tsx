@@ -41,6 +41,7 @@ export function ModelPickerPopoverContent({
         viewport: { width: window.innerWidth, height: window.innerHeight },
         width: panel.getBoundingClientRect().width,
         height: naturalHeight,
+        maxHeight: panel.dataset.variant === "agent" ? 420 : 560,
       }),
     );
   }, [panel]);

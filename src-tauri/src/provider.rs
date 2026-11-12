@@ -217,13 +217,18 @@ impl Provider {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => (
                 str_at(settings.get("baseUrl")),
                 str_at(settings.get("apiKey")),
             ),
             // Pi custom providers use the native models.json field names.
-            AppType::WorkBuddy => (
+            AppType::WorkBuddy | AppType::WorkBuddyAi => (
                 str_at(settings.get("url"))
                     .trim_end_matches("/chat/completions")
                     .to_string(),

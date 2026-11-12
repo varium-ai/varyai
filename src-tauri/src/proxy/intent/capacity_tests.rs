@@ -6,7 +6,15 @@ use crate::{
 use axum::{response::IntoResponse, routing::post, Json, Router};
 use std::sync::Mutex;
 
+struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+impl Drop for RestoreSecurity {
+    fn drop(&mut self) {
+        crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+    }
+}
+
 struct Fixture {
+    _security: RestoreSecurity,
     server: ProxyServer,
     task: tokio::task::JoinHandle<()>,
     client: reqwest::Client,
@@ -24,6 +32,8 @@ impl Fixture {
         windows: [Option<u64>; 2],
         manual: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+        crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let captured = seen.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -114,6 +124,7 @@ impl Fixture {
         .with_intent_runtime(runtime);
         let info = server.start().await?;
         Ok(Self {
+            _security: security,
             server,
             task,
             client,
@@ -171,14 +182,23 @@ async fn growing_plain_history_reselects_but_response_references_remain_bound(
         fixture.models(),
         ["balanced-model", "balanced-model", "strong-model"]
     );
-    let foreign = fixture
+    let unknown = fixture
         .send(
             json!({"input":[{"type":"reasoning","encrypted_content":"synthetic-unknown"}]}),
             "fresh-opaque",
         )
         .await;
-    assert_eq!(foreign.status(), StatusCode::CONFLICT);
-    assert_eq!(fixture.models().len(), 3);
+    assert_eq!(unknown.status(), StatusCode::OK);
+    assert_eq!(unknown.json::<Value>().await?["model"], "balanced-model");
+    assert_eq!(
+        fixture.models(),
+        [
+            "balanced-model",
+            "balanced-model",
+            "strong-model",
+            "balanced-model"
+        ]
+    );
     fixture.server.stop().await?;
     Ok(())
 }

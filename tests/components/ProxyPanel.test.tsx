@@ -75,7 +75,7 @@ describe("ProxyPanel routing applications", () => {
     expect(
       within(routing)
         .getAllByText(
-          /^(Claude|Claude Desktop|Codex|Gemini|Grok Build|WorkBuddy)$/,
+          /^(Claude|Claude Desktop|Codex|Gemini|Grok Build|WorkBuddy China)$/,
         )
         .map((el) => el.textContent),
     ).toEqual([
@@ -84,7 +84,7 @@ describe("ProxyPanel routing applications", () => {
       "Codex",
       "Gemini",
       "Grok Build",
-      "WorkBuddy",
+      "WorkBuddy China",
     ]);
     const desktop = within(routing).getByRole("switch", {
       name: "Claude Desktop 本地路由",

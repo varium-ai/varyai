@@ -13,7 +13,7 @@ impl ModelVisibility {
     pub fn visible(&self, id: &str) -> bool {
         self.ids.iter().any(|known| known == id) == self.only
     }
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.ids.len() > 256
             || self.order.len() > 256
             || self
@@ -38,8 +38,29 @@ impl ModelVisibility {
                 .unwrap_or(usize::MAX)
         });
     }
+    pub(super) fn desktop_models(&self, catalog: &[Model], selected: &str) -> Vec<Model> {
+        let mut models = catalog
+            .iter()
+            .filter(|m| self.visible(&m.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.apply_order(&mut models);
+        // Desktop uses the first entry as the default. Keep the remaining menu order stable.
+        if let Some(index) = models.iter().position(|m| m.id == selected) {
+            let model = models.remove(index);
+            models.insert(0, model);
+        }
+        models
+    }
 }
 impl Manager {
+    pub(crate) fn profile_paths(&self, app: &str) -> Result<Vec<PathBuf>, String> {
+        let mut paths = vec![self.path(app)?];
+        if app == "claude-desktop" {
+            paths.push(self.visibility_path(app)?);
+        }
+        Ok(paths)
+    }
     fn visibility_path(&self, app: &str) -> Result<PathBuf, String> {
         if app != "claude-desktop" {
             return Err(FAILED.into());
@@ -108,6 +129,41 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_default_precedes_the_visible_order_and_hidden_defaults_fall_back() {
+        let policy = ModelVisibility {
+            only: false,
+            ids: vec!["hidden".into()],
+            order: vec!["second".into(), "first".into()],
+        };
+        let catalog = ["first", "hidden", "second"].map(|id| Model {
+            api: "openai-completions",
+            native_model: None,
+            id: id.into(),
+            name: id.into(),
+            group: String::new(),
+            context_window: None,
+            output_tokens: None,
+            cost: None,
+            compact_at: None,
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+            icon: None,
+        });
+        let ids = |selected| {
+            policy
+                .desktop_models(&catalog, selected)
+                .into_iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("first"), ["first", "second"]);
+        assert_eq!(ids("hidden"), ["second", "first"]);
+        assert_eq!(ids("removed"), ["second", "first"]);
+    }
 
     #[test]
     fn desktop_model_order_is_persistent_and_rejects_duplicates() -> Result<(), String> {

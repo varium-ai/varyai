@@ -22,11 +22,13 @@ fn seed() -> cc_switch_lib::AppState {
     for directory in [
         ".pi",
         ".hermes",
+        ".workbuddy",
         ".workbuddy-ai",
         ".qoder-cn",
         ".kimi-code",
         ".qwen",
         ".zcode",
+        ".dsh",
         "Library",
         "AppData",
     ] {
@@ -221,7 +223,7 @@ fn profiles_capture_only_the_current_supplier_for_clients_with_one_selection() {
             app.as_str()
         );
         let path = match app {
-            AppType::WorkBuddy => support::ensure_test_home().join(".workbuddy-ai/models.json"),
+            AppType::WorkBuddy => support::ensure_test_home().join(".workbuddy/models.json"),
             AppType::Qoder => support::ensure_test_home().join(".qoder-cn/settings.json"),
             AppType::Kimi => support::ensure_test_home().join(".kimi-code/config.toml"),
             AppType::Qwen => support::ensure_test_home().join(".qwen/settings.json"),
@@ -403,8 +405,14 @@ fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
     let _guard = test_guard();
     support::reset_test_fs();
     let state = support::create_test_state().unwrap();
+    // WorkBuddy AI uses shared connection profiles, covered by the shared-catalog lifecycle test.
     let apps: Vec<_> = AppType::all()
-        .filter(|app| *app != AppType::DoubaoWork)
+        .filter(|app| {
+            !matches!(
+                app,
+                AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
+            )
+        })
         .collect();
     for app in &apps {
         let config = if *app == AppType::Codex {
@@ -437,8 +445,9 @@ fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
     let payload: serde_json::Value = serde_json::from_str(&profile.payload).unwrap();
     assert_eq!(
         payload["bundle"]["selections"].as_array().unwrap().len(),
-        15
+        apps.len()
     );
+    assert!(apps.contains(&AppType::DeepSeekHarness));
     for selection in payload["bundle"]["selections"].as_array().unwrap() {
         assert!(
             selection.get("library").is_some(),
@@ -822,7 +831,7 @@ fn added_agents_apply_and_undo_through_their_real_configuration_adapters() {
             AppType::Hermes if cfg!(windows) => "AppData/Local/hermes/config.yaml",
             AppType::Hermes => ".hermes/config.yaml",
             AppType::Pi => ".pi/agent/models.json",
-            AppType::WorkBuddy => ".workbuddy-ai/models.json",
+            AppType::WorkBuddy => ".workbuddy/models.json",
             AppType::Qoder => ".qoder-cn/settings.json",
             AppType::Kimi => ".kimi-code/config.toml",
             AppType::Qwen => ".qwen/settings.json",
@@ -1205,7 +1214,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
                 .unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let result=match request["op"].as_str().unwrap(){
-            "health"=>json!({"ready":true,"enabled":false,"revision":2,"modelReplacement":true}),
+            "health"=>json!({"ready":true,"enabled":false,"revision":18,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
             "replace"=>{
                 let mut models = server_models.lock().unwrap();
@@ -1232,7 +1241,12 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
     impl Drop for Stop {
         fn drop(&mut self) {
             self.0.store(false, Ordering::Relaxed);
-            self.1.take().unwrap().join().unwrap();
+            if let Some(worker) = self.1.take() {
+                let result = worker.join();
+                if !std::thread::panicking() {
+                    assert!(result.is_ok(), "synthetic bridge worker failed");
+                }
+            }
         }
     }
     let _stop = Stop(running, Some(worker));
@@ -1388,16 +1402,24 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
     let _guard = test_guard();
     let state = seed();
     let apps: Vec<_> = AppType::all()
-        .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::Trae))
+        .filter(|app| {
+            !matches!(
+                app,
+                AppType::DoubaoWork
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
+                    | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::WorkBuddyAi
+            )
+        })
         .filter(|app| *app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)))
         .collect();
+    assert!(apps.contains(&AppType::DeepSeekHarness));
     assert_eq!(
         apps.len(),
-        if cfg!(any(target_os = "macos", windows)) {
-            14
-        } else {
-            13
-        }
+        AppType::all().count() - 7 - usize::from(!cfg!(any(target_os = "macos", windows)))
     );
     if apps.contains(&AppType::ClaudeDesktop) {
         let mut official = Provider::with_id(
@@ -1493,7 +1515,7 @@ fn workbuddy_model_edit_is_replaced_by_saved_catalog_without_orphaning_old_ids()
         .unwrap();
     edited.settings_config["id"] = json!("later-model");
     ProviderService::update(&state, AppType::WorkBuddy, None, edited).unwrap();
-    let path = support::ensure_test_home().join(".workbuddy-ai/models.json");
+    let path = support::ensure_test_home().join(".workbuddy/models.json");
     let before = std::fs::read(&path).unwrap();
     let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
     let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
@@ -1678,7 +1700,12 @@ fn later_custom_suppliers_can_be_captured_without_changing_old_profiles_or_copyi
 #[test]
 fn missing_profile_suppliers_are_skipped_for_every_agent_without_guessing_a_replacement() {
     let _guard = test_guard();
-    for app in AppType::all().filter(|app| *app != AppType::DoubaoWork) {
+    for app in AppType::all().filter(|app| {
+        !matches!(
+            app,
+            AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
+        )
+    }) {
         for missing_secondary in [false, true] {
             let state = seed();
             let working = if app == AppType::Claude {

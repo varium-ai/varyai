@@ -34,14 +34,17 @@ pub fn configuration_paths(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
             crate::workbuddy_config::get_workbuddy_config_path(),
             crate::workbuddy_config::ownership_path(),
         ],
+        AppType::WorkBuddyAi => vec![crate::workbuddy_config::get_workbuddy_ai_config_path()],
         AppType::Qoder => vec![crate::qoder_config::path()],
-        AppType::Kimi | AppType::Qwen | AppType::ZCode => {
+        AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness => {
             vec![crate::services::agent_clients::config_path(app.as_str())?]
         }
         // TRAE has no file adapter. Profiles save local selection separately
         // from best-effort delivery to an already connected bridge.
-        AppType::Trae => vec![],
-        AppType::DoubaoWork => return Err(error("nativeLoginOnly")),
+        AppType::Trae | AppType::TraeIntl => vec![],
+        AppType::Cursor | AppType::CursorCli | AppType::T3Code | AppType::DoubaoWork => {
+            return Err(error("nativeLoginOnly"))
+        }
     })
 }
 
@@ -359,6 +362,10 @@ pub fn apply_selection(state: &AppState, app: &AppType, saved: &Value) -> Result
                 || saved["auth"].as_str().is_some_and(|auth| {
                     !matches!(auth, "openai" | "anthropic" | "openai-responses")
                 }))
+            || *app == AppType::DeepSeekHarness
+                && saved["provider"]
+                    .as_str()
+                    .is_some_and(|provider| !provider.starts_with("varyai-"))
             || *app == AppType::ZCode
                 && saved["providerId"]
                     .as_str()

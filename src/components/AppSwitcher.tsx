@@ -42,13 +42,19 @@ const APP_DISPLAY_NAME: Record<AppId, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
   pi: "Pi",
-  workbuddy: "WorkBuddy",
+  workbuddy: "WorkBuddy China",
+  "workbuddy-ai": "WorkBuddy AI",
   qoder: "Qoder CN",
   doubaowork: "豆包工作",
   trae: "TRAE CN",
+  "trae-intl": "TRAE International",
   kimi: "Kimi Code",
   qwen: "Qwen Code",
   zcode: "ZCode",
+  "deepseek-harness": "DeepSeek Harness",
+  cursor: "Cursor Private Inference",
+  "cursor-cli": "Cursor CLI",
+  t3code: "T3 Code",
 };
 
 /** 应用图标 + 角标（Claude Code / Desktop 用角标区分终端与桌面） */

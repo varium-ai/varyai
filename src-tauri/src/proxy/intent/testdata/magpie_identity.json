@@ -1,0 +1,263 @@
+[
+  {
+    "name": "raw user message",
+    "headers": {},
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "magpie-491cb7431e947c11dc42bb58"
+  },
+  {
+    "name": "later user turn",
+    "headers": {},
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"},{\"role\":\"assistant\",\"content\":\"synthetic answer\"},{\"role\":\"user\",\"content\":\"synthetic follow-up\"}]}",
+    "expected": "magpie-491cb7431e947c11dc42bb58"
+  },
+  {
+    "name": "header x-opencode-session",
+    "headers": {
+      "x-opencode-session": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header x-session-affinity",
+    "headers": {
+      "x-session-affinity": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header x-session-id",
+    "headers": {
+      "x-session-id": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header session_id",
+    "headers": {
+      "session_id": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header session-id",
+    "headers": {
+      "session-id": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header x-claude-code-session-id",
+    "headers": {
+      "x-claude-code-session-id": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header x-conversation-id",
+    "headers": {
+      "x-conversation-id": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header x-deepseek-harness-session-id",
+    "headers": {
+      "x-deepseek-harness-session-id": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header x-magpie-session",
+    "headers": {
+      "x-magpie-session": "  synthetic-session  "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-session"
+  },
+  {
+    "name": "header precedence",
+    "headers": {
+      "x-opencode-session": "synthetic-first",
+      "session_id": "synthetic-second",
+      "x-magpie-session": "synthetic-third"
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-first"
+  },
+  {
+    "name": "blank header fallback",
+    "headers": {
+      "x-opencode-session": "  ",
+      "x-magpie-session": "synthetic-fallback"
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-fallback"
+  },
+  {
+    "name": "cache key is not identity",
+    "headers": {},
+    "body": "{\"prompt_cache_key\":\"synthetic-shared\",\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "magpie-491cb7431e947c11dc42bb58"
+  },
+  {
+    "name": "thread header is not session",
+    "headers": {
+      "thread-id": "synthetic-thread"
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "magpie-491cb7431e947c11dc42bb58"
+  },
+  {
+    "name": "claude subagent",
+    "headers": {
+      "session_id": "synthetic-lead",
+      "x-claude-code-agent-id": " synthetic-worker "
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-lead|agent:synthetic-worker"
+  },
+  {
+    "name": "truncated subagent",
+    "headers": {
+      "session_id": "synthetic-lead",
+      "x-claude-code-agent-id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "synthetic-lead|agent:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "name": "raw string input",
+    "headers": {},
+    "body": "{\"input\":\"synthetic string\"}",
+    "expected": "magpie-7378b82a572447e07b8f534c"
+  },
+  {
+    "name": "empty body fallback",
+    "headers": {},
+    "body": "{\"model\":\"synthetic-model\"}",
+    "expected": "magpie-ec6c9c953da22d1ff1e63ba0"
+  },
+  {
+    "name": "chat environment and task",
+    "headers": {},
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic cwd</environment_context>\"},{\"role\":\"user\",\"content\":\"synthetic task\"}]}",
+    "expected": "magpie-b5baf401a1559f7311603735"
+  },
+  {
+    "name": "chat environment and different task",
+    "headers": {},
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic cwd</environment_context>\"},{\"role\":\"user\",\"content\":\"synthetic other task\"}]}",
+    "expected": "magpie-0d0e49f01b2b044715a166ca"
+  },
+  {
+    "name": "chat system between opening",
+    "headers": {},
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic cwd</environment_context>\"},{\"role\":\"developer\",\"content\":\"synthetic instructions\"},{\"role\":\"user\",\"content\":\"synthetic task\"}]}",
+    "expected": "magpie-b5baf401a1559f7311603735"
+  },
+  {
+    "name": "chat incomplete environment opening",
+    "headers": {},
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic cwd</environment_context>\"}]}",
+    "expected": "magpie-64fe7adfcf5f7897cfa80341"
+  },
+  {
+    "name": "chat later turn after opening",
+    "headers": {},
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic cwd</environment_context>\"},{\"role\":\"user\",\"content\":\"synthetic task\"},{\"role\":\"assistant\",\"content\":\"synthetic answer\"},{\"role\":\"user\",\"content\":\"synthetic other task\"}]}",
+    "expected": "magpie-b5baf401a1559f7311603735"
+  },
+  {
+    "name": "responses environment and task",
+    "headers": {},
+    "body": "{\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"synthetic task\"}]}]}",
+    "expected": "magpie-886ddb12af3ce03db5ce8758"
+  },
+  {
+    "name": "responses environment and different task",
+    "headers": {},
+    "body": "{\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"synthetic other task\"}]}]}",
+    "expected": "magpie-d611a3b1ef2476e8f911c4fd"
+  },
+  {
+    "name": "responses system between opening",
+    "headers": {},
+    "body": "{\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"role\":\"developer\",\"content\":\"synthetic instructions\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"synthetic task\"}]}]}",
+    "expected": "magpie-886ddb12af3ce03db5ce8758"
+  },
+  {
+    "name": "responses incomplete environment opening",
+    "headers": {},
+    "body": "{\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]}]}",
+    "expected": "magpie-4333533a7c06717c73b4f77e"
+  },
+  {
+    "name": "responses later turn after opening",
+    "headers": {},
+    "body": "{\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"synthetic task\"}]},{\"role\":\"assistant\",\"content\":\"synthetic answer\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"synthetic other task\"}]}]}",
+    "expected": "magpie-886ddb12af3ce03db5ce8758"
+  },
+  {
+    "name": "gemini environment and task",
+    "headers": {},
+    "body": "{\"contents\":[{\"parts\":[{\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"parts\":[{\"text\":\"synthetic task\"}]}]}",
+    "expected": "magpie-74589f4895b33eefb194c4de"
+  },
+  {
+    "name": "gemini environment and different task",
+    "headers": {},
+    "body": "{\"contents\":[{\"parts\":[{\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"parts\":[{\"text\":\"synthetic other task\"}]}]}",
+    "expected": "magpie-8b1e37ccef43088f6fe494df"
+  },
+  {
+    "name": "gemini system between opening",
+    "headers": {},
+    "body": "{\"contents\":[{\"parts\":[{\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"role\":\"developer\",\"content\":\"synthetic instructions\"},{\"parts\":[{\"text\":\"synthetic task\"}]}]}",
+    "expected": "magpie-74589f4895b33eefb194c4de"
+  },
+  {
+    "name": "gemini incomplete environment opening",
+    "headers": {},
+    "body": "{\"contents\":[{\"parts\":[{\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]}]}",
+    "expected": "magpie-7b777995326b6aa7b6a2fb5a"
+  },
+  {
+    "name": "gemini later turn after opening",
+    "headers": {},
+    "body": "{\"contents\":[{\"parts\":[{\"text\":\"<environment_context>synthetic cwd</environment_context>\"}]},{\"parts\":[{\"text\":\"synthetic task\"}]},{\"role\":\"model\",\"content\":\"synthetic answer\"},{\"parts\":[{\"text\":\"synthetic other task\"}]}]}",
+    "expected": "magpie-74589f4895b33eefb194c4de"
+  },
+  {
+    "name": "multiple opening raw normalization",
+    "headers": {},
+    "body": "{\"input\":[{ \"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>synthetic</environment_context>\",\"cache_control\":{\"type\":\"ephemeral\"}}], \"role\":\"user\" }, {\"role\":\"user\", \"content\":\"synthetic task\", \"vendor_number\":1.000000000000000000001}]}",
+    "expected": "magpie-18e6736cad04bf5deb08e169"
+  },
+  {
+    "name": "tool result stops opening",
+    "headers": {},
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic</environment_context>\"},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"synthetic-call\",\"content\":\"synthetic\"}]},{\"role\":\"user\",\"content\":\"synthetic task\"}]}",
+    "expected": "magpie-4e0b443319e52635d67faa51"
+  },
+  {
+    "name": "image ends opening",
+    "headers": {},
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"<environment_context>synthetic</environment_context>\"},{\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":\"synthetic.invalid/image\"}]},{\"role\":\"user\",\"content\":\"synthetic question\"}]}",
+    "expected": "magpie-21ddc77c20b14be08d45c2b9"
+  },
+  {
+    "name": "codex request wrapper",
+    "headers": {},
+    "body": "{\"input\":[{\"role\":\"user\",\"content\":\"# AGENTS.md instructions for /synthetic\\nsynthetic rules\"},{\"role\":\"user\",\"content\":\"<environment_context>synthetic</environment_context>\\n## My request:\\nsynthetic task\"}]}",
+    "expected": "magpie-ba3c1641dcd51724cfdb72c7"
+  }
+]

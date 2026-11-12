@@ -5,11 +5,21 @@ function createBridge(
   audit,
   refreshModels = async () => {},
   storage = globalThis.localStorage,
+  startingModel,
+  rewards,
 ) {
   let undo;
   const sessions = new Map(),
     reported = new Set(),
     controllers = new Set();
+  // Native edit requests keep provider and request-model identity immutable.
+  const editFields = (fields) => ({
+    display_name: fields.display_name,
+    ak: fields.ak,
+    base_url: fields.base_url,
+    auth_type: fields.auth_type,
+    custom_model_type: fields.custom_model_type,
+  });
   const modelFailure = (operation, code) =>
     Error(
       `model_${operation}_failed${Number.isSafeInteger(code) ? `:${code}` : ""}`,
@@ -46,21 +56,106 @@ function createBridge(
       `varyai.trae.models.${id}`,
       JSON.stringify(rows.map(({ id, model }) => ({ id, model }))),
     );
+  const modelName = (model) => {
+    if (typeof model.model_name === "string") return model.model_name;
+    const prefix = `${model.provider}//`;
+    return model.name?.startsWith(prefix)
+      ? model.name.slice(prefix.length)
+      : model.name;
+  };
+  const providerType = (protocol) =>
+    ({
+      openai: "custom_openai_compatible",
+      "openai-responses": "custom_responses_compatible",
+      anthropic: "custom_anthropic_compatible",
+    })[protocol];
+  const digest = async (value) => {
+    const bytes = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify(value)),
+    );
+    return Array.from(new Uint8Array(bytes), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  };
+  const expectedProof = (config, model) =>
+    digest([config.protocol, endpoint(config), model, config.apiKey]);
+  const nativeProof = (row) =>
+    digest([
+      row.custom_model_id,
+      modelName(row),
+      row.provider,
+      row.base_url,
+      row.ak,
+    ]);
+  const verificationKey = (id) => `varyai.trae.verification.${id}`;
+  const loadVerification = (id) => {
+    try {
+      const rows = JSON.parse(storage.getItem(verificationKey(id)) || "[]");
+      return Array.isArray(rows)
+        ? rows.filter(
+            (row) =>
+              row &&
+              typeof row.id === "string" &&
+              typeof row.expected === "string" &&
+              typeof row.native === "string",
+          )
+        : [];
+    } catch {
+      return [];
+    }
+  };
   const isOwned = (id, rows, model) =>
     rows.some((row) => row.id === model.id) ||
     model.displayName?.startsWith(`VaryAI/${id}/`);
+  const legacyVerificationKey = (id) => `varyai.trae.model-verification.${id}`;
+  const modelNameMatches = (wire, model) =>
+    typeof wire === "string" && (wire === model || wire.endsWith(`//${model}`));
+  async function modelVerification(config, wanted, row) {
+    const wire = row?.model_name ?? row?.name;
+    if (
+      !modelNameMatches(wire, wanted.model) ||
+      row.base_url !== endpoint(config) ||
+      typeof row.ak !== "string" ||
+      !row.ak ||
+      /^[*•]+$/.test(row.ak)
+    )
+      return null;
+    // Bind the submitted credential to the native protected representation.
+    // Only a one-way digest is persisted; neither representation leaves this call.
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(
+        JSON.stringify([
+          config.protocol,
+          wanted.model,
+          config.apiKey,
+          row.base_url,
+          row.provider,
+          wire,
+          row.ak,
+        ]),
+      ),
+    );
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
   const shortText = (value, limit) =>
     value.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, "");
   const displayName = (model, provider, used) => {
     const label =
       model.displayName?.trim() || model.model.split("/").pop() || model.model;
     const suffix = ` · ${shortText(provider.trim() || "VaryAI", 32)}`;
+    const name = label.endsWith(suffix)
+      ? label.slice(0, -suffix.length)
+      : label;
     let index = 1,
       value;
     do {
       const number = index === 1 ? "" : ` (${index})`;
       value =
-        shortText(label, 64 - suffix.length - number.length) + number + suffix;
+        shortText(name, 64 - suffix.length - number.length) + number + suffix;
       index++;
     } while (used.has(value));
     used.add(value);
@@ -72,7 +167,7 @@ function createBridge(
       throw Error("model_list_unavailable");
     return result.model_list.map((m) => ({
       id: m.custom_model_id,
-      name: m.name,
+      name: modelName(m),
       displayName: m.display_name,
       baseUrl: m.base_url,
       provider: m.provider,
@@ -92,6 +187,8 @@ function createBridge(
       saveOwned(id, owned);
     }
     saveOwned(id, []);
+    storage.setItem(verificationKey(id), "[]");
+    storage.setItem(legacyVerificationKey(id), "{}");
     await refreshModels();
   }
   function endpoint(config) {
@@ -115,21 +212,53 @@ function createBridge(
     const result = await service.getModelList();
     if (!Array.isArray(result.model_list)) return false;
     const owned = loadOwned(id),
+      verification = loadVerification(id),
       baseUrl = endpoint(config);
+    let legacyVerification = {};
+    try {
+      legacyVerification = JSON.parse(
+        storage.getItem(legacyVerificationKey(id)) || "{}",
+      );
+    } catch {}
     return (
       owned.length === config.models.length &&
-      config.models.every((wanted) => {
-        const owner = owned.find((row) => row.model === wanted.model);
-        const row =
-          owner &&
-          result.model_list.find((m) => m.custom_model_id === owner.id);
-        return (
-          row &&
-          (row.model_name ?? row.name) === wanted.model &&
-          row.base_url === baseUrl &&
-          row.ak === config.apiKey
-        );
-      })
+      (
+        await Promise.all(
+          config.models.map(async (wanted) => {
+            const owner = owned.find((row) => row.model === wanted.model);
+            const row =
+              owner &&
+              result.model_list.find((m) => m.custom_model_id === owner.id);
+            if (
+              !row ||
+              !modelNameMatches(modelName(row), wanted.model) ||
+              row.base_url !== baseUrl ||
+              row.provider !== providerType(config.protocol) ||
+              typeof row.ak !== "string" ||
+              !row.ak ||
+              /^[*•]+$/.test(row.ak)
+            )
+              return false;
+            if (row.ak === config.apiKey) return true;
+            // TRAE returns sealed keys. Verify the result of our successful write,
+            // without persisting either the local credential or the sealed value.
+            const proof = verification.find(
+              (entry) => entry.id === row.custom_model_id,
+            );
+            if (
+              proof &&
+              proof.expected === (await expectedProof(config, wanted.model)) &&
+              proof.native === (await nativeProof(row))
+            )
+              return true;
+            return (
+              typeof legacyVerification?.[row.custom_model_id] === "string" &&
+              legacyVerification[row.custom_model_id] ===
+                (await modelVerification(config, wanted, row))
+            );
+          }),
+        )
+      ).every(Boolean)
     );
   }
   async function apply(id, name, config) {
@@ -148,23 +277,51 @@ function createBridge(
         .filter((model) => !isOwned(id, owned, model))
         .map((model) => model.displayName),
     );
+    const labels = new Set();
+    const desiredLabels = config.models.map((model) =>
+      displayName(model, name, labels),
+    );
     const added = [];
     const addedIds = new Set(),
       wanted = new Set();
     try {
-      for (const model of config.models) {
+      for (const [index, model] of config.models.entries()) {
         const legacyName = await ownedName(id, model.model);
         const previous = owned.find((row) => row.model === model.model);
         let match =
           (previous && existing.find((m) => m.id === previous.id)) ||
           existing.find((m) => m.id && m.displayName === legacyName);
+        if (!match && id === "shared_catalog_connection") {
+          const url = new URL(baseUrl);
+          const candidates = existing.filter(
+            (m) =>
+              m.id &&
+              !owned.some((row) => row.id === m.id) &&
+              modelNameMatches(m.name, model.model) &&
+              m.baseUrl === baseUrl &&
+              m.provider === providerType(config.protocol) &&
+              m.displayName === desiredLabels[index],
+          );
+          if (
+            url.protocol === "http:" &&
+            url.hostname === "127.0.0.1" &&
+            [
+              "/connections/trae/v1/chat/completions",
+              "/connections/trae-intl/v1/chat/completions",
+            ].includes(url.pathname) &&
+            !url.username &&
+            !url.password &&
+            !url.search &&
+            !url.hash &&
+            candidates.length === 1
+          ) {
+            match = candidates[0];
+            used.delete(match.displayName);
+          }
+        }
         const display_name = displayName(model, name, used);
         const fields = {
-          provider: {
-            openai: "custom_openai_compatible",
-            "openai-responses": "custom_responses_compatible",
-            anthropic: "custom_anthropic_compatible",
-          }[config.protocol],
+          provider: providerType(config.protocol),
           model_name: model.model,
           display_name,
           ak: config.apiKey,
@@ -176,17 +333,28 @@ function createBridge(
         };
         if (!fields.provider) throw Error("invalid_protocol");
         if (!match) {
-          // Keep the recoverable legacy marker until native ownership is persisted.
+          // Shared rows can recover ownership by their unique local endpoint and wire identity.
+          // Publish their final label immediately so refreshes never expose a temporary hash.
+          const initialName =
+            id === "shared_catalog_connection" ? display_name : legacyName;
           const result = await service.addCustomModel({
             ...fields,
-            display_name: legacyName,
+            display_name: initialName,
           });
           if (result.code !== 0) throw modelFailure("add", result.code);
-          added.push(legacyName);
+          if (initialName === legacyName) added.push(legacyName);
           await refreshModels();
-          match = (await list()).find(
-            (m) => m.displayName === legacyName && m.id,
+          const candidates = (await list()).filter(
+            (m) =>
+              m.id &&
+              !existing.some((old) => old.id === m.id) &&
+              m.displayName === initialName &&
+              (initialName === legacyName ||
+                (m.baseUrl === baseUrl &&
+                  m.provider === fields.provider &&
+                  modelNameMatches(m.name, model.model))),
           );
+          match = candidates.length === 1 ? candidates[0] : undefined;
           if (!match) throw Error("model_apply_failed");
           addedIds.add(match.id);
         }
@@ -196,12 +364,19 @@ function createBridge(
         owned.push({ id: match.id, model: model.model });
         // Persist before replacing a legacy label, including during partial migrations.
         saveOwned(id, owned);
-        const result = await service.updateCustomModel({
-          action: "update",
-          id: match.id,
-          ...fields,
-        });
-        if (result.code !== 0) throw modelFailure("update", result.code);
+        if (
+          match.provider !== fields.provider ||
+          !modelNameMatches(match.name, model.model)
+        )
+          throw Error("model_identity_changed");
+        if (!(id === "shared_catalog_connection" && addedIds.has(match.id))) {
+          const result = await service.updateCustomModel({
+            action: "update",
+            id: match.id,
+            ...editFields(fields),
+          });
+          if (result.code !== 0) throw modelFailure("update", result.code);
+        }
         wanted.add(match.id);
       }
       const all = await list();
@@ -219,6 +394,30 @@ function createBridge(
         owned.filter((row) => wanted.has(row.id)),
       );
       await refreshModels();
+      const native = (await service.getModelList()).model_list;
+      if (!Array.isArray(native)) throw Error("model_list_unavailable");
+      const verification = await Promise.all(
+        config.models.map(async (model) => {
+          const owner = owned.find((row) => row.model === model.model);
+          const row = native.find((row) => row.custom_model_id === owner?.id);
+          if (
+            !row ||
+            !modelNameMatches(modelName(row), model.model) ||
+            row.base_url !== baseUrl ||
+            row.provider !== providerType(config.protocol) ||
+            typeof row.ak !== "string" ||
+            !row.ak ||
+            /^[*•]+$/.test(row.ak)
+          )
+            throw Error("model_apply_failed");
+          return {
+            id: row.custom_model_id,
+            expected: await expectedProof(config, model.model),
+            native: await nativeProof(row),
+          };
+        }),
+      );
+      storage.setItem(verificationKey(id), JSON.stringify(verification));
       return all.filter((m) => wanted.has(m.id));
     } catch (error) {
       // Roll back newly created entries only. Never remove pre-existing native models.
@@ -273,7 +472,7 @@ function createBridge(
       )?.[0];
       owner ??= /^VaryAI\/([\w-]+)\//.exec(model.display_name || "")?.[1];
       if (!owner || !model.custom_model_id) continue;
-      const wire = model.name || model.model_name;
+      const wire = modelName(model);
       // Recovery credentials stay in this call's memory, never in ownership storage or IPC results.
       if (
         typeof model.ak !== "string" ||
@@ -319,16 +518,27 @@ function createBridge(
       for (const model of snapshots) {
         if (remaining.some((row) => row.id === model.id)) continue;
         try {
-          const marker = await ownedName(model.owner, model.fields.model_name);
+          const shared = model.owner === "shared_catalog_connection";
+          const marker = shared
+            ? model.fields.display_name
+            : await ownedName(model.owner, model.fields.model_name);
           const added = await service.addCustomModel({
             ...model.fields,
             display_name: marker,
           });
           if (added.code !== 0) throw modelFailure("restore", added.code);
           await refreshModels();
-          const found = (await list()).find(
-            (row) => row.displayName === marker,
+          const candidates = (await list()).filter(
+            (row) =>
+              row.id &&
+              !remaining.some((old) => old.id === row.id) &&
+              row.displayName === marker &&
+              (!shared ||
+                (row.baseUrl === model.fields.base_url &&
+                  row.provider === model.fields.provider &&
+                  modelNameMatches(row.name, model.fields.model_name))),
           );
+          const found = candidates.length === 1 ? candidates[0] : undefined;
           if (!found?.id) throw Error("model_restore_failed");
           const rows = ownership
             .get(model.owner)
@@ -339,7 +549,7 @@ function createBridge(
           const updated = await service.updateCustomModel({
             action: "update",
             id: found.id,
-            ...model.fields,
+            ...editFields(model.fields),
           });
           if (updated.code !== 0) throw modelFailure("restore", updated.code);
         } catch {
@@ -351,14 +561,40 @@ function createBridge(
       throw error;
     }
   }
+  // A timed-out IPC caller must not race a still-running native model transaction.
+  let changes = Promise.resolve();
+  const serial =
+    (operation) =>
+    (...args) => {
+      const result = changes.then(() => operation(...args));
+      changes = result.catch(() => {});
+      return result;
+    };
   const bridge = {
     list,
-    matches,
-    apply,
-    replace,
-    remove,
+    matches: serial(matches),
+    apply: serial(apply),
+    replace: serial(replace),
+    remove: serial(remove),
+    select: serial(async (id, model) => {
+      const owned = loadOwned(id).filter((row) => row.model === model);
+      if (owned.length !== 1 || !startingModel)
+        throw Error("starting_model_unavailable");
+      await refreshModels();
+      const rows = (await list()).filter(
+        (row) => row.id === owned[0].id && row.name === model,
+      );
+      if (rows.length !== 1) throw Error("starting_model_unavailable");
+      return startingModel.select(owned[0].id);
+    }),
+    idle() {
+      return changes;
+    },
     get enabled() {
       return Boolean(undo);
+    },
+    rewards(input) {
+      return rewards ? rewards(input) : { outcome: "unsupported" };
     },
     disable() {
       undo?.();
@@ -367,8 +603,31 @@ function createBridge(
     async enable() {
       if (undo) return;
       const client = await service._clientManagerService.getClient();
-      const proto = Object.getPrototypeOf(client),
-        original = proto.convertReqToRustPayload;
+      const proto = Object.getPrototypeOf(client);
+      let convertName = "convertReqToRustPayload";
+      let original = proto[convertName];
+      if (
+        typeof original !== "function" &&
+        typeof proto.request === "function"
+      ) {
+        // Newer clients minify private names; the request envelope retains its protocol keys.
+        const matches = [
+          ...Function.prototype.toString
+            .call(proto.request)
+            .matchAll(/\bpayload\s*:\s*await\s+this\.([A-Za-z_$][\w$]*)\s*\(/g),
+        ];
+        if (matches.length === 1) {
+          const name = matches[0][1];
+          const candidate = Object.getOwnPropertyDescriptor(proto, name)?.value;
+          if (typeof candidate === "function") {
+            const source = Function.prototype.toString.call(candidate);
+            if (/\bservice\s*:/.test(source) && /\bmethod\s*:/.test(source)) {
+              convertName = name;
+              original = candidate;
+            }
+          }
+        }
+      }
       if (typeof original !== "function")
         throw Error("unsupported_client_version");
       const wrapped = async function (request, ...args) {
@@ -441,8 +700,8 @@ function createBridge(
         return original.call(this, next, ...args);
       };
       const originalStream = proto.requestForStream;
-      const wrapStream = function (request) {
-        const stream = originalStream.call(this, request);
+      const wrapStream = function (request, ...args) {
+        const stream = originalStream.call(this, request, ...args);
         if (request.service !== "lite" || request.method !== "subscribe_events")
           return stream;
         const controller = stream.getController(),
@@ -524,12 +783,11 @@ function createBridge(
         controllers.add(restore);
         return stream;
       };
-      proto.convertReqToRustPayload = wrapped;
+      proto[convertName] = wrapped;
       if (typeof originalStream === "function")
         proto.requestForStream = wrapStream;
       undo = () => {
-        if (proto.convertReqToRustPayload === wrapped)
-          proto.convertReqToRustPayload = original;
+        if (proto[convertName] === wrapped) proto[convertName] = original;
         if (proto.requestForStream === wrapStream)
           proto.requestForStream = originalStream;
         for (const restore of controllers) restore();
@@ -539,6 +797,31 @@ function createBridge(
     },
   };
   return bridge;
+}
+function workbenchServices(req) {
+  const ids = Object.keys(req.m || {}).filter((id) =>
+    /\bmcf\s*:/.test(Function.prototype.toString.call(req.m[id])),
+  );
+  if (ids.length !== 1) throw Error("unsupported_ide_version");
+  const di = req(ids[0]).mcf?.getInstance();
+  if (!di?.isInitialized() || typeof di.resolve !== "function")
+    throw Error("unsupported_ide_version");
+  const service = di.resolve(Symbol.for("aiAgent.IAiNativeModelService"));
+  const store = di.resolve(Symbol.for("IModelService"));
+  const management = di.resolve("iICubeModelManagementService");
+  if (
+    typeof service?.getModelList !== "function" ||
+    typeof store?.refreshModelStore !== "function" ||
+    typeof management?.notifyModelChanges !== "function"
+  )
+    throw Error("unsupported_ide_version");
+  return {
+    service,
+    async refresh() {
+      await store.refreshModelStore({ source: "varyai" });
+      management.notifyModelChanges({ source: "varyai" });
+    },
+  };
 }
 function rendererSource() {
   return `(()=>{
@@ -550,11 +833,12 @@ customElements.define(tag,class extends HTMLElement{
  send(value){this.dispatchEvent(new CustomEvent('icube-component',{detail:value}))}
  async init(){if(!this.ready)this.ready=(async()=>{
   const mod=await import(location.href.split('/out/')[0]+'/node_modules/@byted-icube/ai-modules-chat/dist/index.mjs');
-  const req=mod.__webpack_require__, service=req(20536).mc.getInstance().resolve(req(94656).b3);
+  const req=mod.__webpack_require__, workbenchServices=${workbenchServices.toString()};
+  const {service,refresh}=workbenchServices(req);
   return createBridge(service,value=>new Promise((resolve,reject)=>{
    const id=crypto.randomUUID(),timer=setTimeout(()=>{this.pending.delete(id);reject(Error('audit_unavailable'))},5000);
    this.pending.set(id,{resolve,reject,timer});this.send({audit:id,value});
-  }),()=>req(20536).mc.getInstance().resolve(req(1053).S).refreshModelStore({source:'varyai'}));})();return this.ready}
+  }),refresh);})();return this.ready}
  async receive(message){
   if(message.auditResult){const pending=this.pending.get(message.auditResult);if(pending){clearTimeout(pending.timer);this.pending.delete(message.auditResult);message.error?pending.reject(Error('audit_unavailable')):pending.resolve(message.value)}return}
   try{const bridge=await this.init();let result;
@@ -567,4 +851,4 @@ customElements.define(tag,class extends HTMLElement{
  }
 });})();`;
 }
-module.exports = { createBridge, rendererSource };
+module.exports = { createBridge, rendererSource, workbenchServices };

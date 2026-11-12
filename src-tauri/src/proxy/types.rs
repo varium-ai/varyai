@@ -132,8 +132,16 @@ pub struct ProxyTakeoverStatus {
     pub qwen: bool,
     #[serde(default)]
     pub zcode: bool,
+    #[serde(default, rename = "deepseek-harness")]
+    pub deepseek_harness: bool,
+    #[serde(default)]
+    pub cursor: bool,
+    #[serde(default)]
+    pub t3code: bool,
     #[serde(default)]
     pub trae: bool,
+    #[serde(default, rename = "trae-intl")]
+    pub trae_intl: bool,
     #[serde(default)]
     pub doubaowork: bool,
     #[serde(default)]
@@ -146,6 +154,8 @@ pub struct ProxyTakeoverStatus {
     pub qoder: bool,
     #[serde(default)]
     pub workbuddy: bool,
+    #[serde(default, rename = "workbuddy-ai")]
+    pub workbuddy_ai: bool,
     pub claude: bool,
     pub codex: bool,
     pub gemini: bool,
@@ -164,12 +174,17 @@ impl ProxyTakeoverStatus {
             || self.opencode
             || self.openclaw
             || self.workbuddy
+            || self.workbuddy_ai
             || self.qoder
             || self.kimi
             || self.qwen
             || self.zcode
+            || self.cursor
+            || self.t3code
+            || self.deepseek_harness
             || self.pi
             || self.trae
+            || self.trae_intl
             || self.trae_waiting
             || self.doubaowork
             || self.doubaowork_waiting
@@ -436,6 +451,7 @@ mod tests {
         for field in [
             "claude-desktop",
             "zcode",
+            "deepseek-harness",
             "kimi",
             "qwen",
             "pi",

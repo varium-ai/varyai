@@ -339,6 +339,10 @@ async fn every_managed_agent_enforces_and_accounts_without_replacing_native_auth
             "/agents/doubaowork/providers/fixture/v1/chat/completions",
         ),
         ("trae", "/agents/trae/providers/fixture/v1/chat/completions"),
+        (
+            "trae-intl",
+            "/upstream/trae-intl/providers/fixture/v1/chat/completions",
+        ),
         ("kimi", "/agents/kimi/providers/fixture/v1/chat/completions"),
         ("qwen", "/agents/qwen/providers/fixture/v1/messages"),
         ("zcode", "/agents/zcode/providers/fixture/v1/messages"),

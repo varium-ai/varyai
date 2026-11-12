@@ -1,14 +1,15 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Blocks,
-  GitBranch,
-  Layers3,
-  ChartNoAxesCombined,
-  ShieldCheck,
-  Settings2,
+  Command,
+  Shuffle,
+  Component,
+  ChartColumn,
+  ScanEye,
+  Settings,
 } from "lucide-react";
 import appIcon from "@/assets/icons/app-icon.png";
+import { UpdateBadge } from "@/components/UpdateBadge";
 export type WorkspaceView =
   | "agents"
   | "routing"
@@ -17,11 +18,11 @@ export type WorkspaceView =
   | "security"
   | "settings";
 const items = [
-  ["agents", Blocks],
-  ["routing", GitBranch],
-  ["providers", Layers3],
-  ["stats", ChartNoAxesCombined],
-  ["security", ShieldCheck],
+  ["agents", Command],
+  ["routing", Shuffle],
+  ["providers", Component],
+  ["stats", ChartColumn],
+  ["security", ScanEye],
 ] as const;
 export function WorkspaceNavigation({
   view,
@@ -118,21 +119,24 @@ export function WorkspaceNavigation({
             onClick={() => onSelect(id)}
             className="workspace-nav-item"
           >
-            <Icon />
+            <Icon aria-hidden="true" strokeWidth={1.75} />
             <span>{t(`workspaceNav.${id}`)}</span>
           </button>
         ))}
       </nav>
-      <button
-        aria-label={t("workspaceNav.settings")}
-        aria-current={view === "settings" ? "page" : undefined}
-        title={t("workspaceNav.settings")}
-        className="workspace-nav-item workspace-settings"
-        onClick={() => onSelect("settings")}
-      >
-        <Settings2 />
-        <span>{t("workspaceNav.settings")}</span>
-      </button>
+      <div className="workspace-settings-row">
+        <button
+          aria-label={t("workspaceNav.settings")}
+          aria-current={view === "settings" ? "page" : undefined}
+          title={t("workspaceNav.settings")}
+          className="workspace-nav-item workspace-settings"
+          onClick={() => onSelect("settings")}
+        >
+          <Settings aria-hidden="true" strokeWidth={1.75} />
+          <span>{t("workspaceNav.settings")}</span>
+        </button>
+        <UpdateBadge className="workspace-update-badge" />
+      </div>
     </aside>
   );
 }

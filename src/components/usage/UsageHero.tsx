@@ -46,11 +46,14 @@ interface TitleTheme {
 }
 
 const TITLE_THEMES: Record<AppType | "all", TitleTheme> = {
+  workbuddy: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
+  "workbuddy-ai": { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
   doubaowork: { accent: "text-blue-600", iconBg: "bg-blue-500/10" },
   trae: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
   kimi: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
   qwen: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
   zcode: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
+  "deepseek-harness": { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
   qoder: { accent: "text-sky-600 dark:text-sky-400", iconBg: "bg-sky-500/10" },
   all: { accent: "text-primary", iconBg: "bg-primary/10" },
   claude: {

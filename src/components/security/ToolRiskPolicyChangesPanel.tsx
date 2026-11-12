@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Eraser, RefreshCw, X } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -18,8 +19,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useToolRiskPolicyChanges } from "@/hooks/useToolRisk";
+import {
+  useToolRiskPolicyChanges,
+  useToolRiskRules,
+} from "@/hooks/useToolRisk";
 import { projectToolRiskPolicyChanges } from "@/types/toolRisk";
+import { getToolRiskRuleName } from "@/lib/toolRiskRuleLocalization";
 
 const PAGE_SIZE = 50;
 const key = (name: string) => `toolRisk.policyChanges.${name}`;
@@ -33,6 +38,7 @@ export function ToolRiskPolicyChangesPanel({
   const [offset, setOffset] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [clearFailed, setClearFailed] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const {
     changes,
     isLoading,
@@ -43,7 +49,26 @@ export function ToolRiskPolicyChangesPanel({
     isClearing,
   } = useToolRiskPolicyChanges(PAGE_SIZE, offset);
   const rows = projectToolRiskPolicyChanges(changes);
-  const busy = isFetching || isClearing;
+  const { rules, refetch: refetchRules } = useToolRiskRules();
+  const ruleName = (id: string) => {
+    if (id.startsWith("builtin."))
+      return getToolRiskRuleName(t, { id, origin: "builtin", name: id });
+    return rules.find((rule) => rule.id === id)?.name;
+  };
+  const busy = isFetching || isClearing || isRefreshing;
+  const refresh = async () => {
+    setIsRefreshing(true);
+    try {
+      const results = await Promise.all([refetch(), refetchRules()]);
+      if (results.some((result) => result.isError))
+        toast.error(t(key("refreshFailed")));
+      else toast.success(t(key("refreshed")));
+    } catch {
+      toast.error(t(key("refreshFailed")));
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
   const clear = async () => {
     if (isClearing) return;
     setClearFailed(false);
@@ -89,6 +114,9 @@ export function ToolRiskPolicyChangesPanel({
           <p className="mt-1 text-xs text-muted-foreground">
             {t(key("actorHint"))}
           </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t(key("currentNamesHint"))}
+          </p>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button
@@ -96,7 +124,7 @@ export function ToolRiskPolicyChangesPanel({
             variant="outline"
             disabled={busy}
             onClick={() => {
-              void refetch();
+              void refresh();
             }}
           >
             <RefreshCw className="mr-1 h-4 w-4" />
@@ -169,11 +197,18 @@ export function ToolRiskPolicyChangesPanel({
                     {t(key(`kind.${row.kind}`))}
                   </TableCell>
                   <TableCell className="break-all text-xs">
-                    {row.targetId === null
-                      ? t(key("noTarget"))
-                      : row.targetId === "<unknown_target>"
-                        ? t(key("targetUnknown"))
-                        : row.targetId}
+                    {row.targetId === null ? (
+                      t(key("noTarget"))
+                    ) : row.targetId === "<unknown_target>" ? (
+                      t(key("targetUnknown"))
+                    ) : (
+                      <>
+                        <div>{ruleName(row.targetId)}</div>
+                        <div className="text-muted-foreground">
+                          {row.targetId}
+                        </div>
+                      </>
+                    )}
                   </TableCell>
                   <TableCell className="text-xs">
                     {row.changedFields.length === 0

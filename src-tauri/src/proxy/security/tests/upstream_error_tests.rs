@@ -389,6 +389,7 @@ fn upstream_error_passthrough_legacy_diagnostics_do_not_contain_body() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn upstream_error_passthrough_escape_dense_serialization_is_linear() -> TestResult {
     use super::payload_buffer::test_support::{self, Action, Phase};
     use std::{cell::Cell, rc::Rc};

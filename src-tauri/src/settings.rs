@@ -50,6 +50,8 @@ pub struct VisibleApps {
     pub pi: bool,
     #[serde(default)]
     pub workbuddy: bool,
+    #[serde(default, rename = "workbuddy-ai")]
+    pub workbuddy_ai: bool,
     #[serde(default)]
     pub qoder: bool,
     #[serde(default)]
@@ -58,10 +60,20 @@ pub struct VisibleApps {
     pub qwen: bool,
     #[serde(default)]
     pub zcode: bool,
+    #[serde(default, rename = "deepseek-harness")]
+    pub deepseek_harness: bool,
     #[serde(default)]
     pub trae: bool,
+    #[serde(default, rename = "trae-intl")]
+    pub trae_intl: bool,
     #[serde(default)]
     pub doubaowork: bool,
+    #[serde(default)]
+    pub cursor: bool,
+    #[serde(default, rename = "cursor-cli")]
+    pub cursor_cli: bool,
+    #[serde(default)]
+    pub t3code: bool,
 }
 
 impl Default for VisibleApps {
@@ -77,12 +89,18 @@ impl Default for VisibleApps {
             hermes: false, // 默认不显示，需用户手动启用
             pi: true,
             workbuddy: false,
+            workbuddy_ai: false,
             qoder: false,
             kimi: false,
             qwen: false,
             zcode: false,
+            deepseek_harness: false,
             trae: false,
+            trae_intl: false,
             doubaowork: false,
+            cursor: false,
+            cursor_cli: false,
+            t3code: false,
         }
     }
 }
@@ -101,11 +119,17 @@ impl VisibleApps {
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
             AppType::WorkBuddy => self.workbuddy,
+            AppType::WorkBuddyAi => self.workbuddy_ai,
             AppType::Qoder => self.qoder,
             AppType::Kimi => self.kimi,
             AppType::Qwen => self.qwen,
             AppType::ZCode => self.zcode,
+            AppType::DeepSeekHarness => self.deepseek_harness,
             AppType::Trae => self.trae,
+            AppType::TraeIntl => self.trae_intl,
+            AppType::Cursor => self.cursor,
+            AppType::CursorCli => self.cursor_cli,
+            AppType::T3Code => self.t3code,
             AppType::DoubaoWork => self.doubaowork,
         }
     }
@@ -1049,11 +1073,17 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::Hermes => settings.current_provider_hermes.clone(),
         AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => None,
     }
 }
@@ -1075,11 +1105,17 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
         AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {}
     })
 }

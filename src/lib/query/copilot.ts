@@ -32,23 +32,39 @@ export function useCopilotQuota(
         : await copilotGetUsage();
 
       const premium = usage.quota_snapshots.premium_interactions;
-      const utilization =
-        premium.entitlement > 0
-          ? ((premium.entitlement - premium.remaining) / premium.entitlement) *
-            100
-          : 0;
+      const exhausted = premium?.has_quota === false;
+      const percent = premium?.percent_remaining;
+      const utilization = exhausted
+        ? 100
+        : typeof percent === "number" && Number.isFinite(percent)
+          ? Math.max(0, Math.min(100, 100 - percent))
+          : premium?.entitlement != null &&
+              premium.entitlement > 0 &&
+              premium.remaining != null
+            ? Math.max(
+                0,
+                Math.min(
+                  100,
+                  (100 * (premium.entitlement - premium.remaining)) /
+                    premium.entitlement,
+                ),
+              )
+            : null;
 
       return {
         success: true,
         plan: usage.copilot_plan,
         resetDate: usage.quota_reset_date,
-        tiers: [
-          {
-            name: "premium",
-            utilization,
-            resetsAt: usage.quota_reset_date,
-          },
-        ],
+        tiers:
+          utilization == null || (premium?.unlimited && !exhausted)
+            ? []
+            : [
+                {
+                  name: "premium",
+                  utilization,
+                  resetsAt: usage.quota_reset_date,
+                },
+              ],
         error: null,
         queriedAt: Date.now(),
       };

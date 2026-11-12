@@ -34,6 +34,14 @@ function fixture() {
   for (const name of ["notarize-macos.sh", "build-and-notarize-macos.sh"]) {
     copyFileSync(path.join("scripts", name), path.join(root, "scripts", name));
   }
+  // The DMG helper has its own cross-platform tests; never mount an image here.
+  writeFileSync(
+    path.join(root, "scripts/create-macos-dmg.mjs"),
+    `import { appendFileSync, writeFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_CALLS, "create-macos-dmg " + process.argv.slice(2).join(" ") + "\\n");
+writeFileSync(process.argv[3], "synthetic disk image");
+`,
+  );
   writeFileSync(
     path.join(root, "package.json"),
     JSON.stringify({ version: "0.0.0" }),
@@ -169,6 +177,8 @@ describe.skipIf(process.platform === "win32")(
       const result = fixture().run();
       expect(result.status, result.output).toBe(0);
       expect(result.calls.match(/xcrun notarytool submit /g)).toHaveLength(2);
+      expect(result.calls).toContain("create-macos-dmg ");
+      expect(result.calls).not.toContain("hdiutil create ");
       expect(result.calls).toContain("--keychain-profile example-release");
       expect(result.calls).not.toMatch(
         /store-credentials|--apple-id|--password/,
@@ -186,7 +196,7 @@ describe.skipIf(process.platform === "win32")(
     });
 
     it.each(["history", "submit"])(
-      "does not echo failed notary %s diagnostics",
+      "echoes failed notary %s diagnostics without the profile value",
       (operation) => {
         const result = fixture().run("notarize-macos.sh", {
           ...configuration,
@@ -194,7 +204,8 @@ describe.skipIf(process.platform === "win32")(
         });
         expect(result.status).not.toBe(0);
         expect(result.calls).toContain(`xcrun notarytool ${operation} `);
-        expect(result.output).not.toContain("synthetic-secret-diagnostic");
+        expect(result.output).toContain("synthetic-secret-diagnostic");
+        expect(result.output).not.toContain("example-release");
       },
     );
 

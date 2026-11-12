@@ -307,7 +307,9 @@ export interface ProviderFormProps {
 }
 
 export function ProviderForm(props: ProviderFormProps) {
-  if (["trae", "kimi", "qwen", "zcode"].includes(props.appId))
+  if (
+    ["trae", "kimi", "qwen", "zcode", "deepseek-harness"].includes(props.appId)
+  )
     return <ManagedAgentProviderForm {...props} />;
   if (props.appId === "qoder") return <QoderProviderForm {...props} />;
   if (props.appId === "workbuddy") {

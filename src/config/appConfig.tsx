@@ -27,12 +27,18 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   hermes: "hermes",
   pi: "pi",
   workbuddy: "workbuddy",
+  "workbuddy-ai": "workbuddy",
   qoder: "qoder",
   doubaowork: "doubaowork",
   trae: "trae",
+  "trae-intl": "trae-intl",
   kimi: "kimi-code",
   qwen: "qwen-code",
   zcode: "zcode",
+  "deepseek-harness": "deepseek",
+  cursor: "cursor",
+  "cursor-cli": "cursor",
+  t3code: "t3code",
 };
 
 export const APP_IDS: AppId[] = [
@@ -46,12 +52,18 @@ export const APP_IDS: AppId[] = [
   "hermes",
   "pi",
   "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "doubaowork",
   "trae",
+  "trae-intl",
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
+  "cursor",
+  "cursor-cli",
+  "t3code",
 ];
 
 export const DEFAULT_VISIBLE_APPS: VisibleApps = {
@@ -65,12 +77,18 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   hermes: true,
   pi: true,
   workbuddy: false,
+  "workbuddy-ai": false,
   qoder: false,
   doubaowork: false,
   trae: false,
+  "trae-intl": false,
   kimi: false,
   qwen: false,
   zcode: false,
+  "deepseek-harness": false,
+  cursor: false,
+  "cursor-cli": false,
+  t3code: false,
 };
 
 /** App IDs shown in Skills panels. */
@@ -79,12 +97,18 @@ export const SKILLS_APP_IDS: Exclude<
   | "claude-desktop"
   | "openclaw"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
+  | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code"
 >[] = ["claude", "codex", "gemini", "grokbuild", "opencode", "hermes", "pi"];
 
 export type ProxyAppId = Extract<
@@ -105,12 +129,15 @@ export const TAKEOVER_APP_IDS = [
   ...PROXY_APP_IDS,
   "claude-desktop",
   "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "doubaowork",
   "trae",
+  "trae-intl",
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ] as const;
 
 /** Applications controlled by the settings routing switches, including Pi's custom provider. */
@@ -128,12 +155,15 @@ export function isTakeoverAppId(
   | ProxyAppId
   | "claude-desktop"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
-  | "zcode" {
+  | "zcode"
+  | "deepseek-harness" {
   return (TAKEOVER_APP_IDS as readonly string[]).includes(appId);
 }
 
@@ -148,11 +178,14 @@ export type AdditiveAppId = Extract<
   | "hermes"
   | "pi"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
+  | "deepseek-harness"
 >;
 
 export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
@@ -161,11 +194,14 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "hermes",
   "pi",
   "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "trae",
+  "trae-intl",
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ];
 
 export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
@@ -179,12 +215,18 @@ export type McpAppId = Exclude<
   | "openclaw"
   | "pi"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
+  | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code"
 >;
 export const MCP_APP_IDS: McpAppId[] = [
   "claude",
@@ -200,6 +242,27 @@ export function isMcpAppId(appId: string): appId is McpAppId {
 }
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
+  cursor: {
+    label: "Cursor Private Inference",
+    icon: (
+      <ProviderIcon icon="cursor" name="Cursor Private Inference" size={14} />
+    ),
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  "cursor-cli": {
+    label: "Cursor CLI",
+    icon: <ProviderIcon icon="cursor" name="Cursor CLI" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  t3code: {
+    label: "T3 Code",
+    icon: <ProviderIcon icon="t3code" name="T3 Code" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+
   claude: {
     label: "Claude",
     icon: <ClaudeIcon size={14} />,
@@ -303,6 +366,18 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     activeClass: "bg-sky-500/10 text-sky-600",
     badgeClass: "bg-sky-500/10 text-sky-700",
   },
+  "trae-intl": {
+    label: "TRAE International",
+    icon: (
+      <ProviderIcon
+        icon={APP_ICON_NAME["trae-intl"]}
+        name="TRAE International"
+        size={14}
+      />
+    ),
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
   kimi: {
     label: "Kimi Code",
     icon: <ProviderIcon icon={APP_ICON_NAME.kimi} name="Kimi Code" size={14} />,
@@ -312,6 +387,12 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   qwen: {
     label: "Qwen Code",
     icon: <ProviderIcon icon={APP_ICON_NAME.qwen} name="Qwen Code" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  "deepseek-harness": {
+    label: "DeepSeek Harness",
+    icon: <ProviderIcon icon="deepseek" name="DeepSeek Harness" size={14} />,
     activeClass: "bg-sky-500/10 text-sky-600",
     badgeClass: "bg-sky-500/10 text-sky-700",
   },
@@ -328,9 +409,27 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     badgeClass: "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-0 gap-1.5",
   },
   workbuddy: {
-    label: "WorkBuddy",
+    label: "WorkBuddy China",
     icon: (
-      <ProviderIcon icon={APP_ICON_NAME.workbuddy} name="WorkBuddy" size={14} />
+      <ProviderIcon
+        icon={APP_ICON_NAME.workbuddy}
+        name="WorkBuddy China"
+        size={14}
+      />
+    ),
+    activeClass:
+      "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
+    badgeClass:
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 border-0 gap-1.5",
+  },
+  "workbuddy-ai": {
+    label: "WorkBuddy AI",
+    icon: (
+      <ProviderIcon
+        icon={APP_ICON_NAME["workbuddy-ai"]}
+        name="WorkBuddy AI"
+        size={14}
+      />
     ),
     activeClass:
       "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
@@ -352,5 +451,5 @@ export function getAppLabel(appId: string): string {
 }
 
 export function isManagedAgentApp(app: string): boolean {
-  return ["trae", "kimi", "qwen", "zcode"].includes(app);
+  return ["trae", "trae-intl", "kimi", "qwen", "zcode"].includes(app);
 }

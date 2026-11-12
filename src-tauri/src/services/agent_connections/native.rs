@@ -2,6 +2,7 @@ use super::*;
 
 const STARTING_MODEL_APPS: &[&str] = &[
     "claude",
+    "claude-desktop",
     "codex",
     "pi",
     "gemini",
@@ -12,6 +13,9 @@ const STARTING_MODEL_APPS: &[&str] = &[
     "kimi",
     "qwen",
     "zcode",
+    "deepseek-harness",
+    "cursor-cli",
+    "t3code",
 ];
 
 #[derive(Serialize)]
@@ -25,23 +29,43 @@ pub(crate) struct NativeModel {
 pub(crate) fn list() -> Vec<NativeModel> {
     STARTING_MODEL_APPS
         .iter()
-        .map(|&app| match selection(app) {
-            Ok(model) => NativeModel {
-                app,
-                model,
-                available: true,
-            },
-            Err(_) => NativeModel {
-                app,
-                model: None,
-                available: false,
-            },
-        })
+        .map(|&app| observe(app))
         .collect()
 }
 
+pub(crate) fn get(app: &str) -> Result<NativeModel, String> {
+    let app = STARTING_MODEL_APPS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == app)
+        .ok_or(FAILED)?;
+    Ok(observe(app))
+}
+
+fn observe(app: &'static str) -> NativeModel {
+    match selection(app) {
+        Ok(model) => NativeModel {
+            app,
+            model,
+            available: true,
+        },
+        Err(_) => NativeModel {
+            app,
+            model: None,
+            available: false,
+        },
+    }
+}
+
 fn selection(app: &str) -> Result<Option<String>, String> {
+    if app == "claude-desktop" {
+        return desktop_selection(
+            &crate::claude_desktop_config::get_config_library_path().map_err(|_| FAILED)?,
+        );
+    }
     let path = match app {
+        "cursor-cli" => super::cursor::cli_path(),
+        "t3code" => super::t3code::settings_path(),
         "claude" => crate::config::get_claude_settings_path(),
         "codex" => crate::codex_config::get_codex_config_path(),
         "pi" => crate::pi_config::get_pi_settings_path().map_err(|_| FAILED)?,
@@ -54,22 +78,40 @@ fn selection(app: &str) -> Result<Option<String>, String> {
             crate::gemini_config::get_gemini_settings_path()
         }
         "grokbuild" => crate::grok_config::get_grok_config_path(),
-        "opencode" => {
-            let path = crate::opencode_config::get_opencode_config_path();
-            if !path.exists() && path.with_extension("jsonc").exists() {
-                path.with_extension("jsonc")
-            } else {
-                path
-            }
-        }
+        "opencode" => crate::opencode_config::get_opencode_projection_path(),
         "openclaw" => crate::openclaw_config::get_openclaw_config_path(),
         "hermes" => crate::hermes_config::get_hermes_config_path(),
-        "kimi" | "qwen" | "zcode" => {
+        "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
             crate::services::agent_clients::config_path(app).map_err(|_| FAILED)?
         }
         _ => return Err(FAILED.into()),
     };
     read_selection(app, &path)
+}
+
+fn desktop_selection(library: &Path) -> Result<Option<String>, String> {
+    let meta = Format::Json.parse(read(&library.join("_meta.json"))?.as_deref())?;
+    let Some(id) = meta.get("appliedId").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let id = id.as_str().ok_or(FAILED)?;
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err(FAILED.into());
+    }
+    read_selection("claude-desktop", &library.join(format!("{id}.json")))
+}
+
+pub(crate) fn starting_model(app: &str) -> Result<Option<String>, String> {
+    if STARTING_MODEL_APPS.contains(&app) {
+        selection(app)
+    } else {
+        Ok(None)
+    }
 }
 
 fn model_string(value: Option<&Value>) -> Result<Option<String>, String> {
@@ -84,7 +126,7 @@ fn model_string(value: Option<&Value>) -> Result<Option<String>, String> {
         || text.contains("://")
         || text
             .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '?' | '#' | '@' | '\\'))
+            .any(|c| c.is_control() || matches!(c, '?' | '#' | '@' | '\\'))
     {
         return Err(FAILED.into());
     }
@@ -109,7 +151,9 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
     let format = match app {
         "codex" | "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
-        "opencode" | "openclaw" | "pi" => Format::Json5,
+        "deepseek-harness" => Format::Cordis,
+        "opencode" | "qwen" => Format::Jsonc,
+        "openclaw" | "pi" => Format::Json5,
         _ => Format::Json,
     };
     let value = format.parse(read(path)?.as_deref())?;
@@ -117,6 +161,12 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         return Err(FAILED.into());
     }
     match app {
+        "cursor-cli" => model_string(value.pointer("/model/modelId")),
+        "t3code" => model_string(value.pointer("/defaultModelSelection/model")),
+        "claude-desktop" => model_string(value.pointer("/inferenceModels/0/name")),
+        "deepseek-harness" => {
+            model_string(crate::services::deepseek_harness::selection(&value).get("model"))
+        }
         "claude" => model_string(field(&value, &["env", "ANTHROPIC_MODEL"])?)?
             .map_or_else(|| model_string(value.get("model")), |model| Ok(Some(model))),
         "codex" => {
@@ -170,9 +220,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn desktop_observation_uses_only_the_active_profile_and_rejects_path_escape(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        fs::write(
+            dir.path().join("_meta.json"),
+            r#"{"appliedId":"native-profile"}"#,
+        )
+        .map_err(|_| FAILED)?;
+        fs::write(
+            dir.path().join("native-profile.json"),
+            r#"{"inferenceModels":[{"name":"native-default"}]}"#,
+        )
+        .map_err(|_| FAILED)?;
+        assert_eq!(
+            desktop_selection(dir.path())?,
+            Some("native-default".into())
+        );
+        fs::write(
+            dir.path().join("_meta.json"),
+            r#"{"appliedId":"../outside"}"#,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(desktop_selection(dir.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn native_starting_models_are_read_without_importing_or_writing() -> Result<(), String> {
         for (app, text, expected) in [
             ("claude", r#"{"model":"sonnet","env":{"ANTHROPIC_AUTH_TOKEN":"synthetic-only"}}"#, "sonnet"),
+            ("claude-desktop", r#"{"inferenceModels":[{"name":"native-desktop"},{"name":"other"}],"alwaysStartWithDefaultModel":true}"#, "native-desktop"),
             ("codex", "model = 'native-sol'\n", "native-sol"),
             ("gemini", r#"{"model":{"name":"native-gemini"}}"#, "native-gemini"),
             ("grokbuild", "[models]\ndefault = 'profile'\n[model.profile]\nmodel = 'native-grok'\napi_key = 'synthetic-only'\n", "native-grok"),
@@ -181,8 +259,14 @@ mod tests {
             ("hermes", "model:\n  default: native-hermes\n", "native-hermes"),
             ("pi", r#"{"defaultModel":"native-pi","defaultProvider":"synthetic-provider"}"#, "native-pi"),
             ("kimi", "default_model = 'native-kimi'\n", "native-kimi"),
+            ("kimi", "default_model = 'GPT Example · Test provider · VaryAI'\n", "GPT Example · Test provider · VaryAI"),
             ("qwen", r#"{"model":{"name":"native-qwen"}}"#, "native-qwen"),
+            ("qwen", r#"{"model":{"name":"GPT Example · Test provider · VaryAI"}}"#, "GPT Example · Test provider · VaryAI"),
             ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"native-zcode"}}}"#, "native-zcode"),
+            ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"GPT Example · Test provider · VaryAI"}}}"#, "GPT Example · Test provider · VaryAI"),
+            ("cursor-cli", r#"{"model":{"modelId":"native-cursor"}}"#, "native-cursor"),
+            ("t3code", r#"{"defaultModelSelection":{"instanceId":"personal","model":"native-t3"}}"#, "native-t3"),
+            ("deepseek-harness", "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: native-deepseek\n", "native-deepseek"),
         ] {
             let dir = tempfile::tempdir().map_err(|_| FAILED)?;
             let path = dir.path().join("config");

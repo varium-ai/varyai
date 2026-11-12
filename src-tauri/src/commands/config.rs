@@ -68,6 +68,17 @@ pub async fn get_config_status(
     app: String,
 ) -> Result<ConfigStatus, String> {
     match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        app @ (AppType::Cursor | AppType::CursorCli | AppType::T3Code) => {
+            let path = additional_agent_config(&app)?;
+            Ok(ConfigStatus {
+                exists: path.exists(),
+                path: path
+                    .parent()
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        }
         AppType::DoubaoWork => {
             let path = dirs::home_dir()
                 .ok_or("Home directory unavailable")?
@@ -77,16 +88,20 @@ pub async fn get_config_status(
                 path: path.to_string_lossy().into_owned(),
             })
         }
-        AppType::Trae => {
-            let path = dirs::home_dir()
-                .ok_or("Home directory unavailable")?
-                .join(".trae-cn");
+        app @ (AppType::Trae | AppType::TraeIntl) => {
+            let path = dirs::home_dir().ok_or("Home directory unavailable")?.join(
+                if app == AppType::Trae {
+                    ".trae-cn"
+                } else {
+                    ".trae"
+                },
+            );
             Ok(ConfigStatus {
                 exists: path.exists(),
                 path: path.to_string_lossy().into_owned(),
             })
         }
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode) => {
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness) => {
             let path = crate::services::agent_clients::config_path(app.as_str())
                 .map_err(|e| e.to_string())?;
             Ok(ConfigStatus {
@@ -171,6 +186,13 @@ pub async fn get_config_status(
                 .to_string_lossy()
                 .into_owned(),
         }),
+        AppType::WorkBuddyAi => Ok(ConfigStatus {
+            exists: crate::workbuddy_config::get_workbuddy_ai_config_path().exists(),
+            path: crate::config::get_home_dir()
+                .join(".workbuddy-ai")
+                .to_string_lossy()
+                .into_owned(),
+        }),
         AppType::WorkBuddy => Ok(ConfigStatus {
             exists: crate::workbuddy_config::get_workbuddy_config_path().exists(),
             path: crate::workbuddy_config::get_workbuddy_dir()
@@ -199,8 +221,19 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
 #[tauri::command]
 pub async fn get_config_dir(app: String) -> Result<String, String> {
     let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        app @ (AppType::Cursor | AppType::CursorCli | AppType::T3Code) => {
+            let path = additional_agent_config(&app)?;
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => {
+        AppType::TraeIntl => dirs::home_dir()
+            .ok_or("Home directory unavailable")?
+            .join(".trae"),
+        app @ (AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::DeepSeekHarness
+        | AppType::Trae) => {
             let path = crate::services::agent_clients::config_path(app.as_str())
                 .map_err(|e| e.to_string())?;
             path.parent().unwrap_or(&path).to_path_buf()
@@ -216,6 +249,7 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
         AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::WorkBuddy => crate::workbuddy_config::get_workbuddy_dir(),
+        AppType::WorkBuddyAi => crate::config::get_home_dir().join(".workbuddy-ai"),
         AppType::Qoder => crate::qoder_config::directory(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
     };
@@ -226,8 +260,19 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        app @ (AppType::Cursor | AppType::CursorCli | AppType::T3Code) => {
+            let path = additional_agent_config(&app)?;
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => {
+        AppType::TraeIntl => dirs::home_dir()
+            .ok_or("Home directory unavailable")?
+            .join(".trae"),
+        app @ (AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::DeepSeekHarness
+        | AppType::Trae) => {
             let path = crate::services::agent_clients::config_path(app.as_str())
                 .map_err(|e| e.to_string())?;
             path.parent().unwrap_or(&path).to_path_buf()
@@ -243,6 +288,7 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
         AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::WorkBuddy => crate::workbuddy_config::get_workbuddy_dir(),
+        AppType::WorkBuddyAi => crate::config::get_home_dir().join(".workbuddy-ai"),
         AppType::Qoder => crate::qoder_config::directory(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
     };
@@ -501,4 +547,14 @@ pub async fn extract_common_config_snippet(
 
     crate::services::provider::ProviderService::extract_common_config_snippet(&state, app)
         .map_err(|e| e.to_string())
+}
+
+fn additional_agent_config(app: &AppType) -> Result<std::path::PathBuf, String> {
+    use crate::services::agent_connections::{cursor, t3code};
+    match app {
+        AppType::T3Code => Ok(t3code::settings_path()),
+        AppType::CursorCli => Ok(cursor::cli_path()),
+        AppType::Cursor => Ok(crate::config::get_home_dir().join(".cursor/cli-config.json")),
+        _ => Err("Unsupported agent configuration".into()),
+    }
 }

@@ -2,6 +2,208 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Application update installation fails on macOS
+
+The circular update button appears beside Settings in the sidebar when an update
+is available. The updater records the executable path and failures at the
+initialization, check, download, and platform-specific installation stages.
+Inspect the application log for `应用更新失败` and the stage label, rather than
+assuming that the generic installation error indicates a network failure.
+
+Run macOS update installation from a packaged `.app`. The updater rejects a
+standalone development executable because installation replaces the containing
+application bundle. A local signed and notarized build can exercise the update
+flow; exit other instances first so the single-instance plugin does not forward
+the launch to an older process.
+
+An installation error mentioning `._Vary AI.app` indicates an AppleDouble
+metadata entry in the downloaded updater archive. Release tooling that uses
+macOS `tar` must disable automatic metadata entries, for example with
+`COPYFILE_DISABLE=1`, before signing the resulting archive and generating the
+update manifest. Fixing the installed application's signing or notarization does
+not repair an already published archive. The release tooling is maintained
+separately from this repository.
+
+## ChatGPT asks for sign-in immediately after browser authorization
+
+A native account can display its email and plan while an allowance query reports
+that its credentials are unavailable. Earlier VaryAI backends read the native
+account from Codex's file but queried allowances using a service-only macOS
+keychain lookup first. An older keychain item could override the new file login.
+
+The corrected allowance reader follows Magpie's Codex credential-store selection.
+The default and explicit `cli_auth_credentials_store = "file"` use `auth.json`
+without consulting the keychain. `auto` and `keyring` use the keychain item for
+the canonical Codex home when that store is supported; only `auto` falls back to
+the file. Legacy OAuth token records do not require an `auth_mode` marker.
+
+Use the corrected backend before retrying the allowance refresh. Source edits do
+not update an already running backend. Repeated browser authorization, deleting
+authentication files, or clearing the keychain does not fix a backend that reads
+the wrong store. A remaining network or upstream failure needs separate evidence;
+a plan badge alone does not establish allowance or inference success. See the
+[credential-store regression record](qa/2026-11-10-codex-credential-store-magpie.md).
+
+## OpenCode rejects its configuration after connecting
+
+OpenCode reads JSON or JSONC, not JSON5. A projection that adds
+`model: "varyai/synthetic"` without quotes around the key fails with
+`InvalidSymbol` and `PropertyNameExpected`. Comments and trailing commas are
+allowed; unquoted keys and single-quoted strings are not.
+
+The corrected OpenCode writer quotes new root keys and validates the emitted
+document as JSONC before replacing the file. It preserves comments in existing
+provider objects and CRLF line endings. Existing connection receipts keep their
+stored format for compatibility, while OpenCode loads them through the corrected
+writer for refresh and disconnect.
+
+Models with a `limit` object must provide both `context` and `output`.
+OpenCode 1.19.5 rejects a context-only limit even after the JSON syntax is fixed.
+The projection now supplies zero for an unknown limit, matching OpenCode's
+default and Magpie's unknown-output behavior.
+
+Load the corrected VaryAI backend before reconnecting OpenCode. Source edits
+do not update an already running backend. These fixes cover JSONC publication
+and complete model limits; they do not establish complete Magpie feature parity
+or a successful inference request. See the
+[verification record](qa/2026-11-09-opencode-jsonc.md).
+
+## Codex native routing reports HTTP 401
+
+Native Codex forwarding follows Magpie revision
+[`4869d0c`](https://github.com/yetone/magpie/tree/4869d0c9665e1a815fee3a1a4d67a575e0baab93).
+Each request uses the authorization and workspace headers supplied by Codex.
+Forwarding does not require a local credential binding, ownership receipt,
+client-version allowlist, token fingerprint, or periodically renewed lease.
+Codex owns its native sign-in and can refresh it after an upstream HTTP 401.
+Account changes and token rotation take effect on the next request.
+
+Earlier builds could generate `401 routing_native_unavailable` locally when a
+five-second lease expired or its background reconciliation failed. A temporary
+authentication-file rewrite, a configuration change, or waiting for a switch
+lock could leave that authorization revoked until an explicit reconnect.
+That additional authentication mechanism has been removed.
+
+Native model discovery also follows Magpie: account-scoped lists are fresh for
+one minute, concurrent callers share one fetch, stale lists return immediately
+while refreshing, and a cold caller waits at most three seconds while the
+background fetch can continue for thirty seconds. Ordinary upstream HTTP 401
+and 403 responses reach Codex so it can renew its sign-in. A model-list HTTP 401
+that explicitly identifies a revoked sign-in falls back to the available model
+catalog so managed models remain visible; it is not retained as a permanent
+authentication failure. Native generation requests still receive the upstream
+authentication response. An incomplete sign-in file is an unknown discovery
+state and does not change an established native connection.
+
+These changes apply to the shared macOS and Windows forwarding code. Loading
+the corrected backend is required; editing the source does not update an
+already running application.
+
+## Codex interleaves native models and managed model aliases
+
+When Codex keeps its native ChatGPT sign-in beside a VaryAI connection, model
+discovery follows Magpie's `CodexListedBeside`: an official direct model already
+listed by the native backend is not offered again under a managed alias.
+An official model available only through another account remains listed.
+Routing groups and other providers remain separate entries even when their
+display names match. Existing alias mappings remain executable for saved chats.
+
+The merge follows Magpie's `codexMerged` and `FitOwn`: native entries and remaining
+managed entries are ordered together, hidden entries go last, and priorities are
+numbered consecutively. Native models remain in the first 100 entries read by
+the desktop picker. This replaces overlapping independent priorities and does
+not introduce a separate native/managed grouping feature.
+Use the corrected backend and refresh model discovery.
+
+## Claude Desktop repeatedly retries an official Codex model
+
+A `502 routing_upstream_rejected` can hide an upstream HTTP 400 when Claude
+Desktop's Anthropic request is converted for an official ChatGPT/Codex account.
+Claude includes `metadata`, including `user_id`, on ordinary turns. The official
+Codex endpoint rejects that field, even when the same model completes a request
+without it. Retrying the unchanged request repeats the rejection.
+
+The official conversion path omits this unsupported field. Native Anthropic
+requests retain their metadata, and other Responses providers keep their
+existing behavior. This matches Magpie's separation of Anthropic metadata from
+its Responses projection. Sign-in alignment and a successful model catalog
+fetch do not establish compatibility of the inference request.
+
+Tool-bearing turns can also fail when an Anthropic function declares
+`defer_loading: true`. The official Responses endpoint requires its native
+`tool_search` contract for deferred functions. Claude Desktop's client-side
+`ToolSearch` function does not establish that contract, so a minimal model probe
+can succeed while an ordinary conversation repeatedly receives HTTP 400.
+As in Magpie's `responsesTool`, translated Responses function definitions omit
+`defer_loading`, making those functions available immediately while preserving
+names, schemas, explicit strictness and tool choice. This applies to the shared
+Responses builder, including other Responses providers. Anthropic-to-Anthropic
+requests retain deferred loading. Tool references remain available in converted
+history, and native Responses requests retain their native tool-search contract.
+
+Source changes require the corrected backend to be loaded before the live
+Desktop request can succeed. Do not clear credentials or history to work around
+this conversion bug. Verify a complete reply and terminal stream event with
+Desktop's request fields, rather than only an HTTP 200 from a minimal probe.
+See the [diagnosis and verification record](qa/2026-11-09-desktop-codex-metadata.md).
+The deferred-tool and picker-order follow-up is recorded in
+[the November 10 verification record](qa/2026-11-10-desktop-deferred-tools-and-codex-picker.md).
+
+## Codex receives HTTP 400 from Gemini with search and functions
+
+Codex includes both native search and function declarations even on a greeting.
+A Gemini upstream can reject this combination with `routing_upstream_rejected`
+when the converted request omits `toolConfig.includeServerSideToolInvocations`.
+A successful tool-free request does not validate this case. This upstream 400 is
+separate from the local `409 routing_unknown_continuation` history check.
+
+The corrected Gemini converter enables server-tool context circulation and uses
+`VALIDATED` for automatic function choice when both tool kinds are present. It
+keeps search, function schemas and explicit function constraints. It also handles
+the resulting server-side search call/result parts and restores their native
+state only to matching history in the same provider/session scope. Merely adding
+the request flag without updating response parsing can still break a search turn.
+
+Use the rebuilt backend and verify that a complete Codex turn finishes with its
+full tool declarations. With `pnpm dev --no-watch`, source edits and `cargo build`
+do not reload the active gateway; an explicit backend restart is still necessary.
+Do not clear credentials or conversation history as a workaround for this 400.
+See the [verification record](qa/2026-11-06-gemini-tool-combination.md).
+
+## Codex reconnects with Grok and HTTP 400 or 410
+
+HTTP 400 with `routing_upstream_rejected` can also come from Grok rejecting
+object parameters referenced through local JSON Schema `$ref` entries. A greeting
+still sends Codex's tool declarations, so text-only probes with no tools do not
+reproduce this failure. The Grok adapter expands resolvable local references while
+preserving constraints and user data. Verify with the complete tool declarations;
+removing tools or simplifying every schema does not establish compatibility.
+
+If a new Codex conversation using a Grok model fails with `410 Gone` and
+`routing_upstream_rejected`, check whether the selected upstream uses Chat
+Completions. Codex can offer a native `web_search` tool on an ordinary turn.
+Older VaryAI builds translate that declaration into `web_search_options: {}`;
+Grok's retired Chat live-search API rejects that field even when no search was
+requested in the prompt. Reopening the conversation does not remove it.
+
+The corrected Chat converter omits optional Grok native-search declarations while
+preserving function tools, schemas, prompts, reasoning and stream completion. It
+does not downgrade requests that require search as their only tool. Use a
+Responses-capable Grok upstream for native web search. Do not change credentials,
+model names or disable unrelated security controls to work around this error.
+
+Source edits do not change an already running VaryAI backend. The corrected
+backend must be built and explicitly restarted before retesting the desktop
+conversation. A successful direct request without Codex's tool declarations does
+not validate this path. Reproduce with a fresh Codex conversation and verify a
+terminal response, not merely HTTP 200 or the first streamed bytes.
+
+## Kimi Code desktop update leaves the installed version unchanged
+
+The official Kimi Code desktop download endpoint on `code.kimi.com` redirects to `cdn.kimi.com`. Builds whose updater trusts only the first host can discover a newer version but reject the redirected download before installation. Use a VaryAI build that explicitly trusts both official HTTPS hosts. Archive checksums, application identity, signing team and code-signature verification remain required; do not disable these checks or allow arbitrary redirect hosts.
+
+The source fix does not modify an already running VaryAI binary or update Kimi Code by itself. Until the corrected VaryAI backend is in use, update Kimi Code through its official application update channel.
+
 ## CC Switch rejects a shared database as too new
 
 This section concerns historical shared-storage builds. Current VaryAI uses an independent native database pair and keeps its files separate from CC Switch. The historical compatibility baseline was CC Switch v4.0.21 shared schema v23; its portable monolithic export and extension formats are distinct.
@@ -36,6 +238,24 @@ Existing native client configuration remains in its original directory after Var
 For a genuinely absent client configuration, add or import a provider and apply it on Home, or initialize the client before enabling routing.
 
 Claude, Codex, Gemini and Grok Build show setup guidance when native configuration is missing, without starting the gateway or creating a live backup. Other integrations also require supported models, native product configuration, connection consent or certificate trust. Follow the [per-agent prerequisites](guides/provider-routing.md#routing-prerequisites-on-a-new-installation). Empty synthetic files used in isolated tests are not installed for ordinary users.
+
+## A desktop tool has not loaded its connection changes
+
+Claude Desktop and WorkBuddy can retain the model catalog they read when starting. On macOS and supported Windows installations, a running copy older than VaryAI's last configuration change offers **Restart** in Tools. Save work and confirm the dialog. macOS requests a normal quit and leaves a refused quit for you to resolve. Windows first asks windows to close, then can end verified remaining application processes, including a tray instance, before reopening the same installation. WorkBuddy's managed configuration directory selects its domestic or international build; the international Windows build has no verified automatic restart contract.
+
+The restart action also remains available after disconnecting while a running copy still holds the previous connection. VaryAI keeps only a private timestamp and file fingerprints for this check, and refuses the action after an external edit or replacement process invalidates it. Configuration repair, restart and successful upstream inference are separate states. A configured row still needs a message in the tool and a corresponding request in Statistics for validation.
+
+The Codex connection belongs to the ChatGPT desktop app in the reported installation. This ChatGPT build uses the `com.openai.codex` bundle identifier. A confirmed manual restart closes and reopens the verified running application bundle, including `ChatGPT.app`, rather than launching a terminal CLI or only replacing its internal service. A current application can still be explicitly restarted; launch age alone does not invalidate the user's confirmed request. Configuration and process identity checks still reject an unsafe or replaced target. Automatic route-change handling remains separate from this manual whole-application restart.
+
+For unsupported or unidentified installations, fully quit and reopen the tool yourself. CLI tools read changes in a new process or session. TRAE uses its own acknowledged bridge delivery and cleanup; follow its pending-bridge guidance and use **Apply again** to retry delivery. A pending bridge alone is not evidence that restarting would fix it.
+
+## Agent requests fail after quitting and reopening VaryAI
+
+Closing the window with **Minimize to tray on close** enabled leaves the gateway running. Completely quitting VaryAI stops forwarding. Requests interrupted by shutdown must be retried; reopening VaryAI cannot resume a partially received response stream.
+
+Startup resumes saved shared Agent connections, including connections suspended during normal exit and the international TRAE bridge. Codex retains its private local connection credential, historical model-name mappings and published catalogs across shutdown. After VaryAI reopens, an already running Codex session can send its next request without restarting Codex. New sessions can also use the restored connection. Deleted models, invalid upstream login and externally changed configuration still require their usual recovery actions.
+
+Explicitly switching Codex routing off restores the previous native configuration and rejects requests using the inactive local route. It does not change the provider already loaded by a running conversation. Explicitly switching routing on again restores the saved local identity and historical model mappings, allowing the old conversation to make a new request. The saved identity alone never enables forwarding or causes a disconnected tool to reconnect at startup. While routing is off, a new session can use the restored provider only if Codex loads that configuration and the provider is usable.
 
 ## WorkBuddy reports an unsupported cross-protocol field
 
@@ -72,6 +292,22 @@ Use the configured listener address if it differs. `PROXY_MANAGED` is the local 
 Inspect the relevant status code and sanitized logs. Current logs use `~/.varyai/logs/`; historical logs may remain in `~/.cc-switch/logs/`. Use the application's diagnostics to locate the active file.
 
 For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entries for the affected clients. These entries record message and function counts, parameter formats, and output-token ranges without model names, prompts, tool names, schemas, or argument values. The summary helps identify request differences; it does not establish which field the upstream rejected.
+
+### Codex native request decoding and body limits
+
+If switching a Codex/ChatGPT desktop conversation to a Chat, Anthropic or Gemini
+upstream returns `routing_conversion_unsupported` even before the model replies,
+check that the build supports desktop page-context notifications as well as tool
+search. Desktop can include `agent.codex_apps_*` outputs without a tool-call ID
+even when no Page is selected. Older converters reject these notifications as
+malformed tool results. Compatible builds retain their content as user-level
+context and preserve normal tool-call validation.
+
+The native Codex `/backend-api/codex/responses` and `/backend-api/codex/responses/compact` endpoints allow both the received request body and each decompression stage up to 200 MiB (209,715,200 bytes), matching the general proxy ingress budget. Earlier native ingress used an additional 8 MiB (8,388,608-byte) limit that could reject ordinary screenshot-heavy conversations and their compaction requests. Screenshots and accumulated tool output can increase the serialized conversation size even when the latest user message is short. Earlier builds also returned HTTP 400 with only `routing_invalid_encoding` for unsupported encodings, damaged compressed data, and decompression output exceeding the old limit. That historical error alone cannot establish which condition occurred. The local byte limit is separate from the client's token-based context budget and does not trigger automatic compaction; upstream providers may impose their own limits.
+
+Body rejection errors now explain that VaryAI rejected the request before forwarding, describe the cause, and suggest a next step. HTTP 413 with `routing_body_limit` distinguishes `encoded_body_too_large` from `decompressed_body_too_large`; HTTP 400 with `routing_invalid_encoding` distinguishes `unsupported_encoding`, `decode_failed`, and `body_read_failed`. For an oversized conversation, reduce attachments or tool output and retry; use the client's compaction command if possible, or start a new conversation if compaction also exceeds the limit. For a decoding or transfer failure, retry and check the client version and any intermediary that changes request compression.
+
+The message, JSON `error.request_id`, response `x-request-id` header, and `NativeRequestBodyRejected` log entry share a locally generated request ID. Search the active log for this ID to correlate a report. JSON `error.details` and the log include the fixed source `varyai`, endpoint, read/decompression stage, failure reason, sanitized encoding, body limit, and received byte count when the complete body was read. Unknown encodings are labeled `unsupported`; body-read failures have no complete received byte count. Decompression is bounded, so an oversized decoded body is known only to exceed the limit, rather than having a measured total size. These diagnostics exclude request content, credentials, raw header values, and decoder error text. A rejection at this stage does not reach the upstream and has no upstream request ID.
 
 ### HTTP 404: endpoint or protocol mismatch
 
@@ -280,6 +516,10 @@ Settings > About > Local environment check lists every supported agent. The eigh
 
 Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Code, Qwen Code and ZCode also display their installed version. On macOS, desktop cards read the product version from the installed application's bundle metadata without launching it. Desktop installations take precedence over CLI installations and are labeled explicitly; an embedded editor's version is not the desktop product version. Kimi can instead run a bounded `--version` check when only its CLI is installed. Qwen Code uses the same version checks, installation diagnostics and upgrade pipeline as the other managed CLI tools. A WorkBuddy launcher alone establishes presence but is not executed as a version-only CLI. Missing metadata or failed version commands leave the installation marked present and show a version-read failure. Desktop application detection currently supports macOS; unsupported checks on other platforms are labeled explicitly.
 
+All supported Agents are checked for installation when the Tools page opens, every 30 seconds while it is active, and when its window becomes active again. Detection adds an installed Agent to the main list without enabling its connection. On macOS, presence and version checks share discovery across `/Applications`, `~/Applications`, one folder level below each, and Spotlight results for known application identities. Renamed bundles are recognized by their identity; leftover configuration directories do not establish installation. WorkBuddy desktop detection uses the China edition's bundle identity, including renamed China bundles. The international `WorkBuddy AI.app` appears as a separate WorkBuddy AI tool with its own connection, version and website; it is not evidence that WorkBuddy China is installed and is not substituted for its version or updates. CLI detection retains the existing installer-directory and PATH search for every supported CLI Agent.
+
+Applications moved to macOS Trash are excluded from presence and version discovery, including application symlinks pointing into Trash. After uninstalling an Agent, return to Vary AI or refresh the Tools list to rerun detection. Tools confirmed as uninstalled move to **More tools** and show only installation and website actions, even if a connection was previously saved. Check-in, model selection, routing switches and connection status are shown only for installed tools.
+
 The About page uses one shared card layout for CLI and desktop agents: current version, latest version and an Upgrade button when a newer version is available. On macOS, Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Desktop and ZCode query verified publisher release sources. Missing or older remote metadata is not evidence that an installation is current. Refresh reruns detection.
 
 Desktop upgrades run inside Vary AI and are included in Upgrade All. They download the matching official package to a temporary directory, verify any published checksum, product identity, product version, CPU architecture, code signature and the installed publisher's signing team. The updater stages the new application beside the existing installation before requesting a normal quit. It replaces only the application bundle at its existing location and restores the previous bundle if replacement fails; configuration and user data are not removed. A previously running application is reopened. Unsaved-work dialogs can prevent quitting; save and fully quit the agent, then retry. Folder permission failures do not trigger elevation or installation to a different location. If both replacement and recovery fail, the previous bundle remains in a `.varyai-agent-update-` folder beside the installation for recovery. Desktop automatic upgrades currently support macOS. Installation or upgrade failures show fixed localized reasons without exposing raw command output.
@@ -287,6 +527,26 @@ Desktop upgrades run inside Vary AI and are included in Upgrade All. They downlo
 TRAE's displayed product version is distinct from its editor/build version. Doubao Work packages are distinct from the standard Doubao desktop app; Kimi Code Desktop packages are distinct from the Kimi chat app. The updater preserves these identities and never substitutes a similarly named product.
 
 ## Client takeover and recovery
+
+### Agent switches report configuration conflicts after an upgrade
+
+Older installations can retain per-Agent takeover flags and private recovery
+backups. The shared workspace previously displayed those tools as disconnected
+and rejected attempts to connect them because the legacy owner still existed.
+An explicit connection now validates the chosen shared model and current native
+configuration, restores that Agent's legacy connection under its switch lock,
+and journals the restored baseline before installing the shared connection.
+Disconnecting restores that baseline. Saved providers and other Agents are not
+removed or reconfigured, and the gateway stays available during the transition.
+
+Invalid model selections, unreadable recovery data and conflicting shared
+ownership still fail without discarding the legacy recovery record. Do not
+delete recovery files or database backups to clear this error. TRAE retains
+pending native model and endpoint restoration until its bridge is available;
+the shared catalog is delivered only after that restoration succeeds. A closed
+TRAE client therefore shows a pending connection instead of a legacy-owner
+conflict. The transition does not change the global security-audit setting or
+launch an Agent.
 
 ### Claude Desktop refuses a shared connection
 
@@ -325,6 +585,42 @@ load the shared menu. Configuration success alone does not verify an upstream
 model; send a new message and inspect request statistics. No login credentials
 need to be deleted to resolve the inactive-profile conflict.
 
+The **Couldn't sign in to Gateway** notice can come from Desktop's startup
+connection check as well as a conversation request. Its wording alone does not
+establish whether the local credential or the upstream account was rejected.
+Expand **Details** and inspect the corresponding request's sanitized status
+before replacing an upstream key.
+
+Claude Desktop 4.23118 can send Electron Fetch Metadata headers and an absent,
+`null`, or `app://localhost` origin during its connection check. Earlier VaryAI
+builds rejected these native requests with HTTP 403
+`routing_local_clients_only`, which Desktop displayed as a credential failure
+before VaryAI checked the connection token. The Desktop model-list and Messages
+endpoints now accept this metadata from a verified loopback peer, retaining the
+connection-token check and rejecting web origins, duplicate origins, and
+forwarding headers. This behavior applies to both macOS and Windows. Load the
+updated VaryAI backend and use **Check again** in Desktop. A genuine upstream
+rejection still follows the shared router's existing error handling, including
+HTTP 502 `routing_upstream_rejected`; this compatibility fix does not replace
+failed probes with success.
+
+Catalog synchronization repairs a missing or rejected readable key only in the
+journaled Desktop gateway profile, while retaining the active connection token.
+A changed gateway address, provider, authentication scheme, model list or applied
+profile still requires explicit recovery. On macOS an encrypted key cannot be
+verified from its saved ciphertext: ordinary refresh retains it only for the
+existing connection. A new connection writes its own token instead of reusing a
+seal that may contain a retired token. **Reapply** in Tools rebuilds that
+connection; fully quit and reopen Claude Desktop to load the new credential.
+Reapplying does not restart Desktop automatically.
+
+Like Magpie, the local gateway recognizes Desktop's one-token `.` connection
+probe, routes it to the current menu choice or the first visible model, and
+requests at least 16 output tokens for compatible GPT endpoints. The probe still
+calls the real upstream; an authentication failure is not replaced with a
+successful response. Encrypted-profile refresh and disconnect recovery retain
+user settings and the original restoration baseline.
+
 TRAE CN does not need to be open to select or edit a provider. Vary AI saves the selection locally and shows that client delivery is pending; keep Vary AI running and connect TRAE to apply it automatically. Switching to Official while offline also queues withdrawal of previously managed models. A successful local selection does not mean the closed client has already received it. Connection setup and auditing retain their existing consent requirements.
 
 In Settings → Advanced → Local routing, a selected TRAE CN or Doubao Work switch can be waiting for its client connection. The waiting hint means enablement was saved, but traffic is not yet protected. Open the client and follow the displayed connection instructions; deselecting the switch cancels the pending request. Waiting enablement does not show an active-routing success notification.
@@ -350,17 +646,94 @@ Common configuration locations include:
 
 Local proxy configuration can refer to `http://127.0.0.1:15722` or its `/v1` endpoint. If a client still points at that endpoint after an abnormal exit, review the application's takeover state and recovery options. A normal disable/exit path can restore the saved configuration; inspect the relevant backup before manual recovery. Back up the current files before editing them and preserve unrelated client settings. Do not publish authentication files or entire backups in an issue.
 
+### The Codex connection switch stays on and its model picker is disabled
+
+When Tools reports **Connection recovery record is missing**, Codex still selects
+Vary routing fields, but Vary no longer has the receipt needed to restore the
+earlier configuration. A retained inactive provider section alone does not
+trigger this warning. Older builds treated that recovery warning as an enabled
+connection. Disconnect revoked the runtime and cleared the saved enablement, but
+the next status refresh turned the switch on again because the provider section
+remained. The same warning also disabled the starting-model picker.
+
+A missing receipt alone no longer enables the switch. Explicit disconnect saves
+a private backup before removing recognized Vary routing fields at the top level
+and in the selected profile. It removes a native compatibility URL only when its
+local origin matches the recognized Vary menu endpoint. User-selected models,
+catalogs, other endpoints and inactive profiles remain unchanged. The provider
+definition stays available for sessions that name it, so its presence alone is
+not an enabled connection. Unrecognized provider identities or endpoints are
+refused. Supplemental provider fields are preserved and do not by themselves
+block an explicit disconnect. Automatic orphan cleanup keeps its stricter
+whole-definition check. Backup failure prevents configuration writes.
+Background recovery without a receipt still leaves configuration untouched.
+
+A different gateway can retain the Vary provider definition for historical
+conversations. Magpie, for example, can redirect that definition to its own `/v1`
+endpoint while retaining Vary's label and flags. If the effective external
+provider and the retained definition use the same explicit loopback `/v1`
+origin as the native Codex URL, and no Vary model, catalog or provider reference
+remains, that is an external connection. Its definition alone is not a missing
+Vary recovery record. **Disconnect** clears Vary's saved connection request while
+preserving the external endpoint, provider definitions, model selection and
+login. Unknown or ambiguous settings still require normal recovery; a `/v1`
+URL alone is not proof of ownership.
+
+If the active provider or recovery receipt changes while troubleshooting,
+refresh Tools before choosing an action. Reapplying Vary may create a new receipt
+whose baseline is the external connection; subsequent disconnect must preserve
+that baseline. Use an updated build containing this fix. Do not delete the
+retained provider or authentication/history files to suppress the warning.
+
+The disconnect confirmation uses the same restore explanation regardless of
+whether a recovery receipt is available. Codex also explains that its provider
+definition is retained for existing conversations. Internal configuration-conflict
+codes are not rendered as a separate instruction to inspect tool configuration.
+An unsuccessful operation remains unsuccessful and can be retried.
+
+With a receipt, explicit disconnect validates the restored configuration and any
+remaining Vary routing fields before replacing the live document or deleting the
+receipt. If this validation fails, both the installed configuration and the
+recovery evidence remain available; a failed attempt must not create a missing
+receipt state. Authentication files and unrelated settings are preserved.
+
+Choose a shared model or use **Apply again** to back up the current configuration
+and reconnect with a new receipt. Configuration drift with an existing receipt
+still requires the normal recovery flow.
+
 ### Codex stays on "Loading models..." after enabling routing
 
-Keep Vary AI and its local proxy running. After enabling the unified Codex model menu, fully quit and reopen Codex rather than only closing its window. Start a new conversation and select a published provider model or routing group. Existing conversations may keep their previous provider.
+Keep Vary AI and its local proxy running. On macOS and Windows, VaryAI watches the effective Codex provider, endpoint, local credential and applicable login identity for route changes, including a switch from Magpie. Once configuration settles, running turns finish and Codex requests have been quiet for ten seconds, it reloads the desktop application's old stdio app-server and waits for a replacement. A replacement already started by Magpie is adopted without another restart. Access-token refreshes, inactive-provider edits, display-name changes and ordinary model selections do not trigger this restart. A login change also leaves an account-independent custom provider running.
 
-The current Codex routing switch represents a live connection, not a persisted startup preference. Normal application shutdown restores its configuration and removes its recovery receipt/catalogs; startup also recovers an interrupted projection without automatically reconnecting the menu. Consequently this switch returns to off after restart even when other agents resume ordinary proxy takeover. This is a lifecycle limitation, not evidence that routing groups or model windows were erased.
+A model-catalog change alone never automatically restarts Codex. Its row reports that the list changed and offers **Restart** with confirmation; this queues the same idle-aware background-service reload. The row distinguishes waiting for idle, reloading and failed replacement. **Apply again** repairs configuration ownership and does not itself mean the running application loaded it.
 
-A partial leftover configuration can select `model_provider = "varyai-routing"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. If explicit reconnect adopted this partial configuration as its baseline, disconnect correctly restores that same baseline rather than guessing a different provider; the orphan hint can therefore return on every reopen. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
+The proxy activity check covers complete streaming responses and native context-compaction requests. Completion, cancellation or a response error starts the ten-second quiet period, so a configuration change does not restart the background service between adjacent requests in a task.
 
-An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved OpenAI login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now derives this flag from the effective authentication store: file-backed OpenAI login material keeps it enabled, absent or unsupported login material leaves it disabled, and keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out.
+The watcher starts with the application's current configuration as its baseline. It defers invalid or incomplete configuration and unreadable activity records, and recognizes both rollout events and paginated history. It targets only desktop-owned processes using the configured Codex home; terminal daemons, editor servers and explicit listeners are excluded. A replacement-process observation does not establish successful authentication or inference. If replacement times out, or on other platforms, fully quit and reopen Codex rather than only closing its window.
+
+Windows discovery supports the Store package, its cached Codex executable and recognized classic installations. It verifies process ownership, the desktop parent, process creation time and the process's own `CODEX_HOME` or Windows profile. After the idle check, Windows terminates the old server and its verified descendants so inherited output-pipe handles cannot prevent reconnection. Process IDs and creation times are rechecked before termination; other users, other Codex homes and replacement processes are preserved. If no app-server returns while the verified Windows Store Codex application still runs, VaryAI can close and reopen that application once, matching the reference recovery path. Unsent drafts can be lost in this fallback. macOS does not reopen the entire application automatically; a failed row offers retry and manual quit/reopen guidance.
+
+With supported ChatGPT authentication, the connection keeps the native OpenAI provider; recognized OpenAI mirror providers can join this mode too. API-only or other custom-provider connections use the VaryAI provider. Existing conversation provider records are synchronized in the background, separately from the model menu and saved model availability. Busy conversations are retried without changing the connection status or disabling model selection. Native-mode transitions track the conversations brought from the previous provider so disconnect restores only those conversations. When a custom-provider takeover also brings OpenAI conversations along, their recorded IDs allow them to return once OpenAI is selected again. Disconnect retains the VaryAI provider definition for historical conversations; an inactive definition alone does not mean VaryAI is connected or recovery is required. If Codex itself still reports a provider mismatch after background synchronization and idle reload, close that conversation and let the retry finish before reopening it.
+
+Tools retains the requested Codex connection and selected shared model for startup recovery. Configuration receipts track ownership separately from that preference. Automatic startup recovery completes interrupted projection or conversation recovery before restoring the saved connection. A pending recovery receipt remains available until quiet conversation files and their SQLite provider rows agree. Turning a connection off restores its owned configuration fields without deleting conversation history.
+
+If **Apply again** reports that the connection cannot be safely updated, the live configuration and the saved ownership record differ; this does not establish that the user edited them manually. An older reapply implementation disconnected first, then rejected its own deferred recovery record when reconnecting while a conversation remained busy. The corrected explicit action writes the projection directly. When adopting changed configuration, it keeps a private copy of the old recovery record and preserves external settings as the next restore baseline. Busy conversation migration remains independent of configuration reapplication. Use a build containing this fix; do not delete the configuration, history, or recovery records to bypass the check.
+
+A partial leftover configuration can select `model_provider = "varyai"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. Older disconnects restored a partial baseline adopted during reconnect, so the orphan hint could return on every reopen. Explicit disconnect now also detaches recognized Vary routes from that restored baseline after making a private backup; automatic recovery continues to preserve it. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
+
+An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved ChatGPT login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now distinguishes ChatGPT sign-in from an API key: a supported ChatGPT sign-in keeps account discovery, while an API key alone does not require OpenAI authentication. Keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out, and incomplete login-file reads preserve the established policy.
 
 The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing or reconnecting with a fixed build repairs a still-owned projection; external configuration edits still require the normal conflict/recovery flow. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
+
+### Codex cannot reach local routing through a proxy
+
+When the Codex connection is owned and configured and the local gateway is running, Tools checks whether the proxy route predicted from Codex's configuration can reach VaryAI. A warning appears only when a direct gateway health check succeeds, the explicit proxy health check fails, and a second direct check succeeds. Open **How to fix** beside the warning to see the local target, the proxy address without credentials, and whether it came from the environment or system settings. **Check again** repeats the diagnosis. A gateway outage, an unknown result, or an upstream model's HTTP 502 alone does not establish proxy interception.
+
+The diagnostic follows the Magpie reference's Codex proxy selection, including `[features].respect_system_proxy`. Default routing can use `HTTP_PROXY`/`http_proxy`, the system HTTP proxy, or `ALL_PROXY`/`all_proxy`. An HTTPS-only proxy setting does not select a proxy for the local HTTP gateway. For a numeric loopback target, use an exact address or CIDR in `NO_PROXY`: `localhost` or `127.*` alone can be insufficient. Native system exceptions behave differently when `respect_system_proxy` is enabled. macOS checks exported proxy variables from the login shell as well as VaryAI's environment; this predicts a client route and cannot prove the environment of every already-running terminal or desktop process.
+
+Configure the proxy engine to send `127.0.0.0/8`, `::1/128`, and `localhost` directly. In Clash/Mihomo, use Rule mode so these rules actually apply; Global mode skips them. Alternatively, append `127.0.0.1,localhost,::1` to `NO_PROXY` and `no_proxy` in the environment inherited by Codex, preserving existing exclusions. Shell profile changes affect clients that read or inherit them; they do not guarantee that every GUI application receives the variables. On Windows, set the corresponding user environment variables or an exact `127.0.0.1` proxy exception where applicable. Fully quit and reopen Codex after changes, then verify a normal conversation. See [proxy configuration examples](guides/proxy-configs/README.md).
+
+**Disconnect and restore** uses the existing confirmation and ownership-checked recovery flow. The diagnostic itself does not rewrite Codex configuration, shell profiles, or system proxy settings. The warning describes a failed health probe through a predicted route; it does not establish an observed Codex HTTP status, a particular proxy mode, or failure of every model. This resolver is based on the pinned Magpie behavior, whose comments reference Codex 0.162.1; other client versions and process environments still require live verification.
 
 ### Codex shows only 31k context for a routing model
 
@@ -370,13 +743,77 @@ The corrected backend retains explicit model windows, maximum windows, effective
 
 A group intentionally publishes no more than its smallest prepared destination's capacity, including inactive manual members that older conversations may still be bound to. Unknown destinations retain a conservative 32k fallback; no model capacity is inferred from its name. A relay with no exact-model capacity metadata can therefore keep both its direct entries and a mixed official/relay group at about 31k even after a successful Reload. Official discovery cannot establish the same-named relay model's capacity. Review the actual provider's exact-model catalog metadata rather than setting every model to 1M. Existing opaque continuations stay on their original account/model, and increasing a menu value never migrates them.
 
-### Codex reports routing_unknown_continuation after reconnecting
+### Codex says "This chat uses magpie, but your current provider is varyai"
 
-This 409 means VaryAI cannot establish one exact owner for the supplied response ID, tool call or opaque continuation. Older builds retained ordinary ownership only in memory, so restarting VaryAI or reconnecting the Codex menu could lose it. Starting a new conversation avoids submitting unknown account-bound state; do not remove reasoning or compaction items from an existing history to bypass the check.
+Codex refuses the resume before making an inference request when the saved
+conversation provider differs from the configured provider. For paginated history,
+updated VaryAI builds migrate the SQLite provider row alone, preserving the rollout
+bytes and pagination offsets. Older builds tried to rewrite the rollout too;
+changing a short provider ID to a longer one could therefore stay pending forever,
+while the reverse switch succeeded. The standalone provider ID is now `varyai`.
 
-Updated builds asynchronously save bounded, encrypted ownership records for normal Codex-menu/native and authenticated gateway conversations. After reconnecting and reloading Codex configuration, the same consumer, alias and complete destination set can resume observed bindings. An old local bearer token still requires configuration reload; persistence never bypasses current authentication. Records expire after 24 hours, are bounded to 512 conversations, and are not portable conversation history. Temporary editor sessions remain memory-only.
+Updated builds follow Magpie's provider transition independently of model
+availability. Saved model IDs, conversation content, and pagination offsets
+are preserved; an unavailable saved model can still require a model selection
+after provider recovery. Identical displayed provider names do not establish
+identical internal provider IDs. OpenAI conversations brought into a custom
+provider are tracked by ID so they can return when OpenAI becomes active.
+Recent writes defer migration for one minute, and writer locks defer it until
+the conversation is released. Route changes reload Codex's desktop background
+service after its tasks finish; replacement has a separate 30-second wait after
+the old service exits. If a conversation remains locked, close it and allow the
+background retry to complete before reopening it. Do not delete the
+conversation, change pagination offsets, or remove recovery records.
 
-Previously lost bindings cannot be recovered retroactively. Changed accounts, API keys, endpoints, models or execution settings; expired/evicted records; corrupt or unavailable local recovery files; and conflicting IDs still fail closed. A crash before queued writes reach disk can lose recent observations. No request is moved to another account, and no opaque history is silently discarded. See [continuation recovery](guides/intent-routing.md#continuation-recovery-after-restart).
+### Codex reports routing_model_unavailable in a conversation imported from Magpie
+
+This 404 means the request's model is absent from the authenticated VaryAI menu.
+The current default model can be valid while an old conversation still sends a
+provider-qualified name from a previous gateway. Restarting or retrying that
+conversation preserves its saved model and can repeat the error. This is
+separate from a gateway outage or expired local credential.
+
+Select a model from the current VaryAI model list inside Codex. If automatic
+compaction blocks the old conversation before the selection takes effect, start
+a new conversation and choose the model there. Keep the old conversation for
+reference. Updated migration checks leave incompatible histories on their
+original provider and do not guess a new account or model from a matching name.
+Already migrated conversations still require an explicit model selection; the
+fix does not bulk-rewrite historical choices. See the
+[historical-model verification report](qa/2026-11-06-codex-historical-model-routing.md).
+
+### Codex reports routing_unknown_continuation, including in a new conversation
+
+Earlier builds required local ownership records for Responses replay items before
+forwarding them. This could reject a new Codex conversation: an empty reasoning
+summary, `encrypted_content: null` on a message, or a previously unobserved response
+or tool ID was enough to trigger HTTP 409. Reconnecting repeatedly cannot resolve
+that local validation failure, and creating another conversation is not a reliable
+workaround.
+
+Codex Responses now follows Magpie's upstream-validation approach. Optional fields,
+empty reasoning, unknown response IDs, tool results, and encrypted state are sent
+intact to the selected upstream. Observed ownership still pins the destination;
+conflicting known owners and collided IDs remain errors. Authentication, current
+account/workspace checks, lease revocation, and native checkpoint validation still
+apply. This change does not require deleting conversation history.
+
+For direct Responses forwarding, a concrete upstream refusal of encrypted state
+can trigger Magpie's bounded recovery on the same destination, before any reply is
+released. The first stage removes reasoning and nonempty encrypted copies of
+ordinary items while retaining visible messages and tool pairs. A second stage can
+remove sealed compaction history for a non-native request; native compaction and
+checkpoint requests retain that history. Removing compaction loses its earlier
+context. An ordinary conflict, timeout, or unrelated error never triggers this
+rewrite, and there are at most two recovery mutations per request.
+
+Bounded encrypted ownership records survive normal restarts for the same consumer
+and alias. Codex can restore still-available destinations when unrelated members
+change; missing destinations are treated as unavailable affinity instead of
+blocking the request locally. Records expire after 24 hours and retain at most
+512 conversations. Temporary editor sessions remain memory-only, and local bearer
+tokens still require current authentication. Other clients retain their existing
+strict continuation checks. See [continuation recovery](guides/intent-routing.md#continuation-recovery-after-restart).
 
 ### Codex Official login asks to sign in again after switching
 
@@ -420,11 +857,81 @@ The certificate lasts 30 days and is retained across normal restarts. An older t
 
 ### Kimi shows an internal ID as the provider group
 
-Apply the saved provider again to migrate its Kimi group to the provider name shown in Vary AI. Renaming it also updates model references while preserving model aliases and the selected model. Choose a unique provider name: Vary AI refuses to overwrite an existing native group with the same name. Restart Kimi when it needs to reload its configuration.
+When Vary AI starts after an upgrade, it automatically renames recognized legacy `varyai-<provider-id>` groups to the corresponding saved provider names. The old display names disappear while model aliases, the selected model, credentials, custom options and unrelated native models remain intact. Repeated starts do not rewrite an already-migrated configuration. Restart Kimi if its open model list still shows a cached name.
+
+Migration runs after route recovery and before saved routing is restored. If an old group contains unrecognized model references, uses official login, conflicts with an existing native group, or still has a routing backup awaiting recovery, Vary AI leaves the configuration unchanged and retries on a later start. Groups without a matching saved provider are preserved. Resolve any naming conflict or recovery issue before restarting Vary AI; reapplying the saved provider also retains the existing explicit migration path.
+
+### Qwen Responses reports an invalid or inactive route
+
+Qwen appends `/v1/responses` when its configured base URL does not end in `/v1`. Vary AI now accepts this native request path with both root and prefixed base URLs, preserving the resulting upstream path, model checks and text inspection. Older builds rejected the added `/v1` before forwarding. Load a build containing this fix and restart Qwen after applying a provider or changing its protocol so it reloads the current route.
+
+### WorkBuddy refuses to save an alternative with an existing model ID
+
+Saving a provider keeps it as an inactive alternative and does not require its model IDs to be unique in the native WorkBuddy configuration. Multiple saved providers can use the same model. Native conflicts are checked when applying a provider; an unrelated, differently configured native model still requires explicit conflict resolution before it can be replaced. Saving an alternative also works while the native configuration is temporarily unreadable.
+
+### Profile management shows an action hint immediately on opening
+
+The management dialog now focuses its heading on opening. Refresh snapshot, Rename and Delete use the same immediate tooltip style, shown on hover or keyboard focus. Opening the dialog does not refresh a snapshot or display an action tooltip automatically.
+
+### TRAE CN stays pending after opening the client
+
+A reachable local helper does not establish that message inspection is enabled. TRAE CN 3.4.13 renamed its private request converter, so an older bridge can connect while failing to enable inspection. The current bridge retains support for the original method and can identify a renamed converter from the native request envelope, checking the expected protocol keys in its source before attaching. Unknown or ambiguous layouts remain unsupported; they are not reported as protected.
+
+Load a Vary AI build containing this fix. Vary AI refreshes the older resident helper and restores already-enabled auditing without restarting TRAE. The first local debugging configuration still requires one complete client restart. This integration depends on internal TRAE interfaces: method renaming alone no longer requires a name-specific patch, but structural client changes may require another compatibility update.
+
+Agent mode also discovers the unique known container export instead of using a fixed internal module number. This preserves the archived 3.4.4 entry point and handles the renumbered 3.4.13 bundle. Interface checks and synthetic regressions do not establish complete acceptance of every client version; see the [historical compatibility evidence](qa/2026-11-03-pending-bug-review.md#historical-trae-compatibility-audit).
+
+The helper also enables native target discovery before scanning. Without that handshake, an open workbench can be missing from the native target list and appear disconnected. A build containing the discovery fix replaces older resident helpers automatically.
+
+TRAE may return namespaced model names and protected credential representations from its native model API. The shared catalog verifies the model suffix, owned native ID and local endpoint, then compares a one-way digest bound to the submitted connection credential and the protected native representation recorded after delivery. Plaintext credentials and protected credential values are not persisted in this verification record. External model, endpoint or credential changes still invalidate the connection. After updating an older catalog without this verification record, use **Reapply** once to record delivery without replacing the native model IDs or changing global auditing.
+
+If a catalog write was interrupted before all ownership records were saved, **Reapply** can reuse a unique native model with the expected label, request model, provider type and exact local TRAE shared endpoint. It writes the current connection configuration to that entry and retains its native ID. Ambiguous matches and models at other endpoints are not adopted.
+
+### TRAE CN reports HTTP 502 with security auditing off
+
+The local-routing switch and the global security-audit policy are separate. A reproduced TRAE CN 3.4.13 failure affected follow-up turns using Responses: TRAE replayed a reasoning history item without its `summary` array. The first turn succeeded, while the next request returned upstream HTTP 502. Adding only the missing `summary: []` restored forwarding; the original reasoning text and other history fields were retained.
+
+The same missing-summary repair applies to TRAE's shared Agent connection endpoint. It does not relax the shared router's existing continuation checks or modify other Agents' reasoning history. Replayed item IDs and opaque state must still belong to a known conversation.
+
+The shared connection adds models whose labels end in `Vary AI`. Older provider models can remain in TRAE and in existing conversations with direct upstream addresses. Those entries do not pass through the shared gateway or its compatibility repairs. Check the conversation's selected model and the routing page before treating a repeated HTTP 502 as a missing repair; select the corresponding shared model to use Vary routing.
+
+TRAE CN 3.4.14 also sends native requests with `Sec-Fetch-Site: none` and `Sec-Fetch-Mode: no-cors`. The shared connection accepts that combination only for TRAE on a verified loopback connection without an `Origin` header, and still requires its independent connection credential. Browser origins, cross-site requests, navigation requests, and invalid credentials remain rejected. This prevents native shared models from incorrectly returning `routing_local_clients_only` while keeping browser access restricted.
+
+Legacy provider routing sends managed native Responses models through the local compatibility route, including when global auditing is off. It preserves native model IDs so existing conversations can continue. Turning legacy routing off restores the saved upstream address and credential. Delivery to a closed client remains pending until it connects; keep Vary AI running until restoration finishes. Official models remain unchanged. Load a build containing the fix and verify multiple turns in the failed conversation. A single successful probe or usage-accounting row with status 200 does not establish that a conversation works. See the [reproduction and regression evidence](qa/2026-11-03-pending-bug-review.md#route-only-http-502-follow-up).
 
 ### TRAE CN switching reports a model configuration failure
 
-TRAE can keep an older model-list cache after a custom model is added. Older Vary AI bridges may then report a failed switch even though the model was saved; retrying can return a native duplicate-model error. The bridge now refreshes TRAE's native model store before matching existing models and after each addition. It recovers models carrying the provider's legacy ownership label and retains readable labels without duplicating or adopting unrelated user models. Fully quit and reopen TRAE CN after loading a build containing this fix so its in-memory bridge uses the updated script, then apply the provider again. Direct custom-provider switches also withdraw the previous managed models before adding the target, because TRAE rejects overlapping request model IDs under different labels. A failed switch attempts to restore the previous models and retains the previous provider selection; an incomplete restoration is reported explicitly.
+Shared catalog additions publish their final readable label immediately. Older bridges briefly published `VaryAI/shared_catalog_connection/<hash>` while discovering a new native model ID, then renamed it after refreshing the model list. This caused the picker to alternate between an internal marker and the readable label during synchronization. Load a build containing this fix to refresh the resident helper; shared model request IDs remain unchanged, and interrupted writes still recover through a unique native model at the exact local shared endpoint.
+
+TRAE can keep an older model-list cache after a custom model is added. Older Vary AI bridges may then report a failed switch even though the model was saved; retrying can return a native duplicate-model error. The bridge now refreshes TRAE's native model store before matching existing models and after each addition. It recovers models carrying the provider's legacy ownership label and retains readable labels without duplicating or adopting unrelated user models. Load a build containing this fix so Vary AI refreshes the resident helper, then apply the provider again. Direct custom-provider switches also withdraw the previous managed models before adding the target, because TRAE rejects overlapping request model IDs under different labels. A failed switch attempts to restore the previous models and retains the previous provider selection; an incomplete restoration is reported explicitly.
+
+### TRAE CN reports `routing_local_clients_only` with HTTP 403
+
+This response comes from Vary AI's local ingress before connection authentication or an upstream model request. A native TRAE transport can attach Fetch Metadata headers with no `Origin`, or with `Origin: vscode-file://vscode-app`. Older builds reject any request carrying those browser-like headers, even over loopback. An earlier fix covered only the explicit native origin, so native requests carrying `Sec-Fetch-Site` without an origin still returned 403.
+
+The Agent ingress permits native Fetch Metadata with either no origin or this exact, single origin only for `POST /connections/trae/v1/chat/completions` with a verified loopback TCP peer. The TRAE connection must still be enabled and its credential valid. Other origins, including the literal `null`, duplicate origin values, nonloopback callers, other Agent routes and browser preflight requests remain rejected; this does not enable CORS or identify a caller by its user agent. Fetch Metadata is not authentication. Rejection diagnostics record only fixed categories for the peer, method, route and origin, plus the presence of Fetch Metadata; they omit header values, credentials, query strings and request bodies.
+
+Run a Vary AI build containing this fix, then retry the request. Editing an upstream key or changing models does not resolve this ingress rejection. Source changes do not update an already running installed application; installing or replacing that application is a separate explicit action. Synthetic proxy tests cover JSON and streaming requests, not live TRAE acceptance.
+
+### TRAE CN reports `agent_connection_unavailable` with HTTP 401
+
+This response comes from Vary AI's authenticated local Agent endpoint before an upstream model request is sent. Check the TRAE entry under Agent connections and retry delivery if it is pending. A visible Vary AI model in TRAE does not establish that its current connection has been verified.
+
+TRAE can return provider-prefixed model names and sealed API keys in its native model list. Vary AI normalizes the model names and verifies sealed values against fingerprints captured after its own successful configuration write. The verification records contain hashes, not API keys or sealed credentials; changes to the requested credential, native credential, endpoint, protocol or model invalidate verification. Older helpers are refreshed automatically. If ownership metadata is missing, shared catalog delivery can recover an unambiguous native entry only when its model ID, protocol, full loopback Agent endpoint and expected readable label all match. Unrelated or ambiguous models are retained and require explicit resolution.
+
+### TRAE CN reports `routing_unknown_continuation` with HTTP 409 after a tool call
+
+TRAE can send Chat Completions history without a stable session header. Earlier builds could locate the observed tool-call owner but still reject the next request because the native Chat path required an explicit session binding. A text-only connection check does not exercise this failure: the request that returns a tool result, and later messages replaying that history, can return 409 before contacting the upstream.
+
+TRAE also replaces upstream tool-call IDs before submitting the assistant/tool history. For the authenticated TRAE Chat endpoint, an unnamed continuation can resume through observed call IDs or hashes of complete observed function names and JSON arguments. A rewritten ID requires its matching assistant function payload in the same history; a tool result alone cannot establish ownership. Streamed arguments are assembled by choice and tool index and recorded only when the choice finishes. Only hashes enter the existing bounded, encrypted ownership store. Every call must resolve to the same exact destination within the same Agent and model-alias scope; conflicting payload owners remain rejected. The wire request retains its original IDs, tool calls, tool results, reasoning and other fields. Queued encrypted ownership records allow a compatible restart to restore that owner, including when target order or the preferred member changes. No conversation identity is guessed from prompt text. Other native protocols keep their existing session requirements.
+
+Retry the affected conversation after the updated backend has loaded. Older records contain only the original IDs; those records cannot recover a rewritten ID whose function payload was never observed by the updated backend. Synthetic regressions cover rewritten IDs in JSON and fragmented streaming responses, interleaved tools, changed arguments, result submission, later user messages, restart recovery and rejection of foreign or ambiguous calls.
+
+### TRAE CN reports `Connection timeout` with HTTP 500
+
+TRAE can abandon a custom-model request after roughly 90 seconds without response headers. Its UI reports HTTP 500, while Vary AI records status 499 when the client disconnects. A routing trace containing an attempt without a connected step means the upstream has not returned its response headers; it is distinct from a continuation rejection or a completed model response.
+
+Authenticated TRAE streaming Chat requests now open an SSE response after five seconds of waiting and send comment heartbeats every five seconds until routing supplies a response. This keeps the native connection alive while the selected upstream prepares its answer. It does not speed up the upstream, extend its existing request deadline, or retry ambiguous dispatches. Immediate validation and upstream errors retain their HTTP status. Once the waiting stream opens, a late failure is a sanitized SSE error followed by `[DONE]`, since HTTP headers have already been sent. Upstream SSE bytes are forwarded unchanged once available, and cancellation drops the pending forwarding future. Nonstreaming requests and other clients retain their existing behavior.
 
 ## Windows VC++ runtime errors
 
@@ -445,3 +952,90 @@ If events and in-app messages appear but system banners do not, check the notifi
 The macOS implementation uses `UNUserNotificationCenter` for permission and delivery; it does not fall back to legacy notification APIs when the application identity is unavailable. Source changes require a rebuilt development instance or a newly packaged application. Development builds use a separate temporary app bundle and do not replace an installed application. Exit an existing instance normally before starting a separate one.
 
 Screen sharing or mirroring can suppress notification banners and sound. Check the macOS setting that permits notifications during sharing. In-app warnings are independent of system delivery; a recorded warning does not prove that the user saw a banner.
+
+## TRAE starting-model selection
+
+The TRAE CN row uses the shared model picker to choose a starting model for new
+conversations in native modes that support that model. The bridge keeps explicit
+selections in existing conversations. A pending bridge status means the saved
+selection has not yet been acknowledged by native persistence and selection
+readback. Open TRAE CN yourself, and restart it once after the initial bridge
+setup if requested. The floating assistant alone is not a supported chat window.
+Ordinary catalog refreshes preserve subsequent model choices made inside TRAE;
+explicit reapplication applies the preference saved in Vary again.
+
+### ChatGPT browser sign-in keeps waiting after consent
+
+Browser consent must return to `http://localhost:1455/auth/callback` before
+Vary AI can exchange the authorization code and save the account. If the browser
+cannot open that final local page, paste its complete address into **Callback
+URL** in the same active login panel and select **Finish sign-in**. Keep the
+address private: its query contains temporary authorization material. Login
+attempts expire after ten minutes; start a new attempt if it has expired.
+
+The login panel's proxy selection controls Vary AI's authorization requests,
+independently of the browser's network configuration. A successful browser page
+does not establish that the token endpoint is reachable from Vary AI. Token
+exchange has a 30-second request deadline, including reading the response body,
+for global, direct, and custom proxy selections. Older builds inherited the
+shared client's ten-minute timeout when using the global proxy selection, which
+could leave the panel waiting long after consent.
+
+The callback starts token exchange in the backend; renderer polling only reads
+status. The browser reports success after the account is stored. A stale Codex
+login listener is asked to release port 1455 before bounded retries; an unrelated
+listener is left in place and the pasted-address fallback remains available.
+Local callback aliases (`localhost`, `127.0.0.1`, and `::1`) are accepted only
+with the expected port, path, and state.
+
+This behavior follows [Magpie browser sign-in at revision
+`8a7f77c`](https://github.com/yetone/magpie/blob/8a7f77cb716da80d48767b1dcd03bbe8629eec1d/internal/provider/signin.go).
+Token requests send Codex originator and versioned client identity and accept
+JSON, with a one-MiB response limit.
+
+The client identity includes Codex's operating-system version, architecture, and
+terminal label on macOS and Windows. Browser and device sign-in require the
+three credentials and an email in the ID-token payload, as Magpie does; they
+do not impose an additional JWT-header, subject, or workspace requirement.
+Missing workspace IDs are kept empty and omitted from upstream headers rather
+than replaced with a local account ID. Legacy imports retain their existing
+identity and workspace checks.
+
+Signing in to an existing email/workspace updates its credentials in place and
+preserves its local account ID and provider bindings. Different workspace seats
+remain separate. Targeted reauthentication still rejects a different account,
+and cancellation or a newer login generation prevents an older commit.
+
+A directly selected or custom login proxy is saved with the account, including
+across restarts, and used for token refresh, quota, discovery, and forwarding.
+Reauthentication inherits that selection unless explicitly changed. Selecting
+**Global proxy** clears the account override and follows future global changes.
+These account settings and credentials stay in the existing private OAuth store;
+older records need no migration.
+
+Failure pages and the login panel distinguish transport failures, the
+30-second deadline, HTTP rejection, invalid credentials, account mismatch, and
+storage failure. HTTP rejection shows its numeric status. Diagnostics record
+fixed stage names and explicitly recognized OAuth error codes, never arbitrary
+vendor descriptions. They omit callback URLs, authorization codes, PKCE
+verifiers, tokens, proxy addresses, and upstream response bodies. **Device code
+sign-in** is available from the panel when the browser callback cannot be
+completed.
+
+### Codex subscription plan and sign-in status disagree
+
+The plan shown for a Codex account comes from local identity claims and can remain available after authorization is rejected. It does not establish that the credentials still work. Provider rows give known sign-in failures priority over the cached plan and show **Logged out** when a selected account needs reauthentication. Opening the list reads local observations without renewing credentials or probing the vendor.
+
+The account editor shows **Re-login required** and a **Re-login** action for rejected, missing, or unreadable credentials. Managed accounts use targeted device login, preserving their local account ID and provider bindings. Reauthenticating a native account selects the resulting managed credential in the current provider draft; save the draft to retain that choice. This action does not overwrite Codex's native login file. Successful login refreshes allowance and model observations while retaining unsaved model choices. Temporary network and allowance-service errors do not mark an account logged out. Definitive managed refresh-token rejections and allowance HTTP 401 observations are retained locally across restarts, and stale responses cannot mark a newer token generation as rejected.
+
+### Other subscription accounts need signing in again
+
+Claude, ChatGPT API, GitHub Copilot, Gemini CLI, Antigravity and Grok use the same sign-in status priority as Codex: known rejected credentials override a cached plan in the provider list. Each retained account row offers **Re-login** when its local status requires authentication. Plans are shown only when observed from provider metadata; an unknown plan is not evidence of a failed sign-in. Provider-list and account-status polling reads local state and does not probe subscription vendors.
+
+Google and ChatGPT API reauthentication validates the returned identity before updating the existing local account. Claude reauthentication runs in a separate managed home and keeps the existing provider binding only for the same login identity. The old credential remains intact if the new login fails or is cancelled. Copilot and Grok reuse their supported device login; signing in with a different identity adds that identity without silently changing the provider's account selection. Signing back into the bound account preserves selected models. Copilot's GitHub HTTP 401 responses and native subscriptions' definitive OAuth rejections are saved locally; rate limits, permission failures and service outages do not count as revocation. Known native subscription HTTP 401 responses also update the local status without changing the forwarded response.
+
+### Subscription account allowance and model controls
+
+The subscription provider editor reads allowance separately for each retained managed account. Claude uses its managed credential directory, Copilot and Grok use the explicit account ID, and Gemini CLI and Antigravity use the selected Google credential and project. Antigravity prefers shared quota groups when supplied and otherwise shows per-model windows. ChatGPT API has no separate allowance endpoint in this integration and says so. A missing field never implies a full allowance. Refresh failures preserve the last successful meters with a stale notice; a definitive rejected authorization clears the meters and refreshes local sign-in status. Raw vendor errors and credentials are not rendered or retained in the allowance query cache.
+
+Each account has a refresh action and removal action. Removing a managed Copilot or Grok account clears a matching provider draft selection after removal succeeds. The model section supports selecting all, selecting none, manual model IDs, catalog refresh and existing per-model preferences. These controls retain the provider's explicit account binding; they do not enable multi-account fallback for subscription types whose routing schema supports one account.

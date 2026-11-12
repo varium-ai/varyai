@@ -3,7 +3,7 @@
 //! Parse the bounded queue away from forwarding and evaluate the versioned policy.
 //! The forwarding path only uses try_send; this worker handles detection and batched writes.
 //! Never persist raw call IDs, full input objects, tool names or rule names.
-//! New events omit command summaries because built-in sanitization cannot cover custom DLP.
+//! Command summaries are bounded and checked against built-in and custom DLP patterns.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,8 +85,16 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
             .operation_categories
             .first()
             .map(|op| op.as_str().to_string()),
-        // Built-in sanitization cannot cover custom DLP; keep raw-input detection only.
-        command_summary: None,
+        command_summary: (obs.input.status == InputStatus::Complete)
+            .then(|| {
+                super::adapters::adapt_observation(obs)
+                    .operations
+                    .into_iter()
+                    .find_map(|operation| operation.command)
+                    .map(|command| super::sanitize::summarize_command(&command))
+            })
+            .flatten()
+            .filter(|summary| !summary.is_empty()),
         detection_scope: "in_scope".to_string(),
         integrity_status: integrity_status(obs).to_string(),
         verdict: verdict.map(str::to_string),
@@ -176,43 +184,45 @@ pub fn spawn_worker(db: Arc<Database>, mut rx: ObservationReceiver) {
         let mut parser = super::response_parser::ResponseProcessor::default();
         let mut ticker = interval(FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut policy = super::runtime::collection_policy_version();
+        let mut generation = super::runtime::collection_generation();
         let mut previous_drops = (0, 0, 0);
         loop {
             tokio::select! {
                 piece = rx.recv() => {
-                    let version = super::runtime::collection_policy_version();
-                    if version != policy || !super::runtime::collection_enabled() {
-                        parser.clear(); buffer.clear(); policy = version;
+                    let version = super::runtime::collection_generation();
+                    if version != generation || !super::runtime::collection_enabled() {
+                        parser.clear(); buffer.clear(); generation = version;
                     }
                     match piece {
-                        Some(piece) if super::runtime::collection_enabled() && piece.state.policy_version == policy => {
+                        Some(piece) if super::runtime::collection_enabled() && piece.state.generation == generation => {
                             for obs in parser.ingest(&piece) {
                                 if let Some(event) = project_event_with_diagnostic(&obs) {
-                                    if event.policy_version == policy as i64 { buffer.push(event); }
+                                    if super::runtime::collection_generation() == generation
+                                        && event.policy_version == super::runtime::collection_policy_version() as i64 { buffer.push(event); }
                                 }
-                                if buffer.len() >= FLUSH_BATCH { flush(&db, &mut buffer).await; }
+                                if buffer.len() >= FLUSH_BATCH { flush(&db, &mut buffer, generation).await; }
                             }
                         }
                         Some(piece) => {
                             piece.state.faulted.store(true, std::sync::atomic::Ordering::Release);
                             piece.state.release_reservation();
                         }
-                        None => { parser.clear(); flush(&db, &mut buffer).await; break; }
+                        None => { parser.clear(); flush(&db, &mut buffer, generation).await; break; }
                     }
                 }
                 _ = ticker.tick() => {
-                    let version = super::runtime::collection_policy_version();
-                    if version != policy || !super::runtime::collection_enabled() {
-                        parser.clear(); buffer.clear(); policy = version;
+                    let version = super::runtime::collection_generation();
+                    if version != generation || !super::runtime::collection_enabled() {
+                        parser.clear(); buffer.clear(); generation = version;
                     } else {
                         for obs in parser.sweep() {
                             if let Some(event) = project_event_with_diagnostic(&obs) {
-                                if event.policy_version == policy as i64 { buffer.push(event); }
+                                if super::runtime::collection_generation() == generation
+                                        && event.policy_version == super::runtime::collection_policy_version() as i64 { buffer.push(event); }
                             }
-                            if buffer.len() >= FLUSH_BATCH { flush(&db, &mut buffer).await; }
+                            if buffer.len() >= FLUSH_BATCH { flush(&db, &mut buffer, generation).await; }
                         }
-                        flush(&db, &mut buffer).await;
+                        flush(&db, &mut buffer, generation).await;
                     }
                     if let Some(line) = ingress_diagnostic(&rx.counters.snapshot(), &mut previous_drops) {
                         log::info!("{line}");
@@ -223,23 +233,26 @@ pub fn spawn_worker(db: Arc<Database>, mut rx: ObservationReceiver) {
         }
     });
 }
-async fn flush(db: &Arc<Database>, buffer: &mut Vec<ToolRiskEventInput>) {
+async fn flush(db: &Arc<Database>, buffer: &mut Vec<ToolRiskEventInput>, generation: u64) {
     if buffer.is_empty() {
         return;
     }
     let items = std::mem::take(buffer);
-    let version = super::runtime::collection_policy_version();
-    if !super::runtime::collection_enabled() {
+    if !super::runtime::collection_enabled()
+        || super::runtime::collection_generation() != generation
+    {
         return;
     }
     let db = db.clone();
-    let result =
-        tokio::task::spawn_blocking(move || db.insert_current_tool_risk_events_batch(&items)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        super::service::persist_events_for_generation(&db, &items, generation)
+    })
+    .await;
     match result {
         Ok(Ok(count))
             if count > 0
                 && super::runtime::collection_enabled()
-                && super::runtime::collection_policy_version() == version =>
+                && super::runtime::collection_generation() == generation =>
         {
             crate::tool_risk_events::notify_tool_risk_recorded()
         }
@@ -256,6 +269,61 @@ mod tests {
     use crate::services::tool_risk::runtime::{set_tool_risk_runtime_for_test, ToolRiskRuntime};
     use serial_test::serial;
     use std::collections::HashMap;
+
+    #[test]
+    #[serial]
+    fn safe_shell_command_summary_is_projected_without_mutating_the_observation() {
+        enable_runtime();
+        let observation = obs(
+            "Bash",
+            serde_json::json!({"command":"echo SYNTHETIC_PUBLIC_MARKER"}),
+        );
+        let original = observation.clone();
+        let event = project_event(&observation).expect("recognized shell observation");
+        assert_eq!(
+            event.command_summary.as_deref(),
+            Some("echo SYNTHETIC_PUBLIC_MARKER")
+        );
+        assert_eq!(observation, original);
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
+    }
+
+    #[test]
+    #[serial]
+    fn queued_batch_is_rejected_after_same_version_disable_and_reenable() {
+        use super::super::{
+            runtime::collection_generation,
+            service::{persist_events_for_generation, update_settings},
+        };
+        let db = Database::memory().unwrap();
+        let settings = |enabled| crate::database::ToolRiskSettings {
+            enabled,
+            policy_version: 0,
+        };
+        update_settings(&db, &settings(true)).unwrap();
+        let generation = collection_generation();
+        let event = project_event(&obs(
+            "Bash",
+            serde_json::json!({"command":"rm -rf /tmp/synthetic-fixture"}),
+        ))
+        .unwrap();
+        update_settings(&db, &settings(false)).unwrap();
+        update_settings(&db, &settings(true)).unwrap();
+        assert_eq!(
+            db.get_tool_risk_settings().unwrap().policy_version,
+            event.policy_version as u64
+        );
+        assert_eq!(
+            persist_events_for_generation(&db, std::slice::from_ref(&event), generation).unwrap(),
+            0
+        );
+        assert_eq!(
+            persist_events_for_generation(&db, &[event], collection_generation()).unwrap(),
+            1
+        );
+        assert_eq!(db.get_tool_risk_events(10, 0).unwrap().len(), 1);
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
+    }
 
     pub(super) fn obs(tool: &str, input: serde_json::Value) -> ToolObservation {
         ToolObservation {
@@ -327,7 +395,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn claude_desktop_shell_calls_reach_history_without_command_summary() {
+    async fn claude_desktop_shell_calls_reach_history_with_safe_command_summary() {
         use crate::proxy::tool_observation::{channel::*, mount};
         use crate::services::tool_risk::response_parser::ResponseProcessor;
         use bytes::Bytes;
@@ -369,7 +437,7 @@ mod tests {
             let event =
                 project_event(&observations[0]).expect("desktop shell call must be recorded");
             assert_eq!(event.client_category.as_deref(), Some("claude-desktop"));
-            assert!(event.command_summary.is_none());
+            assert_eq!(event.command_summary.as_deref(), Some("pwd"));
             assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
             assert_eq!(event.stage, "proposed");
             db.insert_tool_risk_events_batch(&[event]).unwrap();
@@ -383,7 +451,8 @@ mod tests {
             assert!(project_event(&untrusted).is_none());
         }
         let previews = db.get_tool_risk_command_summary_preview().unwrap();
-        assert!(previews.is_empty());
+        assert_eq!(previews.len(), 2);
+        assert!(previews.iter().all(|(_, summary)| summary == "pwd"));
         assert_eq!(db.get_tool_risk_events(10, 0).unwrap().len(), 2);
         set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
     }
@@ -497,7 +566,10 @@ mod tests {
                 let o = &mut observations[0];
                 o.tool.definition_ref = Some("builtin:codex:tools:v1".into());
                 let event = project_event(o).expect("real shell input must remain auditable");
-                assert!(event.command_summary.is_none());
+                assert_eq!(
+                    event.command_summary.as_deref(),
+                    (o.input.status == InputStatus::Complete).then_some(command)
+                );
                 assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
                 let expected = if carrier.is_null() && verdict == "unchecked" {
                     "low_risk"
@@ -545,9 +617,33 @@ mod tests {
 
     #[test]
     #[serial]
-    fn regression_new_command_summary_is_null_without_changing_risk_or_input() {
+    fn custom_dlp_hides_command_summary_without_changing_risk_or_input() {
         use super::super::types::{ConditionOp, RuleCondition, RuleOrigin, RuleTarget};
 
+        use crate::proxy::security::{
+            runtime::{set_security_runtime_for_test, CompiledCustomRule},
+            types::{AuditAction, RiskLevel},
+            SecurityRuntimeConfig,
+        };
+        struct Restore(SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let mut security = SecurityRuntimeConfig::default();
+        security.custom_rules.push(CompiledCustomRule {
+            id: "synthetic-dlp".into(),
+            name: "Synthetic DLP".into(),
+            rule_type: "keyword".into(),
+            pattern: "SYNTHETIC_ORG_MARKER".into(),
+            regex: None,
+            risk_level: RiskLevel::High,
+            action: AuditAction::Audit,
+            enabled: true,
+        });
+        set_security_runtime_for_test(security);
         let db = Database::memory().unwrap();
         db.save_tool_risk_settings(&crate::database::ToolRiskSettings {
             enabled: true,
@@ -616,16 +712,18 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(observation, original);
-        assert!(
-            event.command_summary.is_none(),
-            "new worker events must omit command summaries, including custom-only sensitive text"
-        );
+        assert_eq!(event.command_summary.as_deref(), Some("<redacted>"));
 
         let projected_ipc = serde_json::to_value(&event).unwrap();
-        assert_eq!(projected_ipc["commandSummary"], serde_json::Value::Null);
+        assert_eq!(projected_ipc["commandSummary"], "<redacted>");
+        // A batch projected before a DLP policy change must be rechecked too.
+        let mut queued_before_policy_change = event.clone();
+        queued_before_policy_change.command_summary = Some(command.into());
         assert_eq!(
-            db.insert_current_tool_risk_events_batch(std::slice::from_ref(&event))
-                .unwrap(),
+            db.insert_current_tool_risk_events_batch(std::slice::from_ref(
+                &queued_before_policy_change
+            ))
+            .unwrap(),
             1
         );
         let stored_summary: Option<String> = db
@@ -636,10 +734,10 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert!(stored_summary.is_none());
+        assert_eq!(stored_summary.as_deref(), Some("<redacted>"));
         let page = db.get_tool_risk_events(1, 0).unwrap();
         assert_eq!(page.len(), 1);
-        assert!(page[0].command_summary.is_none());
+        assert_eq!(page[0].command_summary.as_deref(), Some("<redacted>"));
         let notifications = db.get_tool_risk_events_after(0, 1, policy).unwrap();
         assert_eq!(notifications, page);
         for record in [&page[0], &notifications[0]] {
@@ -666,7 +764,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn risky_call_projects_event_without_command_summary() {
+    fn risky_call_projects_event_with_safe_command_summary() {
         enable_runtime();
         let o = obs(
             "Bash",
@@ -678,12 +776,15 @@ mod tests {
         assert_eq!(ev.policy_version, 7);
         assert!(!ev.rule_ids.is_empty());
         assert_eq!(ev.operation_category.as_deref(), Some("shell_exec"));
-        assert!(ev.command_summary.is_none());
+        assert_eq!(
+            ev.command_summary.as_deref(),
+            Some("rm -rf /PRIVATE_TARGET/*")
+        );
     }
 
     #[test]
     #[serial]
-    fn command_summary_is_omitted_without_changing_credentials_in_input() {
+    fn command_summary_redacts_credentials_without_changing_input() {
         enable_runtime();
         let command = format!(
             "{}={} curl -H '{}: {} {}' https://api.x/public",
@@ -692,7 +793,7 @@ mod tests {
         assert!(command.contains("TOKENVALUE"));
         let o = obs("Bash", serde_json::json!({"command": command}));
         let ev = project_event(&o).expect("in-scope event");
-        assert!(ev.command_summary.is_none());
+        assert_eq!(ev.command_summary.as_deref(), Some("API_KEY=<redacted> curl -H 'Authorization: Bearer <redacted>' https://api.x/public"));
         let output = serde_json::to_string(&ev).unwrap();
         for secret in ["TOKENVALUE", "OTHERSECRET"] {
             assert!(!output.contains(secret));
@@ -702,7 +803,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn command_summary_is_omitted_for_shell_and_non_shell_tools() {
+    fn command_summary_uses_only_recognized_shell_fields() {
         enable_runtime();
         let mut codex = obs(
             "exec_command",
@@ -711,7 +812,10 @@ mod tests {
         codex.tool.client = Some("codex".into());
         codex.tool.definition_ref = Some("builtin:codex:tools:v1".into());
         let event = project_event(&codex).unwrap();
-        assert!(event.command_summary.is_none());
+        assert_eq!(
+            event.command_summary.as_deref(),
+            Some("ls -la /workspace/project")
+        );
         assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
         codex.quality.tool_identity = ToolIdentityQuality::Unknown;
         if let Some(event) = project_event(&codex) {
@@ -726,7 +830,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn projected_command_summary_stays_null_in_database_and_ipc() {
+    fn projected_safe_command_summary_survives_database_ipc_and_notifications() {
         let db = Database::memory().unwrap();
         db.save_tool_risk_settings(&crate::database::ToolRiskSettings {
             enabled: true,
@@ -751,24 +855,28 @@ mod tests {
         ] {
             let observation = obs("Bash", serde_json::json!({"command": command}));
             let event = project_event(&observation).expect("registered shell is in scope");
-            assert!(event.command_summary.is_none());
+            let expected = super::super::sanitize::summarize_command(command);
+            assert_eq!(event.command_summary.as_deref(), Some(expected.as_str()));
             assert_eq!(
                 db.insert_current_tool_risk_events_batch(&[event]).unwrap(),
                 1
             );
             let page = db.get_tool_risk_events(1, 0).unwrap();
-            assert!(page[0].command_summary.is_none());
+            assert_eq!(page[0].command_summary.as_deref(), Some(expected.as_str()));
             let ipc = serde_json::to_value(&page[0]).unwrap();
-            assert_eq!(ipc["commandSummary"], serde_json::Value::Null);
+            assert_eq!(ipc["commandSummary"], expected);
             assert!(!ipc.to_string().contains("PIPELINE_PRIVATE_VALUE"));
             let notifications = db
                 .get_tool_risk_events_after(page[0].id - 1, 1, policy)
                 .unwrap();
-            assert!(notifications[0].command_summary.is_none());
+            assert_eq!(
+                notifications[0].command_summary.as_deref(),
+                Some(expected.as_str())
+            );
             db.get_tool_risk_configuration().unwrap();
             assert!(db.get_tool_risk_events(1, 0).unwrap()[0]
                 .command_summary
-                .is_none());
+                .is_some());
             assert_eq!(
                 observation.input.value.as_ref().unwrap()["command"],
                 command

@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+mod agent_rewards;
 mod auth;
 mod balance;
 mod codex_oauth;
@@ -9,6 +10,7 @@ mod config;
 mod connection_presets;
 mod copilot;
 mod deeplink;
+mod doubao_checkin;
 mod env;
 mod failover;
 mod gateway;
@@ -46,8 +48,10 @@ mod lightweight;
 mod s3_sync;
 mod usage;
 mod webdav_sync;
+mod workbuddy_checkin;
 mod workspace;
 
+pub(crate) use agent_rewards::*;
 pub use auth::*;
 pub use balance::*;
 pub use codex_oauth::*;
@@ -89,11 +93,16 @@ pub(crate) use telemetry::*;
 pub use tool_risk::*;
 pub use xai_oauth::*;
 
+pub(crate) use doubao_checkin::*;
 pub use lightweight::*;
 pub use s3_sync::*;
 pub use usage::*;
 pub use webdav_sync::*;
+pub(crate) use workbuddy_checkin::*;
 pub use workspace::*;
 
 mod agent_connections;
 pub(crate) use agent_connections::*;
+
+mod native_subscription;
+pub(crate) use native_subscription::*;

@@ -214,11 +214,17 @@ impl ProviderType {
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => ProviderType::Codex,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => return None,
         };
         Some(provider_type)
@@ -277,11 +283,17 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Box::new(CodexAdapter::new()),
         AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => return None,
     })
 }

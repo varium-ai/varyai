@@ -4,11 +4,17 @@ const AGENTS: &[&str] = &[
     "claude-desktop",
     "codex",
     "workbuddy",
+    "workbuddy-ai",
     "qoder",
     "doubaowork",
     "trae",
+    "trae-intl",
     "kimi",
     "zcode",
+    "deepseek-harness",
+    "cursor",
+    "cursor-cli",
+    "t3code",
 ];
 
 #[derive(Debug, serde::Serialize)]
@@ -27,16 +33,7 @@ pub(super) fn version_number(text: &str) -> Option<String> {
 #[cfg(target_os = "macos")]
 fn desktop_version(bundle: &Path) -> Option<String> {
     // Read the product version, never the embedded Electron/editor package version.
-    let output = std::process::Command::new("/usr/bin/plutil")
-        .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
-        .arg(bundle.join("Contents/Info.plist"))
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| version_number(&decode_command_output(&output.stdout)))
-        .flatten()
+    version_number(&desktop_apps::field(bundle, "CFBundleShortVersionString")?)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -56,7 +53,12 @@ fn detect_in(
     } else {
         agent_desktop_bundles(app)
     };
-    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen");
+    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen" | "cursor-cli");
+    let tool = if app == "cursor-cli" {
+        "cursor-agent"
+    } else {
+        app
+    };
     let mut result = AgentVersion {
         supported: cli_supported || (desktop_supported && !bundles.is_empty()),
         installed: false,
@@ -65,11 +67,7 @@ fn detect_in(
         source: None,
     };
     if desktop_supported {
-        if let Some(bundle) = roots
-            .iter()
-            .flat_map(|root| bundles.iter().map(move |name| root.join(name)))
-            .find(|path| path.is_dir())
-        {
+        if let Some(bundle) = desktop_apps::find_in(app, roots) {
             result.installed = true;
             result.source = Some("desktop");
             result.version = desktop_version(&bundle);
@@ -78,7 +76,7 @@ fn detect_in(
     }
     if cli_supported {
         for dir in cli_dirs {
-            if let Some(path) = tool_executable_candidates(app, dir)
+            if let Some(path) = tool_executable_candidates(tool, dir)
                 .into_iter()
                 .find(|path| path.is_file())
             {
@@ -133,29 +131,48 @@ async fn latest_version(
 
 pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, String> {
     futures::future::try_join_all(AGENTS.iter().map(|&app| async move {
-        let mut info = tokio::task::spawn_blocking(move || {
-            let roots = if cfg!(target_os = "macos") {
-                vec![
-                    PathBuf::from("/Applications"),
-                    crate::config::get_home_dir().join("Applications"),
-                ]
-            } else {
-                vec![]
-            };
-            detect_in(
+        let (mut info, channel_matches) = tokio::task::spawn_blocking(move || {
+            let bundle = desktop_apps::find(app);
+            let roots = bundle
+                .as_ref()
+                .and_then(|bundle| bundle.parent().map(Path::to_path_buf))
+                .into_iter()
+                .collect::<Vec<_>>();
+            let info = detect_in(
                 app,
                 &roots,
-                &build_tool_search_paths(app),
+                &build_tool_search_paths(if app == "cursor-cli" {
+                    "cursor-agent"
+                } else {
+                    app
+                }),
                 cfg!(target_os = "macos"),
-            )
+            );
+            #[cfg(target_os = "windows")]
+            let info = {
+                let mut info = info;
+                if crate::services::trae_bridge::shared::Edition::parse(app).is_some()
+                    || matches!(app, "cursor" | "t3code")
+                {
+                    info.supported = true;
+                    info.installed = is_agent_installed(app);
+                    info.source = info.installed.then_some("desktop");
+                }
+                info
+            };
+            let channel_matches =
+                bundle.is_none_or(|bundle| desktop_apps::update_channel_matches(app, &bundle));
+            (info, channel_matches)
         })
         .await
         .map_err(|_| "Agent version check failed".to_owned())?;
         let client = crate::proxy::http_client::get();
-        info.latest_version = drop_latest_behind_local(
-            latest_version(&client, app, &info).await,
-            info.version.as_deref(),
-        );
+        if channel_matches {
+            info.latest_version = drop_latest_behind_local(
+                latest_version(&client, app, &info).await,
+                info.version.as_deref(),
+            );
+        }
         Ok((app.to_owned(), info))
     }))
     .await

@@ -1,18 +1,29 @@
 //! TRAE's vendor component API owns account authentication and model storage.
 //! Only explicit message text reaches VaryAI; the helper never exports login credentials.
 pub(crate) mod selection;
+pub(crate) mod shared;
 
 use crate::{error::AppError, provider::Provider};
 use serde_json::{json, Value};
 #[cfg(unix)]
-use std::{
-    io::{BufRead, BufReader, Write},
-    time::Duration,
-};
-use std::{path::PathBuf, sync::Mutex};
+use std::io::{BufRead, BufReader, Write};
+use std::{path::PathBuf, sync::Mutex, time::Duration};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
+const HELPER_REVISION: u64 = 18;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+static CHINA_HELPER_START: Mutex<()> = Mutex::new(());
+static INTERNATIONAL_HELPER_START: Mutex<()> = Mutex::new(());
+fn command_timeout(command: &Value) -> Duration {
+    if matches!(
+        command["op"].as_str(),
+        Some("apply" | "replace" | "remove" | "select" | "matches")
+    ) {
+        Duration::from_secs(330)
+    } else {
+        Duration::from_secs(20)
+    }
+}
 fn unavailable() -> AppError {
     AppError::localized(
         "agents.trae_bridge",
@@ -32,7 +43,7 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
     }
     let mut stream = UnixStream::connect(path).map_err(|_| unavailable())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
+        .set_read_timeout(Some(command_timeout(command)))
         .map_err(|_| unavailable())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
@@ -46,6 +57,9 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
         .read_until(b'\n', &mut bytes)
         .map_err(|_| unavailable())?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    socket_response(command, value)
+}
+fn socket_response(command: &Value, value: Value) -> Result<Value, AppError> {
     if value.get("error").is_some() {
         if matches!(command["op"].as_str(), Some("apply" | "replace" | "remove")) {
             if value["error"] == "model_recovery_unavailable" {
@@ -81,9 +95,75 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
     }
     value.get("result").cloned().ok_or_else(unavailable)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "windows")))]
 fn request_socket(_: &std::path::Path, _: &Value) -> Result<Value, AppError> {
     Err(unavailable())
+}
+#[cfg(target_os = "windows")]
+fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| unavailable())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 8192 {
+        return Err(unavailable());
+    }
+    let marker: Value = serde_json::from_slice(&std::fs::read(path).map_err(|_| unavailable())?)
+        .map_err(|_| unavailable())?;
+    let pipe = marker["pipe"].as_str().ok_or_else(unavailable)?;
+    let auth = marker["auth"]
+        .as_str()
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(unavailable)?;
+    let suffix = pipe
+        .strip_prefix(r"\\.\pipe\varyai-trae-")
+        .ok_or_else(unavailable)?;
+    if suffix.len() > 90
+        || !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return Err(unavailable());
+    }
+    let mut request = command.clone();
+    request["auth"] = auth.into();
+    let mut bytes = serde_json::to_vec(&request).map_err(|_| unavailable())?;
+    bytes.push(b'\n');
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| unavailable())?;
+    let response = runtime.block_on(async {
+        tokio::time::timeout(command_timeout(command), async {
+            let mut client = loop {
+                match tokio::net::windows::named_pipe::ClientOptions::new().open(pipe) {
+                    Ok(client) => break client,
+                    Err(error) if error.raw_os_error() == Some(231) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await
+                    }
+                    Err(_) => return Err(unavailable()),
+                }
+            };
+            client.write_all(&bytes).await.map_err(|_| unavailable())?;
+            let mut response = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = client.read(&mut buffer).await.map_err(|_| unavailable())?;
+                if count == 0 {
+                    return Err(unavailable());
+                }
+                response.extend_from_slice(&buffer[..count]);
+                if response.len() > 2 * 1024 * 1024 {
+                    return Err(unavailable());
+                }
+                if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
+                    response.truncate(end);
+                    return serde_json::from_slice::<Value>(&response).map_err(|_| unavailable());
+                }
+            }
+        })
+        .await
+        .map_err(|_| unavailable())?
+    })?;
+    socket_response(command, response)
 }
 fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -100,25 +180,37 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
             .then(|| entry.path())
         })
         .collect();
-    // Once installed, use the current helper instead of an older resident process.
-    if !include_legacy
-        && paths.iter().any(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
-        })
-    {
-        paths.retain(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
+    if !include_legacy {
+        // Prefer the merged helper, then the newest legacy feature variants.
+        let preferred = [
+            format!("bridge-agent-v{HELPER_REVISION}-"),
+            "bridge-agent-v2-selection-".into(),
+            "bridge-agent-v2-models-".into(),
+        ]
+        .into_iter()
+        .find(|prefix| {
+            paths.iter().any(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
+            })
         });
+        if let Some(prefix) = preferred {
+            paths.retain(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            });
+        }
     }
     paths
 }
 fn request(command: &Value, all: bool) -> Result<Value, AppError> {
+    request_in(&directory()?, command, all)
+}
+fn request_in(directory: &std::path::Path, command: &Value, all: bool) -> Result<Value, AppError> {
     let mut result = None;
     let mut failure = unavailable();
     for path in socket_paths(
-        &directory()?,
+        directory,
         command["op"] == "disable" || !cfg!(target_os = "macos"),
     ) {
         match request_socket(&path, command) {
@@ -138,11 +230,6 @@ pub(crate) fn active() -> bool {
         && request(&json!({"op":"health"}), false)
             .ok()
             .is_some_and(|v| v["enabled"] == true)
-}
-pub(crate) fn ready() -> bool {
-    request(&json!({"op":"health"}), false)
-        .ok()
-        .is_some_and(|value| value["ready"] == true)
 }
 fn reconnect_in(directory: &std::path::Path, origin: &str, token: &str) -> bool {
     let mut connected = false;
@@ -217,10 +304,46 @@ pub(crate) fn authorized(value: &str) -> bool {
                     == 0
         })
 }
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "windows")]
+fn protect_directory(path: &std::path::Path) -> Result<(), AppError> {
+    use std::os::windows::{fs::MetadataExt, process::CommandExt};
+    std::fs::create_dir_all(path).map_err(|_| unavailable())?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| unavailable())?;
+    if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(unavailable());
+    }
+    // The path is passed as data. Only this user may read bridge credentials or replace helpers.
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR
+$acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;' + $sid + ')', [System.Security.AccessControl.AccessControlSections]::Access)
+Set-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR -AclObject $acl
+"#;
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env_remove("PSModulePath")
+        .env("VARYAI_TRAE_PRIVATE_DIR", path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|_| unavailable())?;
+    if !status.success() {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn install_runtime(directory: &std::path::Path) -> Result<PathBuf, AppError> {
     let runtime = directory.join("runtime");
     std::fs::create_dir_all(&runtime).map_err(|_| unavailable())?;
+    #[cfg(target_os = "windows")]
+    {
+        protect_directory(directory)?;
+        protect_directory(&runtime)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -238,8 +361,19 @@ fn install_runtime(directory: &std::path::Path) -> Result<PathBuf, AppError> {
             "renderer.cjs",
             include_str!("../../resources/trae-bridge/renderer.cjs"),
         ),
+        (
+            "starting-model.cjs",
+            include_str!("../../resources/trae-bridge/starting-model.cjs"),
+        ),
+        (
+            "rewards.cjs",
+            include_str!("../../resources/trae-bridge/rewards.cjs"),
+        ),
     ] {
         let path = runtime.join(name);
+        #[cfg(target_os = "windows")]
+        crate::config::atomic_write_private(&path, source.as_bytes())?;
+        #[cfg(not(target_os = "windows"))]
         std::fs::write(&path, source).map_err(|_| unavailable())?;
         #[cfg(unix)]
         {
@@ -263,6 +397,8 @@ fn installed_executable() -> Result<PathBuf, AppError> {
     .ok_or_else(unavailable)
 }
 fn prepare_connection(directory: &std::path::Path, argv: &std::path::Path) -> Result<(), AppError> {
+    #[cfg(target_os = "windows")]
+    protect_directory(directory)?;
     let backup = directory.join("launch-backup.json");
     let original = match std::fs::read_to_string(argv) {
         Ok(source) => Some(source),
@@ -330,8 +466,20 @@ fn argv_path() -> Result<PathBuf, AppError> {
         .join(".trae-cn/argv.json"))
 }
 fn ensure_ready() -> Result<(), AppError> {
-    if let Ok(health) = request(&json!({"op":"health"}), false) {
-        if health["revision"] == 2 {
+    ensure_ready_for(shared::Edition::China)
+}
+fn ensure_ready_for(edition: shared::Edition) -> Result<(), AppError> {
+    let starter = match edition {
+        shared::Edition::China => &CHINA_HELPER_START,
+        shared::Edition::International => &INTERNATIONAL_HELPER_START,
+    };
+    let _guard = starter.lock().map_err(|_| unavailable())?;
+    let client = shared::Client(edition);
+    if let Ok(health) = client.request(&json!({"op":"health"})) {
+        if health["revision"] == HELPER_REVISION
+            && health["modelVerification"] == 1
+            && health["startingModel"] == 1
+        {
             return if health["ready"] == true && health["modelReplacement"] == true {
                 Ok(())
             } else {
@@ -339,17 +487,16 @@ fn ensure_ready() -> Result<(), AppError> {
             };
         }
         // Release the prior VaryAI hook before injecting the current helper.
-        let _ = request(&json!({"op":"disable"}), true);
+        let _ = client.request_all(&json!({"op":"disable"}));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        #[cfg(unix)]
         use std::os::unix::process::CommandExt;
-        let home = dirs::home_dir().ok_or_else(unavailable)?;
-        // Ordinary Dock/Finder launches write this random loopback endpoint. Do not launch TRAE.
-        let source = std::fs::read_to_string(
-            home.join("Library/Application Support/Trae CN/DevToolsActivePort"),
-        )
-        .map_err(|_| unavailable())?;
+        #[cfg(windows)]
+        use std::os::windows::process::CommandExt;
+        // Ordinary desktop launches write this edition's random loopback endpoint.
+        let source = std::fs::read_to_string(client.port_path()?).map_err(|_| unavailable())?;
         let mut lines = source.lines();
         let port = lines
             .next()
@@ -365,29 +512,38 @@ fn ensure_ready() -> Result<(), AppError> {
                         .all(|c| c.is_ascii_alphanumeric() || c == '-')
             })
             .ok_or_else(unavailable)?;
-        let executable = installed_executable()?;
-        let dir = directory()?;
+        let executable = client.connection_executable()?;
+        let dir = client.directory()?;
         let script = install_runtime(&dir)?;
-        let mut child = std::process::Command::new(executable)
+        let mut command = std::process::Command::new(executable);
+        command
+            .env_remove("NODE_OPTIONS")
             .env("ELECTRON_RUN_AS_NODE", "1")
             .arg(script)
             .arg(format!("ws://127.0.0.1:{port}{browser}"))
             .arg(dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|_| unavailable())?;
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000 | 0x00000200);
+        let mut child = command.spawn().map_err(|_| unavailable())?;
         std::thread::spawn(move || {
             let _ = child.wait();
         });
         for _ in 0..30 {
             std::thread::sleep(Duration::from_millis(200));
-            if request(&json!({"op":"health"}), false)
+            if client
+                .request(&json!({"op":"health"}))
                 .ok()
                 .is_some_and(|v| {
-                    v["ready"] == true && v["revision"] == 2 && v["modelReplacement"] == true
+                    v["ready"] == true
+                        && v["revision"] == HELPER_REVISION
+                        && v["modelVerification"] == 1
+                        && v["startingModel"] == 1
+                        && v["modelReplacement"] == true
                 })
             {
                 return Ok(());
@@ -413,7 +569,15 @@ pub(crate) fn enable(origin: &str) -> Result<(), AppError> {
 }
 /// Prepare only after explicit consent. Never launch the UI or enable audit hooks.
 pub(crate) fn prepare_shared() -> Result<(), AppError> {
-    if ready() {
+    if request(&json!({"op":"health"}), false)
+        .ok()
+        .is_some_and(|health| {
+            health["ready"] == true
+                && health["revision"] == HELPER_REVISION
+                && health["modelVerification"] == 1
+                && health["startingModel"] == 1
+        })
+    {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
@@ -422,17 +586,26 @@ pub(crate) fn prepare_shared() -> Result<(), AppError> {
     let _ = ensure_ready();
     Ok(())
 }
-pub(crate) fn restore_shared() -> Result<(), AppError> {
-    restore_connection(&directory()?, &argv_path()?)
-}
-pub(crate) fn disable() -> Result<(), AppError> {
+pub(crate) fn suspend_inspection() -> Result<(), AppError> {
     // Invalidate first; missed/closed windows release their hooks on the heartbeat.
     *AUDIT_TOKEN.lock().map_err(|_| unavailable())? = None;
     let _ = request(&json!({"op":"disable"}), true);
+    Ok(())
+}
+pub(crate) fn finish_disconnect() -> Result<(), AppError> {
     restore_connection(&directory()?, &argv_path()?)
+}
+pub(crate) fn disable() -> Result<(), AppError> {
+    suspend_inspection()?;
+    finish_disconnect()
 }
 pub(crate) fn profile_models() -> Result<Value, AppError> {
     request(&json!({"op":"list"}), false)
+}
+
+pub(crate) fn rewards(input: Value) -> Result<Value, AppError> {
+    ensure_ready()?;
+    request(&json!({"op":"rewards", "input":input}), false)
 }
 /// Deliver configuration without preparing, starting or enabling the bridge.
 pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
@@ -442,14 +615,6 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
         false,
     )?;
     Ok(())
-}
-pub(crate) fn shared_matches(provider: &Provider) -> bool {
-    request(
-        &json!({"op":"matches","id":provider.id,"config":provider.settings_config}),
-        false,
-    )
-    .ok()
-    .is_some_and(|value| value == true)
 }
 pub(crate) fn replace_connected(provider: &Provider) -> Result<(), AppError> {
     model_replacement_ready()?;
@@ -470,7 +635,7 @@ pub(crate) fn model_replacement_ready() -> Result<(), AppError> {
     if health["ready"] != true {
         return Err(unavailable());
     }
-    if health["revision"] != 2 {
+    if health["revision"] != HELPER_REVISION {
         ensure_ready()?;
         health = request(&json!({"op":"health"}), false)?;
     }
@@ -613,10 +778,25 @@ mod tests {
             std::fs::write(dir.path().join(name), "").expect("fixture");
         }
         assert_eq!(socket_paths(dir.path(), false).len(), 1);
-        let current = dir.path().join("bridge-agent-v2-456.sock");
+        let previous = dir.path().join("bridge-agent-v4-456.sock");
+        std::fs::write(&previous, "").expect("previous helper");
+        let current = dir
+            .path()
+            .join(format!("bridge-agent-v{HELPER_REVISION}-789.sock"));
         std::fs::write(&current, "").expect("current helper");
-        assert_eq!(socket_paths(dir.path(), false), vec![current]);
-        assert_eq!(socket_paths(dir.path(), true).len(), 3);
+        assert_eq!(socket_paths(dir.path(), false), vec![current.clone()]);
+        assert_eq!(socket_paths(dir.path(), true).len(), 4);
+        let verified = dir.path().join("bridge-agent-v2-models-789.sock");
+        std::fs::write(&verified, "").expect("current model verification helper");
+        assert_eq!(socket_paths(dir.path(), false), vec![current.clone()]);
+        let selection = dir.path().join("bridge-agent-v2-selection-987.sock");
+        std::fs::write(&selection, "").expect("selection socket");
+        assert_eq!(socket_paths(dir.path(), false), vec![current.clone()]);
+        assert_eq!(socket_paths(dir.path(), true).len(), 6);
+        std::fs::remove_file(current).expect("remove current helper fixture");
+        assert_eq!(socket_paths(dir.path(), false), vec![selection.clone()]);
+        std::fs::remove_file(selection).expect("remove selection helper fixture");
+        assert_eq!(socket_paths(dir.path(), false), vec![verified]);
     }
 
     #[test]
@@ -792,8 +972,9 @@ mod tests {
         assert!(script.is_file());
         assert_eq!(
             std::fs::read_dir(script.parent().unwrap()).unwrap().count(),
-            2
+            4
         );
+        assert!(script.parent().unwrap().join("rewards.cjs").is_file());
         let source = std::fs::read_to_string(&script).unwrap();
         assert!(!source.contains("command.expression"));
         #[cfg(unix)]
@@ -808,6 +989,66 @@ mod tests {
                 0o700
             );
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn private_bridge_directory_preserves_owner_and_restricts_inherited_access() {
+        use std::os::windows::process::CommandExt;
+        if std::env::var_os("VARYAI_TRAE_ACL_TEST_CHILD").is_none() {
+            let modules = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "services::trae_bridge::tests::private_bridge_directory_preserves_owner_and_restricts_inherited_access",
+                    "--nocapture",
+                ])
+                .env("VARYAI_TRAE_ACL_TEST_CHILD", "1")
+                .env("PSModulePath", modules.path())
+                .creation_flags(0x08000000)
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated bridge ACL regression failed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private [bridge] fixture");
+        std::fs::create_dir(&path).unwrap();
+        let inspect = |script: &str| {
+            let output = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env_remove("PSModulePath")
+                .env("VARYAI_TRAE_PRIVATE_DIR", &path)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "bridge ACL inspection failed");
+            output.stdout
+        };
+        let owner = inspect(
+            "$ErrorActionPreference = 'Stop'; $acl = Get-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR; Write-Output $acl.Owner; Write-Output $acl.Group",
+        );
+        protect_directory(&path).unwrap();
+        std::fs::write(path.join("credential-fixture"), b"synthetic").unwrap();
+        let protected_owner = inspect(
+            r#"
+$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR
+$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl' -or $rules[0].InheritanceFlags -ne 'ContainerInherit, ObjectInherit') { exit 1 }
+$child = Get-Acl -LiteralPath (Join-Path $env:VARYAI_TRAE_PRIVATE_DIR 'credential-fixture')
+$childRules = @($child.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if ($childRules.Count -ne 1 -or $childRules[0].IdentityReference.Value -ne $sid -or $childRules[0].FileSystemRights -ne 'FullControl' -or -not $childRules[0].IsInherited) { exit 1 }
+Write-Output $acl.Owner
+Write-Output $acl.Group
+"#,
+        );
+        assert!(
+            owner == protected_owner,
+            "bridge directory ownership changed"
+        );
     }
     #[cfg(unix)]
     #[test]

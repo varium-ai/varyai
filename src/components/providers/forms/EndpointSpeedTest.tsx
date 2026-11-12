@@ -20,12 +20,18 @@ const ENDPOINT_TIMEOUT_SECS: Record<AppId, number> = {
   hermes: 8,
   pi: 8,
   workbuddy: 8,
+  "workbuddy-ai": 8,
   qoder: 5,
   doubaowork: 10,
   trae: 5,
+  "trae-intl": 5,
   kimi: 5,
   qwen: 5,
   zcode: 5,
+  "deepseek-harness": 5,
+  cursor: 5,
+  "cursor-cli": 5,
+  t3code: 5,
 };
 
 interface TestResult {

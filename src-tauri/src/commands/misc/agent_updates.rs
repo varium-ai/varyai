@@ -21,8 +21,10 @@ fn trusted_url(app: &str, raw: &str) -> Option<reqwest::Url> {
         "qoder" => &["static.qoder.com.cn"],
         "doubaowork" => &["lf9-apk.ugapk.cn", "lf6-apk.ugapk.cn", "lf3-apk.ugapk.cn"],
         "trae" => &["lf-cdn.trae.com.cn"],
-        "kimi" => &["code.kimi.com"],
+        "trae-intl" => &["lf-cdn.trae.ai", "lf-static.traecdn.us"],
+        "kimi" => &["code.kimi.com", "cdn.kimi.com"],
         "zcode" => &["cdn-zcode.z.ai", "cdn.codegeex.cn"],
+        "deepseek-harness" => &["download.deepseek.com"],
         _ => return None,
     };
     (url.scheme() == "https"
@@ -156,6 +158,10 @@ fn zcode_release(text: &str, arch: &str) -> Option<Release> {
 
 pub(super) async fn latest(client: &reqwest::Client, app: &str, arch: &str) -> Option<Release> {
     match app {
+        "deepseek-harness" if arch == "arm64" => {
+            let url = "https://download.deepseek.com/dsh-desk/feeds/mac-arm64/nightly-mac.yml";
+            yaml_release(app, url, &get_text(client, url).await?, arch)
+        }
         "qoder" | "kimi" => {
             let url = if app == "qoder" {
                 "https://static.qoder.com.cn/qoder-app/releases/latest-mac.yml"
@@ -177,6 +183,24 @@ pub(super) async fn latest(client: &reqwest::Client, app: &str, arch: &str) -> O
                 "https://www.workbuddy.cn/v2/update?platform=workbuddy-darwin-{arch}&version=0.0.0"
             );
             json_release(app, &get_text(client, &url).await?)
+        }
+        "trae-intl" => {
+            let data: serde_json::Value = serde_json::from_str(
+                &get_text(
+                    client,
+                    "https://api.trae.ai/icube/api/v1/native/version/trae/latest",
+                )
+                .await?,
+            )
+            .ok()?;
+            let versions = data.pointer("/data/manifest/darwin/versions")?.as_array()?;
+            let arch = if arch == "arm64" { "apple" } else { "intel" };
+            let entry = ["va", "sg", "usttp"].into_iter().find_map(|region| {
+                versions
+                    .iter()
+                    .find(|entry| entry["region"] == region && entry["arch"] == arch)
+            })?;
+            release(app, entry["version"].as_str()?, entry["url"].as_str()?)
         }
         "trae" => {
             let url = "https://api.trae.com.cn/icube/api/v1/package/check_update?pid=7409949320595642651&branch=release_desktop_yoma_cn&buildId=0&platform=mac&packageType=stable_cn&appVersion=0.0.0&buildVersion=0.0.0&mid=varyai-update-check&productCode=TRAE";
@@ -231,9 +255,7 @@ pub(super) async fn update_desktop_agent(app: String) -> Result<(), String> {
     {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let _guard = TOOL_LIFECYCLE_LOCK
-                .try_lock()
-                .map_err(|_| "busy".to_owned())?;
+            let _guard = TOOL_LIFECYCLE.reserve(&[&app])?;
             macos::update(&runtime, &app)
         })
         .await
@@ -251,6 +273,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deepseek_desktop_feed_preserves_prerelease_and_architecture() {
+        let text = "version: 0.2.2-rc.1\nfiles:\n - {url: 'https://download.deepseek.com/dsh-desk/bin/mac-arm64/deepseek-harness-0.2.2-rc.1-mac-arm64.zip', sha512: synthetic}";
+        let release = yaml_release(
+            "deepseek-harness",
+            "https://download.deepseek.com/dsh-desk/feeds/mac-arm64/nightly-mac.yml",
+            text,
+            "arm64",
+        )
+        .unwrap();
+        assert_eq!(release.version, "0.2.2-rc.1");
+        assert!(yaml_release(
+            "deepseek-harness",
+            "https://download.deepseek.com/",
+            text,
+            "x64"
+        )
+        .is_none());
+        assert!(trusted_url(
+            "deepseek-harness",
+            "https://download.deepseek.com.evil.test/app.zip"
+        )
+        .is_none());
+    }
+
+    #[test]
     fn publisher_urls_reject_spoofed_hosts_credentials_and_local_feeds() {
         for url in [
             "http://code.kimi.com/a.zip",
@@ -263,6 +310,25 @@ mod tests {
         }
         assert!(trusted_url("kimi", "https://code.kimi.com/kimi-code/desktop/a.zip").is_some());
         assert!(trusted_url("unknown", "https://code.kimi.com/a.zip").is_none());
+    }
+
+    #[test]
+    fn kimi_download_redirect_accepts_only_its_official_https_cdn() {
+        assert!(trusted_url(
+            "kimi",
+            "https://cdn.kimi.com/kimi-code/desktop/binaries/1.3.0/KimiCode-1.3.0-mac-arm64.zip"
+        )
+        .is_some());
+        for url in [
+            "http://cdn.kimi.com/app.zip",
+            "https://cdn.kimi.com.evil.test/app.zip",
+            "https://user@cdn.kimi.com/app.zip",
+            "https://cdn.kimi.com:8443/app.zip",
+            "https://cdn.kimi.com/app.zip#fragment",
+        ] {
+            assert!(trusted_url("kimi", url).is_none());
+        }
+        assert!(trusted_url("qoder", "https://cdn.kimi.com/app.zip").is_none());
     }
 
     #[test]

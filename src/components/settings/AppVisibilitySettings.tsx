@@ -42,7 +42,15 @@ const APP_CONFIG: Array<{
   { id: "trae", icon: APP_ICON_NAME.trae, nameKey: "apps.trae" },
   { id: "kimi", icon: APP_ICON_NAME.kimi, nameKey: "apps.kimi" },
   { id: "qwen", icon: APP_ICON_NAME.qwen, nameKey: "apps.qwen" },
+  { id: "cursor", icon: "cursor", nameKey: "apps.cursor" },
+  { id: "cursor-cli", icon: "cursor", nameKey: "apps.cursor-cli" },
+  { id: "t3code", icon: "t3code", nameKey: "apps.t3code" },
   { id: "zcode", icon: APP_ICON_NAME.zcode, nameKey: "apps.zcode" },
+  {
+    id: "deepseek-harness",
+    icon: "deepseek",
+    nameKey: "apps.deepseek-harness",
+  },
 ];
 
 export function AppVisibilitySettings({

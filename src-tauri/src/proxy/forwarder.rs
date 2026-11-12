@@ -60,6 +60,10 @@ struct ExactBridge {
     output: super::protocol_bridge::Protocol,
 }
 
+/// The body was built from the protocol-neutral IR for this selected upstream.
+#[derive(Clone)]
+struct IrWire;
+
 fn codex_bearer_access_token(headers: &http::HeaderMap) -> Option<&str> {
     let authorization = headers
         .get(http::header::AUTHORIZATION)?
@@ -105,7 +109,7 @@ fn validate_codex_official_authorization(
                     .and_then(|value| value.to_str().ok())
                     .map(str::trim)
                     .filter(|account_id| !account_id.is_empty());
-                if request_account_id != expected_chatgpt_account_id
+                if request_account_id != expected_chatgpt_account_id.filter(|id| !id.is_empty())
                     || managed_session_matches != Some(true)
                 {
                     return Err(ProxyError::AuthError(
@@ -1294,7 +1298,17 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardResponse, ProxyError> {
-        if let Some(bridge) = super::protocol_bridge::Bridge::route(app_type, endpoint, provider) {
+        // Prepared Codex conversions already carry owned provenance for the legacy
+        // Chat/Anthropic transforms. Retain that path until IR has the same evidence.
+        let prepared_codex_conversion = self.dlp_request.is_some()
+            && *app_type == AppType::Codex
+            && (super::providers::should_convert_codex_responses_to_chat(provider, endpoint)
+                || super::providers::should_convert_codex_responses_to_anthropic(
+                    provider, endpoint,
+                ));
+        if let Some(bridge) = super::protocol_bridge::Bridge::route(app_type, endpoint, provider)
+            .filter(|_| !prepared_codex_conversion)
+        {
             // New bridge edges lack owned preparation and completion evidence.
             // Refuse active restoration before cloning or enriching any payload.
             if self.dlp_request.is_some() {
@@ -1332,8 +1346,8 @@ impl RequestForwarder {
         extensions.insert(ExactBridge {
             output: bridge.output,
         });
-        // The intermediate request is Messages-shaped. This is wire context only,
-        // not the actual app identity; the caller owns security and attribution.
+        // The caller owns security and attribution; the transport uses only the
+        // selected upstream protocol and the IR-built wire body.
         self.forward_bridged(
             &AppType::Claude,
             bridge,
@@ -1377,32 +1391,127 @@ impl RequestForwarder {
             }
         }
         if bridge.input == super::protocol_bridge::Protocol::Responses {
-            self.codex_chat_history.enrich_request(&mut body).await;
+            // Ownerless IR requests still need the same guarded-cache admission as
+            // the specialized Codex path. Count-only enrichment hides refusals.
+            let (_, owners) = self
+                .codex_chat_history
+                .enrich_request_with_provenance(
+                    &mut body,
+                    None,
+                    super::security::chat_enrichment::ChatHistoryProvenance::StrictResume,
+                )
+                .await
+                .map_err(ProxyError::DlpForward)?;
+            if owners.is_some() {
+                // Retire the copied payload before releasing its allocation charge.
+                drop(body);
+                drop(owners);
+                return Err(ProxyError::DlpForward(
+                    super::security::http_restoration::DlpForwardError::ContextUnavailable,
+                ));
+            }
+            super::security::http_restoration::validate_unleased_enriched_body(&body)
+                .map_err(ProxyError::DlpForward)?;
+        }
+        if !exact {
+            body = if matches!(app_type, AppType::ClaudeDesktop) {
+                crate::claude_desktop_config::map_proxy_request_model(body, provider)
+                    .map_err(|_| ProxyError::InvalidRequest("Unknown desktop model route".into()))?
+            } else {
+                super::model_mapper::apply_model_mapping(body, provider).0
+            };
+            if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+                if bridge.output == super::protocol_bridge::Protocol::Chat {
+                    super::providers::apply_codex_chat_upstream_model(provider, &mut body);
+                } else {
+                    super::providers::apply_codex_upstream_model(provider, &mut body);
+                }
+            }
         }
         let tool_context =
             super::providers::transform_codex_chat::build_codex_tool_context_from_request(&body);
-        let mut body = bridge.request(body, endpoint)?;
+        let observation_client = if crate::services::tool_risk::runtime::collection_enabled() {
+            if exact {
+                extensions
+                    .get::<super::tool_observation::mount::ClientToolObservation>()
+                    .map(|context| context.0)
+            } else {
+                match app_type {
+                    AppType::Claude => Some("claude"),
+                    AppType::ClaudeDesktop => Some("claude-desktop"),
+                    AppType::Codex => Some("codex"),
+                    _ => None,
+                }
+            }
+        } else {
+            None
+        };
+        let original_tool_schemas = observation_client
+            .map(|client| super::tool_observation::mount::collect_tool_schemas(&body, client));
+        let mut parsed = super::protocol_bridge::ir::parse::request(bridge.input, &body, endpoint)?;
+        if let Some(model) = target_model.as_ref().and_then(serde_json::Value::as_str) {
+            parsed.model = model.to_owned();
+        }
+        if bridge.output == super::protocol_bridge::Protocol::Gemini {
+            super::protocol_bridge::ir::continuity::restore(
+                &mut parsed,
+                &self.gemini_shadow,
+                &provider.id,
+                self.session_client_provided
+                    .then_some(self.session_id.as_str()),
+            );
+        }
+        let streaming = parsed.stream;
+        let model = parsed.model.clone();
+        let mut body = super::protocol_bridge::ir::build::request(&parsed, bridge.output)?;
         if let Some(model) = target_model {
             body["model"] = model;
+        } else {
+            body["model"] = serde_json::Value::String(model);
         }
-        let bridge_context = super::protocol_bridge::BridgeContext {
+        super::protocol_bridge::grok::normalize_tool_schemas(&mut body);
+        if !exact
+            && matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && bridge.input == super::protocol_bridge::Protocol::Responses
+            && bridge.output == super::protocol_bridge::Protocol::Chat
+        {
+            let key = super::providers::CodexAdapter::prompt_cache_key(
+                provider,
+                parsed.native.prompt_cache_key.as_deref(),
+                self.session_client_provided
+                    .then_some(self.session_id.as_str()),
+            )
+            .map(str::to_owned);
+            if let Some(key) = key {
+                body["prompt_cache_key"] = serde_json::Value::String(key);
+            } else if let Some(fields) = body.as_object_mut() {
+                fields.remove("prompt_cache_key");
+            }
+        }
+        // Gemini selects these in the URL; remove the transport hints before send.
+        if bridge.output == super::protocol_bridge::Protocol::Gemini {
+            body["stream"] = serde_json::Value::Bool(streaming);
+        }
+        let mut bridge_context = super::protocol_bridge::BridgeContext {
             tool_context,
-            shadow: self.gemini_shadow.clone(),
             history: self.codex_chat_history.clone(),
+            shadow: self.gemini_shadow.clone(),
             provider_id: provider.id.clone(),
             session_id: self
                 .session_client_provided
                 .then(|| self.session_id.clone()),
-            hints: super::providers::transform_gemini::extract_anthropic_tool_schema_hints(&body),
+            observation: None,
+            reply_observer: None,
         };
-        let streaming = body["stream"].as_bool().unwrap_or(false);
+        let mut extensions = extensions.clone();
+        extensions.insert(IrWire);
         let bridged_provider = bridge.provider(provider);
         let bridged_adapter = super::protocol_bridge::BridgeAdapter {
             original: adapter,
             output: bridge.output,
         };
         let bridge_endpoint = bridge.endpoint(endpoint);
-        let (response, format, model, upstream_tool_schemas, dlp_attempt) = self
+        let (response, _format, model, upstream_tool_schemas, dlp_attempt) = self
             .forward_native(
                 app_type,
                 method,
@@ -1410,10 +1519,44 @@ impl RequestForwarder {
                 &bridge_endpoint,
                 &body,
                 headers,
-                extensions,
+                &extensions,
                 &bridged_adapter,
             )
             .await?;
+        if let (Some(client), Some(original)) = (observation_client, original_tool_schemas) {
+            let definitions = original
+                .iter()
+                .filter(|definition| {
+                    upstream_tool_schemas.iter().any(|actual| {
+                        actual.name == definition.name
+                            && actual.namespace == definition.namespace
+                            && actual.schema == definition.schema
+                    })
+                })
+                .cloned()
+                .collect();
+            let protocol = match bridge.output {
+                super::protocol_bridge::Protocol::Anthropic => {
+                    super::tool_observation::parsers::PROTOCOL_ANTHROPIC
+                }
+                super::protocol_bridge::Protocol::Chat => {
+                    super::tool_observation::parsers::PROTOCOL_OPENAI_CHAT
+                }
+                super::protocol_bridge::Protocol::Responses => {
+                    super::tool_observation::parsers::PROTOCOL_OPENAI_RESPONSES
+                }
+                super::protocol_bridge::Protocol::Gemini => {
+                    super::tool_observation::parsers::PROTOCOL_GEMINI
+                }
+            };
+            bridge_context.observation = Some(super::tool_observation::mount::metadata(
+                protocol,
+                client,
+                super::tool_observation::channel::Transport::Json,
+                super::tool_observation::channel::OutputQuality::Native,
+                Arc::new(definitions),
+            ));
+        }
         Ok((
             bridge
                 .response(
@@ -1423,7 +1566,7 @@ impl RequestForwarder {
                     bridge_context,
                 )
                 .await?,
-            format,
+            Some(bridge.input.format().to_owned()),
             model,
             if exact {
                 Arc::new(Vec::new())
@@ -1447,6 +1590,7 @@ impl RequestForwarder {
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardResponse, ProxyError> {
         let exact_bridge = extensions.get::<ExactBridge>();
+        let wire_ready = extensions.get::<IrWire>().is_some();
         let exact = exact_bridge.is_some();
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
@@ -1526,7 +1670,7 @@ impl RequestForwarder {
         // Declare before all moved forms of the independent mapping tree.
         let _mapping_payload_owner;
         let guarded_model_mapping = self.dlp_request.is_some();
-        let mapped_body = if exact {
+        let mapped_body = if exact || wire_ready {
             _mapping_payload_owner = None;
             body.clone()
         } else if guarded_model_mapping {
@@ -1554,7 +1698,7 @@ impl RequestForwarder {
         };
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
-        let mut mapped_body = if exact {
+        let mut mapped_body = if exact || wire_ready {
             mapped_body
         } else {
             normalize_thinking_type(mapped_body)
@@ -1731,7 +1875,7 @@ impl RequestForwarder {
         } else {
             None
         };
-        if !exact && adapter.name() == "Claude" {
+        if !exact && !wire_ready && adapter.name() == "Claude" {
             if let Some(api_format) = resolved_claude_api_format.as_deref() {
                 // Native Anthropic carriers are immutable: refuse before vendor
                 // normalization can strip signatures or replace redacted blocks.
@@ -1758,6 +1902,9 @@ impl RequestForwarder {
                 );
                 self.apply_media_prevention(&mut mapped_body, provider);
             }
+        }
+        if !exact && wire_ready && adapter.name() == "Claude" {
+            self.apply_media_prevention(&mut mapped_body, provider);
         }
         let needs_transform = match resolved_claude_api_format.as_deref() {
             Some(api_format) => super::providers::claude_api_format_needs_transform(api_format),
@@ -1868,6 +2015,25 @@ impl RequestForwarder {
 
         // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
         let mut codex_oauth_account_id: Option<String> = None;
+        let mut codex_oauth_client: Option<reqwest::Client> = None;
+        if codex_official_auth_passthrough {
+            if let (Some(app), Some(id)) = (
+                self.app_handle.as_ref(),
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.managed_account_id_for("codex_oauth")),
+            ) {
+                codex_oauth_client = app
+                    .state::<CodexOAuthState>()
+                    .0
+                    .account_forwarding_client(&id)
+                    .await
+                    .map_err(|_| {
+                        ProxyError::AuthError("Codex account connection unavailable".into())
+                    })?;
+            }
+        }
         let mut should_send_codex_oauth_session_headers = false;
 
         // 获取认证头（提前准备，用于内联替换），同时保留仅用于日志脱敏的
@@ -1957,6 +2123,16 @@ impl RequestForwarder {
                     match token_result {
                         Ok(token) => {
                             auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
+                            if let Some(id) = resolved_account_id.as_deref() {
+                                codex_oauth_client = codex_auth
+                                    .account_forwarding_client(id)
+                                    .await
+                                    .map_err(|_| {
+                                        ProxyError::AuthError(
+                                            "Codex account connection unavailable".into(),
+                                        )
+                                    })?;
+                            }
                             should_send_codex_oauth_session_headers = true;
                             // 本地账号 ID 只用于绑定；请求头必须使用上游 workspace ID。
                             codex_oauth_account_id = match resolved_account_id.as_deref() {
@@ -2107,7 +2283,16 @@ impl RequestForwarder {
             let mut history_mapping = None;
             #[cfg(test)]
             super::security::http_restoration::transform_input_test_support::input(&codex_body);
-            let mut request_body = if codex_responses_to_chat {
+            let mut request_body = if extensions.get::<IrWire>().is_some() {
+                let mut wire = codex_body;
+                if resolved_claude_api_format.as_deref() == Some("gemini_native") {
+                    if let Some(fields) = wire.as_object_mut() {
+                        fields.remove("model");
+                        fields.remove("stream");
+                    }
+                }
+                wire
+            } else if codex_responses_to_chat {
                 let mut mapped_body = codex_body;
                 let explicit_prompt_cache_key = if self.dlp_request.is_some() {
                     // Move the SAME allocation out of the prepared input. Its owner
@@ -2291,6 +2476,10 @@ impl RequestForwarder {
 
             let mut filtered_body = if exact {
                 request_body
+            } else if wire_ready {
+                // Readers already selected supported wire fields. Recursive
+                // private-key filtering would corrupt arbitrary tool arguments.
+                canonicalize_value(request_body)
             } else {
                 prepare_upstream_request_body(request_body)
             };
@@ -2301,7 +2490,11 @@ impl RequestForwarder {
                     .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
                 {
                     if apply_local_proxy_body_overrides(&mut filtered_body, overrides) {
-                        filtered_body = prepare_upstream_request_body(filtered_body);
+                        filtered_body = if wire_ready {
+                            canonicalize_value(filtered_body)
+                        } else {
+                            prepare_upstream_request_body(filtered_body)
+                        };
                     }
                 }
             }
@@ -2406,7 +2599,9 @@ impl RequestForwarder {
             }
         }
         if let Some(account) = codex_oauth_account_id.as_deref() {
-            if let Ok(value) = http::HeaderValue::from_str(account) {
+            if account.is_empty() {
+                principal_headers.remove("chatgpt-account-id");
+            } else if let Ok(value) = http::HeaderValue::from_str(account) {
                 principal_headers.insert("chatgpt-account-id", value);
             }
         }
@@ -2862,18 +3057,27 @@ impl RequestForwarder {
             ordered_headers.insert(name, value);
         }
 
-        let upstream_tool_schemas = if !exact
-            && needs_transform
-            && matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
+        let upstream_tool_schemas = if (!exact
+            || extensions
+                .get::<super::tool_observation::mount::ClientToolObservation>()
+                .is_some())
+            && (needs_transform || wire_ready)
+            && matches!(
+                app_type,
+                AppType::Claude | AppType::ClaudeDesktop | AppType::Codex
+            )
             && crate::services::tool_risk::runtime::collection_enabled()
         {
             super::tool_observation::mount::collect_tool_schemas(
                 &filtered_body,
-                if matches!(app_type, AppType::ClaudeDesktop) {
-                    "claude-desktop"
-                } else {
-                    "claude"
-                },
+                extensions
+                    .get::<super::tool_observation::mount::ClientToolObservation>()
+                    .map(|context| context.0)
+                    .unwrap_or(match app_type {
+                        AppType::ClaudeDesktop => "claude-desktop",
+                        AppType::Codex => "codex",
+                        _ => "claude",
+                    }),
             )
         } else {
             Arc::new(Vec::new())
@@ -2923,7 +3127,9 @@ impl RequestForwarder {
 
         // 托管 OAuth 的 workspace 由账号绑定决定，覆盖客户端或本地代理配置的旧值。
         if let Some(ref account_id) = codex_oauth_account_id {
-            if let Ok(value) = http::HeaderValue::from_str(account_id) {
+            if account_id.is_empty() {
+                ordered_headers.remove("chatgpt-account-id");
+            } else if let Ok(value) = http::HeaderValue::from_str(account_id) {
                 ordered_headers.insert("chatgpt-account-id", value);
             }
         }
@@ -3034,7 +3240,7 @@ impl RequestForwarder {
                 attempt.record_permitted_attempt(&provider.id, None);
             }
             injected?
-        } else if is_socks_proxy || !preserve_exact_header_case {
+        } else if is_socks_proxy || !preserve_exact_header_case || codex_oauth_client.is_some() {
             // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
             // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
             log::debug!(
@@ -3047,6 +3253,8 @@ impl RequestForwarder {
             #[cfg(not(test))]
             let test_client: Option<reqwest::Client> = None;
             let client = if let Some(client) = test_client {
+                client
+            } else if let Some(client) = codex_oauth_client {
                 client
             } else if bound_attempt {
                 super::http_client::get_without_redirects().map_err(|_| {
@@ -3062,8 +3270,12 @@ impl RequestForwarder {
                 // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
                 // 的首包/静默期超时控制，避免长流被总时长误杀。
                 request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
-            } else if !self.non_streaming_timeout.is_zero() {
-                request = request.timeout(self.non_streaming_timeout);
+            } else {
+                request = request.timeout(if self.non_streaming_timeout.is_zero() {
+                    std::time::Duration::from_secs(600)
+                } else {
+                    self.non_streaming_timeout
+                });
             }
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
@@ -5082,6 +5294,50 @@ mod tests {
             matches!(result, Err(ProxyError::AuthError(message)) if message == "synthetic-bridge-boundary")
         );
         assert_eq!(probe.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prepared_codex_chat_and_anthropic_keep_the_owned_legacy_transport(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::security::http_restoration::{
+            admit_http_request, RestorationAdmission, RestorationGateway,
+        };
+        let _reset =
+            synthetic_bridge_runtime(super::super::security::types::AuditAction::RedactRestore)?;
+        let headers = HeaderMap::new();
+        for format in ["openai_chat", "anthropic"] {
+            let mut provider = test_provider_with_type(None);
+            provider.meta = Some(crate::provider::ProviderMeta {
+                api_format: Some(format.into()),
+                ..Default::default()
+            });
+            let mut body = json!({"model":"synthetic-model","input":"synthetic-sensitive-value"});
+            // Legacy Codex bridge, not a native direct route.
+            let RestorationAdmission::Admitted(request) = admit_http_request(
+                &RestorationGateway::new_default(),
+                &AppType::Codex,
+                true,
+                false,
+                false,
+                &mut body,
+                &headers,
+            )?
+            else {
+                return Err("synthetic restoration request was not admitted".into());
+            };
+            let forwarder =
+                test_forwarder(Duration::ZERO, Duration::ZERO).with_dlp_request(Some(request));
+            let probe = BridgeBoundaryProbe(std::sync::atomic::AtomicUsize::new(0));
+            let result = forwarder
+                .forward_with_adapter_for_test(&provider, "/v1/responses", &body, &headers, &probe)
+                .await;
+            assert!(
+                matches!(result, Err(ProxyError::AuthError(message)) if message == "synthetic-bridge-boundary")
+            );
+            assert_eq!(probe.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
         Ok(())
     }
 

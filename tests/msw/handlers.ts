@@ -433,6 +433,51 @@ export const handlers = [
       fingerprint: null,
     }),
   ),
+  http.post(`${TAURI_ENDPOINT}/get_workbuddy_checkin_status`, () =>
+    success({
+      autoEnabled: false,
+      day: "2026-11-02",
+      outcome: "credentials_unavailable",
+      checkedAt: null,
+      credit: null,
+      streak: null,
+      creditDelayed: false,
+    }),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_workbuddy_checkin_accounts`, () =>
+    success({
+      accounts: [],
+      nativeStatus: {
+        autoEnabled: false,
+        day: "2026-11-02",
+        outcome: "credentials_unavailable",
+        checkedAt: null,
+        credit: null,
+        streak: null,
+        creditDelayed: false,
+      },
+    }),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_doubao_checkin_accounts`, () =>
+    success({
+      connected: false,
+      day: "2026-11-03",
+      outcome: "connection_required",
+      accounts: [],
+    }),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_agent_rewards`, () =>
+    success({
+      app: "qoder",
+      accountId: null,
+      label: null,
+      autoEnabled: false,
+      outcome: "sign_in_required",
+      checkedAt: null,
+      credit: null,
+      nextCheckAt: null,
+    }),
+  ),
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),
 
   // Failover / circuit breaker defaults

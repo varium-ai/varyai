@@ -6,6 +6,7 @@ import {
   within,
 } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import i18n from "i18next";
 import { ProviderImportDialog } from "@/components/providers/ProviderImportDialog";
 import { providerImportApi } from "@/lib/api/providerImport";
 
@@ -66,6 +67,12 @@ const sources = ["cc-switch", "claude-code", "codex", "opencode", "magpie"].map(
 );
 beforeEach(() => {
   vi.clearAllMocks();
+  i18n.addResource(
+    "zh",
+    "translation",
+    "providerImport.selected",
+    "Selected {{count}}",
+  );
   vi.mocked(providerImportApi.preview).mockResolvedValue(sources as never);
   vi.mocked(providerImportApi.import).mockResolvedValue({
     added: 2,
@@ -95,6 +102,59 @@ it("places Magpie first and opens it even when another source has selected provi
     "import-tab-magpie",
   );
   expect(screen.getByText("providerImport.empty")).toBeInTheDocument();
+  expect(screen.getByText("Selected 0")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "providerFlow.import" }),
+  ).toBeDisabled();
+});
+it("explains basic Magpie import and lets providers with advanced source settings import", async () => {
+  const next = structuredClone(sources);
+  next[4].items = [{ ...next[0].items[0], name: "Magpie relay" }] as never;
+  vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
+  mount();
+  expect(await screen.findByText("providerImport.magpieScope")).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: "Magpie relay" })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  await waitFor(() =>
+    expect(providerImportApi.import).toHaveBeenCalledExactlyOnceWith([
+      {
+        source: "magpie",
+        reference: "new",
+        fingerprint: "digest-new",
+        mode: "add",
+      },
+    ]),
+  );
+  fireEvent.click(screen.getByRole("tab", { name: /CC Switch/ }));
+  expect(
+    screen.queryByText("providerImport.magpieScope"),
+  ).not.toBeInTheDocument();
+});
+it("uses the same source order in onboarding while selecting an importable source", async () => {
+  render(
+    <ProviderImportDialog
+      open
+      embedded
+      onClose={vi.fn()}
+      onImported={vi.fn()}
+    />,
+  );
+  const tablist = await screen.findByRole("tablist");
+  expect(
+    within(tablist)
+      .getAllByRole("tab")
+      .map((tab) => tab.id),
+  ).toEqual([
+    "import-tab-magpie",
+    "import-tab-cc-switch",
+    "import-tab-claude-code",
+    "import-tab-codex",
+    "import-tab-opencode",
+  ]);
+  expect(
+    within(tablist).getByRole("tab", { name: /CC Switch/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("checkbox", { name: "New relay" })).toBeChecked();
 });
 it("moves between source tabs in their displayed order with the keyboard", async () => {
   mount();
@@ -105,8 +165,13 @@ it("moves between source tabs in their displayed order with the keyboard", async
   fireEvent.keyDown(magpie, { key: "ArrowRight" });
   expect(ccSwitch).toHaveAttribute("aria-selected", "true");
   expect(ccSwitch).toHaveFocus();
+  expect(screen.getByText("Selected 2")).toBeInTheDocument();
   fireEvent.keyDown(ccSwitch, { key: "Home" });
   expect(magpie).toHaveFocus();
+  expect(screen.getByText("Selected 0")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "providerFlow.import" }),
+  ).toBeDisabled();
   fireEvent.keyDown(magpie, { key: "ArrowLeft" });
   expect(openCode).toHaveAttribute("aria-selected", "true");
   expect(openCode).toHaveFocus();
@@ -163,7 +228,8 @@ it("keeps the modal open and reports only a safe message on source changes", asy
   );
   const done = vi.fn();
   mount(done);
-  await screen.findByRole("tablist");
+  const tabs = await screen.findByRole("tablist");
+  fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
   fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "providerImport.failed",
@@ -197,15 +263,117 @@ it("offers a saved imported Codex subscription in the same picker and submits on
   expect(screen.getByText("providerImport.subscriptionWarning")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
   await waitFor(() =>
-    expect(providerImportApi.import).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        {
-          source: "magpie",
-          reference: "login/0/saved",
-          fingerprint: "opaque-account",
-          mode: "add",
-        },
-      ]),
-    ),
+    expect(providerImportApi.import).toHaveBeenCalledExactlyOnceWith([
+      {
+        source: "magpie",
+        reference: "login/0/saved",
+        fingerprint: "opaque-account",
+        mode: "add",
+      },
+    ]),
+  );
+});
+
+it("selects a visible Antigravity subscription alongside API providers and keeps already-added rows disabled", async () => {
+  const next = structuredClone(sources);
+  next[4].items = [
+    {
+      ...next[0].items[0],
+      reference: "api",
+      name: "API fixture",
+      modelCount: 21,
+    },
+    { ...next[0].items[1], name: "Saved API fixture" },
+    {
+      ...next[0].items[1],
+      reference: "codex",
+      name: "Codex",
+      subscription: true,
+    },
+    {
+      ...next[0].items[0],
+      reference: "login/0/google",
+      name: "Antigravity",
+      modelCount: 12,
+      host: "",
+      subscription: true,
+    },
+  ] as never;
+  vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
+  mount();
+  expect(
+    await screen.findByRole("checkbox", { name: "Antigravity" }),
+  ).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Codex" })).toBeDisabled();
+  expect(screen.getByText("Selected 2")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "API fixture" }));
+  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  await waitFor(() =>
+    expect(providerImportApi.import).toHaveBeenCalledExactlyOnceWith([
+      {
+        source: "magpie",
+        reference: "login/0/google",
+        fingerprint: "digest-new",
+        mode: "add",
+      },
+    ]),
+  );
+});
+
+it("counts and imports only the active source while preserving choices across tabs", async () => {
+  const next = structuredClone(sources);
+  next[2].items = [
+    {
+      ...next[0].items[0],
+      name: "Codex relay",
+      fingerprint: "digest-codex",
+    },
+  ];
+  vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
+  mount();
+  const tabs = await screen.findByRole("tablist");
+  const ccSwitch = within(tabs).getByRole("tab", { name: /CC Switch/ });
+  const codex = within(tabs).getByRole("tab", { name: /Codex/ });
+  const submit = screen.getByRole("button", { name: "providerFlow.import" });
+
+  fireEvent.click(ccSwitch);
+  expect(screen.getByText("Selected 2")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "New relay" }));
+  fireEvent.click(screen.getByRole("radio", { name: "providerImport.asNew" }));
+  expect(screen.getByText("Selected 1")).toBeInTheDocument();
+
+  fireEvent.click(codex);
+  expect(screen.getByText("Selected 1")).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
+  );
+  expect(screen.getByText("Selected 0")).toBeInTheDocument();
+  expect(submit).toBeDisabled();
+  fireEvent.click(submit);
+  expect(providerImportApi.import).not.toHaveBeenCalled();
+
+  fireEvent.click(ccSwitch);
+  expect(screen.getByRole("checkbox", { name: "New relay" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Another key" })).toBeChecked();
+  expect(
+    screen.getByRole("radio", { name: "providerImport.asNew" }),
+  ).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByText("Selected 1")).toBeInTheDocument();
+
+  fireEvent.click(codex);
+  expect(
+    screen.getByRole("checkbox", { name: "Codex relay" }),
+  ).not.toBeChecked();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Codex relay" }));
+  fireEvent.click(submit);
+  await waitFor(() =>
+    expect(providerImportApi.import).toHaveBeenCalledExactlyOnceWith([
+      {
+        source: "codex",
+        reference: "new",
+        fingerprint: "digest-codex",
+        mode: "add",
+      },
+    ]),
   );
 });

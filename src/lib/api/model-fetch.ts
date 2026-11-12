@@ -5,6 +5,7 @@ import { toast } from "sonner";
 export interface FetchedModel {
   id: string;
   ownedBy: string | null;
+  displayName?: string;
   context_window?: number | null;
   max_context_window?: number | null;
   effective_context_window_percent?: number | null;
@@ -12,6 +13,8 @@ export interface FetchedModel {
   reasoningLevels?: string[];
   reasoning?: boolean;
   inputModalities?: string[];
+  outputModalities?: string[];
+  kind?: string;
 }
 
 export interface ModelFetchOptions {
@@ -153,4 +156,10 @@ export function showFetchModelsError(
 
   // 通用兜底
   toast.error(t("providerForm.fetchModelsFailed"));
+}
+
+export function getModelContextWindows(
+  ids: string[],
+): Promise<Record<string, number>> {
+  return invoke("get_model_context_windows", { ids });
 }

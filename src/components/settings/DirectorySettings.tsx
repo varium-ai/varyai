@@ -8,7 +8,19 @@ import type { ResolvedDirectories } from "@/hooks/useSettings";
 
 type DirectoryAppId = Exclude<
   AppId,
-  "claude-desktop" | "qoder" | "doubaowork" | "trae" | "kimi" | "qwen" | "zcode"
+  | "claude-desktop"
+  | "workbuddy-ai"
+  | "qoder"
+  | "doubaowork"
+  | "trae"
+  | "trae-intl"
+  | "kimi"
+  | "qwen"
+  | "zcode"
+  | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code"
 >;
 
 interface DirectorySettingsProps {

@@ -1,11 +1,19 @@
 //! Agents consume a shared catalog. Receipts own only explicitly changed fields.
 mod bridge;
+mod claude_policy;
+pub(crate) mod cursor;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
+pub(crate) mod jsonc;
+pub(crate) mod model_control;
 pub(crate) mod native;
+#[cfg(test)]
+mod parity_tests;
 mod projections;
 mod reasoning;
+mod selection;
+pub(crate) mod t3code;
 mod visibility;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
 use document::Format;
@@ -26,6 +34,7 @@ pub(crate) const APPS: &[&str] = &[
     "claude",
     "pi",
     "workbuddy",
+    "workbuddy-ai",
     "codex",
     "opencode",
     "gemini",
@@ -36,10 +45,19 @@ pub(crate) const APPS: &[&str] = &[
     "kimi",
     "qwen",
     "zcode",
+    "deepseek-harness",
+    "t3code",
+    "cursor",
 ];
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Model {
+    #[serde(skip)]
+    pub api: &'static str,
+    #[serde(skip)]
+    pub native_model: Option<String>,
+    pub output_tokens: Option<u64>,
+    pub cost: Option<Value>,
     pub id: String,
     pub name: String,
     pub context_window: Option<u64>,
@@ -52,6 +70,43 @@ pub(crate) struct Model {
     pub images: bool,
     pub icon: Option<String>,
 }
+fn preferred_api<'a>(
+    targets: impl Iterator<Item = &'a crate::proxy::intent::Target>,
+) -> &'static str {
+    let mut protocols = targets.map(|target| {
+        if target.official {
+            return "openai-responses";
+        }
+        target
+            .upstream
+            .as_ref()
+            .and_then(|provider| {
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.api_format.as_deref())
+                    .or_else(|| {
+                        provider
+                            .settings_config
+                            .get("apiFormat")
+                            .and_then(Value::as_str)
+                    })
+            })
+            .map(|api| match api {
+                "openai_responses" | "responses" => "openai-responses",
+                "anthropic" | "anthropic_messages" => "anthropic-messages",
+                _ => "openai-completions",
+            })
+            .unwrap_or("openai-completions")
+    });
+    let first = protocols.next().unwrap_or("openai-completions");
+    if protocols.all(|api| api == first) {
+        first
+    } else {
+        "openai-completions"
+    }
+}
+
 pub(crate) fn models(menu: &Menu) -> Vec<Model> {
     let mut models = menu
         .models
@@ -67,6 +122,29 @@ pub(crate) fn models(menu: &Menu) -> Vec<Model> {
                 &mut published,
             );
             Some(Model {
+                api: preferred_api(session.menu_targets()),
+                native_model: {
+                    let mut targets = session.menu_targets();
+                    targets.next().and_then(|first| {
+                        targets
+                            .all(|target| target.model == first.model)
+                            .then(|| first.model.clone())
+                    })
+                },
+                output_tokens: session
+                    .menu_targets()
+                    .map(|target| target.effort.output_tokens)
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|values| values.into_iter().min()),
+                cost: {
+                    let mut values = session
+                        .menu_targets()
+                        .map(|target| target.effort.cost.as_ref());
+                    let first = values.next().flatten();
+                    first
+                        .filter(|first| values.all(|next| next == Some(*first)))
+                        .cloned()
+                },
                 id: model.alias.clone(),
                 name: model.label.clone(),
                 context_window: metadata.context_window,
@@ -115,10 +193,33 @@ fn working_window(model: &Model) -> Option<u64> {
         .map(|window| model.compact_at.map_or(window, |at| at.min(window)))
 }
 
+fn output_limit(model: &Model) -> Option<u64> {
+    model.output_tokens.map(|tokens| {
+        model
+            .context_window
+            .map_or(tokens, |window| tokens.min(window))
+    })
+}
+
 pub(crate) fn pi_model(model: &Model) -> Value {
-    let mut row = json!({"id":model.id,"name":model.name,"api":"openai-completions","input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning || model.reasoning_levels.iter().any(|level| level != "none")});
+    let mut row = json!({"id":model.id,"name":model.name,"api":model.api,"input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning || model.reasoning_levels.iter().any(|level| level != "none")});
+    if model.api == "openai-responses" {
+        row["compat"] = json!({"supportsStrictMode":true});
+    } else if model.api == "anthropic-messages"
+        && crate::proxy::thinking_optimizer::uses_adaptive_thinking(
+            model.native_model.as_deref().unwrap_or(&model.id),
+        )
+    {
+        row["compat"] = json!({"forceAdaptiveThinking":true});
+    }
     if let Some(context) = model.context_window {
         row["contextWindow"] = json!(context);
+    }
+    if let Some(tokens) = output_limit(model) {
+        row["maxTokens"] = json!(tokens);
+    }
+    if let Some(cost) = &model.cost {
+        row["cost"] = cost.clone();
     }
     if !model.reasoning_levels.is_empty() {
         row["thinkingLevelMap"] =
@@ -142,10 +243,18 @@ pub(crate) fn pi_model(model: &Model) -> Value {
 
 pub(crate) fn opencode_model(model: &Model) -> Value {
     let mut row = json!({"name":model.name});
+    row["modalities"] = json!({"input":if model.images {vec!["text", "image"]} else {vec!["text"]},"output":["text"]});
     row["reasoning"] =
         json!(model.reasoning || model.reasoning_levels.iter().any(|level| level != "none"));
-    if let Some(context) = model.context_window {
-        row["limit"] = json!({"context":context});
+    let output = output_limit(model);
+    if model.context_window.is_some() || output.is_some() {
+        row["limit"] = json!({
+            "context":model.context_window.unwrap_or(0),
+            "output":output.unwrap_or(0)
+        });
+    }
+    if let Some(cost) = &model.cost {
+        row["cost"] = json!({"input":cost["input"],"output":cost["output"],"cache_read":cost["cacheRead"],"cache_write":cost["cacheWrite"]});
     }
     if !model.reasoning_levels.is_empty() {
         row["variants"] = json!(model
@@ -166,12 +275,32 @@ pub(crate) struct Status {
     pub recovery_reason: Option<RecoveryReason>,
     pub model: Option<String>,
     pub restart_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reload_state: Option<ReloadState>,
     pub desktop_state: Option<desktop::State>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_compatibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration_issue: Option<super::intent_routing::client::ConfigurationIssue>,
+}
+// The wire type remains available on platforms without a Codex desktop worker.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReloadState {
+    Current,
+    StaleCatalog,
+    WaitingForIdle,
+    Restarting,
+    Failed,
+    Stopped,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RecoveryReason {
     BridgePending,
+    BridgeModelRejected,
+    BridgeSelectionPending,
     ConfigurationChanged,
     ConnectionInactive,
     Orphaned,
@@ -202,6 +331,8 @@ pub(crate) struct FileEdit {
     fields: Vec<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     desktop: Option<desktop_config::Kind>,
+    #[serde(default)]
+    desktop_carried: bool,
 }
 fn read(path: &Path) -> Result<Option<String>, String> {
     match fs::symlink_metadata(path) {
@@ -350,7 +481,7 @@ impl FileEdit {
         allow_array: bool,
         update: impl FnOnce(&mut Value) -> Result<(), String>,
     ) -> Result<Self, String> {
-        let original = read(&path)?;
+        let original = format.read(&path)?;
         let before = format.parse(original.as_deref())?;
         if !allow_array && !before.is_object() {
             return Err(FAILED.into());
@@ -370,14 +501,28 @@ impl FileEdit {
             previous: None,
             fields,
             desktop: None,
+            desktop_carried: false,
         })
     }
     pub(crate) fn for_desktop(mut self, kind: desktop_config::Kind) -> Self {
         self.desktop = Some(kind);
+        self.desktop_carried = matches!(
+            kind,
+            desktop_config::Kind::Mode | desktop_config::Kind::Carry
+        );
+        for field in &mut self.fields {
+            if field.first().is_some_and(|key| key == "mcpServers") && field.len() > 2 {
+                field.truncate(2);
+            }
+        }
+        self.fields.sort();
+        self.fields.dedup();
         self
     }
     fn intact(&self) -> Result<bool, String> {
-        let live = self.format.parse(read(&self.path)?.as_deref())?;
+        let live = self
+            .format
+            .parse(self.format.read(&self.path)?.as_deref())?;
         if let Some(kind) = self.desktop {
             return desktop_config::intact(self, &live, kind);
         }
@@ -390,7 +535,9 @@ impl FileEdit {
         if let Some(kind) = self.desktop {
             return desktop_config::restoration(self, kind, false).map(|_| true);
         }
-        let live = self.format.parse(read(&self.path)?.as_deref())?;
+        let live = self
+            .format
+            .parse(self.format.read(&self.path)?.as_deref())?;
         let original = self.format.parse(self.original.as_deref())?;
         Ok(self.fields.iter().all(|field| {
             at(&live, field) == at(&self.installed, field)
@@ -401,15 +548,24 @@ impl FileEdit {
                     .is_some_and(|previous| at(&live, field) == at(previous, field))
         }))
     }
+    fn needs_jsonc_repair(&self) -> bool {
+        matches!(self.format, Format::Jsonc)
+            && self
+                .original
+                .as_deref()
+                .is_some_and(|text| jsonc::parse(text).is_err())
+    }
     fn write(&self) -> Result<(), String> {
-        if self.format.parse(self.original.as_deref())? == self.installed {
-            return replace_checked(
+        if self.format.parse(self.original.as_deref())? == self.installed
+            && !self.needs_jsonc_repair()
+        {
+            return self.format.replace_checked(
                 &self.path,
                 self.original.as_deref(),
                 self.original.as_deref(),
             );
         }
-        replace_checked(
+        self.format.replace_checked(
             &self.path,
             self.original.as_deref(),
             Some(
@@ -426,7 +582,7 @@ impl FileEdit {
         if let Some(kind) = self.desktop {
             return desktop_config::restoration(self, kind, keep_changed)?.write();
         }
-        let text = read(&self.path)?;
+        let text = self.format.read(&self.path)?;
         let mut live = self.format.parse(text.as_deref())?;
         let original = self.format.parse(self.original.as_deref())?;
         // An already restored projection must not reformat later user edits.
@@ -456,18 +612,95 @@ impl FileEdit {
         for field in fields {
             put(&mut live, field, at(&original, field).cloned())?;
         }
-        let restored = if live == original {
+        if matches!(self.format, Format::Cordis) && live.get("providers").is_none() {
+            live["providers"] = json!({});
+        }
+        if matches!(self.format, Format::Cordis) && live.get("selection").is_none() {
+            live["selection"] = json!([]);
+        }
+        if matches!(self.format, Format::Cordis) && live.get("legacyProviders").is_none() {
+            live["legacyProviders"] = json!(false);
+        }
+        if matches!(self.format, Format::Cordis) && keep_changed {
+            let selected = crate::services::deepseek_harness::selection(&live);
+            let removed = selected["provider"].as_str().is_some_and(|provider| {
+                provider.starts_with("varyai-")
+                    && !live["providers"].as_object().is_some_and(|entries| {
+                        entries
+                            .values()
+                            .any(|entry| entry["config"]["providers"].get(provider).is_some())
+                    })
+            });
+            if removed {
+                live["selection"] = original["selection"].clone();
+            }
+        }
+        let restored = if live == original && !self.needs_jsonc_repair() {
             self.original.clone()
         } else {
             Some(self.format.encode(text.as_deref(), &live)?)
         };
-        replace_checked(&self.path, text.as_deref(), restored.as_deref())?;
+        self.format
+            .replace_checked(&self.path, text.as_deref(), restored.as_deref())?;
         Ok(())
     }
 }
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopFreshness {
+    app: String,
+    applied_at_ms: i64,
+    files: Vec<DesktopFingerprint>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DesktopFingerprint {
+    path: PathBuf,
+    digest: Option<String>,
+}
+impl DesktopFingerprint {
+    fn capture(path: PathBuf) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        let digest = read(&path)?.map(|text| format!("{:x}", Sha256::digest(text.as_bytes())));
+        Ok(Self { path, digest })
+    }
+    fn intact(&self) -> bool {
+        Self::capture(self.path.clone()).is_ok_and(|current| current == *self)
+    }
+}
+
 pub(crate) struct Manager {
     pub root: PathBuf,
 }
+
+fn same_native_path(left: &Path, right: &Path) -> bool {
+    let resolve = |path: &Path| {
+        path.canonicalize().unwrap_or_else(|_| {
+            path.parent()
+                .and_then(|parent| parent.canonicalize().ok())
+                .zip(path.file_name())
+                .map(|(parent, name)| parent.join(name))
+                .unwrap_or_else(|| path.to_path_buf())
+        })
+    };
+    resolve(left) == resolve(right)
+}
+
+fn workbuddy_connection_path(app: &str) -> Result<Option<PathBuf>, String> {
+    if !matches!(app, "workbuddy" | "workbuddy-ai") {
+        return Ok(None);
+    }
+    let domestic = crate::workbuddy_config::get_workbuddy_config_path();
+    let international = crate::workbuddy_config::get_workbuddy_ai_config_path();
+    if same_native_path(&domestic, &international) {
+        return Err(CONFLICT.into());
+    }
+    Ok(Some(if app == "workbuddy" {
+        domestic
+    } else {
+        international
+    }))
+}
+
 impl Manager {
     pub fn build(
         &self,
@@ -476,6 +709,21 @@ impl Manager {
         origin: &str,
         selected: &str,
     ) -> Result<Receipt, String> {
+        if let Some(path) = workbuddy_connection_path(app)? {
+            let other = if app == "workbuddy" {
+                "workbuddy-ai"
+            } else {
+                "workbuddy"
+            };
+            if self.load(other)?.is_some_and(|receipt| {
+                receipt
+                    .files
+                    .iter()
+                    .any(|file| same_native_path(&file.path, &path))
+            }) {
+                return Err(CONFLICT.into());
+            }
+        }
         build_with_token(
             app,
             menu,
@@ -483,11 +731,12 @@ impl Manager {
             selected,
             new_token(),
             &self.visibility_for(app)?,
+            None,
         )
     }
     pub fn owns(&self, app: &str) -> bool {
-        if app == "trae" {
-            return self.bridge_owned();
+        if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(app) {
+            return self.bridge_for(edition).bridge_owned();
         }
         APPS.contains(&app) && app != "codex" && self.load(app).map_or(true, |r| r.is_some())
     }
@@ -505,10 +754,128 @@ impl Manager {
         if receipt.app != app || receipt.files.is_empty() {
             return Err(FAILED.into());
         }
+        for file in &mut receipt.files {
+            if matches!(file.format, Format::Cordis) {
+                file.installed = super::deepseek_harness::normalize(&file.installed)?;
+                if let Ok(live) = file.format.parse(read(&file.path)?.as_deref()) {
+                    file.installed = super::deepseek_harness::adopt(&file.installed, &live);
+                }
+                file.previous = file
+                    .previous
+                    .as_ref()
+                    .map(super::deepseek_harness::normalize)
+                    .transpose()?;
+            }
+        }
+        if app == "qwen" {
+            for file in &mut receipt.files {
+                if matches!(file.format, Format::Json) {
+                    file.format = Format::Jsonc;
+                }
+            }
+        }
+        if app == "opencode" {
+            for file in &mut receipt.files {
+                if matches!(file.format, Format::Json5) {
+                    file.format = Format::Jsonc;
+                }
+            }
+        }
         desktop_config::adopt(&mut receipt);
+        let mut adopted = receipt.clone();
+        if selection::adopt(&mut adopted).is_ok() {
+            receipt = adopted;
+        }
         Ok(Some(receipt))
     }
+    fn desktop_freshness_path(&self, app: &str) -> Result<PathBuf, String> {
+        if !desktop::supports_restart(app) {
+            return Err("agentConnections.restartUnsupported".into());
+        }
+        Ok(self.root.join(format!("{app}-desktop-freshness.json")))
+    }
+    fn desktop_freshness(&self, app: &str) -> Result<Option<DesktopFreshness>, String> {
+        if !desktop::supports_restart(app) {
+            return Ok(None);
+        }
+        let Some(text) = read(&self.desktop_freshness_path(app)?)? else {
+            return Ok(None);
+        };
+        let freshness: DesktopFreshness = serde_json::from_str(&text).map_err(|_| FAILED)?;
+        if freshness.app != app || freshness.files.is_empty() || freshness.applied_at_ms <= 0 {
+            return Err(FAILED.into());
+        }
+        Ok(freshness
+            .files
+            .iter()
+            .all(DesktopFingerprint::intact)
+            .then_some(freshness))
+    }
+    fn desktop_restoration_snapshot(receipt: &Receipt) -> Result<Vec<DesktopFingerprint>, String> {
+        if !desktop::supports_restart(&receipt.app) {
+            return Ok(vec![]);
+        }
+        receipt
+            .files
+            .iter()
+            .map(|file| DesktopFingerprint::capture(file.path.clone()))
+            .collect()
+    }
+    fn record_desktop_restoration(
+        &self,
+        receipt: &Receipt,
+        before: Vec<DesktopFingerprint>,
+    ) -> Result<(), String> {
+        if !desktop::supports_restart(&receipt.app) {
+            return Ok(());
+        }
+        let files = Self::desktop_restoration_snapshot(receipt)?;
+        if files == before {
+            return Ok(());
+        }
+        let freshness = DesktopFreshness {
+            app: receipt.app.clone(),
+            applied_at_ms: chrono::Utc::now().timestamp_millis(),
+            files,
+        };
+        atomic_write_private(
+            &self.desktop_freshness_path(&receipt.app)?,
+            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED.into())
+    }
+    fn desktop_selection_matches(&self, app: &str) -> bool {
+        let Some(path) = workbuddy_connection_path(app).ok().flatten() else {
+            return true;
+        };
+        match self.load(app) {
+            Ok(Some(receipt)) => receipt
+                .files
+                .iter()
+                .any(|file| same_native_path(&file.path, &path)),
+            Ok(None) => self.desktop_freshness(app).is_ok_and(|freshness| {
+                freshness.is_some_and(|freshness| {
+                    freshness
+                        .files
+                        .iter()
+                        .any(|file| same_native_path(&file.path, &path))
+                })
+            }),
+            Err(_) => false,
+        }
+    }
     pub fn status(&self, app: &str) -> Result<Status, String> {
+        self.status_with_desktop(app, |app, applied_ms| {
+            self.desktop_selection_matches(app)
+                .then(|| desktop::state(app, applied_ms))
+                .flatten()
+        })
+    }
+    fn status_with_desktop(
+        &self,
+        app: &str,
+        state: impl FnOnce(&str, Option<i64>) -> Option<desktop::State>,
+    ) -> Result<Status, String> {
         let receipt = self.load(app)?;
         let configured = receipt.as_ref().is_some_and(|receipt| {
             !receipt.suspended
@@ -517,30 +884,79 @@ impl Manager {
                     .iter()
                     .all(|file| file.intact().unwrap_or(false))
         });
-        let desktop_state = configured
-            .then(|| desktop::state(app, receipt.as_ref().and_then(|r| r.applied_at_ms)))
-            .flatten();
+        let desktop_state = if configured {
+            state(app, receipt.as_ref().and_then(|r| r.applied_at_ms))
+        } else if receipt.is_none() || receipt.as_ref().is_some_and(|receipt| receipt.suspended) {
+            self.desktop_freshness(app)?
+                .and_then(|freshness| state(app, Some(freshness.applied_at_ms)))
+        } else {
+            None
+        };
         Ok(Status {
             app: app.into(),
-            enabled: receipt.is_some(),
+            enabled: configured,
             configured,
             recovery_pending: receipt.as_ref().is_some_and(|r| !r.suspended) && !configured,
             recovery_reason: (receipt.as_ref().is_some_and(|r| !r.suspended) && !configured)
                 .then_some(RecoveryReason::ConfigurationChanged),
-            model: receipt.map(|r| r.model),
-            restart_required: configured
-                && desktop_state.is_none_or(|state| state == desktop::State::RestartRequired),
+            model: receipt.and_then(|r| {
+                if app == "claude-desktop" && r.visible_models.as_ref().is_some_and(Vec::is_empty) {
+                    None
+                } else {
+                    Some(r.model)
+                }
+            }),
+            restart_required: desktop_state == Some(desktop::State::RestartRequired),
+            reload_state: None,
             desktop_state,
+            native_compatibility: None,
+            configuration_issue: None,
         })
     }
     pub fn restart_desktop(&self, app: &str) -> Result<(), String> {
-        let receipt = self.load(app)?.ok_or(CONFLICT)?;
+        if !self.desktop_selection_matches(app) {
+            return Err(CONFLICT.into());
+        }
+        self.restart_desktop_with(app, |applied_ms, valid| {
+            let applied_ms =
+                if model_control::supports(app) && self.model_control_status(app)?.pending {
+                    Some(chrono::Utc::now().timestamp_millis())
+                } else {
+                    applied_ms
+                };
+            desktop::restart(app, applied_ms, || {
+                self.desktop_selection_matches(app) && valid()
+            })
+        })
+    }
+    fn restart_desktop_with(
+        &self,
+        app: &str,
+        restart: impl FnOnce(Option<i64>, &dyn Fn() -> bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !desktop::supports_restart(app) {
+            return Err("agentConnections.restartUnsupported".into());
+        }
+        let receipt = self.load(app)?;
+        if receipt.is_none() || receipt.as_ref().is_some_and(|receipt| receipt.suspended) {
+            let freshness = self.desktop_freshness(app)?.ok_or(CONFLICT)?;
+            let valid = || {
+                self.load(app).is_ok_and(|current| {
+                    current.is_none() || current.is_some_and(|current| current.suspended)
+                }) && self
+                    .desktop_freshness(app)
+                    .is_ok_and(|current| current.as_ref() == Some(&freshness))
+            };
+            return restart(Some(freshness.applied_at_ms), &valid);
+        }
+        let receipt = receipt.ok_or(CONFLICT)?;
         let valid = || {
             self.load(app).is_ok_and(|current| {
                 current.is_some_and(|current| {
                     !current.suspended
                         && current.token == receipt.token
                         && current.applied_at_ms == receipt.applied_at_ms
+                        && current.model == receipt.model
                         && current
                             .files
                             .iter()
@@ -548,7 +964,7 @@ impl Manager {
                 })
             })
         };
-        desktop::restart(app, receipt.applied_at_ms, valid)
+        restart(receipt.applied_at_ms, &valid)
     }
     pub fn install(&self, mut receipt: Receipt) -> Result<(), String> {
         let path = self.path(&receipt.app)?;
@@ -572,6 +988,7 @@ impl Manager {
                 return Err(error);
             }
         }
+        self.sync_model_control(&receipt, false)?;
         Ok(())
     }
     pub fn refresh(&self, app: &str, menu: &Menu, origin: &str) -> Result<Option<Receipt>, String> {
@@ -594,23 +1011,26 @@ impl Manager {
                     .contains_key(&old.model)
                     .then_some(old.model.as_str())
             })
-            .or_else(|| {
-                if app == "claude-desktop" {
-                    menu.default_model
-                        .as_deref()
-                        .or_else(|| menu.models.keys().min().map(String::as_str))
-                } else {
-                    None
-                }
-            })
+            .or(menu.default_model.as_deref())
+            .or_else(|| menu.models.keys().min().map(String::as_str))
             .unwrap_or(&old.model);
         let visibility = self.visibility_for(app)?;
         if old.suspended {
+            // Suspension already restored the projection, so fields edited after
+            // that point are no longer ours. Keep them as the baseline instead of
+            // failing on the receipt's now-stale original.
             for file in old.files.iter().rev() {
-                file.restore()?;
+                file.restore_fields(true)?;
             }
-            let mut next =
-                build_with_token(app, menu, origin, model, old.token.clone(), &visibility)?;
+            let mut next = build_with_token(
+                app,
+                menu,
+                origin,
+                model,
+                old.token.clone(),
+                &visibility,
+                Some(&old),
+            )?;
             desktop_config::restore_settings(&self.root, &mut next)?;
             atomic_write_private(
                 &self.path(app)?,
@@ -620,29 +1040,59 @@ impl Manager {
             for file in &next.files {
                 file.write()?;
             }
+            self.sync_model_control(&next, false)?;
             return Ok(Some(next));
         }
-        if !old.files.iter().all(|file| file.intact().unwrap_or(false)) {
+        if !old.files.iter().all(|file| {
+            if app == "claude-desktop" {
+                desktop_config::refreshable(file).unwrap_or(false)
+            } else {
+                file.intact().unwrap_or(false)
+            }
+        }) {
             return Err(CONFLICT.into());
         }
-        let mut next = build_with_token(app, menu, origin, model, old.token.clone(), &visibility)?;
-        if next.files.len() != old.files.len() {
+        let mut next = build_with_token(
+            app,
+            menu,
+            origin,
+            model,
+            old.token.clone(),
+            &visibility,
+            Some(&old),
+        )?;
+        if next.files.len() != old.files.len()
+            && !(app == "claude-desktop"
+                && old
+                    .files
+                    .iter()
+                    .all(|prior| next.files.iter().any(|file| file.path == prior.path))
+                && next
+                    .files
+                    .iter()
+                    .filter(|file| !old.files.iter().any(|prior| prior.path == file.path))
+                    .all(|file| matches!(file.desktop, Some(desktop_config::Kind::Carry))))
+        {
             return Err(CONFLICT.into());
+        }
+        if selected.is_none() {
+            selection::preserve(&old, &mut next)?;
         }
         let writes = next.files.clone();
-        if writes.iter().all(|file| {
+        let unchanged = writes.iter().all(|file| {
             file.format
                 .parse(file.original.as_deref())
                 .is_ok_and(|original| original == file.installed)
-        }) {
+                && !file.needs_jsonc_repair()
+        });
+        if unchanged {
             next.applied_at_ms = old.applied_at_ms;
         }
         for file in &mut next.files {
-            let prior = old
-                .files
-                .iter()
-                .find(|prior| prior.path == file.path)
-                .ok_or(CONFLICT)?;
+            let prior = old.files.iter().find(|prior| prior.path == file.path);
+            let Some(prior) = prior else {
+                continue;
+            };
             file.original = prior.original.clone();
             file.previous = Some(prior.installed.clone());
             file.fields.extend(prior.fields.iter().cloned());
@@ -656,7 +1106,9 @@ impl Manager {
             }
             file.fields = owned;
         }
-        if next.model_map == old.model_map
+        if unchanged
+            && next.model == old.model
+            && next.model_map == old.model_map
             && next.visible_models == old.visible_models
             && next
                 .files
@@ -664,6 +1116,7 @@ impl Manager {
                 .zip(&old.files)
                 .all(|(next, old)| next.installed == old.installed)
         {
+            self.sync_model_control(&old, false)?;
             return Ok(Some(old));
         }
         atomic_write_private(
@@ -674,6 +1127,7 @@ impl Manager {
         for file in &writes {
             file.write()?;
         }
+        self.sync_model_control(&next, false)?;
         Ok(Some(next))
     }
     pub fn disconnect(&self, app: &str) -> Result<(), String> {
@@ -689,27 +1143,39 @@ impl Manager {
             return Err(CONFLICT.into());
         }
         desktop_config::save_settings(&self.root, &receipt)?;
+        let before = Self::desktop_restoration_snapshot(&receipt)?;
         for file in receipt.files.iter().rev() {
             file.restore()?;
         }
+        self.record_desktop_restoration(&receipt, before)?;
+        self.sync_model_control(&receipt, true)?;
         fs::remove_file(self.path(app)?).map_err(|_| FAILED.into())
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
         let receipt = self.load(app)?.ok_or(CONFLICT)?;
         // Explicit reapplication retains external edits as the next connection's baseline.
         for file in &receipt.files {
-            file.format.parse(read(&file.path)?.as_deref())?;
+            file.format
+                .parse(file.format.read(&file.path)?.as_deref())?;
             if let Some(kind) = file.desktop {
                 desktop_config::restoration(file, kind, true)?;
             }
-            if file
-                .fields
-                .iter()
-                .any(|field| at(&file.installed, field).is_some_and(Value::is_array))
-                && file.desktop.is_none()
-                && !file.restorable()?
-            {
-                return Err(CONFLICT.into());
+            let has_catalog_array = file.fields.iter().any(|field| {
+                at(&file.installed, field).is_some_and(Value::is_array)
+                    && !(matches!(file.format, Format::Cordis) && field.as_slice() == ["selection"])
+            });
+            if has_catalog_array && file.desktop.is_none() {
+                // Keep a changed Harness default while still guarding its model catalog.
+                let mut catalog = file.clone();
+                catalog.fields.retain(|field| {
+                    at(&file.installed, field).is_some_and(Value::is_array)
+                        && !(matches!(file.format, Format::Cordis)
+                            && field.as_slice() == ["selection"])
+                });
+                let restorable = catalog.restorable()?;
+                if !restorable {
+                    return Err(CONFLICT.into());
+                }
             }
         }
         desktop_config::save_settings(&self.root, &receipt)?;
@@ -739,9 +1205,11 @@ impl Manager {
             &serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
         )
         .map_err(|_| FAILED)?;
+        let before = Self::desktop_restoration_snapshot(&receipt)?;
         for file in receipt.files.iter().rev() {
             file.restore()?;
         }
+        self.record_desktop_restoration(&receipt, before)?;
         Ok(())
     }
     pub fn codex_intent(&self) -> Result<Option<Option<String>>, String> {
@@ -753,14 +1221,119 @@ impl Manager {
         let path = self.root.join("codex-intent.json");
         if enabled {
             atomic_write_private(&path, &serde_json::to_vec(&selected).map_err(|_| FAILED)?)
-                .map_err(|_| FAILED.into())
+                .map_err(|_| FAILED.to_owned())?;
+            self.record_codex_desktop_application()?;
+            Ok(())
         } else {
+            // Capture the restored configuration so a disconnected app can still
+            // offer a restart to load the recovered settings.
+            let _ = self.record_codex_desktop_application();
             match fs::remove_file(path) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(_) => Err(FAILED.into()),
             }
         }
+    }
+
+    fn codex_desktop_freshness_path(&self) -> PathBuf {
+        self.root.join("codex-desktop-freshness.json")
+    }
+
+    pub fn record_codex_desktop_application(&self) -> Result<(), String> {
+        let config = crate::codex_config::get_codex_config_path();
+        let files = vec![DesktopFingerprint::capture(config)?];
+        let freshness = DesktopFreshness {
+            app: "codex".into(),
+            applied_at_ms: chrono::Utc::now().timestamp_millis(),
+            files,
+        };
+        atomic_write_private(
+            &self.codex_desktop_freshness_path(),
+            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED.to_owned())
+    }
+
+    fn codex_applied_at_ms(&self) -> Result<Option<i64>, String> {
+        let Some(text) = read(&self.codex_desktop_freshness_path())? else {
+            return Ok(None);
+        };
+        let freshness: DesktopFreshness = serde_json::from_str(&text).map_err(|_| FAILED)?;
+        if freshness.app != "codex" || freshness.applied_at_ms <= 0 {
+            return Err(FAILED.into());
+        }
+        Ok(Some(freshness.applied_at_ms))
+    }
+
+    pub fn codex_desktop_state(&self, status: &Status) -> Result<Option<desktop::State>, String> {
+        if status.recovery_pending {
+            return Ok(None);
+        }
+        let applied = self.codex_applied_at_ms()?;
+        if applied.is_none() {
+            return Ok(None);
+        }
+        // Connected, pending-intent, and restored fingerprints all need the same
+        // desktop freshness check so the restart action stays consistent.
+        Ok(desktop::state("codex", applied))
+    }
+
+    pub fn restart_codex_desktop(&self) -> Result<(), String> {
+        let applied = self.codex_applied_at_ms()?;
+        let expected = applied;
+        desktop::restart("codex", applied, || {
+            self.codex_applied_at_ms()
+                .is_ok_and(|current| current == expected)
+        })
+    }
+
+    fn doubaowork_freshness_path(&self) -> PathBuf {
+        self.root.join("doubaowork-desktop-freshness.json")
+    }
+
+    pub fn record_doubaowork_desktop_application(&self) -> Result<(), String> {
+        let freshness = DesktopFreshness {
+            app: "doubaowork".into(),
+            applied_at_ms: chrono::Utc::now().timestamp_millis(),
+            files: vec![],
+        };
+        atomic_write_private(
+            &self.doubaowork_freshness_path(),
+            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED.to_owned())
+    }
+
+    pub fn doubaowork_desktop_state(
+        &self,
+        enabled: bool,
+    ) -> Result<Option<desktop::State>, String> {
+        if !enabled {
+            return Ok(None);
+        }
+        let applied = read(&self.doubaowork_freshness_path())?
+            .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+            .filter(|freshness| freshness.app == "doubaowork" && freshness.applied_at_ms > 0)
+            .map(|freshness| freshness.applied_at_ms);
+        Ok(desktop::state("doubaowork", applied))
+    }
+
+    pub fn restart_doubaowork_desktop(&self) -> Result<(), String> {
+        let applied = read(&self.doubaowork_freshness_path())?
+            .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+            .filter(|freshness| freshness.app == "doubaowork" && freshness.applied_at_ms > 0)
+            .map(|freshness| freshness.applied_at_ms);
+        let expected = applied;
+        desktop::restart("doubaowork", applied, || {
+            read(&self.doubaowork_freshness_path())
+                .ok()
+                .flatten()
+                .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+                .filter(|freshness| freshness.app == "doubaowork")
+                .map(|freshness| Some(freshness.applied_at_ms))
+                == Some(expected)
+        })
     }
 }
 #[cfg(test)]
@@ -777,6 +1350,7 @@ pub(crate) fn build(
         selected,
         new_token(),
         &ModelVisibility::default(),
+        None,
     )
 }
 fn new_token() -> String {
@@ -793,58 +1367,104 @@ fn build_with_token(
     selected: &str,
     token: String,
     visibility: &ModelVisibility,
+    previous: Option<&Receipt>,
 ) -> Result<Receipt, String> {
     let catalog = models(menu);
     if !catalog.iter().any(|m| m.id == selected) {
         return Err(EMPTY.into());
     }
     let base = format!("{origin}/connections/{app}");
+    if app == "claude" {
+        claude_policy::check()?;
+    }
     let mut receipt = Receipt {
         app: app.into(),
         token: token.clone(),
         model: selected.into(),
-        model_map: BTreeMap::new(),
+        model_map: previous
+            .map(|old| old.model_map.clone())
+            .unwrap_or_default(),
         visible_models: None,
         files: vec![],
         suspended: false,
         applied_at_ms: Some(chrono::Utc::now().timestamp_millis()),
     };
     match app {
-        "claude" => receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
-            for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
-                let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { selected };
+        "t3code" => t3code::project(&t3code::settings_path(), &crate::services::intent_routing::client::menu_catalog(menu, "")?, &base, &mut receipt)?,
+        "cursor" => {
+            receipt.files.push(FileEdit::prepare_format(crate::config::get_home_dir().join(".cursor/varyai-environment.json"), Format::CursorEnvironment, |value| {
+                value["CURSOR_LOCAL_AGENT_BASE_URL"] = json!(format!("{base}/v1"));
+                value["CURSOR_LOCAL_AGENT_API_KEY"] = json!(token);
+                Ok(())
+            })?);
+        }
+        "claude" => {
+            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
+            for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
+                let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { &selected };
                 put(value, &["env".into(), key.into()], Some(json!(next)))?;
             }
+            for role in ["SONNET", "OPUS", "HAIKU"] {
+                put(value, &["env".into(), format!("ANTHROPIC_DEFAULT_{role}_MODEL_NAME")], Some(json!(selected)))?;
+            }
+            for &key in claude_policy::CLOUD_SWITCHES {
+                put(value, &["env".into(), key.into()], Some(json!("0")))?;
+            }
+            put(value, &["env".into(), "ANTHROPIC_MODEL".into()], None)?;
+            put(value, &["model".into()], Some(json!(selected)))?;
+            let mut options = value.pointer("/modelPicker/options").and_then(Value::as_array).cloned().unwrap_or_default();
+            options.retain(|row| !row["model"].as_str().is_some_and(|id| id.starts_with("vary-provider/") || id.starts_with("vary-auto/") || previous.is_some_and(|old| old.model_map.contains_key(id))));
+            options.extend(catalog.iter().map(|model| json!({"model":model.id,"label":model.name,"description":"via VaryAI"})));
+            put(value, &["modelPicker".into(), "options".into()], Some(json!(options)))?;
             let context = catalog.iter().find(|m| m.id == selected).and_then(working_window);
             put(value, &["env".into(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into()], context.map(|n| json!(n.to_string())))?;
             let capabilities = reasoning::claude_capabilities(&catalog);
             put(value, &["env".into(), "CLAUDE_CODE_MODEL_CAPABILITIES".into()], (!capabilities.is_empty()).then(|| json!(capabilities)))?;
             put(value, &["env".into(), "ANTHROPIC_API_KEY".into()], None)
-        })?),
+        })?);
+        }
         "pi" => {
+            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_models_path().map_err(|_| FAILED)?, |value| {
-                let models = catalog.iter().map(pi_model).collect::<Vec<_>>();
+                let models = catalog.iter().map(|model| {
+                    let mut row = pi_model(model);
+                    if model.api == "anthropic-messages" { row["baseUrl"] = json!(base); }
+                    row
+                }).collect::<Vec<_>>();
                 put(value, &["providers".into(), "varyai".into()], Some(json!({"baseUrl":format!("{base}/v1"),"apiKey":token,"api":"openai-completions","models":models})))
             })?);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_settings_path().map_err(|_| FAILED)?, |value| {
                 put(value, &["defaultProvider".into()], Some(json!("varyai")))?;
                 put(value, &["defaultModel".into()], Some(json!(selected)))?;
                 if let Some(scope) = value.get_mut("enabledModels").and_then(Value::as_array_mut) {
+                    for entry in scope.iter_mut() {
+                        if let Some(alias) = entry.as_str().and_then(|id| id.strip_prefix("varyai/")) {
+                            if let Some((name, _)) = receipt.model_map.iter().find(|(_, internal)| internal.as_str() == alias) {
+                                *entry = json!(format!("varyai/{name}"));
+                            }
+                        }
+                    }
                     if !scope.is_empty() { let reference = json!(format!("varyai/{selected}")); if !scope.contains(&reference) { scope.push(reference); } }
                 }
                 Ok(())
             })?);
         }
-        "workbuddy" => receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
+        "workbuddy" | "workbuddy-ai" => {
+            let path = workbuddy_connection_path(app)?.ok_or(FAILED)?;
+            let (named, _) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            let named_models = named.iter().map(|model| (model.id.clone(), model)).collect::<Vec<_>>();
+            receipt.files.push(FileEdit::prepare_document(path, true, |value| {
             let array = value.is_array();
             if array { *value = json!({"models":value.take()}); }
             if value.get("models").is_some_and(|rows| !rows.is_array()) { return Err(FAILED.into()); }
             let mut rows = value.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
             let previous = rows.iter().filter(|row| row["apiKey"].as_str() == Some(&token)).filter_map(|row| row["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
             rows.retain(|row| row["apiKey"].as_str() != Some(&token));
-            if rows.iter().any(|row| catalog.iter().any(|model| row["id"] == model.id)) { return Err(CONFLICT.into()); }
-            for model in &catalog {
-                let mut row = json!({"id":model.id,"name":model.name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
+            if rows.iter().any(|row| named_models.iter().any(|(name, _)| row["id"] == *name)) { return Err(CONFLICT.into()); }
+            for (name, model) in &named_models {
+                // WorkBuddy appends the ID unless it exactly matches the name.
+                let mut row = json!({"id":name,"name":name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
                 reasoning::workbuddy(&mut row, model);
                 if let Some(context) = model.context_window {
                     row["maxInputTokens"] = json!(context);
@@ -853,19 +1473,22 @@ fn build_with_token(
                 rows.push(row);
             }
             value["models"] = json!(rows);
-            if let Some(available) = value.get_mut("availableModels") { let available = available.as_array_mut().ok_or(FAILED)?; available.retain(|id| !id.as_str().is_some_and(|id| previous.iter().any(|old| old == id))); for model in &catalog { let id = json!(model.id); if !available.contains(&id) { available.push(id); } } }
+            if let Some(available) = value.get_mut("availableModels") { let available = available.as_array_mut().ok_or(FAILED)?; available.retain(|id| !id.as_str().is_some_and(|id| previous.iter().any(|old| old == id))); for (name, _) in &named_models { let id = json!(name); if !available.contains(&id) { available.push(id); } } }
             if array { *value = value["models"].take(); }
             Ok(())
-        })?),
-        "opencode" => receipt.files.push(FileEdit::prepare(crate::opencode_config::get_opencode_config_path(), |value| {
+        })?);
+        },
+        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Jsonc, |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;
             put(value, &["model".into()], Some(json!(format!("varyai/{selected}"))))
         })?),
         "claude-desktop" => {
-            let mut visible = catalog.iter().filter(|m| visibility.visible(&m.id)).cloned().collect::<Vec<_>>();
-            visibility.apply_order(&mut visible);
-            let (files, _) = crate::claude_desktop_config::shared_catalog_edits(&base, &token, &visible)?;
+            let visible = visibility.desktop_models(&catalog, selected);
+            if let Some(default) = visible.first() { receipt.model = default.id.clone(); }
+            let (mut files, _) = crate::claude_desktop_config::shared_catalog_edits(&base, &token, previous.filter(|old| !old.suspended).map(|old| old.token.as_str()), &visible)?;
+            desktop_config::seed_tool_search(&mut files, previous);
+            desktop_config::preserve_carried(&mut files, previous)?;
             receipt.files = files;
             receipt.visible_models = Some(visible.iter().map(|m| m.id.clone()).collect());
             // Keep hidden models addressable by existing Desktop conversations.
@@ -879,6 +1502,182 @@ fn build_with_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_desktop_freshness_is_token_free_and_rechecks_restored_files(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let path = dir.path().join("models.json");
+        let original = r#"{"models":[],"apiKey":"synthetic-original"}"#;
+        fs::write(&path, original).map_err(|_| FAILED)?;
+        let file = FileEdit::prepare(path.clone(), |value| {
+            value["models"] = json!([{"id":"synthetic-model","apiKey":"synthetic-local"}]);
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        manager.disconnect("workbuddy")?;
+        assert_eq!(read(&path)?.as_deref(), Some(original));
+        let freshness = read(&manager.desktop_freshness_path("workbuddy")?)?.ok_or(FAILED)?;
+        assert!(!freshness.contains("synthetic-original"));
+        assert!(!freshness.contains("synthetic-local"));
+        let status = manager.status_with_desktop("workbuddy", |_, applied| {
+            assert!(applied.is_some());
+            Some(desktop::State::RestartRequired)
+        })?;
+        assert!(!status.enabled && !status.configured && !status.recovery_pending);
+        assert!(status.restart_required);
+        assert_eq!(
+            serde_json::to_value(status).map_err(|_| FAILED)?["desktopState"],
+            "restart_required"
+        );
+        manager.restart_desktop_with("workbuddy", |applied, valid| {
+            assert!(applied.is_some());
+            assert!(valid());
+            fs::write(&path, r#"{"models":[{"id":"external"}]}"#).map_err(|_| FAILED)?;
+            assert!(!valid());
+            Ok(())
+        })?;
+        let status = manager.status_with_desktop("workbuddy", |_, _| {
+            panic!("changed restored config must not query apps")
+        })?;
+        assert!(status.desktop_state.is_none());
+        assert!(!status.restart_required);
+        assert_eq!(
+            manager.restart_desktop_with("workbuddy", |_, _| panic!("must refuse changed config")),
+            Err(CONFLICT.into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workbuddy_runtime_selection_must_match_the_managed_projection_path() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let managed = dir.path().join(".workbuddy");
+        let other = dir.path().join(".workbuddy-ai");
+        let file = FileEdit::prepare(managed.join("models.json"), |value| {
+            value["model"] = json!("shared");
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        crate::workbuddy_config::with_test_dir(&managed, || {
+            assert!(manager.desktop_selection_matches("workbuddy"))
+        });
+        crate::workbuddy_config::with_test_dir(&other, || {
+            assert!(!manager.desktop_selection_matches("workbuddy"));
+            assert!(manager.status("workbuddy").unwrap().desktop_state.is_none());
+            assert_eq!(manager.restart_desktop("workbuddy"), Err(CONFLICT.into()));
+        });
+        manager.disconnect("workbuddy")?;
+        crate::workbuddy_config::with_test_dir(&managed, || {
+            assert!(manager.desktop_selection_matches("workbuddy"))
+        });
+        crate::workbuddy_config::with_test_dir(&other, || {
+            assert!(!manager.desktop_selection_matches("workbuddy"))
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn disconnecting_an_already_suspended_desktop_preserves_the_real_restoration_time(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let file = FileEdit::prepare(dir.path().join("models.json"), |value| {
+            value["model"] = json!("shared");
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        manager.suspend("workbuddy")?;
+        let path = manager.desktop_freshness_path("workbuddy")?;
+        let mut freshness = manager.desktop_freshness("workbuddy")?.ok_or(FAILED)?;
+        freshness.applied_at_ms = 1234;
+        atomic_write_private(&path, &serde_json::to_vec(&freshness).map_err(|_| FAILED)?)
+            .map_err(|_| FAILED)?;
+        let before = read(&path)?;
+        manager.disconnect("workbuddy")?;
+        assert_eq!(read(&path)?, before);
+        manager.disconnect("workbuddy")?;
+        assert_eq!(read(&path)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_restart_rechecks_receipt_identity_and_owned_configuration() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let path = dir.path().join("models.json");
+        let file = FileEdit::prepare(path.clone(), |value| {
+            value["model"] = json!("shared");
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        manager.restart_desktop_with("workbuddy", |_, valid| {
+            assert!(valid());
+            let mut receipt = manager.load("workbuddy")?.ok_or(FAILED)?;
+            receipt.token = "synthetic-replacement".into();
+            atomic_write_private(
+                &manager.path("workbuddy")?,
+                &serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
+            )
+            .map_err(|_| FAILED)?;
+            assert!(!valid());
+            Ok(())
+        })?;
+        manager.restart_desktop_with("workbuddy", |_, valid| {
+            assert!(valid());
+            fs::write(&path, r#"{"model":"external"}"#).map_err(|_| FAILED)?;
+            assert!(!valid());
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     #[test]
     fn native_formats_restore_owned_fields_and_preserve_external_edits() -> Result<(), String> {
         for (format, original, external) in [
@@ -1191,6 +1990,172 @@ mod tests {
         );
         assert_eq!(read(&path)?.as_deref(), Some(changed));
         assert!(manager.load("workbuddy")?.is_some());
+        Ok(())
+    }
+    fn fixture_menu() -> Menu {
+        use crate::{
+            proxy::intent::{MenuModel, Session, Target},
+            services::intent_routing::RoutingGroup,
+        };
+        use std::{collections::HashMap, sync::Arc, time::Instant};
+        let group: RoutingGroup = serde_json::from_value(json!({
+            "id":"fixture","name":"Fixture","revision":0,"enabled":true,"members":[],
+            "defaultMemberId":"a","fallbackMemberIds":[],"intentRecognitionEnabled":false,
+            "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+        }))
+        .expect("fixture group");
+        let alias = group.alias();
+        let target = Target {
+            provider_id: "fixture".into(),
+            model: "exact".into(),
+            upstream: None,
+            effort: Default::default(),
+            url: "http://127.0.0.1:1/responses".parse().expect("fixture url"),
+            headers: Default::default(),
+            official: false,
+            credentials: None,
+            scheduling: Arc::default(),
+            fixed_effort: None,
+        };
+        Menu {
+            token: String::new(),
+            models: HashMap::from([(
+                alias.clone(),
+                MenuModel {
+                    alias: alias.clone(),
+                    label: "Fixture".into(),
+                    description: "VaryAI routing group",
+                    order: 0,
+                },
+            )]),
+            default_model: Some(alias.clone()),
+            omitted_entries: 0,
+            context_settings: Default::default(),
+            groups: HashMap::from([(
+                alias,
+                Arc::new(Session {
+                    group,
+                    targets: vec![target],
+                    classifier: None,
+                    client: reqwest::Client::new(),
+                    created: Instant::now(),
+                    bindings: Arc::default(),
+                }),
+            )]),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn workbuddy_editions_connect_and_restore_independently(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        struct Home(Option<std::ffi::OsString>);
+        impl Drop for Home {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let _home = Home(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+        crate::settings::reload_settings()?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let menu = fixture_menu();
+        let model = menu.default_model.as_deref().ok_or("fixture model")?;
+        let paths = [
+            dir.path().join(".workbuddy/models.json"),
+            dir.path().join(".workbuddy-ai/models.json"),
+        ];
+        let original = r#"{"models":[],"custom":"synthetic-user-setting"}"#;
+        for path in &paths {
+            fs::create_dir_all(path.parent().ok_or("parent")?)?;
+            fs::write(path, original)?;
+        }
+        for (index, app) in ["workbuddy", "workbuddy-ai"].into_iter().enumerate() {
+            let receipt = manager.build(app, &menu, "http://127.0.0.1:1", model)?;
+            assert_eq!(receipt.files[0].path, paths[index]);
+            manager.install(receipt)?;
+            let value: Value = serde_json::from_slice(&fs::read(&paths[index])?)?;
+            assert_eq!(
+                value["models"][0]["url"],
+                format!("http://127.0.0.1:1/connections/{app}/v1/chat/completions")
+            );
+        }
+        let domestic = manager.load("workbuddy")?.ok_or("domestic receipt")?;
+        let international = manager
+            .load("workbuddy-ai")?
+            .ok_or("international receipt")?;
+        assert!(domestic.token != international.token);
+        let international_bytes = fs::read(&paths[1])?;
+        manager.disconnect("workbuddy")?;
+        assert_eq!(fs::read_to_string(&paths[0])?, original);
+        assert_eq!(fs::read(&paths[1])?, international_bytes);
+        assert!(manager.status("workbuddy-ai")?.enabled);
+        manager.disconnect("workbuddy-ai")?;
+        assert_eq!(fs::read_to_string(&paths[1])?, original);
+        crate::workbuddy_config::with_test_dir(paths[1].parent().ok_or("parent")?, || {
+            assert!(
+                matches!(manager.build("workbuddy-ai", &menu, "http://127.0.0.1:1", model), Err(error) if error == CONFLICT)
+            );
+        });
+        let mut legacy = manager.build("workbuddy", &menu, "http://127.0.0.1:1", model)?;
+        legacy.files[0].path = paths[1].clone();
+        manager.install(legacy)?;
+        assert!(
+            matches!(manager.build("workbuddy-ai", &menu, "http://127.0.0.1:1", model), Err(error) if error == CONFLICT)
+        );
+        manager.disconnect("workbuddy")?;
+        assert_eq!(fs::read_to_string(&paths[1])?, original);
+        Ok(())
+    }
+    #[test]
+    fn suspended_receipts_reconnect_after_a_restored_field_is_edited() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "default_model = \"native/one\"\n\n[providers.native]\ntype = \"kimi\"\napi_key = \"synthetic-native\"\n\n[models.\"native/one\"]\nprovider = \"native\"\nmodel = \"one\"\nmax_context_size = 128000\n",
+        )
+        .map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let menu = fixture_menu();
+        let selected = menu.default_model.clone().ok_or(FAILED)?;
+        let origin = "http://127.0.0.1:9";
+        let receipt = crate::services::agent_clients::with_test_config(&path, || {
+            manager.build("kimi", &menu, origin, &selected)
+        })?;
+        manager.install(receipt)?;
+        manager.suspend("kimi")?;
+        assert!(manager
+            .load("kimi")?
+            .is_some_and(|receipt| receipt.suspended));
+        // Kimi Code rewrites default_model when the user picks another model
+        // while the shared projection is suspended.
+        fs::write(
+            &path,
+            "default_model = \"native/two\"\n\n[providers.native]\ntype = \"kimi\"\napi_key = \"synthetic-native\"\n\n[models.\"native/one\"]\nprovider = \"native\"\nmodel = \"one\"\nmax_context_size = 128000\n",
+        )
+        .map_err(|_| FAILED)?;
+        crate::services::agent_clients::with_test_config(&path, || {
+            manager.update("kimi", &menu, origin, Some(&selected))
+        })?
+        .ok_or(FAILED)?;
+        assert!(manager.status("kimi")?.configured);
+        let live = Format::Toml.parse(read(&path)?.as_deref())?;
+        assert_eq!(live["default_model"], json!("Fixture"));
+        assert_eq!(
+            live["providers"]["native"]["api_key"],
+            json!("synthetic-native")
+        );
+        assert!(live["providers"].get("Vary AI").is_some());
         Ok(())
     }
     #[test]

@@ -1,5 +1,119 @@
 use super::*;
+
+#[test]
+fn page_context_does_not_claim_a_tool_continuation() {
+    let bindings = Bindings::default();
+    let context = json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page"});
+    assert_eq!(
+        bindings.resolve(&json!({"input":[context]}), None),
+        Ok(None)
+    );
+    for item in [
+        json!({"type":"function_call_output","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"other","name":"codex_apps_open_page","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"unknown-call","output":"Synthetic result"}),
+    ] {
+        assert!(bindings.resolve(&json!({"input":[item]}), None).is_err());
+    }
+}
 use serde_json::json;
+
+#[tokio::test]
+#[serial_test::serial]
+async fn unavailable_historical_models_require_reselection_without_bypassing_authentication(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        database::Database,
+        proxy::{server::ProxyServer, ProxyConfig},
+    };
+    let group: RoutingGroup = serde_json::from_value(json!({
+        "id":"current", "name":"Synthetic current model", "revision":0, "enabled":false,
+        "members":[{"id":"one","providerId":"current-provider","modelId":"current-model"}],
+        "defaultMemberId":"one", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+        "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+    }))?;
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .no_proxy()
+        .build()?;
+    let runtime = Arc::new(Runtime::default());
+    runtime
+        .set_menu(Arc::new(Menu {
+            token: "synthetic-menu-token".into(),
+            groups: HashMap::from([(
+                "vary-provider/current".into(),
+                Arc::new(Session {
+                    group,
+                    targets: vec![],
+                    classifier: None,
+                    client: client.clone(),
+                    created: Instant::now(),
+                    bindings: Arc::default(),
+                }),
+            )]),
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            context_settings: Default::default(),
+        }))
+        .map_err(|_| "synthetic menu publication failed")?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let base = format!("http://127.0.0.1:{}/intent/v1", info.port);
+    let catalog: Value = client
+        .get(format!("{base}/models"))
+        .bearer_auth("synthetic-menu-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(catalog["data"][0]["id"], "vary-provider/current");
+    for (token, status, code) in [
+        (
+            "wrong-token",
+            StatusCode::UNAUTHORIZED,
+            "routing_session_expired",
+        ),
+        (
+            "synthetic-menu-token",
+            StatusCode::NOT_FOUND,
+            "routing_model_unavailable",
+        ),
+    ] {
+        let response = client
+            .post(format!("{base}/responses"))
+            .bearer_auth(token)
+            .json(
+                &json!({"model":"legacy-provider/legacy-model","input":"synthetic-private-input"}),
+            )
+            .send()
+            .await?;
+        assert_eq!(response.status(), status);
+        let failure: Value = response.json().await?;
+        assert_eq!(failure["error"]["code"], code);
+        if status == StatusCode::NOT_FOUND {
+            let message = failure["error"]["message"]
+                .as_str()
+                .ok_or("missing guidance")?;
+            assert!(message.contains("Select a model"));
+            assert!(message.contains("new conversation"));
+        }
+        let text = failure.to_string();
+        assert!(!text.contains("legacy-provider/legacy-model"));
+        assert!(!text.contains("synthetic-private-input"));
+    }
+    server.stop().await?;
+    Ok(())
+}
 
 #[tokio::test]
 #[serial_test::serial]
@@ -255,6 +369,39 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
 }
 
 #[test]
+fn codex_magpie_replay_uses_observed_affinity_not_a_local_id_allowlist() {
+    let mut bindings = Bindings::default();
+    let body = json!({"previous_response_id":"synthetic-unobserved", "input":[
+        {"type":"message","role":"user","content":"hello","encrypted_content":null},
+        {"type":"reasoning","id":"synthetic-item","summary":[],"encrypted_content":"synthetic-seal"},
+        {"type":"function_call_output","call_id":"synthetic-call","output":"synthetic"}
+    ]});
+    let original = body.clone();
+    assert_eq!(bindings.resolve_replay(&body, None), Ok(None));
+    bindings.bind_session("synthetic-session", 2);
+    assert_eq!(
+        bindings.resolve_replay(&body, Some("synthetic-session")),
+        Ok(Some(2))
+    );
+    remember(
+        &mut bindings.responses,
+        "response",
+        "synthetic-unobserved",
+        1,
+    );
+    assert!(bindings
+        .resolve_replay(&body, Some("synthetic-session"))
+        .is_err());
+    assert_eq!(bindings.resolve_replay(&body, None), Ok(Some(1)));
+    remember(&mut bindings.calls, "call", "synthetic-call", 3);
+    assert!(bindings.resolve_replay(&body, None).is_err());
+    assert_eq!(
+        body, original,
+        "Replay must preserve the caller's protocol fields"
+    );
+}
+
+#[test]
 fn unknown_or_conflicting_continuations_fail_closed() {
     let mut bindings = Bindings::default();
     assert!(bindings
@@ -298,6 +445,82 @@ fn response_and_tool_ids_pin_exact_candidate() {
         ),
         Ok(Some(2))
     );
+}
+
+#[test]
+fn visible_reasoning_ids_do_not_claim_opaque_continuation_ownership() {
+    let summary = json!({"type":"reasoning","id":"rs_0","status":"completed","summary":[{"type":"summary_text","text":"Synthetic visible thought"}]});
+    let mut bindings = Bindings::default();
+    remember(&mut bindings.items, "item", "rs_0", usize::MAX);
+    let body = json!({"input":[summary]});
+    assert_eq!(bindings.resolve(&body, None), Ok(None));
+    assert!(bindings.known_opaque(&body));
+    assert!(length::portable(&body));
+    for item in [
+        json!({"encrypted_content":"synthetic-seal"}),
+        json!({"summary":[]}),
+        json!({"summary":[{"type":"summary_text","text":"Synthetic text","signature":"synthetic-seal"}]}),
+        json!({"status":"in_progress"}),
+    ] {
+        let mut invalid = body.clone();
+        for (key, value) in item.as_object().unwrap() {
+            invalid["input"][0][key] = value.clone();
+        }
+        assert!(bindings.resolve(&invalid, None).is_err());
+        assert!(!bindings.known_opaque(&invalid));
+        assert!(!length::portable(&invalid));
+    }
+    let mut reference = body;
+    reference["previous_response_id"] = json!("synthetic-unknown");
+    assert!(bindings.resolve(&reference, None).is_err());
+}
+
+#[test]
+fn codex_visible_reasoning_with_null_fields_and_metadata_is_portable() {
+    let summary = json!({
+        "type":"reasoning","id":"synthetic-prior-model-item",
+        "summary":[{"type":"summary_text","text":"Synthetic visible thought"}],
+        "content":null,"encrypted_content":null,
+        "internal_chat_message_metadata_passthrough":{"turn_id":"synthetic-prior-turn"}
+    });
+    let bindings = Bindings::default();
+    let body = json!({"input":[summary]});
+    assert!(length::visible_reasoning(&body["input"][0]));
+    assert_eq!(bindings.resolve(&body, None), Ok(None));
+    assert!(bindings.known_opaque(&body));
+    assert!(length::portable(&body));
+    let conversations = scopes::Conversations::default();
+    assert!(conversations
+        .acquire("synthetic-codex", &Arc::default(), None, &body)
+        .is_ok());
+    for patch in [
+        json!({"encrypted_content":"synthetic-sealed-state"}),
+        json!({"encrypted_content":{}}),
+        json!({"content":[{"type":"unknown_state","data":"synthetic"}]}),
+        json!({"internal_chat_message_metadata_passthrough":"synthetic-invalid"}),
+        json!({"summary":[]}),
+        json!({"signature":"synthetic-seal"}),
+    ] {
+        let mut invalid = body.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            invalid["input"][0][key] = value.clone();
+        }
+        assert!(!length::visible_reasoning(&invalid["input"][0]));
+        assert!(bindings.resolve(&invalid, None).is_err());
+        assert!(!bindings.known_opaque(&invalid));
+        assert!(!length::portable(&invalid));
+    }
+    for dependency in [
+        json!({"previous_response_id":"synthetic-unknown-response"}),
+        json!({"input":[body["input"][0],{"type":"item_reference","id":"synthetic-unknown-item"}]}),
+        json!({"input":[body["input"][0],{"type":"function_call_output","call_id":"synthetic-unknown-call","output":"synthetic"}]}),
+    ] {
+        let mut dependent = body.clone();
+        for (key, value) in dependency.as_object().unwrap() {
+            dependent[key] = value.clone();
+        }
+        assert!(bindings.resolve(&dependent, None).is_err());
+    }
 }
 
 #[test]
@@ -645,13 +868,14 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
         } else {
             1
         };
-        for _ in 0..n {
+        for turn in 0..n {
             let value = client
                 .post(format!(
                     "http://127.0.0.1:{}/intent/v1/responses",
                     info.port
                 ))
                 .bearer_auth(concat!("synthetic", "-strategies"))
+                .header("session-id", format!("synthetic-strategy-{k}-{turn}"))
                 .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
                 .send()
                 .await
@@ -964,6 +1188,15 @@ async fn readable_auto_alias_uses_smart_order_but_continuations_ignore_cooldown(
 #[tokio::test]
 #[serial_test::serial]
 async fn live_session_forwards_exact_models_and_pins_tools_without_current_provider() {
+    struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for SecurityRuntimeRestore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security =
+        SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     use crate::{
         database::Database,
         proxy::{server::ProxyServer, ProxyConfig},
@@ -1084,10 +1317,14 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
     let response = send(json!({"model":"vary-auto/development","previous_response_id":"unknown"}))
         .await
         .expect("unknown continuation");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
     {
         let seen = seen.lock().expect("fixture lock");
-        assert_eq!(seen.len(), 3);
+        // The first candidate is cooling down after its earlier 503, so
+        // unobserved state goes directly to the still-available candidate.
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[3].1["previous_response_id"], "unknown");
+        assert_eq!(seen[3].1["model"], "strong-model");
         assert_eq!(seen[0].1["model"], "balanced-model");
         assert_eq!(seen[1].1["model"], "strong-model");
         assert_eq!(seen[2].1["model"], "strong-model");
@@ -1257,22 +1494,66 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
             "Bearer synthetic-second"
         );
     }
-    let result = client
+    let calls_before_unavailable = seen.lock().expect("records").len();
+    for unavailable in [
+        "vary-provider/unknown",
+        "legacy-provider/legacy-model",
+        "second-exact-model",
+    ] {
+        let result = client
+            .post(&url)
+            .bearer_auth("menu-token")
+            .json(&json!({"model":unavailable,"input":"synthetic-private-message"}))
+            .send()
+            .await
+            .expect("unavailable saved model");
+        assert_eq!(result.status(), StatusCode::NOT_FOUND);
+        let failure: Value = result.json().await.expect("model selection guidance");
+        assert_eq!(failure["error"]["code"], "routing_model_unavailable");
+        let message = failure["error"]["message"].as_str().expect("error message");
+        assert!(message.contains("Select a model"));
+        assert!(message.contains("new conversation"));
+        assert!(!message.contains(unavailable));
+        assert!(!failure.to_string().contains("synthetic-private-message"));
+        assert_eq!(
+            seen.lock().expect("records").len(),
+            calls_before_unavailable
+        );
+    }
+    let rejected = client
         .post(&url)
-        .bearer_auth("menu-token")
-        .json(&json!({"model":"vary-provider/unknown","input":"synthetic"}))
+        .bearer_auth("wrong-menu-token")
+        .json(&json!({"model":"legacy-provider/legacy-model","input":"synthetic-private-message"}))
         .send()
         .await
-        .expect("unknown alias");
-    assert_eq!(result.status(), StatusCode::NOT_FOUND);
+        .expect("unavailable model with invalid authorization");
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    let failure: Value = rejected.json().await.expect("authorization failure");
+    assert_eq!(failure["error"]["code"], "routing_session_expired");
+    assert_eq!(
+        seen.lock().expect("records").len(),
+        calls_before_unavailable
+    );
     let result = client
         .post(&url)
         .bearer_auth("menu-token")
         .json(&json!({"model":"vary-auto/second","previous_response_id":"response-stream"}))
         .send()
         .await
-        .expect("foreign continuation");
-    assert_eq!(result.status(), StatusCode::CONFLICT);
+        .expect("unobserved continuation at the selected alias");
+    assert_eq!(result.status(), StatusCode::OK);
+    let _: Value = result.json().await.expect("upstream validation response");
+    {
+        let records = seen.lock().expect("records");
+        assert_eq!(records.len(), calls_before_unavailable + 1);
+        let forwarded = records.last().expect("forwarded reference");
+        assert_eq!(forwarded.1["previous_response_id"], "response-stream");
+        assert_eq!(forwarded.1["model"], "second-exact-model");
+        assert_eq!(
+            forwarded.0[header::AUTHORIZATION],
+            "Bearer synthetic-second"
+        );
+    }
     runtime.clear_menu();
     assert_eq!(
         client

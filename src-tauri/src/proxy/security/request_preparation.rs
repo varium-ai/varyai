@@ -276,6 +276,14 @@ fn classify_request_history_impl(
                     calls.push((id, kind == Some("custom_tool_call")))?;
                 }
                 Some("function_call_output" | "custom_tool_call_output") => {
+                    if crate::proxy::providers::codex_chat_common::is_unsolicited_page_context(item)
+                    {
+                        readable_text(
+                            item.get("output").ok_or(TokenError::ContextUnavailable)?,
+                            false,
+                        )?;
+                        continue;
+                    }
                     let id = item
                         .get("call_id")
                         .and_then(Value::as_str)

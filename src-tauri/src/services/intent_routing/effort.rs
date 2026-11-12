@@ -104,6 +104,10 @@ pub(crate) fn offered<'a>(
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Capability {
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub cost: Option<Value>,
     pub levels: Vec<String>,
     pub quiet: bool,
     #[serde(default)]
@@ -122,6 +126,8 @@ pub(crate) struct Capability {
     pub context: super::context::Metadata,
     #[serde(default)]
     pub typed_window: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tiers: Option<Vec<super::speed::Tier>>,
 }
 impl Capability {
     pub(crate) fn has_reasoning_declaration(entry: &Value) -> bool {
@@ -162,12 +168,28 @@ impl Capability {
             {
                 let declared = Self::has_reasoning_declaration(&resolved);
                 let images_declared = Self::parse(&resolved).images.is_some();
+                let tiers_declared = super::speed::parse(&resolved).is_some();
                 if let (Some(resolved), Some(fallback)) =
                     (resolved.as_object_mut(), fallback.as_object())
                 {
                     for (key, value) in fallback {
+                        if tiers_declared
+                            && matches!(
+                                key.as_str(),
+                                "service_tiers" | "serviceTiers" | "additional_speed_tiers"
+                            )
+                        {
+                            continue;
+                        }
                         if declared
-                            && !matches!(key.as_str(), "inputModalities" | "defaultReasoningLevel")
+                            && !matches!(
+                                key.as_str(),
+                                "inputModalities"
+                                    | "defaultReasoningLevel"
+                                    | "service_tiers"
+                                    | "serviceTiers"
+                                    | "additional_speed_tiers"
+                            )
                         {
                             continue;
                         }
@@ -189,6 +211,9 @@ impl Capability {
 
     pub(crate) fn declaration(&self) -> Value {
         let mut entry = json!({});
+        if let Some(tiers) = &self.service_tiers {
+            entry["service_tiers"] = json!(tiers);
+        }
         if self.declared || !self.levels.is_empty() || self.quiet {
             entry["reasoningLevels"] = json!(self.levels);
         }
@@ -204,6 +229,12 @@ impl Capability {
             } else {
                 json!(["text"])
             };
+        }
+        if let Some(tokens) = self.output_tokens {
+            entry["maxOutputTokens"] = json!(tokens);
+        }
+        if let Some(cost) = &self.cost {
+            entry["pricing"] = cost.clone();
         }
         entry
     }
@@ -290,6 +321,42 @@ impl Capability {
                 .map(|values| values.iter().all(|n| *n == 0.0))
             });
         Self {
+            output_tokens: [
+                "maxOutputTokens",
+                "max_output_tokens",
+                "output_token_limit",
+                "maxTokens",
+                "max_completion_tokens",
+                "outputTokens",
+                "output",
+            ]
+            .iter()
+            .find_map(|key| entry[*key].as_u64())
+            .or_else(|| entry.pointer("/limit/output").and_then(Value::as_u64))
+            .filter(|n| *n > 0 && *n <= u64::from(u32::MAX)),
+            cost: entry
+                .get("pricing")
+                .or_else(|| entry.get("price"))
+                .or_else(|| entry.get("cost"))
+                .and_then(|price| {
+                    [
+                        ("input", "input"),
+                        ("output", "output"),
+                        ("cacheRead", "cache_read"),
+                        ("cacheWrite", "cache_write"),
+                    ]
+                    .into_iter()
+                    .map(|(key, alternate)| {
+                        let value = price.get(key).or_else(|| price.get(alternate))?;
+                        let amount = value
+                            .as_f64()
+                            .or_else(|| value.as_str()?.parse::<f64>().ok())
+                            .filter(|amount| amount.is_finite() && *amount >= 0.0)?;
+                        Some((key.to_owned(), json!(amount)))
+                    })
+                    .collect::<Option<serde_json::Map<_, _>>>()
+                    .map(Value::Object)
+                }),
             levels,
             quiet,
             declared: Self::has_reasoning_declaration(entry),
@@ -308,6 +375,7 @@ impl Capability {
             images,
             context: super::context::Metadata::parse(entry),
             typed_window: false,
+            service_tiers: super::speed::parse(entry),
             free: if listed_free == Some(true) || priced_free == Some(true) {
                 Some(true)
             } else {

@@ -532,11 +532,17 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::Hermes
         | AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork
         | AppType::ClaudeDesktop => false,
     }
@@ -614,11 +620,17 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::Hermes
         | AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
@@ -681,11 +693,17 @@ fn apply_common_config_to_settings(
         | AppType::Hermes
         | AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
@@ -1544,11 +1562,17 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
         }
         AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {
             return Err(AppError::InvalidInput(
                 "Native model configurations must use their dedicated provider service".to_string(),
@@ -1803,11 +1827,17 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
             app_type,
             AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
+                | AppType::Cursor
+                | AppType::CursorCli
+                | AppType::T3Code
                 | AppType::DoubaoWork
         ) {
             continue;
@@ -1855,8 +1885,8 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
 /// Read current live settings for an app type
 pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
     match app_type {
-        AppType::DoubaoWork => Ok(serde_json::json!({})),
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => Ok(crate::services::agent_clients::Document::read(app.as_str(),&crate::services::agent_clients::config_path(app.as_str())?)?.value),
+        AppType::Cursor | AppType::CursorCli | AppType::T3Code | AppType::DoubaoWork | AppType::TraeIntl => Ok(serde_json::json!({})),
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness | AppType::Trae) => Ok(crate::services::agent_clients::Document::read(app.as_str(),&crate::services::agent_clients::config_path(app.as_str())?)?.value),
         AppType::Codex => {
             let mut result = crate::codex_config::read_codex_live_settings()?;
             // `modelCatalog` is a cc-switch private field that lives only in
@@ -1967,6 +1997,7 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             Ok(config)
         }
         AppType::Qoder => crate::qoder_config::read_at(&crate::qoder_config::path()).map(|v|v.0),
+        AppType::WorkBuddyAi => crate::workbuddy_config::read_models_at(&crate::workbuddy_config::get_workbuddy_ai_config_path()).map(|models| json!({"models": models})),
         AppType::WorkBuddy => {
             crate::workbuddy_config::read_models().map(|models| json!({"models": models}))
         }
@@ -2105,11 +2136,17 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         | AppType::Hermes
         | AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {
             unreachable!("additive mode apps are handled by early return")
         }

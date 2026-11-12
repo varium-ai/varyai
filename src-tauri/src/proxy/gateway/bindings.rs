@@ -26,14 +26,19 @@ pub fn supports_binding(app: &str) -> bool {
             | "grokbuild"
             | "pi"
             | "workbuddy"
+            | "workbuddy-ai"
             | "opencode"
             | "qoder"
             | "hermes"
             | "doubaowork"
             | "trae"
+            | "trae-intl"
             | "kimi"
             | "qwen"
             | "zcode"
+            | "deepseek-harness"
+            | "cursor"
+            | "t3code"
     )
 }
 
@@ -239,8 +244,9 @@ fn route_agent(path: &str) -> Option<&str> {
     }
     if let Some(path) = path.strip_prefix("/upstream/") {
         let (app, suffix) = path.split_once('/')?;
-        return (matches!(app, "hermes" | "trae") && suffix.starts_with("providers/"))
-            .then_some(app);
+        return (matches!(app, "hermes" | "trae" | "trae-intl")
+            && suffix.starts_with("providers/"))
+        .then_some(app);
     }
     if path.starts_with("/v1beta/") {
         return Some("gemini");

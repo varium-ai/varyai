@@ -19,6 +19,8 @@ pub(crate) const CAPACITY: usize = 60;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Candidate {
+    #[serde(skip)]
+    pub(super) key_id: Option<String>,
     pub provider_id: String,
     pub provider_name: String,
     pub model: String,
@@ -98,14 +100,22 @@ pub(crate) struct Route {
 
 pub(crate) struct Store {
     pub(super) rows: RwLock<VecDeque<Route>>,
+    active_keys: RwLock<BTreeMap<String, ActiveKey>>,
     salt: String,
     history: Option<history::History>,
+}
+
+struct ActiveKey {
+    provider: String,
+    key: String,
+    finished: Arc<AtomicBool>,
 }
 
 impl Default for Store {
     fn default() -> Self {
         Self {
             rows: RwLock::default(),
+            active_keys: RwLock::default(),
             salt: uuid::Uuid::new_v4().to_string(),
             history: None,
         }
@@ -121,6 +131,22 @@ fn label(value: &str) -> String {
 }
 
 impl Store {
+    pub(crate) fn key_running(&self, provider: &str, key: &str) -> Option<usize> {
+        self.active_keys
+            .try_read()
+            .ok()
+            .filter(|active| active.len() < 8192)
+            .map(|active| {
+                active
+                    .values()
+                    .filter(|entry| {
+                        entry.provider == provider
+                            && entry.key == key
+                            && !entry.finished.load(Ordering::Relaxed)
+                    })
+                    .count()
+            })
+    }
     pub(crate) fn with_history(root: std::path::PathBuf) -> std::io::Result<Self> {
         Ok(Self {
             history: Some(history::History::new(root)?),
@@ -201,16 +227,45 @@ impl Store {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or(if target.official { "Codex" } else { "Provider" }),
         );
+        let key = (!target.official).then(|| {
+            target
+                .upstream
+                .as_ref()
+                .map(|provider| {
+                    provider
+                        .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+                        .1
+                })
+                .unwrap_or_default()
+        });
         let account = Account {
             id: format!("{:x}", hash.finalize()),
+            label: (!target.official)
+                .then_some(target.upstream.as_ref())
+                .flatten()
+                .filter(|provider| {
+                    provider
+                        .settings_config
+                        .get("routingSubscription")
+                        .is_none()
+                })
+                .and_then(|provider| {
+                    provider
+                        .settings_config
+                        .get(crate::services::routing_upstreams::KEY_LABEL)
+                })
+                .and_then(serde_json::Value::as_str)
+                .map(label),
             provider_id: target.provider_id.clone(),
             provider_name: provider_name.clone(),
             kind: if target.official {
                 AccountKind::Account
-            } else if target.upstream.is_some()
-                || target.headers.contains_key("authorization")
-                || target.headers.contains_key("x-api-key")
-            {
+            } else if target.upstream.as_ref().is_some_and(|provider| {
+                provider
+                    .settings_config
+                    .get(crate::services::routing_upstreams::KEY_LABEL)
+                    .is_some()
+            }) {
                 AccountKind::Key
             } else {
                 AccountKind::Provider
@@ -219,6 +274,9 @@ impl Store {
             telemetry: target.scheduling.trace_account().unwrap_or_default(),
         };
         Candidate {
+            key_id: key
+                .as_deref()
+                .map(crate::services::routing_upstreams::key_observation),
             provider_id: target.provider_id.clone(),
             provider_name,
             model: label(&target.model),
@@ -290,7 +348,7 @@ impl Store {
             store: self.clone(),
             id,
             started,
-            finished: AtomicBool::new(false),
+            finished: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -319,10 +377,14 @@ pub(crate) struct Request {
     store: Arc<Store>,
     pub id: String,
     started: Instant,
-    finished: AtomicBool,
+    finished: Arc<AtomicBool>,
 }
 
 impl Request {
+    pub(crate) fn auxiliary_purpose(&self, kind: &'static str) {
+        self.update(|row| row.kind = Some(kind.into()));
+    }
+
     fn update(&self, update: impl FnOnce(&mut Route)) {
         if let Ok(mut rows) = self.store.rows.try_write() {
             if let Some(row) = rows.iter_mut().find(|row| row.id == self.id) {
@@ -394,7 +456,18 @@ impl Request {
     }
 
     pub(crate) fn step(&self, kind: Kind, candidate: Option<usize>, status: Option<u16>) {
+        let mut active_key = None;
         self.update(|row| {
+            if kind == Kind::Attempt {
+                active_key = candidate
+                    .and_then(|index| row.candidates.get(index))
+                    .and_then(|candidate| {
+                        candidate
+                            .key_id
+                            .as_ref()
+                            .map(|key| (candidate.provider_id.clone(), key.clone()))
+                    });
+            }
             if kind == Kind::Connected {
                 row.state = State::Streaming;
             }
@@ -410,6 +483,24 @@ impl Request {
                 });
             }
         });
+        if kind == Kind::Attempt {
+            if let Ok(mut active) = self.store.active_keys.try_write() {
+                active.retain(|_, entry| !entry.finished.load(Ordering::Relaxed));
+                active.remove(&self.id);
+                if active.len() < 8192 {
+                    if let Some((provider, key)) = active_key {
+                        active.insert(
+                            self.id.clone(),
+                            ActiveKey {
+                                provider,
+                                key,
+                                finished: self.finished.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn usage(
@@ -446,6 +537,9 @@ impl Request {
     pub(crate) fn finish(&self, status: u16, state: State) {
         if self.finished.swap(true, Ordering::Relaxed) {
             return;
+        }
+        if let Ok(mut active) = self.store.active_keys.try_write() {
+            active.remove(&self.id);
         }
         let kind = match state {
             State::Completed => Kind::Completed,
@@ -531,6 +625,8 @@ pub(crate) enum AccountKind {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Account {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub kind: AccountKind,
     pub provider_id: String,
     pub provider_name: String,
@@ -541,6 +637,8 @@ pub(crate) struct Account {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Telemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     pub rest_until: i64,
     pub sunk_at: Option<i64>,
     pub windows: Vec<Allowance>,

@@ -3,14 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { proxyKeys } from "@/lib/query/proxy";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { AppDialog } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import { proxyApi } from "@/lib/api/proxy";
 import { toast } from "sonner";
@@ -65,22 +58,19 @@ export function QoderCertificateNotice() {
     }
   };
   return (
-    <Dialog
+    <AppDialog
       open={
         renewing || renewalFailed || (expired && data?.expires_at !== dismissed)
       }
       onOpenChange={(open) => {
         if (!open && !renewing) close();
       }}
-    >
-      <DialogContent zIndex="alert">
-        <DialogHeader>
-          <DialogTitle>{t("qoder.certificate.expiredTitle")}</DialogTitle>
-          <DialogDescription>
-            {t("qoder.certificate.expiredDescription")}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
+      pending={renewing}
+      zIndex="alert"
+      title={t("qoder.certificate.expiredTitle")}
+      description={t("qoder.certificate.expiredDescription")}
+      footer={
+        <>
           <Button variant="outline" disabled={renewing} onClick={close}>
             {t("common.confirm")}
           </Button>
@@ -91,8 +81,8 @@ export function QoderCertificateNotice() {
                 : "qoder.certificate.renew",
             )}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    />
   );
 }

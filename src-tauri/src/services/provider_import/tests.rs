@@ -1,6 +1,156 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn magpie_key_model_scopes_keep_each_keys_own_allowlist() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (_dir, paths) = fixture()?;
+    let primary = "synthetic-primary-scoped";
+    let backup = "synthetic-backup-scoped";
+    let first = format!("{:x}", Sha256::digest(primary.as_bytes()))[..10].to_owned();
+    let second = format!("{:x}", Sha256::digest(backup.as_bytes()))[..10].to_owned();
+    let mut scopes = serde_json::Map::new();
+    scopes.insert(first, json!(["chat-a"]));
+    scopes.insert(second, json!(["chat-b"]));
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"scoped","name":"Scoped","chat":"https://synthetic.invalid/v1","key":primary,"keys":[{"key":backup}],"models":["chat-a","chat-b"],"accountModels":scopes}]}),
+    )?;
+    let imported = readers::provider_backup(&paths.provider_backup)?.remove(0);
+    let transport = imported.record.transport.ok_or("transport missing")?;
+    assert_eq!(transport.primary_models, Some(vec!["chat-a".into()]));
+    assert_eq!(transport.keys[0].models, Some(vec!["chat-b".into()]));
+    Ok(())
+}
+
+#[test]
+fn magpie_advanced_settings_do_not_block_usable_api_imports(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    for advanced in [
+        json!({"proxy":"http://proxy.invalid:8080"}),
+        json!({"extraBody":{"synthetic_private_parameter":true}}),
+        json!({"keyPlan":"synthetic-plan"}),
+        json!({"insecureTLS":true}),
+        json!({"keySpendCaps":{"0123456789":{"usd":1,"period":"month"}}}),
+        json!({"maxRPM":1}),
+        json!({"maxConcurrency":1}),
+        json!({"accountConcurrency":1}),
+        json!({"queueLimit":2}),
+        json!({"queueWait":1}),
+        json!({"queueTimeout":1}),
+        json!({"maxQueue":1}),
+        json!({"queueTimeoutMs":1}),
+        json!({"maxAccounts":1}),
+        json!({"accountWeights":{"synthetic":2}}),
+        json!({"accountCaps":{"synthetic":1}}),
+        json!({"accountWindowCaps":{"synthetic":{"week":1}}}),
+        json!({"keyWeight":2}),
+        json!({"keys":[{"key":"synthetic-backup","weight":2}]}),
+        json!({"keys":[{"key":"synthetic-backup","plan":"synthetic-plan"}]}),
+        json!({"priceRate":1.5}),
+        json!({"routing":"rotate"}),
+        json!({"sink":true}),
+        json!({"fallback":["synthetic-fallback"]}),
+        json!({"decide":"synthetic-decision"}),
+    ] {
+        let mut provider = json!({"id":"synthetic","chat":"https://synthetic.invalid/v1","key":"synthetic-only","models":["synthetic-model"],"headers":{"x-workspace":"synthetic-workspace"}});
+        provider
+            .as_object_mut()
+            .ok_or("fixture")?
+            .extend(advanced.as_object().ok_or("fixture")?.clone());
+        write(&paths.provider_backup, json!({"providers":[provider]}))?;
+        let original = std::fs::read(&paths.provider_backup)?;
+        let db = Database::memory()?;
+        let item = preview(&db, &paths)?.remove(4).items.remove(0);
+        assert!(item.skip.is_none());
+        assert_eq!(item.model_count, 1);
+        let public = serde_json::to_string(&item)?;
+        assert!(!public.contains("synthetic-only"));
+        assert!(!public.contains("synthetic-workspace"));
+        assert!(!public.contains("synthetic_private_parameter"));
+        let result = import(
+            &db,
+            &paths,
+            vec![Pick {
+                source: "magpie".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None,
+            }],
+        )?;
+        assert_eq!(result.added, 1);
+        assert_eq!(std::fs::read(&paths.provider_backup)?, original);
+        let saved = db.list_routing_upstreams()?.remove(0);
+        let resolved = db.routing_discovery_provider(&saved.id, saved.revision)?;
+        let variants = crate::services::routing_upstreams::variants(&resolved);
+        assert_eq!(
+            variants.len(),
+            if advanced.get("keys").is_some() { 2 } else { 1 }
+        );
+        let (base, key) = variants[0].resolve_usage_credentials(&crate::app_config::AppType::Codex);
+        assert_eq!(base, "https://synthetic.invalid/v1");
+        assert!(key == "synthetic-only");
+        assert_eq!(
+            variants[0].settings_config["modelCatalog"]["models"][0]["model"],
+            "synthetic-model"
+        );
+        assert_eq!(
+            variants[0]
+                .meta
+                .as_ref()
+                .and_then(|m| m.local_proxy_request_overrides.as_ref())
+                .and_then(|o| o.headers.get("x-workspace"))
+                .map(String::as_str),
+            Some("synthetic-workspace")
+        );
+        let executable = serde_json::to_value(&variants[0])?;
+        assert!(!executable
+            .to_string()
+            .contains("synthetic_private_parameter"));
+    }
+    Ok(())
+}
+
+#[test]
+fn magpie_basic_import_still_rejects_invalid_transport_and_missing_credentials(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    for invalid in [
+        json!({"chat":"file:///synthetic"}),
+        json!({"chat":"https://synthetic.invalid/v1?key=synthetic-private"}),
+        json!({"key":""}),
+        json!({"headers":{"x-workspace":1}}),
+        json!({"headers":{"cookie":"synthetic-private"}}),
+        json!({"headers":{"x-workspace":"bad\nvalue"}}),
+    ] {
+        let mut provider = json!({"id":"synthetic","chat":"https://synthetic.invalid/v1","key":"synthetic-only","models":["synthetic-model"],"maxRPM":1});
+        provider
+            .as_object_mut()
+            .ok_or("fixture")?
+            .extend(invalid.as_object().ok_or("fixture")?.clone());
+        write(&paths.provider_backup, json!({"providers":[provider]}))?;
+        let db = Database::memory()?;
+        let item = preview(&db, &paths)?.remove(4).items.remove(0);
+        assert!(item.skip.is_some());
+        assert!(import(
+            &db,
+            &paths,
+            vec![Pick {
+                source: "magpie".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None,
+            }]
+        )
+        .is_err());
+        assert!(db.list_routing_upstreams()?.is_empty());
+    }
+    Ok(())
+}
+
 fn fixture() -> Result<(tempfile::TempDir, ImportPaths), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let paths = ImportPaths::at(dir.path());
@@ -10,6 +160,34 @@ fn fixture() -> Result<(tempfile::TempDir, ImportPaths), Box<dyn std::error::Err
 fn write(path: &Path, value: Value) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
     std::fs::write(path, serde_json::to_vec(&value)?)?;
+    Ok(())
+}
+
+#[test]
+fn provider_import_preserves_saved_icons_without_network_requests(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"relay","icon":"deepseek-color","chat":"https://relay.example/v1","key":"fixture-key"}]}),
+    )?;
+    let db = Database::memory()?;
+    let item = preview(&db, &paths)?.remove(4).items.remove(0);
+    import(
+        &db,
+        &paths,
+        vec![Pick {
+            source: "magpie".into(),
+            reference: item.reference,
+            fingerprint: item.fingerprint,
+            mode: ImportMode::Add,
+            name: None,
+        }],
+    )?;
+    assert_eq!(
+        serde_json::to_value(db.list_routing_upstreams()?.remove(0))?["icon"],
+        "deepseek-color"
+    );
     Ok(())
 }
 
@@ -74,7 +252,7 @@ fn provider_backup_import_preserves_models_protocols_and_key_pool_and_deduplicat
     let (_dir, paths) = fixture()?;
     write(
         &paths.provider_backup,
-        json!({"providers":[{"id":"relay","name":"Relay","chat":"https://relay.example/v1","responses":"https://relay.example/v1","anthropic":"https://relay.example/anthropic","baseAPI":"responses","key":"synthetic-first","keys":[{"name":"Backup","key":"synthetic-second","off":true}],"models":["vendor/exact"],"unlisted":true}]}),
+        json!({"providers":[{"id":"relay","name":"Relay","chat":"https://relay.example/v1","responses":"https://relay.example/v1","anthropic":"https://relay.example/anthropic","baseAPI":"responses","key":"synthetic-first","keyName":"Personal","keys":[{"name":"Backup","key":"synthetic-second","off":true}],"models":["vendor/exact"],"unlisted":true}]}),
     )?;
     let before = std::fs::read(&paths.provider_backup)?;
     let db = Database::memory()?;
@@ -104,11 +282,18 @@ fn provider_backup_import_preserves_models_protocols_and_key_pool_and_deduplicat
         true
     );
     assert_eq!(saved.transport.as_ref().ok_or("transport")?.keys.len(), 1);
+    assert_eq!(
+        saved
+            .transport
+            .as_ref()
+            .and_then(|transport| transport.primary_name.as_deref()),
+        Some("Personal")
+    );
     assert!(saved.transport.as_ref().ok_or("transport")?.keys[0]
         .key
         .is_none());
     assert!(!serde_json::to_string(&saved)?.contains("synthetic"));
-    assert_eq!(preview(&db, &paths)?[4].items[0].status, "same");
+    assert_eq!(preview(&db, &paths)?[4].items[0].status, "new");
     assert!(std::fs::read(&paths.provider_backup)? == before);
     Ok(())
 }
@@ -159,6 +344,7 @@ fn different_keys_can_join_a_vendor_but_oauth_and_self_routes_are_not_imported(
     )?;
     assert_eq!(db.list_routing_upstreams()?.len(), 1);
     let saved = db.list_routing_upstreams()?.remove(0);
+    assert_eq!(saved.id, "relay");
     assert_eq!(saved.transport.ok_or("transport")?.keys.len(), 1);
     Ok(())
 }
@@ -203,6 +389,7 @@ fn native_import_is_atomic_deduplicates_a_batch_and_retains_redacted_secrets(
             key: Some("synthetic-backup".into()),
             enabled: true,
             api_format: None,
+            models: None,
         }],
         ..Default::default()
     });
@@ -213,11 +400,13 @@ fn native_import_is_atomic_deduplicates_a_batch_and_retains_redacted_secrets(
         .import_native_providers(vec![
             Selected {
                 record: first.clone(),
-                join: false
+                join: false,
+                overwrite: false
             },
             Selected {
                 record: invalid,
-                join: false
+                join: false,
+                overwrite: false
             }
         ])
         .is_err());
@@ -226,10 +415,12 @@ fn native_import_is_atomic_deduplicates_a_batch_and_retains_redacted_secrets(
         Selected {
             record: first.clone(),
             join: false,
+            overwrite: false,
         },
         Selected {
             record: first,
             join: false,
+            overwrite: false,
         },
     ])?;
     assert_eq!(
@@ -350,6 +541,139 @@ fn subscription_auth(subject: &str, workspace: &str) -> Value {
 }
 
 #[test]
+fn magpie_visible_subscriptions_replace_policy_rows_and_hide_unlisted_history(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[
+            {"id":"relay","name":"Relay","chat":"https://relay.example/v1","key":"synthetic-key"},
+            {"id":"codex","name":"Codex","models":["codex-fixture"]},
+            {"id":"antigravity","name":"Antigravity","models":["google-fixture"]},
+            {"id":"claude","hidden":true,"models":["hidden-fixture"]},
+            {"id":"removed","models":["removed-fixture"]}
+        ]}),
+    )?;
+    write(
+        &paths.provider_backup.with_file_name("logins.json"),
+        json!([
+            {"id":"codex-one","agent":"codex","user":"Codex fixture","auth":subscription_auth("fixture-user","fixture-workspace")},
+            {"id":"google-one","agent":"antigravity","user":"person@example.test","on":true,"project":"fixture-project","auth":{"access_token":"synthetic-google-access","refresh_token":"synthetic-google-refresh","expiry_date":4102444800000_i64}},
+            {"id":"old-plugin","agent":"kiro","user":"Unlisted fixture","auth":{}},
+            {"id":"hidden","agent":"claude","user":"Hidden fixture","auth":{}},
+            {"id":"hidden-codex","agent":"codex","hidden":"removed","user":"Hidden Codex fixture","auth":subscription_auth("hidden-user","fixture-workspace")}
+        ]),
+    )?;
+    let source = preview(&Database::memory()?, &paths)?.remove(4);
+    assert!(source.error.is_none());
+    assert_eq!(source.items.len(), 3);
+    assert!(source.items.iter().all(|item| item.skip.is_none()));
+    assert!(source
+        .items
+        .iter()
+        .any(|item| item.name == "Antigravity" && item.model_count == 1 && item.subscription));
+    assert!(source
+        .items
+        .iter()
+        .any(|item| item.name == "Codex" && item.model_count == 1 && item.subscription));
+    let public = serde_json::to_string(&source)?;
+    for private in [
+        "synthetic-google-access",
+        "synthetic-google-refresh",
+        "Unlisted fixture",
+        "Hidden fixture",
+        "Hidden Codex fixture",
+    ] {
+        assert!(!public.contains(private));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn magpie_native_subscriptions_import_with_bound_accounts_models_and_no_source_writes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::providers::{
+        codex_oauth_auth::CodexOAuthManager, copilot_auth::CopilotAuthManager,
+    };
+    use std::sync::Arc;
+    let (dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[
+            {"id":"antigravity","models":["google-fixture"]},
+            {"id":"gemini","models":["gemini-fixture"]},
+            {"id":"claude","models":["claude-fixture"]},
+            {"id":"chatgpt-api","models":["direct-fixture"]},
+            {"id":"copilot","models":["copilot-fixture"]}
+        ]}),
+    )?;
+    let logins = paths.provider_backup.with_file_name("logins.json");
+    write(
+        &logins,
+        json!([
+            {"agent":"antigravity","user":"google@example.test","project":"fixture-project","auth":{"access_token":"synthetic-google-access","refresh_token":"synthetic-google-refresh","expiry_date":4102444800000_i64}},
+            {"agent":"gemini","user":"gemini@example.test","auth":{"access_token":"synthetic-gemini-access","refresh_token":"synthetic-gemini-refresh","expiry_date":4102444800000_i64}},
+            {"agent":"claude","user":"claude@example.test","auth":{"claudeAiOauth":{"accessToken":"synthetic-claude-access","refreshToken":"synthetic-claude-refresh"}},"profile":{"emailAddress":"claude@example.test"}},
+            {"agent":"chatgpt-api","user":"direct@example.test","auth":{"clientId":"fixture-client","sub":"fixture-subject","access":"synthetic-direct-access","refresh":"synthetic-direct-refresh","expires":"2100-01-01T00:00:00Z"}},
+            {"agent":"copilot","user":"fixture-login","auth":{"oauth_token":"synthetic-github-token"}}
+        ]),
+    )?;
+    let original = std::fs::read(&logins)?;
+    let db = Arc::new(Database::memory()?);
+    let manager = Arc::new(CodexOAuthManager::new(dir.path().join("codex-store")));
+    let copilot = CopilotAuthManager::new(dir.path().join("copilot-store"));
+    let sources =
+        preview_with_managers(db.clone(), manager.clone(), &copilot, paths.clone()).await?;
+    let items = &sources[4].items;
+    assert_eq!(items.len(), 5);
+    assert!(items
+        .iter()
+        .all(|i| i.subscription && i.skip.is_none() && i.model_count == 1));
+    assert!(!serde_json::to_string(&sources)?.contains("synthetic-"));
+    let picks = items
+        .iter()
+        .map(|i| Pick {
+            source: "magpie".into(),
+            reference: i.reference.clone(),
+            fingerprint: i.fingerprint.clone(),
+            mode: ImportMode::Add,
+            name: None,
+        })
+        .collect();
+    assert_eq!(
+        import_with_managers(db.clone(), manager.clone(), &copilot, paths.clone(), picks)
+            .await?
+            .added,
+        5
+    );
+    assert_eq!(copilot.list_accounts().await.len(), 1);
+    let reloaded = CopilotAuthManager::new(dir.path().join("copilot-store"));
+    assert_eq!(
+        reloaded.list_accounts().await[0].id,
+        copilot.list_accounts().await[0].id
+    );
+    assert!(copilot.list_accounts().await[0].id.starts_with("imported-"));
+    let records = db.list_routing_upstreams()?;
+    assert_eq!(records.len(), 5);
+    for record in &records {
+        let provider = db.routing_discovery_provider(&record.id, record.revision)?;
+        assert_eq!(
+            provider.settings_config["modelCatalog"]["models"]
+                .as_array()
+                .ok_or("models")?
+                .len(),
+            1
+        );
+        assert!(crate::services::subscription_provider::binding(&provider).is_some());
+    }
+    assert!(!serde_json::to_string(&records)?.contains("synthetic-"));
+    assert_eq!(std::fs::read(&logins)?, original);
+    let repeated = preview_with_managers(db, manager, &copilot, paths).await?;
+    assert!(repeated[4].items.iter().all(|i| i.status == "new"));
+    Ok(())
+}
+
+#[test]
 fn provider_backup_backup_endpoints_cannot_point_back_into_the_local_gateway(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_dir, paths) = fixture()?;
@@ -358,7 +682,117 @@ fn provider_backup_backup_endpoints_cannot_point_back_into_the_local_gateway(
         json!({"providers":[{"id":"relay","chat":"https://relay.example/v1","responses":"http://127.0.0.1:15721/connections/codex","baseAPI":"chat","key":"synthetic-key","keys":[{"name":"Backup","key":"synthetic-backup","protocol":"responses"}]}]}),
     )?;
     let sources = preview(&Database::memory()?, &paths)?;
-    assert_eq!(sources[4].items[0].skip.as_deref(), Some("selfRoute"));
+    assert!(sources[4].items.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn mixed_subscription_batch_rejects_changed_visibility_and_rolls_back_all_account_stores(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::providers::{
+        codex_oauth_auth::CodexOAuthManager, copilot_auth::CopilotAuthManager,
+    };
+    use std::sync::Arc;
+    let (dir, paths) = fixture()?;
+    let providers = json!({"providers":[{"id":"antigravity","models":["google-fixture"]},{"id":"codex"},{"id":"copilot"}]});
+    write(&paths.provider_backup, providers.clone())?;
+    let logins = paths.provider_backup.with_file_name("logins.json");
+    let rows = json!([
+        {"agent":"antigravity","user":"google@example.test","auth":{"refresh_token":"synthetic-google-refresh"}},
+        {"agent":"copilot","user":"fixture-login","auth":{"oauth_token":"synthetic-github-token"}},
+        {"agent":"codex","user":"codex@example.test","auth":subscription_auth("fixture-user","fixture-workspace")}
+    ]);
+    write(&logins, rows.clone())?;
+    let db = Arc::new(Database::memory()?);
+    let manager = Arc::new(CodexOAuthManager::new(dir.path().join("codex-store")));
+    let copilot = CopilotAuthManager::new(dir.path().join("copilot-store"));
+    let source = preview_with_managers(db.clone(), manager.clone(), &copilot, paths.clone())
+        .await?
+        .remove(4);
+    assert_eq!(source.items.len(), 3);
+    let picks = || {
+        source
+            .items
+            .iter()
+            .map(|i| Pick {
+                source: "magpie".into(),
+                reference: i.reference.clone(),
+                fingerprint: i.fingerprint.clone(),
+                mode: ImportMode::Add,
+                name: None,
+            })
+            .collect()
+    };
+    let mut hidden = providers.clone();
+    hidden["providers"][0]["hidden"] = json!(true);
+    write(&paths.provider_backup, hidden)?;
+    assert_eq!(
+        import_with_managers(
+            db.clone(),
+            manager.clone(),
+            &copilot,
+            paths.clone(),
+            picks()
+        )
+        .await,
+        Err(CONFLICT.into())
+    );
+    write(&paths.provider_backup, providers)?;
+    let mut changed = rows.clone();
+    changed[0]["auth"]["refresh_token"] = json!("synthetic-rotated-refresh");
+    write(&logins, changed)?;
+    assert_eq!(
+        import_with_managers(
+            db.clone(),
+            manager.clone(),
+            &copilot,
+            paths.clone(),
+            picks()
+        )
+        .await,
+        Err(CONFLICT.into())
+    );
+    assert!(!paths.subscription_store.exists());
+    assert!(copilot.list_accounts().await.is_empty());
+    assert!(manager.list_accounts().await.is_empty());
+    write(&logins, rows)?;
+    db.import_native_providers(
+        (0..crate::services::routing_upstreams::MAX_UPSTREAMS)
+            .map(|i| Selected {
+                record: candidate(
+                    i.to_string(),
+                    "fixture",
+                    format!("Existing {i}"),
+                    "https://fixture.example/v1".into(),
+                    format!("synthetic-key-{i}"),
+                    "openai_chat",
+                    vec![],
+                )
+                .record,
+                join: false,
+                overwrite: false,
+            })
+            .collect(),
+    )?;
+    assert_eq!(
+        import_with_managers(
+            db.clone(),
+            manager.clone(),
+            &copilot,
+            paths.clone(),
+            picks()
+        )
+        .await,
+        Err("routingUpstreams.limit".into())
+    );
+    assert_eq!(
+        db.list_routing_upstreams()?.len(),
+        crate::services::routing_upstreams::MAX_UPSTREAMS
+    );
+    assert!(!paths.subscription_store.exists());
+    assert!(!dir.path().join("copilot-store/copilot_auth.json").exists());
+    assert!(copilot.list_accounts().await.is_empty());
+    assert!(manager.list_accounts().await.is_empty());
     Ok(())
 }
 
@@ -391,9 +825,7 @@ async fn provider_backup_codex_subscriptions_import_into_managed_accounts_withou
         .find(|it| it.subscription && it.skip.is_none())
         .ok_or("subscription missing")?;
     assert_eq!(account.model_count, 1);
-    assert!(items
-        .iter()
-        .any(|it| it.skip.as_deref() == Some("subscription")));
+    assert!(!items.iter().any(|it| it.name == "Unsupported account"));
     let public = serde_json::to_string(&sources)?;
     let auth = subscription_auth("synthetic-user", "synthetic-workspace");
     for field in ["refresh_token", "access_token", "id_token"] {
@@ -435,7 +867,7 @@ async fn provider_backup_codex_subscriptions_import_into_managed_accounts_withou
     assert!(repeated[4]
         .items
         .iter()
-        .any(|it| it.subscription && it.status == "same"));
+        .any(|it| it.subscription && it.status == "new"));
     Ok(())
 }
 
@@ -579,10 +1011,250 @@ fn provider_backup_model_context_overrides_and_vendor_catalog_remain_independent
 
 #[test]
 fn provider_import_rejects_both_application_default_gateway_ports() {
+    let gateways = gateways::Gateways::default();
     for port in [15721, crate::proxy::types::DEFAULT_PROXY_PORT] {
-        assert!(self_route(&format!("http://127.0.0.1:{port}/v1")));
+        assert!(gateways.matches_url(&format!("http://127.0.0.1:{port}/v1")));
     }
-    assert!(!self_route("https://synthetic-upstream.example/v1"));
+    assert!(!gateways.matches_url("https://synthetic-upstream.example/v1"));
+}
+
+#[test]
+fn provider_import_rejects_magpie_gateway_and_loopback_aliases() {
+    let gateways = gateways::Gateways::default();
+    for host in [
+        "127.0.0.1",
+        "localhost",
+        "LOCALHOST.",
+        "127.0.0.2",
+        "[::1]",
+        "[::ffff:127.0.0.1]",
+    ] {
+        assert!(
+            gateways.matches_url(&format!("http://{host}:3425/v1")),
+            "gateway alias"
+        );
+    }
+    for url in [
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://192.0.2.1:3425/v1",
+        "https://relay.example:3425/v1",
+    ] {
+        assert!(!gateways.matches_url(url), "independent model service");
+    }
+}
+
+#[test]
+fn provider_import_custom_gateway_ports_are_blocked_across_sources_and_on_confirmation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    let db = Database::memory()?;
+    write(
+        &paths.provider_backup.with_file_name("settings.json"),
+        json!({"port":43121}),
+    )?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[
+            {"id":"saved-gateway","chat":"http://localhost:43122/v1","key":"fixture-key"},
+            {"id":"local-model","chat":"http://localhost:11434/v1","key":"fixture-key"}
+        ]}),
+    )?;
+    std::fs::create_dir_all(paths.cc_switch.parent().ok_or("parent")?)?;
+    let cc = rusqlite::Connection::open(&paths.cc_switch)?;
+    cc.execute_batch("CREATE TABLE providers(id TEXT,app_type TEXT,name TEXT,settings_config TEXT); CREATE TABLE proxy_config(listen_port INTEGER); INSERT INTO proxy_config VALUES (43122);")?;
+    cc.execute("INSERT INTO providers VALUES ('saved-relay','claude','Gateway fixture',?1)", [json!({"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:43121","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}).to_string()])?;
+    drop(cc);
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.2:43122","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}),
+    )?;
+    std::fs::create_dir_all(paths.codex.parent().ok_or("parent")?)?;
+    std::fs::write(&paths.codex, "[model_providers.saved]\nbase_url='http://[::1]:43121/v1'\nexperimental_bearer_token='fixture-key'\n")?;
+    write(
+        &paths.opencode,
+        json!({"provider":{"saved":{"options":{"baseURL":"http://localhost:43121/v1","apiKey":"fixture-key"}}}}),
+    )?;
+    let blocked = readers::provider_backup(&paths.provider_backup)?.remove(0);
+    let sources = preview(&db, &paths)?;
+    for source in &sources[..4] {
+        assert!(source.error.is_none());
+        assert!(
+            source.items.is_empty(),
+            "gateway excluded from {}",
+            source.id
+        );
+    }
+    assert_eq!(sources[4].items.len(), 1);
+    let local = &sources[4].items[0];
+    assert_eq!(local.reference, "1/local-model");
+    assert!(local.skip.is_none());
+    let pick = |item: &Item| Pick {
+        source: "magpie".into(),
+        reference: item.reference.clone(),
+        fingerprint: item.fingerprint.clone(),
+        mode: ImportMode::Add,
+        name: None,
+    };
+    let blocked_pick = Pick {
+        source: "magpie".into(),
+        reference: blocked.reference.clone(),
+        fingerprint: fingerprint(&blocked)?,
+        mode: ImportMode::Add,
+        name: None,
+    };
+    assert_eq!(
+        import(&db, &paths, vec![pick(local), blocked_pick]),
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    assert_eq!(import(&db, &paths, vec![pick(local)])?.added, 1);
+    Ok(())
+}
+
+#[test]
+fn provider_import_recognizes_generated_routes_on_arbitrary_ports_and_secondary_endpoints(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.opencode,
+        json!({"provider":{
+            "magpie":{"options":{"baseURL":"http://localhost:43123/v1","apiKey":"fixture-key"}},
+            "cc-switch":{"options":{"baseURL":"http://127.0.0.1:43124/v1","apiKey":"fixture-key"}},
+            "custom":{"options":{"baseURL":"http://127.0.0.1:43125/v1","apiKey":"PROXY_MANAGED"}},
+            "model":{"options":{"baseURL":"http://localhost:1234/v1","apiKey":"fixture-key"}}
+        }}),
+    )?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"relay","chat":"https://relay.example/v1","responses":"http://127.0.0.1:3425/v1","key":"fixture-key"}]}),
+    )?;
+    let sources = preview(&Database::memory()?, &paths)?;
+    assert_eq!(sources[3].items.len(), 1);
+    assert_eq!(sources[3].items[0].reference, "model");
+    assert!(sources[3].items[0].skip.is_none());
+    assert!(sources[4].items.is_empty());
+    Ok(())
+}
+
+#[test]
+fn provider_import_rechecks_gateway_port_changes_before_writing(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    let db = Database::memory()?;
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://localhost:43126","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}),
+    )?;
+    let item = preview(&db, &paths)?.remove(1).items.remove(0);
+    assert!(item.skip.is_none());
+    write(
+        &paths.provider_backup.with_file_name("settings.json"),
+        json!({"port":43126}),
+    )?;
+    assert_eq!(
+        import(
+            &db,
+            &paths,
+            vec![Pick {
+                source: "claude-code".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None
+            }]
+        ),
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn provider_import_excludes_takeover_markers_across_native_and_saved_clients(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://localhost:43127","ANTHROPIC_AUTH_TOKEN":(["magpie", "claude"].join("-"))}}),
+    )?;
+    std::fs::create_dir_all(paths.codex.parent().ok_or("parent")?)?;
+    std::fs::write(
+        &paths.codex,
+        "[model_providers.varyai]\nbase_url='http://127.0.0.1:43128/v1'\nexperimental_bearer_token='fixture-key'\n",
+    )?;
+    std::fs::create_dir_all(paths.cc_switch.parent().ok_or("parent")?)?;
+    let conn = rusqlite::Connection::open(&paths.cc_switch)?;
+    conn.execute_batch(
+        "CREATE TABLE providers(id TEXT,app_type TEXT,name TEXT,settings_config TEXT);",
+    )?;
+    conn.execute("INSERT INTO providers VALUES ('saved','codex','Saved route',?1)", [json!({"config":"model_provider='magpie'\n[model_providers.magpie]\nbase_url='http://localhost:43129/v1'\nexperimental_bearer_token='fixture-key'"}).to_string()])?;
+    drop(conn);
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"magpie","chat":"https://relay.example/v1","key":"fixture-key"}]}),
+    )?;
+    let sources = preview(&Database::memory()?, &paths)?;
+    for source in &sources[..3] {
+        assert!(source.error.is_none());
+        assert!(
+            source.items.is_empty(),
+            "generated local route excluded from {}",
+            source.id
+        );
+    }
+    assert_eq!(sources[4].items.len(), 1);
+    assert!(sources[4].items[0].skip.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_import_rechecks_current_application_listener_on_confirmation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+    use std::sync::Arc;
+    let (dir, paths) = fixture()?;
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://localhost:43130","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}),
+    )?;
+    let before = std::fs::read(&paths.claude)?;
+    let db = Arc::new(Database::memory()?);
+    let manager = Arc::new(CodexOAuthManager::new(dir.path().join("managed")));
+    let item = preview_with_accounts(db.clone(), manager.clone(), paths.clone())
+        .await?
+        .remove(1)
+        .items
+        .remove(0);
+    assert!(item.skip.is_none());
+    let mut config = db.get_global_proxy_config().await?;
+    config.listen_port = 43130;
+    db.update_global_proxy_config(config).await?;
+    let source = preview_with_accounts(db.clone(), manager.clone(), paths.clone())
+        .await?
+        .remove(1);
+    assert!(source.error.is_none());
+    assert!(source.items.is_empty());
+    assert_eq!(
+        import_with_accounts(
+            db.clone(),
+            manager.clone(),
+            paths,
+            vec![Pick {
+                source: "claude-code".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None,
+            }]
+        )
+        .await,
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    assert!(manager.list_accounts().await.is_empty());
+    assert!(std::fs::read(dir.path().join(".claude/settings.json"))? == before);
+    Ok(())
 }
 
 #[tokio::test]
@@ -956,3 +1628,6 @@ fn joining_imported_keys_fills_missing_capabilities_and_preserves_local_preferen
     assert_eq!(models[0]["modelPreferences"]["reasoningLevels"], json!([]));
     Ok(())
 }
+
+#[path = "identity_tests.rs"]
+mod identity_tests;

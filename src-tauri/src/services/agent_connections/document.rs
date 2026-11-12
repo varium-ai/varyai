@@ -6,16 +6,46 @@ use serde_json::{json, Value};
 pub(super) enum Format {
     #[default]
     Json,
+    CursorEnvironment,
+    // Persist the old receipt format; OpenCode upgrades it when loading.
+    #[serde(rename(serialize = "Json5"))]
+    Jsonc,
     Json5,
     Toml,
     Yaml,
+    Cordis,
     Env,
 }
 impl Format {
+    pub(super) fn read(self, path: &std::path::Path) -> Result<Option<String>, String> {
+        if matches!(self, Self::CursorEnvironment) {
+            super::cursor::read_environment(path)
+        } else {
+            super::read(path)
+        }
+    }
+    pub(super) fn replace_checked(
+        self,
+        path: &std::path::Path,
+        before: Option<&str>,
+        after: Option<&str>,
+    ) -> Result<(), String> {
+        if matches!(self, Self::CursorEnvironment) {
+            super::cursor::replace_environment(path, before, after)
+        } else {
+            super::replace_checked(path, before, after)
+        }
+    }
+
     pub(super) fn parse(self, text: Option<&str>) -> Result<Value, String> {
         let value = match self {
-            Self::Json => return parse(text),
-            Self::Json5 => json5::from_str(text.unwrap_or("{}")).map_err(|_| FAILED)?,
+            Self::Cordis => return crate::services::deepseek_harness::parse(text.unwrap_or("")),
+            Self::Json | Self::CursorEnvironment => return parse(text),
+            // Accept legacy receipts for recovery; Jsonc encoding validates the
+            // emitted document against OpenCode's stricter syntax.
+            Self::Jsonc | Self::Json5 => {
+                json5::from_str(text.unwrap_or("{}")).map_err(|_| FAILED)?
+            }
             Self::Toml => serde_json::to_value(
                 text.unwrap_or("")
                     .parse::<toml::Value>()
@@ -55,7 +85,11 @@ impl Format {
     pub(super) fn encode(self, source: Option<&str>, next: &Value) -> Result<String, String> {
         let before = self.parse(source)?;
         match self {
-            Self::Json => serde_json::to_string_pretty(next).map_err(|_| FAILED.into()),
+            Self::Cordis => crate::services::deepseek_harness::encode(source.unwrap_or(""), next),
+            Self::Json | Self::CursorEnvironment => {
+                serde_json::to_string_pretty(next).map_err(|_| FAILED.into())
+            }
+            Self::Jsonc => super::jsonc::encode(source.unwrap_or("{}"), &before, next),
             Self::Json5 => {
                 crate::openclaw_config::patch_document(source.unwrap_or("{}"), &before, next)
                     .map_err(|_| FAILED.into())

@@ -8,6 +8,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 import { ToolRiskPolicyChangesPanel } from "./ToolRiskPolicyChangesPanel";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@/lib/api", async () => ({
@@ -44,7 +45,88 @@ const button = (name: string) => screen.getByRole("button", { name });
 describe("P2-9 policy changes panel with real hooks and API", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset().mockResolvedValue([]);
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.error).mockClear();
   });
+  it.each([false, true])(
+    "reports manual refresh failure=%s without exposing errors",
+    async (failed) => {
+      mount();
+      await screen.findByText("toolRisk.policyChanges.empty");
+      if (failed)
+        vi.mocked(invoke).mockRejectedValueOnce(
+          new Error("synthetic-private-detail"),
+        );
+      fireEvent.click(button("common.refresh"));
+      await waitFor(() =>
+        expect(failed ? toast.error : toast.success).toHaveBeenCalledWith(
+          `toolRisk.policyChanges.${failed ? "refreshFailed" : "refreshed"}`,
+        ),
+      );
+      expect(document.body.textContent).not.toContain(
+        "synthetic-private-detail",
+      );
+    },
+  );
+  it("shows localized builtin names and the current custom rule name beside stable IDs", async () => {
+    const id = "custom-12345678-1234-1234-1234-123456789abc";
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "get_tool_risk_rules"
+        ? [{ id, origin: "custom", name: "Synthetic custom rule" }]
+        : [row, { ...row, id: 2, targetId: id }],
+    );
+    mount();
+    expect(
+      await screen.findByText("toolRisk.builtinRule.sensitive_read.name"),
+    ).toBeVisible();
+    expect(await screen.findByText("Synthetic custom rule")).toBeVisible();
+    expect(screen.getByText(id)).toBeVisible();
+    expect(screen.getByText("builtin.sensitive_read")).toBeVisible();
+    expect(
+      screen.getByText("toolRisk.policyChanges.currentNamesHint"),
+    ).toBeVisible();
+  });
+  it.each([false, true])(
+    "refreshes current rule names and waits for their result when failed=%s",
+    async (failed) => {
+      const id = "custom-12345678-1234-1234-1234-123456789abc";
+      vi.mocked(invoke).mockImplementation(async (command) =>
+        command === "get_tool_risk_rules"
+          ? [{ id, origin: "custom", name: "Synthetic original name" }]
+          : [{ ...row, targetId: id }],
+      );
+      mount();
+      await screen.findByText("Synthetic original name");
+      let finish!: () => void;
+      vi.mocked(invoke).mockImplementation((command) =>
+        command === "get_tool_risk_rules"
+          ? new Promise((resolve, reject) => {
+              finish = () =>
+                failed
+                  ? reject(new Error("synthetic-private-name-error"))
+                  : resolve([
+                      { id, origin: "custom", name: "Synthetic updated name" },
+                    ]);
+            })
+          : Promise.resolve([{ ...row, targetId: id }]),
+      );
+      fireEvent.click(button("common.refresh"));
+      await waitFor(() => expect(finish).toBeTypeOf("function"));
+      expect(button("common.refresh")).toBeDisabled();
+      expect(toast.success).not.toHaveBeenCalled();
+      await act(async () => finish());
+      await waitFor(() =>
+        expect(failed ? toast.error : toast.success).toHaveBeenCalledWith(
+          `toolRisk.policyChanges.${failed ? "refreshFailed" : "refreshed"}`,
+        ),
+      );
+      if (!failed)
+        expect(await screen.findByText("Synthetic updated name")).toBeVisible();
+      expect(document.body.textContent).not.toContain(
+        "synthetic-private-name-error",
+      );
+    },
+  );
   it("starts at 50 records, displays fixed metadata and the honest local-history boundary", async () => {
     vi.mocked(invoke).mockResolvedValue([row]);
     mount();
@@ -67,10 +149,12 @@ describe("P2-9 policy changes panel with real hooks and API", () => {
     expect(button("security.nextPage")).toBeDisabled();
   });
   it("pages by 50, returns to the previous page, and refreshes the active page", async () => {
-    vi.mocked(invoke).mockImplementation(async (_command, args) =>
-      (args as { offset: number }).offset === 0
-        ? Array.from({ length: 50 }, (_, i) => ({ ...row, id: i + 1 }))
-        : [{ ...row, id: 51 }],
+    vi.mocked(invoke).mockImplementation(async (command, args) =>
+      command === "get_tool_risk_rules"
+        ? []
+        : (args as { offset: number }).offset === 0
+          ? Array.from({ length: 50 }, (_, i) => ({ ...row, id: i + 1 }))
+          : [{ ...row, id: 51 }],
     );
     mount();
     await waitFor(() => expect(button("security.nextPage")).toBeEnabled());
@@ -85,8 +169,8 @@ describe("P2-9 policy changes panel with real hooks and API", () => {
     await waitFor(() => expect(button("common.refresh")).toBeEnabled());
     const count = vi.mocked(invoke).mock.calls.length;
     fireEvent.click(button("common.refresh"));
-    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(count + 1));
-    expect(invoke).toHaveBeenLastCalledWith("get_tool_risk_policy_changes", {
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(count + 2));
+    expect(invoke).toHaveBeenCalledWith("get_tool_risk_policy_changes", {
       limit: 50,
       offset: 50,
     });
@@ -131,11 +215,12 @@ describe("P2-9 policy changes panel with real hooks and API", () => {
   });
   it("shows loading, disables duplicate actions, then shows empty", async () => {
     let resolve!: (value: unknown[]) => void;
-    vi.mocked(invoke).mockImplementation(
-      () =>
-        new Promise((done) => {
-          resolve = done;
-        }),
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_tool_risk_rules"
+        ? Promise.resolve([])
+        : new Promise((done) => {
+            resolve = done;
+          }),
     );
     mount();
     expect(screen.getByText("common.loading")).toBeVisible();

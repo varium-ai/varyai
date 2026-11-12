@@ -114,8 +114,13 @@ fn client(reference: String, app: &str, name: String, settings: &Value) -> Candi
         .into();
     }
     let mut rows = models(&json!(rows));
+    let mut generated_gateway = false;
     if app == "codex" {
         if let Ok(config) = text(settings, &["config"]).parse::<toml::Value>() {
+            generated_gateway = config
+                .get("model_provider")
+                .and_then(toml::Value::as_str)
+                .is_some_and(gateways::generated_id);
             if let Some(model) = config.get("model").and_then(toml::Value::as_str) {
                 for row in rows.iter_mut().filter(|row| row["model"] == model) {
                     reasoning::selected(
@@ -132,6 +137,7 @@ fn client(reference: String, app: &str, name: String, settings: &Value) -> Candi
         reasoning::claude(&mut rows, settings);
     }
     let mut result = candidate(reference, app, name, base, key.clone(), &format, rows);
+    result.generated_gateway |= generated_gateway;
     if key.is_empty() {
         result.skip = Some("subscription".into());
     }
@@ -197,21 +203,25 @@ pub(super) fn cc_switch(path: &Path) -> Result<Vec<Candidate>, String> {
         .map_err(|_| FAILED)?;
         conn.busy_timeout(std::time::Duration::from_secs(2))
             .map_err(|_| FAILED)?;
-        let has_meta = conn
+        let columns = conn
             .prepare("PRAGMA table_info(providers)")
             .map_err(|_| FAILED)?
             .query_map([], |r| r.get::<_, String>(1))
             .map_err(|_| FAILED)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| FAILED)?
-            .iter()
-            .any(|name| name == "meta");
-        let sql = if has_meta {
-            "SELECT id,app_type,name,settings_config,COALESCE(meta,'{}') FROM providers ORDER BY app_type,id LIMIT 513"
+            .map_err(|_| FAILED)?;
+        let meta = if columns.iter().any(|name| name == "meta") {
+            "COALESCE(meta,'{}')"
         } else {
-            "SELECT id,app_type,name,settings_config,'{}' FROM providers ORDER BY app_type,id LIMIT 513"
+            "'{}'"
         };
-        let mut stmt = conn.prepare(sql).map_err(|_| FAILED)?;
+        let icon = if columns.iter().any(|name| name == "icon") {
+            "COALESCE(icon,'')"
+        } else {
+            "''"
+        };
+        let sql = format!("SELECT id,app_type,name,settings_config,{meta},{icon} FROM providers ORDER BY app_type,id LIMIT 513");
+        let mut stmt = conn.prepare(&sql).map_err(|_| FAILED)?;
         let entries = stmt
             .query_map([], |r| {
                 Ok((
@@ -220,17 +230,19 @@ pub(super) fn cc_switch(path: &Path) -> Result<Vec<Candidate>, String> {
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
                 ))
             })
             .map_err(|_| FAILED)?;
         for entry in entries {
-            let (id, app, name, raw, meta) = entry.map_err(|_| FAILED)?;
+            let (id, app, name, raw, meta, icon) = entry.map_err(|_| FAILED)?;
             if raw.len() as u64 > MAX_FILE {
                 return Err(INVALID.into());
             }
             let settings: Value = serde_json::from_str(&raw).map_err(|_| INVALID)?;
             let meta: Value = serde_json::from_str(&meta).map_err(|_| INVALID)?;
             let mut c = client(format!("{app}/{id}"), &app, name, &settings);
+            c.record.icon = crate::services::provider_icons::imported(&icon, None);
             apply_meta(&mut c, &meta);
             out.push(c);
         }
@@ -245,6 +257,8 @@ pub(super) fn cc_switch(path: &Path) -> Result<Vec<Candidate>, String> {
                         text(provider, &["name"]),
                         &provider["settingsConfig"],
                     );
+                    c.record.icon =
+                        crate::services::provider_icons::imported(&text(provider, &["icon"]), None);
                     apply_meta(&mut c, &provider["meta"]);
                     out.push(c);
                 }
@@ -398,9 +412,6 @@ pub(super) fn codex(path: &Path, home: &Path) -> Result<Vec<Candidate>, String> 
         if table.get("env_http_headers").is_some() {
             result.skip = Some("unsupported".into());
         }
-        if id == "magpie" || id == "varyai" {
-            result.skip = Some("selfRoute".into());
-        }
         out.push(result);
     }
     Ok(out)
@@ -474,6 +485,8 @@ pub(super) fn opencode(paths: &ImportPaths) -> Result<Vec<Candidate>, String> {
             if name.is_empty() { id.clone() } else { name },
             &config,
         );
+        result.record.icon =
+            crate::services::provider_icons::imported(&text(&config, &["icon"]), None);
         if matches!(login["type"].as_str(), Some("oauth" | "wellknown"))
             && text(&config["options"], &["apiKey"]).is_empty()
         {
@@ -485,6 +498,37 @@ pub(super) fn opencode(paths: &ImportPaths) -> Result<Vec<Candidate>, String> {
         out.push(result);
     }
     Ok(out)
+}
+
+fn magpie_key_models(provider: &Value, key: &str) -> Option<Vec<String>> {
+    let reference = format!("{:x}", Sha256::digest(key.as_bytes()))[..10].to_owned();
+    if let Some(rows) = provider["accountModels"]
+        .get(&reference)
+        .and_then(Value::as_array)
+    {
+        if !rows.is_empty() {
+            return Some(
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+            );
+        }
+    }
+    if provider["accountModelsAll"][&reference] == true {
+        return None;
+    }
+    let rows = models(&provider["models"]);
+    rows.iter().any(|row| row["keys"].is_array()).then(|| {
+        rows.iter()
+            .filter(|row| {
+                row["keys"]
+                    .as_array()
+                    .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(&reference)))
+            })
+            .filter_map(|row| crate::services::routing_upstreams::model_id(row).map(str::to_owned))
+            .collect()
+    })
 }
 
 pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
@@ -504,6 +548,9 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
         .ok_or(INVALID)?;
     let mut out = vec![];
     for (index, p) in providers.iter().enumerate() {
+        if p["hidden"] == true {
+            continue;
+        }
         let id = text(p, &["id"]);
         let reference = format!("{index}/{id}");
         let mut endpoints = BTreeMap::new();
@@ -545,8 +592,17 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
             &selected,
             models(&p["models"]),
         );
+        result.record.id = id.clone();
+        result.record.icon =
+            crate::services::provider_icons::imported(&text(p, &["icon"]), path.parent());
         result.record.enabled = p["off"] != true;
         let mut transport = ImportedTransport {
+            primary_name: p
+                .get("keyName")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+            primary_models: magpie_key_models(p, &text(p, &["key"])),
             endpoints,
             primary_protocol: (!primary_protocol.is_empty()).then_some(selected.clone()),
             ..Default::default()
@@ -554,15 +610,13 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
         if let Some(keys) = p["keys"].as_array() {
             for (index, key) in keys.iter().enumerate() {
                 let protocol = text(key, &["protocol"]);
-                if !text(key, &["plan"]).is_empty() {
-                    result.skip = Some("unsupported".into());
-                }
                 transport.keys.push(ImportedKey {
                     id: format!("import-key-{index}"),
                     name: text(key, &["name"]),
                     key: Some(text(key, &["key"])),
                     enabled: key["off"] != true,
                     api_format: (!protocol.is_empty()).then(|| format(&protocol).into()),
+                    models: magpie_key_models(p, &text(key, &["key"])),
                 });
             }
         }
@@ -655,17 +709,6 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
                 && matches!(id.as_str(), "codex" | "claude" | "copilot" | "workbuddy"))
         {
             result.skip = Some("subscription".into());
-        }
-        if ["proxy", "extraBody", "keyPlan"].iter().any(|key| {
-            p.get(*key)
-                .is_some_and(|v| !v.is_null() && v != "" && v != &json!({}))
-        }) || p["insecureTLS"] == true
-            || !matches!(text(p, &["routing"]).as_str(), "" | "order")
-            || p["sink"] == true
-            || p["fallback"].as_array().is_some_and(|v| !v.is_empty())
-            || p["decide"].as_str().is_some_and(|v| !v.is_empty())
-        {
-            result.skip = Some("unsupported".into());
         }
         out.push(result);
     }

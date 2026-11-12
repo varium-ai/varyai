@@ -1,10 +1,16 @@
+pub(crate) mod agent_rewards;
 pub mod balance;
+#[cfg(any(target_os = "macos", windows, test))]
+pub(crate) mod codex_app_server;
 pub mod codex_oauth_models;
 pub(crate) mod codex_provider;
+pub(crate) mod codex_proxy_diagnostic;
 pub mod coding_plan;
 pub mod config;
+pub(crate) mod doubao_checkin;
 pub mod env_checker;
 pub mod env_manager;
+pub(crate) mod grok_subscription;
 pub mod mcp;
 pub mod model_fetch;
 pub mod model_pricing;
@@ -35,6 +41,8 @@ pub mod sql_helpers;
 pub mod stream_check;
 pub mod subscription;
 pub mod subscription_grok;
+pub(crate) mod subscription_plan;
+pub(crate) mod subscription_provider;
 pub mod sync_protocol;
 pub mod tool_risk;
 pub mod usage_cache;
@@ -42,6 +50,7 @@ pub mod usage_stats;
 pub mod webdav;
 pub mod webdav_auto_sync;
 pub mod webdav_sync;
+pub(crate) mod workbuddy_checkin;
 pub(crate) mod workbuddy_proxy;
 
 pub use config::ConfigService;
@@ -60,7 +69,9 @@ pub use usage_stats::{
     RequestLogDetail, UsageSummary, UsageSummaryByApp,
 };
 pub(crate) mod agent_clients;
+pub(crate) mod deepseek_harness;
 pub(crate) mod intent_routing;
+pub(crate) mod routing_provider_quota;
 pub(crate) mod routing_upstreams;
 
 pub(crate) mod trae_bridge;
@@ -71,4 +82,7 @@ pub(crate) mod upstream_protocol;
 
 pub(crate) mod agent_connections;
 
+pub(crate) mod provider_icons;
 pub(crate) mod provider_import;
+
+pub(crate) mod native_subscription;

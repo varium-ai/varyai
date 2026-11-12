@@ -571,11 +571,17 @@ impl SkillService {
         // 目录覆盖：优先使用用户在 settings.json 中配置的 override 目录
         match app {
             AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
                     "Skill synchronization is not supported for this app"
@@ -638,11 +644,17 @@ impl SkillService {
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
             AppType::Pi => crate::pi_config::get_pi_agent_dir()?.join("skills"),
             AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
                     "Skill synchronization is not supported for this app"
@@ -708,11 +720,17 @@ impl SkillService {
             !matches!(
                 app,
                 AppType::WorkBuddy
+                    | AppType::WorkBuddyAi
                     | AppType::Qoder
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
                     | AppType::DoubaoWork
             )
         }) {
@@ -1072,11 +1090,17 @@ impl SkillService {
                         !matches!(
                             app,
                             AppType::WorkBuddy
+                                | AppType::WorkBuddyAi
                                 | AppType::Qoder
                                 | AppType::Kimi
                                 | AppType::Qwen
                                 | AppType::ZCode
+                                | AppType::DeepSeekHarness
                                 | AppType::Trae
+                                | AppType::TraeIntl
+                                | AppType::Cursor
+                                | AppType::CursorCli
+                                | AppType::T3Code
                                 | AppType::DoubaoWork
                         )
                     }) {
@@ -1722,11 +1746,17 @@ impl SkillService {
             !matches!(
                 app,
                 AppType::WorkBuddy
+                    | AppType::WorkBuddyAi
                     | AppType::Qoder
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
                     | AppType::DoubaoWork
             )
         }) {
@@ -1934,11 +1964,17 @@ impl SkillService {
             !matches!(
                 app,
                 AppType::WorkBuddy
+                    | AppType::WorkBuddyAi
                     | AppType::Qoder
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
                     | AppType::DoubaoWork
             )
         }) {
@@ -2016,11 +2052,17 @@ impl SkillService {
             !matches!(
                 app,
                 AppType::WorkBuddy
+                    | AppType::WorkBuddyAi
                     | AppType::Qoder
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
                     | AppType::DoubaoWork
             )
         }) {
@@ -2543,11 +2585,17 @@ impl SkillService {
             AppType::ClaudeDesktop
                 | AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
+                | AppType::Cursor
+                | AppType::CursorCli
+                | AppType::T3Code
                 | AppType::DoubaoWork
         ) {
             return Ok(());
@@ -3563,11 +3611,17 @@ impl SkillService {
             !matches!(
                 app,
                 AppType::WorkBuddy
+                    | AppType::WorkBuddyAi
                     | AppType::Qoder
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
                     | AppType::DoubaoWork
             )
         }) {
@@ -4312,11 +4366,17 @@ pub fn migrate_skills_to_ssot(db: &Arc<Database>) -> Result<usize> {
         !matches!(
             app,
             AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
+                | AppType::Cursor
+                | AppType::CursorCli
+                | AppType::T3Code
                 | AppType::DoubaoWork
         )
     }) {

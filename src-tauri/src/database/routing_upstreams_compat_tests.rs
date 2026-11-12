@@ -6,6 +6,8 @@ use serde_json::json;
 
 fn custom() -> RoutingUpstream {
     RoutingUpstream {
+        notes: None,
+        icon: None,
         transport: None,
         schema_version: 1,
         preset_id: None,
@@ -29,9 +31,303 @@ fn custom() -> RoutingUpstream {
     }
 }
 
+#[tokio::test]
+async fn api_provider_id_rename_moves_references_and_preserves_agent_and_transport_identity(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::{
+        intent_routing::{catalog, menu},
+        routing_upstreams,
+    };
+    let db = std::sync::Arc::new(Database::memory()?);
+    db.set_intent_routing_auto_create(true)?;
+    let mut original = custom();
+    original.transport = Some(routing_upstreams::ImportedTransport {
+        keys: vec![routing_upstreams::ImportedKey {
+            id: "backup".into(),
+            name: "Backup".into(),
+            key: Some("synthetic-backup-key".into()),
+            enabled: true,
+            api_format: None,
+            models: None,
+        }],
+        ..Default::default()
+    });
+    let saved = db.save_routing_upstream(original)?;
+    db.save_routing_upstream(custom())?;
+    let mut group = db.intent_routing_catalog()?.groups.remove(0);
+    group.name = "Owned fixture".into();
+    group.classifier_target = Some(crate::services::intent_routing::Target {
+        provider_id: saved.id.clone(),
+        model_id: "exact-model".into(),
+    });
+    let group = db.save_intent_routing_group(group)?;
+    db.set_routing_auto_group_skip(vec![saved.id.clone()])?;
+    let dir = tempfile::tempdir()?;
+    let manager = std::sync::Arc::new(
+        crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(dir.path().to_owned()),
+    );
+    let (providers, _) = catalog::prepare_providers(db.clone(), manager.clone(), false).await?;
+    let before = menu::prepare(manager.clone(), providers, vec![group.clone()], None).await?;
+    let mut edited = db.routing_upstream_editor(&saved.id, saved.revision)?;
+    edited.id = "renamed-fixture".into();
+    let renamed = db.save_routing_upstream_as(edited, Some(&saved.id))?;
+    assert_eq!(renamed.id, "renamed-fixture");
+    assert_eq!(renamed.revision, saved.revision + 1);
+    assert!(db
+        .routing_upstream_editor(&saved.id, saved.revision)
+        .is_err());
+    assert!(
+        db.reveal_routing_upstream_key(&renamed.id, renamed.revision, "")?
+            == "synthetic-portable-key"
+    );
+    assert_eq!(db.routing_auto_group_skip()?, vec![renamed.id.clone()]);
+    let groups = db.list_intent_routing_groups()?;
+    let updated = groups
+        .iter()
+        .find(|g| g.id == group.id)
+        .ok_or("group missing")?;
+    assert_eq!(updated.revision, group.revision + 1);
+    assert!(updated.members.iter().any(|m| m.provider_id == renamed.id));
+    assert!(updated.members.iter().all(|m| m.provider_id != saved.id));
+    assert_eq!(
+        updated
+            .classifier_target
+            .as_ref()
+            .map(|t| t.provider_id.as_str()),
+        Some(renamed.id.as_str())
+    );
+    let (providers, _) = catalog::prepare_providers(db.clone(), manager.clone(), false).await?;
+    let after = menu::prepare(manager, providers, groups, None).await?;
+    let old = crate::services::agent_connections::models(&before);
+    let new = crate::services::agent_connections::models(&after);
+    assert_eq!(
+        old.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        new.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
+    for (alias, session) in &before.groups {
+        let next = after.groups.get(alias).ok_or("model alias changed")?;
+        for old in &session.targets {
+            let next = next
+                .targets
+                .iter()
+                .find(|t| {
+                    t.provider_id == old.provider_id
+                        && t.model == old.model
+                        && t.headers == old.headers
+                })
+                .ok_or("target identity changed")?;
+            assert_eq!(old.url, next.url);
+            assert_eq!(old.headers, next.headers);
+            assert_eq!(
+                serde_json::to_value(&old.upstream)?,
+                serde_json::to_value(&next.upstream)?
+            );
+        }
+    }
+    let mut stale = renamed.clone();
+    stale.id = "stale-fixture".into();
+    stale.revision -= 1;
+    assert!(db
+        .save_routing_upstream_as(stale, Some(&renamed.id))
+        .is_err());
+    let mut collision = renamed.clone();
+    collision.id = "portable-fixture-2".into();
+    assert!(db
+        .save_routing_upstream_as(collision, Some(&renamed.id))
+        .is_err());
+    assert_eq!(db.routing_auto_group_skip()?, vec![renamed.id.clone()]);
+    let record = db.routing_upstream_editor(&renamed.id, renamed.revision)?;
+    assert_eq!(record.id, renamed.id);
+    let provider = db.routing_discovery_provider(&renamed.id, renamed.revision)?;
+    assert_eq!(routing_upstreams::variants(&provider).len(), 2);
+    assert!(
+        db.reveal_routing_upstream_key(&renamed.id, renamed.revision, "backup")?
+            == "synthetic-backup-key"
+    );
+    let mut reused = custom();
+    reused.id = saved.id.clone();
+    db.save_routing_upstream(reused)?;
+    let providers = db.routing_providers()?;
+    let current = providers
+        .iter()
+        .find(|p| p.id == renamed.id)
+        .ok_or("renamed missing")?;
+    let reused = providers
+        .iter()
+        .find(|p| p.id == saved.id)
+        .ok_or("new owner missing")?;
+    assert_ne!(
+        routing_upstreams::execution_identity(current),
+        routing_upstreams::execution_identity(reused)
+    );
+    Ok(())
+}
+
+#[test]
+fn provider_id_rename_rolls_back_every_reference_on_storage_failure(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    db.set_intent_routing_auto_create(true)?;
+    let saved = db.save_routing_upstream(custom())?;
+    db.save_routing_upstream(custom())?;
+    let group = db.save_intent_routing_group(db.intent_routing_catalog()?.groups.remove(0))?;
+    db.set_routing_auto_group_skip(vec![saved.id.clone()])?;
+    db.extension_connection().lock().map_err(|_| "fixture")?.execute_batch("CREATE TRIGGER rename_failure BEFORE UPDATE ON intent_routing_groups BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;")?;
+    let mut next = db.routing_upstream_editor(&saved.id, saved.revision)?;
+    next.id = "renamed-fixture".into();
+    assert!(db.save_routing_upstream_as(next, Some(&saved.id)).is_err());
+    assert_eq!(db.list_intent_routing_groups()?[0], group);
+    assert_eq!(db.routing_auto_group_skip()?, vec![saved.id.clone()]);
+    assert!(db
+        .routing_upstream_editor(&saved.id, saved.revision)
+        .is_ok());
+    assert!(db
+        .routing_upstream_editor("renamed-fixture", saved.revision + 1)
+        .is_err());
+    Ok(())
+}
+
+#[test]
+fn provider_notes_survive_save_edit_and_do_not_enter_upstream_configuration(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let mut raw = serde_json::to_value(custom())?;
+    raw["notes"] = json!("Synthetic original provider note");
+    let saved = db.save_routing_upstream(serde_json::from_value(raw)?)?;
+    let editor = db.routing_upstream_editor(&saved.id, saved.revision)?;
+    let mut updated = serde_json::to_value(&editor)?;
+    assert_eq!(updated["notes"], "Synthetic original provider note");
+    updated["notes"] = json!("Synthetic revised provider note");
+    let saved = db.save_routing_upstream(serde_json::from_value(updated)?)?;
+    let reloaded = db.routing_upstream_editor(&saved.id, saved.revision)?;
+    assert_eq!(
+        serde_json::to_value(&reloaded)?["notes"],
+        "Synthetic revised provider note"
+    );
+    assert!(!format!("{reloaded:?}").contains("provider note"));
+    let executable = db.routing_discovery_provider(&reloaded.id, reloaded.revision)?;
+    assert!(!executable
+        .settings_config
+        .to_string()
+        .contains("provider note"));
+    Ok(())
+}
+
+#[test]
+fn key_pool_editor_preserves_private_keys_and_applies_enabled_preference_order(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::routing_upstreams::{variants, ImportedKey, ImportedTransport};
+    let db = Database::memory()?;
+    let mut record = custom();
+    record.transport = Some(ImportedTransport {
+        primary_name: Some("Personal".into()),
+        keys: vec![ImportedKey {
+            id: "backup".into(),
+            name: "Backup".into(),
+            key: Some("synthetic-backup-key".into()),
+            enabled: true,
+            api_format: None,
+            models: None,
+        }],
+        ..Default::default()
+    });
+    let saved = db.save_routing_upstream(record)?;
+    let summaries = db.routing_upstream_keys(&saved.id, saved.revision)?;
+    assert_eq!(summaries.len(), 2);
+    assert!(summaries.iter().all(|key| !key.label.contains("synthetic")));
+    assert!(
+        db.reveal_routing_upstream_key(&saved.id, saved.revision, "backup")?
+            == "synthetic-backup-key"
+    );
+    assert!(db
+        .reveal_routing_upstream_key(&saved.id, saved.revision + 1, "backup")
+        .is_err());
+    let mut value = serde_json::to_value(saved)?;
+    value["transport"]["preferredKey"] = json!("backup");
+    let preferred = db.save_routing_upstream(serde_json::from_value(value)?)?;
+    let provider = db.routing_providers()?.remove(0);
+    let candidates = variants(&provider);
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].settings_config["routingKeyLabel"], "Backup");
+    assert_eq!(candidates[1].settings_config["routingKeyLabel"], "Personal");
+    assert!(candidates
+        .iter()
+        .all(|provider| provider.settings_config.get("routingKeyId").is_none()));
+    let encoded = serde_json::to_string(&summaries)?;
+    assert!(!encoded.contains("observation") && !encoded.contains("synthetic"));
+    assert!(
+        candidates[0]
+            .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+            .1
+            == "synthetic-backup-key"
+    );
+    let mut value = serde_json::to_value(preferred)?;
+    value["transport"]["primaryOff"] = json!(true);
+    let disabled = db.save_routing_upstream(serde_json::from_value(value)?)?;
+    assert_eq!(variants(&db.routing_providers()?.remove(0)).len(), 1);
+    assert!(variants(&db.routing_providers()?.remove(0))[0]
+        .settings_config
+        .get("routingKeyLabel")
+        .is_none());
+    let mut value = serde_json::to_value(disabled)?;
+    value["transport"]["keys"][0]["enabled"] = json!(false);
+    db.save_routing_upstream(serde_json::from_value(value)?)?;
+    assert!(db.routing_providers()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn key_pool_edits_cannot_move_hidden_credentials_to_another_endpoint(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::routing_upstreams::{ImportedKey, ImportedTransport};
+    let db = Database::memory()?;
+    let mut record = custom();
+    record.transport = Some(ImportedTransport {
+        keys: vec![ImportedKey {
+            id: "backup".into(),
+            name: "Backup".into(),
+            key: Some("synthetic-backup-key".into()),
+            enabled: true,
+            api_format: None,
+            models: None,
+        }],
+        ..Default::default()
+    });
+    let saved = db.save_routing_upstream(record)?;
+    let mut value = serde_json::to_value(&saved)?;
+    value["source"]["baseUrl"] = json!("https://other.example/v1");
+    value["source"]["apiKey"] = json!("synthetic-replacement");
+    assert!(db
+        .save_routing_upstream(serde_json::from_value(value)?)
+        .is_err());
+    assert!(db
+        .reveal_routing_upstream_key(&saved.id, saved.revision, "unknown")
+        .is_err());
+    Ok(())
+}
+
+#[test]
+fn provider_icons_round_trip_and_reach_the_shared_catalog() -> Result<(), Box<dyn std::error::Error>>
+{
+    let db = Database::memory()?;
+    let mut value = serde_json::to_value(custom())?;
+    value["icon"] = json!("deepseek");
+    let record: RoutingUpstream = serde_json::from_value(value)?;
+    let saved = db.save_routing_upstream(record)?;
+    assert_eq!(serde_json::to_value(&saved)?["icon"], "deepseek");
+    assert_eq!(
+        serde_json::to_value(db.list_routing_upstreams()?.remove(0))?["icon"],
+        "deepseek"
+    );
+    let resolved = db.routing_discovery_provider(&saved.id, saved.revision)?;
+    assert_eq!(resolved.icon.as_deref(), Some("deepseek"));
+    Ok(())
+}
+
 #[test]
 fn automatic_group_exclusions_preserve_owned_groups_and_unlisted_stand_ins() {
     let db = Database::memory().expect("database");
+    db.set_intent_routing_auto_create(true).expect("on");
     let mut saved = Vec::new();
     for _ in 0..2 {
         saved.push(db.save_routing_upstream(custom()).expect("provider"));

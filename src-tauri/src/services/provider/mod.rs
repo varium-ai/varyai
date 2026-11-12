@@ -2408,7 +2408,7 @@ requires_openai_auth = true
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "DeepSeek V4 Flash Updated", "supports1m": true }]),
+            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "DeepSeek V4 Flash Updated", "supports1m": true, "prefer1m": true }]),
             "provider edits should propagate into the Claude Desktop 3P profile during takeover"
         );
         state
@@ -4797,7 +4797,7 @@ impl ProviderService {
         }
     }
 
-    fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
+    pub(crate) fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
         provider
             .meta
             .as_ref()
@@ -6303,11 +6303,17 @@ impl ProviderService {
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => Ok(String::new()),
         }
     }
@@ -6328,11 +6334,17 @@ impl ProviderService {
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => Ok(String::new()),
         }
     }
@@ -6985,12 +6997,22 @@ impl ProviderService {
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
         match app_type {
+            AppType::Cursor | AppType::CursorCli | AppType::T3Code => {
+                return Err(AppError::InvalidInput(
+                    "Configure this agent through Agent connections".into(),
+                ))
+            }
             AppType::DoubaoWork => {
                 return Err(AppError::InvalidInput(
                     "Doubao Work does not expose custom provider settings".into(),
                 ))
             }
-            AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae => {
+            AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::DeepSeekHarness
+            | AppType::Trae
+            | AppType::TraeIntl => {
                 if provider.category.as_deref() != Some("official") {
                     crate::services::agent_clients::validate(&provider.settings_config)?;
                 }
@@ -7114,7 +7136,7 @@ impl ProviderService {
                     crate::qoder_config::validate_provider(&provider.settings_config)?;
                 }
             }
-            AppType::WorkBuddy => {
+            AppType::WorkBuddy | AppType::WorkBuddyAi => {
                 if provider.category.as_deref() != Some("official") {
                     crate::workbuddy_config::configured_models(&provider.settings_config)?;
                 }
@@ -7330,11 +7352,17 @@ impl ProviderService {
             | AppType::Hermes
             | AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {
                 // These native formats use apiKey and baseUrl directly on the object.
                 let api_key = provider

@@ -3,6 +3,64 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { isChatTarget, bootstrapSource, PipeClient } = require("./agent.cjs");
 const { PassThrough } = require("node:stream");
+test("IDE services survive module renumbering without loading unrelated modules", async () => {
+  const { workbenchServices } = require("./agent.cjs");
+  for (const id of [19208, 99001]) {
+    for (const state of ["ready", "uninitialized", "ambiguous", "missing"]) {
+      const loaded = [],
+        calls = [];
+      const service = { getModelList() {} };
+      const di = {
+        isInitialized: () => state !== "uninitialized",
+        resolve(key) {
+          if (key === Symbol.for("aiAgent.IAiNativeModelService"))
+            return service;
+          if (key === Symbol.for("IModelService"))
+            return {
+              refreshModelStore: async (value) =>
+                calls.push(["refresh", value]),
+            };
+          if (key === "iICubeModelManagementService")
+            return {
+              notifyModelChanges: (value) => calls.push(["notify", value]),
+            };
+          throw Error("Unexpected service");
+        },
+      };
+      const factory = function () {
+        return { mcf: "synthetic-container" };
+      };
+      const req = (key) => {
+        loaded.push(String(key));
+        assert.equal(String(key), String(id));
+        return { mcf: { getInstance: () => di } };
+      };
+      req.m = {
+        unrelated() {
+          throw Error("must not load");
+        },
+      };
+      if (state !== "missing") req.m[id] = factory;
+      if (state === "ambiguous") req.m.other = factory;
+      if (state !== "ready") {
+        assert.throws(() => workbenchServices(req), /unsupported_ide_version/);
+        assert.deepEqual(calls, []);
+      } else {
+        const actual = workbenchServices(req);
+        assert.equal(actual.service, service);
+        await actual.refresh();
+        assert.deepEqual(calls, [
+          ["refresh", { source: "varyai" }],
+          ["notify", { source: "varyai" }],
+        ]);
+      }
+      assert.equal(
+        loaded.length,
+        ["ready", "uninitialized"].includes(state) ? 1 : 0,
+      );
+    }
+  }
+});
 test("model diagnostics expose only a recognized operation and numeric code", () => {
   const { safeModelError } = require("./agent.cjs");
   for (const value of [
@@ -89,6 +147,9 @@ test("bootstrap uses the common bridge and text audit binding", () => {
   assert.match(source, /convertReqToRustPayload/);
   assert.match(source, /__varyaiTraeAudit/);
   assert.doesNotMatch(source, /getUserInfoWithToken/);
+  assert.match(source, /previous.startingModel===1/);
+  assert.match(source, /createStartingModelAdapter\(req\)/);
+  assert.match(source, /__varyaiTraeSoloRequire/);
   new Function("return " + source);
 });
 test("Agent hooks its default connection client rather than the IDE client manager", () => {
@@ -144,6 +205,90 @@ test("resolves only an initialized Solo container and releases inspection refere
     /unsupported_agent_version/,
   );
   assert.equal(calls.at(-1), "Runtime.releaseObjectGroup");
+});
+test("Solo container discovery accepts old and renumbered exports without loading unrelated modules", async () => {
+  const { initializeSolo } = require("./agent.cjs");
+  const vm = require("node:vm");
+  for (const moduleId of [10052, 63503]) {
+    for (const state of [
+      "ready",
+      "uninitialized",
+      "ambiguous",
+      "missing",
+      "invalid",
+    ]) {
+      const loaded = [],
+        calls = [];
+      const di = {
+        isInitialized: () => state !== "uninitialized",
+        resolve() {},
+      };
+      if (state === "invalid") delete di.resolve;
+      const runtime = (id) => {
+        loaded.push(String(id));
+        return { mcf: { getInstance: () => di } };
+      };
+      const factory = function (module, exports, require) {
+        require.d(exports, { mcf: () => di });
+      };
+      runtime.m = {
+        [moduleId]: factory,
+        99999() {
+          throw Error("unrelated module must not execute");
+        },
+      };
+      if (state === "ambiguous") runtime.m[12345] = factory;
+      if (state === "missing") delete runtime.m[moduleId];
+      const context = { runtime };
+      const pipe = {
+        async call(method, params) {
+          calls.push(method);
+          if (method === "Runtime.evaluate")
+            return params.returnByValue
+              ? { result: { value: false } }
+              : { result: { objectId: "bootstrap" } };
+          if (method === "Runtime.getProperties") {
+            if (params.objectId === "bootstrap")
+              return {
+                internalProperties: [
+                  { name: "[[Scopes]]", value: { objectId: "scopes" } },
+                ],
+              };
+            if (params.objectId === "scopes")
+              return { result: [{ value: { objectId: "closure" } }] };
+            return {
+              result: [{ value: { type: "function", objectId: "runtime" } }],
+            };
+          }
+          if (method === "Runtime.callFunctionOn")
+            return {
+              result: {
+                value: vm.runInNewContext(
+                  `(${params.functionDeclaration}).call(runtime)`,
+                  context,
+                ),
+              },
+            };
+        },
+      };
+      if (state === "ready") {
+        await initializeSolo(pipe, "Agent");
+        assert.equal(context.__varyaiTraeSoloDI, di);
+        assert.equal(context.__varyaiTraeSoloRequire, runtime);
+      } else {
+        await assert.rejects(
+          initializeSolo(pipe, "Agent"),
+          /unsupported_agent_version/,
+        );
+        assert.equal(context.__varyaiTraeSoloDI, undefined);
+      }
+      assert.deepEqual(
+        loaded,
+        ["ambiguous", "missing"].includes(state) ? [] : [String(moduleId)],
+      );
+      assert.equal(calls.at(-1), "Runtime.releaseObjectGroup");
+    }
+  }
 });
 test("usage shared by IDE and Agent is recorded once; message audits are never deduplicated", async () => {
   const { deduplicateUsage } = require("./agent.cjs");
@@ -210,17 +355,30 @@ test("Agent model operations use the native authenticated client without swallow
   const fields = { ak: "test-only", model_name: "model" };
   await service.addCustomModel(fields);
   await service.updateCustomModel(fields);
+  await service.refreshModelList();
   assert.deepEqual(
     calls.map((c) => c.method),
-    ["model_list", "add_custom_model", "update_custom_model"],
+    [
+      "model_list",
+      "add_custom_model",
+      "update_custom_model",
+      "model_list_by_function",
+    ],
   );
   assert.equal(calls[1].data, fields);
+  assert.deepEqual(calls[3].data, {
+    functions: ["builder"],
+    force_refresh: true,
+  });
   fail = true;
   await assert.rejects(service.getModelList(), /model_list_unavailable/);
+  await assert.rejects(service.refreshModelList(), /model_list_unavailable/);
 });
 test("passive connection accepts only the random local browser endpoint and never launches TRAE", async () => {
   const { connectEndpoint } = require("./agent.cjs");
   class FakeSocket extends EventTarget {
+    static requests = [];
+    static rejectDiscovery = false;
     constructor(url) {
       super();
       this.url = url;
@@ -229,15 +387,33 @@ test("passive connection accepts only the random local browser endpoint and neve
     }
     send(message) {
       const request = JSON.parse(message);
+      FakeSocket.requests.push(request);
+      if (request.method === "Target.setDiscoverTargets")
+        this.discovering = request.params.discover;
+      const response =
+        request.method === "Target.setDiscoverTargets" &&
+        FakeSocket.rejectDiscovery
+          ? { error: { code: -32601, message: "synthetic discovery failure" } }
+          : {
+              result:
+                request.method === "Target.getTargets"
+                  ? {
+                      targetInfos: this.discovering
+                        ? [{ targetId: "native-workbench", type: "page" }]
+                        : [],
+                    }
+                  : { ok: true },
+            };
       queueMicrotask(() =>
         this.dispatchEvent(
           new MessageEvent("message", {
-            data: JSON.stringify({ id: request.id, result: { ok: true } }),
+            data: JSON.stringify({ id: request.id, ...response }),
           }),
         ),
       );
     }
     close() {
+      this.closed = true;
       this.dispatchEvent(new Event("close"));
     }
   }
@@ -262,22 +438,54 @@ test("passive connection accepts only the random local browser endpoint and neve
     () => {},
     FakeSocket,
   );
+  assert.deepEqual(FakeSocket.requests[0], {
+    id: 1,
+    method: "Target.setDiscoverTargets",
+    params: { discover: true },
+  });
+  assert.deepEqual(await pipe.call("Target.getTargets"), {
+    targetInfos: [{ targetId: "native-workbench", type: "page" }],
+  });
   assert.deepEqual(await pipe.call("Runtime.enable"), { ok: true });
   socket.close();
+  FakeSocket.rejectDiscovery = true;
+  await assert.rejects(
+    connectEndpoint(
+      "ws://127.0.0.1:8888/devtools/browser/test",
+      () => {},
+      FakeSocket,
+    ),
+    /native_command_failed/,
+  );
+  assert.equal(FakeSocket.current.closed, true);
 });
 
 test("bootstrap replaces an older resident bridge and keeps the current bridge on repeated scans", async () => {
   const vm = require("node:vm");
-  let released = 0;
+  let released = 0,
+    audits = 0,
+    legacyAudits = 0;
   const proto = {
-    async convertReqToRustPayload(request) {
-      return request;
+    async ib(request) {
+      return {
+        service: request.service,
+        method: request.method,
+        data: request.data,
+      };
+    },
+    async request(request) {
+      return { payload: await this.ib(request) };
     },
   };
+  const original = proto.ib;
   const client = Object.create(proto);
   const context = {
     __varyaiTraeNativeBridge: {
+      revision: 2,
+      hookRevision: 7,
+      auditBinding: "__varyaiTraeAuditV7",
       bridge: {
+        replace() {},
         disable() {
           released++;
         },
@@ -291,19 +499,65 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
           : { notifyModelChanges: async () => {} },
     },
     document: { querySelector: () => null },
+    crypto: { randomUUID: () => "synthetic-audit-id" },
+    __varyaiTraeAuditV7() {
+      legacyAudits++;
+      throw Error("older helper is disabled");
+    },
+    __varyaiTraeAuditV18(payload) {
+      audits++;
+      const { id, value } = JSON.parse(payload);
+      value.body.messages[0].content[0].text = "[REDACTED]";
+      context.__varyaiTraeNativeBridge.resolve(id, { body: value.body }, false);
+    },
     setTimeout,
     clearTimeout,
   };
   await vm.runInNewContext(bootstrapSource(), context);
   assert.equal(released, 1);
   assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
+  assert.equal(context.__varyaiTraeNativeBridge.modelVerification, 1);
+  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 18);
+  assert.equal(context.__varyaiTraeNativeBridge.startingModel, 1);
   const current = context.__varyaiTraeNativeBridge;
   assert.equal(typeof current.bridge.replace, "function");
   await current.bridge.enable();
-  const wrapped = proto.convertReqToRustPayload;
+  const wrapped = proto.ib;
+  assert.notEqual(wrapped, original);
   await vm.runInNewContext(bootstrapSource(), context);
   assert.equal(context.__varyaiTraeNativeBridge, current);
-  assert.equal(proto.convertReqToRustPayload, wrapped);
+  assert.equal(proto.ib, wrapped);
   assert.equal(released, 1);
+  await vm.runInNewContext(
+    `(async()=>{
+    const previous=globalThis.__varyaiTraeNativeBridge;
+    if(previous?.revision===2&&typeof previous.bridge?.replace==='function')return true;
+    await previous?.bridge?.disable();
+    throw Error('older helper attempted to replace the current renderer');
+  })()`,
+    context,
+  );
+  assert.equal(context.__varyaiTraeNativeBridge, current);
+  assert.equal(proto.ib, wrapped);
+  const result = await client.request({
+    service: "chat",
+    method: "chat",
+    data: { query: "synthetic" },
+  });
+  assert.equal(result.payload.data.query, "[REDACTED]");
+  assert.equal(audits, 1);
+  assert.equal(legacyAudits, 0);
+  assert.equal(current.bridge.enabled, true);
+  const newerRevision = current.hookRevision + 1;
+  const newer = {
+    ...current,
+    hookRevision: newerRevision,
+    auditBinding: `__varyaiTraeAuditV${newerRevision}`,
+  };
+  context.__varyaiTraeNativeBridge = newer;
+  await vm.runInNewContext(bootstrapSource(), context);
+  assert.equal(context.__varyaiTraeNativeBridge, newer);
+  assert.equal(proto.ib, wrapped);
   current.bridge.disable();
+  assert.equal(proto.ib, original);
 });

@@ -23,20 +23,43 @@ export type UpstreamSource =
       mode: "vendor" | "picked" | "best" | "usage";
       groupsOnly: boolean;
     }
-  | { kind: "codex" };
+  | { kind: "codex" }
+  | {
+      kind: "subscription";
+      provider:
+        | "github_copilot"
+        | "xai_oauth"
+        | "claude"
+        | "chatgpt_api"
+        | "gemini_cli"
+        | "antigravity";
+      accountId: string;
+      models: unknown[];
+      catalog: unknown[];
+      mode: "vendor" | "picked" | "best" | "usage";
+      groupsOnly: boolean;
+    };
 export interface RoutingUpstream {
   schemaVersion: 1;
   id: string;
   name: string;
+  notes?: string | null;
+  icon?: string | null;
   revision: number;
   source: UpstreamSource;
   hasApiKey: boolean;
+  subscriptionPlans?: Array<string | null>;
+  reauthRequired?: boolean;
   enabled?: boolean;
   presetId?: string | null;
   region?: string | null;
   codexSettings?: CodexProviderSettings | null;
   codex?: CodexProviderEditor | null;
   transport?: {
+    primaryName?: string | null;
+    primaryOff?: boolean;
+    primaryModels?: string[];
+    preferredKey?: string | null;
     primaryProtocol?: string;
     endpoints: Partial<
       Record<Extract<UpstreamSource, { kind: "api" }>["apiFormat"], string>
@@ -46,7 +69,9 @@ export interface RoutingUpstream {
       id: string;
       name: string;
       enabled: boolean;
+      key?: string;
       apiFormat?: string;
+      models?: string[];
     }>;
   } | null;
 }
@@ -64,16 +89,38 @@ export interface CodexProviderEditor {
     plan?: string | null;
     native: boolean;
     ready: boolean;
+    aliases?: string[];
   }>;
   models: Array<Record<string, unknown>>;
 }
+export interface ApiProviderAllowance {
+  status: "ready" | "unsupported" | "unauthorized";
+  balance: number | null;
+  tiers: import("@/types/subscription").QuotaTier[];
+}
 export const routingUpstreamsApi = {
+  quota: (id: string, revision: number) =>
+    invoke<ApiProviderAllowance>("routing_upstream_quota", { id, revision }),
+  keys: (id: string, revision: number) =>
+    invoke<Array<{ id: string; label: string; running: number | null }>>(
+      "routing_upstream_keys",
+      { id, revision },
+    ),
+  revealKey: (id: string, revision: number, keyId: string) =>
+    invoke<string>("reveal_routing_upstream_key", { id, revision, keyId }),
+  fetchIcon: (url: string, automatic = false) =>
+    invoke<string>("fetch_provider_icon", { url, automatic }),
   createCodex: () => invoke<RoutingUpstream>("create_codex_provider"),
   editor: async (id: string, revision: number): Promise<RoutingUpstream> => {
     return invoke<RoutingUpstream>("routing_upstream_editor", { id, revision });
   },
   saveCodex: (upstream: RoutingUpstream, settings: CodexProviderSettings) => {
-    const { codex: _editor, ...record } = upstream;
+    const {
+      codex: _editor,
+      subscriptionPlans: _plans,
+      reauthRequired: _reauth,
+      ...record
+    } = upstream;
     return invoke<RoutingUpstream>("save_codex_provider", {
       upstream: record,
       settings,
@@ -91,7 +138,7 @@ export const routingUpstreamsApi = {
       { account },
     ),
   importCodexAccount: (path: string) =>
-    invoke<void>("import_codex_provider_account", { path }),
+    invoke<{ id: string }>("import_codex_provider_account", { path }),
   testCodexModel: (
     id: string,
     revision: number,
@@ -110,11 +157,21 @@ export const routingUpstreamsApi = {
       revision,
     }),
   list: () => invoke<RoutingUpstream[]>("list_routing_upstreams"),
-  save: (upstream: RoutingUpstream, copyFrom?: ProviderCopySource) => {
-    const { codex: _editor, ...record } = upstream;
+  save: (
+    upstream: RoutingUpstream,
+    copyFrom?: ProviderCopySource,
+    originalId?: string,
+  ) => {
+    const {
+      codex: _editor,
+      subscriptionPlans: _plans,
+      reauthRequired: _reauth,
+      ...record
+    } = upstream;
     return invoke<RoutingUpstream>("save_routing_upstream", {
       upstream: record,
       copyFrom,
+      ...(originalId ? { originalId } : {}),
     });
   },
   probe: (id: string, revision: number, model: string) =>

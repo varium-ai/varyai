@@ -17,7 +17,7 @@ async fn unnamed_recovery_does_not_ignore_collision_in_another_conversation(
             &json!({"input":"synthetic"}),
             Some(store.clone()),
         )?;
-        let mut bindings = state.bindings.lock().await;
+        let mut bindings = state.bindings.lock().unwrap();
         bindings.observe(&json!({"id":"shared-response"}), 0);
         if name == "collision" {
             bindings.observe(&json!({"id":"shared-response"}), 1);
@@ -55,7 +55,7 @@ async fn overlapping_generations_preserve_all_delivered_owners(
     older
         .bindings
         .lock()
-        .await
+        .unwrap()
         .observe(&json!({"id":"initial"}), 1);
     let mut next = two_targets()?;
     next.targets.swap(0, 1);
@@ -69,12 +69,12 @@ async fn overlapping_generations_preserve_all_delivered_owners(
     newer
         .bindings
         .lock()
-        .await
+        .unwrap()
         .observe(&json!({"id":"newer-response"}), 0);
     older
         .bindings
         .lock()
-        .await
+        .unwrap()
         .observe(&json!({"id":"older-response"}), 1);
     store.flush().await?;
     drop(newer);
@@ -93,7 +93,7 @@ async fn overlapping_generations_preserve_all_delivered_owners(
             Some(store.clone()),
         )?;
         assert_eq!(
-            state.bindings.lock().await.resolve(&body, None),
+            state.bindings.lock().unwrap().resolve(&body, None),
             Ok(Some(0))
         );
     }
@@ -146,18 +146,19 @@ async fn saved(
         &json!({"input":"synthetic"}),
         Some(store.clone()),
     )?;
-    let mut bindings = state.bindings.lock().await;
-    if let Some(name) = name {
-        bindings.bind_session(name, 1);
+    {
+        let mut bindings = state.bindings.lock().unwrap();
+        if let Some(name) = name {
+            bindings.bind_session(name, 1);
+        }
+        bindings.observe(
+            &json!({"id":"response-b","output":[
+                {"type":"function_call","call_id":"call-b"},
+                {"type":"reasoning","id":"item-b","encrypted_content":"opaque-b"}
+            ]}),
+            1,
+        );
     }
-    bindings.observe(
-        &json!({"id":"response-b","output":[
-            {"type":"function_call","call_id":"call-b"},
-            {"type":"reasoning","id":"item-b","encrypted_content":"opaque-b"}
-        ]}),
-        1,
-    );
-    drop(bindings);
     store.flush().await?;
     Ok(())
 }
@@ -191,22 +192,27 @@ async fn restored_owners_follow_destinations_not_target_positions(
         restored
             .bindings
             .lock()
-            .await
+            .unwrap()
             .resolve(&body, Some("thread")),
         Ok(Some(0))
     );
-    assert!(restored.bindings.lock().await.known_opaque(&body));
+    assert!(restored.bindings.lock().unwrap().known_opaque(&body));
     for name in [None, Some("another-thread")] {
         let other = scopes::Conversations::default();
         let result =
             other.acquire_durable("local-codex", &reordered, name, &body, Some(store.clone()));
         if name.is_none() {
             assert_eq!(
-                result?.bindings.lock().await.resolve(&body, None),
+                result?.bindings.lock().unwrap().resolve(&body, None),
                 Ok(Some(0))
             );
         } else {
-            assert!(result?.bindings.lock().await.resolve(&body, name).is_err());
+            assert!(result?
+                .bindings
+                .lock()
+                .unwrap()
+                .resolve(&body, name)
+                .is_err());
         }
     }
     let mut changed = two_targets()?;
@@ -221,7 +227,7 @@ async fn restored_owners_follow_destinations_not_target_positions(
     assert!(isolated
         .bindings
         .lock()
-        .await
+        .unwrap()
         .resolve(&body, Some("thread"))
         .is_err());
     let mut renamed = two_targets()?;
@@ -236,7 +242,7 @@ async fn restored_owners_follow_destinations_not_target_positions(
     assert!(isolated
         .bindings
         .lock()
-        .await
+        .unwrap()
         .resolve(&body, Some("thread"))
         .is_err());
     for change in 0..4 {
@@ -283,7 +289,7 @@ async fn unnamed_recovery_ignores_unrelated_records_and_retains_collisions(
         Some(store.clone()),
     )?;
     {
-        let mut bindings = state.bindings.lock().await;
+        let mut bindings = state.bindings.lock().unwrap();
         bindings.observe(&json!({"id":"collision-response"}), 0);
         bindings.observe(&json!({"id":"collision-response"}), 1);
     }
@@ -302,7 +308,7 @@ async fn unnamed_recovery_ignores_unrelated_records_and_retains_collisions(
         Some(store.clone()),
     )?;
     assert_eq!(
-        restored.bindings.lock().await.resolve(&body, None),
+        restored.bindings.lock().unwrap().resolve(&body, None),
         Ok(Some(1))
     );
     assert!(scopes::Conversations::default()
@@ -336,7 +342,7 @@ async fn unnamed_recovery_ignores_unrelated_records_and_retains_collisions(
         fresh
             .bindings
             .lock()
-            .await
+            .unwrap()
             .resolve(&json!({"input":"new text"}), None),
         Ok(None)
     );
@@ -362,17 +368,58 @@ async fn persistence_failure_does_not_break_live_bindings() -> Result<(), Box<dy
     state
         .bindings
         .lock()
-        .await
+        .unwrap()
         .observe(&json!({"id":"live-response"}), 0);
     assert!(store.flush().await.is_err());
     assert_eq!(
         state
             .bindings
             .lock()
-            .await
+            .unwrap()
             .resolve(&json!({"previous_response_id":"live-response"}), None),
         Ok(Some(0))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn memory_only_responses_replay_does_not_import_durable_owners(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store =
+        continuation::Store::load(dir.path().join("state.json"), dir.path().join("state.key"))
+            .await?;
+    saved(&two_targets()?, store.clone(), Some("thread")).await?;
+    let fresh = two_targets()?;
+    let body = json!({"previous_response_id":"response-b", "input":[
+        {"type":"function_call_output","call_id":"call-b","output":"synthetic"},
+        {"type":"reasoning","id":"item-b","encrypted_content":"opaque-b"}
+    ]});
+    let memory_only = scopes::Conversations::default().acquire_durable_with_policy(
+        "local-codex",
+        &fresh,
+        Some("thread"),
+        &body,
+        None,
+        scopes::HistoryPolicy::ResponsesReplay,
+    )?;
+    {
+        let bindings = memory_only.bindings.lock().unwrap();
+        assert!(bindings.resolve(&body, Some("thread")).is_err());
+        assert_eq!(bindings.resolve_replay(&body, Some("thread")), Ok(None));
+        assert!(!bindings.known_opaque(&body));
+    }
+    let durable = scopes::Conversations::default().acquire_durable_with_policy(
+        "local-codex",
+        &fresh,
+        Some("thread"),
+        &body,
+        Some(store),
+        scopes::HistoryPolicy::ResponsesReplay,
+    )?;
+    let bindings = durable.bindings.lock().unwrap();
+    assert_eq!(bindings.resolve_replay(&body, Some("thread")), Ok(Some(1)));
+    assert!(bindings.known_opaque(&body));
     Ok(())
 }
 
@@ -503,15 +550,16 @@ async fn http_reconnect_restores_json_and_observed_sse_before_eof(
     .with_intent_runtime(runtime.clone());
     let info = server.start().await?;
     let url = format!("http://127.0.0.1:{}/intent/v1/responses", info.port);
-    let temporary = runtime.install(make_session()?, None)?;
-    let rejected = client
+    let temporary_token = runtime.install(make_session()?, None)?;
+    let unobserved_reference = client
         .post(&url)
-        .bearer_auth(&temporary)
+        .bearer_auth(&temporary_token)
         .header("session_id", "json-thread")
         .json(&json!({"model":alias,"previous_response_id":"json-response","input":"synthetic"}))
         .send()
         .await?;
-    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(unobserved_reference.status(), StatusCode::OK);
+    let _: Value = unobserved_reference.json().await?;
     assert_eq!(
         client
             .post(&url)
@@ -537,7 +585,7 @@ async fn http_reconnect_restores_json_and_observed_sse_before_eof(
         assert_eq!(response.status(), StatusCode::OK);
         let _: Value = response.json().await?;
     }
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
     server.stop().await?;
     task.abort();
     Ok(())
@@ -589,7 +637,7 @@ async fn restart_restores_exact_response_tool_and_opaque_ownership(
         Some(store.clone()),
     )?;
     {
-        let mut bindings = scope.bindings.lock().await;
+        let mut bindings = scope.bindings.lock().unwrap();
         bindings.bind_session("thread", 0);
         bindings.observe(
             &json!({"id":"resp-one", "output":[
@@ -621,11 +669,11 @@ async fn restart_restores_exact_response_tool_and_opaque_ownership(
         restored
             .bindings
             .lock()
-            .await
+            .unwrap()
             .resolve(&body, Some("thread")),
         Ok(Some(0))
     );
-    assert!(restored.bindings.lock().await.known_opaque(&body));
+    assert!(restored.bindings.lock().unwrap().known_opaque(&body));
     let mut changed = session()?;
     changed.targets[0].model = "different-model".into();
     assert!(scopes::Conversations::default()
@@ -647,7 +695,7 @@ async fn restart_restores_exact_response_tool_and_opaque_ownership(
     assert!(foreign
         .bindings
         .lock()
-        .await
+        .unwrap()
         .resolve(&body, Some("thread"))
         .is_err());
     Ok(())

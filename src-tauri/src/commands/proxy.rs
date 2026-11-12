@@ -134,9 +134,21 @@ pub(crate) async fn ensure_trae_consent(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<(), String> {
+    ensure_trae_edition_consent(
+        app,
+        state,
+        crate::services::trae_bridge::shared::Edition::China,
+    )
+    .await
+}
+pub(crate) async fn ensure_trae_edition_consent(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    edition: crate::services::trae_bridge::shared::Edition,
+) -> Result<(), String> {
     if state
         .db
-        .get_bool_flag(crate::services::trae_bridge::CONSENT_KEY)
+        .get_bool_flag(edition.consent_key())
         .map_err(|e| e.to_string())?
     {
         return Ok(());
@@ -153,14 +165,25 @@ pub(crate) async fn ensure_trae_consent(
     };
     let texts: serde_json::Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
     let text = |key: &str| {
-        texts["homeAudit"][key]
+        let text = texts["homeAudit"][key]
             .as_str()
             .unwrap_or_default()
-            .to_string()
+            .to_string();
+        if edition == crate::services::trae_bridge::shared::Edition::International {
+            text.replace("TRAE CN", "TRAE International")
+        } else {
+            text
+        }
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
-        .message(text("traeConsent"))
+        .message(text(
+            if edition == crate::services::trae_bridge::shared::Edition::International {
+                "traeIntlConsent"
+            } else {
+                "traeConsent"
+            },
+        ))
         .title(text("traeNoticeTitle"))
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
@@ -175,7 +198,7 @@ pub(crate) async fn ensure_trae_consent(
     }
     state
         .db
-        .set_setting(crate::services::trae_bridge::CONSENT_KEY, "true")
+        .set_setting(edition.consent_key(), "true")
         .map_err(|e| e.to_string())
 }
 
@@ -248,6 +271,21 @@ pub async fn set_proxy_takeover_for_app(
     app_type: String,
     enabled: bool,
 ) -> Result<(), String> {
+    if app_type == "trae-intl" {
+        return Box::pin(super::agent_connections::set_agent_connection(
+            app, state, app_type, enabled, None,
+        ))
+        .await;
+    }
+    if app_type == "workbuddy-ai" {
+        return super::agent_connections::set_native_connection(
+            state.inner(),
+            app_type,
+            enabled,
+            None,
+        )
+        .await;
+    }
     if app_type == "doubaowork" && enabled {
         ensure_doubao_consent(&app, state.inner()).await?;
     }

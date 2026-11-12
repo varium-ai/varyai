@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::json;
 
-fn setup() -> (tempfile::TempDir, Manager) {
+pub(super) fn setup() -> (tempfile::TempDir, Manager) {
     let dir = tempfile::tempdir().expect("fixture directory");
     let manager = Manager::new(
         dir.path().join("config.toml"),
@@ -10,8 +10,93 @@ fn setup() -> (tempfile::TempDir, Manager) {
     );
     (dir, manager)
 }
-fn group() -> RoutingGroup {
+pub(super) fn group() -> RoutingGroup {
     super::super::tests::fixture()
+}
+
+pub(crate) fn assert_restored_config(manager: &Manager, original: &str) {
+    let text = fs::read_to_string(&manager.config).expect("restored configuration");
+    let mut actual: toml::Value = text.parse().expect("restored TOML");
+    let expected: toml::Value = original.parse().expect("original TOML");
+    if expected
+        .get("model_providers")
+        .and_then(|providers| providers.get(PROVIDER))
+        .is_none()
+    {
+        let providers = actual
+            .get_mut("model_providers")
+            .and_then(toml::Value::as_table_mut)
+            .expect("retained historical provider table");
+        let retained = providers
+            .remove(PROVIDER)
+            .expect("retained VaryAI provider");
+        assert_eq!(retained["wire_api"].as_str(), Some("responses"));
+        if providers.is_empty() && expected.get("model_providers").is_none() {
+            actual
+                .as_table_mut()
+                .expect("root")
+                .remove("model_providers");
+        }
+    }
+    assert_eq!(actual, expected);
+    for comment in original.lines().filter(|line| line.starts_with('#')) {
+        assert!(text.contains(comment), "original comment was lost");
+    }
+}
+
+#[test]
+fn provider_refresh_preserves_capabilities_and_header_table_shapes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for headers in [
+        "http_headers = { x-synthetic-header = 'retained', x-openai-actor-authorization = 'varyai' }\n",
+        "[model_providers.varyai.http_headers]\nx-synthetic-header = 'retained'\nx-openai-actor-authorization = 'varyai'\n",
+    ] {
+        let (_dir, manager) = setup();
+        let original = format!(
+            "[model_providers.varyai]\ncapabilities = ['synthetic-capability']\n{headers}"
+        );
+        fs::write(&manager.config, &original)?;
+        manager.write_projection_inner(
+            &[group()],
+            "synthetic-local-token",
+            "http://127.0.0.1:1234/intent/v1",
+            None,
+            true,
+            None,
+        )?;
+        for _ in 0..2 {
+            let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+            let provider = &doc["model_providers"][PROVIDER];
+            assert_eq!(
+                provider.get("capabilities"),
+                Some(&toml::Value::Array(vec![toml::Value::String(
+                    "synthetic-capability".into()
+                )]))
+            );
+            assert_eq!(
+                provider
+                    .get("http_headers")
+                    .and_then(|h| h.get("x-synthetic-header"))
+                    .and_then(toml::Value::as_str),
+                Some("retained")
+            );
+            assert_eq!(
+                provider
+                    .get("http_headers")
+                    .and_then(|h| h.get("x-openai-actor-authorization"))
+                    .and_then(toml::Value::as_str),
+                Some(PROVIDER)
+            );
+            manager.write_projection(
+                &[group()],
+                "synthetic-local-token",
+                "http://127.0.0.1:1234/intent/v1",
+            )?;
+        }
+        manager.restore()?;
+        assert_eq!(fs::read_to_string(&manager.config)?, original);
+    }
+    Ok(())
 }
 
 #[test]
@@ -40,7 +125,6 @@ fn projection_keeps_openai_login_visible_without_using_it_for_forwarding() {
     for auth in [
         json!({"auth_mode":"chatgpt", "tokens":{"access_token":"synthetic-oauth"}}),
         json!({"auth_mode":"chatgptAuthTokens", "tokens":{"access_token":"synthetic-oauth"}}),
-        json!({"OPENAI_API_KEY":"synthetic-official-key"}),
     ] {
         let (dir, manager) = setup();
         let original = "model_provider='openai'\nmodel='original'\n";
@@ -69,10 +153,7 @@ fn projection_keeps_openai_login_visible_without_using_it_for_forwarding() {
             assert_eq!(fs::read(&auth_path).expect("unchanged auth"), auth_bytes);
         }
         manager.restore().expect("restore");
-        assert_eq!(
-            fs::read_to_string(&manager.config).expect("restored"),
-            original
-        );
+        assert_restored_config(&manager, original);
         assert_eq!(fs::read(auth_path).expect("unchanged auth"), auth_bytes);
     }
 }
@@ -84,6 +165,7 @@ fn projection_does_not_require_a_missing_or_unsupported_login() {
         Some("not-json".to_owned()),
         Some(json!({"last_refresh":"synthetic-metadata"}).to_string()),
         Some(json!({"OPENAI_API_KEY":"PROXY_MANAGED"}).to_string()),
+        Some(json!({"OPENAI_API_KEY":"synthetic-official-key"}).to_string()),
         Some(json!({"bedrock_api_key":"synthetic-bedrock"}).to_string()),
         Some(json!({"auth_mode":"headers", "tokens":{"access_token":"stale"}}).to_string()),
     ] {
@@ -232,6 +314,53 @@ fn orphan(manager: &Manager) -> String {
 }
 
 #[test]
+fn dangling_projection_without_provider_requires_explicit_reconnect() {
+    let (dir, manager) = setup();
+    let before = "# user fixture\nmodel = 'vary-provider/model-synthetic'\nmodel_provider = 'varyai'\nmodel_catalog_json = '/synthetic/vary-routing-catalog-0123456789abcdef0123456789abcdef.json'\nopenai_base_url = 'http://127.0.0.1:3425/backend-api/codex'\n[model_providers.custom]\nbase_url = 'https://synthetic.example/v1'\n";
+    fs::write(&manager.config, before).expect("config");
+
+    let status = manager.status().expect("status");
+    assert!(status.orphaned_config && status.recovery_pending);
+    assert!(!status.orphan_cleanup_available);
+    assert_eq!(
+        manager.write_projection(
+            &[group()],
+            "synthetic-reconnect-token",
+            "http://127.0.0.1:1234/intent/v1",
+        ),
+        Err(CONFLICT.into())
+    );
+    assert_eq!(
+        fs::read_to_string(&manager.config).expect("unchanged"),
+        before
+    );
+    assert!(!manager.receipt.exists());
+
+    manager
+        .write_projection_inner(
+            &[group()],
+            "synthetic-reconnect-token",
+            "http://127.0.0.1:1234/intent/v1",
+            None,
+            true,
+            None,
+        )
+        .expect("explicit reconnect");
+    assert!(manager.receipt.exists());
+    assert!(fs::read_dir(dir.path())
+        .expect("files")
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("vary-routing-orphan-backup-")
+        }));
+    manager.restore().expect("restore");
+    assert_restored_config(&manager, before);
+}
+
+#[test]
 fn orphaned_inactive_projection_has_explicit_private_backup_cleanup() {
     let (dir, manager) = setup();
     let before = orphan(&manager);
@@ -239,7 +368,8 @@ fn orphaned_inactive_projection_has_explicit_private_backup_cleanup() {
     fs::write(&auth, "synthetic-login").expect("auth");
     let status = manager.status().expect("status");
     assert!(!status.enabled);
-    assert!(status.recovery_pending && status.orphaned_config && status.orphan_cleanup_available);
+    assert!(!status.recovery_pending && !status.orphaned_config);
+    assert!(status.orphan_cleanup_available);
     assert!(!serde_json::to_string(&status)
         .expect("status json")
         .contains("synthetic-orphan-token"));
@@ -293,7 +423,484 @@ fn orphaned_inactive_projection_has_explicit_private_backup_cleanup() {
         )
         .expect("reconnect");
     manager.restore().expect("restore");
-    assert_eq!(fs::read_to_string(&manager.config).expect("config"), after);
+    assert_restored_config(&manager, &after);
+}
+
+fn foreign_native_takeover(
+    manager: &Manager,
+    origin: &str,
+    profile: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    orphan(manager);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    let external = if profile {
+        "external_gateway"
+    } else {
+        "magpie"
+    };
+    doc["model_providers"][PROVIDER]["base_url"] = toml_edit::value(format!("{origin}/v1"));
+    doc["model_providers"][external]["base_url"] = toml_edit::value(format!("{origin}/v1"));
+    doc["model_providers"][external]["wire_api"] = toml_edit::value("responses");
+    doc["openai_base_url"] = toml_edit::value(format!("{origin}/backend-api/codex"));
+    if profile {
+        doc["profile"] = toml_edit::value("external");
+        doc["profiles"]["external"]["model_provider"] = toml_edit::value(external);
+        doc["profiles"]["external"]["model"] = toml_edit::value("external-model");
+    } else {
+        doc["model_provider"] = toml_edit::value(external);
+    }
+    let text = doc.to_string();
+    fs::write(&manager.config, &text)?;
+    Ok(text)
+}
+
+#[test]
+fn receiptless_foreign_native_disconnect_preserves_the_active_gateway(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for profile in [false, true] {
+        let (dir, manager) = setup();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let before = foreign_native_takeover(&manager, &origin, profile)?;
+        let auth = dir.path().join("auth.json");
+        fs::write(&auth, "synthetic-foreign-login")?;
+        let status = manager.status()?;
+        assert!(!status.enabled && !status.recovery_pending && !status.orphaned_config);
+        assert!(!status.orphan_cleanup_available);
+        for _ in 0..2 {
+            manager.disconnect()?;
+            assert_eq!(fs::read_to_string(&manager.config)?, before);
+            assert_eq!(fs::read_to_string(&auth)?, "synthetic-foreign-login");
+            let status = manager.status()?;
+            assert!(!status.recovery_pending && !status.orphaned_config);
+        }
+        assert!(!manager.receipt.exists());
+        assert!(!fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("vary-routing-orphan-backup-")
+            }));
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_baseline_disconnect_succeeds_after_explicit_reconnection(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let foreign = foreign_native_takeover(&manager, &origin, false)?;
+    let auth = dir.path().join("auth.json");
+    fs::write(&auth, "fixture-login-preserved")?;
+    manager.write_projection_inner(
+        &[group()],
+        "fixture-reconnection-token",
+        &format!("{origin}/intent/v1"),
+        None,
+        true,
+        None,
+    )?;
+    assert!(manager.receipt.exists());
+    manager.disconnect()?;
+    let restored = fs::read_to_string(&manager.config)?;
+    assert_eq!(
+        restored.parse::<toml::Value>()?,
+        foreign.parse::<toml::Value>()?
+    );
+    assert_eq!(fs::read_to_string(auth)?, "fixture-login-preserved");
+    assert!(!manager.receipt.exists());
+    assert!(!manager.status()?.orphaned_config);
+    manager.disconnect()?;
+    assert_eq!(fs::read_to_string(&manager.config)?, restored);
+    Ok(())
+}
+
+#[test]
+fn foreign_native_projection_requires_complete_unambiguous_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let before = foreign_native_takeover(&manager, &origin, false)?;
+    let original: toml::Value = before.parse()?;
+    assert!(foreign_native_projection(&original));
+    for case in [
+        "external_origin",
+        "retained_origin",
+        "native_origin",
+        "own_intent_path",
+        "external_path",
+        "retained_trailing_slash",
+        "external_query",
+        "external_userinfo",
+        "native_path",
+        "native_query",
+        "native_missing",
+        "remote",
+        "implicit_port",
+        "zero_port",
+        "unknown_provider",
+        "openai",
+        "own_provider",
+        "own_profile",
+        "own_alias",
+        "own_catalog",
+        "inactive_profile",
+        "nested_reference",
+        "unknown_marker",
+    ] {
+        let mut doc = original.clone();
+        let other = "http://127.0.0.2:12345";
+        match case {
+            "external_origin" => {
+                doc["model_providers"]["magpie"]["base_url"] = format!("{other}/v1").into()
+            }
+            "retained_origin" => {
+                doc["model_providers"][PROVIDER]["base_url"] = format!("{other}/v1").into()
+            }
+            "native_origin" => doc["openai_base_url"] = format!("{other}/backend-api/codex").into(),
+            "own_intent_path" => {
+                doc["model_providers"][PROVIDER]["base_url"] = format!("{origin}/intent/v1").into()
+            }
+            "external_path" => {
+                doc["model_providers"]["magpie"]["base_url"] = format!("{origin}/custom").into()
+            }
+            "retained_trailing_slash" => {
+                doc["model_providers"][PROVIDER]["base_url"] = format!("{origin}/v1/").into()
+            }
+            "external_query" => {
+                doc["model_providers"]["magpie"]["base_url"] =
+                    format!("{origin}/v1?fixture=1").into()
+            }
+            "external_userinfo" => {
+                doc["model_providers"]["magpie"]["base_url"] =
+                    format!("{}/v1", origin.replacen("http://", "http://fixture@", 1)).into()
+            }
+            "native_path" => doc["openai_base_url"] = format!("{origin}/other").into(),
+            "native_query" => {
+                doc["openai_base_url"] = format!("{origin}/backend-api/codex?fixture=1").into()
+            }
+            "native_missing" => {
+                doc.as_table_mut().ok_or("table")?.remove("openai_base_url");
+            }
+            "remote" => {
+                doc["model_providers"]["magpie"]["base_url"] = "https://fixture.example/v1".into()
+            }
+            "implicit_port" => {
+                doc["model_providers"]["magpie"]["base_url"] = "http://127.0.0.1/v1".into()
+            }
+            "zero_port" => {
+                doc["model_providers"]["magpie"]["base_url"] = "http://127.0.0.1:0/v1".into()
+            }
+            "unknown_provider" => doc["model_provider"] = "missing-provider".into(),
+            "openai" => doc["model_provider"] = "openai".into(),
+            "own_provider" => doc["model_provider"] = PROVIDER.into(),
+            "own_profile" => {
+                let extra: toml::Value =
+                    "profile='fixture'\n[profiles.fixture]\nmodel_provider='varyai'\n".parse()?;
+                let table = doc.as_table_mut().ok_or("table")?;
+                table.insert("profile".into(), extra["profile"].clone());
+                table.insert("profiles".into(), extra["profiles"].clone());
+            }
+            "own_alias" => doc["model"] = "vary-auto/fixture".into(),
+            "own_catalog" => {
+                doc.as_table_mut().ok_or("table")?.insert(
+                    "model_catalog_json".into(),
+                    "vary-routing-catalog-0123456789abcdef0123456789abcdef.json".into(),
+                );
+            }
+            "inactive_profile" => {
+                let extra: toml::Value =
+                    "[profiles.inactive]\nmodel_provider='varyai'\n".parse()?;
+                doc.as_table_mut()
+                    .ok_or("table")?
+                    .insert("profiles".into(), extra["profiles"].clone());
+            }
+            "nested_reference" => {
+                let extra: toml::Value = "external=[{model_provider='varyai'}]".parse()?;
+                doc.as_table_mut()
+                    .ok_or("table")?
+                    .insert("external".into(), extra["external"].clone());
+            }
+            "unknown_marker" => doc["model_providers"][PROVIDER]["name"] = "User owned".into(),
+            _ => return Err("unknown fixture".into()),
+        }
+        assert!(!foreign_native_projection(&doc), "{case}");
+        fs::write(&manager.config, toml::to_string(&doc)?)?;
+        let status = manager.status()?;
+        let inactive_definition = matches!(
+            case,
+            "retained_origin" | "native_origin" | "native_path" | "native_query" | "native_missing"
+        );
+        assert_eq!(status.orphaned_config, !inactive_definition, "{case}");
+        assert!(!status.enabled && !status.configuration_owned, "{case}");
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_disconnect_does_not_bypass_unreadable_recovery_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let before = foreign_native_takeover(
+        &manager,
+        &format!("http://{}", listener.local_addr()?),
+        false,
+    )?;
+    fs::write(&manager.receipt, "invalid fixture receipt")?;
+    assert!(manager.disconnect().is_err());
+    assert_eq!(fs::read_to_string(&manager.config)?, before);
+    assert_eq!(
+        fs::read_to_string(&manager.receipt)?,
+        "invalid fixture receipt"
+    );
+    Ok(())
+}
+
+#[test]
+fn explicit_disconnect_removes_receiptless_routes_and_keeps_provider_and_login(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for profile in [false, true] {
+        let (dir, manager) = setup();
+        fs::write(&manager.config, "model='original'\ntheme='keep-user'\n")?;
+        let auth = dir.path().join("auth.json");
+        fs::write(&auth, "synthetic-login")?;
+        manager.write_projection_with_native(
+            &[group()],
+            "synthetic-disconnect-token",
+            "http://127.0.0.1:1234/intent/v1",
+            Some("http://127.0.0.1:1234/backend-api/codex"),
+        )?;
+        let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+        if profile {
+            doc["profile"] = toml_edit::value("work");
+            doc["profiles"]["work"]["model_provider"] = toml_edit::value(PROVIDER);
+            doc["profiles"]["work"]["model"] = doc["model"].clone();
+            doc["profiles"]["work"]["model_catalog_json"] = doc["model_catalog_json"].clone();
+            doc["profiles"]["other"]["model"] = toml_edit::value("user-other");
+        }
+        let before = doc.to_string();
+        fs::write(&manager.config, &before)?;
+        fs::remove_file(&manager.receipt)?;
+        manager.restore()?;
+        assert_eq!(fs::read_to_string(&manager.config)?, before);
+        manager.disconnect()?;
+        let after: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+        for field in [
+            "model_provider",
+            "model",
+            "model_catalog_json",
+            "openai_base_url",
+        ] {
+            assert!(after.get(field).is_none(), "{field}");
+        }
+        assert_eq!(after["theme"].as_str(), Some("keep-user"));
+        assert!(after["model_providers"].get(PROVIDER).is_some());
+        if profile {
+            for field in ["model_provider", "model", "model_catalog_json"] {
+                assert!(after["profiles"]["work"].get(field).is_none(), "{field}");
+            }
+            assert_eq!(
+                after["profiles"]["other"]["model"].as_str(),
+                Some("user-other")
+            );
+        }
+        assert_eq!(fs::read_to_string(auth)?, "synthetic-login");
+        let after = fs::read_to_string(&manager.config)?;
+        manager.disconnect()?;
+        assert_eq!(fs::read_to_string(&manager.config)?, after);
+        let backups = fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("vary-routing-orphan-backup-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read_to_string(backups[0].path())?, before);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(backups[0].path())?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn receiptless_disconnect_preserves_external_fields_and_refuses_unknown_provider(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    orphan(&manager);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    doc["model_provider"] = toml_edit::value(PROVIDER);
+    doc["model"] = toml_edit::value("user-model");
+    doc["model_catalog_json"] = toml_edit::value("/synthetic/user-models.json");
+    doc["openai_base_url"] = toml_edit::value("https://synthetic.example/backend-api/codex");
+    fs::write(&manager.config, doc.to_string())?;
+    manager.disconnect()?;
+    let after: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert!(after.get("model_provider").is_none());
+    assert_eq!(after["model"].as_str(), Some("user-model"));
+    assert_eq!(
+        after["model_catalog_json"].as_str(),
+        Some("/synthetic/user-models.json")
+    );
+    assert_eq!(
+        after["openai_base_url"].as_str(),
+        Some("https://synthetic.example/backend-api/codex")
+    );
+
+    doc["model_providers"][PROVIDER]["base_url"] =
+        toml_edit::value("https://synthetic.example/intent/v1");
+    let unknown = doc.to_string();
+    fs::write(&manager.config, &unknown)?;
+    assert_eq!(manager.disconnect(), Err(CONFLICT.into()));
+    assert_eq!(fs::read_to_string(&manager.config)?, unknown);
+    Ok(())
+}
+
+#[test]
+fn explicit_disconnect_keeps_supplemental_provider_fields_without_blocking(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for reconnect in [false, true] {
+        let (dir, manager) = setup();
+        orphan(&manager);
+        let mut baseline: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+        baseline["model_provider"] = toml_edit::value(PROVIDER);
+        baseline["model"] = toml_edit::value(group().alias());
+        baseline["theme"] = toml_edit::value("user-theme");
+        baseline["model_providers"][PROVIDER]["request_timeout_ms"] = toml_edit::value(1234);
+        baseline["model_providers"][PROVIDER]["custom_flag"] = toml_edit::value(true);
+        let provider = baseline["model_providers"][PROVIDER].to_string();
+        fs::write(&manager.config, baseline.to_string())?;
+        let auth = dir.path().join("auth.json");
+        fs::write(&auth, "synthetic-login")?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        if reconnect {
+            manager.write_projection_inner(
+                &[group()],
+                "synthetic-customized-provider",
+                &format!("http://{}/intent/v1", listener.local_addr()?),
+                None,
+                true,
+                None,
+            )?;
+        }
+        manager.disconnect()?;
+        let after: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+        assert!(after.get("model_provider").is_none());
+        assert!(after.get("model").is_none());
+        assert_eq!(after["theme"].as_str(), Some("user-theme"));
+        assert_eq!(after["model_providers"][PROVIDER].to_string(), provider);
+        assert_eq!(fs::read_to_string(&auth)?, "synthetic-login");
+        assert!(!manager.receipt.exists());
+        manager.disconnect()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnect_failure_preserves_recovery_evidence_and_installed_configuration(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    orphan(&manager);
+    let mut baseline: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    baseline["model_provider"] = toml_edit::value(PROVIDER);
+    baseline["model"] = toml_edit::value(group().alias());
+    baseline["model_providers"][PROVIDER]["base_url"] =
+        toml_edit::value("https://synthetic.example/intent/v1");
+    fs::write(&manager.config, baseline.to_string())?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    manager.write_projection_inner(
+        &[group()],
+        "synthetic-disconnect-evidence",
+        &format!("http://{}/intent/v1", listener.local_addr()?),
+        None,
+        true,
+        None,
+    )?;
+    let installed = fs::read_to_string(&manager.config)?;
+    let original = manager.load()?.ok_or("missing fixture receipt")?.original;
+    assert_eq!(manager.disconnect(), Err(CONFLICT.into()));
+    assert!(
+        manager.receipt.exists(),
+        "a rejected disconnect must retain recovery evidence"
+    );
+    assert!(
+        fs::read_to_string(&manager.config)? == installed,
+        "a rejected disconnect must not partially restore configuration"
+    );
+    assert!(manager.load()?.ok_or("lost receipt")?.original == original);
+    assert!(!manager.status()?.orphaned_config);
+    Ok(())
+}
+
+#[test]
+fn explicit_disconnect_detaches_an_orphan_baseline_after_reconnect(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    orphan(&manager);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    doc["model_provider"] = toml_edit::value(PROVIDER);
+    doc["model"] = toml_edit::value(group().alias());
+    fs::write(&manager.config, doc.to_string())?;
+    manager.write_projection_inner(
+        &[group()],
+        "synthetic-reconnect-token",
+        "http://127.0.0.1:4321/intent/v1",
+        None,
+        true,
+        None,
+    )?;
+    assert!(manager.receipt.exists());
+    manager.disconnect()?;
+    let after: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert!(after.get("model_provider").is_none());
+    assert!(after.get("model").is_none());
+    assert!(!manager.receipt.exists());
+    Ok(())
+}
+
+#[test]
+fn receiptless_disconnect_requires_a_recovery_location_and_accepts_legacy_fields(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = setup();
+    orphan(&manager);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    doc["model_provider"] = toml_edit::value(PROVIDER);
+    doc["model"] = toml_edit::value(group().alias());
+    let provider = doc["model_providers"][PROVIDER]
+        .as_table_like_mut()
+        .ok_or("provider table")?;
+    provider.remove("supports_websockets");
+    provider.remove("supports_standalone_web_search");
+    let before = doc.to_string();
+    fs::write(&manager.config, &before)?;
+    let manager = Manager::new(
+        manager.config.clone(),
+        dir.path().join("blocked/receipt.json"),
+        Arc::default(),
+    );
+    fs::write(dir.path().join("blocked"), "synthetic-file")?;
+    assert!(manager.disconnect().is_err());
+    assert_eq!(fs::read_to_string(&manager.config)?, before);
+    fs::remove_file(dir.path().join("blocked"))?;
+    manager.disconnect()?;
+    let after: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert!(after.get("model_provider").is_none());
+    assert!(after.get("model").is_none());
+    Ok(())
 }
 
 #[test]
@@ -320,7 +927,7 @@ fn orphan_cleanup_never_guesses_active_or_custom_ownership() {
             "active" => doc["model_provider"] = toml_edit::value(PROVIDER),
             "profile" => doc["profiles"]["selected"]["model_provider"] = toml_edit::value(PROVIDER),
             "nested-reference" => {
-                let nested: DocumentMut = "external = [{ model_provider = 'varyai-routing' }]"
+                let nested: DocumentMut = "external = [{ model_provider = 'varyai' }]"
                     .parse()
                     .expect("nested fixture");
                 doc["external"] = nested["external"].clone();
@@ -353,10 +960,12 @@ fn orphan_cleanup_never_guesses_active_or_custom_ownership() {
         let before = doc.to_string();
         fs::write(&manager.config, &before).expect("config");
         let status = manager.status().expect("status");
-        assert!(
-            status.orphaned_config && status.recovery_pending,
-            "{change}"
+        let references_route = matches!(
+            change,
+            "active" | "profile" | "nested-reference" | "alias" | "catalog"
         );
+        assert_eq!(status.orphaned_config, references_route, "{change}");
+        assert_eq!(status.recovery_pending, references_route, "{change}");
         assert!(!status.orphan_cleanup_available, "{change}");
         assert!(manager.cleanup_orphan(true).is_err(), "{change}");
         assert_eq!(
@@ -370,7 +979,7 @@ fn orphan_cleanup_never_guesses_active_or_custom_ownership() {
 fn explicit_reconnect_repairs_partial_menu_without_modifying_login(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (dir, manager) = setup();
-    let before = "model_provider='varyai-routing'\nmodel='synthetic-raw-model'\n[model_providers.varyai-routing]\nname='VaryAI models and routing groups'\nbase_url='http://127.0.0.1:1234/intent/v1'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='synthetic-old-token'\n";
+    let before = "model_provider='varyai'\nmodel='synthetic-raw-model'\n[model_providers.varyai]\nname='VaryAI models and routing groups'\nbase_url='http://127.0.0.1:1234/intent/v1'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='synthetic-old-token'\n";
     fs::write(&manager.config, before)?;
     let auth = serde_json::to_vec(
         &json!({"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-login"}}),
@@ -393,7 +1002,10 @@ fn explicit_reconnect_repairs_partial_menu_without_modifying_login(
         None,
     )?;
     let installed: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
-    assert_eq!(installed["model"].as_str(), Some(group().alias().as_str()));
+    assert_eq!(
+        installed["model"].as_str(),
+        Some(format!("{}-routing-group", group().name).as_str())
+    );
     assert_eq!(
         installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
         Some(true)
@@ -468,7 +1080,10 @@ fn explicit_reconnect_adopts_restored_or_modified_provider_and_preserves_baselin
             .parse()
             .expect("toml");
         assert_eq!(installed["model_provider"].as_str(), Some(PROVIDER));
-        assert_eq!(installed["model"].as_str(), Some(group().alias().as_str()));
+        assert_eq!(
+            installed["model"].as_str(),
+            Some(format!("{}-routing-group", group().name).as_str())
+        );
         assert_eq!(
             installed["model_providers"][PROVIDER]["base_url"].as_str(),
             Some("http://127.0.0.1:4321/intent/v1")
@@ -641,7 +1256,7 @@ fn restores_original_config_without_touching_auth_or_unrelated_edits() {
         )
         .expect("project");
     let active = fs::read_to_string(&manager.config).expect("active");
-    assert!(active.contains("varyai-routing"));
+    assert!(active.contains("varyai"));
     fs::write(&manager.config, format!("new_setting = true\n{active}")).expect("external edit");
     manager.restore().expect("restore");
     let restored: toml::Value = fs::read_to_string(&manager.config)
@@ -650,7 +1265,7 @@ fn restores_original_config_without_touching_auth_or_unrelated_edits() {
         .expect("toml");
     assert_eq!(restored["model"].as_str(), Some("original"));
     assert_eq!(restored["new_setting"].as_bool(), Some(true));
-    assert!(restored["model_providers"].get(PROVIDER).is_none());
+    assert!(restored["model_providers"].get(PROVIDER).is_some());
     assert_eq!(fs::read_to_string(auth).expect("auth"), "synthetic-auth");
     assert!(!manager.receipt.exists());
 }
@@ -676,7 +1291,10 @@ fn recovery_is_durable_and_preserves_newer_owned_field_edits() {
     restarted.restore().expect("recover");
     let text = fs::read_to_string(&manager.config).expect("restored");
     assert!(text.contains("user-new-model"));
-    assert!(!text.contains("varyai-routing"));
+    let restored: toml::Value = text.parse().expect("restored TOML");
+    assert!(restored.get("model_provider").is_none());
+    assert!(restored.get("model_catalog_json").is_none());
+    assert!(restored["model_providers"].get(PROVIDER).is_some());
 }
 
 #[test]
@@ -693,10 +1311,7 @@ fn updating_catalog_keeps_original_backup_and_detects_external_takeover() {
         .write_projection(&[second], "token-two", "http://127.0.0.1:1234/intent/v1")
         .expect("second");
     manager.restore().expect("restore");
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("config"),
-        original
-    );
+    assert_restored_config(&manager, original);
     manager
         .write_projection(&[group()], "token", "http://127.0.0.1:1234/intent/v1")
         .expect("first");
@@ -802,7 +1417,13 @@ fn no_original_file_and_private_receipt_are_recoverable() {
         );
     }
     manager.restore().expect("recover");
-    assert!(!manager.config.exists());
+    assert_restored_config(&manager, "");
+    assert!(
+        !manager
+            .status()
+            .expect("disconnected status")
+            .orphaned_config
+    );
 }
 
 #[test]
@@ -846,10 +1467,7 @@ async fn gateway_stop_recovers_menu_config_without_an_active_server() {
         .expect("project");
     assert!(service.set_takeover_for_app("codex", true).await.is_err());
     let _ = service.stop().await;
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("restored"),
-        "model='original'\n"
-    );
+    assert_restored_config(manager, "model='original'\n");
     assert!(!manager.receipt.exists());
 }
 
@@ -970,10 +1588,7 @@ fn native_projection_refuses_any_unowned_url_including_identical_loopback() {
             receipt
         );
         manager.restore().expect("restore");
-        assert_eq!(
-            fs::read_to_string(&manager.config).expect("config"),
-            original
-        );
+        assert_restored_config(&manager, &original);
     }
 }
 
@@ -1031,10 +1646,7 @@ fn native_v2_install_refresh_and_restore_preserve_ownership_without_implicit_acq
         Some(NATIVE_TWO.into())
     );
     manager.restore().expect("restore");
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("restored"),
-        original
-    );
+    assert_restored_config(&manager, original);
     manager
         .write_projection(&[group()], "token", MENU_BASE)
         .expect("menu only");
@@ -1315,6 +1927,7 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
                 upstream: None,
                 effort: super::super::effort::Capability::parse(&json!({
                     "supported_reasoning_levels":["low","high"],
+                    "service_tiers": if images { json!([{ "id":"priority", "name":"Fast", "description":"Higher usage" }]) } else { json!([]) },
                     "context_window": if images { 1000000 } else { 128000 },
                     "max_context_window": if images { 1200000 } else { 128000 },
                     "auto_compact_token_limit": 90000,
@@ -1373,7 +1986,7 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
     manager
         .activate_menu_with_native(menu.clone(), MENU_BASE, Some(NATIVE_ONE), false)
         .expect("activate");
-    let expected = menu_catalog(&menu, "high").expect("rich catalog");
+    let mut expected = menu_catalog(&menu, "high").expect("rich catalog");
     assert_eq!(expected["models"][0]["slug"], "auto/exact-group");
     assert_eq!(expected["models"][1]["slug"], "vary-provider/exact-id");
     let receipt = manager.load().expect("receipt").expect("installed");
@@ -1381,17 +1994,18 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         &fs::read_to_string(receipt.catalogs.last().expect("catalog path")).expect("catalog"),
     )
     .expect("json");
+    aliases::project(&mut expected, &mut BTreeMap::new()).expect("readable catalog");
     assert_eq!(actual, expected);
     let (published_menu, native_catalog) = manager.runtime.native.menu().expect("native snapshot");
     assert_eq!(native_catalog, actual);
     assert_eq!(published_menu.token, menu.token);
-    assert_eq!(actual["models"][0]["slug"], "auto/exact-group");
+    assert_eq!(actual["models"][0]["slug"], "Exact-group-label");
     assert_eq!(
         actual["models"][0]["description"],
         "Routing group description"
     );
     assert_eq!(actual["models"][0]["input_modalities"], json!(["text"]));
-    assert_eq!(actual["models"][1]["slug"], "vary-provider/exact-id");
+    assert_eq!(actual["models"][1]["slug"], "Exact-direct-label");
     assert_eq!(actual["models"][1]["display_name"], "Exact direct label");
     assert_eq!(
         actual["models"][1]["supported_reasoning_levels"]
@@ -1406,6 +2020,23 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
     assert_eq!(actual["models"][1]["auto_compact_token_limit"], 90000);
     assert_eq!(actual["models"][1]["effective_context_window_percent"], 90);
     assert_eq!(actual["models"][1]["default_reasoning_level"], "high");
+    assert_eq!(actual["models"][0]["service_tiers"], json!([]));
+    assert_eq!(
+        actual["models"][1]["service_tiers"],
+        json!([
+            {"id":"priority","name":"Fast","description":"Higher usage"}
+        ])
+    );
+    assert_eq!(
+        actual["models"][1]["additional_speed_tiers"],
+        json!(["fast"])
+    );
+    let direct_session = &menu.groups["vary-provider/exact-id"];
+    assert_eq!(
+        direct_session.model_entry("vary-provider/exact-id")["service_tiers"],
+        actual["models"][1]["service_tiers"]
+    );
+
     assert_eq!(
         actual["models"][1]["input_modalities"],
         json!(["text", "image"])
@@ -1423,7 +2054,14 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         .expect("config")
         .parse()
         .expect("toml");
-    assert_eq!(selected["model"].as_str(), Some("auto/exact-group"));
+    assert_eq!(selected["model"].as_str(), Some("Exact-group-label"));
+    assert_eq!(
+        manager
+            .selected_model()
+            .expect("canonical selection")
+            .as_deref(),
+        Some("auto/exact-group")
+    );
     manager
         .activate_menu_with_native(menu.clone(), MENU_BASE, None, false)
         .expect("background refresh");
@@ -1431,7 +2069,14 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         .expect("config")
         .parse()
         .expect("toml");
-    assert_eq!(selected["model"].as_str(), Some("auto/exact-group"));
+    assert_eq!(selected["model"].as_str(), Some("Exact-group-label"));
+    assert_eq!(
+        manager
+            .selected_model()
+            .expect("canonical selection")
+            .as_deref(),
+        Some("auto/exact-group")
+    );
     let before = fs::read(&manager.config).expect("config");
     assert!(manager
         .activate_menu_with_selection(menu, MENU_BASE, None, true, Some("not-in-catalog"))
@@ -1467,4 +2112,29 @@ fn menu_exports_shared_levels_and_preserves_user_default() {
         value["models"][0]["input_modalities"],
         json!(["text", "image"])
     );
+}
+
+#[test]
+fn external_takeover_is_observed_without_reapplying_or_losing_the_recovery_receipt(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    manager.write_projection(
+        &[group()],
+        "synthetic-token",
+        "http://127.0.0.1:1234/intent/v1",
+    )?;
+    assert!(manager.status()?.configuration_owned);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    doc["model_provider"] = toml_edit::value("magpie");
+    doc["model"] = toml_edit::value("synthetic-external-model");
+    doc["model_providers"]["magpie"]["base_url"] = toml_edit::value("http://127.0.0.1:2345/v1");
+    let external = doc.to_string();
+    fs::write(&manager.config, &external)?;
+    let status = manager.status()?;
+    assert!(!status.enabled && !status.configuration_owned);
+    assert!(status.recovery_pending);
+    manager.sync_configuration("http://127.0.0.1:1234/intent/v1")?;
+    assert_eq!(fs::read_to_string(&manager.config)?, external);
+    assert!(manager.load()?.is_some());
+    Ok(())
 }

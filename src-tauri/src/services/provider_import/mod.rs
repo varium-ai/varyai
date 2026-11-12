@@ -1,8 +1,11 @@
 //! Explicit, read-only app imports. Credentials never cross the preview boundary.
+mod gateways;
 mod readers;
 mod reasoning;
 mod subscriptions;
+#[cfg(test)]
 pub(crate) use subscriptions::{import_with_accounts, preview_with_accounts};
+pub(crate) use subscriptions::{import_with_managers, preview_with_managers};
 #[cfg(test)]
 mod tests;
 
@@ -35,11 +38,13 @@ pub(crate) struct ImportPaths {
     opencode_auth: PathBuf,
     provider_backup: PathBuf,
     home: PathBuf,
+    subscription_store: PathBuf,
 }
 impl ImportPaths {
     pub(crate) fn local(source_path: Option<String>) -> Self {
         let home = crate::config::get_home_dir();
         let mut paths = Self::at(&home);
+        paths.subscription_store = crate::services::native_subscription::store_path();
         paths.claude = crate::config::get_claude_settings_path();
         paths.codex = crate::codex_config::get_codex_config_path();
         paths.opencode = crate::opencode_config::get_opencode_config_path();
@@ -76,6 +81,7 @@ impl ImportPaths {
             opencode_auth: home.join(".local/share/opencode/auth.json"),
             provider_backup: home.join(".config/magpie/providers.json"),
             home: home.into(),
+            subscription_store: home.join("subscription-accounts/accounts.json"),
         }
     }
     fn display(&self, path: &Path) -> String {
@@ -137,7 +143,8 @@ pub(crate) struct Candidate {
     from: String,
     record: RoutingUpstream,
     skip: Option<String>,
-    subscription: Option<Value>,
+    subscription: Option<subscriptions::SavedSubscription>,
+    generated_gateway: bool,
 }
 struct PrivateSource {
     public: Source,
@@ -239,6 +246,8 @@ fn candidate(
 ) -> Candidate {
     use crate::services::codex_provider::ModelMode;
     let mut record = RoutingUpstream {
+        notes: None,
+        icon: None,
         schema_version: 1,
         id: "imported".into(),
         name: if name.is_empty() {
@@ -272,17 +281,7 @@ fn candidate(
         base_url, api_key, ..
     } = &record.source
     {
-        let own = url::Url::parse(base_url).ok().is_some_and(|url| {
-            matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
-                && (matches!(
-                    url.port(),
-                    Some(15721) | Some(crate::proxy::types::DEFAULT_PROXY_PORT)
-                ) || url.path().contains("/connections/")
-                    || url.path().contains("/codex-menu"))
-        });
-        if own {
-            Some("selfRoute")
-        } else if base_url.is_empty() {
+        if base_url.is_empty() {
             Some("missingUrl")
         } else if api_key.as_deref().is_none_or(str::is_empty) {
             Some("missingKey")
@@ -296,12 +295,15 @@ fn candidate(
     if record.name.chars().count() > 120 {
         record.name = record.name.chars().take(120).collect();
     }
+    let generated_gateway = gateways::generated_id(reference.rsplit('/').next().unwrap_or(""))
+        || gateways::generated_id(&record.name);
     Candidate {
         reference,
         from: from.into(),
         record,
         skip,
         subscription: None,
+        generated_gateway,
     }
 }
 fn fingerprint(candidate: &Candidate) -> Result<String, String> {
@@ -355,18 +357,6 @@ fn protocol_endpoints(record: &RoutingUpstream) -> BTreeMap<String, String> {
     }
     urls
 }
-fn self_route(raw: &str) -> bool {
-    url::Url::parse(raw).is_ok_and(|url| {
-        matches!(
-            url.host_str(),
-            Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-        ) && (matches!(
-            url.port(),
-            Some(15721) | Some(crate::proxy::types::DEFAULT_PROXY_PORT)
-        ) || url.path().contains("/connections/")
-            || url.path().contains("/codex-menu"))
-    })
-}
 pub(crate) fn same_vendor(a: &RoutingUpstream, b: &RoutingUpstream) -> bool {
     let headers = |r: &RoutingUpstream| {
         r.transport
@@ -381,6 +371,21 @@ pub(crate) fn same_vendor(a: &RoutingUpstream, b: &RoutingUpstream) -> bool {
         && endpoints(a).iter().any(|u| endpoints(b).contains(u))
 }
 pub(crate) fn already_added(a: &RoutingUpstream, b: &RoutingUpstream) -> bool {
+    if let (
+        UpstreamSource::Subscription {
+            provider: ap,
+            account_id: ai,
+            ..
+        },
+        UpstreamSource::Subscription {
+            provider: bp,
+            account_id: bi,
+            ..
+        },
+    ) = (&a.source, &b.source)
+    {
+        return ap == bp && ai == bi;
+    }
     if matches!(
         (&a.source, &b.source),
         (UpstreamSource::Codex, UpstreamSource::Codex)
@@ -400,7 +405,12 @@ pub(crate) fn already_added(a: &RoutingUpstream, b: &RoutingUpstream) -> bool {
                 .is_some_and(|have| have.trim_end_matches('/') == url.trim_end_matches('/'))
         })
 }
-fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
+fn scan(
+    db: &Database,
+    paths: &ImportPaths,
+    have: &[RoutingUpstream],
+) -> Result<Vec<PrivateSource>, String> {
+    let gateways = gateways::Gateways::load(db, paths)?;
     let definitions = [
         ("cc-switch", "CC Switch", &paths.cc_switch),
         ("claude-code", "Claude Code", &paths.claude),
@@ -408,7 +418,7 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
         ("opencode", "OpenCode", &paths.opencode),
         ("magpie", "Magpie", &paths.provider_backup),
     ];
-    definitions
+    Ok(definitions
         .into_iter()
         .map(|(id, name, path)| {
             let found = path.try_exists().unwrap_or(true)
@@ -444,20 +454,17 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
                     vec![]
                 }
             };
+            candidates.retain(|candidate| !gateways.excludes(candidate));
             for candidate in &mut candidates {
-                if protocol_endpoints(&candidate.record)
-                    .values()
-                    .any(|url| self_route(url))
-                {
-                    candidate.skip = Some("selfRoute".into());
-                }
                 if candidate.skip.is_none() && candidate.record.validate().is_err() {
                     candidate.skip = Some("unsupported".into());
                 }
                 let same = have.iter().find(|r| already_added(r, &candidate.record));
                 let vendor = have.iter().find(|r| same_vendor(r, &candidate.record));
                 let collision = have.iter().find(|r| r.name == candidate.record.name);
-                let (status, existing) = if let Some(r) = same {
+                let (status, existing) = if id == "magpie" {
+                    ("new", None)
+                } else if let Some(r) = same {
                     ("same", Some(r.name.clone()))
                 } else if let Some(r) = vendor {
                     ("vendor", Some(r.name.clone()))
@@ -472,8 +479,13 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
                     .and_then(|url| url.host_str().map(str::to_owned))
                     .unwrap_or_default();
                 let model_count = match &candidate.record.source {
-                    UpstreamSource::Api { models, .. } => models.len(),
-                    _ => 0,
+                    UpstreamSource::Api { models, .. }
+                    | UpstreamSource::Subscription { models, .. } => models.len(),
+                    UpstreamSource::Codex => candidate
+                        .record
+                        .codex_settings
+                        .as_ref()
+                        .map_or(0, |s| s.models.len()),
                 };
                 public.items.push(Item {
                     reference: candidate.reference.clone(),
@@ -491,16 +503,20 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
             }
             PrivateSource { public, candidates }
         })
-        .collect()
+        .collect())
 }
 #[cfg(test)]
 pub(crate) fn preview(db: &Database, paths: &ImportPaths) -> Result<Vec<Source>, String> {
     let have = db.private_routing_upstreams()?;
-    Ok(scan(paths, &have).into_iter().map(|s| s.public).collect())
+    Ok(scan(db, paths, &have)?
+        .into_iter()
+        .map(|s| s.public)
+        .collect())
 }
 pub(crate) struct Selected {
     pub record: RoutingUpstream,
     pub join: bool,
+    pub overwrite: bool,
 }
 #[cfg(test)]
 pub(crate) fn import(
@@ -511,7 +527,7 @@ pub(crate) fn import(
     if picks.is_empty() || picks.len() > 256 {
         return Err(INVALID.into());
     }
-    let sources = scan(paths, &db.private_routing_upstreams()?);
+    let sources = scan(db, paths, &db.private_routing_upstreams()?)?;
     let mut selected = Vec::new();
     let mut seen = HashSet::new();
     for pick in picks {
@@ -527,7 +543,9 @@ pub(crate) fn import(
             return Err(CONFLICT.into());
         }
         let mut record = candidate.record.clone();
-        record.id.clear();
+        if pick.source != "magpie" {
+            record.id.clear();
+        }
         if let Some(name) = pick.name {
             if !name.trim().is_empty() {
                 record.name = name.trim().into();
@@ -536,6 +554,7 @@ pub(crate) fn import(
         selected.push(Selected {
             record,
             join: matches!(pick.mode, ImportMode::Key),
+            overwrite: pick.source == "magpie",
         });
     }
     db.import_native_providers(selected)
@@ -566,6 +585,10 @@ pub(crate) fn join_keys(
                     .transport
                     .as_ref()
                     .map_or_else(|| Some(api_format.clone()), |t| t.primary_protocol.clone()),
+                models: incoming
+                    .transport
+                    .as_ref()
+                    .and_then(|t| t.primary_models.clone()),
             });
         }
     }

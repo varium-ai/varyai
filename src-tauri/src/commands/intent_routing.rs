@@ -614,6 +614,7 @@ pub(crate) async fn trial_intent_routing_classification(
             .get(&target.provider_id)
             .cloned()
             .ok_or("intentRouting.providerUnavailable")?;
+        let classifier = crate::services::routing_upstreams::first_enabled(&classifier)?;
         Ok((group, Some(classifier)))
     })
     .await

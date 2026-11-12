@@ -1,87 +1,89 @@
-//! Authenticated native Codex ingress, separate from custom-provider bearer tokens.
+//! Codex native ingress follows the caller's own sign-in, as in Magpie.
 
-use hmac::{Hmac, Mac};
 use http::{header, HeaderMap, StatusCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     io::Read,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, RwLock,
-    },
-    time::{Duration, Instant},
+    sync::{Arc, RwLock},
+    time::Instant,
 };
 
 const FAILED: &str = "routing_native_unavailable";
-const LEASE: Duration = Duration::from_secs(5);
-const BODY_LIMIT: usize = 8 * 1024 * 1024;
-type TokenMac = Hmac<Sha256>;
+// Match the general proxy ingress budget for image-heavy conversations.
+const BODY_LIMIT: usize = 200 * 1024 * 1024;
 
-pub(crate) struct Credentials {
-    token: String,
-    identity: String,
-    workspace: String,
-}
-impl Credentials {
-    pub fn same_identity(&self, other: &Self) -> bool {
-        self.identity == other.identity && self.workspace == other.workspace
+#[cfg(test)]
+#[path = "native_parity_tests.rs"]
+mod parity_tests;
+
+fn canonicalize_model(
+    bytes: bytes::Bytes,
+    original: &mut Value,
+    model_map: &BTreeMap<String, String>,
+) -> Result<bytes::Bytes, &'static str> {
+    let Some(canonical) = original["model"]
+        .as_str()
+        .and_then(|name| model_map.get(name))
+    else {
+        return Ok(bytes);
+    };
+    if original["model"] == *canonical {
+        return Ok(bytes);
     }
+    let before = original.clone();
+    original["model"] = Value::String(canonical.clone());
+    // Edit only the model string; preserve numeric lexemes and all other fields.
+    super::super::pi::json::encode_redacted(&bytes, &before, original)
+        .map(bytes::Bytes::from)
+        .map_err(|_| "routing_unsafe_payload_edit")
 }
-struct Proof {
-    key: [u8; 32],
-    digest: Vec<u8>,
-    until: Instant,
-}
-pub(crate) struct Lease {
-    pub epoch: u64,
+
+/// A conversation namespace, not an authentication decision. Magpie keys native
+/// account state by the request's workspace, falling back to its bearer header.
+#[derive(Clone)]
+pub(crate) struct Context {
     pub identity: String,
-    workspace: String,
-    proof: RwLock<Proof>,
-    revoked: AtomicBool,
-    cancelled: tokio::sync::watch::Sender<bool>,
 }
-impl Lease {
-    pub fn valid(&self) -> bool {
-        !self.revoked.load(Ordering::Acquire)
-            && self.proof.read().is_ok_and(|p| Instant::now() < p.until)
-    }
-    fn revoke(&self) {
-        self.revoked.store(true, Ordering::Release);
-        self.cancelled.send_replace(true);
-    }
-    pub async fn cancelled(&self) {
-        let mut cancelled = self.cancelled.subscribe();
-        loop {
-            if *cancelled.borrow() || self.revoked.load(Ordering::Acquire) {
-                return;
-            }
-            let until = match self.proof.read() {
-                Ok(proof) if Instant::now() < proof.until => proof.until,
-                _ => {
-                    self.revoke();
-                    return;
-                }
-            };
-            tokio::select! {
-                _ = cancelled.changed() => return,
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(until)) => {}
-            }
+impl Context {
+    pub fn from_headers(headers: &HeaderMap) -> Self {
+        let account = headers
+            .get("chatgpt-account-id")
+            .or_else(|| headers.get(header::AUTHORIZATION));
+        Self {
+            identity: format!(
+                "{:x}",
+                Sha256::digest(account.map(|h| h.as_bytes()).unwrap_or_default())
+            ),
         }
     }
 }
 #[derive(Default)]
 pub(crate) struct Native {
-    current: RwLock<Option<Arc<Lease>>>,
-    epoch: AtomicU64,
     status: RwLock<Option<&'static str>>,
     checkpoints: RwLock<Option<Arc<super::checkpoint::Store>>>,
-    projection: RwLock<Option<(Arc<super::Menu>, Value)>>,
+    projection: RwLock<Option<Projection>>,
+}
+#[derive(Clone)]
+struct Projection {
+    menu: Arc<super::Menu>,
+    catalog: Value,
+    model_map: Arc<BTreeMap<String, String>>,
 }
 impl Native {
-    pub fn publish_menu(&self, menu: Arc<super::Menu>, catalog: Value) -> Result<(), &'static str> {
-        *self.projection.write().map_err(|_| FAILED)? = Some((menu, catalog));
+    pub fn publish_menu(
+        &self,
+        menu: Arc<super::Menu>,
+        catalog: Value,
+        model_map: BTreeMap<String, String>,
+    ) -> Result<(), &'static str> {
+        *self.projection.write().map_err(|_| FAILED)? = Some(Projection {
+            menu,
+            catalog,
+            model_map: Arc::new(model_map),
+        });
         Ok(())
     }
     pub fn clear_menu(&self) {
@@ -89,23 +91,36 @@ impl Native {
             *projection = None;
         }
     }
-    pub(crate) fn menu(&self) -> Result<(Arc<super::Menu>, Value), &'static str> {
+    fn projection(&self) -> Result<Projection, &'static str> {
         self.projection
             .read()
             .map_err(|_| FAILED)?
             .clone()
             .ok_or(FAILED)
     }
-    fn observed(&self, lease: &Arc<Lease>) {
-        if let Ok(slot) = self.current.read() {
-            if slot
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, lease))
-                && lease.valid()
-            {
-                self.set_status("active");
-            }
+    #[cfg(test)]
+    pub(crate) fn menu(&self) -> Result<(Arc<super::Menu>, Value), &'static str> {
+        self.projection()
+            .map(|projection| (projection.menu, projection.catalog))
+    }
+    pub(super) fn canonicalize_model(
+        &self,
+        bytes: bytes::Bytes,
+        original: &mut Value,
+    ) -> Result<bytes::Bytes, &'static str> {
+        let map = self
+            .projection
+            .read()
+            .map_err(|_| FAILED)?
+            .as_ref()
+            .map(|projection| projection.model_map.clone());
+        match map {
+            Some(map) => canonicalize_model(bytes, original, &map),
+            None => Ok(bytes),
         }
+    }
+    fn observed(&self) {
+        self.set_status("active");
     }
     pub fn prepare_checkpoints(&self, path: &Path) -> Result<(), &'static str> {
         let store = super::checkpoint::Store::load_or_create(path)?;
@@ -120,11 +135,6 @@ impl Native {
             .ok_or(FAILED)
     }
     pub fn status(&self) -> &'static str {
-        if let Ok(slot) = self.current.read() {
-            if slot.as_ref().is_some_and(|lease| !lease.valid()) {
-                return "revoked";
-            }
-        }
         self.status
             .read()
             .ok()
@@ -136,155 +146,9 @@ impl Native {
             *slot = Some(status);
         }
     }
-    pub fn revoke(&self) {
-        self.epoch.fetch_add(1, Ordering::AcqRel);
-        if let Ok(mut slot) = self.current.write() {
-            if let Some(lease) = slot.take() {
-                lease.revoke();
-            }
-        }
-        self.set_status("revoked");
+    pub fn reset_status(&self) {
+        self.set_status("disabled");
     }
-    pub fn install(&self, credentials: Credentials) -> Result<Arc<Lease>, &'static str> {
-        self.revoke();
-        let epoch = self.epoch.load(Ordering::Acquire);
-        let mut key = [0u8; 32];
-        getrandom::getrandom(&mut key).map_err(|_| FAILED)?;
-        let digest = token_digest(&key, &credentials.token)?;
-        let (cancelled, _) = tokio::sync::watch::channel(false);
-        let lease = Arc::new(Lease {
-            epoch,
-            identity: credentials.identity,
-            workspace: credentials.workspace,
-            proof: RwLock::new(Proof {
-                key,
-                digest,
-                until: Instant::now() + LEASE,
-            }),
-            revoked: AtomicBool::new(false),
-            cancelled,
-        });
-        let mut slot = self.current.write().map_err(|_| FAILED)?;
-        if self.epoch.load(Ordering::Acquire) != lease.epoch {
-            lease.revoke();
-            return Err(FAILED);
-        }
-        *slot = Some(lease.clone());
-        drop(slot);
-        self.set_status("pending");
-        Ok(lease)
-    }
-    pub fn revoke_if(&self, lease: &Arc<Lease>) {
-        if let Ok(mut slot) = self.current.write() {
-            if slot
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, lease))
-            {
-                self.epoch.fetch_add(1, Ordering::AcqRel);
-                lease.revoke();
-                *slot = None;
-                self.set_status("reconnect_required");
-            }
-        }
-    }
-    pub fn bind(
-        &self,
-        credentials: Credentials,
-        reconnect: bool,
-    ) -> Result<Arc<Lease>, &'static str> {
-        let current = self.current.read().map_err(|_| FAILED)?.clone();
-        if let Some(lease) = current {
-            if lease.valid()
-                && lease.identity == credentials.identity
-                && lease.workspace == credentials.workspace
-            {
-                if self.refresh(&lease, credentials) {
-                    return Ok(lease);
-                }
-                return Err(FAILED);
-            }
-            if !reconnect {
-                self.revoke_if(&lease);
-                return Err(FAILED);
-            }
-        } else if !reconnect {
-            return Err(FAILED);
-        }
-        self.install(credentials)
-    }
-    pub fn refresh(&self, lease: &Arc<Lease>, credentials: Credentials) -> bool {
-        let Ok(slot) = self.current.read() else {
-            return false;
-        };
-        if !slot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, lease))
-            || !lease.valid()
-        {
-            return false;
-        }
-        if credentials.identity != lease.identity || credentials.workspace != lease.workspace {
-            lease.revoke();
-            return false;
-        }
-        let Ok(mut proof) = lease.proof.write() else {
-            lease.revoke();
-            return false;
-        };
-        if lease.revoked.load(Ordering::Acquire) || Instant::now() >= proof.until {
-            lease.revoke();
-            return false;
-        }
-        let Ok(digest) = token_digest(&proof.key, &credentials.token) else {
-            lease.revoke();
-            return false;
-        };
-        proof.digest = digest;
-        proof.until = Instant::now() + LEASE;
-        true
-    }
-    pub fn authenticate(&self, headers: &HeaderMap) -> Result<Arc<Lease>, &'static str> {
-        let mut authorization = headers.get_all(header::AUTHORIZATION).iter();
-        let token = authorization
-            .next()
-            .and_then(|h| h.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer "))
-            .filter(|s| {
-                !s.is_empty() && s.len() <= 32 * 1024 && s.bytes().all(|b| b.is_ascii_graphic())
-            })
-            .ok_or(FAILED)?;
-        if authorization.next().is_some() {
-            return Err(FAILED);
-        }
-        let lease = self
-            .current
-            .read()
-            .map_err(|_| FAILED)?
-            .clone()
-            .ok_or(FAILED)?;
-        if !lease.valid() {
-            return Err(FAILED);
-        }
-        for workspace in headers.get_all("chatgpt-account-id").iter() {
-            if workspace.to_str().ok() != Some(lease.workspace.as_str()) {
-                return Err(FAILED);
-            }
-        }
-        let proof = lease.proof.read().map_err(|_| FAILED)?;
-        if lease.revoked.load(Ordering::Acquire) || Instant::now() >= proof.until {
-            return Err(FAILED);
-        }
-        let mut mac = TokenMac::new_from_slice(&proof.key).map_err(|_| FAILED)?;
-        mac.update(token.as_bytes());
-        mac.verify_slice(&proof.digest).map_err(|_| FAILED)?;
-        drop(proof);
-        Ok(lease)
-    }
-}
-fn token_digest(key: &[u8], token: &str) -> Result<Vec<u8>, &'static str> {
-    let mut mac = TokenMac::new_from_slice(key).map_err(|_| FAILED)?;
-    mac.update(token.as_bytes());
-    Ok(mac.finalize().into_bytes().to_vec())
 }
 fn read_private(path: &Path) -> Result<Option<String>, &'static str> {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -330,133 +194,37 @@ fn read_private(path: &Path) -> Result<Option<String>, &'static str> {
     }
     Ok(Some(text))
 }
-pub(crate) fn environment_supported(config: &Path) -> bool {
-    if ["OPENAI_BASE_URL", "OPENAI_API_KEY", "CODEX_API_KEY"]
-        .iter()
-        .any(|key| std::env::var_os(key).is_some())
+/// Discovery only controls how the client is configured. An incomplete read is
+/// unknown, not a logout; forwarding always uses the request's own credentials.
+pub(crate) fn signed_in(config: &Path) -> Option<bool> {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+    let text = read_private(config).ok()?.unwrap_or_default();
+    let doc: toml::Value = text.parse().ok()?;
+    if doc
+        .get("forced_login_method")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("api"))
     {
-        return false;
+        return Some(false);
     }
-    std::env::var_os("CODEX_HOME").is_none_or(|home| Path::new(&home).join("config.toml") == config)
-}
-/// Only called while preparing or reconciling a binding, never during forwarding.
-pub(crate) fn read_credentials(config: &Path, marker: &Path) -> Result<Credentials, &'static str> {
-    let auth = config.parent().ok_or(FAILED)?.join("auth.json");
-    let before = (
-        read_private(config)?,
-        read_private(&auth)?,
-        read_private(marker)?,
-    );
-    let credentials = parse_credentials(
-        before.0.as_deref().unwrap_or(""),
-        &serde_json::from_str::<Value>(before.1.as_deref().ok_or(FAILED)?).map_err(|_| FAILED)?,
-        before
-            .2
-            .as_deref()
-            .map(serde_json::from_str::<Value>)
-            .transpose()
-            .map_err(|_| FAILED)?
-            .as_ref(),
-    )?;
-    let after = (
-        read_private(config)?,
-        read_private(&auth)?,
-        read_private(marker)?,
-    );
-    if before != after {
-        return Err(FAILED);
-    }
-    Ok(credentials)
-}
-fn parse_credentials(
-    config: &str,
-    auth: &Value,
-    marker: Option<&Value>,
-) -> Result<Credentials, &'static str> {
-    use crate::codex_config::{
-        codex_config_auth_store_mode, extract_codex_id_token_user_identity, CodexAuthStoreMode,
-    };
-    let doc: toml::Value = config.parse().map_err(|_| FAILED)?;
-    if codex_config_auth_store_mode(config) != CodexAuthStoreMode::File
-        || doc
-            .get("profiles")
-            .and_then(toml::Value::as_table)
-            .is_some_and(|profiles| {
-                profiles.values().any(|profile| {
-                    profile.get("openai_base_url").is_some()
-                        || profile.get("cli_auth_credentials_store").is_some()
-                })
-            })
-        || auth["auth_mode"] != "chatgpt"
-        || [
-            "OPENAI_API_KEY",
-            "personal_access_token",
-            "bedrock_api_key",
-            "bedrock_access_keys",
-            "agent_identity",
-        ]
-        .iter()
-        .any(|key| auth.get(*key).is_some_and(|v| !v.is_null()))
-    {
-        return Err(FAILED);
-    }
-    let field = |key| {
-        auth.pointer(key)
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty() && s.len() <= 32 * 1024)
-    };
-    let token = field("/tokens/access_token").ok_or(FAILED)?.to_owned();
-    let workspace = field("/tokens/account_id").ok_or(FAILED)?.to_owned();
-    let user = extract_codex_id_token_user_identity(field("/tokens/id_token").ok_or(FAILED)?)
-        .ok_or(FAILED)?;
-    let managed = if let Some(marker) = marker {
-        if marker["version"] != 3
-            || marker["chatgpt_account_id"].as_str() != Some(&workspace)
-            || marker["user_identity"].as_str() != Some(&user)
-        {
-            return Err(FAILED);
+    let auth = match codex_config_auth_store_mode(&text) {
+        CodexAuthStoreMode::File | CodexAuthStoreMode::Auto => {
+            read_private(&config.parent()?.join("auth.json")).ok()?
         }
-        marker["account_id"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or(FAILED)?
-    } else {
-        "native"
+        CodexAuthStoreMode::Ephemeral => return Some(false),
+        CodexAuthStoreMode::Keyring | CodexAuthStoreMode::Unknown => return None,
     };
-    let identity = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&(user, &workspace, managed)).map_err(|_| FAILED)?)
-    );
-    Ok(Credentials {
-        token,
-        identity,
-        workspace,
-    })
-}
-fn version(text: &str) -> Option<[u32; 3]> {
-    if text.is_empty()
-        || text.len() > 80
-        || !text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-    {
-        return None;
-    }
-    let core = text.split(['-', '+']).next()?;
-    let parts = core
-        .split('.')
-        .map(str::parse::<u32>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    parts.try_into().ok()
-}
-fn models_query(query: Option<&str>) -> bool {
-    query.is_none_or(|q| {
-        q.len() <= 128
-            && q.strip_prefix("client_version=")
-                .and_then(version)
-                .is_some()
-    })
+    let Some(auth) = auth else {
+        return Some(false);
+    };
+    let auth: Value = serde_json::from_str(&auth).ok()?;
+    let auth = auth.as_object()?;
+    Some(
+        auth.get("tokens")
+            .and_then(|t| t.get("access_token"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty()),
+    )
 }
 
 /// Preserve untouched wire lexemes even when a checkpoint/control adapter edits structure.
@@ -528,7 +296,7 @@ pub(super) struct Compact {
     pub native: bool,
 }
 fn checkpoint_context(
-    lease: &Lease,
+    context: &Context,
     alias: &str,
     target: &super::Target,
 ) -> super::checkpoint::Context {
@@ -550,7 +318,7 @@ fn checkpoint_context(
         }
     }
     super::checkpoint::Context {
-        identity: lease.identity.clone(),
+        identity: context.identity.clone(),
         alias: alias.into(),
         destination: format!("{:x}", hash.finalize()),
     }
@@ -558,7 +326,7 @@ fn checkpoint_context(
 fn restore_checkpoints(
     body: &mut Value,
     session: &super::Session,
-    lease: &Lease,
+    context: &Context,
     alias: &str,
     store: &super::checkpoint::Store,
 ) -> Result<Option<usize>, &'static str> {
@@ -580,7 +348,7 @@ fn restore_checkpoints(
             }
             let mut decoded = None;
             for (index, target) in session.targets.iter().enumerate() {
-                if let Ok(summary) = store.open(&checkpoint_context(lease, alias, target), seal) {
+                if let Ok(summary) = store.open(&checkpoint_context(context, alias, target), seal) {
                     if decoded.is_some() {
                         return Err("routing_checkpoint_ambiguous");
                     }
@@ -610,9 +378,134 @@ async fn validated_native_compaction(
     }
 }
 
-/// Outer middleware authenticates before gateway policy decoding or database work.
+fn body_error(
+    parts: &http::request::Parts,
+    received_bytes: Option<usize>,
+    status: StatusCode,
+    code: &'static str,
+    reason: &'static str,
+    explanation: &'static str,
+) -> Box<axum::response::Response> {
+    use axum::response::IntoResponse;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let endpoint = if parts.uri.path() == "/backend-api/codex/responses/compact" {
+        "/backend-api/codex/responses/compact"
+    } else {
+        "/backend-api/codex/responses"
+    };
+    let stage = if received_bytes.is_some() {
+        "native_request_decompress"
+    } else {
+        "native_request_read"
+    };
+    // Only allowlisted coding names may appear in diagnostics, never raw headers.
+    let encoding = super::super::content_encoding::get_content_encoding(&parts.headers)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .take(8)
+                .map(|coding| {
+                    if coding == "identity"
+                        || super::super::content_encoding::is_supported_content_encoding(coding)
+                    {
+                        coding
+                    } else {
+                        "unsupported"
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "identity".into());
+    let advice = if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "Reduce screenshots, attachments, or conversation history; compact or start a new conversation, then retry."
+    } else {
+        "Retry the request; if it persists, check the client version and request compression (supported: gzip, deflate, br, zstd)."
+    };
+    let received = received_bytes.map_or_else(|| "unknown".into(), |bytes| bytes.to_string());
+    let limit_mib = BODY_LIMIT / (1024 * 1024);
+    let message = format!(
+        "[VaryAI] Request rejected before forwarding: {explanation} Endpoint={endpoint}; stage={stage}; reason={reason}; encoding={encoding}; received_bytes={received}; limit={BODY_LIMIT} bytes ({limit_mib} MiB). {advice} Request ID: {request_id}"
+    );
+    let details = serde_json::json!({
+        "source":"varyai", "endpoint":endpoint, "stage":stage, "reason":reason,
+        "encoding":encoding, "received_bytes":received_bytes, "body_limit_bytes":BODY_LIMIT
+    });
+    log::warn!(
+        "NativeRequestBodyRejected request_id={request_id} status={} code={code} details={details}",
+        status.as_u16()
+    );
+    let mut response = (
+        status,
+        axum::Json(serde_json::json!({"error":{
+            "type":"invalid_request_error", "code":code, "message":message,
+            "request_id":request_id, "details":details
+        }})),
+    )
+        .into_response();
+    if let Ok(value) = http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    Box::new(response)
+}
+
+async fn read_body(
+    parts: &http::request::Parts,
+    body: axum::body::Body,
+) -> Result<bytes::Bytes, Box<axum::response::Response>> {
+    use super::super::content_encoding::{self, DecompressError};
+    let bytes = axum::body::to_bytes(body, BODY_LIMIT)
+        .await
+        .map_err(|error| {
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            while let Some(error) = source {
+                if error.is::<http_body_util::LengthLimitError>() {
+                    return body_error(
+                        parts,
+                        None,
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "routing_body_limit",
+                        "encoded_body_too_large",
+                        "The received request body exceeds the local body limit.",
+                    );
+                }
+                source = error.source();
+            }
+            body_error(
+                parts,
+                None,
+                StatusCode::BAD_REQUEST,
+                "routing_invalid_encoding",
+                "body_read_failed",
+                "The request body could not be fully read.",
+            )
+        })?;
+    let Some(encoding) = content_encoding::get_content_encoding(&parts.headers) else {
+        return Ok(bytes);
+    };
+    // Reject unknown codings before the shared decoder can log the raw header.
+    if !content_encoding::is_supported_content_encoding(&encoding) {
+        return Err(body_error(
+            parts,
+            Some(bytes.len()),
+            StatusCode::BAD_REQUEST,
+            "routing_invalid_encoding",
+            "unsupported_encoding",
+            "The request uses an unsupported Content-Encoding.",
+        ));
+    }
+    match content_encoding::decompress_body_with_limit(&encoding, &bytes, BODY_LIMIT) {
+        Ok(Some(bytes)) => Ok(bytes::Bytes::from(bytes)),
+        Err(DecompressError::TooLarge { .. }) => Err(body_error(parts, Some(bytes.len()), StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit", "decompressed_body_too_large", "The decompressed request body exceeds the local body limit.")),
+        _ => Err(body_error(parts, Some(bytes.len()), StatusCode::BAD_REQUEST, "routing_invalid_encoding", "decode_failed", "The compressed request could not be decoded: data may be damaged, truncated, or inconsistent with Content-Encoding.")),
+    }
+}
+
+/// Native clients on loopback retain Codex's own authentication. No local
+/// token snapshot or expiring authorization is placed in front of forwarding.
 pub(crate) async fn admission(
-    axum::extract::State(state): axum::extract::State<super::super::server::ProxyState>,
+    axum::extract::State(_state): axum::extract::State<super::super::server::ProxyState>,
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -628,103 +521,39 @@ pub(crate) async fn admission(
     {
         return super::error(StatusCode::FORBIDDEN, "routing_local_clients_only");
     }
-    let lease = match state.intent_runtime.native.authenticate(request.headers()) {
-        Ok(lease) => lease,
-        Err(_) => return super::error(StatusCode::UNAUTHORIZED, FAILED),
-    };
-    request.extensions_mut().insert(lease.clone());
-    let forward = async {
-        // Bound native decoding before the shared gateway policy reads its model.
-        let request = if request.method() == http::Method::POST
-            && matches!(
-                request.uri().path(),
-                "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
-            ) {
-            let (mut parts, body) = request.into_parts();
-            let bytes = match axum::body::to_bytes(body, BODY_LIMIT).await {
-                Ok(bytes) => bytes,
-                Err(_) => return super::error(StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit"),
-            };
-            let bytes = if let Some(encoding) =
-                super::super::content_encoding::get_content_encoding(&parts.headers)
-            {
-                match super::super::content_encoding::decompress_body_with_limit(
-                    &encoding, &bytes, BODY_LIMIT,
-                ) {
-                    Ok(Some(bytes)) => bytes::Bytes::from(bytes),
-                    _ => return super::error(StatusCode::BAD_REQUEST, "routing_invalid_encoding"),
-                }
-            } else {
-                bytes
-            };
-            for name in [
-                header::CONTENT_ENCODING,
-                header::CONTENT_LENGTH,
-                header::TRANSFER_ENCODING,
-            ] {
-                parts.headers.remove(name);
-            }
-            axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
-        } else {
-            request
+    let context = Arc::new(Context::from_headers(request.headers()));
+    request.extensions_mut().insert(context);
+    let request = if request.method() == http::Method::POST
+        && matches!(
+            request.uri().path(),
+            "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
+        ) {
+        let (mut parts, body) = request.into_parts();
+        let bytes = match read_body(&parts, body).await {
+            Ok(bytes) => bytes,
+            Err(response) => return *response,
         };
-        next.run(request).await
+        for name in [
+            header::CONTENT_ENCODING,
+            header::CONTENT_LENGTH,
+            header::TRANSFER_ENCODING,
+        ] {
+            parts.headers.remove(name);
+        }
+        axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
+    } else {
+        request
     };
-    tokio::select! {
-        biased;
-        _ = lease.cancelled() => super::error(StatusCode::UNAUTHORIZED, FAILED),
-        response = forward => response,
-    }
+    next.run(request).await
 }
 
 pub(crate) async fn handle(
     axum::extract::State(state): axum::extract::State<super::super::server::ProxyState>,
     request: axum::extract::Request,
 ) -> axum::response::Response {
-    let Some(lease) = request
-        .extensions()
-        .get::<Arc<Lease>>()
-        .cloned()
-        .filter(|l| l.valid())
-    else {
-        return super::error(StatusCode::UNAUTHORIZED, FAILED);
-    };
+    let context = Arc::new(Context::from_headers(request.headers()));
     let path = request.uri().path();
     let models = request.method() == http::Method::GET && path == "/backend-api/codex/models";
-    if (models && !models_query(request.uri().query()))
-        || (!models && request.uri().query().is_some())
-    {
-        return super::error(StatusCode::BAD_REQUEST, "routing_query_unsupported");
-    }
-    let observed = request
-        .headers()
-        .get("version")
-        .and_then(|h| h.to_str().ok())
-        .and_then(version)
-        .or_else(|| {
-            request
-                .headers()
-                .get(header::USER_AGENT)
-                .and_then(|h| h.to_str().ok())
-                .filter(|ua| ua.to_ascii_lowercase().starts_with("codex"))
-                .and_then(|ua| ua.split_once('/')?.1.split_whitespace().next())
-                .and_then(version)
-        })
-        .or_else(|| {
-            models
-                .then(|| {
-                    request
-                        .uri()
-                        .query()?
-                        .strip_prefix("client_version=")
-                        .and_then(version)
-                })
-                .flatten()
-        });
-    if !observed.is_some_and(|v| v[0] == 0 && matches!(v[1], 114 | 165)) {
-        state.intent_runtime.native.set_status("unsupported");
-        return super::error(StatusCode::BAD_REQUEST, "routing_native_client_unsupported");
-    }
     crate::codex_client::observe(request.headers());
     if path == "/backend-api/codex/responses"
         && request.method() == http::Method::GET
@@ -735,40 +564,36 @@ pub(crate) async fn handle(
     {
         return super::error(StatusCode::UPGRADE_REQUIRED, "routing_native_use_http");
     }
-    let (menu, catalog) = match state.intent_runtime.native.menu() {
-        Ok(projection) => projection,
-        Err(_) => return super::error(StatusCode::SERVICE_UNAVAILABLE, FAILED),
-    };
+    let projection = state.intent_runtime.native.projection().ok();
     if models {
-        use axum::response::IntoResponse;
-        let mut response = axum::Json(catalog).into_response();
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            http::HeaderValue::from_static("no-store"),
-        );
-        return response;
+        let catalog = projection
+            .as_ref()
+            .map(|p| p.catalog.clone())
+            .unwrap_or_else(|| serde_json::json!({"models":[]}));
+        return super::native_gateway::merged_catalog(
+            request.headers(),
+            request.uri().query(),
+            catalog,
+            projection
+                .as_ref()
+                .map(|p| super::native_gateway::CatalogPolicy::for_menu(&p.menu, &p.model_map))
+                .unwrap_or_default(),
+        )
+        .await;
     }
+    let (menu, model_map) = match projection {
+        Some(p) => (Some(p.menu), p.model_map),
+        None => (None, Arc::new(BTreeMap::new())),
+    };
     let legacy = path == "/backend-api/codex/responses/compact";
     if request.method() != http::Method::POST || !(legacy || path == "/backend-api/codex/responses")
     {
         return super::error(StatusCode::NOT_FOUND, "routing_endpoint_unsupported");
     }
     let (mut parts, body) = request.into_parts();
-    let bytes = match axum::body::to_bytes(body, BODY_LIMIT).await {
+    let bytes = match read_body(&parts, body).await {
         Ok(bytes) => bytes,
-        Err(_) => return super::error(StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit"),
-    };
-    let bytes = if let Some(encoding) =
-        super::super::content_encoding::get_content_encoding(&parts.headers)
-    {
-        match super::super::content_encoding::decompress_body_with_limit(
-            &encoding, &bytes, BODY_LIMIT,
-        ) {
-            Ok(Some(bytes)) => bytes::Bytes::from(bytes),
-            _ => return super::error(StatusCode::BAD_REQUEST, "routing_invalid_encoding"),
-        }
-    } else {
-        bytes
+        Err(response) => return *response,
     };
     for name in [
         header::CONTENT_ENCODING,
@@ -781,15 +606,65 @@ pub(crate) async fn handle(
         Ok(body) if body.is_object() => body,
         _ => return super::error(StatusCode::BAD_REQUEST, "routing_invalid_json"),
     };
-    let Some(session) = original["model"]
-        .as_str()
-        .and_then(|alias| menu.groups.get(alias))
-        .cloned()
-    else {
+    let bytes = match canonicalize_model(bytes, &mut original, &model_map) {
+        Ok(bytes) => bytes,
+        Err(code) => return super::error(StatusCode::BAD_REQUEST, code),
+    };
+    let Some(model) = original["model"].as_str() else {
         return super::error(
             StatusCode::NOT_FOUND,
             "routing_native_select_published_model",
         );
+    };
+    let Some(session) = menu
+        .as_ref()
+        .and_then(|menu| menu.groups.get(model))
+        .cloned()
+    else {
+        if super::native_gateway::is_vary_alias(model) {
+            return super::error(
+                StatusCode::NOT_FOUND,
+                "routing_native_select_published_model",
+            );
+        }
+        let mut inspected = original.clone();
+        match super::super::security::inspect_with_context(
+            &crate::app_config::AppType::Codex,
+            &crate::app_config::AppType::Codex,
+            "",
+            None,
+            &mut inspected,
+            &parts.headers,
+        ) {
+            Ok(Some(blocked)) => return blocked,
+            Err(_) => return super::error(StatusCode::BAD_REQUEST, "routing_inspection_failed"),
+            Ok(None) => {}
+        }
+        let bytes = if inspected == original {
+            bytes
+        } else {
+            match super::super::pi::json::encode_redacted(&bytes, &original, &inspected) {
+                Ok(payload) => bytes::Bytes::from(payload),
+                Err(_) => {
+                    return super::error(StatusCode::BAD_REQUEST, "routing_unsafe_payload_edit")
+                }
+            }
+        };
+        let response = super::native_gateway::forward(
+            if legacy {
+                super::native_gateway::Endpoint::Compact
+            } else {
+                super::native_gateway::Endpoint::Responses
+            },
+            parts.headers,
+            bytes,
+            parts.uri.query(),
+        )
+        .await;
+        if response.status().is_success() {
+            state.intent_runtime.native.observed();
+        }
+        return response;
     };
     let operation = match super::compaction::operation(&original, legacy) {
         Ok(operation) => operation,
@@ -801,7 +676,7 @@ pub(crate) async fn handle(
         Ok(store) => store,
         Err(code) => return super::error(StatusCode::SERVICE_UNAVAILABLE, code),
     };
-    let forced = match restore_checkpoints(&mut original, &session, &lease, &alias, &store) {
+    let forced = match restore_checkpoints(&mut original, &session, &context, &alias, &store) {
         Ok(forced) => forced,
         Err(code) => return super::error(StatusCode::CONFLICT, code),
     };
@@ -846,7 +721,7 @@ pub(crate) async fn handle(
             "/v1/responses"
         }
         .into(),
-        format!("native-codex:{}", lease.identity),
+        format!("native-codex:{}", context.identity),
         true,
         false,
         None,
@@ -855,14 +730,14 @@ pub(crate) async fn handle(
     .await;
     let Some(operation) = operation else {
         if response.status().is_success() {
-            runtime.native.observed(&lease);
+            runtime.native.observed();
         }
         return response;
     };
     if native_compact {
         let response = validated_native_compaction(response, operation).await;
         if response.status().is_success() {
-            runtime.native.observed(&lease);
+            runtime.native.observed();
         }
         return response;
     }
@@ -879,10 +754,10 @@ pub(crate) async fn handle(
     let Some(target) = session.targets.get(index) else {
         return super::error(StatusCode::BAD_GATEWAY, FAILED);
     };
-    let context = checkpoint_context(&lease, &alias, target);
+    let context = checkpoint_context(&context, &alias, target);
     match store.seal(&context, &summary) {
-        Ok(seal) if lease.valid() => {
-            runtime.native.observed(&lease);
+        Ok(seal) => {
+            runtime.native.observed();
             super::compaction::checkpoint_response(operation, seal, usage)
         }
         _ => super::error(StatusCode::BAD_GATEWAY, "routing_checkpoint_unavailable"),
@@ -893,69 +768,247 @@ pub(crate) async fn handle(
 mod tests {
     use super::*;
     use http::{header, HeaderMap};
+    use std::time::Duration;
 
-    fn credentials(token: &str, user: &str) -> Credentials {
-        Credentials {
-            token: token.into(),
-            identity: user.into(),
-            workspace: "fixture-workspace".into(),
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
         }
     }
-
-    #[test]
-    fn native_bearer_is_exact_and_bound_to_workspace() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-token", "fixture-user"))
-            .expect("install");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-token".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_ok());
-        headers.insert(
-            "chatgpt-account-id",
-            "different-workspace".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        headers.remove("chatgpt-account-id");
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer arbitrary-token".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-token".parse().expect("header"),
-        );
-        headers.append(
-            header::AUTHORIZATION,
-            "Bearer fixture-token".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        assert!(lease.valid());
-    }
-
-    #[test]
-    fn revoked_or_expired_authorization_cannot_be_republished() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-old", "fixture-user"))
-            .expect("install");
-        runtime.revoke();
-        assert!(!lease.valid());
-        assert!(!runtime.refresh(&lease, credentials("fixture-new", "fixture-user")));
-        let next = runtime
-            .install(credentials("fixture-new", "fixture-user"))
-            .expect("install");
-        assert_ne!(lease.epoch, next.epoch);
-        next.proof.write().expect("proof").until = Instant::now();
-        assert!(!next.valid());
+    fn security() -> RestoreSecurity {
+        let previous = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+        crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+        previous
     }
 
     #[tokio::test]
-    async fn reconnect_recovers_ownership_without_reviving_native_authorization(
+    async fn native_body_accepts_requests_above_legacy_eight_mib_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "model":"synthetic",
+            "input":[{"role":"user","content":[{"type":"input_image",
+                "image_url":format!("data:image/png;base64,{}", "A".repeat(9 * 1024 * 1024))}]}]
+        }))?;
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(&payload), 0)?;
+        for path in ["responses", "responses/compact"] {
+            for (encoding, body) in [("identity", &payload), ("zstd", &compressed)] {
+                let (parts, body) = axum::extract::Request::builder()
+                    .uri(format!("/backend-api/codex/{path}"))
+                    .header(header::CONTENT_ENCODING, encoding)
+                    .body(axum::body::Body::from(body.clone()))?
+                    .into_parts();
+                let decoded = read_body(&parts, body)
+                    .await
+                    .map_err(|_| "screenshot-sized body rejected")?;
+                assert_eq!(decoded.as_ref(), payload);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_body_decoding_preserves_payload_and_accepts_exact_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        let payload = br#"{"model":"synthetic","value":1.0000000000000000001}"#;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(payload)?;
+        let gzip = gzip.finish()?;
+        for (encoding, body) in [
+            ("identity", payload.to_vec()),
+            ("gzip", gzip.clone()),
+            (
+                "zstd",
+                zstd::stream::encode_all(std::io::Cursor::new(payload), 0)?,
+            ),
+            (
+                "gzip, zstd",
+                zstd::stream::encode_all(std::io::Cursor::new(gzip), 0)?,
+            ),
+        ] {
+            let (parts, body) = axum::extract::Request::builder()
+                .uri("/backend-api/codex/responses")
+                .header(header::CONTENT_ENCODING, encoding)
+                .body(axum::body::Body::from(body))?
+                .into_parts();
+            let decoded = read_body(&parts, body)
+                .await
+                .map_err(|_| "valid body rejected")?;
+            assert_eq!(decoded.as_ref(), payload);
+        }
+        let body = zstd::stream::encode_all(std::io::repeat(b'x').take(BODY_LIMIT as u64), 0)?;
+        let (parts, body) = axum::extract::Request::builder()
+            .uri("/backend-api/codex/responses")
+            .header(header::CONTENT_ENCODING, "zstd")
+            .body(axum::body::Body::from(body))?
+            .into_parts();
+        let decoded = read_body(&parts, body)
+            .await
+            .map_err(|_| "exact limit rejected")?;
+        assert_eq!(decoded.len(), BODY_LIMIT);
+        assert!(decoded.iter().all(|byte| *byte == b'x'));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_body_rejects_received_and_decompressed_data_above_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Generate large fixtures incrementally instead of allocating their input.
+        const CHUNK: &[u8] = &[b'x'; 64 * 1024];
+        let compressed =
+            zstd::stream::encode_all(std::io::repeat(b'x').take(BODY_LIMIT as u64 + 1), 0)?;
+        let stream = futures::stream::iter(
+            (0..=BODY_LIMIT / CHUNK.len())
+                .map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from_static(CHUNK))),
+        );
+        for (encoding, body, reason) in [
+            (
+                "identity",
+                axum::body::Body::from_stream(stream),
+                "encoded_body_too_large",
+            ),
+            (
+                "zstd",
+                axum::body::Body::from(compressed),
+                "decompressed_body_too_large",
+            ),
+        ] {
+            let (parts, body) = axum::extract::Request::builder()
+                .uri("/backend-api/codex/responses")
+                .header(header::CONTENT_ENCODING, encoding)
+                .body(body)?
+                .into_parts();
+            let response = read_body(&parts, body)
+                .await
+                .err()
+                .ok_or("oversized body accepted")?;
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192).await?;
+            let body: Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(body["error"]["code"], "routing_body_limit");
+            assert_eq!(body["error"]["details"]["reason"], reason);
+            assert_eq!(body["error"]["details"]["body_limit_bytes"], 209715200);
+            let message = body["error"]["message"].as_str().ok_or("missing message")?;
+            assert!(message.contains("209715200 bytes (200 MiB)"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_body_read_failure_is_not_reported_as_size_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let stream = futures::stream::once(async {
+            Err::<bytes::Bytes, _>(std::io::Error::other("synthetic-private-stream-error"))
+        });
+        let (parts, body) = axum::extract::Request::builder()
+            .uri("/backend-api/codex/responses?synthetic-private-query")
+            .body(axum::body::Body::from_stream(stream))?
+            .into_parts();
+        let response = read_body(&parts, body)
+            .await
+            .err()
+            .ok_or("expected read failure")?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT).await?;
+        let text = std::str::from_utf8(&bytes)?;
+        assert!(!text.contains("synthetic-private"));
+        let body: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(body["error"]["details"]["reason"], "body_read_failed");
+        assert_eq!(body["error"]["details"]["received_bytes"], Value::Null);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn native_body_errors_explain_failures_without_exposing_request_data(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{
+            database::Database,
+            proxy::{server::ProxyServer, ProxyConfig},
+        };
+        let runtime = Arc::new(super::super::Runtime::default());
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime);
+        let info = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        for path in ["responses", "responses/compact"] {
+            for (encoding, body, status, code, reason, stage) in [
+                (
+                    "zstd",
+                    b"synthetic-private-body".to_vec(),
+                    StatusCode::BAD_REQUEST,
+                    "routing_invalid_encoding",
+                    "decode_failed",
+                    "native_request_decompress",
+                ),
+                (
+                    "synthetic-private-header",
+                    b"synthetic-private-body".to_vec(),
+                    StatusCode::BAD_REQUEST,
+                    "routing_invalid_encoding",
+                    "unsupported_encoding",
+                    "native_request_decompress",
+                ),
+            ] {
+                let response = client
+                    .post(format!(
+                        "http://127.0.0.1:{}/backend-api/codex/{path}",
+                        info.port
+                    ))
+                    .bearer_auth("fixture-token")
+                    .header(header::CONTENT_ENCODING, encoding)
+                    .body(body.clone())
+                    .send()
+                    .await?;
+                assert_eq!(response.status(), status);
+                let request_id = response
+                    .headers()
+                    .get("x-request-id")
+                    .ok_or("missing request ID")?
+                    .to_str()?
+                    .to_owned();
+                uuid::Uuid::parse_str(&request_id)?;
+                let text = response.text().await?;
+                assert!(!text.contains("synthetic-private"));
+                assert!(!text.contains("fixture-token"));
+                let error: Value = serde_json::from_str(&text)?;
+                let error = &error["error"];
+                assert_eq!(error["code"], code);
+                assert_eq!(error["request_id"], request_id);
+                assert_eq!(error["details"]["source"], "varyai");
+                assert_eq!(error["details"]["reason"], reason);
+                assert_eq!(error["details"]["stage"], stage);
+                assert_eq!(
+                    error["details"]["endpoint"],
+                    format!("/backend-api/codex/{path}")
+                );
+                assert_eq!(error["details"]["body_limit_bytes"], BODY_LIMIT);
+                if stage == "native_request_decompress" {
+                    assert_eq!(error["details"]["received_bytes"], body.len());
+                }
+                let message = error["message"].as_str().ok_or("missing message")?;
+                assert!(message.contains("VaryAI"));
+                assert!(message.contains(&request_id));
+                assert!(message.contains("209715200"));
+                assert!(message.contains("200 MiB"));
+                assert!(message.contains("before forwarding"));
+                assert!(message.contains("retry") || message.contains("Retry"));
+            }
+        }
+        server.stop().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_continuation_scope_survives_token_rotation_and_isolates_workspaces(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use super::super::{continuation, scopes, Bindings, Session, Target};
         let dir = tempfile::tempdir()?;
@@ -986,8 +1039,10 @@ mod tests {
             created: Instant::now(),
             bindings: Arc::new(tokio::sync::Mutex::new(Bindings::default())),
         };
-        let native = Native::default();
-        let first = native.install(credentials("synthetic-old-token", "synthetic-user"))?;
+        let mut headers = HeaderMap::new();
+        headers.insert("chatgpt-account-id", "synthetic-workspace".parse()?);
+        headers.insert(header::AUTHORIZATION, "Bearer synthetic-old-token".parse()?);
+        let first = Context::from_headers(&headers);
         let store = continuation::Store::load(path.clone(), key.clone()).await?;
         let conversations = scopes::Conversations::default();
         let state = conversations.acquire_durable(
@@ -1000,21 +1055,15 @@ mod tests {
         state
             .bindings
             .lock()
-            .await
+            .unwrap()
             .observe(&serde_json::json!({"id":"native-response"}), 0);
         store.flush().await?;
         drop(state);
         drop(conversations);
         drop(store);
-        native.revoke();
-        let next = native.install(credentials("synthetic-new-token", "synthetic-user"))?;
-        assert_ne!(first.epoch, next.epoch);
-        assert!(!first.valid());
-        let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, "Bearer synthetic-old-token".parse()?);
-        assert!(native.authenticate(&headers).is_err());
         headers.insert(header::AUTHORIZATION, "Bearer synthetic-new-token".parse()?);
-        assert!(native.authenticate(&headers).is_ok());
+        let next = Context::from_headers(&headers);
+        assert_eq!(first.identity, next.identity);
         session.bindings = Arc::default();
         let store = continuation::Store::load(path, key).await?;
         let body = serde_json::json!({"previous_response_id":"native-response"});
@@ -1026,11 +1075,11 @@ mod tests {
             Some(store.clone()),
         )?;
         assert_eq!(
-            restored.bindings.lock().await.resolve(&body, None),
+            restored.bindings.lock().unwrap().resolve(&body, None),
             Ok(Some(0))
         );
-        native.revoke();
-        let different = native.install(credentials("synthetic-new-token", "different-user"))?;
+        headers.insert("chatgpt-account-id", "synthetic-other-workspace".parse()?);
+        let different = Context::from_headers(&headers);
         let isolated = scopes::Conversations::default().acquire_durable(
             &format!("native-codex:{}", different.identity),
             &session,
@@ -1038,23 +1087,13 @@ mod tests {
             &body,
             Some(store),
         )?;
-        assert!(isolated.bindings.lock().await.resolve(&body, None).is_err());
+        assert!(isolated
+            .bindings
+            .lock()
+            .unwrap()
+            .resolve(&body, None)
+            .is_err());
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn lease_expiry_cancels_without_waiting_for_a_reconciliation_worker() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-token", "fixture-user"))
-            .expect("install");
-        lease.proof.write().expect("proof").until = Instant::now() + Duration::from_millis(20);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(250), lease.cancelled())
-                .await
-                .is_ok()
-        );
-        assert!(!runtime.refresh(&lease, credentials("fixture-new", "fixture-user")));
     }
 
     #[test]
@@ -1074,31 +1113,26 @@ mod tests {
     }
 
     #[test]
-    fn refresh_rejects_same_workspace_different_user_and_rotates_exact_token() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-old", "fixture-user"))
-            .expect("install");
-        assert!(runtime.refresh(&lease, credentials("fixture-new", "fixture-user")));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-old".parse().expect("header"),
+    fn readable_model_normalization_preserves_unrelated_wire_values() {
+        let raw = bytes::Bytes::from_static(br#"{"model":"Grok - Synthetic","input":"opaque","metadata":{"integer":9007199254740993,"float":1.0000e+03}}"#);
+        let mut original = super::super::super::pi::json::parse(&raw).expect("fixture");
+        let map = BTreeMap::from([("Grok - Synthetic".into(), "vary-provider/synthetic".into())]);
+        let normalized = canonicalize_model(raw, &mut original, &map).expect("normalize");
+        let text = std::str::from_utf8(&normalized).expect("utf8");
+        assert_eq!(original["model"], "vary-provider/synthetic");
+        assert!(text.contains("9007199254740993"));
+        assert!(text.contains("1.0000e+03"));
+        assert_eq!(
+            canonicalize_model(normalized.clone(), &mut original, &map).expect("legacy"),
+            normalized
         );
-        assert!(runtime.authenticate(&headers).is_err());
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-new".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_ok());
-        assert!(!runtime.refresh(&lease, credentials("fixture-new", "different-user")));
-        assert!(!lease.valid());
     }
 
     #[tokio::test]
     #[serial_test::serial]
     async fn native_facade_auth_fallback_compaction_and_restart_are_isolated(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let _security = security();
         use crate::{
             database::Database,
             proxy::{server::ProxyServer, ProxyConfig},
@@ -1155,20 +1189,23 @@ mod tests {
         });
         let expected_catalog =
             crate::services::intent_routing::client::menu_catalog(&menu, "high")?;
-        runtime
-            .native
-            .publish_menu(menu.clone(), expected_catalog.clone())?;
+        runtime.native.publish_menu(
+            menu.clone(),
+            expected_catalog.clone(),
+            BTreeMap::from([
+                ("Readable synthetic model".into(), alias.clone()),
+                ("Previous synthetic name".into(), alias.clone()),
+                (
+                    "Removed synthetic model".into(),
+                    "vary-provider/removed".into(),
+                ),
+            ]),
+        )?;
         runtime.set_menu(menu)?;
         let directory = tempfile::tempdir()?;
         runtime
             .native
             .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
-        let credentials = || Credentials {
-            token: concat!("synthetic", "-native-auth").into(),
-            identity: "fixture-user".into(),
-            workspace: "fixture-workspace".into(),
-        };
-        runtime.native.install(credentials())?;
         let db = Arc::new(Database::memory()?);
         let server = ProxyServer::new(
             ProxyConfig {
@@ -1186,7 +1223,7 @@ mod tests {
             client
                 .post(format!("{base}/responses"))
                 .bearer_auth(concat!("synthetic", "-native-auth"))
-                .header("version", "0.165.0")
+                .header("version", "0.167.0")
                 .header("cookie", "caller-private")
                 .json(&body)
                 .send()
@@ -1196,9 +1233,9 @@ mod tests {
             .bearer_auth("arbitrary")
             .send()
             .await?;
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(unauthorized.status(), StatusCode::OK);
         let browser = client
-            .get(format!("{base}/models?client_version=0.165.0"))
+            .get(format!("{base}/models?client_version=0.166.0"))
             .bearer_auth(concat!("synthetic", "-native-auth"))
             .header("origin", "https://fixture.invalid")
             .send()
@@ -1207,7 +1244,7 @@ mod tests {
         let handshake = client
             .get(format!("{base}/responses"))
             .bearer_auth(concat!("synthetic", "-native-auth"))
-            .header("version", "0.165.0")
+            .header("version", "0.166.0")
             .header("connection", "upgrade")
             .header("upgrade", "websocket")
             .send()
@@ -1215,7 +1252,7 @@ mod tests {
         assert_eq!(handshake.status(), StatusCode::UPGRADE_REQUIRED);
         assert!(seen.lock().expect("fixture").is_empty());
         let catalog: Value = client
-            .get(format!("{base}/models?client_version=0.165.0"))
+            .get(format!("{base}/models?client_version=0.166.0"))
             .bearer_auth(concat!("synthetic", "-native-auth"))
             .send()
             .await?
@@ -1223,15 +1260,42 @@ mod tests {
             .await?;
         assert_eq!(catalog, expected_catalog);
         assert_eq!(catalog["models"][0]["slug"], alias);
+        for version in ["0.114.0", "0.165.0", "0.166.0", "0.167.0"] {
+            let response = client
+                .get(format!("{base}/models?client_version={version}"))
+                .bearer_auth(concat!("synthetic", "-native-auth"))
+                .header("version", version)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK, "{version}");
+            assert_eq!(response.json::<Value>().await?, expected_catalog);
+        }
+        for version in ["0.113.0", "0.168.0", "1.0.0"] {
+            let response = client
+                .get(format!("{base}/models?client_version={version}"))
+                .bearer_auth(concat!("synthetic", "-native-auth"))
+                .header("version", version)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK, "{version}");
+        }
+        runtime.native.set_status("pending");
         assert_eq!(runtime.native.status(), "pending");
         assert_eq!(
-            post(serde_json::json!({"model":"unpublished","input":"synthetic"}))
+            post(serde_json::json!({"model":"vary-provider/unpublished","input":"synthetic"}))
                 .await?
                 .status(),
             StatusCode::NOT_FOUND
         );
-        assert_eq!(post(serde_json::json!({"model":alias,"input":[{"type":"reasoning","encrypted_content":"unknown-state"}]})).await?.status(),StatusCode::CONFLICT);
-        let first = post(serde_json::json!({"model":alias,"input":"synthetic"})).await?;
+        assert_eq!(
+            post(serde_json::json!({"model":"Removed synthetic model","input":"synthetic"}))
+                .await?
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let first =
+            post(serde_json::json!({"model":"Readable synthetic model","input":"synthetic"}))
+                .await?;
         assert_eq!(first.status(), StatusCode::OK);
         let _ = first.bytes().await?;
         let compact_response = client.post(format!("{base}/responses/compact")).bearer_auth(concat!("synthetic", "-native-auth")).header("version","0.114.0").json(&serde_json::json!({"model":alias,"input":[{"type":"message","role":"user","content":"synthetic history"}]})).send().await?;
@@ -1243,12 +1307,10 @@ mod tests {
             .to_owned();
         assert!(seal.starts_with("varyai1:"));
         assert!(!seal.contains("Synthetic continuation"));
-        runtime.native.revoke();
         runtime
             .native
             .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
-        runtime.native.install(credentials())?;
-        let response = post(serde_json::json!({"model":alias,"input":[{"type":"compaction","encrypted_content":seal.clone()},{"type":"message","role":"user","content":"continue"}]})).await?;
+        let response = post(serde_json::json!({"model":"Previous synthetic name","input":[{"type":"compaction","encrypted_content":seal.clone()},{"type":"message","role":"user","content":"continue"}]})).await?;
         assert_eq!(response.status(), StatusCode::OK);
         let _ = response.bytes().await?;
         {
@@ -1267,16 +1329,13 @@ mod tests {
                 .to_string()
                 .contains("Synthetic continuation summary"));
         }
-        runtime.native.revoke();
-        runtime.native.install(Credentials {
-            token: concat!("synthetic", "-native-auth").into(),
-            identity: "different-user".into(),
-            workspace: "fixture-workspace".into(),
-        })?;
-        assert_eq!(post(serde_json::json!({"model":alias,"input":[{"type":"compaction","encrypted_content":seal}]})).await?.status(),StatusCode::CONFLICT);
+        let different = client.post(format!("{base}/responses"))
+            .bearer_auth(concat!("synthetic", "-native-auth"))
+            .header("chatgpt-account-id", "synthetic-other-workspace")
+            .json(&serde_json::json!({"model":alias,"input":[{"type":"compaction","encrypted_content":seal}]}))
+            .send().await?;
+        assert_eq!(different.status(), StatusCode::CONFLICT);
         assert_eq!(seen.lock().expect("fixture").len(), 3);
-        runtime.native.revoke();
-        runtime.native.install(credentials())?;
         let key = db.create_gateway_key(crate::proxy::gateway::KeyPolicy {
             name: "Synthetic native policy".into(),
             models: vec!["different-published-alias".into()],
@@ -1315,70 +1374,583 @@ mod tests {
         .await?;
         let _ = axum::body::to_bytes(validated.into_body(), BODY_LIMIT).await?;
         assert_eq!(seen.lock().expect("fixture").len(), 4);
-        runtime.native.revoke();
-        assert_eq!(
-            post(serde_json::json!({"model":alias,"input":"synthetic"}))
-                .await?
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(seen.lock().expect("fixture").len(), 4);
+        for model in [
+            &alias,
+            "Readable synthetic model",
+            "Previous synthetic name",
+        ] {
+            let response = client
+                .post(format!(
+                    "http://127.0.0.1:{}/intent/v1/responses",
+                    info.port
+                ))
+                .bearer_auth(concat!("fixture", "-menu-token"))
+                .json(&serde_json::json!({"model":model,"input":"synthetic"}))
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
+        }
+        assert_eq!(seen.lock().expect("fixture").len(), 7);
+        for named in [false, true] {
+            let input = serde_json::json!([
+                {"type":"reasoning","id":"synthetic-prior-model-item",
+                 "summary":[{"type":"summary_text","text":"Synthetic visible thought"}],
+                 "content":null,"encrypted_content":null,
+                 "internal_chat_message_metadata_passthrough":{"turn_id":"synthetic-prior-turn"}},
+                {"type":"message","role":"assistant","content":"Synthetic prior answer"},
+                {"type":"message","role":"user","content":"Synthetic follow-up"}
+            ]);
+            let mut body = serde_json::json!({"model":"Readable synthetic model","input":input});
+            if named {
+                body["prompt_cache_key"] = serde_json::json!("synthetic-switched-conversation");
+            }
+            let response = post(body.clone()).await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
+            assert_eq!(
+                seen.lock()
+                    .expect("fixture")
+                    .last()
+                    .ok_or("missing request")?
+                    .1["input"],
+                input
+            );
+        }
+        assert_eq!(seen.lock().expect("fixture").len(), 9);
         server.stop().await?;
         task.abort();
         Ok(())
     }
 
-    #[test]
-    fn file_credentials_require_stable_identity_and_exact_managed_marker() {
-        let auth = serde_json::json!({"auth_mode":"chatgpt","tokens":{
-            "access_token":"synthetic-file-token","account_id":"synthetic-workspace",
-            "id_token":crate::codex_config::test_codex_id_token("synthetic-user")
-        }});
-        let unmanaged = parse_credentials("", &auth, None).expect("native file login");
-        let marker = serde_json::json!({"version":3,"chatgpt_account_id":"synthetic-workspace","user_identity":"sub:synthetic-user","account_id":"managed-fixture"});
-        let managed = parse_credentials("", &auth, Some(&marker)).expect("managed file login");
-        assert!(!unmanaged.same_identity(&managed));
-        for (key, value) in [
-            ("version", serde_json::json!(2)),
-            ("user_identity", serde_json::json!("another-user")),
-            ("chatgpt_account_id", serde_json::json!("another-workspace")),
-            ("account_id", serde_json::json!("")),
-        ] {
-            let mut invalid = marker.clone();
-            invalid[key] = value;
-            assert!(parse_credentials("", &auth, Some(&invalid)).is_err());
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn native_responses_fresh_named_session_preserves_empty_reasoning_and_unknown_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{
+            database::Database,
+            proxy::{server::ProxyServer, ProxyConfig},
+        };
+        use axum::{routing::post, Json, Router};
+        use std::{collections::HashMap, sync::Mutex};
+
+        let _security = security();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let upstream = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/responses",
+                post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                    observed.lock().expect("fixture").push((headers, body));
+                    std::future::ready(Json(serde_json::json!({
+                        "id":"synthetic-native-hello-response", "object":"response",
+                        "status":"completed", "output":[{"type":"message",
+                            "role":"assistant", "content":[{"type":"output_text", "text":"hello"}]}]
+                    })))
+                }),
+            );
+            let _ = axum::serve(listener, app).await;
+        });
+        let group: super::super::RoutingGroup = serde_json::from_value(serde_json::json!({
+            "id":"native-first-hello", "name":"Synthetic first hello", "revision":0,
+            "client":"codex", "enabled":false,
+            "members":[{"id":"a", "providerId":"synthetic", "modelId":"synthetic-model"}],
+            "defaultMemberId":"a", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+            "classifierTarget":null, "classificationBudgetMs":2000, "rules":[]
+        }))?;
+        let alias = group.alias();
+        let session = Arc::new(super::super::Session {
+            group,
+            targets: vec![super::super::Target {
+                fixed_effort: None,
+                provider_id: "synthetic".into(),
+                model: "synthetic-model".into(),
+                upstream: None,
+                effort: Default::default(),
+                url: format!("http://{upstream}/responses").parse()?,
+                headers: HeaderMap::from_iter([(
+                    header::AUTHORIZATION,
+                    "Bearer synthetic-upstream-token".parse()?,
+                )]),
+                official: false,
+                credentials: None,
+                scheduling: Arc::default(),
+            }],
+            classifier: None,
+            client: reqwest::Client::builder().no_proxy().build()?,
+            created: Instant::now(),
+            bindings: Arc::default(),
+        });
+        let menu = Arc::new(super::super::Menu {
+            token: "synthetic-menu-token".into(),
+            models: HashMap::new(),
+            default_model: Some(alias.clone()),
+            omitted_entries: 0,
+            context_settings: Default::default(),
+            groups: HashMap::from([(alias.clone(), session)]),
+        });
+        let runtime = Arc::new(super::super::Runtime::default());
+        let catalog = crate::services::intent_routing::client::menu_catalog(&menu, "high")?;
+        runtime
+            .native
+            .publish_menu(menu.clone(), catalog, BTreeMap::new())?;
+        runtime.set_menu(menu)?;
+        let directory = tempfile::tempdir()?;
+        runtime
+            .native
+            .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime.clone());
+        let info = server.start().await?;
+        let url = format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let mut body = serde_json::json!({
+            "model":alias, "prompt_cache_key":"synthetic-brand-new-session",
+            "previous_response_id":null,
+            "input":[
+                {"type":"reasoning", "id":"synthetic-unobserved-reasoning",
+                 "summary":[], "content":null, "encrypted_content":null},
+                {"type":"message", "role":"user",
+                 "content":[{"type":"input_text", "text":"hello"}]}
+            ]
+        });
+        for auth in [None, Some("synthetic-invalid-token")] {
+            let request = client.post(&url).header("version", "0.167.0").json(&body);
+            let request = match auth {
+                Some(token) => request.bearer_auth(token),
+                None => request,
+            };
+            let response = request.send().await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
         }
-        for config in [
-            "cli_auth_credentials_store='keyring'",
-            "cli_auth_credentials_store='auto'",
-            "cli_auth_credentials_store='ephemeral'",
-            "[profiles.fixture]\nopenai_base_url='https://synthetic.invalid'",
-        ] {
-            assert!(parse_credentials(config, &auth, None).is_err());
+        assert_eq!(seen.lock().expect("fixture").len(), 2);
+        seen.lock().expect("fixture").clear();
+
+        for unknown_state in [false, true] {
+            if unknown_state {
+                body["prompt_cache_key"] = serde_json::json!("synthetic-other-brand-new-session");
+                body["previous_response_id"] = serde_json::json!("synthetic-unobserved-response");
+                body["input"][0]["id"] = serde_json::json!("synthetic-other-unobserved-reasoning");
+                body["input"][0]["encrypted_content"] =
+                    serde_json::json!("synthetic-unobserved-state");
+            }
+            let response = client
+                .post(&url)
+                .bearer_auth("synthetic-native-token")
+                .header("version", "0.167.0")
+                .json(&body)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
+            let seen = seen.lock().expect("fixture");
+            assert_eq!(seen.len(), if unknown_state { 2 } else { 1 });
+            let (headers, forwarded) = seen.last().ok_or("missing upstream request")?;
+            assert_eq!(
+                headers[header::AUTHORIZATION],
+                "Bearer synthetic-upstream-token"
+            );
+            assert_eq!(forwarded["model"], "synthetic-model");
+            assert_eq!(forwarded["input"], body["input"]);
+            assert_eq!(
+                forwarded.get("previous_response_id"),
+                body.get("previous_response_id")
+            );
         }
-        let mut invalid = auth.clone();
-        invalid["auth_mode"] = serde_json::json!("chatgptAuthTokens");
-        assert!(parse_credentials("", &invalid, None).is_err());
-        invalid = auth.clone();
-        invalid["tokens"]["id_token"] = serde_json::Value::Null;
-        assert!(parse_credentials("", &invalid, None).is_err());
+        server.stop().await?;
+        task.abort();
+        Ok(())
     }
 
-    #[test]
-    fn native_queries_are_bounded_and_not_forwarded() {
-        assert!(models_query(None));
-        assert!(models_query(Some("client_version=0.114.0")));
-        assert!(models_query(Some("client_version=0.165.0-alpha.1")));
-        for query in [
-            "",
-            "client_version=",
-            "client_version=0.1.0&client_version=0.1.0",
-            "x=0.1.0",
-            "client_version=0.1.0&x=1",
-            "client_version=../../../",
-            "client_version=0.1",
-        ] {
-            assert!(!models_query(Some(query)));
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn official_native_gateway_uses_local_fixture_and_preserves_raw_transport(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{body::Body, Router};
+        use bytes::Bytes;
+        use http::Response;
+        use http_body_util::BodyExt;
+        use std::sync::Mutex;
+
+        let seen = Arc::new(Mutex::new(Vec::<(String, HeaderMap, Bytes)>::new()));
+        let observed = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let observed = observed.clone();
+            async move {
+                let path = request.uri().path().to_owned();
+                let query = request.uri().query().unwrap_or_default().to_owned();
+                let (parts, body) = request.into_parts();
+                let body = axum::body::to_bytes(body, BODY_LIMIT)
+                    .await
+                    .unwrap_or_default();
+                let request_headers = parts.headers.clone();
+                observed.lock().expect("fixture").push((
+                    path.clone(),
+                    request_headers.clone(),
+                    body.clone(),
+                ));
+                if path.ends_with("/models") {
+                    if query.contains("0.165.0") {
+                        return Response::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .body(Body::from("synthetic unavailable"))
+                            .expect("fixture response");
+                    }
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "models": [{"slug": "gpt-5", "display_name": "Official"}],
+                                "account": "fixture"
+                            })
+                            .to_string(),
+                        ))
+                        .expect("fixture response");
+                }
+                if request_headers.contains_key("x-native-redirect") {
+                    return Response::builder()
+                        .status(StatusCode::TEMPORARY_REDIRECT)
+                        .header(header::LOCATION, "/redirect-target")
+                        .body(Body::empty())
+                        .expect("fixture response");
+                }
+                if request_headers.contains_key("x-native-stream") {
+                    let stream = async_stream::stream! {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"first-chunk"));
+                        std::future::pending::<()>().await;
+                    };
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .expect("fixture response");
+                }
+                Response::builder()
+                    .status(StatusCode::CREATED)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-native-fixture", "preserved")
+                    .header("connection", "x-remove")
+                    .header("x-remove", "removed")
+                    .body(Body::from(body))
+                    .expect("fixture response")
+            }
+        });
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let _origin = super::super::native_gateway::set_test_origin(format!(
+            "http://{address}/backend-api/codex"
+        ));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Bearer fixture-token".parse()?);
+        headers.insert("chatgpt-account-id", "fixture-workspace".parse()?);
+        headers.insert("x-native-test", "preserved".parse()?);
+        headers.insert(header::COOKIE, "private-cookie".parse()?);
+        headers.insert("connection", "x-request-hop".parse()?);
+        headers.insert("x-request-hop", "removed".parse()?);
+
+        let vary = serde_json::json!({
+            "models": [{"slug": "vary-auto/development", "display_name": "Vary"}]
+        });
+        let merged = super::super::native_gateway::merged_catalog(
+            &headers,
+            Some("client_version=0.166.0"),
+            vary.clone(),
+            Default::default(),
+        )
+        .await;
+        let merged: Value =
+            serde_json::from_slice(&axum::body::to_bytes(merged.into_body(), BODY_LIMIT).await?)?;
+        assert_eq!(merged["account"], "fixture");
+        assert_eq!(merged["models"].as_array().map(Vec::len), Some(2));
+        assert_eq!(merged["models"][1]["slug"], "vary-auto/development");
+        let fallback = super::super::native_gateway::merged_catalog(
+            &headers,
+            Some("client_version=0.165.0"),
+            vary.clone(),
+            Default::default(),
+        )
+        .await;
+        let fallback: Value =
+            serde_json::from_slice(&axum::body::to_bytes(fallback.into_body(), BODY_LIMIT).await?)?;
+        assert_eq!(fallback, vary);
+
+        let raw =
+            Bytes::from_static(br#"{"model":"gpt-5","opaque":[1,2],"service_tier":"priority"}"#);
+        let response = super::super::native_gateway::forward(
+            super::super::native_gateway::Endpoint::Responses,
+            headers.clone(),
+            raw.clone(),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()["x-native-fixture"], "preserved");
+        assert!(!response.headers().contains_key("x-remove"));
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), BODY_LIMIT).await?,
+            raw
+        );
+
+        let compact = super::super::native_gateway::forward(
+            super::super::native_gateway::Endpoint::Compact,
+            headers.clone(),
+            Bytes::from_static(b"compact-body"),
+            None,
+        )
+        .await;
+        assert_eq!(compact.status(), StatusCode::CREATED);
+        assert_eq!(
+            axum::body::to_bytes(compact.into_body(), BODY_LIMIT).await?,
+            Bytes::from_static(b"compact-body")
+        );
+        {
+            let requests = seen.lock().expect("fixture");
+            assert_eq!(requests.len(), 4);
+            assert_eq!(requests[0].0, "/backend-api/codex/models");
+            assert_eq!(requests[1].0, "/backend-api/codex/models");
+            assert_eq!(requests[2].0, "/backend-api/codex/responses");
+            assert_eq!(requests[3].0, "/backend-api/codex/responses/compact");
+            for (_, request_headers, _) in requests.iter() {
+                assert_eq!(
+                    request_headers[header::AUTHORIZATION],
+                    "Bearer fixture-token"
+                );
+                assert_eq!(request_headers["chatgpt-account-id"], "fixture-workspace");
+                assert_eq!(request_headers["x-native-test"], "preserved");
+                assert!(!request_headers.contains_key(header::COOKIE));
+                assert!(!request_headers.contains_key("x-request-hop"));
+            }
+            assert_eq!(requests[2].2, raw);
         }
+
+        let mut redirect_headers = headers.clone();
+        redirect_headers.insert("x-native-redirect", "1".parse()?);
+        let redirected = super::super::native_gateway::forward(
+            super::super::native_gateway::Endpoint::Responses,
+            redirect_headers,
+            Bytes::from_static(b"redirect-body"),
+            None,
+        )
+        .await;
+        assert_eq!(redirected.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(redirected.headers()[header::LOCATION], "/redirect-target");
+
+        let mut stream_headers = headers.clone();
+        stream_headers.insert("x-native-stream", "1".parse()?);
+        let streamed = super::super::native_gateway::forward(
+            super::super::native_gateway::Endpoint::Responses,
+            stream_headers,
+            Bytes::from_static(b"stream-body"),
+            None,
+        )
+        .await;
+        assert_eq!(streamed.status(), StatusCode::OK);
+        let mut body = streamed.into_body();
+        let first = body
+            .frame()
+            .await
+            .ok_or_else(|| std::io::Error::other("missing stream frame"))??
+            .into_data()
+            .map_err(|_| std::io::Error::other("unexpected stream trailer"))?;
+        assert_eq!(first, Bytes::from_static(b"first-chunk"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), body.frame())
+                .await
+                .is_err()
+        );
+
+        let requests = seen.lock().expect("fixture");
+        assert_eq!(requests.len(), 6);
+        assert_eq!(requests[4].0, "/backend-api/codex/responses");
+        assert_eq!(requests[5].0, "/backend-api/codex/responses");
+
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn official_model_ingress_uses_raw_gateway_applies_dlp_and_marks_native_active(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _security = security();
+        use crate::{
+            database::Database,
+            proxy::{server::ProxyServer, ProxyConfig},
+        };
+        use axum::{body::Body, Router};
+        use bytes::Bytes;
+        use http::Response;
+        use std::{collections::HashMap, sync::Mutex};
+
+        let seen = Arc::new(Mutex::new(Vec::<(HeaderMap, Bytes)>::new()));
+        let observed = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let observed = observed.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                let body = axum::body::to_bytes(body, BODY_LIMIT)
+                    .await
+                    .unwrap_or_default();
+                observed
+                    .lock()
+                    .expect("fixture")
+                    .push((parts.headers, body.clone()));
+                Response::builder()
+                    .status(StatusCode::CREATED)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .expect("fixture response")
+            }
+        });
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let _origin = super::super::native_gateway::set_test_origin(format!(
+            "http://{address}/backend-api/codex"
+        ));
+        let runtime = Arc::new(super::super::Runtime::default());
+        runtime.native.publish_menu(
+            Arc::new(super::super::Menu {
+                token: "fixture-menu".into(),
+                models: HashMap::new(),
+                default_model: None,
+                omitted_entries: 0,
+                context_settings: Default::default(),
+                groups: HashMap::new(),
+            }),
+            serde_json::json!({"models": [{"slug": "vary-auto/development"}]}),
+            BTreeMap::new(),
+        )?;
+        let db = Arc::new(Database::memory()?);
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db,
+            None,
+        )
+        .with_intent_runtime(runtime.clone());
+        let info = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let raw = Bytes::from_static(br#"{"model":"gpt-5","opaque":{"n":1}}"#);
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/backend-api/codex/responses",
+                info.port
+            ))
+            .bearer_auth("fixture-token")
+            .header("version", "0.166.0")
+            .header("x-native-test", "preserved")
+            .body(raw.clone())
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.bytes().await?, raw);
+        assert_eq!(runtime.native.status(), "active");
+        {
+            let requests = seen.lock().expect("fixture");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].1, raw);
+            assert_eq!(requests[0].0[header::AUTHORIZATION], "Bearer fixture-token");
+            assert!(!requests[0].0.contains_key("chatgpt-account-id"));
+            assert_eq!(requests[0].0["x-native-test"], "preserved");
+        }
+
+        crate::proxy::security::runtime::set_security_runtime_for_test(
+            crate::proxy::security::SecurityRuntimeConfig {
+                custom_rules: vec![crate::proxy::security::runtime::CompiledCustomRule {
+                    id: "native-redact".into(),
+                    name: "Synthetic native redaction".into(),
+                    rule_type: "regex".into(),
+                    pattern: "native-redact-secret".into(),
+                    regex: regex::Regex::new("native-redact-secret").ok(),
+                    risk_level: crate::proxy::security::RiskLevel::High,
+                    action: crate::proxy::security::AuditAction::Redact,
+                    enabled: true,
+                }],
+                ..Default::default()
+            },
+        );
+        let redacted = client
+            .post(format!(
+                "http://127.0.0.1:{}/backend-api/codex/responses",
+                info.port
+            ))
+            .bearer_auth("fixture-token")
+            .header("version", "0.166.0")
+            .body(r#"{"model":"gpt-5","input":"native-redact-secret","opaque":{"n":9007199254740993}}"#)
+            .send()
+            .await?;
+        assert_eq!(redacted.status(), StatusCode::CREATED);
+        let redacted_body = redacted.bytes().await?;
+        let redacted_text = std::str::from_utf8(&redacted_body)?;
+        assert!(redacted_text.contains("[REDACTED]"));
+        assert!(!redacted_text.contains("native-redact-secret"));
+        assert!(redacted_text.contains("9007199254740993"));
+        assert_eq!(seen.lock().expect("fixture").len(), 2);
+
+        crate::proxy::security::runtime::set_security_runtime_for_test(
+            crate::proxy::security::SecurityRuntimeConfig {
+                custom_rules: vec![crate::proxy::security::runtime::CompiledCustomRule {
+                    id: "native-block".into(),
+                    name: "Synthetic native block".into(),
+                    rule_type: "regex".into(),
+                    pattern: "native-block-secret".into(),
+                    regex: regex::Regex::new("native-block-secret").ok(),
+                    risk_level: crate::proxy::security::RiskLevel::High,
+                    action: crate::proxy::security::AuditAction::Block,
+                    enabled: true,
+                }],
+                ..Default::default()
+            },
+        );
+        let blocked = client
+            .post(format!(
+                "http://127.0.0.1:{}/backend-api/codex/responses",
+                info.port
+            ))
+            .bearer_auth("fixture-token")
+            .header("version", "0.166.0")
+            .json(&serde_json::json!({
+                "model": "gpt-5",
+                "input": "native-block-secret"
+            }))
+            .send()
+            .await?;
+        assert_eq!(blocked.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(seen.lock().expect("fixture").len(), 2);
+
+        let unknown = client
+            .post(format!(
+                "http://127.0.0.1:{}/backend-api/codex/responses",
+                info.port
+            ))
+            .bearer_auth("fixture-token")
+            .header("version", "0.166.0")
+            .json(&serde_json::json!({"model":"vary-provider/missing"}))
+            .send()
+            .await?;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert_eq!(seen.lock().expect("fixture").len(), 2);
+        server.stop().await?;
+        task.abort();
+        Ok(())
     }
 }

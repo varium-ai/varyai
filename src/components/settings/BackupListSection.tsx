@@ -2,14 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Pencil, RotateCcw, Check, X, Download, Trash2 } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { AppDialog } from "@/components/ui/app-dialog";
 import {
   Select,
   SelectContent,
@@ -407,25 +400,22 @@ export function BackupListSection({
       </div>
 
       {/* Restore Confirmation Dialog */}
-      <Dialog
+      <AppDialog
         open={!!confirmFilename}
-        onOpenChange={(open) => !open && setConfirmFilename(null)}
-      >
-        <DialogContent className="max-w-md" zIndex="alert">
-          <DialogHeader>
-            <DialogTitle>
-              {t("settings.backupManager.confirmTitle", {
-                defaultValue: "Confirm Restore",
-              })}
-            </DialogTitle>
-            <DialogDescription>
-              {t("settings.backupManager.confirmMessage", {
-                defaultValue:
-                  "Restoring this backup will overwrite the current database. A safety backup will be created first.",
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        pending={isRestoring}
+        onOpenChange={(open) => {
+          if (!open) setConfirmFilename(null);
+        }}
+        zIndex="alert"
+        title={t("settings.backupManager.confirmTitle", {
+          defaultValue: "Confirm Restore",
+        })}
+        description={t("settings.backupManager.confirmMessage", {
+          defaultValue:
+            "Restoring this backup will overwrite the current database. A safety backup will be created first.",
+        })}
+        footer={
+          <>
             <Button
               variant="outline"
               onClick={() => setConfirmFilename(null)}
@@ -442,30 +432,27 @@ export function BackupListSection({
                     defaultValue: "Restore",
                   })}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      />
 
       {/* Delete Confirmation Dialog */}
-      <Dialog
+      <AppDialog
         open={!!deleteFilename}
-        onOpenChange={(open) => !open && setDeleteFilename(null)}
-      >
-        <DialogContent className="max-w-md" zIndex="alert">
-          <DialogHeader>
-            <DialogTitle>
-              {t("settings.backupManager.deleteConfirmTitle", {
-                defaultValue: "Confirm Delete",
-              })}
-            </DialogTitle>
-            <DialogDescription>
-              {t("settings.backupManager.deleteConfirmMessage", {
-                defaultValue:
-                  "This backup will be permanently deleted. This action cannot be undone.",
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        pending={isDeleting}
+        onOpenChange={(open) => {
+          if (!open) setDeleteFilename(null);
+        }}
+        zIndex="alert"
+        title={t("settings.backupManager.deleteConfirmTitle", {
+          defaultValue: "Confirm Delete",
+        })}
+        description={t("settings.backupManager.deleteConfirmMessage", {
+          defaultValue:
+            "This backup will be permanently deleted. This action cannot be undone.",
+        })}
+        footer={
+          <>
             <Button
               variant="outline"
               onClick={() => setDeleteFilename(null)}
@@ -486,9 +473,9 @@ export function BackupListSection({
                     defaultValue: "Delete",
                   })}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      />
     </div>
   );
 }

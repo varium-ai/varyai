@@ -10,9 +10,11 @@ pub(crate) mod execution;
 pub(crate) mod folders;
 pub(crate) mod membership;
 pub(crate) mod menu;
-mod model_context;
+mod menu_labels;
+pub(crate) mod model_context;
 pub(crate) mod model_preferences;
 pub(crate) mod rules;
+pub(crate) mod speed;
 
 use crate::{app_config::AppType, provider::Provider};
 pub(crate) use discovery::{discover_groups, discover_stand_ins, legacy_ids};
@@ -431,6 +433,9 @@ impl RoutingGroup {
 
 /// A configuration eligibility check, not an inference or capability probe.
 pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
+    if crate::services::subscription_provider::binding(provider).is_some() {
+        return !classifier;
+    }
     if provider.category.as_deref() == Some("official")
         || provider.uses_managed_account_auth()
         || provider

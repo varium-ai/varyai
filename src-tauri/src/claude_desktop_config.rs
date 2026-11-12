@@ -15,6 +15,8 @@ pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
 pub const PROFILE_NAME: &str = "Vary AI";
 
 #[cfg(test)]
+mod longest_tests;
+#[cfg(test)]
 mod reasoning_tests;
 #[cfg(test)]
 mod shared_recovery_tests;
@@ -80,6 +82,7 @@ pub const DEFAULT_PROXY_ROUTES: &[ClaudeDesktopDefaultRoute] = &[
 
 #[derive(Debug, Clone)]
 struct ClaudeDesktopPaths {
+    normal_data_path: PathBuf,
     normal_config_path: PathBuf,
     threep_config_path: PathBuf,
     config_library_path: PathBuf,
@@ -320,6 +323,9 @@ pub fn provider_mode(provider: &Provider) -> ClaudeDesktopMode {
 
 pub fn is_claude_safe_model_id(model: &str) -> bool {
     let normalized = model.trim().to_ascii_lowercase();
+    if let Some(hash) = normalized.strip_prefix("anthropic/vary-") {
+        return hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    }
     if normalized.contains(ONE_M_CONTEXT_MARKER) {
         return false;
     }
@@ -350,6 +356,7 @@ fn inference_model_json(spec: &InferenceModelSpec) -> Value {
         }
         if spec.supports_1m {
             item["supports1m"] = json!(true);
+            item["prefer1m"] = json!(true);
         }
         if let Some(effort) = &spec.max_effort {
             item["maxEffort"] = json!(effort);
@@ -739,7 +746,11 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
     let data: Vec<Value> = routes
         .iter()
         .map(|route| {
-            let model_id = route.route_id.clone();
+            let model_id = if route.supports_1m {
+                format!("{}[1m]", route.route_id)
+            } else {
+                route.route_id.clone()
+            };
             let mut item = json!({
                 "type": "model",
                 "id": model_id,
@@ -747,6 +758,7 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
             });
             if route.supports_1m {
                 item["supports1m"] = json!(true);
+                item["description"] = json!("1M context window");
             }
             item
         })
@@ -1452,14 +1464,61 @@ fn windows_local_app_data_dir() -> PathBuf {
 
 #[cfg(windows)]
 fn windows_paths_from_local_app_data(local_app_data: &Path) -> ClaudeDesktopPaths {
-    let normal_dir = pick_windows_claude_dir(local_app_data, false)
-        .unwrap_or_else(|| local_app_data.join("Claude"));
-    let threep_dir = pick_windows_claude_dir(local_app_data, true)
-        .unwrap_or_else(|| local_app_data.join("Claude-3p"));
-    paths_from_dirs(normal_dir, threep_dir)
+    let roaming = if cfg!(test) && std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
+        local_app_data.with_file_name("Roaming")
+    } else {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| local_app_data.with_file_name("Roaming"))
+    };
+    windows_path_sets(local_app_data, &roaming).remove(0)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+fn windows_path_sets(local: &Path, roaming: &Path) -> Vec<ClaudeDesktopPaths> {
+    let normal = pick_windows_claude_dir(local, false).unwrap_or_else(|| local.join("Claude"));
+    let threep = pick_windows_claude_dir(local, true).unwrap_or_else(|| local.join("Claude-3p"));
+    let mut classic = paths_from_dirs(normal, threep);
+    classic.normal_data_path = roaming.join("Claude").join(CONFIG_FILE);
+    let mut sets = vec![classic];
+    let mut packages = std::fs::read_dir(local.join("Packages"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.starts_with("Claude_") || name.starts_with("AnthropicPBC.Claude_")
+            })
+        })
+        .map(|entry| entry.path().join("LocalCache"))
+        .collect::<Vec<_>>();
+    packages.sort();
+    for package in packages {
+        let mut paths = paths_from_dirs(
+            package.join("Local/Claude"),
+            package.join("Local/Claude-3p"),
+        );
+        paths.normal_data_path = package.join("Roaming/Claude").join(CONFIG_FILE);
+        sets.push(paths);
+    }
+    sets.sort_by_key(|paths| {
+        std::cmp::Reverse(
+            [&paths.normal_data_path, &paths.threep_config_path]
+                .into_iter()
+                .filter_map(|path| {
+                    path.parent()
+                        .and_then(|dir| std::fs::metadata(dir.join("Local State")).ok())
+                        .and_then(|meta| meta.modified().ok())
+                })
+                .max(),
+        )
+    });
+    sets
+}
+
+#[cfg(any(windows, test))]
 fn pick_windows_claude_dir(local_app_data: &Path, threep: bool) -> Option<PathBuf> {
     let exact_name = if threep { "Claude-3p" } else { "Claude" };
     let exact = local_app_data.join(exact_name);
@@ -1492,6 +1551,7 @@ fn paths_from_dirs(normal_dir: PathBuf, threep_dir: PathBuf) -> ClaudeDesktopPat
     let meta_path = config_library_path.join("_meta.json");
 
     ClaudeDesktopPaths {
+        normal_data_path: normal_dir.join(CONFIG_FILE),
         normal_config_path: normal_dir.join(CONFIG_FILE),
         threep_config_path: threep_dir.join(CONFIG_FILE),
         config_library_path,
@@ -1523,6 +1583,14 @@ pub(crate) fn shared_model_name(id: &str) -> String {
     )
 }
 
+pub(crate) fn shared_plain_model_name(id: &str) -> String {
+    let legacy = legacy_shared_model_name(id);
+    format!(
+        "anthropic/vary-{}",
+        legacy.trim_start_matches("claude-vary-")
+    )
+}
+
 pub(crate) fn shared_reasoning_model_name(id: &str) -> String {
     let legacy = legacy_shared_model_name(id);
     format!(
@@ -1535,7 +1603,7 @@ pub(crate) fn shared_model_wire(model: &crate::services::agent_connections::Mode
     if desktop_max_effort(model).is_some() {
         shared_reasoning_model_name(&model.id)
     } else {
-        shared_model_name(&model.id)
+        shared_plain_model_name(&model.id)
     }
 }
 
@@ -1552,10 +1620,20 @@ pub(crate) fn legacy_shared_model_name(id: &str) -> String {
     format!("claude-vary-{:x}", Sha256::digest(id.as_bytes()))
 }
 
+#[cfg(not(test))]
+pub(crate) fn selector_roots() -> Vec<PathBuf> {
+    current_platform_paths()
+        .ok()
+        .and_then(|paths| paths.threep_config_path.parent().map(Path::to_path_buf))
+        .into_iter()
+        .collect()
+}
+
 /// Publish the visible shared menu through Desktop's native gateway profile.
 pub(crate) fn shared_catalog_edits(
     base: &str,
     token: &str,
+    previous_token: Option<&str>,
     models: &[crate::services::agent_connections::Model],
 ) -> Result<
     (
@@ -1564,15 +1642,41 @@ pub(crate) fn shared_catalog_edits(
     ),
     String,
 > {
+    #[cfg(not(windows))]
     use crate::services::agent_connections::FAILED;
-    let paths = current_platform_paths().map_err(|_| FAILED)?;
-    shared_catalog_edits_at(paths, base, token, models)
+    #[cfg(windows)]
+    {
+        let local = windows_local_app_data_dir();
+        let roaming = if cfg!(test) && std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
+            local.with_file_name("Roaming")
+        } else {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .unwrap_or_else(|| local.with_file_name("Roaming"))
+        };
+        let mut all = vec![];
+        let mut mapping = std::collections::BTreeMap::new();
+        for paths in windows_path_sets(&local, &roaming) {
+            let (files, models) =
+                shared_catalog_edits_at(paths, base, token, previous_token, models)?;
+            all.extend(files);
+            mapping.extend(models);
+        }
+        Ok((all, mapping))
+    }
+    #[cfg(not(windows))]
+    {
+        let paths = current_platform_paths().map_err(|_| FAILED)?;
+        shared_catalog_edits_at(paths, base, token, previous_token, models)
+    }
 }
 
 fn shared_catalog_edits_at(
     paths: ClaudeDesktopPaths,
     base: &str,
     token: &str,
+    previous_token: Option<&str>,
     models: &[crate::services::agent_connections::Model],
 ) -> Result<
     (
@@ -1582,7 +1686,7 @@ fn shared_catalog_edits_at(
     String,
 > {
     use crate::services::agent_connections::{
-        desktop_config::{key_matches, Kind},
+        desktop_config::{keep_key, Kind},
         FileEdit,
     };
     let mut mapping = std::collections::BTreeMap::new();
@@ -1600,6 +1704,7 @@ fn shared_catalog_edits_at(
         })
         .collect::<Vec<_>>();
     let mut profile = build_gateway_profile(base, token, Some(&specs));
+    profile["alwaysStartWithDefaultModel"] = json!(true);
     if let Some(effort) = models.first().and_then(|model| {
         model.default_reasoning_level.as_deref().filter(|effort| {
             matches!(*effort, "low" | "medium" | "high" | "xhigh" | "max")
@@ -1608,11 +1713,28 @@ fn shared_catalog_edits_at(
     }) {
         profile["defaultModelEffort"] = json!(effort);
     }
+    let native: Value = read_json_file(&paths.normal_data_path).unwrap_or_else(|_| json!({}));
+    let locale_source = paths.normal_data_path.with_file_name("config.json");
+    let locale_target = paths.threep_config_path.with_file_name("config.json");
     let mut files = vec![];
-    for path in [paths.normal_config_path, paths.threep_config_path] {
+    for path in [&paths.normal_config_path, &paths.threep_config_path] {
         files.push(
-            FileEdit::prepare(path, |value| {
+            FileEdit::prepare(path.clone(), |value| {
                 value["deploymentMode"] = json!("3p");
+                if path == &paths.threep_config_path {
+                    if let Some(source) = native.get("mcpServers").and_then(Value::as_object) {
+                        if value.get("mcpServers").is_none() {
+                            value["mcpServers"] = json!({});
+                        }
+                        if let Some(target) =
+                            value.get_mut("mcpServers").and_then(Value::as_object_mut)
+                        {
+                            for (name, server) in source {
+                                target.entry(name.clone()).or_insert_with(|| server.clone());
+                            }
+                        }
+                    }
+                }
                 Ok(())
             })?
             .for_desktop(Kind::Mode),
@@ -1620,11 +1742,14 @@ fn shared_catalog_edits_at(
     }
     files.push(
         FileEdit::prepare(paths.profile_path, |value| {
+            if previous_token.is_none() && value.get("toolSearchEnabled").is_none() {
+                value["toolSearchEnabled"] = json!(true);
+            }
             let preserve_key = value["inferenceProvider"] == "gateway"
                 && value["inferenceGatewayBaseUrl"] == base
                 && value
                     .get("inferenceGatewayApiKey")
-                    .is_some_and(|key| key_matches(key, &json!(token)));
+                    .is_some_and(|key| keep_key(key, token, previous_token));
             for (key, next) in profile
                 .as_object()
                 .ok_or(crate::services::agent_connections::FAILED)?
@@ -1662,7 +1787,45 @@ fn shared_catalog_edits_at(
         })?
         .for_desktop(Kind::Meta),
     );
+    let locale: Value = read_json_file(&locale_source).unwrap_or_else(|_| json!({}));
+    if let Some(locale) = locale["locale"].as_str().filter(|locale| {
+        !locale.is_empty()
+            && locale.len() <= 32
+            && locale
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }) {
+        if let Ok(edit) = FileEdit::prepare(locale_target, |value| {
+            if value.get("locale").is_none() {
+                value["locale"] = json!(locale);
+            }
+            Ok(())
+        }) {
+            files.push(edit.for_desktop(Kind::Carry));
+        }
+    }
     Ok((files, mapping))
+}
+
+/// Match the native picker representation while retaining the actual input capacity.
+pub(crate) fn desktop_model_entry(
+    model: &crate::services::agent_connections::Model,
+    mut entry: Value,
+) -> Value {
+    let wire = shared_model_wire(model);
+    let long = model.context_window.is_some_and(|n| n >= 1_000_000);
+    entry["id"] = json!(if long { format!("{wire}[1m]") } else { wire });
+    if long {
+        entry["description"] = json!("1M context window");
+    }
+    if let Some(effort) = desktop_max_effort(model) {
+        entry["max_effort_level"] = json!(effort);
+    }
+    if let Some(window) = model.context_window {
+        entry["max_input_tokens"] = json!(window);
+        entry["supports_1m"] = json!(long);
+    }
+    entry
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -1713,6 +1876,7 @@ mod tests {
                 paths.clone(),
                 "http://127.0.0.1:1",
                 concat!("synthetic", "-local"),
+                None,
                 &[],
             )
         };
@@ -1744,6 +1908,7 @@ mod tests {
                 paths.clone(),
                 "http://127.0.0.1:1",
                 concat!("synthetic", "-local"),
+                None,
                 &[],
             )
         };
@@ -1817,6 +1982,10 @@ mod tests {
         .map(|path| Ok((path.clone(), fs::read(path).map_err(|_| "fixture")?)))
         .collect::<Result<Vec<_>, String>>()?;
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
             icon: None,
             compact_at: None,
             id: "synthetic-provider/first".into(),
@@ -1828,11 +1997,12 @@ mod tests {
             default_reasoning_level: None,
             images: true,
         };
-        let wire = shared_model_name(&model.id);
+        let wire = shared_model_wire(&model);
         let (files, mapping) = shared_catalog_edits_at(
             paths.clone(),
             "http://127.0.0.1:1/connections/claude-desktop",
             concat!("synthetic", "-local-token"),
+            None,
             std::slice::from_ref(&model),
         )?;
         assert_eq!(mapping.get(&wire), Some(&model.id));
@@ -1857,6 +2027,7 @@ mod tests {
             "Synthetic model"
         );
         assert_eq!(profile["inferenceModels"][0]["supports1m"], true);
+        assert_eq!(profile["alwaysStartWithDefaultModel"], true);
         let meta: Value = read_json_file(&paths.meta_path).map_err(|_| "fixture")?;
         assert_eq!(meta["appliedId"], PROFILE_ID);
         assert_eq!(meta["entries"].as_array().map(Vec::len), Some(2));
@@ -2104,7 +2275,7 @@ mod tests {
         );
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "supports1m": true }])
+            json!([{ "name": "claude-sonnet-4-6", "supports1m": true, "prefer1m": true }])
         );
     }
 
@@ -2149,7 +2320,7 @@ mod tests {
             .starts_with("ccs-"));
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "Kimi K2", "supports1m": true }])
+            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "Kimi K2", "supports1m": true, "prefer1m": true }])
         );
         assert!(!profile.to_string().contains("kimi-k2"));
     }
@@ -2194,7 +2365,14 @@ mod tests {
         assert_eq!(mapped["model"], json!("kimi-k2"));
 
         let models = model_list_response(&provider).expect("model list");
-        assert_eq!(models["data"][0]["id"], json!("claude-sonnet-4-6"));
+        assert_eq!(models["data"][0]["id"], json!("claude-sonnet-4-6[1m]"));
+        assert_eq!(models["data"].as_array().map(Vec::len), Some(1));
+        let long_mapped = map_proxy_request_model(
+            json!({"model":"claude-sonnet-4-6[1m]","messages":[]}),
+            &provider,
+        )
+        .expect("map long route");
+        assert_eq!(long_mapped["model"], mapped["model"]);
         assert_eq!(models["data"][0]["supports1m"], json!(true));
 
         let err = map_proxy_request_model(json!({"model": "claude-opus-4-8"}), &provider)

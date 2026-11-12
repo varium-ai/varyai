@@ -1,4 +1,4 @@
-//! Local projections for native clients that cannot speak the selected upstream format.
+//! Local projections for native protocol conversion and request compatibility.
 use crate::{app_config::AppType, database::Database, error::AppError, provider::Provider};
 use serde_json::json;
 
@@ -24,12 +24,23 @@ pub(crate) fn requires_bridge(app: &AppType, provider: &Provider) -> bool {
             .is_some_and(|format| format != native_format(app, provider))
 }
 
+pub(crate) fn trae_native_responses(provider: &Provider) -> bool {
+    provider.category.as_deref() != Some("official")
+        && native_format(&AppType::Trae, provider) == "openai_responses"
+        && !requires_bridge(&AppType::Trae, provider)
+}
+
 pub(crate) fn project(
     db: &Database,
     app: &AppType,
     provider: &Provider,
 ) -> Result<Provider, AppError> {
-    if !matches!(app, AppType::Hermes | AppType::Trae) || !requires_bridge(app, provider) {
+    let responses_route = *app == AppType::Trae
+        && trae_native_responses(provider)
+        && db.get_bool_flag(super::trae_bridge::ENABLED_KEY)?;
+    if !matches!(app, AppType::Hermes | AppType::Trae | AppType::TraeIntl)
+        || !(requires_bridge(app, provider) || responses_route)
+    {
         return Ok(provider.clone());
     }
     let config = futures::executor::block_on(db.get_proxy_config())?;
@@ -57,6 +68,48 @@ pub(crate) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trae_responses_projection_follows_routing_without_enabling_auditing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::memory()?;
+        db.update_security_settings(&crate::database::SecurityAuditSettings { enabled: false })?;
+        let mut provider = Provider::with_id(
+            "fixture".into(),
+            "Fixture".into(),
+            json!({
+                "protocol":"openai-responses", "baseUrl":"https://upstream.example/api/v1",
+                "apiKey":"synthetic-key", "models":[{"model":"fixture"}]
+            }),
+            None,
+        );
+        let original = provider.settings_config.clone();
+        assert_eq!(
+            project(&db, &AppType::Trae, &provider)?.settings_config,
+            original
+        );
+        db.set_setting(super::super::trae_bridge::ENABLED_KEY, "true")?;
+        let projected = project(&db, &AppType::Trae, &provider)?;
+        assert!(projected.settings_config["baseUrl"]
+            .as_str()
+            .is_some_and(|url| url.contains("/upstream/trae/providers/fixture/v1")));
+        assert_eq!(projected.settings_config["apiKey"], "varyai-local");
+        assert_eq!(projected.settings_config["protocol"], "openai-responses");
+        assert_eq!(provider.settings_config, original);
+        assert!(!db.get_security_settings()?.enabled);
+        provider.category = Some("official".into());
+        assert_eq!(
+            project(&db, &AppType::Trae, &provider)?.settings_config,
+            original
+        );
+        provider.category = None;
+        db.set_setting(super::super::trae_bridge::ENABLED_KEY, "false")?;
+        assert_eq!(
+            project(&db, &AppType::Trae, &provider)?.settings_config,
+            original
+        );
+        Ok(())
+    }
+
     #[test]
     fn projection_keeps_saved_upstream_and_native_protocol(
     ) -> Result<(), Box<dyn std::error::Error>> {

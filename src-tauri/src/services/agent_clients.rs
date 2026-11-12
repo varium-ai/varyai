@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode"];
+pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode", "deepseek-harness"];
 pub(crate) fn supported(app: &str) -> bool {
     APPS.contains(&app)
 }
@@ -46,6 +46,7 @@ pub(crate) fn config_path(app: &str) -> Result<PathBuf, AppError> {
             .unwrap_or_else(|| home.join(".qwen"))
             .join("settings.json")),
         "zcode" => Ok(home.join(".zcode/v2/provider_config.json")),
+        "deepseek-harness" => Ok(super::deepseek_harness::config_path()),
         _ => Err(invalid()),
     }
 }
@@ -112,6 +113,8 @@ pub(crate) struct Document {
     original: Value,
     source: String,
     existed: bool,
+    cordis: bool,
+    jsonc: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Route {
@@ -129,7 +132,12 @@ impl Document {
         if !supported(app) {
             return Err(invalid());
         }
-        let (value, toml) = if app == "kimi" {
+        let (value, toml) = if app == "deepseek-harness" {
+            (
+                super::deepseek_harness::parse(text).map_err(|_| invalid())?,
+                None,
+            )
+        } else if app == "kimi" {
             let doc = text
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|_| invalid())?;
@@ -137,6 +145,11 @@ impl Document {
             (
                 serde_json::to_value(value).map_err(|_| invalid())?,
                 Some(doc),
+            )
+        } else if app == "qwen" {
+            (
+                super::agent_connections::jsonc::parse(text).map_err(|_| invalid())?,
+                None,
             )
         } else {
             (
@@ -153,13 +166,24 @@ impl Document {
             toml,
             source: text.into(),
             existed: true,
+            cordis: app == "deepseek-harness",
+            jsonc: app == "qwen",
         })
     }
     pub fn read(app: &str, path: &Path) -> Result<Self, AppError> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(app, &text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut doc = Self::parse(app, if app == "kimi" { "" } else { "{}" })?;
+                let mut doc = Self::parse(
+                    app,
+                    if app == "kimi" {
+                        ""
+                    } else if app == "deepseek-harness" {
+                        "[]"
+                    } else {
+                        "{}"
+                    },
+                )?;
                 doc.existed = false;
                 Ok(doc)
             }
@@ -167,6 +191,18 @@ impl Document {
         }
     }
     pub fn encode(&self) -> Result<String, AppError> {
+        if self.cordis {
+            return super::deepseek_harness::encode(&self.source, &self.value)
+                .map_err(|_| invalid());
+        }
+        if self.jsonc {
+            return super::agent_connections::jsonc::encode(
+                &self.source,
+                &self.original,
+                &self.value,
+            )
+            .map_err(|_| invalid());
+        }
         if let Some(mut toml) = self.toml.clone() {
             patch_toml(toml.as_item_mut(), &self.original, &self.value)?;
             Ok(toml.to_string())
@@ -192,6 +228,7 @@ impl Document {
     }
     pub fn selection(&self, app: &str) -> Value {
         match app {
+            "deepseek-harness" => super::deepseek_harness::selection(&self.value),
             "kimi" => self.value["default_model"].clone(),
             "qwen" => {
                 json!({"model":self.value["model"]["name"],"baseUrl":self.value["model"]["baseUrl"],"auth":self.value["security"]["auth"]["selectedType"]})
@@ -205,8 +242,28 @@ impl Document {
             .map(|id| format!("varyai-{id}"))
             .unwrap_or_else(|| "varyai-".into());
         match app {
+            "deepseek-harness" => {
+                self.selection(app)["provider"]
+                    .as_str()
+                    .is_some_and(|provider| {
+                        if id.is_some() {
+                            provider == prefix
+                        } else {
+                            provider.starts_with(&prefix)
+                        }
+                    })
+            }
             "kimi" => self.value["default_model"].as_str().is_some_and(|s| {
                 s.starts_with(&format!("{prefix}{}", if id.is_some() { "-" } else { "" }))
+                    || ((id.is_none() || id == Some("shared-catalog"))
+                        && self.value["models"][s]["provider"] == "Vary AI"
+                        && self.value["providers"]["Vary AI"]["base_url"]
+                            .as_str()
+                            .and_then(|url| url::Url::parse(url).ok())
+                            .is_some_and(|url| {
+                                url.host_str() == Some("127.0.0.1")
+                                    && url.path().starts_with("/connections/kimi/")
+                            }))
             }),
             "zcode" => self.value["config"]["defaultModelSelection"]["providerId"]
                 .as_str()
@@ -241,6 +298,10 @@ impl Document {
         }
     }
     pub fn set_selection(&mut self, app: &str, selection: &Value) -> Result<(), AppError> {
+        if app == "deepseek-harness" {
+            return super::deepseek_harness::set_selection(&mut self.value, selection)
+                .map_err(|_| invalid());
+        }
         fn set(value: &mut Value, key: &str, selection: &Value) -> Result<(), AppError> {
             let map = value.as_object_mut().ok_or_else(invalid)?;
             if selection.is_null() {
@@ -277,6 +338,19 @@ impl Document {
     }
     pub fn selection_available(&self, app: &str, selection: &Value) -> bool {
         match app {
+            "deepseek-harness" => self.value["providers"]
+                .as_object()
+                .is_some_and(|providers| {
+                    providers.values().any(|entry| {
+                        selection["provider"]
+                            .as_str()
+                            .and_then(|provider| entry["config"]["providers"].get(provider))
+                            .and_then(|provider| provider["models"].as_array())
+                            .is_some_and(|models| {
+                                models.iter().any(|model| model["id"] == selection["model"])
+                            })
+                    })
+                }),
             "kimi" => selection
                 .as_str()
                 .is_some_and(|id| self.value["models"].get(id).is_some()),
@@ -323,6 +397,16 @@ impl Document {
     }
 
     pub fn clear_managed_models(&mut self, app: &str) -> Result<(), AppError> {
+        if app == "deepseek-harness" {
+            self.value["legacyProviders"] = json!(false);
+            self.value["providers"]
+                .as_object_mut()
+                .ok_or_else(invalid)?
+                .clear();
+            super::deepseek_harness::set_selection(&mut self.value, &Value::Null)
+                .map_err(|_| invalid())?;
+            return Ok(());
+        }
         if self.value.as_object().is_some_and(|value| value.is_empty()) {
             return Ok(());
         }
@@ -409,6 +493,35 @@ impl Document {
         Ok(())
     }
 
+    fn rename_kimi_provider(&mut self, previous_key: &str, name: &str) -> Result<(), AppError> {
+        let provider_name = name.trim();
+        if provider_name.is_empty()
+            || (provider_name != previous_key
+                && self.value["providers"].get(provider_name).is_some())
+        {
+            return Err(invalid());
+        }
+        if previous_key != provider_name {
+            if let Some(previous) = self.value["providers"]
+                .as_object_mut()
+                .ok_or_else(invalid)?
+                .remove(previous_key)
+            {
+                self.value["providers"][provider_name] = previous;
+            }
+            for model in self.value["models"]
+                .as_object_mut()
+                .ok_or_else(invalid)?
+                .values_mut()
+            {
+                if model["provider"] == previous_key {
+                    model["provider"] = json!(provider_name);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn apply(
         &mut self,
         app: &str,
@@ -417,6 +530,10 @@ impl Document {
         config: &Value,
     ) -> Result<(), AppError> {
         validate(config)?;
+        if app == "deepseek-harness" {
+            return super::deepseek_harness::apply(&mut self.value, id, name, config)
+                .map_err(|_| invalid());
+        }
         let key = format!("varyai-{id}");
         let models = config["models"].as_array().ok_or_else(invalid)?;
         let first = models
@@ -428,34 +545,12 @@ impl Document {
                 object(&mut self.value, "providers")?;
                 object(&mut self.value, "models")?;
                 let previous_key = self.kimi_provider_key(id);
+                self.rename_kimi_provider(&previous_key, name)?;
                 let provider_name = name.trim();
-                if provider_name.is_empty()
-                    || (provider_name != previous_key
-                        && self.value["providers"].get(provider_name).is_some())
-                {
-                    return Err(invalid());
-                }
-                if previous_key != provider_name {
-                    if let Some(previous) = self.value["providers"]
-                        .as_object_mut()
-                        .ok_or_else(invalid)?
-                        .remove(&previous_key)
-                    {
-                        self.value["providers"][provider_name] = previous;
-                    }
-                    for model in self.value["models"]
-                        .as_object_mut()
-                        .ok_or_else(invalid)?
-                        .values_mut()
-                    {
-                        if model["provider"] == previous_key {
-                            model["provider"] = json!(provider_name);
-                        }
-                    }
-                }
                 let protocol = match config["protocol"].as_str() {
                     Some("anthropic") => "anthropic",
                     Some("openai-responses") => "openai_responses",
+                    _ if id == "shared-catalog" => "kimi",
                     _ => "openai",
                 };
                 object(&mut self.value["providers"], provider_name)?;
@@ -473,17 +568,35 @@ impl Document {
                     });
                 for model in models {
                     let wire = model["model"].as_str().ok_or_else(invalid)?;
-                    let alias = format!("{key}-{wire}");
+                    let alias = if id == "shared-catalog" {
+                        wire.to_owned()
+                    } else {
+                        format!("{key}-{wire}")
+                    };
+                    if self.value["models"]
+                        .get(&alias)
+                        .is_some_and(|entry| entry["provider"] != provider_name)
+                    {
+                        return Err(invalid());
+                    }
                     object(&mut self.value["models"], &alias)?;
                     let entry = &mut self.value["models"][&alias];
                     entry["provider"] = json!(provider_name);
                     entry["model"] = json!(wire);
+                    entry["display_name"] = model
+                        .get("displayName")
+                        .cloned()
+                        .unwrap_or_else(|| json!(wire));
                     if model["contextWindow"].is_u64() || entry.get("max_context_size").is_none() {
                         entry["max_context_size"] =
                             json!(model["contextWindow"].as_u64().unwrap_or(200000));
                     }
                 }
-                self.value["default_model"] = json!(format!("{key}-{first}"));
+                self.value["default_model"] = json!(if id == "shared-catalog" {
+                    first.to_owned()
+                } else {
+                    format!("{key}-{first}")
+                });
             }
             "qwen" => {
                 for section in ["modelProviders", "env", "model", "security"] {
@@ -525,8 +638,11 @@ impl Document {
                     ));
                 }
                 entries.extend(models.iter().map(|m| {
-                    let mut model = json!({"id":m["model"],"name":m["model"],"baseUrl":config["baseUrl"],"envKey":env});
+                    let mut model = json!({"id":m["model"],"name":m.get("displayName").unwrap_or(&m["model"]),"baseUrl":config["baseUrl"],"envKey":env});
                     if config["protocol"] == "openai-responses" { model["wireApi"] = json!("responses"); }
+                    if let Some(window) = m["contextWindow"].as_u64().filter(|window|*window>0) {
+                        model["generationConfig"] = json!({"contextWindowSize":window});
+                    }
                     model
                 }));
                 self.value["modelProviders"][protocol] = Value::Array(entries);
@@ -665,7 +781,9 @@ impl Document {
     }
     pub fn route(&mut self, app: &str, origin: &str) -> Result<Vec<Route>, AppError> {
         let mut candidates: Vec<(String, String, Vec<String>)> = Vec::new();
-        if app == "kimi" {
+        if app == "deepseek-harness" {
+            candidates = super::deepseek_harness::candidates(&self.value);
+        } else if app == "kimi" {
             if let Some(providers) = self.value["providers"].as_object() {
                 for (id, p) in providers {
                     if !matches!(
@@ -836,6 +954,10 @@ impl Document {
                     .and_then(|rule| rule["providerId"].as_str())
                     .and_then(|id| id.strip_prefix("varyai-"))
                     .map(String::from)
+            } else if app == "deepseek-harness" {
+                path.rsplit('/')
+                    .find_map(|part| part.strip_prefix("varyai-"))
+                    .map(String::from)
             } else if app == "kimi" {
                 self.value["models"].as_object().and_then(|models| {
                     models.iter().find_map(|(alias, model)| {
@@ -922,7 +1044,10 @@ impl Document {
             .and_then(|models| {
                 models.iter().find_map(|(alias, model)| {
                     let wire = model["model"].as_str()?;
-                    (alias == &format!("varyai-{id}-{wire}"))
+                    (alias == &format!("varyai-{id}-{wire}")
+                        || (id == "shared-catalog"
+                            && alias == wire
+                            && model["provider"] == "Vary AI"))
                         .then(|| model["provider"].as_str().map(String::from))?
                 })
             })
@@ -930,6 +1055,10 @@ impl Document {
     }
 
     pub fn remove(&mut self, app: &str, id: &str, expected: &Value) -> Result<(), AppError> {
+        if app == "deepseek-harness" {
+            return super::deepseek_harness::remove(&mut self.value, id, expected)
+                .map_err(|_| invalid());
+        }
         let key = if app == "kimi" {
             self.kimi_provider_key(id)
         } else {
@@ -1141,6 +1270,61 @@ pub(crate) async fn enable(
     doc.write(&path)?;
     db.set_setting(&enabled_key(app), "true")?;
     Ok(())
+}
+
+pub(crate) fn migrate_legacy_kimi_provider_names(
+    db: &crate::database::Database,
+) -> Result<usize, AppError> {
+    let path = config_path("kimi")?;
+    let mut doc = Document::read("kimi", &path)?;
+    let mut migrated = 0;
+    for provider in db
+        .get_all_providers("kimi")?
+        .into_values()
+        .filter(|provider| provider.category.as_deref() != Some("official"))
+    {
+        let key = format!("varyai-{}", provider.id);
+        let Some(group) = doc.value["providers"].get(&key) else {
+            continue;
+        };
+        if provider.name.trim() == key {
+            continue;
+        }
+        if group.get("oauth").is_some()
+            || !matches!(
+                group["type"].as_str(),
+                Some("openai" | "openai_legacy" | "openai_responses" | "anthropic")
+            )
+        {
+            return Err(invalid());
+        }
+        let references: Vec<_> = doc.value["models"]
+            .as_object()
+            .ok_or_else(invalid)?
+            .iter()
+            .filter(|(_, model)| model["provider"] == key)
+            .collect();
+        if references.is_empty() {
+            continue;
+        }
+        if references.iter().any(|(alias, model)| {
+            model["model"]
+                .as_str()
+                .is_none_or(|wire| **alias != format!("{key}-{wire}"))
+        }) {
+            return Err(invalid());
+        }
+        doc.rename_kimi_provider(&key, &provider.name)?;
+        migrated += 1;
+    }
+    if migrated > 0 {
+        // Startup recovery must restore old route pointers before names change.
+        if futures::executor::block_on(db.get_live_backup("kimi"))?.is_some() {
+            return Err(invalid());
+        }
+        doc.write(&path)?;
+    }
+    Ok(migrated)
 }
 
 #[cfg(test)]
@@ -1414,6 +1598,211 @@ mod tests {
             original["providers"]["Native"]
         );
         assert!(doc.value["providers"].get("varyai-saved").is_none());
+    }
+
+    fn legacy_kimi_upgrade_fixture(path: &Path) -> crate::database::Database {
+        let db = crate::database::Database::memory().expect("db");
+        for (id, name) in [("saved", "Company"), ("spare", "Alternative")] {
+            db.save_provider(
+                "kimi",
+                &crate::provider::Provider::with_id(id.into(), name.into(), provider(), None),
+            )
+            .expect("save");
+        }
+        db.set_current_provider("kimi", "saved").expect("current");
+        std::fs::write(
+            path,
+            r#"# Unrelated user settings must survive an upgrade.
+default_model = "varyai-saved-beta"
+[providers.official]
+type = "kimi"
+base_url = "https://native.example/v1"
+[providers.official.oauth]
+storage = "file"
+key = "oauth/synthetic"
+[providers.manual]
+type = "openai"
+base_url = "https://manual.example/v1"
+api_key = "synthetic-native"
+[providers.varyai-saved]
+type = "openai"
+base_url = "https://models.example/v1"
+api_key = "synthetic-test-key"
+[providers.varyai-saved.custom_headers]
+x-keep = "synthetic-header"
+[providers.varyai-spare]
+type = "openai"
+base_url = "https://models.example/v1"
+api_key = "synthetic-test-key"
+[models.official]
+provider = "official"
+model = "native"
+[models.manual]
+provider = "manual"
+model = "manual"
+[models.varyai-saved-alpha]
+provider = "varyai-saved"
+model = "alpha"
+max_context_size = 12345
+[models.varyai-saved-beta]
+provider = "varyai-saved"
+model = "beta"
+base_url = "https://override.example/v1"
+[models.varyai-spare-alpha]
+provider = "varyai-spare"
+model = "alpha"
+"#,
+        )
+        .expect("legacy configuration");
+        db
+    }
+
+    #[test]
+    fn kimi_upgrade_migrates_legacy_names_without_changing_models_or_login() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        with_test_config(&path, || {
+            let db = legacy_kimi_upgrade_fixture(&path);
+            let original = Document::read("kimi", &path).expect("original").value;
+            let saved = db.get_all_providers("kimi").expect("providers");
+            assert_eq!(migrate_legacy_kimi_provider_names(&db).expect("migrate"), 2);
+            let updated = Document::read("kimi", &path).expect("updated").value;
+            let mut expected = original;
+            for (old, new) in [("varyai-saved", "Company"), ("varyai-spare", "Alternative")] {
+                let group = expected["providers"]
+                    .as_object_mut()
+                    .expect("groups")
+                    .remove(old)
+                    .expect("legacy");
+                expected["providers"][new] = group;
+                for model in expected["models"]
+                    .as_object_mut()
+                    .expect("models")
+                    .values_mut()
+                {
+                    if model["provider"] == old {
+                        model["provider"] = json!(new);
+                    }
+                }
+            }
+            assert_eq!(updated, expected);
+            assert_eq!(
+                db.get_current_provider("kimi")
+                    .expect("selection")
+                    .as_deref(),
+                Some("saved")
+            );
+            assert_eq!(
+                serde_json::to_value(db.get_all_providers("kimi").expect("providers"))
+                    .expect("json"),
+                serde_json::to_value(saved).expect("json")
+            );
+            let bytes = std::fs::read(&path).expect("bytes");
+            assert!(String::from_utf8_lossy(&bytes).contains("# Unrelated user settings"));
+            assert_eq!(migrate_legacy_kimi_provider_names(&db).expect("repeat"), 0);
+            assert_eq!(std::fs::read(&path).expect("unchanged bytes"), bytes);
+        });
+    }
+
+    #[test]
+    fn kimi_upgrade_does_not_create_missing_configuration_or_claim_unknown_groups() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        with_test_config(&path, || {
+            let db = crate::database::Database::memory().expect("db");
+            assert_eq!(migrate_legacy_kimi_provider_names(&db).expect("missing"), 0);
+            assert!(!path.exists());
+            let db = legacy_kimi_upgrade_fixture(&path);
+            db.delete_provider("kimi", "saved").expect("delete saved");
+            db.delete_provider("kimi", "spare").expect("delete spare");
+            let bytes = std::fs::read(&path).expect("bytes");
+            assert_eq!(migrate_legacy_kimi_provider_names(&db).expect("unknown"), 0);
+            assert_eq!(std::fs::read(&path).expect("unchanged bytes"), bytes);
+        });
+    }
+
+    #[test]
+    fn kimi_upgrade_preserves_all_bytes_when_legacy_ownership_or_names_conflict() {
+        for case in ["name", "foreign-model", "oauth", "official", "malformed"] {
+            let dir = tempfile::tempdir().expect("dir");
+            let path = dir.path().join("config.toml");
+            with_test_config(&path, || {
+                let db = legacy_kimi_upgrade_fixture(&path);
+                let mut doc = Document::read("kimi", &path).expect("document");
+                match case {
+                    "name" => {
+                        doc.value["providers"]["Company"] = doc.value["providers"]["manual"].clone()
+                    }
+                    "foreign-model" => {
+                        doc.value["models"]["manual"]["provider"] = json!("varyai-saved")
+                    }
+                    "oauth" => {
+                        doc.value["providers"]["varyai-saved"]["oauth"] =
+                            json!({"key":"oauth/synthetic"})
+                    }
+                    "official" => doc.value["providers"]["varyai-saved"]["type"] = json!("kimi"),
+                    "malformed" => {}
+                    _ => unreachable!(),
+                }
+                doc.write(&path).expect("fixture");
+                if case == "malformed" {
+                    std::fs::write(&path, "[malformed").expect("malformed fixture");
+                }
+                let bytes = std::fs::read(&path).expect("bytes");
+                assert!(migrate_legacy_kimi_provider_names(&db).is_err(), "{case}");
+                assert_eq!(
+                    std::fs::read(&path).expect("unchanged bytes"),
+                    bytes,
+                    "{case}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn kimi_upgrade_defers_active_routes_then_rebuilds_and_restores_renamed_pointers() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("dynamic port");
+        let origin = format!("http://{}", listener.local_addr().expect("address"));
+        with_test_config(&path, || {
+            let db = legacy_kimi_upgrade_fixture(&path);
+            futures::executor::block_on(enable(&db, "kimi", &origin)).expect("route legacy");
+            let bytes = std::fs::read(&path).expect("routed bytes");
+            let backup = futures::executor::block_on(db.get_live_backup("kimi"))
+                .expect("backup")
+                .expect("present");
+            assert!(migrate_legacy_kimi_provider_names(&db).is_err());
+            assert_eq!(std::fs::read(&path).expect("unchanged bytes"), bytes);
+            assert_eq!(
+                futures::executor::block_on(db.get_live_backup("kimi"))
+                    .expect("backup")
+                    .expect("present")
+                    .original_config,
+                backup.original_config
+            );
+            futures::executor::block_on(restore(&db, "kimi")).expect("startup recovery");
+            assert_eq!(migrate_legacy_kimi_provider_names(&db).expect("migrate"), 2);
+            let renamed = Document::read("kimi", &path).expect("renamed").value;
+            futures::executor::block_on(enable(&db, "kimi", &origin)).expect("restore routing");
+            let backup = futures::executor::block_on(db.get_live_backup("kimi"))
+                .expect("backup")
+                .expect("present");
+            let backup: Backup = serde_json::from_str(&backup.original_config).expect("decode");
+            assert!(backup
+                .routes
+                .iter()
+                .any(|route| route.pointer == "/providers/Company/base_url"));
+            assert!(backup
+                .routes
+                .iter()
+                .all(|route| !route.pointer.contains("/providers/varyai-")));
+            futures::executor::block_on(restore(&db, "kimi")).expect("restore direct endpoints");
+            assert_eq!(
+                Document::read("kimi", &path).expect("restored").value,
+                renamed
+            );
+        });
     }
 
     #[test]

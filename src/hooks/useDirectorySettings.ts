@@ -7,7 +7,19 @@ import type { SettingsFormState } from "./useSettingsForm";
 
 export type DirectoryAppId = Exclude<
   AppId,
-  "claude-desktop" | "doubaowork" | "qoder" | "trae" | "kimi" | "qwen" | "zcode"
+  | "claude-desktop"
+  | "workbuddy-ai"
+  | "doubaowork"
+  | "qoder"
+  | "trae"
+  | "trae-intl"
+  | "kimi"
+  | "qwen"
+  | "zcode"
+  | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code"
 >;
 type AppDirectoryKey =
   | "claude"
@@ -47,7 +59,7 @@ const APP_DIRECTORY_META: Record<
   openclaw: { key: "openclaw", defaultFolder: ".openclaw" },
   hermes: { key: "hermes", defaultFolder: ".hermes" },
   pi: { key: "pi", defaultFolder: ".pi/agent" },
-  workbuddy: { key: "workbuddy", defaultFolder: ".workbuddy-ai" },
+  workbuddy: { key: "workbuddy", defaultFolder: ".workbuddy" },
 };
 
 const DIRECTORY_KEY_TO_SETTINGS_FIELD: Record<

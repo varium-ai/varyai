@@ -440,7 +440,12 @@ pub(crate) fn audit_session_id(
     {
         let id = if matches!(
             app_type,
-            AppType::WorkBuddy | AppType::Kimi | AppType::Qwen | AppType::ZCode
+            AppType::WorkBuddy
+                | AppType::WorkBuddyAi
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::DeepSeekHarness
         ) {
             format!("{}_{id}", app_type.as_str())
         } else {

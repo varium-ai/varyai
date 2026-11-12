@@ -58,10 +58,12 @@ impl ModelCache {
                 .names
                 .iter()
                 .all(|(id, name)| self.models.contains(id) && super::valid_text(name, 80))
-            && self
-                .reasoning
-                .iter()
-                .all(|(id, c)| self.models.contains(id) && c.levels.len() <= 8 && c.context.valid())
+            && self.reasoning.iter().all(|(id, c)| {
+                self.models.contains(id)
+                    && c.levels.len() <= 8
+                    && c.context.valid()
+                    && super::speed::valid(c.service_tiers.as_deref())
+            })
             && self
                 .models
                 .iter()
@@ -82,7 +84,7 @@ pub(crate) struct CatalogStatus {
 fn cache_key(source: &str, account: &str, identity: &str) -> String {
     let mut hash = Sha256::new();
     // Older caches lack picker visibility and cannot be safely filtered in place.
-    for part in ["picker-visible-v1", source, account, identity] {
+    for part in ["picker-visible-service-tiers-v2", source, account, identity] {
         hash.update(part.len().to_be_bytes());
         hash.update(part.as_bytes());
     }
@@ -126,7 +128,7 @@ fn read_bounded(path: &std::path::Path) -> Option<String> {
     (value.len() <= 1024 * 1024).then_some(value)
 }
 
-fn read_native() -> Option<(String, String)> {
+fn read_native_auth() -> Option<Value> {
     use crate::codex_config::*;
     let path = get_codex_config_path();
     let config = if path.exists() {
@@ -138,16 +140,35 @@ fn read_native() -> Option<(String, String)> {
     if codex_config_auth_store_mode(&config) != CodexAuthStoreMode::File {
         return None;
     }
-    native_credentials(&serde_json::from_str::<Value>(&read_bounded(&get_codex_auth_path())?).ok()?)
+    let auth = serde_json::from_str::<Value>(&read_bounded(&get_codex_auth_path())?).ok()?;
+    native_credentials(&auth)?;
+    Some(auth)
 }
 
-pub(crate) fn native_editor_info() -> Option<(String, Option<String>)> {
+fn read_native() -> Option<(String, String)> {
+    native_credentials(&read_native_auth()?)
+}
+
+pub(crate) struct NativeEditorInfo {
+    pub login: String,
+    pub plan: Option<String>,
+    pub identity: Option<(String, String)>,
+}
+
+pub(crate) fn native_editor_info() -> Option<NativeEditorInfo> {
+    native_editor_observation(&read_native_auth()?)
+}
+
+fn native_editor_observation(auth: &Value) -> Option<NativeEditorInfo> {
     use base64::Engine as _;
-    read_native()?;
-    let auth: Value =
-        serde_json::from_str(&read_bounded(&crate::codex_config::get_codex_auth_path())?).ok()?;
+    let (_, workspace) = native_credentials(auth)?;
+    let unknown = || NativeEditorInfo {
+        login: "Codex".into(),
+        plan: None,
+        identity: None,
+    };
     let Some(token) = auth.pointer("/tokens/id_token").and_then(Value::as_str) else {
-        return Some(("Codex".into(), None));
+        return Some(unknown());
     };
     let claims = token
         .split('.')
@@ -159,25 +180,33 @@ pub(crate) fn native_editor_info() -> Option<(String, Option<String>)> {
         })
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
     let Some(claims) = claims else {
-        return Some(("Codex".into(), None));
+        return Some(unknown());
     };
     let login = claims["email"]
         .as_str()
         .filter(|s| s.len() <= 256 && !s.chars().any(char::is_control))
         .unwrap_or("Codex")
         .to_owned();
-    let plan = match claims
-        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
-        .and_then(Value::as_str)
-    {
-        Some("plus") => Some("ChatGPT Plus".into()),
-        Some("pro") => Some("ChatGPT Pro".into()),
-        Some("free") => Some("ChatGPT Free".into()),
-        Some("team" | "business") => Some("ChatGPT Business".into()),
-        Some("enterprise") => Some("ChatGPT Enterprise".into()),
-        _ => None,
-    };
-    Some((login, plan))
+    let plan = crate::services::subscription_plan::chatgpt_plan_from_claims(&claims);
+    // Equal display names or emails do not prove an equal subscription seat.
+    let identity = crate::codex_config::extract_codex_id_token_user_identity(token)
+        .filter(|_| {
+            claims
+                .get("chatgpt_account_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    claims
+                        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
+                        .and_then(Value::as_str)
+                })
+                == Some(workspace.as_str())
+        })
+        .map(|user| (user, workspace));
+    Some(NativeEditorInfo {
+        login,
+        plan,
+        identity,
+    })
 }
 
 pub(crate) fn official_source(provider: &Provider) -> bool {
@@ -406,6 +435,18 @@ pub(crate) async fn prepare_provider(
     mut provider: Provider,
     refresh: bool,
 ) -> Result<(Provider, Option<CatalogStatus>), String> {
+    if crate::services::subscription_provider::binding(&provider).is_some() {
+        let count = provider.settings_config["modelCatalog"]["models"]
+            .as_array()
+            .map_or(0, Vec::len);
+        let status = CatalogStatus {
+            provider_id: provider.id.clone(),
+            status: "cached",
+            model_count: count,
+            reason: None,
+        };
+        return Ok((provider, Some(status)));
+    }
     if !official_source(&provider) {
         let status = prepare_static_context(db, &mut provider, refresh).await;
         return Ok((provider, Some(status)));
@@ -439,7 +480,13 @@ pub(crate) async fn prepare_provider(
             } else {
                 identity.native_token.clone()?
             };
-            crate::services::codex_oauth_models::fetch_catalog_with_token(
+            let client = if let Some(id) = &identity.managed_id {
+                manager.account_client(id).await.ok()?
+            } else {
+                crate::proxy::http_client::get_without_redirects().ok()?
+            };
+            crate::services::codex_oauth_models::fetch_catalog_with_client(
+                &client,
                 &token,
                 &identity.workspace,
             )
@@ -509,10 +556,15 @@ async fn prepare_static_context(
     if !super::eligible_provider(provider, false) {
         return status;
     }
+    let Ok(transport_provider) = crate::services::routing_upstreams::first_enabled(provider) else {
+        return status;
+    };
     let adapter = ClaudeAdapter::new();
     let (legacy_base, token) =
-        provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
-    let base = adapter.extract_base_url(provider).unwrap_or(legacy_base);
+        transport_provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    let base = adapter
+        .extract_base_url(&transport_provider)
+        .unwrap_or(legacy_base);
     let Ok(identity) = serde_json::to_string(&provider.settings_config) else {
         return status;
     };
@@ -532,12 +584,12 @@ async fn prepare_static_context(
         status.reason = None;
     }
     if refresh {
-        let format = provider
+        let format = transport_provider
             .meta
             .as_ref()
             .and_then(|m| m.api_format.as_deref())
-            .or_else(|| provider.settings_config["apiFormat"].as_str())
-            .or_else(|| provider.settings_config["api_format"].as_str());
+            .or_else(|| transport_provider.settings_config["apiFormat"].as_str())
+            .or_else(|| transport_provider.settings_config["api_format"].as_str());
         let format = if format == Some("anthropic")
             && (provider.settings_config["authType"] == "api-key"
                 || provider.claude_uses_api_key_field())
@@ -546,15 +598,15 @@ async fn prepare_static_context(
         } else {
             format
         };
-        let models_url = provider.settings_config["modelsUrl"].as_str();
-        let user_agent = provider
+        let models_url = transport_provider.settings_config["modelsUrl"].as_str();
+        let user_agent = transport_provider
             .meta
             .as_ref()
             .and_then(|m| m.custom_user_agent_header().ok().flatten());
         let request = crate::services::model_fetch::fetch_models(
             &base,
             &token,
-            provider
+            transport_provider
                 .meta
                 .as_ref()
                 .and_then(|m| m.is_full_url)
@@ -839,11 +891,14 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         let db = Arc::new(Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         let dir = tempfile::tempdir()?;
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let mut saved = Vec::new();
         for models in [vec![], vec![], vec![json!({"model":"selected-model"})]] {
             saved.push(db.save_routing_upstream(RoutingUpstream {
+                notes: None,
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 id: String::new(),
@@ -1278,6 +1333,43 @@ mod tests {
     }
 
     #[test]
+    fn speed_tiers_survive_account_scoped_cache_and_refresh() {
+        let tiers = json!([{"id":"priority","name":"Fast","description":"Higher usage"}]);
+        let cache = ModelCache::from_catalog(
+            json!({"models":[{
+                "slug":"synthetic-model", "service_tiers":tiers,
+                "private_extension":"not-persisted"
+            }]}),
+            100,
+        )
+        .expect("synthetic catalog");
+        let serialized = serde_json::to_string(&cache).expect("cache");
+        assert!(!serialized.contains("private_extension"));
+        let restored: ModelCache = serde_json::from_str(&serialized).expect("cache");
+        assert!(restored.valid_at(101));
+        let mut provider = Provider::with_id("fixture".into(), "Fixture".into(), json!({}), None);
+        apply_cache(&mut provider, restored);
+        assert_eq!(
+            provider.settings_config["modelCatalog"]["models"][0]["service_tiers"],
+            tiers
+        );
+        apply_cache(
+            &mut provider,
+            ModelCache::from_catalog(
+                json!({"models":[{
+                    "slug":"synthetic-model", "service_tiers":[]
+                }]}),
+                101,
+            )
+            .expect("updated catalog"),
+        );
+        assert_eq!(
+            provider.settings_config["modelCatalog"]["models"][0]["service_tiers"],
+            json!([])
+        );
+    }
+
+    #[test]
     fn discovery_retains_only_normalized_reasoning_capabilities() {
         for value in [
             json!({"models":[{"slug":"synthetic-model", "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}], "input_modalities":["text","image"], "private_extension":"not-persisted"}]}),
@@ -1529,6 +1621,67 @@ mod tests {
     }
 
     #[test]
+    fn native_editor_plan_preserves_new_chatgpt_tiers() -> Result<(), Box<dyn std::error::Error>> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        for (plan, expected) in [
+            ("prolite", "ChatGPT Prolite"),
+            ("promax", "ChatGPT Promax"),
+            ("go", "ChatGPT Go"),
+            ("team", "ChatGPT Team"),
+        ] {
+            let claims = json!({"sub":"fixture-user", "https://api.openai.com/auth":{"chatgpt_account_id":"fixture-workspace", "chatgpt_plan_type":plan}});
+            let token = format!(
+                "{}.{}.",
+                URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#),
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
+            );
+            let info = native_editor_observation(&json!({"auth_mode":"chatgpt", "tokens":{"account_id":"fixture-workspace", "access_token":"synthetic-access", "id_token":token}})).ok_or("missing native observation")?;
+            assert_eq!(info.plan.as_deref(), Some(expected));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_editor_identity_requires_consistent_workspace_and_never_returns_tokens() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            json!({
+                "sub": "fixture-user",
+                "email": "person@example.test",
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "fixture-workspace",
+                    "chatgpt_plan_type": "plus"
+                }
+            })
+            .to_string(),
+        );
+        let mut auth = json!({"auth_mode":"chatgpt", "tokens": {
+            "access_token":"synthetic-access",
+            "account_id":"fixture-workspace",
+            "id_token":format!("{header}.{payload}.")
+        }});
+        let info = native_editor_observation(&auth).expect("native observation");
+        assert_eq!(info.login, "person@example.test");
+        assert_eq!(info.plan.as_deref(), Some("ChatGPT Plus"));
+        assert_eq!(
+            info.identity,
+            Some(("sub:fixture-user".into(), "fixture-workspace".into()))
+        );
+        auth["tokens"]["account_id"] = json!("other-workspace");
+        assert!(native_editor_observation(&auth)
+            .expect("observation")
+            .identity
+            .is_none());
+        auth["tokens"]["id_token"] = json!("invalid-token");
+        let unknown = native_editor_observation(&auth).expect("unknown identity");
+        assert_eq!(unknown.login, "Codex");
+        assert!(unknown.identity.is_none());
+        auth["auth_mode"] = json!("apikey");
+        assert!(native_editor_observation(&auth).is_none());
+    }
+
+    #[test]
     fn native_credentials_require_chatgpt_mode_and_complete_tokens() {
         let auth = json!({"tokens":{"access_token":"synthetic", "account_id":"workspace"}});
         assert!(native_credentials(&auth).is_some());
@@ -1619,6 +1772,9 @@ pub(crate) struct ExecutionCredentials {
     continuation: Option<String>,
 }
 impl ExecutionCredentials {
+    pub(crate) fn capability(&self, model: &str) -> super::effort::Capability {
+        super::effort::Capability::for_provider(&self.provider, model)
+    }
     pub(crate) fn serves_model(&self, model: &str) -> bool {
         crate::services::codex_provider::account_serves(&self.provider, model)
     }
