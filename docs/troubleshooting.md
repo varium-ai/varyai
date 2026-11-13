@@ -196,7 +196,7 @@ do not reload the active gateway; an explicit backend restart is still necessary
 Do not clear credentials or conversation history as a workaround for this 400.
 See the [verification record](qa/2026-11-06-gemini-tool-combination.md).
 
-## Codex reconnects with Grok and HTTP 400 or 410
+## Codex Chat requests fail with HTTP 400 or 410
 
 HTTP 400 with `routing_upstream_rejected` can also come from Grok rejecting
 object parameters referenced through local JSON Schema `$ref` entries. A greeting
@@ -205,18 +205,30 @@ reproduce this failure. The Grok adapter expands resolvable local references whi
 preserving constraints and user data. Verify with the complete tool declarations;
 removing tools or simplifying every schema does not establish compatibility.
 
-If a new Codex conversation using a Grok model fails with `410 Gone` and
+If a new Codex conversation fails with HTTP 400 or 410 and
 `routing_upstream_rejected`, check whether the selected upstream uses Chat
 Completions. Codex can offer a native `web_search` tool on an ordinary turn.
-Older VaryAI builds translate that declaration into `web_search_options: {}`;
-Grok's retired Chat live-search API rejects that field even when no search was
-requested in the prompt. Reopening the conversation does not remove it.
+Older VaryAI builds translate that declaration into `web_search_options: {}`.
+Ordinary Chat gateways can reject it with HTTP 400, and Grok's retired Chat
+live-search API can reject it with HTTP 410, even when the prompt did not request
+search. Reopening the conversation does not remove the declaration. A gateway
+can support both Chat and Responses yet reject this Chat parameter.
 
-The corrected Chat converter omits optional Grok native-search declarations while
+The corrected Chat converter omits optional hosted-search declarations while
 preserving function tools, schemas, prompts, reasoning and stream completion. It
 does not downgrade requests that require search as their only tool. Use a
-Responses-capable Grok upstream for native web search. Do not change credentials,
-model names or disable unrelated security controls to work around this error.
+supported native-search protocol, such as Responses, when native web search is
+required. Native Chat requests are still passed through without this conversion.
+Do not change credentials, model names or unrelated security controls to work
+around this error.
+
+A separate HTTP 400 can occur when a Chat gateway rejects `strict: true` in
+function-tool definitions. Removing an optional search declaration does not fix
+that refusal. VaryAI retains explicit strict-tool requirements; it does not
+silently relax them. If the same upstream supports Responses, verify that native
+endpoint with the complete tool definitions and use it for Codex. Changing a
+saved source's protocol requires re-entering its existing key as explicit
+credential confirmation; an omitted saved key cannot silently change protocols.
 
 Source edits do not change an already running VaryAI backend. The corrected
 backend must be built and explicitly restarted before retesting the desktop

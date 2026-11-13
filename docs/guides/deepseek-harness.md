@@ -24,6 +24,13 @@ Use one manager for DeepSeek Harness at a time. If Magpie or another tool also m
 
 Harness can remove or rewrite comments when saving its profile. VaryAI recognizes its managed provider entries by YAML structure and route identity, so missing comment markers do not by themselves require repair. Explicit reconnection releases only the provider routes and gateway credential identified by the saved connection record, then rewrites VaryAI's connection fields from the current shared catalog, including changed endpoints, authentication and model lists. It saves private `deepseek-harness-recovery-*.yml` backups of the profile and existing credential store beside the connection record before changing either native file. Effective native provider settings, another manager's disconnect and a native default-model choice are retained. Polling and startup do not rewrite changed owned credentials or endpoints automatically. Invalid YAML, unsupported credential-store versions and ambiguous provider ownership stop recovery without overwriting the native files; restore a known-good backup or contact support in those cases.
 
+If the local connection record was lost, explicit reconnection can replace an
+orphaned gateway credential only when the native profile still binds that exact
+reference to VaryAI's generated routes on a loopback gateway endpoint. The new
+connection journals both preceding native files and restores them on disconnect.
+Foreign routes sharing the reference, remote endpoints and ambiguous stores are
+refused. Passive synchronization does not acquire an orphaned credential.
+
 ## Versions and updates
 
 On macOS, presence and installed versions are read from the official `DeepSeek Harness.app` bundle with identity `com.deepseek.dsh`. The homepage includes this agent in individual and batch update checks. Apple Silicon builds using the installed official Nightly feed can use the existing verified desktop updater. An absent, different or unreadable feed does not offer an automatic update; use Harness's own updater or the official download page. Update checks do not download or replace an application.

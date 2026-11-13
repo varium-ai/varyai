@@ -139,17 +139,19 @@ scoped references retain the original schema; depth and node budgets also cancel
 expansion without dropping constraints. Only schema-bearing keywords are visited,
 so examples, defaults and properties named `description` or `title` stay intact.
 
-Grok Chat live search is retired: sending `web_search_options`, including an
-empty object, can return HTTP 410. When converting to Chat for a Grok model,
-optional native search declarations are omitted instead of inventing that retired
-field. Function tools, schemas, choices, prompts and reasoning remain intact.
-A search-only request with `tool_choice: "required"` is rejected locally rather
-than silently running without its required tool. If no tools remain, optional
-choices and parallel-tool settings are omitted as well. Native search declarations
-on Responses and search conversion for other models are unchanged. Grok native
-web search requires a Responses-capable upstream; this Chat compatibility rule
-does not implement a replacement search executor. The behavior was checked against
-Magpie's `chat.go` / `gateway.go` search handling at the pinned Grok reference.
+Hosted search is not a generic Chat Completions capability. Codex can offer a
+native `web_search` tool on ordinary turns, but translating that declaration into
+`web_search_options: {}` makes regular Chat gateways reject the whole request
+with HTTP 400; Grok's retired Chat live-search API returns HTTP 410. The Chat
+builder omits these optional native-search declarations while retaining function
+tools, schemas, choices, prompts and reasoning. A search-only request with
+`tool_choice: "required"` is rejected locally rather than silently running without
+its required tool. If no tools remain, optional choices and parallel-tool settings
+are omitted as well. Native Chat passthrough and native search on Responses,
+Anthropic and Gemini retain their own behavior. This conversion rule does not
+implement a replacement search executor; native search needs a supported native
+protocol. Magpie's `chat.go` / `gateway.go` likewise avoid injecting search options
+into ordinary Chat requests, and handle their search execution separately.
 
 Intent routing preserves an explicit upstream rejection's HTTP status instead of
 labeling it a connection failure. Raw upstream error bodies remain private; only

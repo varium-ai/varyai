@@ -575,23 +575,13 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         body["stop"] = json!(r.stop);
     }
     let mut tools = Vec::new();
-    let grok = r
-        .model
-        .rsplit('/')
-        .next()
-        .unwrap_or(&r.model)
-        .to_ascii_lowercase()
-        .starts_with("grok");
     let mut omitted_search = false;
     for t in &r.tools {
         if t.kind == "web_search" {
-            // Grok retired Chat live search (410). Codex offers search even on
-            // ordinary turns; only Responses can execute Grok's native search.
-            if grok {
-                omitted_search = true;
-            } else {
-                body["web_search_options"] = native_tool(t, Protocol::Chat)?;
-            }
+            // An optional hosted-search declaration does not establish Chat
+            // search support. Codex sends it on ordinary turns too; generic
+            // Chat gateways reject an invented web_search_options field.
+            omitted_search = true;
             continue;
         }
         if t.kind != "function" {
@@ -1363,6 +1353,41 @@ mod tests {
         );
     }
     #[test]
+    fn ordinary_chat_models_do_not_imply_native_search_support() {
+        for model in ["gpt-6.1-sol", "claude-sonnet-5-5", "synthetic-model"] {
+            for choice in ["auto", "none", "required"] {
+                let body = json!({"model":model,"input":"Synthetic prompt","stream":true,
+                    "tools":[{"type":"web_search"},{"type":"function","name":"lookup","description":"Synthetic lookup",
+                        "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"strict":false}],
+                    "tool_choice":choice,"parallel_tool_calls":false,"reasoning":{"effort":"high"}});
+                let parsed =
+                    super::super::parse::request(Protocol::Responses, &body, "/v1/responses")
+                        .unwrap();
+                let chat = request(&parsed, Protocol::Chat).unwrap();
+                assert!(chat.get("web_search_options").is_none());
+                assert_eq!(chat["tools"][0]["function"]["name"], "lookup");
+                assert_eq!(
+                    chat["tools"][0]["function"]["description"],
+                    "Synthetic lookup"
+                );
+                assert_eq!(
+                    chat["tools"][0]["function"]["parameters"],
+                    body["tools"][1]["parameters"]
+                );
+                assert_eq!(chat["tools"][0]["function"]["strict"], false);
+                assert_eq!(chat["tool_choice"], choice);
+                assert_eq!(chat["parallel_tool_calls"], false);
+                assert_eq!(chat["reasoning_effort"], "high");
+                assert_eq!(chat["messages"][0]["content"], "Synthetic prompt");
+                assert_eq!(
+                    request(&parsed, Protocol::Responses).unwrap()["tools"],
+                    body["tools"]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn grok_chat_omits_optional_native_search_but_keeps_function_tools() {
         for model in ["grok-4.5", "grok-4.7", "xai/GROK-4.6"] {
             for required in [false, true] {
@@ -1395,18 +1420,21 @@ mod tests {
                 );
                 let mut other = parsed;
                 other.model = "synthetic-model".into();
-                assert_eq!(
-                    request(&other, Protocol::Chat).unwrap()["web_search_options"],
-                    json!({})
-                );
+                assert!(request(&other, Protocol::Chat)
+                    .unwrap()
+                    .get("web_search_options")
+                    .is_none());
             }
         }
     }
 
     #[test]
-    fn grok_chat_does_not_silently_ignore_required_search_or_leave_dangling_choices() {
-        for choice in ["auto", "none", "required"] {
-            let body = json!({"model":"grok-4.5","input":"Synthetic prompt",
+    fn chat_does_not_silently_ignore_required_search_or_leave_dangling_choices() {
+        for (model, choice) in ["grok-4.5", "gpt-6.1-sol", "synthetic-model"]
+            .into_iter()
+            .flat_map(|model| ["auto", "none", "required"].map(|choice| (model, choice)))
+        {
+            let body = json!({"model":model,"input":"Synthetic prompt",
                 "tools":[{"type":"web_search"}],"tool_choice":choice,"parallel_tool_calls":true});
             let parsed =
                 super::super::parse::request(Protocol::Responses, &body, "/v1/responses").unwrap();
@@ -1457,6 +1485,10 @@ mod tests {
             assert!(request(&parsed, Protocol::Gemini).unwrap()["tools"][0]
                 .get("googleSearch")
                 .is_some());
+            assert!(request(&parsed, Protocol::Chat)
+                .unwrap()
+                .get("web_search_options")
+                .is_none());
         }
     }
     #[test]

@@ -340,3 +340,84 @@ fn deepseek_native_credentials_accept_empty_native_documents() -> Result<(), Str
     }
     Ok(())
 }
+
+#[test]
+fn deepseek_orphan_gateway_credentials_can_be_replaced_and_restored() -> Result<(), String> {
+    let root = tempfile::tempdir().map_err(|_| FAILED)?;
+    let profile = root.path().join("profiles/desktop/cordis.patch.yml");
+    let credentials = root.path().join(".credentials.yaml");
+    let manager = Manager {
+        root: root.path().join("receipts"),
+    };
+    let menu = tests::fixture_menu();
+    let selected = menu.default_model.as_deref().ok_or(FAILED)?;
+    crate::services::agent_clients::with_test_config(&profile, || -> Result<(), String> {
+        let first = manager.build("deepseek-harness", &menu, "http://127.0.0.1:1", selected)?;
+        let old_token = first.token.clone();
+        manager.install(first)?;
+        let baseline = (read(&profile)?, read(&credentials)?);
+        fs::remove_file(manager.path("deepseek-harness")?).map_err(|_| FAILED)?;
+        let replacement =
+            manager.build("deepseek-harness", &menu, "http://127.0.0.1:2", selected)?;
+        assert!(replacement.token != old_token);
+        let token = replacement.token.clone();
+        manager.install(replacement)?;
+        let store = harness_credentials::parse(read(&credentials)?.as_deref())?;
+        assert!(store["refs"][KEY].as_str() == Some(token.as_str()));
+        assert!(manager.status("deepseek-harness")?.configured);
+        manager.disconnect("deepseek-harness")?;
+        assert!((read(&profile)?, read(&credentials)?) == baseline);
+        Ok(())
+    })
+}
+
+#[test]
+fn deepseek_orphan_key_is_not_claimed_by_foreign_profiles() -> Result<(), String> {
+    for (id, route, base) in [
+        (
+            "varyai-provider-shared-catalog",
+            "varyai-shared-catalog",
+            "https://synthetic.invalid/connections/deepseek-harness/v1",
+        ),
+        (
+            "native-provider",
+            "native",
+            "http://127.0.0.1:1/connections/deepseek-harness/v1",
+        ),
+        (
+            "mixed",
+            "varyai-shared-catalog",
+            "http://127.0.0.1:1/connections/deepseek-harness/v1",
+        ),
+        (
+            "varyai-provider-shared-catalog",
+            "varyai-shared-catalog",
+            "http://127.0.0.1:1/native/v1",
+        ),
+    ] {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let profile = root.path().join("cordis.patch.yml");
+        let credentials = root.path().join(".credentials.yaml");
+        let original = "version: 1\nrefs: {VARYAI_HARNESS_GATEWAY_KEY: synthetic-foreign}\n";
+        fs::write(&credentials, original).map_err(|_| FAILED)?;
+        let adapter = if id == "native-provider" {
+            id
+        } else {
+            "llm-pi-ai"
+        };
+        let mut document =
+            json!([{"id":adapter,"config":{"providers":{route:{"apiKeyEnv":KEY,"baseURL":base}}}}]);
+        if id == "mixed" {
+            document[0]["config"]["providers"]["native"] =
+                json!({"apiKeyEnv":KEY,"baseURL":"https://synthetic.invalid/v1"});
+        }
+        fs::write(
+            &profile,
+            serde_yaml::to_string(&document).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(harness_credentials::prepare(&profile, "synthetic-new").is_err());
+        assert!(read(&credentials)?.as_deref() == Some(original));
+    }
+    Ok(())
+}

@@ -50,11 +50,72 @@ pub(super) fn parse(text: Option<&str>) -> Result<Value, String> {
     Ok(value)
 }
 
+fn references_gateway_key(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.get("apiKeyEnv").is_some_and(|value| value == KEY)
+                || fields.values().any(references_gateway_key)
+        }
+        Value::Array(rows) => rows.iter().any(references_gateway_key),
+        _ => false,
+    }
+}
+
+fn references_local_gateway(profile: &Path) -> Result<bool, String> {
+    let Some(source) = read(profile)? else {
+        return Ok(false);
+    };
+    let document = crate::services::deepseek_harness::parse(&source)?;
+    if references_gateway_key(&document["patches"]) {
+        return Ok(false);
+    }
+    let Some(providers) = document["providers"].as_object() else {
+        return Ok(false);
+    };
+    let mut found = false;
+    for (id, provider) in providers {
+        for (route, config) in provider["config"]["providers"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            if config["apiKeyEnv"] != KEY {
+                continue;
+            }
+            found = true;
+            let owned = ["", "-responses", "-anthropic"].iter().any(|suffix| {
+                id == &format!("varyai-provider-shared-catalog{suffix}")
+                    && route == &format!("varyai-shared-catalog{suffix}")
+            });
+            let local = config["baseURL"]
+                .as_str()
+                .and_then(|base| url::Url::parse(base).ok())
+                .is_some_and(|url| {
+                    matches!(url.scheme(), "http" | "https")
+                        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                        && matches!(
+                            url.path().trim_end_matches('/'),
+                            "/connections/deepseek-harness" | "/connections/deepseek-harness/v1"
+                        )
+                });
+            if !owned || !local {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(found)
+}
+
 pub(super) fn prepare(profile: &Path, token: &str) -> Result<FileEdit, String> {
     let mut file = FileEdit::prepare_format(path(profile)?, Format::HarnessCredentials, |value| {
         if value["refs"]
             .get(KEY)
             .is_some_and(|key| key.as_str() != Some(token))
+            && !references_local_gateway(profile)?
         {
             return Err(CONFLICT.into());
         }

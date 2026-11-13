@@ -2604,6 +2604,20 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
 #[serial_test::serial]
 async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    check_codex_chat_optional_search("grok-4.5", StatusCode::GONE).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_chat_optional_search_is_not_a_generic_provider_capability(
+) -> Result<(), Box<dyn std::error::Error>> {
+    check_codex_chat_optional_search("gpt-6.1-sol", StatusCode::BAD_REQUEST).await
+}
+
+async fn check_codex_chat_optional_search(
+    model: &str,
+    rejected: StatusCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
     impl Drop for RestoreSecurity {
@@ -2617,23 +2631,25 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
+    let upstream_model = model.to_owned();
     let task = tokio::spawn(async move {
         axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
             let tx = tx.clone();
+            let upstream_model = upstream_model.clone();
             async move {
                 let _ = tx.send(body.clone()).await;
                 if body.get("web_search_options").is_some() {
-                    return (StatusCode::GONE, Json(json!({"error":{"message":"Synthetic retired Chat search"}}))).into_response();
+                    return (rejected, Json(json!({"error":{"message":"Synthetic unsupported Chat search option"}}))).into_response();
                 }
                 if body["stream"] == true {
                     let events = [
-                        json!({"id":"synthetic-grok-reply","model":"grok-4.5","choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic answer"},"finish_reason":null}]}),
-                        json!({"id":"synthetic-grok-reply","model":"grok-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                        json!({"id":"synthetic-chat-reply","model":upstream_model,"choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic answer"},"finish_reason":null}]}),
+                        json!({"id":"synthetic-chat-reply","model":upstream_model,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
                     ];
                     let sse = events.iter().map(|event| format!("data: {event}\n\n")).collect::<String>() + "data: [DONE]\n\n";
                     return ([("content-type", "text/event-stream")], sse).into_response();
                 }
-                Json(json!({"id":"synthetic-grok-reply","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})).into_response()
+                Json(json!({"id":"synthetic-chat-reply","object":"chat.completion","model":upstream_model,"choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})).into_response()
             }
         }))).await
     });
@@ -2647,11 +2663,11 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
             .ok_or("missing session")?,
     );
     session.group.levels.clear();
-    session.group.members[0].model_id = "grok-4.5".into();
-    session.targets[0].model = "grok-4.5".into();
+    session.group.members[0].model_id = model.into();
+    session.targets[0].model = model.into();
     let mut provider = Provider::with_id(
         "fixture".into(),
-        "Synthetic Grok".into(),
+        "Synthetic Chat".into(),
         json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}/v1"),"ANTHROPIC_API_KEY":"synthetic-upstream"}}),
         None,
     );
@@ -2700,7 +2716,7 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
             .await?
             .ok_or("missing request")?;
         assert!(sent.get("web_search_options").is_none());
-        assert_eq!(sent["model"], "grok-4.5");
+        assert_eq!(sent["model"], model);
         assert_eq!(sent["stream"], stream);
         assert_eq!(sent["tools"].as_array().map(Vec::len), Some(1));
         assert_eq!(
