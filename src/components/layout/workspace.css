@@ -138,6 +138,14 @@
   --workspace-brand-top: 24px;
   background: var(--mp-workspace-bg);
 }
+@media (min-width: 641px) {
+  .vary-workspace:lang(en) {
+    --workspace-sidebar-width: 240px;
+  }
+  .vary-workspace:lang(ja) {
+    --workspace-sidebar-width: 208px;
+  }
+}
 .workspace-drag-region + div {
   --workspace-page-top: 0px;
   --workspace-brand-top: 24px;
@@ -145,11 +153,17 @@
 .workspace-drag-region {
   height: 24px;
   flex: none;
-  background: linear-gradient(
-    to right,
-    var(--mp-sidebar) var(--workspace-sidebar-width),
-    transparent var(--workspace-sidebar-width)
-  );
+}
+.workspace-drag-region::before {
+  content: "";
+  display: block;
+  width: var(--workspace-sidebar-width);
+  height: 100%;
+  background: var(--mp-sidebar);
+}
+.workspace-drag-region::before,
+.workspace-sidebar {
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .workspace-sidebar {
   position: relative;
@@ -216,6 +230,11 @@
   line-height: 20px;
   text-align: left;
   white-space: nowrap;
+}
+.workspace-nav-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .workspace-nav-item svg {
   width: 16px;
@@ -946,6 +965,8 @@ html:has(.vary-workspace) .tray-profile-menu {
 }
 @media (prefers-reduced-motion: reduce) {
   .mp-agent-next svg,
+  .workspace-drag-region::before,
+  .workspace-sidebar,
   .workspace-nav-selection,
   .mp-agent-more > summary svg,
   .mp-switch[role="switch"],

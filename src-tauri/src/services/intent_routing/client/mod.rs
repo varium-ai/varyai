@@ -13,6 +13,7 @@ use toml_edit::DocumentMut;
 
 pub(crate) mod aliases;
 mod health;
+mod model_cache;
 mod thread_lifecycle;
 mod threads;
 pub(crate) use health::ConfigurationIssue;
@@ -20,6 +21,8 @@ pub(crate) use health::ConfigurationIssue;
 mod alias_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod model_cache_tests;
 #[cfg(test)]
 mod parity_tests;
 #[cfg(test)]
@@ -1106,12 +1109,25 @@ impl Manager {
             }
             return Err(FAILED.into());
         }
+        let cache_changed = intent != ApplyIntent::Refresh
+            || new_catalog
+            || current
+                .as_deref()
+                .is_none_or(|current| !projection_owned(current, &receipt.installed));
         replace_checked(&self.config, current.as_deref(), Some(&receipt.installed))?;
         if let Some(menu) = menu {
             self.runtime
                 .native
                 .publish_menu(menu, projection, receipt.model_map.clone())
                 .map_err(|_| FAILED)?;
+        }
+        if cache_changed
+            && matches!(
+                health::configuration_issue(&self.config, Some(&receipt.installed)),
+                Ok(None)
+            )
+        {
+            model_cache::expire(&self.config);
         }
         self.reconcile_thread_receipt(&mut receipt, false)?;
         Ok(())
@@ -1139,7 +1155,9 @@ impl Manager {
         if self.receipt.exists() {
             return Err(CONFLICT.into());
         }
-        replace_checked(&self.config, Some(&current), Some(&disconnected))
+        replace_checked(&self.config, Some(&current), Some(&disconnected))?;
+        model_cache::expire(&self.config);
+        Ok(())
     }
     pub fn restore(&self) -> Result<(), String> {
         self.restore_inner(false)
@@ -1152,6 +1170,13 @@ impl Manager {
             return Ok(());
         };
         let current = read(&self.config)?;
+        let cache_owned = current.as_deref().is_some_and(|current| {
+            projection_owned(current, &receipt.installed)
+                && matches!(
+                    health::configuration_issue(&self.config, Some(current)),
+                    Ok(None)
+                )
+        });
         let restored = restore_text(current.as_deref(), &receipt)?;
         self.reconcile_thread_receipt(&mut receipt, true)?;
         let current_provider = current
@@ -1208,6 +1233,9 @@ impl Manager {
             restored
         };
         replace_checked(&self.config, current.as_deref(), restored.as_deref())?;
+        if cache_owned {
+            model_cache::expire(&self.config);
+        }
         self.runtime.clear_menu();
         // Preserve cached client credentials, aliases and catalog paths while
         // forwarding stays revoked, including across an explicit off/on cycle.

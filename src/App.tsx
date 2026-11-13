@@ -107,6 +107,7 @@ export default function App() {
     <div
       className="vary-workspace flex h-screen flex-col overflow-hidden"
       data-testid="global-workspace"
+      lang={i18n.language}
     >
       {isMac() && (
         <div {...DRAG_REGION_ATTR} className="workspace-drag-region" />

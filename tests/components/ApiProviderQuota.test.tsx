@@ -61,6 +61,33 @@ it("shows a relay's balance and remaining windows without revealing saved keys",
   expect(routingUpstreamsApi.quota).toHaveBeenCalledExactlyOnceWith("relay", 4);
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
+it("replaces the initial quota skeleton with the allowance", async () => {
+  let resolve!: (value: typeof reading) => void;
+  vi.mocked(routingUpstreamsApi.quota).mockReturnValue(
+    new Promise((done) => {
+      resolve = done;
+    }) as never,
+  );
+  mount();
+  const status = screen.getByRole("status");
+  expect(status).toHaveAttribute("aria-busy", "true");
+  expect(status.querySelector(".pv-quota-skeleton")).not.toBeNull();
+  resolve(reading);
+  await screen.findByText(/993.86/);
+  expect(status.querySelector(".pv-quota-skeleton")).toBeNull();
+  expect(status).toHaveAttribute("aria-busy", "false");
+});
+it("keeps cached amounts visible during background refresh", async () => {
+  const client = mount();
+  await screen.findByText(/993.86/);
+  vi.mocked(routingUpstreamsApi.quota).mockReturnValue(new Promise(() => {}));
+  void client.invalidateQueries({ queryKey: ["routing-provider-quota"] });
+  await waitFor(() =>
+    expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true"),
+  );
+  expect(screen.getByText(/993.86/)).toBeVisible();
+  expect(document.querySelector(".pv-quota-skeleton")).toBeNull();
+});
 it("retains full allowance and manual refresh in the provider form", async () => {
   mount(false);
   expect(await screen.findByText(/993.86/)).toBeVisible();

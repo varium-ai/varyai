@@ -39,13 +39,11 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
     codexQuota: vi.fn(),
   },
 }));
-function mount() {
+function mount(
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      }
-    >
+    <QueryClientProvider client={client}>
       <RoutingUpstreamsPanel />
     </QueryClientProvider>,
   );
@@ -63,6 +61,53 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+describe("provider loading", () => {
+  it("preserves loaded rows during background refresh", async () => {
+    const client = new QueryClient();
+    const record = {
+      schemaVersion: 1 as const,
+      id: "cached",
+      revision: 1,
+      name: "Synthetic cached provider",
+      hasApiKey: false,
+      source: {
+        kind: "api" as const,
+        apiFormat: "openai_chat" as const,
+        baseUrl: "https://cached.example/v1",
+        models: [],
+        catalog: [],
+        mode: "vendor" as const,
+        groupsOnly: false,
+      },
+    };
+    client.setQueryData(["routing-upstreams"], [record]);
+    vi.mocked(routingUpstreamsApi.list).mockReturnValue(new Promise(() => {}));
+    const view = mount(client);
+    expect(
+      await screen.findByRole("article", { name: record.name }),
+    ).toBeVisible();
+    expect(view.container.querySelector(".pv-list-skeleton")).toBeNull();
+  });
+  it("shows decorative list skeletons until an empty response arrives", async () => {
+    let resolve!: (value: []) => void;
+    vi.mocked(routingUpstreamsApi.list).mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const view = mount();
+    const status = screen.getByRole("status", { name: "common.loading" });
+    expect(status).toHaveAttribute("aria-busy", "true");
+    expect(status.querySelectorAll(".pv-skeleton-row").length).toBeGreaterThan(
+      1,
+    );
+    expect(within(status).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByText("modelProviders.empty")).not.toBeInTheDocument();
+    await act(async () => resolve([]));
+    expect(await screen.findByText("modelProviders.empty")).toBeVisible();
+    expect(view.container.querySelector(".pv-list-skeleton")).toBeNull();
+  });
 });
 describe("provider setup-help shortcut", () => {
   it("copies the onboarding prompt from the header before the add action", async () => {
@@ -602,6 +647,8 @@ describe("global upstream editor", () => {
     ]);
     vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
       ...primary,
+      id: "codex",
+      name: "Codex fixture",
       source: { kind: "codex" },
       codex: {
         settings: {
@@ -630,6 +677,13 @@ describe("global upstream editor", () => {
     expect(within(row).queryByText("ChatGPT / Codex")).not.toBeInTheDocument();
     expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("selected");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(
+      within(row).getByRole("button", { name: "common.edit Codex fixture" }),
+    );
+    await screen.findByRole("dialog");
+    expect(
+      within(row).getByText("codexProvider.remaining"),
+    ).toBeInTheDocument();
   });
   it.each([
     "ChatGPT Prolite",

@@ -25,6 +25,10 @@ export function AppUpdateDialog() {
     updateInfo,
     isDismissed,
     isInstalling,
+    installProgress,
+    isDownloadStalled,
+    isCancelling,
+    cancelUpdate,
     dismissUpdate,
     installUpdate,
   } = useUpdate();
@@ -103,6 +107,29 @@ export function AppUpdateDialog() {
   const hasNotes = displayed.some((entry) => entry.notes);
   const releaseUrl = releaseNotesPageUrl(updateInfo.availableVersion);
 
+  const phase = installProgress?.phase;
+  const canCancel = isInstalling && Boolean(phase) && phase !== "installing";
+  const percent =
+    installProgress?.total && installProgress.total > 0
+      ? Math.min(
+          100,
+          Math.floor(
+            (installProgress.downloaded / installProgress.total) * 100,
+          ),
+        )
+      : undefined;
+  const formatBytes = (bytes: number) => {
+    const unit = bytes >= 1024 * 1024 ? "MB" : "KB";
+    const value = bytes / (unit === "MB" ? 1024 * 1024 : 1024);
+    return `${new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 1 }).format(value)} ${unit}`;
+  };
+  const handleCancel = async () => {
+    try {
+      await cancelUpdate();
+    } catch {
+      toast.error(t("settings.updateCancelFailed"));
+    }
+  };
   const handleInstall = async () => {
     try {
       await installUpdate();
@@ -138,6 +165,41 @@ export function AppUpdateDialog() {
       }
       footer={
         <>
+          {isInstalling && phase && (
+            <div className="vary-update-progress">
+              <p role="status" className="vary-update-progress-label">
+                {t(
+                  isCancelling
+                    ? "settings.updateCancelling"
+                    : phase === "checking"
+                      ? "settings.updatePreparing"
+                      : phase === "installing"
+                        ? "settings.updateInstalling"
+                        : "settings.updateDownloading",
+                )}
+                {phase === "downloading" && installProgress && (
+                  <span>
+                    {formatBytes(installProgress.downloaded)}
+                    {installProgress.total
+                      ? ` / ${formatBytes(installProgress.total)} · ${percent}%`
+                      : ""}
+                  </span>
+                )}
+              </p>
+              {phase === "downloading" && (
+                <progress
+                  aria-label={t("settings.updateDownloading")}
+                  max={100}
+                  value={percent}
+                />
+              )}
+              {isDownloadStalled && phase === "downloading" && (
+                <p role="status" className="vary-update-progress-hint">
+                  {t("settings.updateDownloadStalled")}
+                </p>
+              )}
+            </div>
+          )}
           <p className="vary-update-footer-hint">
             {t(
               isPortable
@@ -148,10 +210,10 @@ export function AppUpdateDialog() {
           <Button
             type="button"
             variant="outline"
-            disabled={isInstalling}
-            onClick={dismissUpdate}
+            disabled={isInstalling && (!canCancel || isCancelling)}
+            onClick={canCancel ? () => void handleCancel() : dismissUpdate}
           >
-            {t("settings.updateLater")}
+            {t(canCancel ? "settings.updateCancel" : "settings.updateLater")}
           </Button>
           {isPortable ? (
             <Button

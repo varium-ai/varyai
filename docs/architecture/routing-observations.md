@@ -41,6 +41,13 @@ navigation, and reduced-motion settings suppress control and stage movement.
   the accounts-and-keys panel are absent from this workspace. Legacy request-list
   preferences do not affect the live overview, and the page does not fetch history.
   A supplier with one distinct enabled API key displays its provider name.
+  Provider labels that share a name with another configured or staged supplier
+  append ` · <provider ID>` in both the workspace and compact tray, including
+  their tooltips. Name comparison ignores surrounding whitespace and case;
+  models, keys and execution aliases of one public supplier do not count as
+  separate providers. The suffix uses the recorded public `sourceProviderId`
+  when present, otherwise `providerId`. Recorded candidates still disambiguate
+  without a provider catalog. Account masking applies to the combined label.
   With multiple distinct enabled keys, candidates display their configured key
   name or a backend-masked credential label (four leading and four trailing
   characters, or bullets for short keys). Disabled and duplicate keys do not

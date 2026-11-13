@@ -1,0 +1,108 @@
+.pv-skeleton {
+  display: inline-block;
+  flex: none;
+  max-width: 100%;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--mp-line, #e1e2e8);
+  animation: pv-skeleton-pulse 1.8s ease-in-out infinite;
+}
+.pv-quota-skeleton {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  max-width: 100%;
+  min-height: 18px;
+}
+.pv-skeleton-window {
+  width: 112px;
+  margin-block: 3px;
+}
+.vary-providers .pv-skeleton-search {
+  width: 220px;
+  height: 30px;
+  border-radius: 7px;
+}
+.vary-providers .pv-skeleton-manage {
+  width: 34px;
+}
+.vary-providers .pv-skeleton-hint {
+  width: min(400px, 100%);
+  height: 11px;
+}
+.vary-providers .pv-skeleton-row {
+  cursor: default;
+}
+.vary-providers .pv-skeleton-row:hover {
+  background: transparent;
+}
+.vary-providers .pv-skeleton-row + .pv-skeleton-row {
+  border-top: 1px solid var(--mp-line, #e1e2e8);
+}
+.vary-providers .pv-skeleton-row .pv-logo {
+  border-radius: 8px;
+}
+.vary-providers .pv-skeleton-row .pv-who {
+  flex: 1;
+}
+.vary-providers .pv-skeleton-name {
+  width: 160px;
+  height: 14px;
+  margin-block: 4px;
+}
+.vary-providers .pv-skeleton-row:nth-child(even) .pv-skeleton-name {
+  width: 112px;
+}
+.vary-providers .pv-skeleton-subtitle {
+  width: 210px;
+  vertical-align: middle;
+}
+.vary-providers .pv-skeleton-key {
+  flex: none;
+  width: 128px;
+  margin-left: 4px;
+  padding: 0 8px;
+}
+.vary-providers .pv-skeleton-key > span {
+  width: 76px;
+}
+.vary-providers .pv-skeleton-toggle {
+  width: 36px;
+  height: 20px;
+  border-radius: 12px;
+}
+.vary-providers .pv-skeleton-action {
+  width: 28px;
+  height: 14px;
+  border-inline: 7px solid var(--mp-card, #fff);
+  border-radius: 2px;
+}
+.vary-providers .pv-skeleton-chevron {
+  width: 11px;
+  height: 11px;
+}
+@keyframes pv-skeleton-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pv-skeleton {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .vary-providers .pv-skeleton-key {
+    position: absolute;
+    left: 60px;
+    bottom: 4px;
+    height: 18px;
+    margin: 0;
+    padding: 0;
+  }
+  .vary-providers .pv-skeleton-search {
+    flex: 1;
+    min-width: 140px;
+  }
+}

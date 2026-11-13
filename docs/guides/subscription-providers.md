@@ -74,6 +74,13 @@ full allowance meters, reset times and refresh controls. Both views share the sa
 safe failure and stale-reading states. Providers without an allowance endpoint
 show that limitation instead of an estimated balance.
 
+The provider page uses row skeletons while the initial catalog loads and compact
+skeletons while the first allowance request is pending. Background refreshes keep
+cached readings visible, and opening an editor keeps the list allowance mounted
+to avoid collapsing rows behind the dialog. Skeletons follow the current theme,
+honor reduced-motion preferences and expose a localized loading status to screen
+readers. Unsupported endpoints and failed reads retain their existing behavior.
+
 Provider rows and account editors share subscription-plan labels. Codex native
 sign-ins, managed accounts and ChatGPT API read the same plan claim, including
 Prolite, Promax, Go, Team and education/workspace tiers. New bounded plan

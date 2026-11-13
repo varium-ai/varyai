@@ -46,3 +46,11 @@ export async function checkForUpdate(
 
   return { status: "available", info };
 }
+
+export interface UpdateInstallProgress {
+  phase: "checking" | "downloading" | "installing";
+  downloaded: number;
+  total: number | null;
+}
+
+export type UpdateInstallResult = "installed" | "up-to-date" | "cancelled";
