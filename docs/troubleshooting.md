@@ -222,13 +222,16 @@ required. Native Chat requests are still passed through without this conversion.
 Do not change credentials, model names or unrelated security controls to work
 around this error.
 
-A separate HTTP 400 can occur when a Chat gateway rejects `strict: true` in
-function-tool definitions. Removing an optional search declaration does not fix
-that refusal. VaryAI retains explicit strict-tool requirements; it does not
-silently relax them. If the same upstream supports Responses, verify that native
-endpoint with the complete tool definitions and use it for Codex. Changing a
-saved source's protocol requires re-entering its existing key as explicit
-credential confirmation; an omitted saved key cannot silently change protocols.
+A separate HTTP 400 can occur when a Chat gateway rejects the `strict` flag in
+function-tool definitions. Removing an optional search declaration alone does
+not fix that refusal. Like Magpie's generic Chat builder, VaryAI omits this flag
+when translating tools to Chat while preserving the full parameter schema,
+including `required` and `additionalProperties`, tool choices and function names.
+Both ordinary conversion and the prepared DLP conversion apply this rule. Native
+Chat passthrough and native Responses retain their strict flags. Generic Chat
+conversion cannot promise server-enforced strict outputs; use a supported native
+protocol when that guarantee is required. No source protocol or key change is
+needed for the Chat compatibility fix.
 
 Source edits do not change an already running VaryAI backend. The corrected
 backend must be built and explicitly restarted before retesting the desktop

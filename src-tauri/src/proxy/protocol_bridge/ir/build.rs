@@ -587,10 +587,9 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         if t.kind != "function" {
             return Err(invalid());
         }
-        let mut f = json!({"name":t.name,"description":t.description,"parameters":t.schema});
-        if let Some(strict) = t.strict {
-            f["strict"] = json!(strict);
-        }
+        // Match Magpie's generic Chat conversion: the complete schema is
+        // portable, but a strict flag is not supported by every Chat gateway.
+        let f = json!({"name":t.name,"description":t.description,"parameters":t.schema});
         tools.push(json!({"type":"function","function":f}));
     }
     if omitted_search && tools.is_empty() && r.tool_choice == Some(ToolChoice::Required) {
@@ -1353,6 +1352,35 @@ mod tests {
         );
     }
     #[test]
+    fn translated_chat_tools_follow_magpie_without_strict_flags() {
+        for strict in [Some(true), Some(false), None] {
+            let mut tool = json!({"type":"function","name":"lookup","description":"Synthetic lookup",
+                "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}});
+            if let Some(value) = strict {
+                tool["strict"] = json!(value);
+            }
+            let body = json!({"model":"gpt-6.1-sol","input":"Synthetic prompt","tools":[tool],"tool_choice":"required"});
+            let parsed =
+                super::super::parse::request(Protocol::Responses, &body, "/v1/responses").unwrap();
+            let chat = request(&parsed, Protocol::Chat).unwrap();
+            assert!(chat["tools"][0]["function"].get("strict").is_none());
+            assert_eq!(
+                chat["tools"][0]["function"]["parameters"],
+                body["tools"][0]["parameters"]
+            );
+            assert_eq!(
+                chat["tools"][0]["function"]["description"],
+                "Synthetic lookup"
+            );
+            assert_eq!(chat["tool_choice"], "required");
+            assert_eq!(
+                request(&parsed, Protocol::Responses).unwrap()["tools"],
+                body["tools"]
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_chat_models_do_not_imply_native_search_support() {
         for model in ["gpt-6.1-sol", "claude-sonnet-5-5", "synthetic-model"] {
             for choice in ["auto", "none", "required"] {
@@ -1374,7 +1402,7 @@ mod tests {
                     chat["tools"][0]["function"]["parameters"],
                     body["tools"][1]["parameters"]
                 );
-                assert_eq!(chat["tools"][0]["function"]["strict"], false);
+                assert!(chat["tools"][0]["function"].get("strict").is_none());
                 assert_eq!(chat["tool_choice"], choice);
                 assert_eq!(chat["parallel_tool_calls"], false);
                 assert_eq!(chat["reasoning_effort"], "high");
@@ -1407,7 +1435,7 @@ mod tests {
                     chat["tools"][0]["function"]["parameters"],
                     body["tools"][1]["parameters"]
                 );
-                assert_eq!(chat["tools"][0]["function"]["strict"], true);
+                assert!(chat["tools"][0]["function"].get("strict").is_none());
                 assert_eq!(chat["messages"][0]["content"], "Synthetic prompt");
                 assert_eq!(chat["tool_choice"], body["tool_choice"]);
                 assert_eq!(chat["parallel_tool_calls"], true);

@@ -153,6 +153,17 @@ implement a replacement search executor; native search needs a supported native
 protocol. Magpie's `chat.go` / `gateway.go` likewise avoid injecting search options
 into ordinary Chat requests, and handle their search execution separately.
 
+Generic Chat tool conversion also follows Magpie's `buildChat`: function names,
+descriptions and complete schemas are portable, while the optional `strict` flag
+is omitted. Magpie only opts into emitting that flag in a provider-specific
+adapter (`strictSaid`); ordinary conversion does not enable it. Both the IR
+builder and prepared Codex/DLP converter apply this rule, including flattened
+namespace tools. Schema constraints, tool choices, argument text and DLP
+provenance remain intact. This does not provide server-enforced strict outputs
+through a generic Chat gateway. Native Chat passthrough and native Responses
+keep their existing strict behavior; use those supported native capabilities when
+strict enforcement is required.
+
 Intent routing preserves an explicit upstream rejection's HTTP status instead of
 labeling it a connection failure. Raw upstream error bodies remain private; only
 fixed rejection categories are returned for legacy errors (null required lists,

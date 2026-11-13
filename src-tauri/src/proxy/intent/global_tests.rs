@@ -2641,6 +2641,9 @@ async fn check_codex_chat_optional_search(
                 if body.get("web_search_options").is_some() {
                     return (rejected, Json(json!({"error":{"message":"Synthetic unsupported Chat search option"}}))).into_response();
                 }
+                if body["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["function"].get("strict").is_some())) {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic unsupported Chat strict flag"}}))).into_response();
+                }
                 if body["stream"] == true {
                     let events = [
                         json!({"id":"synthetic-chat-reply","model":upstream_model,"choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic answer"},"finish_reason":null}]}),
@@ -2727,7 +2730,7 @@ async fn check_codex_chat_optional_search(
             sent["tools"][0]["function"]["parameters"]["required"],
             json!(["text"])
         );
-        assert_eq!(sent["tools"][0]["function"]["strict"], true);
+        assert!(sent["tools"][0]["function"].get("strict").is_none());
         assert_eq!(
             sent["messages"][0]["content"],
             "Synthetic developer instruction"
