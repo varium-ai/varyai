@@ -10,6 +10,8 @@ Profiles capture selected client configuration so you can restore a known setup 
 4. After applying, follow the client restart or new-session instructions in the completion notification. A successful apply updates saved configuration; running clients may still need to reload it.
 5. Use the explicit refresh/update action to replace a saved snapshot with the current configuration. Renaming or deleting a profile affects the shared profile entity.
 
+Confirm text entry in the profile name field with Enter as needed, then click the dialog's confirmation button to save. Pressing Enter in the name field does not create a profile, including when confirming an IME candidate.
+
 Every newly created profile uses a configuration snapshot, including profiles containing only one agent. Multi-agent selection can also contain just one supported agent; an empty selection cannot be saved. Older single-client profiles retain their existing format and behavior.
 
 Codex shared selections are captured from the owned model menu, including retained aliases in older saved profiles. Preview resolves the current catalog label; applying and undoing preserve connection ownership and the selected canonical model. Unknown legacy aliases are skipped rather than guessed.

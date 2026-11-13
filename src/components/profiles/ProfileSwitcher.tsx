@@ -357,9 +357,6 @@ export function ProfileSwitcher({
               onChange={(e) => setNewName(e.target.value)}
               placeholder={t("profiles.namePlaceholder")}
               autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreate();
-              }}
             />
             {duplicateName && (
               <p role="alert" className="mt-2 text-sm text-destructive">
