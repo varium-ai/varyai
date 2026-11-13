@@ -53,3 +53,34 @@ This record captures the local checkpoint before pushing PR #55. Linux, Windows,
 macOS and the applicable Windows-to-WSL2 CI results must be checked for the exact
 pushed revision. Local success does not establish those results or live-client,
 installer, signing or notarization acceptance.
+
+## Linux Desktop matrix follow-up
+
+[CI #167](https://github.com/varium-ai/varyai/actions/runs/43399168907)
+reproduced a failure in the new all-Agent explicit-connection regression:
+Claude Desktop projection is intentionally unsupported on Linux, but the matrix
+expected a successful connection for every platform. The existing portable
+projection contract already requires Linux to reject Desktop projection.
+
+The matrix now asserts the expected error and absence of an owned receipt on
+unsupported Desktop platforms, then continues testing all portable Agents.
+macOS and Windows retain the full Desktop overwrite, restoration and stale-catalog
+checks. The test remains enabled everywhere; no assertion is suppressed for
+supported Agents and no production behavior changed.
+
+Validation starts from `7aaf7b189f33ae1602ebf88e5fcd73fa66eb6144`.
+SHA-256 of `src-tauri/src/services/agent_connections.rs`:
+`95ade57e8ed4a8769dd017f43cee4b537b4699c2781b4cf60ab239f6bd9bba32`. The host, toolchain and isolated worktree are the same as above.
+Rust formatting, compilation, Clippy and the complete library/integration suites
+were rerun successfully: 7,500 library tests and 7,665 tests across all targets
+passed, with 21 existing ignored tests. Renderer, helper and dependency sources
+are unchanged from the preceding verified integration.
+
+The first repeated full Rust run returned a synthetic upstream 502 in
+`codex_grok_chat_normalizes_tool_schema_patterns`. That test passed immediately
+in isolation and the subsequent unchanged full run passed. The failure record
+was retained; no Grok implementation or assertion was changed. The cause of that
+single failed attempt was not established.
+
+The preceding CI run passed frontend, Windows backend and Windows-to-WSL2 checks.
+The new pushed revision still requires its own complete CI results.

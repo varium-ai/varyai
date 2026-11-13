@@ -2422,6 +2422,15 @@ mod tests {
             let manager = Manager {
                 root: dir.path().join(format!("receipts-{app}")),
             };
+            #[cfg(not(any(target_os = "macos", windows)))]
+            if app == "claude-desktop" {
+                assert!(matches!(
+                    manager.build(app, &menu, "http://127.0.0.1:1", selected),
+                    Err(error) if error == FAILED
+                ));
+                assert!(!manager.owns(app));
+                continue;
+            }
             manager.install(
                 manager
                     .build(app, &menu, "http://127.0.0.1:1", selected)
