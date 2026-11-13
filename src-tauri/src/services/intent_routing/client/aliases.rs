@@ -1,6 +1,7 @@
 //! Magpie Codex picker identities and duplicate-label disambiguation.
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn project(
@@ -34,6 +35,12 @@ pub(super) fn project_menu(
                         .map(|id| format!("group/{id}"))
                         .unwrap_or_else(|| canonical.to_owned())
                 });
+            // Codex reads this identity from an ASCII-only HTTP routing hint.
+            let id = if id.is_ascii() {
+                id
+            } else {
+                format!("vary-provider/alias-{:x}", Sha256::digest(id.as_bytes()))
+            };
             let provider = menu
                 .and_then(|menu| menu.groups.get(canonical))
                 .and_then(|session| session.targets.first())
@@ -147,6 +154,53 @@ mod tests {
             "context_window":123456,"supported_reasoning_levels":[{"effort":"high"}],
             "service_tiers":[{"id":"priority"}]
         })).collect::<Vec<_>>()})
+    }
+
+    #[test]
+    fn unicode_wire_ids_support_codex_headers_and_preserve_legacy_selection() {
+        let canonical = "synthetic-供应商/日本語-model";
+        let label = "Synthetic model · 测试供应商";
+        let mut retained = BTreeMap::from([(canonical.into(), canonical.into())]);
+        let mut value = catalog(&[(canonical, label)]);
+        let visible = project(&mut value, &mut retained).unwrap();
+        let wire = &visible[0];
+        let header = http::HeaderValue::from_str(&format!("model={wire}")).unwrap();
+        assert!(
+            header.to_str().is_ok(),
+            "Codex must be able to read its routing hint"
+        );
+        assert!(wire.is_ascii());
+        assert_eq!(retained[wire], canonical);
+        assert_eq!(
+            selected(&visible, &retained, canonical),
+            Some(wire.as_str())
+        );
+        assert_eq!(value["models"][0]["display_name"], label);
+        assert_eq!(value["models"][1]["slug"], canonical);
+        assert_eq!(value["models"][1]["visibility"], "hide");
+        assert_eq!(
+            value["models"][0]["context_window"],
+            value["models"][1]["context_window"]
+        );
+    }
+
+    #[test]
+    fn unicode_wire_ids_do_not_collide_with_literal_escapes_or_change_on_reorder() {
+        let entries = [
+            ("synthetic/测试", "Synthetic Chinese"),
+            ("synthetic/%E6%B5%8B%E8%AF%95", "Synthetic literal escape"),
+            ("synthetic/model", "Synthetic ASCII"),
+            ("vary-auto/测试组", "Synthetic group"),
+        ];
+        let mut retained = BTreeMap::new();
+        let mut value = catalog(&entries);
+        let initial = project(&mut value, &mut retained).unwrap();
+        assert!(initial.iter().all(|id| id.is_ascii()));
+        assert_eq!(initial.iter().collect::<BTreeSet<_>>().len(), entries.len());
+        assert_eq!(initial[2], "synthetic/model");
+        let mut reordered = catalog(&entries.into_iter().rev().collect::<Vec<_>>());
+        let updated = project(&mut reordered, &mut retained).unwrap();
+        assert_eq!(updated, initial.into_iter().rev().collect::<Vec<_>>());
     }
 
     #[test]

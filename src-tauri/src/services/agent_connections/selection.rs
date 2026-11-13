@@ -2,7 +2,7 @@
 use super::{at, put, Receipt, FAILED};
 use serde_json::Value;
 
-fn paths(app: &str) -> &'static [&'static [&'static str]] {
+pub(super) fn paths(app: &str) -> &'static [&'static [&'static str]] {
     match app {
         "claude" => &[&["env", "ANTHROPIC_MODEL"], &["model"]],
         "pi" => &[&["defaultProvider"], &["defaultModel"]],

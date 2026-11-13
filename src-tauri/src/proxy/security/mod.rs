@@ -272,9 +272,7 @@ fn inspect_as(
     let current_turn = extractor::CurrentTurn::new(body);
     let inspection = SecurityAuditEngine::inspect_and_redact_with_runtime(body, &runtime);
     for finding in &inspection.findings {
-        if finding.action == AuditAction::Allow
-            || (!inspection.is_blocked() && current_turn.is_historical(&finding.location))
-        {
+        if finding.action == AuditAction::Allow || current_turn.is_historical(&finding.location) {
             continue;
         }
         emit_audit_event(aggregation::PendingAuditEvent {
@@ -357,9 +355,7 @@ pub fn inspect_and_intercept(
     // Enqueue audit events asynchronously.
     let current_turn = extractor::CurrentTurn::new(body);
     for finding in &inspection.findings {
-        if finding.action == AuditAction::Allow
-            || (!blocked && current_turn.is_historical(&finding.location))
-        {
+        if finding.action == AuditAction::Allow || current_turn.is_historical(&finding.location) {
             continue;
         }
         emit_audit_event(aggregation::PendingAuditEvent {

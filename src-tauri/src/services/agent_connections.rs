@@ -632,6 +632,9 @@ impl FileEdit {
             .iter()
             .filter(|field| ours(field))
             .collect::<Vec<_>>();
+        if fields.is_empty() {
+            return Ok(());
+        }
         for field in fields {
             put(&mut live, field, at(&original, field).cloned())?;
         }
@@ -768,6 +771,24 @@ impl Manager {
         }
         Ok(self.root.join(format!("{app}.json")))
     }
+    fn model_choice_path(&self, app: &str) -> Option<PathBuf> {
+        (APPS.contains(&app) || super::trae_bridge::shared::Edition::parse(app).is_some())
+            .then(|| self.root.join("model-choices").join(format!("{app}.json")))
+    }
+    pub(crate) fn remembered_model(&self, app: &str) -> Option<String> {
+        let text = read(&self.model_choice_path(app)?).ok().flatten()?;
+        serde_json::from_str::<String>(&text)
+            .ok()
+            .filter(|model| !model.is_empty())
+    }
+    fn remember_model(&self, app: &str, model: Option<&str>) {
+        let (Some(path), Some(model)) = (self.model_choice_path(app), model) else {
+            return;
+        };
+        if atomic_write_private(&path, json!(model).to_string().as_bytes()).is_err() {
+            log::warn!("Agent model preference could not be saved");
+        }
+    }
     pub fn load(&self, app: &str) -> Result<Option<Receipt>, String> {
         let Some(text) = read(&self.path(app)?)? else {
             return Ok(None);
@@ -899,6 +920,10 @@ impl Manager {
         state: impl FnOnce(&str, Option<i64>) -> Option<desktop::State>,
     ) -> Result<Status, String> {
         let receipt = self.load(app)?;
+        let remembered = receipt
+            .is_none()
+            .then(|| self.remembered_model(app))
+            .flatten();
         let configured = receipt.as_ref().is_some_and(|receipt| {
             !receipt.suspended
                 && receipt
@@ -921,13 +946,17 @@ impl Manager {
             recovery_pending: receipt.as_ref().is_some_and(|r| !r.suspended) && !configured,
             recovery_reason: (receipt.as_ref().is_some_and(|r| !r.suspended) && !configured)
                 .then_some(RecoveryReason::ConfigurationChanged),
-            model: receipt.and_then(|r| {
-                if app == "claude-desktop" && r.visible_models.as_ref().is_some_and(Vec::is_empty) {
-                    None
-                } else {
-                    Some(r.model)
-                }
-            }),
+            model: receipt
+                .and_then(|r| {
+                    if app == "claude-desktop"
+                        && r.visible_models.as_ref().is_some_and(Vec::is_empty)
+                    {
+                        None
+                    } else {
+                        Some(r.model)
+                    }
+                })
+                .or(remembered),
             restart_required: desktop_state == Some(desktop::State::RestartRequired),
             reload_state: None,
             desktop_state,
@@ -1011,6 +1040,7 @@ impl Manager {
             }
         }
         self.sync_model_control(&receipt, false)?;
+        self.remember_model(&receipt.app, Some(&receipt.model));
         Ok(())
     }
     pub fn refresh(&self, app: &str, menu: &Menu, origin: &str) -> Result<Option<Receipt>, String> {
@@ -1064,6 +1094,7 @@ impl Manager {
                 file.write()?;
             }
             self.sync_model_control(&next, false)?;
+            self.remember_model(app, Some(&next.model));
             return Ok(Some(next));
         }
         if !old.files.iter().all(|file| {
@@ -1073,7 +1104,32 @@ impl Manager {
                 file.intact().unwrap_or(false)
             }
         }) {
-            return Err(CONFLICT.into());
+            if selected.is_none() {
+                return Err(CONFLICT.into());
+            }
+            // An explicit connection replaces changed routing fields. Validate
+            // the new projection before archiving and releasing the old one.
+            build_with_token(
+                app,
+                menu,
+                origin,
+                model,
+                old.token.clone(),
+                &visibility,
+                Some(&old),
+            )?;
+            self.release_for_reapply(app)?;
+            let next = build_with_token(
+                app,
+                menu,
+                origin,
+                model,
+                old.token.clone(),
+                &visibility,
+                Some(&old),
+            )?;
+            self.install(next.clone())?;
+            return Ok(Some(next));
         }
         let mut next = build_with_token(
             app,
@@ -1151,6 +1207,7 @@ impl Manager {
             file.write()?;
         }
         self.sync_model_control(&next, false)?;
+        self.remember_model(app, Some(&next.model));
         Ok(Some(next))
     }
     pub fn disconnect(&self, app: &str) -> Result<(), String> {
@@ -1172,6 +1229,7 @@ impl Manager {
         }
         self.record_desktop_restoration(&receipt, before)?;
         self.sync_model_control(&receipt, true)?;
+        self.remember_model(app, Some(&receipt.model));
         fs::remove_file(self.path(app)?).map_err(|_| FAILED.into())
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
@@ -1192,6 +1250,7 @@ impl Manager {
                     .join(format!("deepseek-harness-recovery-{}.yml", new_token()));
                 atomic_write_private(&backup, source.as_bytes()).map_err(|_| FAILED)?;
                 replace_checked(&file.path, Some(source), Some(&clean))?;
+                self.remember_model(app, Some(&receipt.model));
                 return fs::remove_file(self.path(app)?).map_err(|_| FAILED.into());
             }
         }
@@ -1201,28 +1260,43 @@ impl Manager {
             if let Some(kind) = file.desktop {
                 desktop_config::restoration(file, kind, true)?;
             }
-            let has_catalog_array = file.fields.iter().any(|field| {
-                at(&file.installed, field).is_some_and(Value::is_array)
-                    && !(matches!(file.format, Format::Cordis) && field.as_slice() == ["selection"])
-            });
-            if has_catalog_array && file.desktop.is_none() {
-                // Keep a changed Harness default while still guarding its model catalog.
-                let mut catalog = file.clone();
-                catalog.fields.retain(|field| {
-                    at(&file.installed, field).is_some_and(Value::is_array)
-                        && !(matches!(file.format, Format::Cordis)
-                            && field.as_slice() == ["selection"])
-                });
-                let restorable = catalog.restorable()?;
-                if !restorable {
-                    return Err(CONFLICT.into());
-                }
-            }
         }
+        let archive = self
+            .root
+            .join(format!("{app}-reapply-recovery-{}.json", new_token()));
+        atomic_write_private(&archive, &serde_json::to_vec(&receipt).map_err(|_| FAILED)?)
+            .map_err(|_| FAILED)?;
         desktop_config::save_settings(&self.root, &receipt)?;
         for file in receipt.files.iter().rev() {
             file.restore_fields(true)?;
         }
+        if app == "zcode" {
+            // Restoring unchanged owned fields can leave externally edited
+            // rule arrays without their required native schema envelope.
+            for file in &receipt.files {
+                if read(&file.path)?.is_none() {
+                    continue;
+                }
+                FileEdit::prepare(file.path.clone(), |value| {
+                    if value.get("schemaVersion").is_none() {
+                        value["schemaVersion"] = json!(1);
+                    }
+                    for parts in [
+                        vec!["config", "providerConfigRules", "providerRules"],
+                        vec!["config", "modelConfigRules", "providerModelRules"],
+                        vec!["config", "modelConfigRules", "manualProviderModelRules"],
+                    ] {
+                        let parts = parts.into_iter().map(str::to_owned).collect::<Vec<_>>();
+                        if at(value, &parts).is_none() {
+                            put(value, &parts, Some(json!([])))?;
+                        }
+                    }
+                    Ok(())
+                })?
+                .write()?;
+            }
+        }
+        self.remember_model(app, Some(&receipt.model));
         fs::remove_file(self.path(app)?).map_err(|_| FAILED.into())
     }
     pub fn suspend(&self, app: &str) -> Result<(), String> {
@@ -1264,8 +1338,13 @@ impl Manager {
             atomic_write_private(&path, &serde_json::to_vec(&selected).map_err(|_| FAILED)?)
                 .map_err(|_| FAILED.to_owned())?;
             self.record_codex_desktop_application()?;
+            self.remember_model("codex", selected);
             Ok(())
         } else {
+            let selected = selected
+                .map(str::to_owned)
+                .or_else(|| self.codex_intent().ok().flatten().flatten());
+            self.remember_model("codex", selected.as_deref());
             // Capture the restored configuration so a disconnected app can still
             // offer a restart to load the recovered settings.
             let _ = self.record_codex_desktop_application();
@@ -1528,8 +1607,7 @@ fn build_with_token(
             if value.get("models").is_some_and(|rows| !rows.is_array()) { return Err(FAILED.into()); }
             let mut rows = value.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
             let previous = rows.iter().filter(|row| row["apiKey"].as_str() == Some(&token)).filter_map(|row| row["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
-            rows.retain(|row| row["apiKey"].as_str() != Some(&token));
-            if rows.iter().any(|row| named_models.iter().any(|(name, _)| row["id"] == *name)) { return Err(CONFLICT.into()); }
+            rows.retain(|row| row["apiKey"].as_str() != Some(&token) && !named_models.iter().any(|(name, _)| row["id"] == *name));
             for (name, model) in &named_models {
                 // WorkBuddy appends the ID unless it exactly matches the name.
                 let mut row = json!({"id":name,"name":name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
@@ -1993,6 +2071,47 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn disconnect_preserves_each_native_agents_last_model_without_retaining_connection_intent(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let root = dir.path().join("receipts");
+        let manager = Manager { root: root.clone() };
+        for &app in APPS.iter().filter(|&&app| app != "codex") {
+            let path = dir.path().join(format!("{app}-native.json"));
+            let file = FileEdit::prepare(path.clone(), |value| {
+                value["syntheticRoute"] = json!("http://127.0.0.1:1");
+                Ok(())
+            })?;
+            let chosen = format!("vary-auto/second-{app}");
+            manager.install(Receipt {
+                app: app.into(),
+                token: "synthetic-token".into(),
+                model: chosen.clone(),
+                model_map: BTreeMap::new(),
+                visible_models: None,
+                files: vec![file],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+            manager.disconnect(app)?;
+            let reopened = Manager { root: root.clone() };
+            let status = reopened.status_with_desktop(app, |_, _| None)?;
+            assert_eq!(
+                status.model.as_deref(),
+                Some(chosen.as_str()),
+                "{app} remembered choice"
+            );
+            assert!(
+                !status.enabled && !status.configured && !status.recovery_pending,
+                "{app} stays disconnected"
+            );
+            assert!(!reopened.owns(app));
+            assert!(!path.exists());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn changed_owned_fields_are_never_overwritten() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
         let path = dir.path().join("client.json");
@@ -2051,7 +2170,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn explicit_reapply_does_not_guess_ownership_inside_a_changed_array() -> Result<(), String> {
+    fn explicit_reapply_accepts_a_changed_array_as_the_next_baseline() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
         let manager = Manager {
             root: dir.path().join("receipts"),
@@ -2073,12 +2192,18 @@ mod tests {
         })?;
         let changed = r#"[{"id":"shared"},{"id":"external"}]"#;
         fs::write(&path, changed).map_err(|_| FAILED)?;
-        assert_eq!(
-            manager.release_for_reapply("workbuddy"),
-            Err(CONFLICT.into())
-        );
+        manager.release_for_reapply("workbuddy")?;
         assert_eq!(read(&path)?.as_deref(), Some(changed));
-        assert!(manager.load("workbuddy")?.is_some());
+        assert!(manager.load("workbuddy")?.is_none());
+        assert!(fs::read_dir(&manager.root)
+            .map_err(|_| FAILED)?
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("workbuddy-reapply-recovery-")
+            }));
         Ok(())
     }
     fn fixture_menu() -> Menu {
@@ -2136,6 +2261,216 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn unrelated_route_publication_preserves_each_agents_explicit_selection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        struct Home(Option<std::ffi::OsString>);
+        impl Drop for Home {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let _home = Home(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+        crate::settings::reload_settings()?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let mut menu = fixture_menu();
+        let original = menu.default_model.clone().ok_or(FAILED)?;
+        let session = menu.groups.get(&original).ok_or(FAILED)?.clone();
+        for (id, name) in [("second", "Second group"), ("third", "Third group")] {
+            let mut group = session.group.clone();
+            group.id = id.into();
+            group.name = name.into();
+            let alias = group.alias();
+            menu.models.insert(
+                alias.clone(),
+                crate::proxy::intent::MenuModel {
+                    alias: alias.clone(),
+                    label: name.into(),
+                    description: "VaryAI routing group",
+                    order: menu.models.len(),
+                },
+            );
+            menu.groups.insert(
+                alias,
+                std::sync::Arc::new(crate::proxy::intent::Session {
+                    group,
+                    targets: session.targets.clone(),
+                    classifier: None,
+                    client: reqwest::Client::new(),
+                    created: std::time::Instant::now(),
+                    bindings: std::sync::Arc::default(),
+                }),
+            );
+        }
+        let chosen = "vary-auto/second";
+        let origin = "http://127.0.0.1:9";
+        for app in [
+            "claude",
+            "pi",
+            "gemini",
+            "opencode",
+            "grokbuild",
+            "openclaw",
+            "hermes",
+            "kimi",
+            "qwen",
+            "zcode",
+        ] {
+            let initial = manager.build(app, &menu, origin, &original)?;
+            manager.install(initial)?;
+            let selected = manager
+                .update(app, &menu, origin, Some(chosen))?
+                .ok_or(FAILED)?;
+            assert_eq!(
+                manager.status(app)?.model.as_deref(),
+                Some(chosen),
+                "{app} explicit model selection"
+            );
+            let mut revised = menu.clone();
+            revised.models.remove("vary-auto/third");
+            revised.groups.remove("vary-auto/third");
+            for publication in [&revised, &menu] {
+                let refreshed = manager.refresh(app, publication, origin)?.ok_or(FAILED)?;
+                assert_eq!(refreshed.model, chosen, "{app} refreshed selection");
+                assert_eq!(
+                    manager.status(app)?.model.as_deref(),
+                    Some(chosen),
+                    "{app} visible selection"
+                );
+                for (old, next) in selected.files.iter().zip(&refreshed.files) {
+                    for path in selection::paths(app) {
+                        let path = path.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+                        assert_eq!(
+                            at(&old.installed, &path),
+                            at(&next.installed, &path),
+                            "{app} native selection"
+                        );
+                    }
+                }
+            }
+            manager.disconnect(app)?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn explicit_connections_replace_changed_routes_for_all_native_agents(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        struct Home(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Home {
+            fn drop(&mut self) {
+                for (key, value) in self.0.drain(..) {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let keys = [
+            "CC_SWITCH_TEST_HOME",
+            "HERMES_HOME",
+            "LOCALAPPDATA",
+            "KIMI_CODE_HOME",
+            "QWEN_HOME",
+            "PI_CODING_AGENT_DIR",
+        ];
+        let _home = Home(
+            keys.into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect(),
+        );
+        for key in keys {
+            std::env::set_var(key, dir.path().join(key));
+        }
+        std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+        crate::settings::reload_settings()?;
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            json!({
+                "apiFormat":"openai_responses",
+                "auth":{"OPENAI_API_KEY":"synthetic-only"},
+                "config":"model_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'",
+                "modelCatalog":{"models":[{"model":"first"}]}
+            }),
+            None,
+        );
+        let menu = crate::services::intent_routing::menu::prepare(
+            std::sync::Arc::new(
+                crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                    dir.path().join("accounts"),
+                ),
+            ),
+            vec![provider],
+            vec![],
+            None,
+        )
+        .await?;
+        let selected = menu.default_model.as_deref().ok_or("fixture model")?;
+        for &app in APPS.iter().filter(|&&app| app != "codex") {
+            let manager = Manager {
+                root: dir.path().join(format!("receipts-{app}")),
+            };
+            manager.install(
+                manager
+                    .build(app, &menu, "http://127.0.0.1:1", selected)
+                    .map_err(|error| format!("{app} initial build: {error}"))?,
+            )?;
+            let old = manager.load(app)?.ok_or("receipt")?;
+            let mut changed = false;
+            for file in &old.files {
+                let before = read(&file.path)?.ok_or("installed file")?;
+                let edited = before.replace("http://127.0.0.1:1", "http://127.0.0.1:2");
+                if edited != before {
+                    fs::write(&file.path, edited)?;
+                    changed = true;
+                }
+            }
+            assert!(changed, "{app} fixture must change a route");
+            assert!(
+                manager.refresh(app, &menu, "http://127.0.0.1:3").is_err(),
+                "{app} passive refresh"
+            );
+            manager
+                .update(app, &menu, "http://127.0.0.1:3", Some(selected))
+                .map_err(|error| format!("{app} explicit connect: {error}"))?
+                .ok_or("connected receipt")?;
+            assert!(
+                manager.status_with_desktop(app, |_, _| None)?.configured,
+                "{app} explicit connection"
+            );
+            manager.disconnect(app)?;
+            assert!(manager.load(app)?.is_none(), "{app} restored connection");
+            // A stale catalog without a receipt is replaced by explicit enable, too.
+            manager.install(manager.build(app, &menu, "http://127.0.0.1:3", selected)?)?;
+            fs::remove_file(manager.path(app)?)?;
+            manager.install(
+                manager
+                    .build(app, &menu, "http://127.0.0.1:4", selected)
+                    .map_err(|error| format!("{app} stale catalog: {error}"))?,
+            )?;
+            assert!(
+                manager.status_with_desktop(app, |_, _| None)?.configured,
+                "{app} orphan replacement"
+            );
+            manager.disconnect(app)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn workbuddy_editions_connect_and_restore_independently(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -2188,6 +2523,61 @@ mod tests {
         assert!(manager.status("workbuddy-ai")?.enabled);
         manager.disconnect("workbuddy-ai")?;
         assert_eq!(fs::read_to_string(&paths[1])?, original);
+        // Enabling a connection replaces colliding native IDs and retains their
+        // original configuration in the receipt for disconnect restoration.
+        for (index, app) in ["workbuddy", "workbuddy-ai"].into_iter().enumerate() {
+            for array in [true, false] {
+                fs::write(&paths[index], "[]")?;
+                let stale = manager.build(app, &menu, "http://127.0.0.1:1", model)?;
+                let mut rows = stale.files[0]
+                    .installed
+                    .as_array()
+                    .ok_or("model array")?
+                    .clone();
+                if !array {
+                    rows[0]["vendor"] = json!("Synthetic original");
+                    rows[0]["apiKey"] = json!("synthetic-original");
+                    rows[0]["url"] = json!("https://synthetic.invalid/v1/chat/completions");
+                }
+                rows.push(json!({"id":"synthetic-unrelated","url":"https://synthetic.invalid/v1","apiKey":"synthetic-private"}));
+                let baseline = if array {
+                    json!(rows)
+                } else {
+                    json!({"models":rows,"availableModels":[rows[0]["id"],"synthetic-unrelated"],"custom":true})
+                };
+                let original_bytes = serde_json::to_vec(&baseline)?;
+                fs::write(&paths[index], &original_bytes)?;
+                assert!(manager.load(app)?.is_none());
+                let receipt = manager.build(app, &menu, "http://127.0.0.1:2", model)?;
+                let token = receipt.token.clone();
+                manager.install(receipt)?;
+                assert!(manager.status_with_desktop(app, |_, _| None)?.enabled);
+                let live: Value = serde_json::from_slice(&fs::read(&paths[index])?)?;
+                assert_eq!(live.is_array(), array);
+                let models = if array { &live } else { &live["models"] };
+                let models = models.as_array().ok_or("installed models")?;
+                assert_eq!(models.len(), rows.len());
+                let native = rows.last().ok_or("native row")?;
+                assert!(models.iter().any(|row| row == native));
+                assert!(models
+                    .iter()
+                    .filter(|row| row["id"] != "synthetic-unrelated")
+                    .all(|row| {
+                        row["apiKey"] == token
+                            && row["url"]
+                                == format!(
+                                    "http://127.0.0.1:2/connections/{app}/v1/chat/completions"
+                                )
+                    }));
+                if !array {
+                    assert_eq!(live["availableModels"], baseline["availableModels"]);
+                    assert_eq!(live["custom"], true);
+                }
+                manager.disconnect(app)?;
+                assert!(fs::read(&paths[index])? == original_bytes);
+            }
+            fs::write(&paths[index], original)?;
+        }
         crate::workbuddy_config::with_test_dir(paths[1].parent().ok_or("parent")?, || {
             assert!(
                 matches!(manager.build("workbuddy-ai", &menu, "http://127.0.0.1:1", model), Err(error) if error == CONFLICT)

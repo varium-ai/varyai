@@ -1,5 +1,15 @@
 use super::*;
 
+fn recovery_files(root: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    Ok(fs::read_dir(root)
+        .map_err(|_| FAILED)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| FAILED)?
+        .into_iter()
+        .filter(|entry| entry.path().is_file())
+        .collect())
+}
+
 fn install(manager: &Manager, path: &Path) -> Result<(), String> {
     let file = FileEdit::prepare_format(path.into(), Format::Cordis, |value| {
         crate::services::deepseek_harness::apply(
@@ -82,10 +92,11 @@ fn explicit_reapply_keeps_structural_client_saves_and_the_other_managers_disconn
         !clean.contains("https://native.invalid/"),
         "a removed native provider must not return"
     );
-    let backups = fs::read_dir(&manager.root)
-        .map_err(|_| FAILED)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| FAILED)?;
+    let backups = recovery_files(&manager.root)?;
+    assert_eq!(
+        manager.remembered_model("deepseek-harness").as_deref(),
+        Some("shared-model")
+    );
     assert_eq!(backups.len(), 1);
     assert_eq!(read(&backups[0].path())?.as_deref(), Some(damaged.as_str()));
     install(&manager, &path)?;
@@ -111,7 +122,7 @@ fn explicit_reapply_rewrites_changed_owned_fields() -> Result<(), String> {
         assert!(manager.status("deepseek-harness")?.recovery_pending);
         assert_eq!(read(&path)?.as_deref(), Some(damaged.as_str()));
         manager.release_for_reapply("deepseek-harness")?;
-        assert_eq!(fs::read_dir(&manager.root).map_err(|_| FAILED)?.count(), 1);
+        assert_eq!(recovery_files(&manager.root)?.len(), 1);
         let clean = crate::services::deepseek_harness::parse(&read(&path)?.ok_or(FAILED)?)?;
         assert_eq!(clean["providers"], json!({}));
         install(&manager, &path)?;
@@ -156,7 +167,7 @@ fn recovery_rejects_ambiguous_boundaries_and_invalid_documents() -> Result<(), S
         assert!(manager.release_for_reapply("deepseek-harness").is_err());
         assert_eq!(read(&path)?.as_deref(), Some(damaged.as_str()));
         assert!(manager.path("deepseek-harness")?.is_file());
-        assert_eq!(fs::read_dir(&manager.root).map_err(|_| FAILED)?.count(), 1);
+        assert_eq!(recovery_files(&manager.root)?.len(), 1);
     }
     Ok(())
 }

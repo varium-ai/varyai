@@ -419,3 +419,25 @@ it.each([false, true])(
     });
   },
 );
+
+it("captures another single Agent directly without entering multi-agent mode", async () => {
+  mount("claude");
+  fireEvent.click(await screen.findByRole("combobox"));
+  fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+  fireEvent.change(screen.getByLabelText(zh.profiles.bundle.singleAgent), {
+    target: { value: "pi" },
+  });
+  expect(
+    screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
+  ).not.toBeChecked();
+  fireEvent.change(screen.getByPlaceholderText(zh.profiles.namePlaceholder), {
+    target: { value: "Single Pi fixture" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
+  await waitFor(() =>
+    expect(profilesApi.captureBundle).toHaveBeenCalledWith(
+      "Single Pi fixture",
+      ["pi"],
+    ),
+  );
+});

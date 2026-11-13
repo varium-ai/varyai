@@ -19,6 +19,12 @@ impl CurrentTurn {
         Self { starts }
     }
 
+    pub(crate) fn is_historical_item(&self, root: &str, index: usize) -> bool {
+        self.starts
+            .iter()
+            .any(|(key, start)| *key == root && index < *start)
+    }
+
     pub(crate) fn is_historical(&self, location: &str) -> bool {
         self.starts.iter().any(|(key, start)| {
             location

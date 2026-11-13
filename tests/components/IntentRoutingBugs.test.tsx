@@ -166,3 +166,47 @@ it("shows an unavailable template's add action with its unmet requirement", asyn
   expect(actions.length).toBeGreaterThan(0);
   for (const action of actions) expect(action).toBeDisabled();
 });
+
+it.each([false, true])(
+  "reports JSON export outcome safely when download fails=%s",
+  async (failed) => {
+    const createUrl = vi.fn(() => "blob:synthetic-export");
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static createObjectURL = createUrl;
+        static revokeObjectURL = vi.fn();
+      },
+    );
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        expect(this.download).toBe("vary-routing-group-fixture.json");
+        if (failed) throw new Error("synthetic-private-export");
+      });
+    try {
+      mount();
+      await userEvent.click(
+        await screen.findByRole("button", {
+          name: "routingPage.more Synthetic group",
+        }),
+      );
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: "routingPage.export" }),
+      );
+      if (failed)
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          "intentRouting.failed",
+        );
+      else
+        expect(await screen.findByRole("status")).toHaveTextContent(
+          "routingPage.exportStarted",
+        );
+      expect(createUrl).toHaveBeenCalledWith(expect.any(Blob));
+      expect(click).toHaveBeenCalledOnce();
+      expect(document.body).not.toHaveTextContent("synthetic-private-export");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);

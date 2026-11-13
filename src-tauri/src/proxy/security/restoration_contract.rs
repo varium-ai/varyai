@@ -56,6 +56,7 @@ impl ProtocolPair {
 pub(super) enum IngressNamespace {
     Direct,
     Gateway,
+    Shared,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

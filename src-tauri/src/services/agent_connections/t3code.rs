@@ -1,5 +1,5 @@
 //! T3 Code uses an independent Codex instance, leaving existing logins intact.
-use super::{read, FileEdit, Format, Receipt, CONFLICT, FAILED};
+use super::{FileEdit, Format, Receipt, FAILED};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -21,25 +21,12 @@ pub(super) fn project(
     let home = settings.parent().ok_or(FAILED)?.join("varyai-codex");
     let config_path = home.join("config.toml");
     let catalog_path = home.join("models.json");
-    let current = Format::Toml.parse(read(&config_path)?.as_deref())?;
-    let owned = current
-        .pointer("/model_providers/varyai/experimental_bearer_token")
-        .and_then(Value::as_str)
-        == Some(receipt.token.as_str());
-    if !owned && (read(&config_path)?.is_some() || read(&catalog_path)?.is_some()) {
-        return Err(CONFLICT.into());
-    }
     let mut catalog = catalog.clone();
     let mut selected = String::new();
     let settings_edit = FileEdit::prepare(settings.to_path_buf(), |value| {
         if value.get("providers").is_some() {
             // Older T3 schemas need an explicit migration in T3 before integration.
             return Err(FAILED.into());
-        }
-        if let Some(existing) = value.pointer("/providerInstances/varyai") {
-            if !owned || existing.pointer("/config/homePath") != Some(&json!(home)) {
-                return Err(CONFLICT.into());
-            }
         }
         let visible = crate::services::intent_routing::client::aliases::project(
             &mut catalog,
@@ -132,7 +119,7 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::agent_connections::{read, Manager, Receipt, CONFLICT, FAILED};
+    use crate::services::agent_connections::{read, Manager, Receipt, FAILED};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -231,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn t3code_refuses_an_existing_provider_named_varyai_without_writing() -> Result<(), String> {
+    fn t3code_replaces_an_existing_varyai_provider_and_restores_it() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
         let settings = dir.path().join("settings.json");
         let source = r#"{"providerInstances":{"varyai":{"driver":"claude"}}}"#;
@@ -246,17 +233,20 @@ mod tests {
             suspended: false,
             applied_at_ms: None,
         };
-        assert_eq!(
-            project(
-                &settings,
-                &json!({"models":[]}),
-                "http://127.0.0.1:1/connections/t3code",
-                &mut receipt
-            ),
-            Err(CONFLICT.into())
-        );
+        project(
+            &settings,
+            &json!({"models":[{"slug":"example","display_name":"Synthetic model"}]}),
+            "http://127.0.0.1:1/connections/t3code",
+            &mut receipt,
+        )?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        manager.install(receipt)?;
+        let applied = super::super::parse(read(&settings)?.as_deref())?;
+        assert_eq!(applied["providerInstances"]["varyai"]["driver"], "codex");
+        manager.disconnect("t3code")?;
         assert_eq!(read(&settings)?.as_deref(), Some(source));
-        assert!(!dir.path().join("varyai-codex").exists());
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use super::{put, FileEdit, Format, Model, Receipt, CONFLICT, FAILED};
+use super::{put, FileEdit, Format, Model, Receipt, FAILED};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -125,12 +125,6 @@ fn set(value: &mut Value, path: &[&str], next: Value) -> Result<(), String> {
         Some(next),
     )
 }
-fn owned(value: Option<&Value>, token: &str, key: &str) -> Result<(), String> {
-    if value.is_some_and(|v| v[key].as_str() != Some(token)) {
-        return Err(CONFLICT.into());
-    }
-    Ok(())
-}
 fn edit(
     app: &str,
     path: PathBuf,
@@ -163,11 +157,7 @@ fn edit(
                 let mut desired = serde_json::Map::new();
                 for m in catalog {
                     let profile = m.name.clone();
-                    owned(
-                        value.get("model").and_then(|v| v.get(&profile)),
-                        token,
-                        "api_key",
-                    )?;
+
                     let backend = match m.api {
                         "openai-responses" => "responses",
                         "anthropic-messages" => "messages",
@@ -199,7 +189,6 @@ fn edit(
                 set(value, &["features", "campaigns"], json!(false))?;
             }
             "openclaw" => {
-                owned(value.pointer("/models/providers/varyai"), token, "apiKey")?;
                 let previous = value
                     .pointer("/models/providers/varyai/models")
                     .and_then(Value::as_array)
@@ -260,9 +249,6 @@ fn edit(
                 // Current Hermes reads named entries under providers, not custom_providers.
                 if let Some(rows) = value.get_mut("custom_providers") {
                     let rows = rows.as_array_mut().ok_or(FAILED)?;
-                    for row in rows.iter().filter(|row| row["name"] == "varyai") {
-                        owned(Some(row), token, "api_key")?;
-                    }
                     rows.retain(|row| row["name"] != "varyai");
                     if rows.is_empty() {
                         value
@@ -281,13 +267,6 @@ fn edit(
                     ("varyai", "chat_completions"),
                     ("varyai-anthropic", "anthropic_messages"),
                 ] {
-                    owned(
-                        value
-                            .get("providers")
-                            .and_then(|providers| providers.get(id)),
-                        token,
-                        "api_key",
-                    )?;
                     if id == "varyai-anthropic" && !split {
                         if let Some(providers) =
                             value.get_mut("providers").and_then(Value::as_object_mut)
@@ -346,7 +325,6 @@ fn edit(
                 super::put(value, &["model".into(), "base_url".into()], None)?;
             }
             "qoder" => {
-                owned(value.pointer("/providers/varyai"), token, "apiKey")?;
                 let mut config = client_config(catalog, base, token, selected);
                 if let Some(rows) = config["models"].as_array_mut() {
                     for row in rows {
@@ -363,29 +341,6 @@ fn edit(
                 set(value, &["providers", "varyai"], config)?;
             }
             "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
-                match app {
-                    "kimi" => owned(value.pointer("/providers/Vary AI"), token, "api_key")?,
-                    "qwen" => {
-                        if value
-                            .pointer("/env/VARYAI_shared_catalog_API_KEY")
-                            .is_some_and(|v| v.as_str() != Some(token))
-                        {
-                            return Err(CONFLICT.into());
-                        }
-                    }
-                    "zcode" => {
-                        for row in value
-                            .pointer("/config/providerConfigRules/providerRules")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter(|r| r["providerId"] == "varyai-shared-catalog")
-                        {
-                            owned(row.pointer("/config/access"), token, "apiKey")?;
-                        }
-                    }
-                    _ => {}
-                }
                 if app == "deepseek-harness" {
                     crate::services::deepseek_harness::project(
                         value, catalog, base, token, selected,

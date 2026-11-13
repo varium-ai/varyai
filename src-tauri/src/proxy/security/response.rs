@@ -6,6 +6,9 @@ use crate::app_config::AppType;
 use crate::proxy::error::ProxyError;
 
 fn blocked_message(reason: &str) -> String {
+    if reason == "dlp_unsupported_route" {
+        return "[Vary AI 安全审计] 当前规则要求「隐藏并本地还原」，但此请求路径暂不支持安全还原，因此请求已停止发送。请使用支持本地还原的请求路径，或在安全中心调整对应规则。".into();
+    }
     format!(
         "[Vary AI 安全审计] 检测到敏感数据，请求已被拦截\n{reason}\n当前处理方式为「拦截」，如需继续，请在安全审计设置中调整对应规则。"
     )

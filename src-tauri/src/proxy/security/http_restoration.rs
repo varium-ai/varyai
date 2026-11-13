@@ -595,6 +595,16 @@ impl DlpForwardError {
         self.into_app_response(&AppType::Codex)
     }
 
+    pub(crate) fn into_routed_app_response(self, app_type: &AppType) -> Response {
+        match self {
+            Self::RestoreUnsupported => {
+                Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint)
+            }
+            other => other,
+        }
+        .into_app_response(app_type)
+    }
+
     pub(crate) fn into_app_response(self, app_type: &AppType) -> Response {
         if let Self::RestoreFailedAt(stage) = self {
             super::restore_diagnostics::log_failure(self.code(), stage);
@@ -1146,6 +1156,118 @@ pub(super) mod route_scope_test_support {
     }
 }
 
+/// Authenticated shared routes use the existing actual-send and completion owners.
+/// This entry point grants no authority to ordinary gateway registrations or headers.
+pub(crate) fn admit_routed_http_request(
+    gateway: &RestorationGateway,
+    app: &AppType,
+    protocol: crate::proxy::protocol_bridge::Protocol,
+    endpoint: &str,
+    body: &mut Value,
+    headers: &HeaderMap,
+) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
+    use crate::proxy::protocol_bridge::Protocol;
+    let snapshot = admit_security_runtime()
+        .map_err(|_| crate::proxy::error::ProxyError::DlpForward(DlpForwardError::Unavailable))?;
+    let references = value_contains_any_token_reference(body).map_err(|error| {
+        crate::proxy::error::ProxyError::DlpForward(DlpForwardError::from_token_error(error))
+    })?;
+    if !snapshot.runtime.restoration_enabled() && !references {
+        return Ok(RestorationAdmission::Passthrough);
+    }
+    let budget = PayloadBudget::default();
+    let bounded =
+        CodexRequestCarriers::from_body_with_budget(body, budget.clone()).map_err(|error| {
+            crate::proxy::error::ProxyError::DlpForward(DlpForwardError::from_token_error(error))
+        })?;
+    let matched =
+        body_matches_any_restore_rule(body, &snapshot.runtime, &[], &budget).map_err(|error| {
+            crate::proxy::error::ProxyError::DlpForward(DlpForwardError::from_token_error(error))
+        })?;
+    drop(bounded);
+    if !matched && !references {
+        return Ok(RestorationAdmission::Passthrough);
+    }
+    let path = endpoint.split('?').next().unwrap_or(endpoint);
+    match protocol {
+        Protocol::Responses if path.ends_with("/responses") => {
+            let namespace = format!("shared:{}", app.as_str());
+            admit_http_request_for_actor(
+                gateway,
+                app,
+                true,
+                false,
+                false,
+                body,
+                headers,
+                Some(&namespace),
+            )
+        }
+        Protocol::Chat if path.ends_with("/chat/completions") => {
+            admit_routed_native_request(gateway, app, body, headers, protocol)
+        }
+        Protocol::Anthropic if path.ends_with("/messages") => {
+            admit_routed_native_request(gateway, app, body, headers, protocol)
+        }
+        Protocol::Gemini => {
+            use crate::proxy::handler_context::{
+                RequestIngress, RestorationFraming, RestorationOperation, RestorationRouteScope,
+            };
+            let scope = endpoint.parse::<http::Uri>().ok().map(|uri| {
+                RestorationRouteScope::gemini_endpoint(
+                    RequestIngress::Direct,
+                    &http::Method::POST,
+                    &uri,
+                )
+            });
+            if scope.is_some_and(|scope| {
+                matches!(
+                    (scope.operation, scope.framing),
+                    (
+                        RestorationOperation::GenerateContent,
+                        RestorationFraming::Json
+                    ) | (
+                        RestorationOperation::StreamGenerateContent,
+                        RestorationFraming::Sse
+                    )
+                )
+            }) {
+                admit_routed_native_request(gateway, app, body, headers, protocol)
+            } else {
+                Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::RestoreUnsupported.into_routed_app_response(app),
+                ))
+            }
+        }
+        _ => Ok(RestorationAdmission::Intercepted(
+            DlpForwardError::RestoreUnsupported.into_routed_app_response(app),
+        )),
+    }
+}
+
+fn admit_routed_native_request(
+    gateway: &RestorationGateway,
+    app: &AppType,
+    body: &mut Value,
+    headers: &HeaderMap,
+    protocol: crate::proxy::protocol_bridge::Protocol,
+) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
+    let mut admission = native_chat::admit_routed(gateway, app, body, headers, protocol)?;
+    if let RestorationAdmission::Admitted(request) = &mut admission {
+        match PendingRequestAudit::capture_refusal(
+            body,
+            &request.runtime,
+            request.authority.budget(),
+        ) {
+            Ok(summary) => request.initial_audit = std::sync::Arc::new(summary),
+            Err(_) => {
+                log::warn!("[SecurityAudit] stage=routed_summary category=unavailable")
+            }
+        }
+    }
+    Ok(admission)
+}
+
 /// Admit only the existing Responses cells from trusted handler-owned scope.
 /// Native and unsupported cells retain ordinary inspection, never namespace authority.
 pub(crate) fn admit_http_request_with_scope(
@@ -1254,8 +1376,31 @@ pub(crate) fn admit_http_request(
     body: &mut Value,
     headers: &HeaderMap,
 ) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
-    let is_supported_codex =
-        matches!(app_type, AppType::Codex) && endpoint_supported_codex_responses;
+    admit_http_request_for_actor(
+        gateway,
+        app_type,
+        endpoint_supported_codex_responses,
+        endpoint_is_compact,
+        native_direct_scope,
+        body,
+        headers,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_http_request_for_actor(
+    gateway: &RestorationGateway,
+    app_type: &AppType,
+    endpoint_supported_codex_responses: bool,
+    endpoint_is_compact: bool,
+    native_direct_scope: bool,
+    body: &mut Value,
+    headers: &HeaderMap,
+    responses_actor: Option<&str>,
+) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
+    let is_supported_codex = (matches!(app_type, AppType::Codex) || responses_actor.is_some())
+        && endpoint_supported_codex_responses;
     let gateway_state = gateway.state();
     let reference_budget = match &gateway_state {
         Ok(Some(state)) => state.budget.clone(),
@@ -1317,7 +1462,7 @@ pub(crate) fn admit_http_request(
         Some(
             RequestAuthority::admit_responses(
                 &gw_state.store,
-                "codex",
+                responses_actor.unwrap_or("codex"),
                 extract_codex_restoration_session_id(headers, body),
                 snapshot.restoration_policy_revision,
                 gw_state.budget.clone(),
@@ -1726,6 +1871,111 @@ impl DlpResponseNamespaceTable {
 }
 
 impl DlpHttpRequest {
+    /// Canonical classifier input has no response-restoration channel. Hide it independently
+    /// while retaining the untouched request for the actual-send owner below.
+    pub(crate) fn routing_projection(
+        &self,
+        body: &Value,
+    ) -> Result<(Value, DlpSourceBodyOwner), DlpForwardError> {
+        if body.get("messages").is_some() || body.get("contents").is_some() {
+            return Err(DlpForwardError::RestoreUnsupported);
+        }
+        use super::request_plan::{plan_request_with_budget, PlanField, SpanMatch};
+        let result = (|| -> Result<(Value, DlpSourceBodyOwner), PlanError> {
+            let budget = self.authority.budget();
+            let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
+            let mut logical = PayloadVec::new(budget.clone())?;
+            let mut protective_block = false;
+            carriers.visit(|leaf| {
+                let mut matches = PayloadVec::new(budget.clone())?;
+                for found in detect_spans_with_budget(
+                    leaf.text,
+                    leaf.is_password_field,
+                    &self.runtime,
+                    budget.clone(),
+                )?
+                .as_slice()
+                {
+                    if found.range.is_empty() {
+                        protective_block |= found.action == EffectiveAction::Block;
+                        continue;
+                    }
+                    matches.push(SpanMatch {
+                        range: found.range.clone(),
+                        category: found.category,
+                        action: if found.action == EffectiveAction::Restore {
+                            EffectiveAction::Redact
+                        } else {
+                            found.action
+                        },
+                    })?;
+                }
+                logical.push((leaf, matches))
+            })?;
+            if protective_block {
+                return Err(PlanError::Blocked);
+            }
+            let mut fields = PayloadVec::new(budget.clone())?;
+            for (leaf, matches) in logical.as_slice() {
+                fields.push(PlanField {
+                    text: leaf.text,
+                    writable: leaf.writable,
+                    matches: matches.as_slice(),
+                })?;
+            }
+            let plan = plan_request_with_budget(fields.as_slice(), &[], budget.clone())?;
+            let texts = super::request_transaction::build_candidate(
+                fields.as_slice(),
+                plan.as_slice(),
+                &[],
+                &budget,
+            )?;
+            let candidate = carriers.rewrite_candidate(body, |leaf| {
+                let text = texts
+                    .as_slice()
+                    .get(leaf.id)
+                    .ok_or(TokenError::RedactionFailed)?;
+                Ok((text.as_str() != leaf.text).then_some(text.as_str()))
+            })?;
+            let remaining =
+                CodexRequestCarriers::from_body_with_budget(candidate.as_value(), budget.clone())?;
+            remaining.visit(|leaf| {
+                if detect_spans_with_budget(
+                    leaf.text,
+                    leaf.is_password_field,
+                    &self.runtime,
+                    budget.clone(),
+                )?
+                .as_slice()
+                .iter()
+                .any(|found| {
+                    matches!(
+                        found.action,
+                        EffectiveAction::Redact | EffectiveAction::Restore | EffectiveAction::Block
+                    )
+                }) {
+                    return Err(TokenError::RedactionFailed);
+                }
+                Ok(())
+            })?;
+            let (value, reservation) = candidate.into_parts();
+            Ok((
+                value,
+                DlpSourceBodyOwner {
+                    #[cfg(test)]
+                    _probe: source_copy_test_support::OwnerProbe::new(reservation.bytes()),
+                    _reservation: reservation,
+                },
+            ))
+        })()
+        .map_err(DlpForwardError::from_plan_error);
+        if result.is_err() {
+            self.audit_state
+                .record_refusal(&self.initial_audit, "", None);
+        }
+        result
+    }
+
     pub(crate) fn is_native_chat(&self) -> bool {
         self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Chat)
     }
@@ -4565,6 +4815,86 @@ pub(super) mod mapping_copy_test_support {
 mod private_correctness_tests {
     use super::*;
 
+    #[test]
+    #[serial_test::serial]
+    fn shared_responses_keep_actor_and_direct_namespaces_separate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _runtime = super::super::unified_test_support::ResponsesFixture::new();
+        let mut runtime = (*super::super::runtime::get_security_runtime()).clone();
+        runtime.builtin_action_overrides.insert(
+            "chinese_phone_number".into(),
+            super::super::AuditAction::RedactRestore,
+        );
+        super::super::runtime::set_security_runtime_for_test(runtime);
+        let gateway = RestorationGateway::new_default();
+        let body = json!({"input":"Synthetic contact 13800001234"});
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "session-id",
+            HeaderValue::from_static("synthetic-same-session"),
+        );
+        let mut namespaces = std::collections::BTreeSet::new();
+        let direct = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            false,
+            &mut body.clone(),
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("direct synthetic admission failed".into()),
+        };
+        let namespace = |request: &DlpHttpRequest| {
+            request
+                .authority
+                .lease()
+                .history_binding_for_test(
+                    "synthetic-provider",
+                    "openai_responses",
+                    "https://synthetic.invalid/responses",
+                    Some("synthetic-principal"),
+                )
+                .map(|binding| binding.namespace)
+                .ok_or("binding missing")
+        };
+        namespaces.insert(namespace(&direct)?);
+        for app in [AppType::Codex, AppType::Pi, AppType::WorkBuddyAi] {
+            let routed = match admit_routed_http_request(
+                &gateway,
+                &app,
+                crate::proxy::protocol_bridge::Protocol::Responses,
+                "/v1/responses",
+                &mut body.clone(),
+                &headers,
+            )? {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("shared synthetic admission failed".into()),
+            };
+            assert!(
+                namespaces.insert(namespace(&routed)?),
+                "Agent and ingress namespaces must be distinct"
+            );
+        }
+        assert!(
+            !matches!(
+                admit_http_request(
+                    &gateway,
+                    &AppType::Pi,
+                    true,
+                    false,
+                    false,
+                    &mut body.clone(),
+                    &headers
+                )?,
+                RestorationAdmission::Admitted(_)
+            ),
+            "ordinary route flags cannot acquire shared authority"
+        );
+        Ok(())
+    }
+
     fn source_copy_request(budget: PayloadBudget) -> DlpHttpRequest {
         let store = DlpTokenStore::new();
         let request_body = json!({"input":"synthetic source copy", "nested":["quoted\nvalue"]});
@@ -5330,6 +5660,33 @@ mod private_correctness_tests {
     }
 
     #[test]
+    fn routed_classifier_projection_obeys_the_request_budget() {
+        let budget = PayloadBudget::with_limit(1024 * 1024);
+        let request = source_copy_request(budget.clone());
+        let before = budget.used();
+        let fill = budget
+            .reserve(budget.limit() - before)
+            .expect("fill budget");
+        assert!(matches!(
+            request.routing_projection(request.source_body.as_value()),
+            Err(DlpForwardError::CapacityExceeded)
+        ));
+        assert_eq!(budget.used(), budget.limit());
+        drop(fill);
+        let (projection, owner) = request
+            .routing_projection(request.source_body.as_value())
+            .expect("bounded projection");
+        assert!(budget.used() > before);
+        assert_eq!(projection, *request.source_body.as_value());
+        drop(projection);
+        assert!(budget.used() > before);
+        drop(owner);
+        assert_eq!(budget.used(), before);
+        drop(request);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
     fn private_source_copy_has_distinct_prebuild_charge() {
         use super::super::payload_json::test_support::{self, Action, Phase};
         use std::{cell::Cell, rc::Rc};
@@ -6013,6 +6370,11 @@ mod private_production_activation_tests {
         let _reset = Reset(previous);
         for (id, text, prefix) in [
             ("chinese_phone_number", "13800138000", "rredact-cn_phone-"),
+            (
+                "chinese_id_card",
+                "110101199001010015",
+                "rredact-cn_id_card-",
+            ),
             (
                 "catalog:generic-sk-key-notice",
                 "sk-syntheticfixture",

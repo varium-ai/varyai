@@ -66,6 +66,28 @@ impl RequestAuthority {
         })
     }
 
+    pub(super) fn admit_shared_native(
+        store: &DlpTokenStore,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+        budget: PayloadBudget,
+        client: super::restoration_contract::ClientProtocol,
+    ) -> Result<Self, TokenError> {
+        Ok(Self {
+            lease: store.admit_scoped_published_policy(
+                super::restoration_contract::ContinuityScope::Native {
+                    client,
+                    ingress: super::restoration_contract::IngressNamespace::Shared,
+                },
+                app,
+                session,
+                policy_revision,
+            )?,
+            budget,
+        })
+    }
+
     pub(super) fn admit_native_chat(
         store: &DlpTokenStore,
         app: &str,

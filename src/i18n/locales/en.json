@@ -2746,6 +2746,7 @@
   "profiles": {
     "bundle": {
       "create": "Multi-agent profile",
+      "singleAgent": "Agent to save",
       "chooseAgents": "Select agents to save",
       "captureCurrentHint": "Save the current {{app}} provider, model settings and supported resources. Enable Multi-agent profile to include the agents currently selected in the main window.",
       "captureHint": "Save providers, model settings and lists, plus MCP, Skills and instructions supported by each selected agent. Account credentials are not copied into profiles.",
@@ -5116,6 +5117,7 @@
     "sameAsHint": "Treat this model as the specified model when finding groups and filling missing catalog facts. The upstream model ID stays unchanged."
   },
   "agentConnections": {
+    "conflict": "The Agent configuration conflicts with the saved connection or another connection. Check for external changes and overlapping configuration directories, then retry. Existing settings have been preserved.",
     "cursorLocalHint": "Requires Cursor Private Inference. Quit and reopen after connecting. A gateway saved in Cursor takes priority over these environment defaults.",
     "cursorCliHint": "Manages Cursor’s native model selection. CLI requests continue through Cursor’s service.",
     "cursorAuto": "Auto · Cursor native",
@@ -6015,6 +6017,8 @@
     "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export."
   },
   "agentRewards": {
+    "noActivity": "No active campaign",
+    "nativeAccountManagement": "Only the current official client account is available here. Add or switch accounts in the official client, then refresh. Adding separate accounts in VaryAI is not supported yet.",
     "readNative": "Read client login",
     "nativeAccessHint": "A local Qoder CN login was detected. Reading it may require macOS Keychain permission; this does not sign in again.",
     "sources": {

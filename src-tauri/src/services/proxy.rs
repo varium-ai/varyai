@@ -3218,6 +3218,14 @@ impl ProxyService {
             if let Some(previous) = self.intent_runtime.menu_snapshot()? {
                 menu.preserve_from(&previous);
             }
+            let selected = selected.or_else(|| {
+                if !consent || self.intent_runtime.menu_active() {
+                    return None;
+                }
+                self.agent_connections
+                    .remembered_model("codex")
+                    .filter(|alias| menu.groups.contains_key(alias))
+            });
             if selected
                 .as_ref()
                 .is_some_and(|alias| !menu.groups.contains_key(alias))
@@ -3318,7 +3326,7 @@ impl ProxyService {
             if !native::signed_in(manager.config_path()).unwrap_or(was_native) {
                 return Err("unsupported");
             }
-            if !reapply && doc.get("openai_base_url").is_some() && !was_native {
+            if !reapply && !reconnect && doc.get("openai_base_url").is_some() && !was_native {
                 return Err("reconnect_required");
             }
             runtime
@@ -6892,6 +6900,205 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn codex_shared_profile_roundtrip_restores_the_selection_and_owned_receipt(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tokio::task::spawn_blocking(|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            use super::super::{
+                agent_connections, profile_bundle,
+                routing_upstreams::{RoutingUpstream, UpstreamSource},
+            };
+            let _home = TempHome::new();
+            crate::settings::reload_settings()?;
+            let db = Arc::new(Database::memory()?);
+            futures::executor::block_on(use_ephemeral_proxy_port(&db));
+            db.save_routing_upstream(RoutingUpstream {
+                notes: None,
+                icon: None,
+                transport: None,
+                schema_version: 1,
+                preset_id: None,
+                region: None,
+                codex_settings: None,
+                id: String::new(),
+                name: "Profile fixture".into(),
+                revision: 0,
+                has_api_key: false,
+                enabled: true,
+                source: UpstreamSource::Api {
+                    catalog: vec![],
+                    mode: crate::services::codex_provider::ModelMode::Picked,
+                    groups_only: false,
+                    base_url: "https://synthetic.invalid/v1".into(),
+                    api_key: Some("synthetic-profile-secret".into()),
+                    api_format: "openai_responses".into(),
+                    models: vec![json!({"model":"fixture-a"}), json!({"model":"fixture-b"})],
+                    auth_type: None,
+                },
+            })?;
+            let state = crate::store::AppState::new(db);
+            let service = &state.proxy_service;
+            let info = futures::executor::block_on(service.start())?;
+            let menu = service
+                .intent_runtime
+                .global_snapshot()?
+                .ok_or("missing menu")?;
+            let models = agent_connections::models(&menu);
+            let model_a = &models[0].id;
+            let model_b = &models[1].id;
+            let origin = format!("http://127.0.0.1:{}", info.port);
+
+            let select = |model: &str| -> Result<(), String> {
+                service.intent_client.activate_menu_with_selection(
+                    menu.clone(),
+                    &format!("{origin}/intent/v1"),
+                    None,
+                    true,
+                    Some(model),
+                )?;
+                service
+                    .agent_connections
+                    .set_codex_intent(Some(model), true)
+            };
+            select(model_a)?;
+            assert!(profile_bundle::agents(&state)?
+                .iter()
+                .any(|agent| agent.app == AppType::Codex && agent.available));
+            let saved = profile_bundle::ProfileBundleService::capture(
+                &state,
+                "Codex shared fixture",
+                &["codex".into()],
+                None,
+            )?;
+            let payload: serde_json::Value = serde_json::from_str(&saved.payload)?;
+            assert_eq!(
+                payload["bundle"]["selections"][0]["connection"]["model"],
+                *model_a
+            );
+            assert!(!saved.payload.contains("synthetic-profile-secret"));
+            assert!(!saved.payload.contains("127.0.0.1"));
+            assert!(state.db.get_all_providers("codex")?.is_empty());
+            let saved_wire: toml::Value =
+                std::fs::read_to_string(service.intent_client.config_path())?.parse()?;
+            let saved_wire = saved_wire["model"]
+                .as_str()
+                .ok_or("missing saved wire model")?
+                .to_owned();
+            select(model_b)?;
+            let config = service.intent_client.config_path();
+            let before = std::fs::read(config)?;
+            let receipt_path = config.with_file_name("intent-routing-client.json");
+            let receipt_before = std::fs::read(&receipt_path)?;
+            let token = service
+                .intent_runtime
+                .menu_snapshot()?
+                .ok_or("missing active menu")?
+                .token
+                .clone();
+            assert!(!saved.payload.contains(&token));
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert_eq!(preview.changes[0].current_provider, "Vary AI");
+            assert_eq!(preview.changes[0].target_provider, "Vary AI");
+            assert_eq!(
+                preview.changes[0].current_models,
+                vec![models[1].name.clone()]
+            );
+            assert_eq!(preview.changes[0].models, vec![models[0].name.clone()]);
+            let mut external: toml_edit::DocumentMut = std::fs::read_to_string(config)?.parse()?;
+            external["theme"] = toml_edit::value("synthetic-external-edit");
+            std::fs::write(config, external.to_string())?;
+            assert!(profile_bundle::ProfileBundleService::apply(
+                &state,
+                &saved.id,
+                &preview.revision
+            )
+            .is_err());
+            std::fs::write(config, &before)?;
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let result =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(result.success);
+            assert_eq!(
+                service.intent_client.selected_model()?.as_ref(),
+                Some(model_a)
+            );
+            assert_eq!(
+                service.agent_connections.codex_intent()?,
+                Some(Some(model_a.clone()))
+            );
+            assert!(service.intent_client.status()?.enabled);
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                result.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            assert_eq!(
+                service.intent_client.selected_model()?.as_ref(),
+                Some(model_b)
+            );
+            assert_eq!(
+                service.agent_connections.codex_intent()?,
+                Some(Some(model_b.clone()))
+            );
+            assert!(
+                std::fs::read(config)? == before,
+                "Codex configuration must be restored"
+            );
+            assert!(
+                std::fs::read(receipt_path)? == receipt_before,
+                "Codex ownership receipt must be restored"
+            );
+            assert!(
+                service
+                    .intent_runtime
+                    .menu_snapshot()?
+                    .ok_or("missing restored menu")?
+                    .token
+                    == token,
+                "Codex runtime authority must match the restored receipt"
+            );
+            assert!(service.intent_client.status()?.enabled);
+            assert!(state.db.get_all_providers("codex")?.is_empty());
+            // Old bundles captured a native supplier and wire alias even for a shared connection.
+            let mut legacy = saved.clone();
+            let mut payload: serde_json::Value = serde_json::from_str(&legacy.payload)?;
+            let selection = &mut payload["bundle"]["selections"][0];
+            selection["connection"] = serde_json::Value::Null;
+            selection["providerId"] = json!("synthetic-deleted-legacy-supplier");
+            selection["models"] = json!({"model":saved_wire,"model_reasoning_effort":"none"});
+            legacy.payload = payload.to_string();
+            state.db.save_profile(&legacy)?;
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &legacy.id)?;
+            assert!(preview.skipped.is_empty());
+            assert_eq!(preview.changes[0].target_provider, "Vary AI");
+            assert_eq!(preview.changes[0].models, vec![models[0].name.clone()]);
+            let applied =
+                profile_bundle::ProfileBundleService::apply(&state, &legacy.id, &preview.revision)?;
+            assert!(applied.success);
+            assert_eq!(
+                service.intent_client.selected_model()?.as_ref(),
+                Some(model_a)
+            );
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                applied.undo_id.as_deref().ok_or("missing legacy undo")?,
+            )?;
+            assert_eq!(
+                service.intent_client.selected_model()?.as_ref(),
+                Some(model_b)
+            );
+            payload["bundle"]["selections"][0]["models"]["model"] =
+                json!("synthetic-unregistered-model");
+            legacy.payload = payload.to_string();
+            state.db.save_profile(&legacy)?;
+            let missing = profile_bundle::ProfileBundleService::preview(&state, &legacy.id)?;
+            assert!(missing.changes.is_empty());
+            assert_eq!(missing.skipped.len(), 1);
+            futures::executor::block_on(service.stop())?;
+            Ok(())
+        })
+        .await?
+    }
     // Profile commands run on a blocking pool while gateway tasks keep progressing.
     #[tokio::test]
     #[serial]
@@ -7387,10 +7594,11 @@ mod tests {
         edited["theme"] = toml_edit::value("keep-external");
         std::fs::write(&codex, edited.to_string())?;
         assert!(!service.intent_client.status()?.configuration_owned);
-        assert!(service
+        service
             .connect_codex_agent(true, false, Some(model.clone()))
             .await
-            .is_err());
+            .map_err(|error| format!("synthetic Codex explicit reconnect: {error}"))?;
+        assert!(service.intent_client.status()?.configuration_owned);
         service
             .reapply_agent_connection("codex")
             .await
@@ -7505,9 +7713,23 @@ mod tests {
                 format!("http://127.0.0.1:{}/intent/v1", info.port),
             )
             .await?;
-        service.agent_connections.set_codex_intent(None, true)?;
+        let chosen = service
+            .intent_client
+            .selected_model()?
+            .ok_or("fixture selected model")?;
+        service
+            .agent_connections
+            .set_codex_intent(Some(&chosen), true)?;
         service.disconnect_codex_agent().await?;
         service.agent_connections.set_codex_intent(None, false)?;
+        assert_eq!(service.agent_connections.codex_intent()?, None);
+        assert_eq!(
+            service
+                .agent_connections
+                .remembered_model("codex")
+                .as_deref(),
+            Some(chosen.as_str())
+        );
         service.stop().await?;
         crate::restore_proxy_state_on_startup(&state).await;
         assert!(!service.is_running().await);
@@ -7624,7 +7846,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn native_codex_unowned_url_keeps_custom_menu_without_overwriting_native_field() {
+    async fn native_codex_explicit_enable_replaces_previous_url_and_restores_it() {
         let _environment = NativeTestEnvironment::isolated();
         // The gateway process environment is not the separately running Codex client's.
         env::set_var("OPENAI_BASE_URL", "https://synthetic-launcher.example/v1");
@@ -7634,9 +7856,12 @@ mod tests {
             native_lifecycle_auth("synthetic-user", "synthetic-token"),
         );
         service
-            .activate_codex_groups(
+            .activate_codex_groups_inner(
                 synthetic_codex_menu(),
                 "http://127.0.0.1:32123/intent/v1".into(),
+                false,
+                None,
+                false,
             )
             .await
             .expect("custom activation");
@@ -7656,10 +7881,11 @@ mod tests {
                 "http://127.0.0.1:32123/intent/v1".into(),
                 true,
                 None,
-                true,
+                false,
             )
             .await
-            .expect("explicit native reapply");
+            .expect("explicit native connection");
+        assert_eq!(service.intent_runtime.native.status(), "pending");
         let applied: toml::Value = std::fs::read_to_string(&config)
             .expect("applied config")
             .parse()

@@ -136,7 +136,9 @@ impl TraeBridge<'_> {
                     .is_some_and(|o| !delivered || o.selection_pending)
                     .then_some(RecoveryReason::BridgePending)
             },
-            model: outbox.and_then(|o| o.model),
+            model: outbox
+                .and_then(|o| o.model)
+                .or_else(|| self.manager.remembered_model(self.edition.app())),
             restart_required: desktop_restart,
             reload_state: None,
             desktop_state,
@@ -192,10 +194,13 @@ impl TraeBridge<'_> {
         if !enabled && old.is_none() {
             return Ok(());
         }
-        let selected = model.or_else(|| old.as_ref().and_then(|o| o.model.clone()));
-        let delivered = enabled && old.as_ref().is_some_and(|o| o.enabled && o.delivered);
-        let configuration_changed =
-            enabled && old.as_ref().is_some_and(|o| o.configuration_changed);
+        let selected = model
+            .or_else(|| old.as_ref().and_then(|o| o.model.clone()))
+            .or_else(|| self.manager.remembered_model(self.edition.app()));
+        let delivered = enabled
+            && old
+                .as_ref()
+                .is_some_and(|o| o.enabled && o.delivered && !o.configuration_changed);
         self.bridge_save(&Outbox {
             enabled,
             token: old.as_ref().map(|o| o.token.clone()).unwrap_or_else(|| {
@@ -208,10 +213,13 @@ impl TraeBridge<'_> {
             provider: old.and_then(|o| o.provider),
             delivered,
             selection_pending: enabled && selected.is_some(),
-            configuration_changed,
+            configuration_changed: false,
             model_write_failed: false,
-            model: selected,
-        })
+            model: selected.clone(),
+        })?;
+        self.manager
+            .remember_model(self.edition.app(), selected.as_deref());
+        Ok(())
     }
     pub(crate) fn bridge_retry(&self) -> Result<(), String> {
         let mut outbox = self.bridge_load()?.ok_or(CONFLICT)?;
@@ -654,6 +662,47 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn disconnected_trae_editions_remember_their_model_after_outbox_cleanup() -> Result<(), String>
+    {
+        use crate::services::trae_bridge::shared::Edition;
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().into(),
+        };
+        for (edition, model) in [
+            (Edition::China, "vary-auto/china-second"),
+            (Edition::International, "vary-auto/international-second"),
+        ] {
+            let bridge = manager.bridge_for(edition);
+            bridge.bridge_select_model(true, Some(model.into()))?;
+            bridge.bridge_select(false)?;
+            bridge.bridge_sync_with(
+                None,
+                "http://127.0.0.1:1",
+                false,
+                |_| Ok(()),
+                || Ok(()),
+                |_| Ok(()),
+                |_| Some(true),
+            )?;
+            let reopened = Manager {
+                root: dir.path().into(),
+            };
+            let bridge = reopened.bridge_for(edition);
+            let status = bridge.bridge_status_with_desktop(None, |_, _| None)?;
+            assert_eq!(status.model.as_deref(), Some(model));
+            assert!(!status.enabled && !status.configured && !status.recovery_pending);
+            assert!(!bridge.bridge_owned());
+            bridge.bridge_select(true)?;
+            assert_eq!(
+                bridge.bridge_load()?.ok_or(FAILED)?.model.as_deref(),
+                Some(model)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn editions_keep_shared_catalog_intentions_separate() -> Result<(), String> {
         use crate::services::trae_bridge::shared::Edition;
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
@@ -675,6 +724,18 @@ mod tests {
             international.bridge_status()?.model.as_deref(),
             Some("synthetic-global-model")
         );
+        for bridge in [&china, &international] {
+            let mut outbox = bridge.bridge_load()?.ok_or(FAILED)?;
+            outbox.delivered = true;
+            outbox.configuration_changed = true;
+            bridge.bridge_save(&outbox)?;
+            bridge.bridge_select_model(true, None)?;
+            let reapplied = bridge.bridge_load()?.ok_or(FAILED)?;
+            assert!(reapplied.enabled);
+            assert!(!reapplied.delivered);
+            assert!(!reapplied.configuration_changed);
+            assert!(reapplied.selection_pending);
+        }
         international.bridge_select(false)?;
         assert!(china.bridge_enabled());
         assert!(!international.bridge_enabled());

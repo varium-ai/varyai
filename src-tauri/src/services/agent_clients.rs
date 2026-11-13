@@ -544,7 +544,13 @@ impl Document {
             "kimi" => {
                 object(&mut self.value, "providers")?;
                 object(&mut self.value, "models")?;
-                let previous_key = self.kimi_provider_key(id);
+                let previous_key = if id == "shared-catalog"
+                    && self.value["providers"].get(name.trim()).is_some()
+                {
+                    name.trim().to_owned()
+                } else {
+                    self.kimi_provider_key(id)
+                };
                 self.rename_kimi_provider(&previous_key, name)?;
                 let provider_name = name.trim();
                 let protocol = match config["protocol"].as_str() {
@@ -573,9 +579,10 @@ impl Document {
                     } else {
                         format!("{key}-{wire}")
                     };
-                    if self.value["models"]
-                        .get(&alias)
-                        .is_some_and(|entry| entry["provider"] != provider_name)
+                    if id != "shared-catalog"
+                        && self.value["models"]
+                            .get(&alias)
+                            .is_some_and(|entry| entry["provider"] != provider_name)
                     {
                         return Err(invalid());
                     }

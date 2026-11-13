@@ -242,7 +242,18 @@ export function AgentConnectionsPage({
   >({});
   const operationLocks = useRef(new Set<AppId>());
   const busy = Object.keys(operations).length > 0;
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<AppId, string>>>({});
+  function setError(app: AppId, error: string | null) {
+    setErrors((current) => ({ ...current, [app]: error ?? undefined }));
+  }
+  function errorMessage(app: AppId | null) {
+    const error = app ? errors[app] : undefined;
+    return error ? (
+      <p role="alert" className="text-sm text-destructive break-words">
+        {t(error)}
+      </p>
+    ) : null;
+  }
   const moreTools = useRef<HTMLDetailsElement>(null);
   const emptyTitleId = useId();
   const [expanded, setExpanded] = useState<AppId | null>(null);
@@ -321,12 +332,16 @@ export function AgentConnectionsPage({
   }
   async function reapply(app: AppId) {
     if (!beginOperation(app, "reapplying")) return;
-    setError(null);
+    setError(app, null);
     try {
       await agentConnectionsApi.reapply(app);
     } catch (cause) {
       setError(
-        cause === "agentConnections.noModels"
+        app,
+        typeof cause === "string" &&
+          ["agentConnections.noModels", "agentConnections.conflict"].includes(
+            cause,
+          )
           ? cause
           : "agentConnections.failed",
       );
@@ -341,17 +356,32 @@ export function AgentConnectionsPage({
     model = selected || catalog.data?.[0]?.id || null,
   ) {
     if (!beginOperation(app, enabled ? "connecting" : "disconnecting")) return;
-    setError(null);
+    setError(app, null);
     try {
       await agentConnectionsApi.set(app, enabled, enabled ? model : null);
+      if (enabled) {
+        toast.success(
+          `${name(app)}: ${t(
+            needsModelControl(app) || app === "claude-desktop" || isTrae(app)
+              ? "agentConnections.restartHint"
+              : "agentConnections.sessionHint",
+          )}`,
+          { closeButton: true, duration: 8000 },
+        );
+      }
       setSetup((current) => (current === app ? null : current));
       setPicking((current) => (current === app ? null : current));
       setDisconnecting((current) => (current === app ? null : current));
       return true;
     } catch (cause) {
       setError(
-        enabled && cause === "agentConnections.conflict"
-          ? "agentConnections.conflict"
+        app,
+        enabled &&
+          typeof cause === "string" &&
+          ["agentConnections.conflict", "agentConnections.noModels"].includes(
+            cause,
+          )
+          ? cause
           : "agentConnections.failed",
       );
       return false;
@@ -365,7 +395,7 @@ export function AgentConnectionsPage({
       const control =
         modelControls[modelControlApps.findIndex((known) => known === app)];
       if (control.isPending || control.isError) {
-        setError("agentConnections.modelControlUnavailable");
+        setError(app, "agentConnections.modelControlUnavailable");
         return;
       }
       if (!control.data?.authorized) {
@@ -382,14 +412,14 @@ export function AgentConnectionsPage({
     if (!modelControlRequest || authorizingModel) return;
     const { app, model } = modelControlRequest;
     setAuthorizingModel(true);
-    setError(null);
+    setError(app, null);
     try {
       await agentConnectionsApi.authorizeModelControl(app, true);
       if (await apply(app, true, model)) {
         setModelControlRequest(null);
       }
     } catch {
-      setError("agentConnections.modelControlUnavailable");
+      setError(app, "agentConnections.modelControlUnavailable");
     } finally {
       setAuthorizingModel(false);
       refreshConnectionViews();
@@ -397,7 +427,7 @@ export function AgentConnectionsPage({
   }
   async function restart(app: AppId) {
     if (!beginOperation(app, "restarting")) return;
-    setError(null);
+    setError(app, null);
     try {
       await agentConnectionsApi.restart(app, true);
       setRestarting(null);
@@ -408,6 +438,7 @@ export function AgentConnectionsPage({
         "agentConnections.restartUnsupported",
       ];
       setError(
+        app,
         typeof cause === "string" && allowed.includes(cause)
           ? cause
           : "agentConnections.restartFailed",
@@ -419,7 +450,7 @@ export function AgentConnectionsPage({
   }
   async function launchDoubao(enabled: boolean) {
     if (!beginOperation("doubaowork", "connecting")) return;
-    setError(null);
+    setError("doubaowork", null);
     try {
       if (!enabled) await agentConnectionsApi.set("doubaowork", true, null);
       await proxyApi.launchDoubaoWorkForAudit();
@@ -430,6 +461,7 @@ export function AgentConnectionsPage({
         "homeAudit.doubaoPlatform",
       ];
       setError(
+        "doubaowork",
         typeof cause === "string" && allowed.includes(cause)
           ? cause
           : "homeAudit.doubaoLaunchFailed",
@@ -441,7 +473,7 @@ export function AgentConnectionsPage({
   }
   function openSetup(app: AppId) {
     setSetup(app);
-    setError(null);
+    setError(app, null);
     setSelected(
       states.data?.find((state) => state.app === app)?.model ??
         catalog.data?.[0]?.id ??
@@ -726,6 +758,13 @@ export function AgentConnectionsPage({
           : hasAgentRewards(app) && rewards[rewardApps.indexOf(app)]?.data
             ? [rewards[rewardApps.indexOf(app)].data!]
             : [];
+    const rewardsQuery = hasAgentRewards(app)
+      ? rewards[rewardApps.indexOf(app)]
+      : undefined;
+    const checkinInactive =
+      app === "zcode" &&
+      !rewardsQuery?.isError &&
+      rewardsQuery?.data?.outcome === "inactive";
     const checkinComplete =
       checkinStatuses.length > 0 &&
       checkinStatuses.every((status) =>
@@ -739,6 +778,9 @@ export function AgentConnectionsPage({
       checkinStatuses.every((status) => status.credit != null)
         ? checkinStatuses.reduce((sum, status) => sum + (status.credit ?? 0), 0)
         : null;
+    const checkinTriggerLabel = checkinInactive
+      ? t("agentRewards.noActivity")
+      : checkinLabel(app);
     const checkinTrigger = (app === "workbuddy" ||
       app === "doubaowork" ||
       hasAgentRewards(app)) && (
@@ -746,7 +788,8 @@ export function AgentConnectionsPage({
         type="button"
         className="mp-agent-start mp-agent-checkin-trigger"
         data-complete={checkinComplete}
-        aria-label={`${checkinLabel(app)} ${name(app)}`}
+        data-inactive={checkinInactive}
+        aria-label={`${checkinTriggerLabel} ${name(app)}`}
         aria-describedby={`${detailsId}-checkin-summary`}
         aria-expanded={checkinApp === app}
         aria-controls={`${detailsId}-checkin`}
@@ -775,7 +818,7 @@ export function AgentConnectionsPage({
                     : "dailyCheckin.todayChecked",
                 { credit: checkinCredit },
               )
-            : checkinLabel(app)}
+            : checkinTriggerLabel}
         </span>
         {checkinComplete && (
           <span className="sr-only">{checkinLabel(app)}</span>
@@ -1210,6 +1253,16 @@ export function AgentConnectionsPage({
             ) : null}
           </div>
         )}
+        {errors[app] && (
+          <div className="mp-agent-error">
+            {errorMessage(app)}
+            {errors[app] === "agentConnections.noModels" && onAddProvider && (
+              <Button variant="outline" size="sm" onClick={onAddProvider}>
+                {t("modelProviders.add")}
+              </Button>
+            )}
+          </div>
+        )}
       </SortableAgentRow>
     );
   }
@@ -1223,20 +1276,10 @@ export function AgentConnectionsPage({
           <h1 className="mp-page-heading">{t("agentConnections.title")}</h1>
         </header>
       )}
-      {(states.isError || installations.isError || error) && (
+      {(states.isError || installations.isError) && (
         <p role="alert" className="mb-4 text-sm text-destructive">
-          {t(error ?? "agentConnections.failed")}
+          {t("agentConnections.failed")}
         </p>
-      )}
-      {error === "agentConnections.noModels" && onAddProvider && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="mb-4"
-          onClick={onAddProvider}
-        >
-          {t("modelProviders.add")}
-        </Button>
       )}
       <AgentUpdatesBar updates={updates} name={name} disabled={!!busy} />
       <AgentInstallDialog updates={updates} name={name} />
@@ -1443,13 +1486,14 @@ export function AgentConnectionsPage({
                     onClick={() => {
                       void settingsApi
                         .openExternal(websites[app])
-                        .catch(() => setError("agentConnections.failed"));
+                        .catch(() => setError(app, "agentConnections.failed"));
                     }}
                   >
                     <ExternalLink className="mr-2 h-3 w-3" />
                     {t("agentConnections.website")}
                   </Button>
                 </div>
+                {errorMessage(app)}
               </div>
             ))}
           </div>
@@ -1494,11 +1538,7 @@ export function AgentConnectionsPage({
           </>
         }
       >
-        {error && (
-          <p role="alert" className="vary-dialog-error">
-            {t(error)}
-          </p>
-        )}
+        {errorMessage(modelControlRequest?.app ?? null)}
       </AppDialog>
       <AppDialog
         open={!!restarting}
@@ -1545,11 +1585,7 @@ export function AgentConnectionsPage({
           </>
         }
       >
-        {error && (
-          <p role="alert" className="vary-dialog-error">
-            {t(error)}
-          </p>
-        )}
+        {errorMessage(restarting)}
       </AppDialog>
       <AppDialog
         open={!!disconnecting}
@@ -1592,11 +1628,7 @@ export function AgentConnectionsPage({
             {t("agentConnections.codexDisconnectNote")}
           </p>
         )}
-        {error && (
-          <p role="alert" className="vary-dialog-error">
-            {t(error)}
-          </p>
-        )}
+        {errorMessage(disconnecting)}
       </AppDialog>
       <AppDialog
         open={!!setup}
@@ -1681,11 +1713,7 @@ export function AgentConnectionsPage({
                 : "agentConnections.consent",
             )}
           </p>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {t(error)}
-            </p>
-          )}
+          {errorMessage(setup)}
         </div>
       </AppDialog>
     </section>

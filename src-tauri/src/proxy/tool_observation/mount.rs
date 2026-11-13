@@ -243,7 +243,7 @@ mod protocol_regression_tests {
             .split_once("fn codex_chat_observation_metadata(")
             .unwrap()
             .1
-            .split_once("\nasync fn handle_codex_chat_to_responses_transform(")
+            .split_once("async fn handle_codex_chat_to_responses_transform(")
             .unwrap()
             .0;
         assert!(

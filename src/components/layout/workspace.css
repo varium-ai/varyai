@@ -398,6 +398,12 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-agent-expanded:empty {
   display: none;
 }
+.mp-agent-error {
+  flex: 0 0 100%;
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-top: 6px;
+}
 .mp-agent-checkin {
   flex: 0 0 100%;
   padding-left: 48px;
@@ -413,10 +419,12 @@ html:has(.vary-workspace) .tray-profile-menu {
   height: 26px;
   padding: 0 8px;
   border-radius: 6px;
-  color: var(--mp-fg-2);
   font-size: 12px;
 }
-.mp-agent-detail-actions button:hover {
+.mp-agent-detail-actions button:not([data-variant="default"]) {
+  color: var(--mp-fg-2);
+}
+.mp-agent-detail-actions button:not([data-variant="default"]):hover {
   background: var(--mp-hover);
   color: var(--mp-fg);
 }

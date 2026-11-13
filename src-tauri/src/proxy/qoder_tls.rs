@@ -67,6 +67,7 @@ impl Server {
                  Some(_) = connections.join_next(), if !connections.is_empty()=>{}
                 }
             }
+            drop(listener);
             connections.abort_all();
             while connections.join_next().await.is_some() {}
         });
@@ -79,8 +80,14 @@ impl Server {
         if let Some(tx) = self.stop.take() {
             let _ = tx.send(());
         }
-        if let Some(task) = self.task.take() {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), task).await;
+        if let Some(mut task) = self.task.take() {
+            if tokio::time::timeout(std::time::Duration::from_secs(3), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
         }
     }
 }
@@ -89,5 +96,33 @@ impl Drop for Server {
         if let Some(tx) = self.stop.take() {
             let _ = tx.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn stop_joins_a_listener_task_even_after_the_grace_period_expires() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _listener = listener;
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        ready.await.expect("listener task started");
+        Server {
+            stop: None,
+            task: Some(task),
+        }
+        .stop()
+        .await;
+        let _rebound = tokio::net::TcpListener::bind(address)
+            .await
+            .expect("shutdown must drop its owned listener");
     }
 }

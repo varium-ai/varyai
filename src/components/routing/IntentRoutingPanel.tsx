@@ -292,6 +292,7 @@ export function IntentRoutingPanel({
     onEditingChange,
   );
   const [error, setError] = useState<string | null>(null);
+  const [exported, setExported] = useState<string | null>(null);
   const [classification, setClassification] = useState('{"intentId":null}');
   const [preview, setPreview] = useState<RoutingPlanPreview | null>(null);
   const [previewPending, setPreviewPending] = useState(false);
@@ -485,6 +486,29 @@ export function IntentRoutingPanel({
       await copyText(shareRoutingGroup(group));
       toast.success(t("routingPage.copied"));
     });
+  }
+  function exportGroup(group: RoutingGroup) {
+    setError(null);
+    setExported(null);
+    let url: string | undefined;
+    try {
+      const blob = new Blob([shareRoutingGroup(group)], {
+        type: "application/json",
+      });
+      url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `vary-routing-group-${group.id}.json`;
+      anchor.click();
+      setExported(group.name);
+    } catch {
+      report(null);
+    } finally {
+      if (url) {
+        const downloadUrl = url;
+        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      }
+    }
   }
   function closeImport() {
     if (pending) return;
@@ -1984,6 +2008,11 @@ export function IntentRoutingPanel({
           </Button>
         </div>
       )}
+      {exported && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {t("routingPage.exportStarted", { name: exported })}
+        </p>
+      )}
       {discovery.isFetching && (
         <p role="status" className="text-xs text-muted-foreground">
           {t("intentRouting.discoveringCatalogs")}
@@ -2396,6 +2425,12 @@ export function IntentRoutingPanel({
                                 onSelect={() => void shareGroup(group)}
                               >
                                 {t("routingPage.copyShare")}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={isGroupPending(group.id)}
+                                onSelect={() => exportGroup(group)}
+                              >
+                                {t("routingPage.export")}
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>

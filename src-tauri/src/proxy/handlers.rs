@@ -1951,16 +1951,16 @@ fn codex_chat_observation_metadata(
     )
 }
 
-struct CodexDlpTransformContext<'a> {
-    attempt: Option<&'a super::security::http_restoration::DlpPreparedAttempt>,
-    evidence: Option<
+pub(super) struct CodexDlpTransformContext<'a> {
+    pub(super) attempt: Option<&'a super::security::http_restoration::DlpPreparedAttempt>,
+    pub(super) evidence: Option<
         std::sync::Arc<
             std::sync::Mutex<super::security::http_restoration::UpstreamSseEvidenceTracker>,
         >,
     >,
 }
 
-async fn handle_codex_chat_to_responses_transform(
+pub(super) async fn handle_codex_chat_to_responses_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     state: &ProxyState,
@@ -2293,7 +2293,7 @@ async fn handle_codex_chat_to_responses_transform(
 /// `handle_codex_chat_error_response` (whose extraction logic also works for
 /// Anthropic's `{"error":{type,message}}`). It does not involve codex_chat_history
 /// (tool ids round-trip natively through Anthropic).
-async fn handle_codex_anthropic_to_responses_transform(
+pub(super) async fn handle_codex_anthropic_to_responses_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     state: &ProxyState,

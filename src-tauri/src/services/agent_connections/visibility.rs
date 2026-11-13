@@ -55,6 +55,12 @@ impl ModelVisibility {
 }
 impl Manager {
     pub(crate) fn profile_paths(&self, app: &str) -> Result<Vec<PathBuf>, String> {
+        if app == "codex" {
+            return Ok(vec![
+                self.root.join("codex-intent.json"),
+                self.root.join("codex-desktop-freshness.json"),
+            ]);
+        }
         let mut paths = vec![self.path(app)?];
         if app == "claude-desktop" {
             paths.push(self.visibility_path(app)?);

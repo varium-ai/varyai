@@ -2746,6 +2746,7 @@
   "profiles": {
     "bundle": {
       "create": "多 Agent 配置方案（Profile）",
+      "singleAgent": "保存哪个 Agent",
       "chooseAgents": "选择要保存的 Agent",
       "captureCurrentHint": "保存当前 {{app}} 的供应商、模型配置及支持的资源。勾选“多 Agent 配置方案”后，默认包含主界面当前选中的 Agent。",
       "captureHint": "保存所选 Agent 的供应商、模型配置与列表，以及各工具支持的 MCP、Skills 和指令。账号凭据不复制到方案。",
@@ -5114,6 +5115,7 @@
     "sameAsHint": "自动发现分组及补全缺失模型信息时，将此模型视为填写的模型。发给供应商的模型 ID 保持原样。"
   },
   "agentConnections": {
+    "conflict": "此 Agent 的配置与已保存的连接或其他连接冲突。请检查配置是否被外部修改、不同客户端是否共用配置目录，再重试。现有配置已保留。",
     "cursorLocalHint": "需要 Cursor Private Inference。连接后请完全退出并重新打开；Cursor 内已保存的网关配置优先于此处的环境默认值。",
     "cursorCliHint": "管理 Cursor 原生模型选择，CLI 请求仍通过 Cursor 服务。",
     "cursorAuto": "Auto · Cursor 原生",
@@ -6011,6 +6013,8 @@
     "hint_antigravity": "使用 Antigravity 账号及其可用模型，支持 Google 登录或导入账号 JSON。"
   },
   "agentRewards": {
+    "noActivity": "暂无活动",
+    "nativeAccountManagement": "此处仅显示官方客户端的当前账号。请在官方客户端添加或切换账号，再回来刷新。暂不支持在 VaryAI 内独立添加多个账号。",
     "readNative": "读取客户端登录",
     "nativeAccessHint": "已检测到本机 Qoder CN 登录存储。首次读取可能需要允许系统钥匙串访问，无需重新登录 Qoder。",
     "sources": {

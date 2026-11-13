@@ -69,3 +69,28 @@ Native macOS acceptance on 2026-11-05 covered all five check-in buttons, expansi
 The subsequent Qoder native-account acceptance, including the installed client's update to 0.5.3, showed **Using the current Qoder CN login** and the same confirmed 100-Credit window in the running app, without opening a browser login or authorization page. A rebuilt development app required the user to approve Keychain read access again; the background query returned promptly without prompting, and the explicit read action completed after system approval. Synthetic encrypted fixtures additionally cover native-first selection, fallback grants, expired credentials, stale account selections and preservation of the native credential file.
 
 As of 2026-11-05, the remaining integrated Agents—Claude Desktop, Claude Code, Codex, Gemini CLI, Grok Build, Pi, Hermes, OpenCode, OpenClaw, Kimi Code, Qwen Code and DeepSeek Harness—have no confirmed official claim-based reward endpoint in this audit. VaryAI does not add a check-in button for automatic quota resets, subscriptions or unverified promotions. For example, [Kimi Code membership limits](https://www.kimi.com/code/docs/kimi-code/membership.html) are usage allowances rather than a daily reward claim. The [Qwen Code setup guide](https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/) also states that its former OAuth free tier ended on 2026-04-15; it is not a current daily reward. Recheck official campaigns before adding further adapters.
+
+ZCode and TRAE currently expose only the official client's current account. Their
+account picker can be opened when an account is available, but does not provide a
+saved account pool. Add or switch accounts in the official client and refresh
+VaryAI. Independent multi-account authorization, as offered for WorkBuddy, is not
+implemented for these two adapters. The management panel explains this limit.
+ZCode labels recognize native `displayName` and `username` fields as well as
+nickname, name and email. Empty or invalid fields are skipped; a short hashed
+account identifier distinguishes accounts when no display label is available.
+
+ZCode distinguishes an inactive marketing feed from a confirmed claim. When a
+successful status query reports no active offer, both full and compact Agent
+lists keep its check-in entry and replace the manual/automatic mode text with
+**No active campaign** in muted text. The entry still expands and collapses its
+details, and an open panel stays open when an offer becomes inactive. A previous
+claim does not replace that inactive status; its local receipt remains stored.
+Confirmed claims remain visible while the offer is still reported. Errors and unavailable
+credentials are not treated as an inactive offer.
+
+Discovery remains subscribed while the Agent page is mounted, including when no
+campaign is active: status is queried on first opening, every 60 seconds while the
+window is active, and on returning to the page or refocusing the window when the
+60-second cache is stale. A discovered offer restores the saved manual/automatic
+mode text and normal entry color automatically. This read-only discovery does not depend on automatic claiming being enabled and
+does not claim rewards. The closed application does not poll for offers.

@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::{
     aggregation::PendingAuditEvent,
     builtin_rules::BUILTIN_RULES,
-    extractor::extract_payload_texts,
+    extractor::{extract_payload_texts, CurrentTurn},
     history_provenance::{DlpHistoryProjection, HistoryLeafPolicy},
     identity::{fingerprint, ContentFingerprint},
     payload_budget::{PayloadBudget, Reservation},
@@ -46,6 +46,7 @@ pub(super) struct PendingRequestAudit {
 }
 
 struct LogicalField<'a> {
+    historical: bool,
     text: &'a str,
     matches: PayloadVec<SpanMatch>,
     rules: PayloadVec<&'a str>,
@@ -77,6 +78,7 @@ impl PendingRequestAudit {
         projection: Option<&DlpHistoryProjection<'_>>,
     ) -> Result<Self, PlanError> {
         let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
+        let current_turn = CurrentTurn::new(body);
         let mut logical = PayloadVec::new(budget.clone())?;
         let mut count = 0usize;
         carriers.visit_with_history(projection, |leaf| {
@@ -124,6 +126,7 @@ impl PendingRequestAudit {
                 rules.push(found.rule_id)?;
             }
             logical.push(LogicalField {
+                historical: carriers.is_historical(leaf.id, &current_turn),
                 text: leaf.text,
                 matches,
                 rules,
@@ -143,6 +146,9 @@ impl PendingRequestAudit {
             plan_request_with_budget(fields.as_slice(), historical.as_slice(), budget.clone())?;
         let mut pending = Self::empty(budget.clone())?;
         for (index, field) in logical.as_slice().iter().enumerate() {
+            if field.historical {
+                continue;
+            }
             for (found, rule) in field.matches.as_slice().iter().zip(field.rules.as_slice()) {
                 let action = if found.action == EffectiveAction::Restore
                     && plan.as_slice()[index].spans.as_slice().iter().any(|span| {
@@ -181,9 +187,12 @@ impl PendingRequestAudit {
         projection: Option<&DlpHistoryProjection<'_>>,
     ) -> Result<Self, TokenError> {
         let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
+        let current_turn = CurrentTurn::new(body);
         let mut pending = Self::empty(budget.clone())?;
         carriers.visit_with_history(projection, |leaf| {
-            if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+            if leaf.policy == HistoryLeafPolicy::DeliveredReasoning
+                || carriers.is_historical(leaf.id, &current_turn)
+            {
                 return Ok(());
             }
             for found in detect_spans_with_budget(
@@ -214,6 +223,9 @@ impl PendingRequestAudit {
         let mut extraction_charge = budget.reserve(0)?;
         charge_extraction(body, 0, 0, &mut 0, &mut extraction_charge)?;
         for field in extract_payload_texts(body) {
+            if current_turn.is_historical(&field.location) {
+                continue;
+            }
             for found in detect_spans_with_budget(
                 field.text,
                 field.is_password_field,

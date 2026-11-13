@@ -179,6 +179,7 @@ struct AppSnapshot {
     backup: Option<String>,
     files: Vec<FileState>,
     codex: Option<crate::codex_config::CodexLiveStateSnapshot>,
+    codex_menu: Option<std::sync::Arc<crate::proxy::intent::Menu>>,
     library: library::LibraryBefore,
     library_fingerprint: Value,
     trees: Vec<files::Tree>,
@@ -549,6 +550,15 @@ impl AppSnapshot {
             } else {
                 None
             },
+            codex_menu: if app == AppType::Codex {
+                state
+                    .proxy_service
+                    .intent_runtime
+                    .menu_snapshot()
+                    .map_err(|_| error("readFailed"))?
+            } else {
+                None
+            },
             library: library::LibraryBefore::capture(state, &app)?,
             library_fingerprint: library::fingerprint(state, &app)?,
             trees,
@@ -628,10 +638,13 @@ impl AppSnapshot {
                 .is_err();
         }
         {
+            let codex_paths = if self.codex.is_some() {
+                native::configuration_paths(&AppType::Codex)?
+            } else {
+                Vec::new()
+            };
             for file in &self.files {
-                if self.codex.is_some()
-                    && file.path != crate::prompt_files::prompt_file_path(&self.app)?
-                {
+                if codex_paths.contains(&file.path) {
                     continue;
                 }
                 let result = match &file.bytes {
@@ -656,6 +669,12 @@ impl AppSnapshot {
             .is_err();
         }
         failed |= shared::restore(state, &self.app).is_err();
+        if self.app == AppType::Codex {
+            state
+                .proxy_service
+                .intent_runtime
+                .restore_menu(self.codex_menu.clone());
+        }
         if failed {
             Err(error("restoreFailed"))
         } else {
@@ -695,7 +714,10 @@ fn resolve_bundle(
 ) -> Result<(ProfileBundle, Vec<ProfileSkip>), AppError> {
     let mut selections = Vec::new();
     let mut skipped = Vec::new();
-    for selection in bundle.selections {
+    for mut selection in bundle.selections {
+        if selection.connection.is_none() {
+            selection.connection = shared::legacy_codex_connection(state, &selection)?;
+        }
         if let Some(connection) = &selection.connection {
             if shared::exists(state, &selection.app, connection)? {
                 selections.push(selection);

@@ -440,8 +440,11 @@ async function zcodeAccount() {
     device,
     uid: String(uid),
     id: hash("zcode|" + uid),
-    label: String(
-      info.nickname ?? info.name ?? info.email ?? "ZCode account",
+    source: "native",
+    label: (
+      [info.displayName, info.nickname, info.name, info.username, info.email]
+        .find((value) => typeof value === "string" && value.trim())
+        ?.trim() ?? `ZCode · ${hash("zcode|" + uid).slice(0, 6)}`
     ).slice(0, 256),
   };
 }

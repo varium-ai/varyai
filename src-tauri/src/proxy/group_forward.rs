@@ -1,6 +1,9 @@
 //! Explicit cross-protocol execution for normalized static group providers.
 //! Native execution and consumer attribution belong to the group runtime.
 
+mod dlp;
+pub(crate) use dlp::RoutedRestoration;
+
 use super::{
     forwarder::RequestForwarder,
     hyper_client::ProxyResponse,
@@ -61,9 +64,12 @@ pub(crate) async fn forward(
         .ok_or_else(|| {
             ProxyError::ConfigError("Group upstream requires an explicit supported protocol".into())
         })?;
-    let bridge = Bridge::plan(protocol, output).ok_or_else(|| {
-        ProxyError::InvalidRequest("Native group requests require byte-preserving execution".into())
-    })?;
+    let bridge = Bridge::plan(protocol, output);
+    if bridge.is_none() && extensions.get::<RoutedRestoration>().is_none() {
+        return Err(ProxyError::InvalidRequest(
+            "Native group requests require byte-preserving execution".into(),
+        ));
+    }
     if body
         .get("model")
         .and_then(Value::as_str)
@@ -91,7 +97,7 @@ pub(crate) async fn forward(
             ));
         }
     }
-    let mut upstream = bridge.provider(upstream);
+    let mut upstream = bridge.map_or_else(|| upstream.clone(), |bridge| bridge.provider(upstream));
     // The normalized OpenAI source retains its key in auth.OPENAI_API_KEY.
     // ClaudeAdapter owns config/auth interpretation; do not derive from the caller.
     let openai_key = upstream
@@ -129,7 +135,7 @@ pub(crate) async fn forward(
         state.status.clone(),
         state.current_providers.clone(),
         shadow,
-        history,
+        history.clone(),
         state.failover_manager.clone(),
         None,
         String::new(),
@@ -142,9 +148,26 @@ pub(crate) async fn forward(
         Default::default(),
         0,
     );
+    if let Some(routed) = extensions.get::<RoutedRestoration>() {
+        return dlp::forward(
+            state, forwarder, routed, protocol, &upstream, method, endpoint, body, headers,
+            extensions, session_id, history,
+        )
+        .await;
+    }
     let (response, _, _, _, _) = forwarder
         .forward_bridge(
-            bridge, method, &upstream, endpoint, body, headers, extensions,
+            bridge.ok_or_else(|| {
+                ProxyError::InvalidRequest(
+                    "Native group requests require byte-preserving execution".into(),
+                )
+            })?,
+            method,
+            &upstream,
+            endpoint,
+            body,
+            headers,
+            extensions,
         )
         .await?;
     Ok(response)

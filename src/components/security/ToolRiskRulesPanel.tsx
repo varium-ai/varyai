@@ -19,6 +19,12 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -683,18 +689,29 @@ export function ToolRiskRulesPanel({
                           }
                         />
                         {rule.origin === "builtin" ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            title={t("toolRisk.resetBuiltin", {
-                              defaultValue: "恢复默认",
-                            })}
-                            onClick={() =>
-                              resetBuiltinRule(rule.id, rule.revision)
-                            }
-                          >
-                            <RefreshCw className="h-4 w-4" />
-                          </Button>
+                          <TooltipProvider delayDuration={150}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={t("toolRisk.resetBuiltin", {
+                                    defaultValue: "恢复默认",
+                                  })}
+                                  onClick={() =>
+                                    resetBuiltinRule(rule.id, rule.revision)
+                                  }
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t("toolRisk.resetBuiltin", {
+                                  defaultValue: "恢复默认",
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         ) : (
                           <>
                             <Button

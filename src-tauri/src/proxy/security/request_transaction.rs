@@ -207,7 +207,7 @@ fn replacement<'a>(
     }
 }
 
-fn build_candidate(
+pub(super) fn build_candidate(
     fields: &[PlanField<'_>],
     plan: &[PlannedField],
     tokens: &[PayloadText],

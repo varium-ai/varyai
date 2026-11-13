@@ -608,6 +608,46 @@ impl Manager {
         ));
         crate::config::atomic_write_private(&backup, current.as_bytes()).map_err(|_| FAILED.into())
     }
+    /// Recognize saved shared selectors only through retained ownership metadata.
+    pub(crate) fn profile_model(&self, wire: &str) -> Result<Option<String>, String> {
+        if let Some(receipt) = self.load()? {
+            if let Some(model) = receipt.model_map.get(wire) {
+                return Ok(Some(model.clone()));
+            }
+            if receipt.model_aliases.iter().any(|model| model == wire) {
+                return Ok(Some(wire.into()));
+            }
+        }
+        let Some(identity) = self.connection_identity()? else {
+            return Ok(None);
+        };
+        Ok(identity.model_map.get(wire).cloned().or_else(|| {
+            identity
+                .model_map
+                .values()
+                .any(|model| model == wire)
+                .then(|| wire.into())
+        }))
+    }
+
+    /// Local undo snapshots include ownership metadata; profiles store only selectors.
+    pub(crate) fn profile_paths(&self) -> Result<Vec<PathBuf>, String> {
+        let mut paths = vec![
+            self.config.clone(),
+            self.receipt.clone(),
+            self.receipt.with_extension("identity.json"),
+        ];
+        if let Some(receipt) = self.load()? {
+            paths.extend(
+                receipt
+                    .catalogs
+                    .into_iter()
+                    .filter(|path| self.owns_catalog_path(path)),
+            );
+        }
+        Ok(paths)
+    }
+
     pub(crate) fn config_path(&self) -> &Path {
         &self.config
     }
@@ -817,10 +857,10 @@ impl Manager {
                 .as_ref()
                 .is_some_and(|s| projection_owned(s, &receipt.installed))
             {
-                if intent != ApplyIntent::Reapply {
+                if intent == ApplyIntent::Refresh {
                     return Err(CONFLICT.into());
                 }
-                // An explicit reapply adopts external edits as the next baseline.
+                // Explicit connection adopts external edits as the next baseline.
                 // Archive the old recovery record; do not move busy histories as
                 // a prerequisite for updating the connection's configuration.
                 baseline = restore_text(current.as_deref(), receipt)?;
@@ -846,7 +886,7 @@ impl Manager {
         let native = if let Some(url) = native_url {
             let replaced_url = if previous_native.is_none() {
                 match doc.get("openai_base_url") {
-                    Some(value) if intent == ApplyIntent::Reapply => Some(
+                    Some(value) if intent != ApplyIntent::Refresh => Some(
                         value
                             .as_str()
                             .ok_or("intentRouting.nativeConflict")?

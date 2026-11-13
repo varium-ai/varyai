@@ -428,3 +428,56 @@ fn restoration_audit_auxiliary_entropy_skips_summary_only_and_recovers() -> Test
     assert_eq!(events[0].log.action_taken, "redact_restore");
     Ok(())
 }
+
+#[test]
+fn resent_history_does_not_repeat_audits_even_when_the_request_is_refused() -> TestResult {
+    let runtime = policy(&[
+        ("past", "private-a", AuditAction::RedactRestore),
+        ("current", "private-b", AuditAction::RedactRestore),
+    ]);
+    for root in ["input", "messages", "contents"] {
+        for current in ["private-b", "safe-current-text"] {
+            let body = json!({(root): [
+                {"role":"user", "content":"private-a", "parts":[{"text":"private-a"}]},
+                {"role":"assistant", "content":"safe reply", "parts":[{"text":"safe reply"}]},
+                {"role":"user", "content":current, "parts":[{"text":current}]}
+            ]});
+            let mut inspected = body.clone();
+            assert!(
+                super::SecurityAuditEngine::inspect_and_redact_with_runtime(
+                    &mut inspected,
+                    &runtime
+                )
+                .is_blocked(),
+                "history must remain subject to the hiding policy"
+            );
+            let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+            let state = RequestAuditState::new(&AppType::Codex, None, budget.clone())?;
+            let pending = PendingRequestAudit::capture_refusal(&body, &runtime, budget)?;
+            let mut events = Vec::new();
+            state.record_with(&pending, "fixture", None, true, |event| events.push(event));
+            assert_eq!(events.len(), usize::from(current == "private-b"));
+            assert!(events.iter().all(|event| event.log.rule_id == "current"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn resent_responses_history_is_inspected_but_only_current_findings_are_reported() -> TestResult {
+    let runtime = policy(&[
+        ("past", "private-a", AuditAction::RedactRestore),
+        ("current", "private-b", AuditAction::RedactRestore),
+    ]);
+    let body = json!({"input":[{"role":"user","content":"private-a"},{"role":"assistant","content":"safe reply"},{"role":"user","content":"private-b"}]});
+    let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+    let lease = DlpTokenStore::new().admit("codex", None, 1)?;
+    let pending = PendingRequestAudit::capture(&body, &runtime, &[], &lease, budget.clone())
+        .map_err(|_| std::io::Error::other("fixture summary failed"))?;
+    let state = RequestAuditState::new(&AppType::Codex, None, budget)?;
+    let mut events = Vec::new();
+    state.record_with(&pending, "fixture", None, false, |event| events.push(event));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].log.rule_id, "current");
+    Ok(())
+}

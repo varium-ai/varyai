@@ -1232,7 +1232,7 @@ describe("IntentRoutingPanel", () => {
     );
     expect(intentRoutingApi.trial).not.toHaveBeenCalled();
   });
-  it("shows only Duplicate and Copy to share in the Actions More menu", async () => {
+  it("shows Duplicate, Copy to share and JSON export in the Actions More menu", async () => {
     mount();
     const user = userEvent.setup();
     const heading = await screen.findByRole("heading", {
@@ -1255,7 +1255,11 @@ describe("IntentRoutingPanel", () => {
     await user.click(more);
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["routingPage.duplicate", "routingPage.copyShare"]);
+    ).toEqual([
+      "routingPage.duplicate",
+      "routingPage.copyShare",
+      "routingPage.export",
+    ]);
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
     await user.click(

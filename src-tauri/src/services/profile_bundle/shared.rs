@@ -14,12 +14,23 @@ pub struct Connection {
 }
 
 fn supported(app: &AppType) -> bool {
-    app != &AppType::Codex && agent_connections::APPS.contains(&app.as_str())
+    agent_connections::APPS.contains(&app.as_str())
 }
 
 pub(super) fn available(state: &AppState, app: &AppType) -> Result<bool, AppError> {
     if !supported(app) {
         return Ok(false);
+    }
+    if app == &AppType::Codex {
+        let client = &state.proxy_service.intent_client;
+        return Ok(client
+            .status()
+            .map_err(|_| error("invalidConfig"))?
+            .configuration_owned
+            && client
+                .selected_model()
+                .map_err(|_| error("invalidConfig"))?
+                .is_some());
     }
     state
         .proxy_service
@@ -29,9 +40,35 @@ pub(super) fn available(state: &AppState, app: &AppType) -> Result<bool, AppErro
         .map_err(|_| error("invalidConfig"))
 }
 
+pub(super) fn legacy_codex_connection(
+    state: &AppState,
+    selection: &ProfileSelection,
+) -> Result<Option<Connection>, AppError> {
+    if selection.app != AppType::Codex || selection.connection.is_some() {
+        return Ok(None);
+    }
+    let Some(model) = selection.models.get("model").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    state
+        .proxy_service
+        .intent_client
+        .profile_model(model)
+        .map(|model| {
+            model.map(|model| Connection {
+                model,
+                visibility: None,
+            })
+        })
+        .map_err(|_| error("invalidConfig"))
+}
+
 pub(super) fn prepare(state: &AppState, bundle: &super::ProfileBundle) -> Result<(), AppError> {
     for selection in &bundle.selections {
-        if selection.connection.is_some() || available(state, &selection.app)? {
+        if selection.connection.is_some()
+            || available(state, &selection.app)?
+            || legacy_codex_connection(state, selection)?.is_some()
+        {
             // Refresh before taking client locks; forwarding keeps progressing
             // while the profile command waits on its blocking worker.
             futures::executor::block_on(state.proxy_service.ensure_global_routing())
@@ -54,6 +91,20 @@ fn menu(state: &AppState) -> Result<std::sync::Arc<crate::proxy::intent::Menu>, 
 pub(super) fn capture(state: &AppState, app: &AppType) -> Result<Option<Connection>, AppError> {
     if !available(state, app)? {
         return Ok(None);
+    }
+    if app == &AppType::Codex {
+        let model = state
+            .proxy_service
+            .intent_client
+            .selected_model()
+            .map_err(|_| error("invalidConfig"))?
+            .ok_or_else(|| error("nativeModelMissing"))?;
+        let connection = Connection {
+            model,
+            visibility: None,
+        };
+        validate(state, app, &connection)?;
+        return Ok(Some(connection));
     }
     let manager = &state.proxy_service.agent_connections;
     let receipt = manager
@@ -160,31 +211,44 @@ pub(super) fn preview(
     if let Some(library) = &selection.library {
         library.validate(state, &selection.app)?;
     }
-    let current = agent_connections::native::starting_model(selection.app.as_str())
-        .map_err(|_| error("invalidConfig"))?;
-    let receipt = state
-        .proxy_service
-        .agent_connections
-        .load(selection.app.as_str())
-        .map_err(|_| error("invalidConfig"))?;
-    let current = current.or_else(|| receipt.as_ref().map(|receipt| receipt.model.clone()));
-    let current = current.map(|wire| {
-        label(
-            receipt
-                .as_ref()
-                .and_then(|receipt| {
-                    receipt
-                        .model_map
-                        .get(&wire)
-                        .or_else(|| receipt.model_map.get(wire.strip_prefix("varyai/")?))
-                })
-                .map(String::as_str)
-                .unwrap_or_else(|| wire.strip_prefix("varyai/").unwrap_or(&wire)),
+    let (current, connected) = if selection.app == AppType::Codex {
+        (
+            state
+                .proxy_service
+                .intent_client
+                .selected_model()
+                .map_err(|_| error("invalidConfig"))?
+                .map(|model| label(&model)),
+            available(state, &selection.app)?,
         )
-    });
+    } else {
+        let current = agent_connections::native::starting_model(selection.app.as_str())
+            .map_err(|_| error("invalidConfig"))?;
+        let receipt = state
+            .proxy_service
+            .agent_connections
+            .load(selection.app.as_str())
+            .map_err(|_| error("invalidConfig"))?;
+        let current = current.or_else(|| receipt.as_ref().map(|receipt| receipt.model.clone()));
+        let current = current.map(|wire| {
+            label(
+                receipt
+                    .as_ref()
+                    .and_then(|receipt| {
+                        receipt
+                            .model_map
+                            .get(&wire)
+                            .or_else(|| receipt.model_map.get(wire.strip_prefix("varyai/")?))
+                    })
+                    .map(String::as_str)
+                    .unwrap_or_else(|| wire.strip_prefix("varyai/").unwrap_or(&wire)),
+            )
+        });
+        (current, receipt.is_some())
+    };
     Ok(ProfileChange {
         app: selection.app.as_str().into(),
-        current_provider: if receipt.is_some() {
+        current_provider: if connected {
             "Vary AI".into()
         } else {
             String::new()
@@ -217,6 +281,35 @@ pub(super) fn apply(
         .map_err(|_| error("operationFailed"))?;
     if !status.running {
         return Err(error("sharedGatewayRequired"));
+    }
+    if app == &AppType::Codex {
+        let client = &state.proxy_service.intent_client;
+        let mut menu = (*menu).clone();
+        if let Some(previous) = state
+            .proxy_service
+            .intent_runtime
+            .menu_snapshot()
+            .map_err(|_| error("operationFailed"))?
+        {
+            menu.preserve_from(&previous);
+        }
+        let native = client
+            .native_owned_url()
+            .map_err(|_| error("invalidConfig"))?;
+        client
+            .activate_menu_with_selection(
+                std::sync::Arc::new(menu),
+                &format!("http://127.0.0.1:{}/intent/v1", status.port),
+                native.as_deref(),
+                true,
+                Some(&connection.model),
+            )
+            .map_err(|_| error("operationFailed"))?;
+        return state
+            .proxy_service
+            .agent_connections
+            .set_codex_intent(Some(&connection.model), true)
+            .map_err(|_| error("operationFailed"));
     }
     let manager = &state.proxy_service.agent_connections;
     if let Some(value) = &connection.visibility {
@@ -258,15 +351,25 @@ pub(super) fn paths(state: &AppState, app: &AppType) -> Result<Vec<PathBuf>, App
     if !supported(app) {
         return Ok(vec![]);
     }
-    state
+    let mut paths = state
         .proxy_service
         .agent_connections
         .profile_paths(app.as_str())
-        .map_err(|_| error("invalidConfig"))
+        .map_err(|_| error("invalidConfig"))?;
+    if app == &AppType::Codex {
+        paths.extend(
+            state
+                .proxy_service
+                .intent_client
+                .profile_paths()
+                .map_err(|_| error("invalidConfig"))?,
+        );
+    }
+    Ok(paths)
 }
 
 pub(super) fn restore(state: &AppState, app: &AppType) -> Result<(), AppError> {
-    if !supported(app) {
+    if !supported(app) || app == &AppType::Codex {
         return Ok(());
     }
     state

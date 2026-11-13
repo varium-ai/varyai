@@ -1384,6 +1384,7 @@ impl DlpTokenStore {
                     match ingress {
                         IngressNamespace::Direct => b"direct",
                         IngressNamespace::Gateway => b"gateway",
+                        IngressNamespace::Shared => b"shared",
                     },
                 ],
             ),

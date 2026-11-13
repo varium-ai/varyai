@@ -43,6 +43,15 @@ fn codex_connection_status(
     }
 }
 
+fn with_remembered_model(mut status: Status, remembered: Option<String>) -> Status {
+    status.model = if status.enabled {
+        status.model.or(remembered)
+    } else {
+        remembered.or(status.model)
+    };
+    status
+}
+
 fn with_codex_reload(
     mut status: Status,
     reload: Option<agent_connections::ReloadState>,
@@ -163,6 +172,7 @@ pub(crate) async fn get_agent_connection(
                 client.selected_model()?,
                 manager.codex_intent()?,
             );
+            let status = with_remembered_model(status, manager.remembered_model("codex"));
             let desktop_state = manager.codex_desktop_state(&status)?;
             Ok(with_codex_reload(status, reload, desktop_state))
         })
@@ -265,6 +275,7 @@ pub(crate) async fn list_agent_connections(
             client.selected_model()?,
             manager.codex_intent()?,
         );
+        let status = with_remembered_model(status, manager.remembered_model("codex"));
         let desktop_state = manager.codex_desktop_state(&status)?;
         Ok::<_, String>(with_codex_reload(status, reload, desktop_state))
     })
@@ -455,6 +466,7 @@ pub(crate) async fn restart_agent_connection(
                 client.selected_model()?,
                 manager.codex_intent()?,
             );
+            let status = with_remembered_model(status, manager.remembered_model("codex"));
             let desktop_state = manager.codex_desktop_state(&status)?;
             Ok::<_, String>((status, desktop_state))
         })
@@ -756,7 +768,15 @@ pub(crate) async fn set_agent_connection(
         return Err(FAILED.into());
     }
     if app == "codex" {
-        let desired = model.clone();
+        let desired = if enabled {
+            model.clone()
+        } else {
+            let client = state.proxy_service.intent_client.clone();
+            tokio::task::spawn_blocking(move || client.selected_model().ok().flatten())
+                .await
+                .unwrap_or_default()
+                .or_else(|| model.clone())
+        };
         if enabled {
             state.proxy_service.start().await?;
             state
@@ -777,9 +797,17 @@ pub(crate) async fn set_agent_connection(
                 })?;
         }
         let manager = state.proxy_service.agent_connections.clone();
-        tokio::task::spawn_blocking(move || manager.set_codex_intent(desired.as_deref(), enabled))
-            .await
-            .map_err(|_| FAILED)??;
+        let client = state.proxy_service.intent_client.clone();
+        tokio::task::spawn_blocking(move || {
+            let desired = if enabled {
+                client.selected_model().ok().flatten().or(desired)
+            } else {
+                desired
+            };
+            manager.set_codex_intent(desired.as_deref(), enabled)
+        })
+        .await
+        .map_err(|_| FAILED)??;
         return Ok(());
     }
     set_native_connection(state.inner(), app, enabled, model).await
@@ -817,18 +845,16 @@ pub(crate) async fn set_native_connection(
         .intent_runtime
         .global_snapshot()?
         .ok_or(agent_connections::EMPTY)?;
+    let catalog = agent_connections::models(&menu);
+    let remembered = manager
+        .remembered_model(&app)
+        .filter(|model| catalog.iter().any(|entry| &entry.id == model));
     let selected = model
+        .or(remembered)
         .or_else(|| menu.default_model.clone())
-        .or_else(|| {
-            agent_connections::models(&menu)
-                .first()
-                .map(|model| model.id.clone())
-        })
+        .or_else(|| catalog.first().map(|model| model.id.clone()))
         .ok_or(agent_connections::EMPTY)?;
-    if !agent_connections::models(&menu)
-        .iter()
-        .any(|entry| entry.id == selected)
-    {
+    if !catalog.iter().any(|entry| entry.id == selected) {
         return Err(agent_connections::EMPTY.into());
     }
     let origin = format!("http://127.0.0.1:{}", info.port);
