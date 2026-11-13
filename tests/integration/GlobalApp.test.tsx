@@ -1,10 +1,13 @@
 import {
+  act,
   render,
   screen,
   fireEvent,
   within,
   waitFor,
 } from "@testing-library/react";
+import { createInstance } from "i18next";
+import { I18nextProvider, initReactI18next } from "react-i18next";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
@@ -81,6 +84,47 @@ describe("Global application shell", () => {
     vi.mocked(profilesApi.captureBundle)
       .mockReset()
       .mockResolvedValue({} as never);
+  });
+  it("updates the layout language immediately while keeping the selected page", async () => {
+    const i18n = createInstance();
+    await i18n.use(initReactI18next).init({
+      lng: "zh",
+      resources: Object.fromEntries(
+        ["zh", "en", "ja", "zh-TW"].map((language) => [
+          language,
+          { translation: {} },
+        ]),
+      ),
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={client}>
+          <App />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+    await waitFor(() =>
+      expect(client.getQueryState(["settings"])?.status).toBe("success"),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "workspaceNav.routing" }),
+    );
+    for (const language of ["en", "zh-TW", "ja", "zh"]) {
+      await act(async () => {
+        await i18n.changeLanguage(language);
+      });
+      expect(screen.getByTestId("global-workspace")).toHaveAttribute(
+        "lang",
+        language,
+      );
+      expect(screen.getByTestId("global-routes")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "workspaceNav.routing" }),
+      ).toHaveAttribute("aria-current", "page");
+    }
   });
   it("creates a multi-agent profile from the main footer using connected agents", async () => {
     const client = new QueryClient({

@@ -533,7 +533,9 @@ it("shows safe allowance failures, caches the failed attempt and offers a manual
   expect(await screen.findByText("codexProvider.quotaFailed")).toBeVisible();
   expect(screen.queryByText("synthetic-private-error")).not.toBeInTheDocument();
   expect(
-    screen.queryByText("codexProvider.quotaUnknown"),
+    within(screen.getByRole("dialog")).queryByText(
+      "codexProvider.quotaUnknown",
+    ),
   ).not.toBeInTheDocument();
   expect(screen.queryByText("codexProvider.remaining")).not.toBeInTheDocument();
   await reopen();

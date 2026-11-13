@@ -29,6 +29,10 @@ const state = vi.hoisted(() => ({
   } as { currentVersion: string; availableVersion: string; notes?: string },
   isDismissed: false,
   isInstalling: false,
+  installProgress: null as import("@/lib/updater").UpdateInstallProgress | null,
+  isDownloadStalled: false,
+  isCancelling: false,
+  cancelUpdate: vi.fn(),
   error: null as string | null,
   dismissUpdate: vi.fn(),
   installUpdate: vi.fn(),
@@ -69,6 +73,9 @@ beforeEach(() => {
   state.hasUpdate = true;
   state.isDismissed = false;
   state.isInstalling = false;
+  state.installProgress = null;
+  state.isDownloadStalled = false;
+  state.isCancelling = false;
   state.error = null;
   state.language = "en";
   state.updateInfo.notes =
@@ -313,4 +320,69 @@ it("keeps installation available when the optional release-notes request fails",
     screen.getByRole("button", { name: "settings.restartToUpdate" }),
   ).toBeEnabled();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("shows byte progress and a cancellation action while downloading", async () => {
+  state.isInstalling = true;
+  state.installProgress = {
+    phase: "downloading",
+    downloaded: 1048576,
+    total: 4194304,
+  };
+  mount();
+  const bar = await screen.findByRole("progressbar");
+  expect(bar).toHaveAttribute("value", "25");
+  expect(screen.getByText(/1 MB \/ 4 MB/)).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", { name: "settings.updateCancel" }),
+  );
+  expect(state.cancelUpdate).toHaveBeenCalledOnce();
+  expect(state.dismissUpdate).not.toHaveBeenCalled();
+});
+
+it("uses indeterminate progress for unknown sizes and explains stalled downloads", async () => {
+  state.isInstalling = true;
+  state.installProgress = {
+    phase: "downloading",
+    downloaded: 2048,
+    total: null,
+  };
+  state.isDownloadStalled = true;
+  mount();
+  expect(await screen.findByRole("progressbar")).not.toHaveAttribute("value");
+  expect(screen.getByText(/2 KB/)).toBeVisible();
+  expect(screen.getByText("settings.updateDownloadStalled")).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "settings.updateCancel" }),
+  ).toBeEnabled();
+});
+
+it("locks cancellation once installation starts and keeps status visible in the footer", async () => {
+  state.isInstalling = true;
+  state.installProgress = { phase: "installing", downloaded: 100, total: 100 };
+  mount();
+  const status = await screen.findByText("settings.updateInstalling");
+  expect(status.closest(".vary-dialog-footer")).not.toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "settings.updateCancel" }),
+  ).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "settings.updateLater" }),
+  ).toBeDisabled();
+});
+
+it("reports cancellation failure without exposing backend details", async () => {
+  state.isInstalling = true;
+  state.installProgress = { phase: "checking", downloaded: 0, total: null };
+  state.cancelUpdate.mockRejectedValueOnce(
+    new Error("synthetic-private-detail"),
+  );
+  mount();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "settings.updateCancel" }),
+  );
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith("settings.updateCancelFailed"),
+  );
+  expect(screen.queryByText("synthetic-private-detail")).toBeNull();
 });

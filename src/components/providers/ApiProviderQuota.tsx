@@ -88,6 +88,7 @@ export function ApiProviderQuota({
       items={items}
       status={status}
       fetching={query.isFetching}
+      loading={!query.data && query.isFetching}
     >
       {quota?.balance != null && Number.isFinite(quota.balance) && (
         <span>

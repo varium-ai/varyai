@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import i18n from "i18next";
@@ -84,6 +84,58 @@ it("reads only selected Codex accounts and displays remaining window percentages
     "selected",
   );
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
+});
+it("keeps a skeleton through both Codex account and quota loading", async () => {
+  let resolveEditor!: (value: RoutingUpstream) => void;
+  let resolveQuota!: (value: typeof quota) => void;
+  vi.mocked(routingUpstreamsApi.editor).mockReturnValue(
+    new Promise((resolve) => {
+      resolveEditor = resolve;
+    }),
+  );
+  vi.mocked(routingUpstreamsApi.codexQuota).mockReturnValue(
+    new Promise((resolve) => {
+      resolveQuota = resolve;
+    }) as never,
+  );
+  const view = mount();
+  expect(view.container.querySelector(".pv-quota-skeleton")).not.toBeNull();
+  await act(async () =>
+    resolveEditor({
+      ...record,
+      codex: {
+        settings: record.codexSettings!,
+        models: [],
+        accounts: [
+          { id: "selected", login: "Fixture", native: false, ready: true },
+        ],
+      },
+    }),
+  );
+  await waitFor(() =>
+    expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("selected"),
+  );
+  expect(view.container.querySelector(".pv-quota-skeleton")).not.toBeNull();
+  await act(async () => resolveQuota(quota));
+  expect(await screen.findByText(/73%/)).toBeVisible();
+  expect(view.container.querySelector(".pv-quota-skeleton")).toBeNull();
+});
+it("uses a skeleton while a subscription account quota is pending", async () => {
+  vi.mocked(nativeSubscriptionApi.quota).mockReturnValue(new Promise(() => {}));
+  const view = mount({
+    ...record,
+    source: {
+      kind: "subscription",
+      provider: "claude",
+      accountId: "selected",
+      mode: "vendor",
+      models: [],
+      catalog: [],
+      groupsOnly: false,
+    },
+  });
+  expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true");
+  expect(view.container.querySelector(".pv-quota-skeleton")).not.toBeNull();
 });
 it("keeps multiple account allowances separate", async () => {
   mount({

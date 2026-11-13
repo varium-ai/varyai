@@ -190,6 +190,7 @@ export function SubscriptionAccountQuota({
       <SubscriptionQuotaSummary
         label={`${t("subscriptionProvider.allowance")} ${login}`}
         fetching={query.isFetching}
+        loading={!query.data && query.isFetching}
         items={quotaGroups.flatMap((group) => group.tiers)}
         status={
           provider === "chatgpt_api"
