@@ -70,3 +70,26 @@ earlier incomplete attempts described in the drag report.
 Linux, Windows, Windows-to-WSL2 and the repository-pinned Node runtime require remote
 CI verification for the pushed revision. Local results do not establish
 cross-platform or release acceptance.
+
+## CI toolchain follow-up
+
+The initial PR revision, `238cbd0e75883aa71c2c2a4120b4ed1c52bbd69f`, passed
+the frontend and Windows-to-WSL2 CI checks. Linux, Windows and macOS backend logs all reported
+`clippy::needless_bool` in the existing thinking-budget error detector at
+`src-tauri/src/proxy/thinking_budget_rectifier.rs:68`. CI installed Rust 1.100.0,
+while the local checks above used Rust 1.98.1.
+
+The detector now returns its existing three-condition boolean expression directly.
+Its switches, error matching, request changes and retry behavior are preserved.
+All 14 existing thinking-budget tests passed after this mechanical change. Before
+the follow-up commit, the same macOS arm64 host with Rust 1.98.1 passed:
+
+- `cargo fmt --check --manifest-path src-tauri/Cargo.toml`
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+- `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`
+- `cargo test --lib --manifest-path src-tauri/Cargo.toml`: 7471 passed, 21 ignored.
+- `cargo test --manifest-path src-tauri/Cargo.toml`: 7636 passed, 21 ignored across 16 targets.
+
+These checks cover revision `238cbd0e` plus the boolean-expression simplification
+and this report update. CI on Rust 1.100.0 must validate the follow-up revision on
+all required platforms. No warning policy or test assertions were relaxed.
