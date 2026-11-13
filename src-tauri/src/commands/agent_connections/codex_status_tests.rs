@@ -200,3 +200,40 @@ fn stopped_gateway_does_not_look_like_an_external_takeover() {
         Some(RecoveryReason::ConnectionInactive)
     ));
 }
+
+#[test]
+fn current_background_server_clears_window_age_without_claiming_inference_success() {
+    for reload in [
+        agent_connections::ReloadState::Current,
+        agent_connections::ReloadState::WaitingForIdle,
+        agent_connections::ReloadState::Restarting,
+        agent_connections::ReloadState::StaleCatalog,
+    ] {
+        let status = client::Status {
+            enabled: true,
+            configuration_owned: true,
+            provider_enabled: true,
+            recovery_pending: false,
+            orphaned_config: false,
+            orphan_cleanup_available: false,
+            group_ids: vec![],
+            omitted_entries: 0,
+            native_compatibility: "unsupported".into(),
+            configuration_issue: None,
+        };
+        let result = with_codex_reload(
+            codex_connection_status(status, None, None),
+            Some(reload),
+            Some(agent_connections::desktop::State::RestartRequired),
+        );
+        assert_eq!(
+            result.desktop_state,
+            Some(agent_connections::desktop::State::Current)
+        );
+        assert_eq!(result.reload_state, Some(reload));
+        assert_eq!(
+            result.restart_required,
+            reload == agent_connections::ReloadState::StaleCatalog
+        );
+    }
+}

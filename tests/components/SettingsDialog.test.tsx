@@ -281,6 +281,15 @@ const renderSettingsPage = (
 };
 
 describe("SettingsPage Component", () => {
+  it("exposes the installation statistics preference in general settings", () => {
+    renderSettingsPage();
+    expect(screen.getByText("theme-settings")).toBeInTheDocument();
+    expect(screen.getByText("privacy.title")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /privacy.statistics/ }),
+    ).toBeInTheDocument();
+  });
+
   it("only exposes the supported settings categories", () => {
     renderSettingsPage();
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);

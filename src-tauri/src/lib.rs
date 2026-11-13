@@ -437,6 +437,9 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
+            if window.label() == telemetry::ANALYTICS_WINDOW_LABEL {
+                return;
+            }
             if window.label() == tray_panel::LABEL {
                 tray_panel::window_event(window, event);
                 return;
@@ -478,7 +481,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_denylist(&[tray_panel::LABEL])
+                .with_denylist(&[tray_panel::LABEL, telemetry::ANALYTICS_WINDOW_LABEL])
                 .with_state_flags(window_state_flags())
                 .build(),
         )
@@ -1172,7 +1175,7 @@ pub fn run() {
             };
             let telemetry = Arc::new(crate::telemetry::TelemetryManager::load(telemetry_path));
             app.manage(telemetry.clone());
-            telemetry.clone().start_worker();
+            telemetry.clone().start_worker(app.handle().clone());
 
             if let Ok(directory) = app.path().app_local_data_dir() {
                 let checkin = Arc::new(services::workbuddy_checkin::Manager::new(
@@ -1463,7 +1466,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(telemetry::guard_invoke_handler(tauri::generate_handler![
             tray_panel::tray_panel_resize,
             tray_panel::tray_panel_hide,
             tray_panel::tray_panel_open,
@@ -1509,6 +1512,11 @@ pub fn run() {
             commands::codex_browser_login_cancel,
             commands::codex_provider_models,
             commands::codex_provider_quota,
+            commands::quota_panel_history,
+            commands::quota_panel_note,
+            commands::quota_panel_codex,
+            commands::quota_panel_policy,
+            commands::quota_panel_reset,
             commands::import_codex_provider_account,
             commands::test_codex_provider_model,
             commands::discover_routing_upstream_models,
@@ -1591,6 +1599,7 @@ pub fn run() {
             commands::get_settings,
             commands::get_telemetry_preferences,
             commands::set_telemetry_enabled,
+            commands::acknowledge_analytics_report,
             commands::save_settings,
             commands::has_codex_unify_history_backup,
             commands::restore_codex_unified_history,
@@ -1973,7 +1982,7 @@ pub fn run() {
             commands::save_tool_risk_command_list,
             commands::delete_tool_risk_command_list,
             commands::preview_tool_risk_command_pattern,
-        ]);
+        ]));
 
     let app = builder
         .build(context)

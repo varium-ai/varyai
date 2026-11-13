@@ -71,7 +71,7 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                         json!(format!("varyai/{legacy}"))
                 }
                 "qoder" => file.installed["providers"]["varyai"]["model"] = json!(legacy),
-                "deepseek-harness" => {
+                "deepseek-harness" if matches!(file.format, Format::Cordis) => {
                     file.installed["selection"][0]["config"]["model"] = json!(legacy)
                 }
                 "t3code" if file.path.ends_with("settings.json") => {
@@ -115,7 +115,7 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                     format!("varyai/{name}")
                 ),
                 "qoder" => assert_eq!(file.installed["providers"]["varyai"]["model"], name),
-                "deepseek-harness" => {
+                "deepseek-harness" if matches!(file.format, Format::Cordis) => {
                     assert_eq!(file.installed["selection"][0]["config"]["model"], name)
                 }
                 "t3code" if file.path.ends_with("settings.json") => {

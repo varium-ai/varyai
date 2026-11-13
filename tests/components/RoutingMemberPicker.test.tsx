@@ -60,7 +60,9 @@ it("marks removed provider models unavailable and never adds them back via selec
   render(<Harness />);
   const removed = screen.getByRole("checkbox", { name: "removed" });
   expect(
-    within(removed.closest("label")!).getByText("intentRouting.memberNotReady"),
+    within(removed.closest("label")!).getByText(
+      "intentRouting.memberUnavailable.modelMissing",
+    ),
   ).toBeVisible();
   fireEvent.click(removed);
   expect(
@@ -83,3 +85,27 @@ it("keeps the remaining model choices usable after selecting the first", () => {
   expect(screen.getByRole("checkbox", { name: "current" })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: "second" })).toBeChecked();
 });
+
+it.each([
+  { options: [], reason: "providerMissing" },
+  {
+    options: [{ ...providers[0], taskEligible: false }],
+    reason: "providerNotReady",
+  },
+])(
+  "identifies $reason without removing saved members",
+  ({ options, reason }) => {
+    render(
+      <RoutingMemberPicker
+        providers={options}
+        members={[{ id: "saved", providerId: "fixture", modelId: "current" }]}
+        disabled={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(
+      screen.getByText(`intentRouting.memberUnavailable.${reason}`),
+    ).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "current" })).toBeChecked();
+  },
+);

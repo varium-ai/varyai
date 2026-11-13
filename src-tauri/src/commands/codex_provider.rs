@@ -420,19 +420,30 @@ pub(crate) fn quota_auth_error(
 pub(crate) async fn codex_provider_quota(
     state: State<'_, AppState>,
     account: String,
-) -> Result<crate::services::subscription::SubscriptionQuota, String> {
+) -> Result<CodexQuotaObservation, String> {
     use crate::services::subscription::{query_codex_quota_with_client, SubscriptionQuota};
+    let identity = state.quota_panel.account_identity(&account).await;
     let result = if account == "native" {
         crate::services::subscription::get_subscription_quota("codex").await
     } else {
         let manager = &state.codex_oauth_manager;
         let token = match manager.get_valid_token_for_account(&account).await {
             Ok(token) => token,
-            Err(error) => return quota_auth_error(error),
+            Err(error) => {
+                return quota_auth_error(error).map(|quota| CodexQuotaObservation {
+                    quota,
+                    account_identity: None,
+                })
+            }
         };
         let workspace = match manager.chatgpt_account_id_for_account(&account).await {
             Ok(workspace) => workspace,
-            Err(error) => return quota_auth_error(error),
+            Err(error) => {
+                return quota_auth_error(error).map(|quota| CodexQuotaObservation {
+                    quota,
+                    account_identity: None,
+                })
+            }
         };
         let client = manager.account_client(&account).await?;
         let result = query_codex_quota_with_client(
@@ -457,7 +468,22 @@ pub(crate) async fn codex_provider_quota(
     // Vendor text and authentication errors never enter this editor.
     quota.error = None;
     quota.credential_message = None;
-    Ok(quota)
+    let account_identity = state
+        .quota_panel
+        .observe(&account, identity.as_deref(), &quota)
+        .await;
+    Ok(CodexQuotaObservation {
+        quota,
+        account_identity,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CodexQuotaObservation {
+    #[serde(flatten)]
+    quota: crate::services::subscription::SubscriptionQuota,
+    account_identity: Option<String>,
 }
 
 #[cfg(test)]

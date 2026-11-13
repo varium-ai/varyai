@@ -2,6 +2,22 @@
 
 The Agent model dropdown is the single model entry point for WorkBuddy, WorkBuddy AI, Qoder CN and Claude Desktop. Claude Desktop's visibility controls are available through **Manage visible models** inside that dropdown.
 
+VaryAI's shared model picker follows Magpie's default inline labels:
+`Model name · Provider name`, including when model names are unique. Routing
+groups use `· routing group`. A custom name already containing its source keeps
+that name without another suffix. Native client models retain their original
+labels. Equal labels within one provider group can additionally show a short
+identity hint. Account masking also covers inline suffixes, accessible labels
+and tooltips. These display labels do not change saved selections or request IDs.
+
+Source labels must also reach each managed Agent's own model list. Provider
+headings such as `Vary AI` identify the gateway, while each model's label
+identifies its upstream source. The shared catalog supplies that label before
+the individual client adapters run. Existing connections refresh display names
+independently of retained request aliases, so an older bare alias cannot erase
+the source suffix. Clients whose model menu only supports IDs receive a readable
+source-qualified alias and retain their previous aliases for existing sessions.
+
 The Agent model selector saves the model for new sessions. Existing conversations retain their own selections. CLI integrations use their supported configuration fields; desktop integrations may need a confirmed restart to reload their configuration. The restart button appears when a running desktop instance predates the applied configuration. A stopped application reads the configuration on launch; a newer instance has no pending restart.
 
 Managed model catalogs and default selections use readable model names, including

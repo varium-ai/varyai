@@ -70,7 +70,10 @@ mod tests {
             assert_eq!(choice.model.group, "gs");
             let serialized = serde_json::to_value(choice)?;
             assert_eq!(serialized["id"], original.id);
-            assert_eq!(serialized["name"], "GLM-5.3-Flash");
+            assert_eq!(
+                serialized["name"],
+                format!("GLM-5.3-Flash · gs ({})", index + 1)
+            );
             assert_eq!(serialized["group"], "gs");
             assert_eq!(
                 serialized["reference"],

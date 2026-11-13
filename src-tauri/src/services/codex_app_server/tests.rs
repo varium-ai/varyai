@@ -309,11 +309,7 @@ fn catalog_flaps_and_partial_writes_only_affect_manual_freshness(
     let route = fingerprint(&config).map_err(|_| "fingerprint")?;
     let (original, modified) = catalog_sample(&config).map_err(|_| "catalog")?;
     assert!(modified > 0);
-    for contents in [
-        r#"{"models":[{"slug":"one"}]}"#,
-        r#"{"models":[{"slug":"two"},{"slug":"one","description":"updated","priority":2}]}"#,
-        r#"{"models":[]}"#,
-    ] {
+    for contents in [r#"{"models":[{"slug":"one"}]}"#, r#"{"models":[]}"#] {
         fs::write(&catalog, contents)?;
         assert_eq!(fingerprint(&config).map_err(|_| "fingerprint")?, route);
         assert_ne!(
@@ -538,7 +534,7 @@ fn manual_catalog_refresh_waits_for_idle_and_observes_replacement() {
     assert_eq!(m.observe([1; 32], old.clone(), true, 15), Action::None);
     assert_eq!(
         m.observe([1; 32], old.clone(), false, 16),
-        Action::RestartApplication(old)
+        Action::Restart(old)
     );
     assert_eq!(m.snapshot(), ReloadState::Restarting);
     assert_eq!(
@@ -718,4 +714,52 @@ fn paginated_in_progress_turns_block_restart_until_completed(
     conn.execute_batch("UPDATE thread_turns SET status='inProgress', started_at=1")?;
     assert!(!activity::busy(dir.path(), 10_000_000).map_err(|_| "activity")?);
     Ok(())
+}
+
+#[test]
+fn catalog_freshness_ignores_order_metadata_and_model_picks_but_tracks_visibility(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("config.toml");
+    let catalog = dir.path().join("models.json");
+    fs::write(&config, "model_catalog_json='models.json'\nmodel='one'\n")?;
+    fs::write(
+        &catalog,
+        r#"{"models":[{"slug":"one","visibility":"list","priority":1},{"slug":"two"}]}"#,
+    )?;
+    let original = catalog_fingerprint(&config).map_err(|_| "catalog")?;
+    fs::write(
+        &catalog,
+        r#"{"models":[{"slug":"two","description":"new metadata"},{"slug":"one","visibility":"list","priority":99}]}"#,
+    )?;
+    fs::write(
+        &config,
+        "model_catalog_json='models.json'\nmodel='two'\nmodel_reasoning_effort='high'\n",
+    )?;
+    assert_eq!(
+        catalog_fingerprint(&config).map_err(|_| "catalog")?,
+        original
+    );
+    fs::write(
+        &catalog,
+        r#"{"models":[{"slug":"two"},{"slug":"one","visibility":"hide"}]}"#,
+    )?;
+    assert_ne!(
+        catalog_fingerprint(&config).map_err(|_| "catalog")?,
+        original
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_startup_route_offers_manual_refresh_without_ending_any_server() {
+    let mut monitor = Monitor::default();
+    let old = vec![server(10)];
+    monitor.observe([1; 32], old.clone(), false, 0);
+    monitor.observe_catalog(Some([2; 32]), Some(13_000_000));
+    assert_eq!(monitor.snapshot(), ReloadState::StaleCatalog);
+    assert_eq!(monitor.observe([1; 32], old, false, 6), Action::None);
+    monitor.observe([1; 32], vec![server(20)], false, 7);
+    monitor.observe_catalog(Some([2; 32]), Some(13_000_000));
+    assert_eq!(monitor.snapshot(), ReloadState::Current);
 }

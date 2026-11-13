@@ -1,68 +1,41 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
-import { globalProviderPresets } from "@/config/globalProviderPresets";
+import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import {
-  routingUpstreamsApi,
-  type ApiProviderAllowance,
-  type RoutingUpstream,
-} from "@/lib/api/routingUpstreams";
+  apiProviderQuotaEnabled,
+  apiProviderQuotaOptions,
+  type ApiProviderQuotaObservation,
+} from "@/lib/query/apiProviderQuota";
 import { SubscriptionQuotaSummary } from "./SubscriptionQuotaSummary";
+import { ProviderQuotaCard, type QuotaCardOptions } from "./ProviderQuotaCard";
 
-type Snapshot = { quota?: ApiProviderAllowance; failed: boolean };
-export function ApiProviderQuota({
-  record,
-  compact = true,
-  disabled = false,
-}: {
+interface ApiProviderQuotaProps {
   record: RoutingUpstream;
   compact?: boolean;
   disabled?: boolean;
-}) {
-  const { t, i18n } = useTranslation();
+  card?: QuotaCardOptions;
+}
+
+export function ApiProviderQuota(props: ApiProviderQuotaProps) {
   const client = useQueryClient();
-  const preset = globalProviderPresets.find(
-    (entry) => entry.id === record.presetId,
+  const query = useQuery(
+    apiProviderQuotaOptions(props.record, client, !!props.card),
   );
-  const enabled =
-    record.source.kind === "api" &&
-    record.revision > 0 &&
-    record.hasApiKey &&
-    preset?.kind !== "vendor";
-  const queryKey = ["routing-provider-quota", record.id, record.revision];
-  const query = useQuery({
-    queryKey,
-    enabled,
-    retry: false,
-    staleTime: (query) =>
-      (query.state.data as Snapshot | undefined)?.quota?.status ===
-      "unsupported"
-        ? 6 * 60 * 60_000
-        : 60_000,
-    gcTime: 6 * 60 * 60_000,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    queryFn: async (): Promise<Snapshot> => {
-      const previous = client.getQueryData<Snapshot>(queryKey)?.quota;
-      try {
-        const quota = await routingUpstreamsApi.quota(
-          record.id,
-          record.revision,
-        );
-        if (quota.status === "unsupported" && previous?.status === "ready") {
-          return { quota: previous, failed: true };
-        }
-        return { quota, failed: false };
-      } catch {
-        return {
-          quota: previous?.status === "ready" ? previous : undefined,
-          failed: true,
-        };
-      }
-    },
-  });
+  return <ApiProviderQuotaView {...props} observation={query} />;
+}
+
+export function ApiProviderQuotaView({
+  record,
+  compact = true,
+  disabled = false,
+  card,
+  observation: query,
+}: ApiProviderQuotaProps & { observation: ApiProviderQuotaObservation }) {
+  const { t, i18n } = useTranslation();
   const quota = query.data?.quota;
-  if (!enabled || quota?.status === "unsupported") return null;
+  if (!apiProviderQuotaEnabled(record) || quota?.status === "unsupported")
+    return null;
   const status =
     quota?.status === "unauthorized"
       ? "subscriptionProvider.quotaKeyRejected"
@@ -82,6 +55,38 @@ export function ApiProviderQuota({
         { defaultValue: tier.name },
       ),
     }));
+  if (card)
+    return (
+      <ProviderQuotaCard
+        name={record.name}
+        card={card}
+        items={items}
+        status={status}
+        fetching={query.isFetching}
+        loading={!query.data && query.isFetching}
+        disabled={disabled}
+        sample={
+          query.data?.observedAt
+            ? {
+                scope: `api:${record.id}:${record.revision}`,
+                at: query.data.observedAt,
+              }
+            : undefined
+        }
+        refresh={() => void query.refetch({ cancelRefetch: false })}
+      >
+        {quota?.balance != null && Number.isFinite(quota.balance) && (
+          <span>
+            {t("subscriptionProvider.balance", {
+              amount: new Intl.NumberFormat(i18n.language, {
+                style: "currency",
+                currency: "USD",
+              }).format(quota.balance),
+            })}
+          </span>
+        )}
+      </ProviderQuotaCard>
+    );
   const summary = (
     <SubscriptionQuotaSummary
       label={`${t("subscriptionProvider.allowance")} ${record.name}`}

@@ -69,6 +69,20 @@ consumer boundaries, native checkpoints, and security inspection remain enforced
 
 Routing groups use a table with a full group name that wraps when needed, a compact member summary and publication/edit/delete controls in Actions. Separators appear only between rows; a single result has no bottom divider. The table fits the available workspace width without a fixed minimum. The model and request columns are 80 px each, the action column is 108 px, and the name column shrinks with the workspace while long names wrap and member summaries truncate. All four columns remain visible at the application's 900 px minimum window width. The Actions header and cells stay fixed to the right edge. Action controls always stay on one line. The action column stays compact, leaving more space for the group name. Continuous narrow inset shadows, following Ant Design's fixed-column treatment, appear only where more table content can be scrolled into view. The drag grip stays inside its icon button. While dragging, an inert row preview preserves the measured column widths, full row height and fixed-action alignment. The live table keeps its layout; Escape, pointer cancellation and resizing remove the preview and restore the row. Vertical edge scrolling uses the workspace rather than the horizontal table viewport. Rows use a neutral global-resource icon rather than assigning ownership to an agent. Filter locally by group name, exact model ID text or provider name; filtering never changes saved groups. Editing and confirmed deletion remain available per row. Saving strategy changes in the editor creates a user-owned group override. Member information checks supported task transport and locally available official/OAuth identity, rather than the older API-key-only offline validator. It does not prove inference permissions or remote availability.
 
+Group readiness is based on whether at least one participating member is locally
+available, including members resolved from model patterns. Switched-off members
+do not count. Manual groups count only their selected member (or the default
+member if no manual selection is stored), without silently switching to another
+member. Once the provider catalog has loaded, a group with no ready member shows
+**No member ready** in the list. A partially available group has no group-level
+warning. In the editor, unavailable members remain selected and removable, with
+separate explanations for a provider missing from configuration, a provider not
+ready for task routing, or a model absent from its provider's current model list.
+An omitted model list is not treated as an empty list. These are local readiness
+checks, not live probes of credentials, quotas or remote service health. This
+presentation does not change forwarding or fallback behavior and is shared by
+macOS and Windows.
+
 Click the group name, member summary, blank row space or **Edit** to open the same modal dialog used by **Create group**. The compact list remains in place behind the dialog. Publication toggles, drag handles and delete icons keep their own actions. The dialog is capped at 880 px wide with a scrollable body and persistent Save/Cancel actions. Group deletion is available only through the list's trash icon and its confirmation dialog; the editor footer has no group deletion action. Focus starts in the group name and returns to the row's Edit button or the creation trigger after closing.
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.

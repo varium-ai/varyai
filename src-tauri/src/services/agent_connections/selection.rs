@@ -250,6 +250,10 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
     let names = &next.model_map;
     let visible = next.visible_models.as_deref();
     for file in &mut next.files {
+        if old.app == "deepseek-harness" && matches!(file.format, super::Format::HarnessCredentials)
+        {
+            continue;
+        }
         let prior = old
             .files
             .iter()

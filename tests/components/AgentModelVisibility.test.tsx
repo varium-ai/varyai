@@ -84,7 +84,7 @@ async function open() {
   return { trigger, client, dialog: await screen.findByRole("dialog") };
 }
 
-it("uses the reference implementation's compact immediate-save model list without form actions or repeated provider suffixes", async () => {
+it("uses the reference implementation's compact immediate-save model list with inline provider suffixes and without form actions", async () => {
   const { dialog, trigger } = await open();
   expect(dialog).toHaveClass("mp-model-picker-popover");
   expect(dialog.querySelector(".mp-shared-picker .mp-am-body")).not.toBeNull();
@@ -94,7 +94,9 @@ it("uses the reference implementation's compact immediate-save model list withou
   expect(
     within(dialog).queryByRole("button", { name: "common.cancel" }),
   ).not.toBeInTheDocument();
-  const alpha = within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" });
+  const alpha = within(dialog).getByRole("menuitemcheckbox", {
+    name: "Alpha · Vendor one",
+  });
   expect(alpha).toHaveAttribute("aria-checked", "true");
   expect(
     within(dialog).getByRole("button", {
@@ -127,7 +129,9 @@ it("uses the reference implementation's compact immediate-save model list withou
 
 it("uses empty maker slots and context text rather than repeating provider initials or capability badges", async () => {
   const { dialog } = await open();
-  const alpha = within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" });
+  const alpha = within(dialog).getByRole("menuitemcheckbox", {
+    name: "Alpha · Vendor one",
+  });
   expect(alpha.querySelector(".mp-am-logo")).toBeEmptyDOMElement();
   expect(alpha).toHaveTextContent("200K");
   expect(alpha.querySelector(".mp-model-badge")).toBeNull();
@@ -193,7 +197,9 @@ it("shows routing, relay and subscription groups from the shared catalog on the 
     expect(within(dialog).getAllByRole("menuitemcheckbox")).toHaveLength(count);
   }
   expect(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Shared 0" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Shared 0 · Subscription",
+    }),
   ).toHaveTextContent("500K");
 });
 
@@ -205,13 +211,17 @@ it("searches all providers even after choosing one on the rail and retains just-
     }),
   );
   expect(
-    within(dialog).queryByRole("menuitemcheckbox", { name: "Gamma" }),
+    within(dialog).queryByRole("menuitemcheckbox", {
+      name: "Gamma · Vendor two",
+    }),
   ).not.toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("searchbox"), {
     target: { value: "Gamma" },
   });
   expect(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Gamma" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Gamma · Vendor two",
+    }),
   ).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("searchbox"), {
     target: { value: "" },
@@ -222,10 +232,14 @@ it("searches all providers even after choosing one on the rail and retains just-
     }),
   );
   fireEvent.click(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   );
   expect(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   ).toHaveAttribute("aria-checked", "false");
   fireEvent.click(
     within(dialog).getByRole("button", {
@@ -238,7 +252,9 @@ it("searches all providers even after choosing one on the rail and retains just-
     }),
   );
   expect(
-    within(dialog).queryByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(dialog).queryByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   ).not.toBeInTheDocument();
 });
 
@@ -282,10 +298,12 @@ it("serializes rapid choices and restores the latest saved state on failure with
     .mockRejectedValueOnce("synthetic-private-error");
   const { dialog, client } = await open();
   fireEvent.click(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   );
   fireEvent.click(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Beta" }),
+    within(dialog).getByRole("menuitemcheckbox", { name: "Beta · Vendor one" }),
   );
   await waitFor(() =>
     expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledTimes(1),
@@ -298,10 +316,12 @@ it("serializes rapid choices and restores the latest saved state on failure with
     "agentConnections.failed",
   );
   expect(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   ).toHaveAttribute("aria-checked", "false");
   expect(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Beta" }),
+    within(dialog).getByRole("menuitemcheckbox", { name: "Beta · Vendor one" }),
   ).toHaveAttribute("aria-checked", "true");
   expect(
     client.getQueryData<Visibility>([
@@ -319,7 +339,9 @@ it("saves keyboard model ordering and restores the default order", async () => {
       name: "agentConnections.modelViewOrder",
     }),
   );
-  const alpha = within(dialog).getByRole("listitem", { name: "Alpha" });
+  const alpha = within(dialog).getByRole("listitem", {
+    name: "Alpha · Vendor one",
+  });
   fireEvent.keyDown(alpha, { altKey: true, key: "ArrowUp" });
   await waitFor(() =>
     expect(agentConnectionsApi.setModelVisibility).toHaveBeenLastCalledWith(
@@ -328,7 +350,7 @@ it("saves keyboard model ordering and restores the default order", async () => {
     ),
   );
   expect(within(dialog).getAllByRole("listitem")[0]).toHaveAccessibleName(
-    "Alpha",
+    "Alpha · Vendor one",
   );
   fireEvent.click(
     within(dialog).getByRole("button", {
@@ -349,14 +371,20 @@ it("supports keyboard model choices and closes on outside scrolling without disc
     key: "ArrowDown",
   });
   expect(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Smart" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Smart · routing group",
+    }),
   ).toHaveFocus();
   fireEvent.scroll(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Smart" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Smart · routing group",
+    }),
   );
   expect(dialog).toBeInTheDocument();
   fireEvent.click(
-    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(dialog).getByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   );
   fireEvent.scroll(document);
   await waitFor(() =>
@@ -371,6 +399,8 @@ it("supports keyboard model choices and closes on outside scrolling without disc
   fireEvent.click(trigger);
   const reopened = await screen.findByRole("dialog");
   expect(
-    within(reopened).getByRole("menuitemcheckbox", { name: "Alpha" }),
+    within(reopened).getByRole("menuitemcheckbox", {
+      name: "Alpha · Vendor one",
+    }),
   ).toHaveAttribute("aria-checked", "false");
 });

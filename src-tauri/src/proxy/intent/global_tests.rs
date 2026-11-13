@@ -92,7 +92,7 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
         "fixture".into(),
         MenuModel {
             alias: alias.clone(),
-            label: "Zeta Model".into(),
+            label: "Zeta Model · Synthetic".into(),
             description: "VaryAI routing group",
             order: 0,
         },
@@ -108,6 +108,14 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
         "claude",
         "pi",
         "workbuddy",
+        "workbuddy-ai",
+        "grokbuild",
+        "hermes",
+        "kimi",
+        "qwen",
+        "zcode",
+        "trae",
+        "trae-intl",
     ];
     let name = "zeta-model";
     use sha2::{Digest, Sha256};
@@ -152,7 +160,7 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
             .json()
             .await?;
         assert_eq!(models["data"][0]["id"], name, "{app}");
-        assert_eq!(models["data"][0]["display_name"], "Zeta Model");
+        assert_eq!(models["data"][0]["display_name"], "Zeta Model · Synthetic");
         if app == "gemini" {
             let models: Value = client
                 .get(format!("{base}/v1beta/models"))
@@ -163,6 +171,7 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
                 .json()
                 .await?;
             assert_eq!(models["models"][0]["name"], format!("models/{name}"));
+            assert_eq!(models["models"][0]["displayName"], "Zeta Model · Synthetic");
         }
         for wire in [name, "a-previous-readable-name", &legacy, &alias] {
             let (endpoint, body) = if app == "gemini" {

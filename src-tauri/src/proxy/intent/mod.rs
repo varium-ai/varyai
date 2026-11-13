@@ -1842,7 +1842,24 @@ async fn execute(
                 .iter()
                 .map(|at| candidates[*at])
                 .collect::<Vec<_>>();
-            pool.sort_by_key(|index| session.targets[*index].scheduling.exhausted(now));
+            pool.sort_by_key(|index| {
+                let target = &session.targets[*index];
+                let exhausted = target.scheduling.exhausted(now);
+                let first = target.effort.free != Some(true)
+                    && target
+                        .credentials
+                        .as_ref()
+                        .and_then(|c| c.quota_identity())
+                        .is_some_and(|id| {
+                            crate::services::quota_panel::credits(&id, exhausted)
+                                == crate::services::quota_panel::CreditsMode::First
+                        });
+                if first {
+                    -1
+                } else {
+                    i32::from(exhausted)
+                }
+            });
             for (at, index) in positions.into_iter().zip(pool) {
                 candidates[at] = index;
             }
@@ -1921,6 +1938,22 @@ async fn execute(
             }
         }
     }
+    if pinned.is_none() && !count_tokens {
+        candidates.sort_by_key(|index| {
+            let target = &session.targets[*index];
+            target.effort.free != Some(true)
+                && target
+                    .credentials
+                    .as_ref()
+                    .and_then(|c| c.quota_identity())
+                    .is_some_and(|id| {
+                        crate::services::quota_panel::credits(
+                            &id,
+                            target.scheduling.exhausted(chrono::Utc::now().timestamp()),
+                        ) == crate::services::quota_panel::CreditsMode::Last
+                    })
+        });
+    }
     trace.plan(
         candidates
             .iter()
@@ -1954,7 +1987,16 @@ async fn execute(
     let mut transient: Vec<(usize, usize)> = Vec::new();
     let mut retry_deadline = None;
     let mut replay_recovery = replay_recovery::Recovery::default();
+    let mut reset_deferred = std::collections::VecDeque::<(usize, usize, String)>::new();
+    let mut reset_checked = std::collections::HashSet::<String>::new();
     'attempts: loop {
+        if attempts.is_empty()
+            && !reset_deferred.is_empty()
+            && retry_deadline.is_some_and(|at| Instant::now() >= at)
+        {
+            transient.clear();
+            retry_deadline = None;
+        }
         if attempts.is_empty() && !transient.is_empty() && retry_seconds > 0 {
             let deadline = *retry_deadline
                 .get_or_insert_with(|| Instant::now() + Duration::from_secs(retry_seconds));
@@ -1992,6 +2034,18 @@ async fn execute(
                 continue;
             }
         }
+        if attempts.is_empty() {
+            if let Some((candidate, index, identity)) = reset_deferred.pop_front() {
+                if reset_checked.insert(identity.clone())
+                    && crate::services::quota_panel::auto_week(&identity).await
+                {
+                    if let Some(target) = session.targets.get(index) {
+                        target.scheduling.reset_confirmed();
+                    }
+                }
+                attempts.push_back((candidate, index));
+            }
+        }
         let Some((candidate, index)) = attempts.pop_front() else {
             break;
         };
@@ -2001,6 +2055,26 @@ async fn execute(
         let Some(target) = session.targets.get(index) else {
             return fail(StatusCode::BAD_REQUEST, "routing_invalid_target");
         };
+        if !count_tokens && target.effort.free != Some(true) {
+            if let Some(identity) = target.credentials.as_ref().and_then(|c| c.quota_identity()) {
+                let now = chrono::Utc::now().timestamp();
+                if !reset_checked.contains(&identity)
+                    && crate::services::quota_panel::week_enabled(&identity)
+                    && (target.scheduling.weekly_exhausted(now)
+                        || crate::services::quota_panel::observed_week_full(&identity))
+                {
+                    reset_deferred.push_back((candidate, index, identity));
+                    continue;
+                }
+                if crate::services::quota_panel::credits(
+                    &identity,
+                    target.scheduling.exhausted(now),
+                ) == crate::services::quota_panel::CreditsMode::Off
+                {
+                    continue;
+                }
+            }
+        }
         if refused_models.contains(&(target.provider_id.clone(), target.model.clone()))
             || overflow_tokens.is_some_and(|tokens| {
                 target

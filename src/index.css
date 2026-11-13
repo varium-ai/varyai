@@ -143,6 +143,24 @@ body {
   @apply m-0 p-0 text-sm;
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@layer base {
+  /* Keep editing and copyable content selectable in WebKit and WebView2. */
+  input,
+  textarea,
+  [contenteditable=""],
+  [contenteditable="true"],
+  [contenteditable="plaintext-only"],
+  .cm-content,
+  pre,
+  code,
+  .select-text {
+    -webkit-user-select: text;
+    user-select: text;
+  }
 }
 
 html.dark {

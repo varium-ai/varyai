@@ -1,6 +1,7 @@
 import {
   Search,
   Info,
+  CircleAlert,
   ChevronDown,
   Settings,
   Pencil,
@@ -19,6 +20,7 @@ import { RoutingMemberPicker } from "@/components/routing/RoutingMemberPicker";
 import {
   catalogRoutingMembers,
   routingMemberAvailable,
+  routingGroupHasReadyMember,
   selectRoutingMembers,
 } from "@/lib/routingMemberSelection";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
@@ -726,9 +728,7 @@ export function IntentRoutingPanel({
         const name =
           providers.data?.find((p) => p.id === member.providerId)?.name ||
           member.providerId;
-        const unavailable =
-          providers.data && !routingMemberAvailable(providers.data, member);
-        return `${name} · ${member.modelId}${member.effort ? ` :${member.effort}` : ""}${unavailable ? ` (${t("intentRouting.memberNotReady")})` : ""}`;
+        return `${name} · ${member.modelId}${member.effort ? ` :${member.effort}` : ""}`;
       })
       .join(" · ");
   }
@@ -1849,13 +1849,10 @@ export function IntentRoutingPanel({
                 {visibleGroups?.map((group) => {
                   const notReady =
                     providers.data &&
-                    group.members.some(
-                      (member) =>
-                        !group.off?.includes(member.id) &&
-                        (group.routing !== "manual" ||
-                          member.id ===
-                            (group.manualMemberId ?? group.defaultMemberId)) &&
-                        !routingMemberAvailable(providers.data ?? [], member),
+                    !routingGroupHasReadyMember(
+                      providers.data,
+                      group,
+                      groups.data?.matchedMembers?.[group.id],
                     );
                   const summary = memberSummary(group);
                   return (
@@ -1987,14 +1984,15 @@ export function IntentRoutingPanel({
                               {notReady && (
                                 <span
                                   tabIndex={0}
-                                  title={t("intentRouting.memberNotReady")}
-                                  aria-label={t("intentRouting.memberNotReady")}
-                                  className="text-muted-foreground"
+                                  title={t("intentRouting.noMemberReady")}
+                                  aria-label={t("intentRouting.noMemberReady")}
+                                  className="inline-flex items-center gap-1 text-xs text-destructive"
                                 >
-                                  <Info
+                                  <CircleAlert
                                     aria-hidden="true"
-                                    className="h-3.5 w-3.5"
+                                    className="h-3.5 w-3.5 shrink-0"
                                   />
+                                  {t("intentRouting.noMemberReady")}
                                 </span>
                               )}
                             </div>

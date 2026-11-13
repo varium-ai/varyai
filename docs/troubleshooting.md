@@ -660,6 +660,14 @@ seal that may contain a retired token. **Reapply** in Tools rebuilds that
 connection; fully quit and reopen Claude Desktop to load the new credential.
 Reapplying does not restart Desktop automatically.
 
+When you confirm **Restart** in Tools / Agent, the confirmation closes immediately.
+The affected agent spins its restart icon, shows **Restarting…** and temporarily
+disables its connection, model and restart controls. Other agents and workspace pages remain available;
+returning to Tools / Agent preserves the pending restart indicator. Completion
+refreshes connection status. If restart fails, VaryAI shows a sanitized error
+notification and unlocks the agent so you can retry. This applies on macOS and
+Windows.
+
 Like Magpie, the local gateway recognizes Desktop's one-token `.` connection
 probe, routes it to the current menu choice or the first visible model, and
 requests at least 16 output tokens for compatible GPT endpoints. The probe still

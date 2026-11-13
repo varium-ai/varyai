@@ -2486,9 +2486,143 @@ describe("IntentRoutingPanel", () => {
       name: "intentRouting.manualMember",
     });
     expect(
-      screen.queryByLabelText("intentRouting.memberNotReady"),
+      screen.queryByLabelText("intentRouting.noMemberReady"),
     ).not.toBeInTheDocument();
   });
+
+  it("does not report unavailable members before the provider catalog loads", async () => {
+    let finish!: (
+      value: Awaited<ReturnType<typeof intentRoutingApi.providers>>,
+    ) => void;
+    vi.mocked(intentRoutingApi.providers).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    mount();
+    await screen.findByText("Fixture group");
+    expect(
+      screen.queryByLabelText("intentRouting.noMemberReady"),
+    ).not.toBeInTheDocument();
+    await act(async () => finish([]));
+    expect(
+      await screen.findByLabelText("intentRouting.noMemberReady"),
+    ).toBeVisible();
+  });
+
+  it.each(["smart", "ordered", "round_robin"] as const)(
+    "keeps a %s group ready when only some members are unavailable",
+    async (routing) => {
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [
+          {
+            ...group,
+            routing,
+            members: [
+              ...group.members,
+              { id: "missing", providerId: "gone", modelId: "gone-model" },
+            ],
+          },
+        ],
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      mount();
+      await screen.findByText("Fixture group");
+      await waitFor(() =>
+        expect(intentRoutingApi.providers).toHaveBeenCalled(),
+      );
+      expect(
+        screen.queryByLabelText("intentRouting.memberNotReady"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("intentRouting.noMemberReady"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "common.edit" }));
+      const missing = screen.getByRole("group", { name: "gone" });
+      expect(
+        within(missing).getByText(
+          "intentRouting.memberUnavailable.providerMissing",
+        ),
+      ).toBeVisible();
+      expect(
+        within(missing).getByRole("checkbox", { name: "gone-model" }),
+      ).toBeChecked();
+    },
+  );
+
+  it.each([
+    { members: [], matched: [], routing: "ordered" as const, off: [] },
+    {
+      members: group.members,
+      matched: [],
+      routing: "smart" as const,
+      off: ["member"],
+    },
+    {
+      members: [{ id: "missing", providerId: "gone", modelId: "gone-model" }],
+      matched: [],
+      routing: "smart" as const,
+      off: [],
+    },
+    {
+      members: group.members,
+      matched: [],
+      routing: "manual" as const,
+      off: [],
+    },
+  ])(
+    "warns when no participating member is ready: %j",
+    async ({ members, matched, routing, off }) => {
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [
+          { ...group, members, routing, off, manualMemberId: "missing" },
+        ],
+        matchedMembers: { [group.id]: matched },
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      mount();
+      expect(
+        await screen.findByLabelText("intentRouting.noMemberReady"),
+      ).toBeVisible();
+    },
+  );
+
+  it.each(["ordered", "manual"] as const)(
+    "counts pattern matches in %s group readiness",
+    async (routing) => {
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [
+          {
+            ...group,
+            routing,
+            manualMemberId: "dynamic",
+            members: [
+              { id: "missing", providerId: "gone", modelId: "gone-model" },
+            ],
+          },
+        ],
+        matchedMembers: {
+          [group.id]: [{ ...group.members[0], id: "dynamic" }],
+        },
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      mount();
+      await screen.findByText("Fixture group");
+      await waitFor(() =>
+        expect(intentRoutingApi.providers).toHaveBeenCalled(),
+      );
+      expect(
+        screen.queryByLabelText("intentRouting.memberNotReady"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("intentRouting.noMemberReady"),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("pauses classifier controls in manual mode and retains the stored rules", async () => {
     mount();
@@ -3396,7 +3530,7 @@ describe("IntentRoutingPanel", () => {
     mount();
     await screen.findByText("Fixture group");
     expect(
-      await screen.findByTitle("intentRouting.memberNotReady"),
+      await screen.findByTitle("intentRouting.noMemberReady"),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "common.edit" }));
     const provider = screen.getByRole("group", {
@@ -3406,7 +3540,9 @@ describe("IntentRoutingPanel", () => {
       within(provider).getByRole("checkbox", { name: "fixture-model" }),
     ).toBeChecked();
     expect(
-      within(provider).getByText("intentRouting.memberNotReady"),
+      within(provider).getByText(
+        "intentRouting.memberUnavailable.providerNotReady",
+      ),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>

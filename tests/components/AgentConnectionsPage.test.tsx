@@ -87,10 +87,14 @@ vi.mock("@/lib/api/settings", () => ({
 function mount(
   compact = false,
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  onEditingChange?: (state: { dirty: boolean; busy: boolean }) => void,
 ) {
   return render(
     <QueryClientProvider client={client}>
-      <AgentConnectionsPage compact={compact} />
+      <AgentConnectionsPage
+        compact={compact}
+        onEditingChange={onEditingChange}
+      />
     </QueryClientProvider>,
   );
 }
@@ -499,6 +503,128 @@ beforeEach(() => {
   });
   vi.mocked(agentConnectionsApi.setModelVisibility).mockResolvedValue();
 });
+describe("installation rescan feedback", () => {
+  it("clears the busy state after a failed refresh and allows retry", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const { container } = mount(false, client);
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    fireEvent.click(container.querySelector("details.mp-agent-more summary")!);
+    const button = screen.getByRole("button", {
+      name: "agentConnections.rescan",
+    });
+    let failRefresh!: () => void;
+    const refresh = vi.spyOn(client, "invalidateQueries").mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        failRefresh = () => reject(new Error("Synthetic refresh failure"));
+      }),
+    );
+    const notify = vi.spyOn(toast, "error").mockReturnValue("rescan-error");
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(button.querySelector("svg")).toHaveClass("animate-spin");
+    await act(async () => failRefresh());
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button.querySelector("svg")).not.toHaveClass("animate-spin");
+    expect(notify).toHaveBeenCalledWith("agentConnections.rescanFailed");
+    refresh.mockRestore();
+    notify.mockRestore();
+
+    const previousCalls = vi.mocked(proxyApi.getAgentInstallations).mock.calls
+      .length;
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(proxyApi.getAgentInstallations).toHaveBeenCalledTimes(
+      previousCalls + 1,
+    );
+  });
+
+  it.each([
+    { compact: false, empty: false },
+    { compact: true, empty: false },
+    { compact: false, empty: true },
+    { compact: true, empty: true },
+  ])(
+    "keeps all rescan buttons spinning until the full refresh completes ($compact, $empty)",
+    async ({ compact, empty }) => {
+      const success = vi
+        .spyOn(toast, "success")
+        .mockReturnValue("rescan-toast");
+      const presence: Record<string, boolean> = empty ? {} : { claude: true };
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue(presence);
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const { container } = mount(compact, client);
+      await waitFor(() => expect(client.isFetching()).toBe(0));
+      fireEvent.click(
+        container.querySelector("details.mp-agent-more summary")!,
+      );
+      const buttons = screen.getAllByRole("button", {
+        name: "agentConnections.rescan",
+      });
+      expect(buttons).toHaveLength(empty ? 2 : 1);
+      for (const button of buttons) {
+        expect(button).toBeEnabled();
+        expect(button.querySelector("svg")).not.toHaveClass("animate-spin");
+      }
+
+      let finishDetection!: () => void;
+      let finishVersions!: () => void;
+      vi.mocked(proxyApi.getAgentInstallations).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishDetection = () => resolve(presence);
+        }),
+      );
+      vi.mocked(settingsApi.getAgentVersions).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishVersions = () => resolve({});
+        }),
+      );
+      fireEvent.click(buttons[0]);
+      await waitFor(() => {
+        for (const button of buttons) {
+          expect(button).toBeDisabled();
+          expect(button).toHaveAttribute("aria-busy", "true");
+          expect(button.querySelector("svg")).toHaveClass("animate-spin");
+        }
+      });
+      const detectionCalls = vi.mocked(proxyApi.getAgentInstallations).mock
+        .calls.length;
+      fireEvent.click(buttons[buttons.length - 1]);
+      expect(proxyApi.getAgentInstallations).toHaveBeenCalledTimes(
+        detectionCalls,
+      );
+
+      await act(async () => finishDetection());
+      await waitFor(() =>
+        expect(client.isFetching({ queryKey: ["agent-installations"] })).toBe(
+          0,
+        ),
+      );
+      for (const button of buttons) {
+        expect(button).toBeDisabled();
+        expect(button.querySelector("svg")).toHaveClass("animate-spin");
+      }
+      expect(success).not.toHaveBeenCalledWith(
+        "agentConnections.rescanSuccess",
+      );
+
+      await act(async () => finishVersions());
+      await waitFor(() => {
+        for (const button of buttons) {
+          expect(button).toBeEnabled();
+          expect(button).toHaveAttribute("aria-busy", "false");
+          expect(button.querySelector("svg")).not.toHaveClass("animate-spin");
+        }
+      });
+      expect(success).toHaveBeenCalledWith("agentConnections.rescanSuccess");
+      success.mockRestore();
+    },
+  );
+});
+
 describe("tool discovery empty state", () => {
   it.each([false, true])(
     "offers installation and rescan actions (tray: %s)",
@@ -1642,6 +1768,241 @@ describe("Agent connections", () => {
     }
   });
 
+  it.each(["Macintosh", "Windows NT 10.0"])(
+    "closes restart confirmation and keeps other agents and navigation available on %s",
+    async (userAgent) => {
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(userAgent);
+      let finish!: () => void;
+      vi.mocked(agentConnectionsApi.restart).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue(
+        ["workbuddy", "claude-desktop"].map((app) => ({
+          app,
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: true,
+          desktopState: "restart_required" as const,
+        })),
+      );
+      const editing = vi.fn();
+      try {
+        mount(false, undefined, editing);
+        const row = await screen.findByRole("article", {
+          name: "apps.workbuddy",
+        });
+        fireEvent.click(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        );
+        fireEvent.click(
+          within(await screen.findByRole("dialog")).getByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        await waitFor(() =>
+          expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+        );
+        expect(agentConnectionsApi.restart).toHaveBeenCalledWith(
+          "workbuddy",
+          true,
+        );
+        expect(within(row).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.restarting",
+        );
+        expect(within(row).getByRole("switch")).toBeDisabled();
+        expect(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        ).toBeDisabled();
+        const restartButton = within(row).getByRole("button", {
+          name: "agentConnections.restart",
+        });
+        expect(restartButton).toHaveAttribute("aria-busy", "true");
+        expect(restartButton.querySelector("svg")).toHaveClass(
+          "animate-spin",
+          "motion-reduce:animate-none",
+        );
+        expect(editing).toHaveBeenLastCalledWith({ dirty: false, busy: false });
+        const other = screen.getByRole("article", {
+          name: "apps.claude-desktop",
+        });
+        expect(within(other).getByRole("switch")).toBeEnabled();
+        fireEvent.click(
+          within(other).getByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        const dialog = await screen.findByRole("dialog");
+        expect(dialog).toHaveAccessibleName("agentConnections.restartTitle");
+        await act(async () => finish());
+        await waitFor(() =>
+          expect(
+            within(row).getByRole("switch", { hidden: true }),
+          ).toBeEnabled(),
+        );
+        expect(restartButton).toHaveAttribute("aria-busy", "false");
+        expect(restartButton.querySelector("svg")).not.toHaveClass(
+          "animate-spin",
+        );
+        expect(dialog).toBeInTheDocument();
+        expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => finish());
+        ua.mockRestore();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "tracks concurrent restart spinners independently (compact=%s)",
+    async (compact) => {
+      const finish = new Map<string, () => void>();
+      vi.mocked(agentConnectionsApi.restart).mockImplementation(
+        (app) =>
+          new Promise<void>((resolve) => {
+            finish.set(app, resolve);
+          }),
+      );
+      const entries = ["codex", "workbuddy"].map((app) => ({
+        app,
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        model: "vary-auto/shared",
+        restartRequired: true,
+        desktopState: "restart_required" as const,
+      }));
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue(entries);
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      mount(compact, client);
+      for (const { app } of entries) {
+        const row = await screen.findByRole("article", { name: `apps.${app}` });
+        const button = within(row).getByRole("button", {
+          name: "agentConnections.restart",
+        });
+        expect(button.querySelector("svg")).not.toHaveClass("animate-spin");
+        fireEvent.click(button);
+        fireEvent.click(
+          within(await screen.findByRole("dialog")).getByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        await waitFor(() =>
+          expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+        );
+        expect(button.querySelector("svg")).toHaveClass("animate-spin");
+      }
+      // Polling can clear restart-required before the native restart has finished.
+      await act(async () => {
+        for (const entry of entries)
+          client.setQueryData(["agent-connections", entry.app], {
+            ...entry,
+            restartRequired: false,
+            desktopState: "current",
+          });
+      });
+      const codex = screen.getByRole("article", { name: "apps.codex" });
+      const workbuddy = screen.getByRole("article", { name: "apps.workbuddy" });
+      expect(
+        within(codex)
+          .getByRole("button", { name: "agentConnections.restart" })
+          .querySelector("svg"),
+      ).toHaveClass("animate-spin");
+      await act(async () => finish.get("codex")?.());
+      await waitFor(() =>
+        expect(
+          within(codex).getByRole("switch", { hidden: true }),
+        ).toBeEnabled(),
+      );
+      expect(within(codex).getByRole("status")).not.toHaveTextContent(
+        "agentConnections.states.restarting",
+      );
+      const pending = within(workbuddy).getByRole("button", {
+        name: "agentConnections.restart",
+      });
+      expect(pending).toBeDisabled();
+      expect(pending.querySelector("svg")).toHaveClass("animate-spin");
+      expect(within(workbuddy).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.restarting",
+      );
+      await act(async () => finish.get("workbuddy")?.());
+      await waitFor(() =>
+        expect(
+          within(workbuddy).getByRole("switch", { hidden: true }),
+        ).toBeEnabled(),
+      );
+      expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("preserves a pending restart across navigation and releases the row after failure", async () => {
+    const notify = vi.spyOn(toast, "error");
+    let fail!: (cause: unknown) => void;
+    vi.mocked(agentConnectionsApi.restart).mockReturnValueOnce(
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "workbuddy",
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        model: "vary-auto/shared",
+        restartRequired: true,
+        desktopState: "restart_required",
+      },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const view = mount(false, client);
+    let row = await screen.findByRole("article", { name: "apps.workbuddy" });
+    fireEvent.click(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "agentConnections.restart",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    view.unmount();
+    mount(false, client);
+    row = await screen.findByRole("article", { name: "apps.workbuddy" });
+    expect(within(row).getByRole("status")).toHaveTextContent(
+      "agentConnections.states.restarting",
+    );
+    expect(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeDisabled();
+    await act(async () => fail(new Error("synthetic private detail")));
+    await waitFor(() => expect(within(row).getByRole("switch")).toBeEnabled());
+    expect(within(row).getByRole("status")).not.toHaveTextContent(
+      "agentConnections.states.restarting",
+    );
+    expect(notify).toHaveBeenCalledWith("agentConnections.restartFailed");
+    expect(
+      screen.queryByText(/synthetic private detail/),
+    ).not.toBeInTheDocument();
+    notify.mockRestore();
+    fireEvent.click(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["claude-desktop", "workbuddy"])(
     "confirms a stale %s restart and never restarts from rendering or cancel",
     async (app) => {
@@ -2313,9 +2674,16 @@ describe("Agent connections", () => {
       expect(button).toHaveTextContent("agentConnections.nativeDefault"),
     );
     fireEvent.click(button);
-    expect(
-      await screen.findByText("agentConnections.noModels"),
-    ).toBeInTheDocument();
+    const hint = await screen.findByRole("note");
+    expect(hint).toHaveTextContent("agentConnections.noModels");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toContainElement(hint);
+    expect(within(dialog).queryByRole("navigation")).not.toBeInTheDocument();
+    const native = within(dialog).getByRole("radio", {
+      name: "agentConnections.nativeDefault",
+    });
+    expect(native).toBeChecked();
+    expect(native).toBeDisabled();
     expect(agentConnectionsApi.set).not.toHaveBeenCalled();
   });
 
@@ -2407,7 +2775,9 @@ describe("Agent connections", () => {
       ),
     );
     expect(
-      within(dialog).getByRole("menuitemcheckbox", { name: "Direct model" }),
+      within(dialog).getByRole("menuitemcheckbox", {
+        name: "Direct model",
+      }),
     ).toHaveAttribute("aria-checked", "true");
     expect(
       within(dialog).queryByRole("button", { name: "common.save" }),
@@ -2435,7 +2805,9 @@ describe("Agent connections", () => {
     });
     const dialog = await openDesktopList(row);
     fireEvent.click(
-      within(dialog).getByRole("menuitemcheckbox", { name: "Shared group" }),
+      within(dialog).getByRole("menuitemcheckbox", {
+        name: "Shared group",
+      }),
     );
     await waitFor(() =>
       expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledWith(
@@ -2478,14 +2850,18 @@ describe("Agent connections", () => {
     );
     const dialog = await openDesktopList(await desktop());
     fireEvent.click(
-      within(dialog).getByRole("menuitemcheckbox", { name: "Shared group" }),
+      within(dialog).getByRole("menuitemcheckbox", {
+        name: "Shared group",
+      }),
     );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "agentConnections.failed",
     );
     expect(dialog).not.toHaveTextContent("synthetic-private-error");
     expect(
-      within(dialog).getByRole("menuitemcheckbox", { name: "Shared group" }),
+      within(dialog).getByRole("menuitemcheckbox", {
+        name: "Shared group",
+      }),
     ).toHaveAttribute("aria-checked", "true");
   });
 
@@ -2509,10 +2885,14 @@ describe("Agent connections", () => {
       }),
     );
     expect(
-      within(dialog).getByRole("menuitemcheckbox", { name: "Shared group" }),
+      within(dialog).getByRole("menuitemcheckbox", {
+        name: "Shared group",
+      }),
     ).toHaveAttribute("aria-checked", "false");
     expect(
-      within(dialog).getByRole("menuitemcheckbox", { name: "Direct model" }),
+      within(dialog).getByRole("menuitemcheckbox", {
+        name: "Direct model",
+      }),
     ).toHaveAttribute("aria-checked", "true");
     await waitFor(() =>
       expect(agentConnectionsApi.setModelVisibility).toHaveBeenLastCalledWith(
@@ -2852,7 +3232,9 @@ describe("Agent connections", () => {
             );
           if (app === "trae")
             fireEvent.click(
-              within(dialog).getByRole("listitem", { name: "Shared group" }),
+              within(dialog).getByRole("listitem", {
+                name: "Shared group",
+              }),
             );
           fireEvent.change(within(dialog).getByRole("searchbox"), {
             target: { value: "Direct" },
@@ -2975,7 +3357,9 @@ describe("Agent connections", () => {
         fireEvent.click(catalog);
         const dialog = await screen.findByRole("dialog");
         expect(
-          within(dialog).getByRole("listitem", { name: "Shared group" }),
+          within(dialog).getByRole("listitem", {
+            name: "Shared group",
+          }),
         ).toBeVisible();
         expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
         expect(agentConnectionsApi.set).not.toHaveBeenCalled();
@@ -4722,5 +5106,40 @@ it.each([false, true])(
     await waitFor(() => expect(remountedToggle).toBeEnabled());
     expect(remountedToggle).not.toBeChecked();
     expect(agentConnectionsApi.set).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each([
+  ["current", "configured", false],
+  ["stale_catalog", "catalogStale", true],
+] as const)(
+  "keeps the desktop Codex %s freshness reason separate from connection availability",
+  async (reloadState, status, canRefresh) => {
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "codex",
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        model: "vary-auto/shared",
+        restartRequired: canRefresh,
+        reloadState,
+        desktopState: "current",
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    expect(
+      await within(row).findByText(`agentConnections.states.${status}`),
+    ).toBeVisible();
+    expect(
+      within(row).queryByText("agentConnections.states.restartRequired"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).queryAllByRole("button", {
+        name: "agentConnections.restart",
+      }),
+    ).toHaveLength(canRefresh ? 1 : 0);
+    expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
   },
 );

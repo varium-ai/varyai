@@ -1,4 +1,4 @@
-//! Magpie Codex picker identities and duplicate-label disambiguation.
+//! Codex picker source labels and stable routing identities.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -113,6 +113,96 @@ pub(crate) fn project_readable(
     Ok(visible)
 }
 
+// Source identities are routing keys, not picker labels. Allocate readable source
+// labels once per visible source so every model from it has the same suffix.
+fn source_labels(
+    models: &[Value],
+    menu: Option<&crate::proxy::intent::Menu>,
+) -> BTreeMap<String, String> {
+    let mut sources = BTreeMap::new();
+    for model in models.iter().filter(|model| model["visibility"] != "hide") {
+        let Some(target) = model["slug"]
+            .as_str()
+            .filter(|slug| slug.starts_with("vary-provider/"))
+            .and_then(|slug| menu?.groups.get(slug))
+            .and_then(|session| session.targets.first())
+        else {
+            continue;
+        };
+        let name = target
+            .upstream
+            .as_ref()
+            .map(|provider| provider.name.as_str())
+            .or_else(|| {
+                target
+                    .credentials
+                    .as_ref()
+                    .map(|credentials| credentials.provider_name())
+            })
+            .filter(|name| !name.trim().is_empty());
+        let name = match name {
+            // Automatically generated account labels belong in account management.
+            Some(name) if target.official && name.starts_with("Codex · ") => "Codex",
+            Some(name) => name,
+            None if target.official => "Codex",
+            None => "Source",
+        };
+        sources.insert(target.provider_id.clone(), name.to_owned());
+    }
+    let mut counts = BTreeMap::new();
+    for name in sources.values() {
+        *counts.entry(name.to_lowercase()).or_insert(0) += 1;
+    }
+    let mut reserved = sources
+        .values()
+        .map(|name| name.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    for name in sources.values_mut() {
+        if counts[&name.to_lowercase()] < 2 {
+            continue;
+        }
+        let mut number = 1;
+        loop {
+            let candidate = format!("{name} ({number})");
+            if reserved.insert(candidate.to_lowercase()) {
+                *name = candidate;
+                break;
+            }
+            number += 1;
+        }
+    }
+    sources
+}
+
+pub(crate) fn qualify_menu_labels(menu: &mut crate::proxy::intent::Menu) {
+    let entries = menu
+        .models
+        .values()
+        .map(|entry| serde_json::json!({"slug":entry.alias}))
+        .collect::<Vec<_>>();
+    let sources = source_labels(&entries, Some(menu));
+    for entry in menu.models.values_mut() {
+        let Some((target, source)) = menu
+            .groups
+            .get(&entry.alias)
+            .filter(|_| entry.alias.starts_with("vary-provider/"))
+            .and_then(|session| session.targets.first())
+            .and_then(|target| {
+                sources
+                    .get(&target.provider_id)
+                    .map(|source| (target, source))
+            })
+        else {
+            continue;
+        };
+        if entry.label == target.model
+            || !entry.label.to_lowercase().contains(&source.to_lowercase())
+        {
+            entry.label = format!("{} · {source}", entry.label);
+        }
+    }
+}
+
 pub(super) fn project_menu(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
@@ -168,29 +258,43 @@ pub(super) fn project_menu(
             Ok((canonical.to_owned(), id, provider, label))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let mut same: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (index, (_, _, _, label)) in entries.iter().enumerate() {
-        if models[index]["visibility"] != "hide" {
-            same.entry(label.to_lowercase()).or_default().push(index);
+    let sources = source_labels(models, menu);
+    for (index, (canonical, _, provider, label)) in entries.iter().enumerate() {
+        if let Some(source) = sources
+            .get(provider)
+            .filter(|_| canonical.starts_with("vary-provider/"))
+        {
+            // Preserve custom names that already identify their source.
+            if !label.to_lowercase().contains(&source.to_lowercase()) {
+                models[index]["display_name"] = Value::String(format!("{label} · {source}"));
+            }
         }
     }
-    // Magpie codexApart: only full, case-insensitive duplicate labels get
-    // a suffix, using a unique provider ID or otherwise the full entry ID.
-    for indices in same.values().filter(|indices| indices.len() > 1) {
-        for &index in indices {
-            let (_, id, provider, label) = &entries[index];
-            let group = entries[index].0.starts_with("auto/")
-                || entries[index].0.starts_with("vary-auto/")
-                || entries[index].0.starts_with("group/");
-            let unique = !group
-                && !provider.is_empty()
-                && indices
-                    .iter()
-                    .filter(|&&i| entries[i].2.eq_ignore_ascii_case(provider))
-                    .count()
-                    == 1;
-            models[index]["display_name"] =
-                Value::String(format!("{label} · {}", if unique { provider } else { id }));
+    let mut same: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, model) in models.iter().enumerate() {
+        if model["visibility"] != "hide" {
+            if let Some(label) = model["display_name"].as_str() {
+                same.entry(label.to_lowercase()).or_default().push(index);
+            }
+        }
+    }
+    let mut reserved = same.keys().cloned().collect::<BTreeSet<_>>();
+    // Equal custom model/group names still need a hint, never an internal ID.
+    for indices in same.values_mut().filter(|indices| indices.len() > 1) {
+        indices.sort_by(|&a, &b| entries[a].1.cmp(&entries[b].1));
+        let mut number = 1;
+        for &index in indices.iter() {
+            let label = models[index]["display_name"]
+                .as_str()
+                .unwrap_or(&entries[index].3);
+            loop {
+                let candidate = format!("{label} ({number})");
+                number += 1;
+                if reserved.insert(candidate.to_lowercase()) {
+                    models[index]["display_name"] = Value::String(candidate);
+                    break;
+                }
+            }
         }
     }
     let mut visible = Vec::new();
@@ -306,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn magpie_group_duplicates_use_group_ids_and_hidden_entries_do_not_disambiguate() {
+    fn group_duplicates_use_readable_numbers_and_hidden_entries_do_not_disambiguate() {
         let mut value = catalog(&[
             ("vary-auto/a", "Shared · routing group"),
             ("vary-auto/b", "Shared · routing group"),
@@ -318,11 +422,11 @@ mod tests {
         assert_eq!(value["models"][0]["slug"], "group/a");
         assert_eq!(
             value["models"][0]["display_name"],
-            "Shared · routing group · group/a"
+            "Shared · routing group (1)"
         );
         assert_eq!(
             value["models"][1]["display_name"],
-            "Shared · routing group · group/b"
+            "Shared · routing group (2)"
         );
         assert_eq!(value["models"][2]["display_name"], "Unique · Relay");
     }
@@ -349,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn magpie_duplicate_labels_use_provider_identity_or_full_entry_identity() {
+    fn duplicate_legacy_labels_use_readable_numbers_without_exposing_identity() {
         let mut value = catalog(&[
             ("codex/gpt", "GPT · Codex"),
             ("codex-b/gpt", "GPT · Codex"),
@@ -367,10 +471,10 @@ mod tests {
         assert_eq!(
             names,
             [
-                "GPT · Codex · codex",
-                "GPT · Codex · codex-b",
-                "GLM · Relay · relay/glm",
-                "glm · relay · relay/glm-old",
+                "GPT · Codex (2)",
+                "GPT · Codex (1)",
+                "GLM · Relay (1)",
+                "glm · relay (2)",
                 "Kimi · Relay"
             ]
         );
@@ -396,6 +500,249 @@ mod tests {
         ] {
             assert_eq!(value["models"][0][key], value["models"][1][key]);
         }
+    }
+
+    fn source_menu(sources: &[(&str, &str, bool)]) -> crate::proxy::intent::Menu {
+        use crate::proxy::intent::{Menu, Session, Target};
+        use std::sync::Arc;
+        let mut menu = Menu {
+            token: "synthetic-label-token".into(),
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            context_settings: Default::default(),
+            groups: Default::default(),
+        };
+        let template = Session {
+            group: super::super::tests::group(),
+            targets: vec![Target {
+                fixed_effort: None,
+                provider_id: "fixture".into(),
+                model: "synthetic-model".into(),
+                upstream: None,
+                effort: Default::default(),
+                url: "http://127.0.0.1:1/responses".parse().unwrap(),
+                headers: Default::default(),
+                official: false,
+                credentials: None,
+                scheduling: Arc::default(),
+            }],
+            classifier: None,
+            client: reqwest::Client::new(),
+            created: std::time::Instant::now(),
+            bindings: Arc::default(),
+        };
+        for (id, name, official) in sources {
+            let mut session = template.clone();
+            let target = &mut session.targets[0];
+            target.provider_id = (*id).into();
+            target.model = "synthetic-model".into();
+            target.official = *official;
+            target.upstream = (!official).then(|| {
+                crate::provider::Provider::with_id((*id).into(), (*name).into(), json!({}), None)
+            });
+            menu.groups
+                .insert(format!("vary-provider/{id}"), Arc::new(session));
+        }
+        menu
+    }
+
+    #[test]
+    fn account_and_api_duplicates_show_sources_without_changing_request_identity() {
+        let account = "11111111-1111-4111-8111-111111111111";
+        let api = "22222222-2222-4222-8222-222222222222";
+        let menu = source_menu(&[(account, "Codex", true), (api, "Team Relay", false)]);
+        let account_alias = format!("vary-provider/{account}");
+        let api_alias = format!("vary-provider/{api}");
+        let mut value = catalog(&[
+            (&account_alias, "GPT Synthetic"),
+            (&api_alias, "GPT Synthetic"),
+        ]);
+        let mut retained =
+            BTreeMap::from([("Previous-account-alias".into(), account_alias.clone())]);
+        let visible = project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert_eq!(value["models"][0]["display_name"], "GPT Synthetic · Codex");
+        assert_eq!(
+            value["models"][1]["display_name"],
+            "GPT Synthetic · Team Relay"
+        );
+        assert_eq!(
+            visible,
+            [
+                format!("{account}/synthetic-model"),
+                format!("{api}/synthetic-model")
+            ]
+        );
+        assert_eq!(retained[&visible[0]], account_alias);
+        assert_eq!(retained[&visible[1]], api_alias);
+        assert_eq!(
+            selected(&visible, &retained, "Previous-account-alias"),
+            Some(visible[0].as_str())
+        );
+        assert!(value["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["slug"] == "Previous-account-alias" && m["visibility"] == "hide"));
+        for model in value["models"].as_array().unwrap() {
+            assert_eq!(model["context_window"], 123456);
+            assert_eq!(
+                model["supported_reasoning_levels"],
+                json!([{"effort":"high"}])
+            );
+            assert_eq!(model["service_tiers"], json!([{"id":"priority"}]));
+        }
+    }
+
+    #[test]
+    fn every_model_from_a_source_keeps_the_same_suffix_even_without_a_name_collision() {
+        use std::sync::Arc;
+        let mut menu = source_menu(&[("account", "Codex", true), ("relay", "Team Relay", false)]);
+        let mut second = menu.groups["vary-provider/relay"].as_ref().clone();
+        second.targets[0].model = "synthetic-other-model".into();
+        menu.groups
+            .insert("vary-provider/relay-other".into(), Arc::new(second));
+        let mut value = catalog(&[
+            ("vary-provider/account", "GPT Synthetic Sol"),
+            ("vary-provider/relay", "GPT Synthetic Sol"),
+            ("vary-provider/relay-other", "GPT Synthetic Terra"),
+        ]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(
+            value["models"][0]["display_name"],
+            "GPT Synthetic Sol · Codex"
+        );
+        assert_eq!(
+            value["models"][1]["display_name"],
+            "GPT Synthetic Sol · Team Relay"
+        );
+        assert_eq!(
+            value["models"][2]["display_name"],
+            "GPT Synthetic Terra · Team Relay"
+        );
+    }
+
+    #[test]
+    fn same_source_names_use_stable_readable_numbers_and_ignore_hidden_models() {
+        let sources = [("source-b", "Relay", false), ("source-a", "Relay", false)];
+        let menu = source_menu(&sources);
+        let mut value = catalog(&[
+            ("vary-provider/source-b", "Shared"),
+            ("vary-provider/source-a", "Shared"),
+        ]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(value["models"][0]["display_name"], "Shared · Relay (2)");
+        assert_eq!(value["models"][1]["display_name"], "Shared · Relay (1)");
+        let mut reversed = catalog(&[
+            ("vary-provider/source-a", "Shared"),
+            ("vary-provider/source-b", "Shared"),
+        ]);
+        project_menu(&mut reversed, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(
+            reversed["models"][0]["display_name"],
+            value["models"][1]["display_name"]
+        );
+        let mut hidden = catalog(&[
+            ("vary-provider/source-a", "Shared"),
+            ("vary-provider/source-b", "Shared"),
+        ]);
+        hidden["models"][1]["visibility"] = json!("hide");
+        project_menu(&mut hidden, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(hidden["models"][0]["display_name"], "Shared · Relay");
+    }
+
+    #[test]
+    fn custom_names_are_not_suffixed_twice_or_overwritten_by_numbering() {
+        let menu = source_menu(&[
+            ("a", "Relay", false),
+            ("b", "Relay", false),
+            ("c", "Other", false),
+        ]);
+        let mut value = catalog(&[
+            ("vary-provider/a", "My RELAY model"),
+            ("vary-provider/b", "My RELAY model"),
+            ("vary-provider/c", "My RELAY model (1)"),
+        ]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(
+            value["models"][0]["display_name"],
+            "My RELAY model · Relay (1)"
+        );
+        assert_eq!(
+            value["models"][1]["display_name"],
+            "My RELAY model · Relay (2)"
+        );
+        assert_eq!(
+            value["models"][2]["display_name"],
+            "My RELAY model (1) · Other"
+        );
+    }
+
+    #[test]
+    fn unique_custom_names_keep_the_source_once_and_source_numbering_avoids_reserved_names() {
+        let menu = source_menu(&[
+            ("a", "Relay", false),
+            ("b", "Relay", false),
+            ("c", "Relay (1)", false),
+        ]);
+        let mut value = catalog(&[
+            ("vary-provider/a", "Shared"),
+            ("vary-provider/b", "Shared"),
+            ("vary-provider/c", "My RELAY (1) model"),
+        ]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(value["models"][0]["display_name"], "Shared · Relay (2)");
+        assert_eq!(value["models"][1]["display_name"], "Shared · Relay (3)");
+        assert_eq!(value["models"][2]["display_name"], "My RELAY (1) model");
+    }
+
+    #[test]
+    fn routing_groups_do_not_inherit_their_first_members_source_suffix() {
+        use std::sync::Arc;
+        let mut menu = source_menu(&[("relay", "Team Relay", false)]);
+        let session = menu.groups["vary-provider/relay"].clone();
+        menu.groups
+            .insert("vary-auto/group".into(), Arc::clone(&session));
+        let mut value = catalog(&[
+            ("vary-provider/relay", "Direct"),
+            ("vary-auto/group", "Development · routing group"),
+        ]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(value["models"][0]["display_name"], "Direct · Team Relay");
+        assert_eq!(
+            value["models"][1]["display_name"],
+            "Development · routing group"
+        );
+    }
+
+    #[test]
+    fn duplicate_model_numbers_do_not_overwrite_literal_custom_labels() {
+        let mut value = catalog(&[
+            ("source/a", "Shared"),
+            ("source/b", "shared"),
+            ("source/c", "Shared (1)"),
+        ]);
+        project(&mut value, &mut BTreeMap::new()).unwrap();
+        assert_eq!(value["models"][0]["display_name"], "Shared (2)");
+        assert_eq!(value["models"][1]["display_name"], "shared (3)");
+        assert_eq!(value["models"][2]["display_name"], "Shared (1)");
+    }
+
+    #[test]
+    fn generated_account_names_do_not_publish_account_details() {
+        let mut menu = source_menu(&[("account", "Codex", true)]);
+        let session =
+            std::sync::Arc::make_mut(menu.groups.get_mut("vary-provider/account").unwrap());
+        session.targets[0].upstream = Some(crate::provider::Provider::with_id(
+            "account".into(),
+            "Codex · synthetic-person@example.test".into(),
+            json!({}),
+            None,
+        ));
+        let mut value = catalog(&[("vary-provider/account", "GPT Synthetic")]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(value["models"][0]["display_name"], "GPT Synthetic · Codex");
+        assert!(!value.to_string().contains("synthetic-person"));
     }
 
     #[test]
