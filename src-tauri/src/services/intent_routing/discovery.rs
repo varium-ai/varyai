@@ -212,6 +212,7 @@ fn discover(providers: impl IntoIterator<Item = Provider>, minimum: usize) -> Ve
                 classifier_target: None,
                 classification_budget_ms: 2000,
                 rules: vec![],
+                retired_policy: None,
                 auto_generated: true,
                 routing: RoutingStrategy::Smart,
                 model_alias: Some(alias),

@@ -3842,7 +3842,6 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
         "deepseek-harness" => &["DeepSeek Harness.app"],
-        "cursor" => &["Cursor Private Inference.app", "Cursor.app"],
         "t3code" => &["T3 Code.app", "T3 Code (Alpha).app"],
         _ => &[],
     }
@@ -3856,7 +3855,6 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
         "claude" | "codex" | "gemini" | "workbuddy" | "kimi" | "qwen" | "opencode" | "pi"
         | "openclaw" | "hermes" => app,
         "grokbuild" => "grok",
-        "cursor-cli" => "cursor-agent",
         _ => return false,
     };
     cli_dirs.iter().any(|dir| {
@@ -3879,12 +3877,11 @@ pub(crate) fn is_agent_installed(app: &str) -> bool {
             .is_ok();
     }
     #[cfg(target_os = "windows")]
-    if matches!(app, "cursor" | "t3code") {
+    if app == "t3code" {
         return desktop_apps::windows_executable(app).is_some();
     }
     let tool = match app {
         "grokbuild" => "grok",
-        "cursor-cli" => "cursor-agent",
         _ => app,
     };
     desktop_apps::find(app).is_some()
@@ -3913,26 +3910,9 @@ mod agent_installation_tests {
     use super::*;
 
     #[test]
-    fn cursor_cli_presence_is_independent_of_the_editor() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn t3code_desktop_presence_is_detected_without_running_it(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
-        std::fs::create_dir(dir.path().join("Cursor.app"))?;
-        assert!(!agent_installed_in(
-            "cursor-cli",
-            &[dir.path().to_path_buf()],
-            &[]
-        ));
-        let binary = dir.path().join(if cfg!(windows) {
-            "cursor-agent.exe"
-        } else {
-            "cursor-agent"
-        });
-        std::fs::write(binary, "synthetic presence fixture")?;
-        assert!(agent_installed_in(
-            "cursor-cli",
-            &[],
-            &[dir.path().to_path_buf()]
-        ));
         std::fs::create_dir(dir.path().join("T3 Code.app"))?;
         assert!(agent_installed_in(
             "t3code",

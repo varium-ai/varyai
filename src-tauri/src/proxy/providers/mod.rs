@@ -222,8 +222,6 @@ impl ProviderType {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => return None,
         };
@@ -291,8 +289,6 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
-        | AppType::Cursor
-        | AppType::CursorCli
         | AppType::T3Code
         | AppType::DoubaoWork => return None,
     })

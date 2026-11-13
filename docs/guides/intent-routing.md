@@ -4,7 +4,7 @@
 
 The routing page header provides a primary **Create group** action and the account visibility toggle. Global routing groups appear below the live overview, without a duplicate creation action in the group toolbar.
 
-Catalog discovery and reload update available models without listing per-provider refresh results beneath the templates. An empty group list uses the template cards for guidance. Each template has one **Add** action. It opens the group dialog with its name, models, strategy, rules and classifier already filled in. Review or edit the draft, then Save to create it; Cancel creates nothing.
+Catalog refresh updates available models without inserting per-provider refresh results into the group list. An empty group list uses the template cards for guidance. Each template has one **Add** action. It opens the group dialog with its name, models, strategy, rules and classifier already filled in. Review or edit the draft, then Save to create it; Cancel creates nothing.
 
 Open **Plans / Routing** from the sidebar. Manage independent global connections in **Models / Providers**, then connect clients from **Tools / Agents**. Groups retain stable resource IDs and exact model IDs; no Agent owns a newly added API provider. Existing Agent-owned configurations remain reference-only compatibility sources. The shared native-client catalog and authenticated external gateway access are separate consumers of these resources. See [Shared catalog](../architecture/shared-catalog.md) and [Routing observations](../architecture/routing-observations.md) for the current control plane; [reference parity](../design/reference-parity.md) records remaining differences rather than claiming complete parity.
 
@@ -19,6 +19,27 @@ API-key task upstreams support explicit `openai_responses`, `openai_chat`, `anth
 
 The routing provider selector never returns stored API credentials. New API connections are edited inline in **Models / Providers**. Imported rows open the same provider dialog. Supported static connections become independent shared API resources on explicit save, keeping their global IDs and leaving original Agent configurations unchanged. Account authentication and custom transports remain attached to their existing source; their shared names and enabled state can be changed in the same dialog. Stored credentials never enter the renderer. Deleting a source provider makes its targets unavailable instead of redirecting them to another provider. Deleting an imported reference leaves its original source configuration intact and does not restore it automatically. Only a manual reimport restores that reference, keeping its identity and increasing its revision.
 
+## Saving and synchronization
+
+Saving waits for local persistence, global route publication, connected-client
+catalog synchronization and any active Codex menu refresh. It does not activate
+disconnected clients. These steps remain ordered; a failed publication still
+revokes stale targets. Public model facts use immutable lookup indexes.
+This reduces repeated preparation without delaying route
+activation or moving client synchronization into an unobserved background task.
+
+Runtime logs report only elapsed milliseconds for persistence, provider
+preparation, group definitions, executable targets, client synchronization and
+Codex refresh. They do not include group names, model IDs or credentials. See
+[save performance verification](../qa/2026-11-12-routing-save-performance.md) for
+the isolated timing fixtures and verification limits.
+
+TRAE catalog delivery does not prepare native connections or rewrite launch
+arguments. Explicit connect/reapply actions prepare them; the existing recovery
+loop reconnects previously authorized desktops outside catalog switch locks.
+Offline deliveries remain pending until acknowledged. See
+[live save diagnosis](../qa/2026-11-12-routing-save-live-followup.md).
+
 ## External consumers
 
 Start the loopback gateway explicitly and configure a gateway key under **Settings → Routing → Local routing**. Give restricted keys the group's public alias, not its concrete member model. Authenticated `GET /gateway/v1/models` lists only executable published groups permitted by that key. Use the same alias on `/gateway/v1/responses`, `/gateway/v1/chat/completions`, `/gateway/v1/messages`, or the Gemini generate/streamGenerateContent route. See [gateway keys](gateway-keys.md) for headers, budgets and manual connection setup. This version does not automatically take over every agent.
@@ -28,6 +49,8 @@ Protocol selection belongs to the request and chosen upstream, not to the consum
 The executable global catalog exists independently of Codex activation and per-agent current-provider selection. Resource changes invalidate its generation immediately; control-plane refresh rebuilds snapshots off the forwarding path. Database restore/import invalidates old snapshots and resets imported publication flags; explicitly publish the intended groups again after reviewing imported resources. A failed refresh revokes stale targets. Group aliases are not passed to ordinary upstream routing when the group is unpublished, unavailable or stale. Account health is shared, while continuation state is scoped by authenticated gateway key and conversation. Native Chat, Messages and Gemini tool/opaque continuations require an observed pinned destination within the same consumer and conversation. The authenticated TRAE Chat adapter also accepts unnamed tool history when every call resolves to one previously observed destination in its Agent and alias scope. When TRAE rewrites a call ID, the assistant function name and JSON arguments must match a complete observed payload by hash; tool results alone cannot establish this mapping. TRAE rewritten-call ownership is never inferred from message text. Responses continuations can locate their consumer-scoped conversation by known response or call IDs without a separate session header. Unknown/conflicting response or tool IDs fail closed. At most 1024 consumer/conversation scopes are retained, with a one-hour inactive lifetime; active streams retain their lease. In-flight requests may finish after an edit or revocation. Eligible normal gateway and Codex-menu conversations can restore exact ownership after restart from the private continuation store described below; this does not reconstruct upstream history or decrypt foreign opaque state.
 
 ## Compact list
+
+The group table keeps scheduling strategy, an enable/disable switch and Edit/Delete icons together in **Actions**. The More menu in Actions contains only Duplicate and Copy to share; the provider icon and row context click do not open it. Move up/down and export are absent from that menu. Successful sharing shows the standard success toast and does not add text to the row. There is no separate status column. Group IDs and public aliases are hidden in list rows; aliases remain searchable and retain their stored values for API access and import/export. Enabled row actions show a pointer cursor. Hovering or keyboard-focusing Edit uses the theme accent with a faint accent background. The toolbar status filter remains available. Provider stacks use the same artwork renderer as the provider list, including uploaded images, registered image assets and built-in icons. Providers without artwork use a neutral icon.
 
 Conversation identity and concurrent forwarding follow Magpie revision
 `4869d0c9665e1a815fee3a1a4d67a575e0baab93` (`gateway.go`'s `affinityID`,
@@ -44,11 +67,25 @@ Concurrent requests, including requests within one named session, can forward
 while earlier responses remain open. Known ownership collisions, authenticated
 consumer boundaries, native checkpoints, and security inspection remain enforced.
 
-Routing groups use a single divided list with a two-line name/member summary, a public alias and a compact strategy selector. Rows use a neutral global-resource icon rather than assigning ownership to an agent. Filter locally by group name, exact model ID text or provider name; filtering never changes saved groups. Editing and confirmed deletion remain available per row. Selecting a strategy saves a user-owned group override. Member information checks supported task transport and locally available official/OAuth identity, rather than the older API-key-only offline validator. It does not prove inference permissions or remote availability.
+Routing groups use a table with a full group name that wraps when needed, a compact member summary and a strategy selector in Actions. Separators appear only between rows; a single result has no bottom divider. The table scrolls horizontally when needed, while its Actions header and cells stay fixed to the right edge. Action controls always stay on one line. The action column stays compact, leaving more space for the group name. Continuous narrow inset shadows, following Ant Design's fixed-column treatment, appear only where more table content can be scrolled into view. The drag grip stays inside its icon button. While dragging, an inert row preview preserves the measured column widths, full row height and fixed-action alignment. The live table keeps its layout; Escape, pointer cancellation and resizing remove the preview and restore the row. Vertical edge scrolling uses the workspace rather than the horizontal table viewport. Rows use a neutral global-resource icon rather than assigning ownership to an agent. Filter locally by group name, exact model ID text or provider name; filtering never changes saved groups. Editing and confirmed deletion remain available per row. Selecting a strategy saves a user-owned group override. Member information checks supported task transport and locally available official/OAuth identity, rather than the older API-key-only offline validator. It does not prove inference permissions or remote availability.
 
-Click the group name, alias, member summary, blank row space or **Edit** to open the same modal dialog used by **Create group**. The compact list remains in place behind the dialog. Strategy selectors, publication toggles and row menus keep their own actions. The dialog has a scrollable body and persistent Save/Cancel actions. Focus starts in the group name and returns to the row's Edit button or the creation trigger after closing.
+Click the group name, member summary, blank row space or **Edit** to open the same modal dialog used by **Create group**. The compact list remains in place behind the dialog. Strategy selectors, publication toggles and row menus keep their own actions. The dialog is capped at 880 px wide with a scrollable body and persistent Save/Cancel actions. Group deletion is available only through the list's trash icon and its confirmation dialog; the editor footer has no group deletion action. Focus starts in the group name and returns to the row's Edit button or the creation trigger after closing.
 
-Use **Manage** beside **Reload** to select routing groups for removal. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible when the list is empty and becomes available after a group is added.
+Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
+
+The three template cards remain visible above the list for both empty and populated catalogs, including while batch management is active. Choose **Add** on a card to open its suggested models and rules in the editor, then review and save. Templates are independent of Manage and do not save or publish a group when opened.
+
+Row operations track pending state by group ID. Publishing, changing strategy or manual target, duplicating, sharing and restoring a group disable only that group's conflicting controls. Other rows, templates and the toolbar remain available during background synchronization. Saving closes the editor after persistence and keeps only the saved row busy until synchronization finishes. Completion or failure of one operation never releases another operation's controls. Membership and ordering writes are serialized against the latest catalog so concurrent copies, removals and reordering retain all current group IDs. Sorting temporarily disables drag handles while other row actions remain available.
+
+Reload only shows a spinning icon on its own button and prevents repeated clicks
+until catalog and list refreshes finish. Import, management, filtering and group
+editing remain available. An open draft keeps its unsaved edits, and completing
+a reload does not unlock a separate save or deletion that is still running.
+While loading, the refresh arrows become a circular progress indicator with a
+faint full-circle track. This keeps the visible outline centered throughout
+rotation, rather than rotating the arrow tips beyond the circular outline.
+The indicator uses the same fixed square as the idle icon, including the compact
+toolbar where button labels are hidden. The arrows return when loading ends.
 
 While removing selected groups, the confirmation stays open and its removal button shows a loading indicator. Confirmation, cancellation, Escape and backdrop dismissal are disabled until removal and the list refresh finish. Successful removal closes the dialog. A failure keeps it open with a sanitized error and allows retrying only the remaining groups.
 
@@ -58,7 +95,7 @@ Save closes the dialog after persistence succeeds. Failed saves retain the draft
 
 The provider-exclusion control opens a compact checklist below the discovery description. Select multiple providers without reopening it; changes save immediately. The panel scrolls when needed and stays within the window. Long provider names are truncated with the full name available on hover. Escape closes the panel and returns focus to the control.
 
-The **Find groups on their own** switch is always visible beside the group list, defaults to off when no preference exists, and persists independently of proxy activation. Explicitly saved on or off preferences are preserved. When enabled, the list derives enabled groups from explicitly registered global providers using their saved `modelCatalog.models[].model` entries and account-scoped official Codex model discovery caches. Enabling the switch or selecting **Reload** fetches official catalogs; Reload and per-account refresh results remain available with automatic creation off. Ordinary list reads never perform network discovery. No inference requests are made.
+The automatic-discovery switch and provider-exclusion controls are temporarily hidden from the routing page. Their saved preferences remain independent of proxy activation and default to off when no preference exists. Opening or managing the list does not change an explicitly saved on or off preference. When enabled, the list derives enabled groups from explicitly registered global providers using their saved `modelCatalog.models[].model` entries and account-scoped official Codex model discovery caches. Selecting **Refresh** fetches official catalogs; refresh operations remain available with automatic creation off. Ordinary list reads never perform network discovery. No inference requests are made.
 
 Registered executable upstreams participate, including available official and OAuth Codex accounts. Imported static Codex connections also contribute their explicitly selected TOML model without rewriting provider storage. An empty API model selection follows its cached vendor list; a nonempty saved selection remains authoritative. With automatic discovery on, entering Routing loads missing model lists off the forwarding path, with four concurrent catalog preparations and a five-minute UI freshness interval. Official accounts fetch their own visible models from the fixed ChatGPT Codex models endpoint, never from a public model list or another account. Opening a signed-in official provider with no cached models also loads the selected account's catalog. Missing login, fetch failure, and successful empty results have separate safe messages. These are model-list reads, not inference probes or automatic logins.
 
@@ -71,6 +108,11 @@ Automatic groups are not persisted as separate configuration rows. Editing and s
 The combined list shows at most 32 groups, with saved groups taking priority. Groups exceeding the validated 256-member limit are omitted instead of silently discarding members. The interface reports the number omitted. Import/restore turns automatic discovery off while preserving hidden IDs and saved drafts. Discovery never starts the listener or connects an Agent. Enabled discovered groups enter the global execution snapshot alongside direct provider models, independently of Codex activation. Switching discovery off keeps user-owned groups, removes discovered groups from pickers, and reseats connected Agents to the corresponding model from the first available provider. Requests still naming an automatic alias resolve to that one provider, even when only one provider now remains. Opaque continuations are never remapped across changed destinations; an incompatible continuation still fails closed.
 
 ## Group scheduling
+
+The experimental four-policy UI has been withdrawn. Previously saved experimental
+`policy` metadata is accepted only for reading and omitted from saved/exported
+configuration; it no longer changes planning. The retired `expiring` value is
+read as **In order**. Original rules, members and execution settings remain intact.
 
 New automatic groups default to **Smart**. Existing saved groups without a strategy retain **In order** for compatibility. The compact list and editor expose the nine routing choices:
 
@@ -155,6 +197,19 @@ One dedicated `varyai` provider and one external Codex-native catalog expose bot
 The menu combines **available enabled global provider models and executable routing groups**. Direct entries retain each exact upstream identity; selecting one never silently substitutes a different provider. Group-only model unlisting withdraws a direct entry without removing the group target. Unsupported transports, unavailable credentials and non-executable entries are omitted, with a count in the UI; discovery is not evidence of inference permission. At most 256 entries are published, reserving room for the routing groups. Agents with a starting-model control choose their own default from this shared menu; native-picker applications choose the chat model inside the application. Background catalog refresh preserves the starting choice while explicit selection changes it; provider creation and editing do not select an Agent or change another Agent's default. Existing Codex conversations may retain their earlier native configuration.
 
 The shared VaryAI model picker uses readable model names for both rows and hover tooltips. Internal routing aliases remain selection values and are not shown in these tooltips.
+
+When models in the same provider group have identical displayed names, the
+picker follows Magpie's `modelTells`: it removes common leading and trailing
+path segments from their public references and displays the remaining identity
+in muted text beside the name. For example, `gs/vendor/glm` and
+`gs-2/vendor/glm` show `gs` and `gs-2`. Unique names need no hint. Search includes
+these references, and selecting a row still sends its original routing alias.
+
+Model rows and the provider rail use the saved provider icon, including built-in
+icons, uploaded images and letter icons. Saving an icon change refreshes the
+shared catalog and updates these views. Native model choices keep their explicit
+application logo; routing groups keep their routing mark. An unreadable uploaded
+image falls back to the standard provider icon.
 
 Claude Desktop has a separate **model list** control on its connected Agent row, following the reference implementation's distinction between model visibility and a chat's selected model. Search and check several models, show or hide all, then save. By default, newly added shared models appear automatically; **Only models I pick** keeps new models hidden until explicitly selected. These preferences survive disconnect, reapply, gateway suspension and catalog refresh, and never hide a model from another Agent or disable its global provider. The native gateway profile and authenticated Desktop model-list endpoint publish only the visible subset, including an explicitly empty list. Visibility is not an access-control policy and does not invalidate an existing conversation's model identity. Quit and reopen Claude Desktop to load the updated profile, then choose the model inside Desktop. Configuration conflicts keep the recovery record rather than overwriting externally changed fields. This covers model visibility, not the reference implementation's separate per-Agent model ordering controls.
 

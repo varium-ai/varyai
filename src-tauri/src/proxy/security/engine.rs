@@ -315,21 +315,11 @@ impl SecurityAuditEngine {
 }
 
 fn builtin_action(rule: &BuiltinRule, runtime: &SecurityRuntimeConfig) -> AuditAction {
-    let action = runtime
+    runtime
         .builtin_action_overrides
         .get(rule.id)
         .copied()
-        .unwrap_or(rule.default_action);
-
-    if rule.id == "catalog:generic-sk-key-notice"
-        && matches!(
-            action,
-            AuditAction::Block | AuditAction::Redact | AuditAction::RedactRestore
-        )
-    {
-        return rule.default_action;
-    }
-    action
+        .unwrap_or(rule.default_action)
 }
 
 fn sensitive_match<'a>(

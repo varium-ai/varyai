@@ -17,6 +17,27 @@ pub(super) fn fixture() -> RoutingGroup {
 }
 
 #[test]
+fn retired_experimental_metadata_does_not_prevent_reading_original_configuration(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let original = serde_json::to_value(fixture())?;
+    for kind in ["adaptive", "capability", "speed", "expiring"] {
+        let mut stored = original.clone();
+        stored["policy"] = json!({"kind":kind,"economicalMemberId":"balanced"});
+        if kind == "expiring" {
+            stored["routing"] = json!("expiring");
+        }
+        let group: RoutingGroup = serde_json::from_value(stored)?;
+        group.validate()?;
+        assert_eq!(group.routing, RoutingStrategy::Ordered);
+        assert_eq!(serde_json::to_value(group)?, original);
+    }
+    let mut unknown = original;
+    unknown["unsupportedExperimentalField"] = json!(true);
+    assert!(serde_json::from_value::<RoutingGroup>(unknown).is_err());
+    Ok(())
+}
+
+#[test]
 fn reference_execution_controls_round_trip_and_disabled_members_are_not_planned() {
     let mut value = serde_json::to_value(fixture()).expect("fixture");
     value["affinity"] = json!("off");

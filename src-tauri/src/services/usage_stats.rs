@@ -93,6 +93,8 @@ pub struct ProviderStats {
 #[serde(rename_all = "camelCase")]
 pub struct ModelStats {
     pub model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     pub request_count: u64,
     pub total_tokens: u64,
     pub total_cost: String,
@@ -208,8 +210,12 @@ fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reques
 /// Session logs use placeholder provider_ids (e.g., `_session`, `_<app>_session`)
 /// that don't exist in the providers table — the CASE expression below is the
 /// authoritative mapping from placeholder to readable name.
-fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
-    format!(
+fn provider_name_coalesce(
+    log_alias: &str,
+    provider_alias: &str,
+    data_source: Option<&str>,
+) -> String {
+    let fallback = format!(
         "COALESCE({provider_alias}.name, CASE {log_alias}.provider_id \
          WHEN '_session' THEN 'Claude (Session)' \
          WHEN '_codex_session' THEN 'Codex (Session)' \
@@ -218,7 +224,15 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
          WHEN '_grok_session' THEN 'Grok Build (Session)' \
          WHEN '_pi_session' THEN 'Pi (Session)' \
          ELSE {log_alias}.provider_id END)"
-    )
+    );
+    // Historical rollups do not retain source metadata. Do not infer their supplier.
+    match data_source {
+        Some(source) => format!(
+            "CASE WHEN {log_alias}.app_type = 'pi' AND {log_alias}.provider_id = 'varyai' \
+             AND {source} = 'pi_session' THEN 'Pi (Session)' ELSE {fallback} END"
+        ),
+        None => fallback,
+    }
 }
 
 pub(crate) const SESSION_PROXY_DEDUP_WINDOW_SECONDS: i64 = 10 * 60;
@@ -269,37 +283,37 @@ fn providers_join(log_alias: &str, provider_alias: &str) -> String {
     )
 }
 
-/// SQL 标量表达式：行的「有效计价模型」—— pricing_model 非空优先，NULL/'' 回落
-/// model。这是 `get_model_stats` 的分组键，也是 Dashboard 模型筛选的匹配口径：
-/// 筛选值来自模型统计列表，两边必须用同一表达式才能选得中。
+/// Billing-model grouping key. Older records fall back to the response model.
 fn effective_model_sql(alias: &str) -> String {
     format!("COALESCE(NULLIF({alias}.pricing_model, ''), {alias}.model)")
 }
 
-/// 把 Dashboard 顶部的 Provider/模型筛选追加到查询条件。
-///
-/// Provider 按展示名精确匹配（复用 [`provider_name_coalesce`]，会话占位行的
-/// 可读名如 "Claude (Session)" 也能选中）；模型按 [`effective_model_sql`] 匹配。
-/// 注意：传入 `provider_name` 时调用方必须把 [`providers_join`] 拼进 FROM，
-/// 否则 `{provider_alias}.name` 无法解析。
+/// Match provider display names and any observed request, response or billing ID.
+/// Callers filtering providers must include [`providers_join`] in the query.
 fn push_provider_model_filters(
     conditions: &mut Vec<String>,
     params: &mut Vec<Box<dyn rusqlite::ToSql>>,
     log_alias: &str,
     provider_alias: &str,
+    data_source: Option<&str>,
     provider_name: Option<&str>,
     model: Option<&str>,
 ) {
     if let Some(name) = provider_name {
         conditions.push(format!(
             "{} = ?",
-            provider_name_coalesce(log_alias, provider_alias)
+            provider_name_coalesce(log_alias, provider_alias, data_source)
         ));
         params.push(Box::new(name.to_string()));
     }
     if let Some(m) = model {
-        conditions.push(format!("{} = ?", effective_model_sql(log_alias)));
-        params.push(Box::new(m.to_string()));
+        conditions.push(format!(
+            "({} = ? OR {log_alias}.model = ? OR {log_alias}.request_model = ?)",
+            effective_model_sql(log_alias)
+        ));
+        for _ in 0..3 {
+            params.push(Box::new(m.to_string()));
+        }
     }
 }
 
@@ -629,6 +643,7 @@ impl Database {
             &mut params_vec,
             "l",
             "p",
+            Some("l.data_source"),
             provider_name,
             model,
         );
@@ -664,6 +679,7 @@ impl Database {
             &mut rollup_params,
             "r",
             "p2",
+            None,
             provider_name,
             model,
         );
@@ -783,6 +799,7 @@ impl Database {
             &mut detail_params,
             "l",
             "p",
+            Some("l.data_source"),
             provider_name,
             model,
         );
@@ -807,6 +824,7 @@ impl Database {
             &mut rollup_params,
             "r",
             "p2",
+            None,
             provider_name,
             model,
         );
@@ -963,6 +981,7 @@ impl Database {
                 &mut extra_params,
                 "l",
                 "p",
+                Some("l.data_source"),
                 provider_name,
                 model,
             );
@@ -1076,6 +1095,7 @@ impl Database {
             &mut extra_params,
             "l",
             "p",
+            Some("l.data_source"),
             provider_name,
             model,
         );
@@ -1159,6 +1179,7 @@ impl Database {
             &mut rollup_params,
             "r",
             "p2",
+            None,
             provider_name,
             model,
         );
@@ -1291,6 +1312,7 @@ impl Database {
             &mut detail_params,
             "l",
             "p",
+            Some("l.data_source"),
             provider_name,
             model,
         );
@@ -1318,6 +1340,7 @@ impl Database {
             &mut rollup_params,
             "r",
             "p2",
+            None,
             provider_name,
             model,
         );
@@ -1328,8 +1351,8 @@ impl Database {
         };
 
         // UNION detail logs + rollup data, then aggregate
-        let detail_pname = provider_name_coalesce("l", "p");
-        let rollup_pname = provider_name_coalesce("r", "p2");
+        let detail_pname = provider_name_coalesce("l", "p", Some("l.data_source"));
+        let rollup_pname = provider_name_coalesce("r", "p2", None);
         let fresh_input_detail = fresh_input_sql("l");
         let fresh_input_rollup = fresh_input_sql("r");
         let sql = format!(
@@ -1353,7 +1376,7 @@ impl Database {
                 FROM proxy_request_logs l
                 LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
                 {detail_where}
-                GROUP BY l.provider_id, l.app_type
+                GROUP BY l.provider_id, l.app_type, provider_name
                 UNION ALL
                 SELECT r.provider_id, r.app_type,
                     {rollup_pname} as provider_name,
@@ -1367,7 +1390,7 @@ impl Database {
                 {rollup_where}
                 GROUP BY r.provider_id, r.app_type
             )
-            GROUP BY provider_id, app_type
+            GROUP BY provider_id, app_type, provider_name
             ORDER BY total_cost DESC"
         );
 
@@ -1435,6 +1458,7 @@ impl Database {
             &mut detail_params,
             "l",
             "p",
+            Some("l.data_source"),
             provider_name,
             model,
         );
@@ -1467,6 +1491,7 @@ impl Database {
             &mut rollup_params,
             "r",
             "p2",
+            None,
             provider_name,
             model,
         );
@@ -1496,12 +1521,14 @@ impl Database {
                 model,
                 SUM(request_count) as request_count,
                 SUM(total_tokens) as total_tokens,
-                SUM(total_cost) as total_cost
+                SUM(total_cost) as total_cost,
+                json_group_array(json(model_aliases)) as model_aliases
             FROM (
                 SELECT {detail_model} as model,
                     COUNT(*) as request_count,
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
+                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    json_group_array(DISTINCT json_array(l.model, l.request_model)) as model_aliases
                 FROM proxy_request_logs l
                 {detail_join}
                 {detail_where}
@@ -1510,7 +1537,8 @@ impl Database {
                 SELECT {rollup_model},
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
-                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0)
+                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                    json_group_array(DISTINCT json_array(r.model, r.request_model))
                 FROM usage_daily_rollups r
                 {rollup_join}
                 {rollup_where}
@@ -1533,8 +1561,21 @@ impl Database {
                 0.0
             };
 
+            let encoded: String = row.get(4)?;
+            let aliases: Vec<Vec<[Option<String>; 2]>> =
+                serde_json::from_str(&encoded).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let aliases = aliases
+                .into_iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .filter(|model| !model.trim().is_empty())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
             Ok(ModelStats {
                 model: row.get(0)?,
+                aliases,
                 request_count: request_count as u64,
                 total_tokens: row.get::<_, i64>(2)? as u64,
                 total_cost: format!("{total_cost:.6}"),
@@ -1577,6 +1618,7 @@ impl Database {
             &mut params,
             "l",
             "p",
+            Some("l.data_source"),
             filters.provider_name.as_deref(),
             filters.model.as_deref(),
         );
@@ -1615,7 +1657,7 @@ impl Database {
         params.push(Box::new(page_size as i64));
         params.push(Box::new(offset as i64));
 
-        let logs_pname = provider_name_coalesce("l", "p");
+        let logs_pname = provider_name_coalesce("l", "p", Some("l.data_source"));
         let sql = format!(
             "SELECT l.request_id, l.provider_id, {logs_pname} as provider_name, l.app_type, l.model,
                     l.request_model, l.cost_multiplier,
@@ -1659,7 +1701,7 @@ impl Database {
     ) -> Result<Option<RequestLogDetail>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let detail_pname = provider_name_coalesce("l", "p");
+        let detail_pname = provider_name_coalesce("l", "p", Some("l.data_source"));
         let detail_sql = format!(
             "SELECT l.request_id, l.provider_id, {detail_pname} as provider_name, l.app_type, l.model,
                     l.request_model, l.cost_multiplier,
@@ -3290,9 +3332,9 @@ mod tests {
         let deepseek = db.get_usage_summary(None, None, None, None, Some("deepseek-v3"))?;
         assert_eq!(deepseek.total_requests, 8, "b-1 + rollup 7");
 
-        // ③ pricing_model 优先于 model：alias-model 查不到，real-model 查得到。
+        // Both response and billing IDs select the observed request. Billing stays unchanged.
         let by_alias = db.get_usage_summary(None, None, None, None, Some("alias-model"))?;
-        assert_eq!(by_alias.total_requests, 0);
+        assert_eq!(by_alias.total_requests, 1);
         let by_real = db.get_usage_summary(None, None, None, None, Some("real-model"))?;
         assert_eq!(by_real.total_requests, 1);
 
@@ -3775,6 +3817,111 @@ mod tests {
         assert!(request_ids.contains(&"session-matches-error-proxy"));
         assert!(request_ids.contains(&"claude-session-cache-creation-mismatch"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn model_filters_include_observed_request_and_response_ids_without_changing_billing(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "aliases",
+                "pi",
+                "supplier",
+                "response-model",
+                "proxy",
+                1000,
+                10,
+                5,
+                0,
+                0,
+                200,
+                "0.5",
+            )?;
+            conn.execute("UPDATE proxy_request_logs SET request_model='configured-model', pricing_model='billing-model' WHERE request_id='aliases'", [])?;
+            conn.execute("INSERT INTO usage_daily_rollups (date,app_type,provider_id,model,request_model,pricing_model,request_count,success_count,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,total_cost_usd,avg_latency_ms) VALUES ('2020-01-01','pi','supplier','older-response','older-request','billing-model',2,2,20,10,0,0,'1.0',100)", [])?;
+        }
+        let stats = db.get_model_stats(None, None, Some("pi"), None, None)?;
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].model, "billing-model");
+        assert_eq!(stats[0].request_count, 3);
+        for id in [
+            "configured-model",
+            "response-model",
+            "older-request",
+            "older-response",
+        ] {
+            assert!(
+                stats[0].aliases.iter().any(|alias| alias == id),
+                "observed model missing from selector metadata"
+            );
+            let summary = db.get_usage_summary(None, None, Some("pi"), None, Some(id))?;
+            assert!(summary.total_requests > 0);
+        }
+        assert_eq!(stats[0].total_cost.parse::<f64>().ok(), Some(1.5));
+        Ok(())
+    }
+
+    #[test]
+    fn pi_gateway_session_provider_is_labelled_as_a_session_even_with_a_legacy_provider(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute("INSERT INTO providers(id,app_type,name,settings_config) VALUES ('varyai','pi','Vary AI','{}')", [])?;
+            insert_usage_log(
+                &conn,
+                "gateway-session",
+                "pi",
+                "varyai",
+                "configured-model",
+                "pi_session",
+                1000,
+                10,
+                5,
+                0,
+                0,
+                200,
+                "0.5",
+            )?;
+            insert_usage_log(
+                &conn,
+                "actual-provider",
+                "pi",
+                "varyai",
+                "configured-model",
+                "proxy",
+                1001,
+                10,
+                5,
+                0,
+                0,
+                200,
+                "0.5",
+            )?;
+        }
+        let logs = db.get_request_logs(&LogFilters::default(), 0, 10)?;
+        let session = logs
+            .data
+            .iter()
+            .find(|row| row.request_id == "gateway-session");
+        assert_eq!(
+            session.and_then(|row| row.provider_name.as_deref()),
+            Some("Pi (Session)")
+        );
+        let stats = db.get_provider_stats(None, None, Some("pi"), None, None)?;
+        assert_eq!(stats.len(), 2);
+        assert!(stats
+            .iter()
+            .any(|row| row.provider_name == "Vary AI" && row.request_count == 1));
+        assert_eq!(
+            db.get_provider_stats(None, None, Some("pi"), Some("Pi (Session)"), None)?[0]
+                .request_count,
+            1
+        );
         Ok(())
     }
 

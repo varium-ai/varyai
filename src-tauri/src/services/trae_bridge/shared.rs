@@ -138,6 +138,9 @@ impl Client {
         let _ = ensure_ready_for(self.0);
         Ok(())
     }
+    pub(crate) fn reconnect(self) -> Result<(), AppError> {
+        ensure_ready_for(self.0)
+    }
     pub(crate) fn restore(self) -> Result<(), AppError> {
         restore_connection(&self.directory()?, &self.argv_path()?)
     }

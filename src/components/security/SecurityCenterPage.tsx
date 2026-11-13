@@ -376,14 +376,6 @@ export function SecurityCenterPage({
                       configuredAction === "block"
                         ? "redact"
                         : configuredAction;
-                    const availableActionOptions =
-                      rule.id === "catalog:generic-sk-key-notice"
-                        ? defaultActionOptions.filter(
-                            (option) =>
-                              option.value === "audit" ||
-                              option.value === "allow",
-                          )
-                        : defaultActionOptions;
                     return (
                       <div
                         key={rule.id}
@@ -406,7 +398,7 @@ export function SecurityCenterPage({
                         </div>
 
                         <div className="flex shrink-0 items-center gap-2.5">
-                          {availableActionOptions.map((option) => {
+                          {defaultActionOptions.map((option) => {
                             const selected = effectiveAction === option.value;
                             const selectedClass =
                               option.value === "audit"

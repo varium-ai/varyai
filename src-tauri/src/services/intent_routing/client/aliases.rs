@@ -1,11 +1,17 @@
-//! Readable Codex wire names with retained mappings for existing conversations.
+//! Magpie Codex picker identities and duplicate-label disambiguation.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+pub(super) fn project(
+    catalog: &mut Value,
+    retained: &mut BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
+    project_menu(catalog, retained, None)
+}
+
 fn wire_name(label: &str) -> String {
-    // Codex also serializes the model ID in x-codex-routing-hint. Unicode
-    // labels belong in display_name, never in that header's model ID.
     let ascii = label
         .chars()
         .map(|c| {
@@ -28,7 +34,9 @@ fn wire_name(label: &str) -> String {
     }
 }
 
-pub(super) fn project(
+/// Projects an Agent-facing catalog to readable ASCII model IDs while retaining
+/// hidden historical aliases for existing sessions.
+pub(crate) fn project_readable(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
 ) -> Result<Vec<String>, String> {
@@ -55,11 +63,15 @@ pub(super) fn project(
         .iter()
         .map(|(_, label, _)| wire_name(label))
         .collect::<BTreeSet<_>>();
-    // Allocate duplicates by stable identity, independent of picker ordering.
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut legacy = Vec::new();
     for (id, label, index) in entries {
-        let base = wire_name(&label);
+        let previous = crate::services::agent_connections::model_wire(retained, None, &id);
+        let base = if previous == id {
+            wire_name(&label)
+        } else {
+            previous.to_owned()
+        };
         let mut name = base.clone();
         let mut number = 2;
         while (reserved.contains(&name) && name != id)
@@ -78,8 +90,6 @@ pub(super) fn project(
         if number > 2 {
             model["display_name"] = Value::String(format!("{label} ({})", number - 1));
         }
-        // Existing sessions keep the same capability metadata without adding
-        // duplicate picker rows. Retired names stay reserved in the receipt.
         let mut previous = retained
             .iter()
             .filter(|(_, owner)| **owner == id)
@@ -102,7 +112,121 @@ pub(super) fn project(
     Ok(visible)
 }
 
-pub(super) fn selected<'a>(
+pub(super) fn project_menu(
+    catalog: &mut Value,
+    retained: &mut BTreeMap<String, String>,
+    menu: Option<&crate::proxy::intent::Menu>,
+) -> Result<Vec<String>, String> {
+    let models = catalog["models"]
+        .as_array_mut()
+        .ok_or("intentRouting.clientFailed")?;
+    let entries = models
+        .iter()
+        .map(|model| {
+            let canonical = model["slug"].as_str().ok_or("intentRouting.clientFailed")?;
+            let direct = menu
+                .and_then(|menu| menu.groups.get(canonical))
+                .filter(|_| canonical.starts_with("vary-provider/"))
+                .and_then(|session| session.targets.first());
+            let id = direct
+                .map(|target| format!("{}/{}", target.provider_id, target.model))
+                .unwrap_or_else(|| {
+                    canonical
+                        .strip_prefix("vary-auto/")
+                        .map(|id| format!("group/{id}"))
+                        .unwrap_or_else(|| canonical.to_owned())
+                });
+            let provider = menu
+                .and_then(|menu| menu.groups.get(canonical))
+                .and_then(|session| session.targets.first())
+                .map(|target| target.provider_id.clone())
+                .unwrap_or_else(|| {
+                    if canonical.starts_with("auto/")
+                        || canonical.starts_with("vary-auto/")
+                        || canonical.starts_with("group/")
+                    {
+                        String::new()
+                    } else {
+                        canonical
+                            .split_once('/')
+                            .map_or("", |(provider, _)| provider)
+                            .to_owned()
+                    }
+                });
+            let label = model["display_name"]
+                .as_str()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(canonical)
+                .to_owned();
+            Ok((canonical.to_owned(), id, provider, label))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut same: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, (_, _, _, label)) in entries.iter().enumerate() {
+        if models[index]["visibility"] != "hide" {
+            same.entry(label.to_lowercase()).or_default().push(index);
+        }
+    }
+    // Magpie codexApart: only full, case-insensitive duplicate labels get
+    // a suffix, using a unique provider ID or otherwise the full entry ID.
+    for indices in same.values().filter(|indices| indices.len() > 1) {
+        for &index in indices {
+            let (_, id, provider, label) = &entries[index];
+            let group = entries[index].0.starts_with("auto/")
+                || entries[index].0.starts_with("vary-auto/")
+                || entries[index].0.starts_with("group/");
+            let unique = !group
+                && !provider.is_empty()
+                && indices
+                    .iter()
+                    .filter(|&&i| entries[i].2.eq_ignore_ascii_case(provider))
+                    .count()
+                    == 1;
+            models[index]["display_name"] =
+                Value::String(format!("{label} · {}", if unique { provider } else { id }));
+        }
+    }
+    let mut visible = Vec::new();
+    let mut legacy = Vec::new();
+    let reserved = entries
+        .iter()
+        .map(|(_, id, _, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    if reserved.len() != entries.len() {
+        return Err("intentRouting.clientConflict".into());
+    }
+    for (index, (canonical, id, _, _)) in entries.into_iter().enumerate() {
+        if retained.get(&id).is_some_and(|owner| owner != &canonical) {
+            return Err("intentRouting.clientConflict".into());
+        }
+        if !retained.contains_key(&id) && retained.len() >= 16384 {
+            return Err("intentRouting.limit".into());
+        }
+        retained.insert(id.clone(), canonical.clone());
+        models[index]["slug"] = Value::String(id.clone());
+        visible.push(id.clone());
+        // Preserve historical VaryAI IDs only as hidden compatibility entries.
+        let mut previous = retained
+            .iter()
+            .filter(|(_, owner)| **owner == canonical)
+            .map(|(wire, _)| wire.clone())
+            .collect::<BTreeSet<_>>();
+        previous.insert(canonical);
+        for wire in previous {
+            if reserved.contains(&wire) {
+                continue;
+            }
+            let mut hidden = models[index].clone();
+            hidden["slug"] = Value::String(wire);
+            hidden["visibility"] = Value::String("hide".into());
+            legacy.push(hidden);
+        }
+    }
+    models.extend(legacy);
+    Ok(visible)
+}
+
+pub(crate) fn selected<'a>(
     visible: &'a [String],
     retained: &BTreeMap<String, String>,
     model: &str,
@@ -128,103 +252,128 @@ mod tests {
     }
 
     #[test]
-    fn readable_wire_names_keep_legacy_metadata_hidden_in_the_picker() {
-        let mut catalog = catalog(&[("vary-provider/model-synthetic", "Grok · Synthetic")]);
-        let mut retained = BTreeMap::new();
-        let visible = project(&mut catalog, &mut retained).unwrap();
-        assert_eq!(visible, ["Grok-Synthetic"]);
-        assert_eq!(retained["Grok-Synthetic"], "vary-provider/model-synthetic");
-        assert_eq!(catalog["models"][0]["slug"], "Grok-Synthetic");
+    fn magpie_group_duplicates_use_group_ids_and_hidden_entries_do_not_disambiguate() {
+        let mut value = catalog(&[
+            ("vary-auto/a", "Shared · routing group"),
+            ("vary-auto/b", "Shared · routing group"),
+            ("relay/a", "Unique · Relay"),
+            ("relay/old", "Unique · Relay"),
+        ]);
+        value["models"][3]["visibility"] = json!("hide");
+        project(&mut value, &mut BTreeMap::new()).unwrap();
+        assert_eq!(value["models"][0]["slug"], "group/a");
         assert_eq!(
-            catalog["models"][1]["slug"],
-            "vary-provider/model-synthetic"
+            value["models"][0]["display_name"],
+            "Shared · routing group · group/a"
         );
-        assert_eq!(catalog["models"][1]["visibility"], "hide");
+        assert_eq!(
+            value["models"][1]["display_name"],
+            "Shared · routing group · group/b"
+        );
+        assert_eq!(value["models"][2]["display_name"], "Unique · Relay");
+    }
+
+    #[test]
+    fn magpie_identity_is_independent_of_unicode_labels_and_catalog_order() {
+        let entries = [
+            ("company/glm-5", "GLM-5 · 公司"),
+            ("test/glm-5", "GLM-5 · 测试"),
+        ];
+        let mut retained = BTreeMap::new();
+        let mut first = catalog(&entries);
+        assert_eq!(
+            project(&mut first, &mut retained).unwrap(),
+            ["company/glm-5", "test/glm-5"]
+        );
+        assert_eq!(first["models"][0]["display_name"], "GLM-5 · 公司");
+        let mut renamed = catalog(&[(entries[1].0, "New · 测试"), entries[0]]);
+        assert_eq!(
+            project(&mut renamed, &mut retained).unwrap(),
+            ["test/glm-5", "company/glm-5"]
+        );
+        assert_eq!(retained["company/glm-5"], "company/glm-5");
+    }
+
+    #[test]
+    fn magpie_duplicate_labels_use_provider_identity_or_full_entry_identity() {
+        let mut value = catalog(&[
+            ("codex/gpt", "GPT · Codex"),
+            ("codex-b/gpt", "GPT · Codex"),
+            ("relay/glm", "GLM · Relay"),
+            ("relay/glm-old", "glm · relay"),
+            ("relay/kimi", "Kimi · Relay"),
+        ]);
+        project(&mut value, &mut BTreeMap::new()).unwrap();
+        let names = value["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["display_name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "GPT · Codex · codex",
+                "GPT · Codex · codex-b",
+                "GLM · Relay · relay/glm",
+                "glm · relay · relay/glm-old",
+                "Kimi · Relay"
+            ]
+        );
+    }
+
+    #[test]
+    fn previous_display_aliases_remain_hidden_with_capabilities_and_selection() {
+        let canonical = "vary-provider/model-synthetic";
+        let mut retained = BTreeMap::from([("Grok-Synthetic".into(), canonical.into())]);
+        let mut value = catalog(&[(canonical, "Grok · Synthetic")]);
+        let names = project(&mut value, &mut retained).unwrap();
+        assert_eq!(names, [canonical]);
+        assert_eq!(
+            selected(&names, &retained, "Grok-Synthetic"),
+            Some(canonical)
+        );
+        assert_eq!(value["models"][1]["slug"], "Grok-Synthetic");
+        assert_eq!(value["models"][1]["visibility"], "hide");
         for key in [
             "context_window",
             "supported_reasoning_levels",
             "service_tiers",
         ] {
-            assert_eq!(catalog["models"][0][key], catalog["models"][1][key]);
+            assert_eq!(value["models"][0][key], value["models"][1][key]);
         }
     }
 
     #[test]
-    fn unicode_labels_never_enter_codex_routing_headers() {
-        let mut catalog = catalog(&[("vary-provider/synthetic", "grok-4.5 · 我的Grok")]);
-        let mut retained = BTreeMap::from([(
-            "grok-4.5 · 我的Grok".into(),
-            "vary-provider/synthetic".into(),
-        )]);
-        let names = project(&mut catalog, &mut retained).unwrap();
-        assert!(names
-            .iter()
-            .all(|name| name.is_ascii() && !name.contains(char::is_whitespace)));
-        assert_eq!(names, ["grok-4.5-Grok"]);
-        assert_eq!(catalog["models"][0]["display_name"], "grok-4.5 · 我的Grok");
-        assert_eq!(retained["grok-4.5 · 我的Grok"], "vary-provider/synthetic");
-    }
-
-    #[test]
-    fn duplicate_names_are_stable_across_catalog_order_and_restart() {
-        let entries = [("vary-provider/a", "Shared"), ("vary-provider/b", "Shared")];
+    fn readable_agent_aliases_survive_renaming_and_catalog_reordering() {
         let mut retained = BTreeMap::new();
-        assert_eq!(
-            project(&mut catalog(&entries), &mut retained).unwrap(),
-            ["Shared", "Shared-2"]
-        );
-        let mut restored =
-            serde_json::from_str(&serde_json::to_string(&retained).unwrap()).unwrap();
-        assert_eq!(
-            project(&mut catalog(&[entries[1], entries[0]]), &mut restored).unwrap(),
-            ["Shared-2", "Shared"]
-        );
-        assert_eq!(restored, retained);
-    }
-
-    #[test]
-    fn renamed_and_removed_names_never_move_to_a_different_destination() {
-        let mut retained = BTreeMap::new();
-        project(
-            &mut catalog(&[("vary-provider/a", "Original")]),
-            &mut retained,
-        )
-        .unwrap();
-        let mut renamed = catalog(&[("vary-provider/a", "Renamed")]);
-        assert_eq!(project(&mut renamed, &mut retained).unwrap(), ["Renamed"]);
-        assert_eq!(retained["Original"], "vary-provider/a");
-        assert!(renamed["models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["slug"] == "Original" && m["visibility"] == "hide"));
-        let mut replacement = catalog(&[("vary-provider/b", "Original")]);
-        assert_eq!(
-            project(&mut replacement, &mut retained).unwrap(),
-            ["Original-2"]
-        );
-        assert_eq!(retained["Original"], "vary-provider/a");
-        assert!(!replacement["models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["slug"] == "Original"));
-    }
-
-    #[test]
-    fn readable_names_cannot_shadow_legacy_ids_or_other_requested_names() {
-        let mut retained = BTreeMap::new();
-        let mut catalog = catalog(&[
-            ("vary-provider/a", "Shared"),
-            ("vary-provider/b", "Shared"),
-            ("vary-provider/c", "Shared (2)"),
-            ("vary-provider/d", "vary-provider/a"),
+        let mut first = catalog(&[
+            ("vary-provider/a", "Readable Model"),
+            ("vary-provider/b", "Readable Model"),
+            ("vary-provider/c", "Readable-Model-2"),
         ]);
-        let names = project(&mut catalog, &mut retained).unwrap();
+        assert_eq!(
+            project_readable(&mut first, &mut retained).unwrap(),
+            ["Readable-Model", "Readable-Model-3", "Readable-Model-2"]
+        );
+        let mut renamed = catalog(&[
+            ("vary-provider/c", "Renamed"),
+            ("vary-provider/a", "Renamed"),
+            ("vary-provider/b", "Renamed"),
+        ]);
+        let names = project_readable(&mut renamed, &mut retained).unwrap();
         assert_eq!(
             names,
-            ["Shared", "Shared-3", "Shared-2", "vary-provider/a-2"]
+            ["Readable-Model-2", "Readable-Model", "Readable-Model-3"]
         );
-        assert!(!retained.contains_key("vary-provider/a"));
+        assert_eq!(retained["Readable-Model"], "vary-provider/a");
+        let hidden = renamed["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "vary-provider/a")
+            .unwrap();
+        assert_eq!(hidden["visibility"], "hide");
+        assert_eq!(hidden["context_window"], 123456);
     }
 }

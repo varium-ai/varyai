@@ -71,6 +71,42 @@ describe("RequestLogTable", () => {
     );
   });
 
+  it("shows the actual pricing model and retains distinct request and response identifiers", () => {
+    useRequestLogsMock.mockReturnValue({
+      data: {
+        data: [
+          {
+            requestId: "synthetic",
+            providerId: "supplier",
+            providerName: "Synthetic",
+            model: "response-model",
+            pricingModel: "billing-model",
+            requestModel: "configured-model",
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalCostUsd: "0.5",
+            latencyMs: 100,
+            statusCode: 200,
+            createdAt: 1000,
+          },
+        ],
+        total: 1,
+      },
+      isLoading: false,
+    });
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        refreshIntervalMs={0}
+      />,
+    );
+    expect(screen.getByText("billing-model")).toBeVisible();
+    expect(screen.getByText(/configured-model/)).toBeVisible();
+    expect(screen.getByText(/response-model/)).toBeVisible();
+  });
   it("resets pagination when the dashboard range changes", async () => {
     const initialRange: UsageRangeSelection = { preset: "today" };
     const nextRange: UsageRangeSelection = {

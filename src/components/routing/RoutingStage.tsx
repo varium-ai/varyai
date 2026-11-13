@@ -397,7 +397,9 @@ export function RoutingStage({
         )}
         {candidates.map(({ candidate, trace, index }) => {
           const supplier = upstreams.find(
-            (provider) => provider.id === candidate.providerId,
+            (provider) =>
+              provider.id ===
+              (candidate.sourceProviderId ?? candidate.providerId),
           );
           const chosen = chosenCandidate(trace);
           const active = isAnswering(trace);

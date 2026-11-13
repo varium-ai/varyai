@@ -4,6 +4,27 @@ use crate::services::intent_routing::{eligible_provider, valid_id, RoutingGroup,
 use rusqlite::{params, OptionalExtension};
 
 const FAILED: &str = "intentRouting.failed";
+const MAX_ARCHIVE_BYTES: usize = 70_000;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ArchivedGroup {
+    #[serde(flatten)]
+    summary: crate::services::intent_routing::RemovedGroup,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<RoutingGroup>,
+}
+
+fn archived_group(text: &str) -> Result<Option<RoutingGroup>, String> {
+    if text.len() > MAX_ARCHIVE_BYTES {
+        return Err(FAILED.into());
+    }
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| FAILED)?;
+    if value.get("group").is_none() {
+        return Ok(None);
+    }
+    let record: ArchivedGroup = serde_json::from_value(value).map_err(|_| FAILED)?;
+    Ok(record.group)
+}
 
 impl Database {
     pub(crate) fn routing_context_settings(
@@ -291,7 +312,33 @@ impl Database {
     }
 
     pub(crate) fn restore_discovered_routing_group(&self, id: &str) -> Result<(), String> {
-        if !valid_id(id) || !id.starts_with("auto-") {
+        if !valid_id(id) {
+            return Err("intentRouting.invalid".into());
+        }
+        let archived: Option<String> = self
+            .extension_connection()
+            .lock()
+            .map_err(|_| FAILED)?
+            .query_row(
+                "SELECT value FROM intent_routing_preferences WHERE key=?1",
+                [format!("hidden:{id}")],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| FAILED)?;
+        if let Some(group) = archived
+            .as_deref()
+            .map(archived_group)
+            .transpose()?
+            .flatten()
+        {
+            if group.id != id {
+                return Err("intentRouting.invalid".into());
+            }
+            self.save_intent_routing_group_inner(group, true)?;
+            return Ok(());
+        }
+        if !id.starts_with("auto-") {
             return Err("intentRouting.invalid".into());
         }
         let providers = self.routing_catalog_providers(true).map_err(|_| FAILED)?;
@@ -524,7 +571,15 @@ impl Database {
 
     pub(crate) fn save_intent_routing_group(
         &self,
+        group: RoutingGroup,
+    ) -> Result<RoutingGroup, String> {
+        self.save_intent_routing_group_inner(group, false)
+    }
+
+    fn save_intent_routing_group_inner(
+        &self,
         mut group: RoutingGroup,
+        restoring: bool,
     ) -> Result<RoutingGroup, String> {
         group = crate::services::intent_routing::membership::definition(group);
         group.validate()?;
@@ -542,8 +597,31 @@ impl Database {
             )
             .optional()
             .map_err(|_| FAILED)?;
-        if current.unwrap_or(0) != group.revision {
+        let archived: Option<String> = tx
+            .query_row(
+                "SELECT value FROM intent_routing_preferences WHERE key=?1",
+                [format!("hidden:{}", group.id)],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| FAILED)?;
+        let archived = archived
+            .as_deref()
+            .map(archived_group)
+            .transpose()?
+            .flatten();
+        let conflict = if restoring {
+            current.is_some() || archived.as_ref() != Some(&group)
+        } else {
+            current.unwrap_or(0) != group.revision
+        };
+        if conflict {
             return Err("intentRouting.conflict".into());
+        }
+        if !restoring && current.is_none() {
+            if let Some(archived) = archived {
+                group.revision = archived.revision;
+            }
         }
         if current.is_none() {
             let count: usize = tx
@@ -581,10 +659,12 @@ impl Database {
             params![group.id, group.revision, config],
         )
         .map_err(|_| FAILED)?;
-        if group.id.starts_with("auto-") {
-            for id in std::iter::once(group.id.clone())
-                .chain(crate::services::intent_routing::legacy_ids(&group))
-            {
+        {
+            for id in std::iter::once(group.id.clone()).chain(if group.id.starts_with("auto-") {
+                crate::services::intent_routing::legacy_ids(&group)
+            } else {
+                vec![]
+            }) {
                 tx.execute(
                     "DELETE FROM intent_routing_preferences WHERE key=?1",
                     [format!("hidden:{id}")],
@@ -625,6 +705,22 @@ impl Database {
         }
         let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
         let tx = conn.transaction().map_err(|_| FAILED)?;
+        let group = if revision > 0 {
+            let config: Option<String> = tx
+                .query_row(
+                    "SELECT config FROM intent_routing_groups WHERE id=?1 AND revision=?2",
+                    params![id, revision],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| FAILED)?;
+            Some(
+                serde_json::from_str::<RoutingGroup>(&config.ok_or("intentRouting.conflict")?)
+                    .map_err(|_| FAILED)?,
+            )
+        } else {
+            group
+        };
         if revision == 0 {
             let exists: bool = tx
                 .query_row(
@@ -646,12 +742,15 @@ impl Database {
         if revision != 0 && changed != 1 {
             return Err("intentRouting.conflict".into());
         }
-        if id.starts_with("auto-") {
+        {
             let value = group
                 .map(|group| {
-                    serde_json::to_string(&crate::services::intent_routing::RemovedGroup {
-                        id: group.id,
-                        name: group.name,
+                    serde_json::to_string(&ArchivedGroup {
+                        summary: crate::services::intent_routing::RemovedGroup {
+                            id: group.id.clone(),
+                            name: group.name.clone(),
+                        },
+                        group: (revision > 0).then_some(group),
                     })
                 })
                 .transpose()
@@ -700,3 +799,7 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "intent_routing_recovery_tests.rs"]
+mod recovery_tests;

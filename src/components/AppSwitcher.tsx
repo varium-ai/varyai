@@ -52,8 +52,7 @@ const APP_DISPLAY_NAME: Record<AppId, string> = {
   qwen: "Qwen Code",
   zcode: "ZCode",
   "deepseek-harness": "DeepSeek Harness",
-  cursor: "Cursor Private Inference",
-  "cursor-cli": "Cursor CLI",
+
   t3code: "T3 Code",
 };
 

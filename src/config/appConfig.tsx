@@ -36,8 +36,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   qwen: "qwen-code",
   zcode: "zcode",
   "deepseek-harness": "deepseek",
-  cursor: "cursor",
-  "cursor-cli": "cursor",
+
   t3code: "t3code",
 };
 
@@ -61,8 +60,7 @@ export const APP_IDS: AppId[] = [
   "qwen",
   "zcode",
   "deepseek-harness",
-  "cursor",
-  "cursor-cli",
+
   "t3code",
 ];
 
@@ -86,8 +84,7 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   qwen: false,
   zcode: false,
   "deepseek-harness": false,
-  cursor: false,
-  "cursor-cli": false,
+
   t3code: false,
 };
 
@@ -106,8 +103,6 @@ export const SKILLS_APP_IDS: Exclude<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
-  | "cursor"
-  | "cursor-cli"
   | "t3code"
 >[] = ["claude", "codex", "gemini", "grokbuild", "opencode", "hermes", "pi"];
 
@@ -224,8 +219,6 @@ export type McpAppId = Exclude<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
-  | "cursor"
-  | "cursor-cli"
   | "t3code"
 >;
 export const MCP_APP_IDS: McpAppId[] = [
@@ -242,20 +235,6 @@ export function isMcpAppId(appId: string): appId is McpAppId {
 }
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
-  cursor: {
-    label: "Cursor Private Inference",
-    icon: (
-      <ProviderIcon icon="cursor" name="Cursor Private Inference" size={14} />
-    ),
-    activeClass: "bg-sky-500/10 text-sky-600",
-    badgeClass: "bg-sky-500/10 text-sky-700",
-  },
-  "cursor-cli": {
-    label: "Cursor CLI",
-    icon: <ProviderIcon icon="cursor" name="Cursor CLI" size={14} />,
-    activeClass: "bg-sky-500/10 text-sky-600",
-    badgeClass: "bg-sky-500/10 text-sky-700",
-  },
   t3code: {
     label: "T3 Code",
     icon: <ProviderIcon icon="t3code" name="T3 Code" size={14} />,

@@ -306,6 +306,52 @@ pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
     Ok(text)
 }
 
+/// Explicitly release only routes identified by the saved connection receipt.
+pub(crate) fn recover_for_reapply(
+    source: &str,
+    installed: &Value,
+    baseline: &Value,
+) -> Result<String, String> {
+    let conflict = super::agent_connections::CONFLICT;
+    let mut clean = parse(source).map_err(|_| conflict)?;
+    let expected = installed["providers"]
+        .as_object()
+        .filter(|providers| !providers.is_empty())
+        .ok_or(conflict)?;
+    let mut owned_routes = Vec::new();
+    for (id, provider) in expected {
+        if provider["name"] != PLUGIN || !id.starts_with("varyai-provider-") {
+            return Err(conflict.into());
+        }
+        let routes = provider["config"]["providers"]
+            .as_object()
+            .filter(|routes| !routes.is_empty())
+            .ok_or(conflict)?;
+        let live = clean["providers"]
+            .as_object_mut()
+            .ok_or(conflict)?
+            .remove(id)
+            .ok_or(conflict)?;
+        if live["name"] != PLUGIN
+            || routes.keys().any(|route| {
+                !route.starts_with("varyai-") || live["config"]["providers"].get(route).is_none()
+            })
+        {
+            return Err(conflict.into());
+        }
+        owned_routes.extend(routes.keys().map(String::as_str));
+    }
+    let selected = selection(&clean);
+    if selected
+        .get("provider")
+        .and_then(Value::as_str)
+        .is_some_and(|provider| owned_routes.contains(&provider))
+    {
+        set_selection(&mut clean, &selection(baseline)).map_err(|_| conflict)?;
+    }
+    encode(source, &clean).map_err(|_| conflict.into())
+}
+
 fn key(id: &str) -> String {
     format!("varyai-provider-{id}")
 }

@@ -85,11 +85,19 @@ Claude Desktop fixtures use `Library/Application Support` on macOS and separate
 Windows, all under the temporary test home. Linux must assert that Desktop
 projection is rejected while retaining the portable client coverage.
 
+Gemini and T3 Code publish readable ASCII model aliases. Refreshes retain an
+existing readable alias when its display label changes, and keep historical
+identities addressable so existing model selections and sessions can continue.
+
 The Qoder TLS listener owns its accepted connection tasks and cancels and joins
-them during shutdown. Its certificate test keeps both an immediate same-address
-rebind assertion and pending TLS handshakes to verify that stopping the listener
-releases active sockets. The test uses an isolated certificate and never installs
-system trust.
+them during shutdown. `stop()` waits for the listener task to finish; a timeout
+must not detach it and report completion while it still owns sockets. A portable
+regression delays listener cleanup past the former three-second deadline and checks
+an immediate same-address rebind. It leaves the listener unconnected so Windows
+connection reuse restrictions do not obscure the shutdown check. The macOS
+certificate test also keeps an immediate rebind assertion and checks that pending
+TLS handshakes close. It uses an isolated certificate and never installs system
+trust.
 
 ## Toolchain dependency review
 
@@ -112,6 +120,11 @@ Ordinary source builds have no statistics destination and do not report installa
 - Use synthetic provider endpoints, keys and sample content. Sanitize logs and screenshots before sharing.
 - Keep the four runtime locale files aligned; the application remains multilingual.
 - Provider editor operation failures use the shared Sonner toast with an action-specific message (save, model discovery, model test, account import, enable/disable or delete). Do not render a generic catalog-update error inside the form. Preserve the draft after a failed save; show only recognized, localized error codes and never raw backend error details. Account availability, sign-in guidance and empty/loading states remain contextual.
+- Add provider uses four entry cards: subscription accounts, model vendors, import and custom providers. Import lives inside this page and returns focus to its card when closed. The popular-provider table shows four subscription shortcuts and four official API vendors by default; it omits the API relay group. Subscription and vendor cards open their full directories in centered dialogs with independent search. Closing a picker cancels its unfinished authorization and restores focus to its card while preserving the page search and four popular shortcuts per row. Escape clears the picker search before closing; deferred picker focus cleanup must not steal focus from a newly opened provider editor. Preserve inline sign-in, cancel authorization before opening import or an API editor, and keep narrow layouts, dark mode and all four runtime languages supported.
+- Provider forms use a centered modal capped at 560 px, compact 12–13 px field text, 28 px inputs, and a scrolling body. Provider sizing must override shared dialog styles regardless of stylesheet load order; preview with provider CSS before the global stylesheet, matching the renderer entry point. Preserve the existing fields, validation, protocol detection, key management and save behavior when adjusting this presentation. Narrow windows stack labels above controls and retain outer margins; keep dark mode and all four runtime languages supported.
+- Subscription confirmation must keep the selected credential source visible and automatically load its missing model catalog. Codex native/managed account deduplication uses only backend-proven aliases; project the selected ID into the display row and use that credential's own readiness, never another alias's readiness. Reconfirming a proven alias replaces that identity's existing binding while preserving other accounts and model preferences. Subscription model toolbars share the API form's tri-state select-all checkbox and inline refresh action. Bulk selection applies to visible chat models and preserves hidden/image selections, ordering and saved metadata.
+- Provider field labels align right on desktop. Saved API keys use a four-column table for credentials, model scope, limits and actions, with editors and model pickers expanded below the relevant row. Use square checkboxes in the credential column to enable or disable keys; do not duplicate these controls in the actions column. Keep copy beside the masked key, and put edit and red delete icons in the actions column with localized accessible labels. Omit the single-key "In use" label; retain the first-key indicator when multiple keys are enabled. Keep the table within its own horizontal scroll area on narrow windows and preserve all existing key callbacks and draft updates.
+- A successful key copy shows a green animated check for two seconds after the latest successful copy, then restores the copy icon and accessible label. Keep confirmation scoped to the copied row, clear its timer when replaced or unmounted, respect reduced motion, and show success only after the clipboard write completes. Never include copied credentials in feedback text or diagnostics.
 - Provider duplication follows Magpie's `duplicateProvider`: open the Add form directly from the saved provider, show its copy title, and keep stored credentials private until saving. Ignore deferred focus cleanup from an editor that has been replaced by that draft; only the matching closed editor may clear the active draft. Regression tests must let the old dialog's deferred cleanup run before checking the copy.
 - Single-choice native selects share `src/components/ui/native-select.css` for a flat surface, theme-aware chevron, keyboard focus and disabled states. Keep page-specific heights, and avoid resetting the chevron or its reserved end padding with equally specific background/padding shorthands. The compact login proxy retains its own SVG indicator; multiple and sized list boxes retain native rendering. Forced-color mode restores the system select indicator.
 - Read the [storage design](architecture/storage.md) before changing migrations or backup formats.

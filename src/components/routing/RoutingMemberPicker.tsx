@@ -18,6 +18,7 @@ import type {
 import {
   catalogRoutingMembers,
   routingMemberKey,
+  routingMemberAvailable,
   ROUTING_MEMBER_LIMIT,
 } from "@/lib/routingMemberSelection";
 
@@ -87,6 +88,11 @@ export function RoutingMemberPicker({
       provider.models.push({ id: member.modelId, name: member.modelId });
     }
   }
+  const providerNameCounts = new Map<string, number>();
+  for (const provider of sections) {
+    const key = provider.name.trim().toLocaleLowerCase();
+    providerNameCounts.set(key, (providerNameCounts.get(key) ?? 0) + 1);
+  }
   return (
     <div className="rt-member-picker">
       <div className="rt-member-picker-actions">
@@ -124,6 +130,12 @@ export function RoutingMemberPicker({
             providerId: provider.id,
             modelId: model.id,
           }));
+          const providerNameKey = provider.name.trim().toLocaleLowerCase();
+          const duplicateName =
+            (providerNameCounts.get(providerNameKey) ?? 0) > 1;
+          const providerLabel = duplicateName
+            ? `${provider.name} · ${provider.id}`
+            : provider.name;
           const count = choices.filter((choice) =>
             selected.has(routingMemberKey(choice)),
           ).length;
@@ -152,7 +164,7 @@ export function RoutingMemberPicker({
                           ? choices
                           : choices.filter(
                               (choice) =>
-                                provider.taskEligible ||
+                                routingMemberAvailable(providers, choice) ||
                                 selected.has(routingMemberKey(choice)),
                             ),
                         provider.taskEligible && !all,
@@ -166,6 +178,7 @@ export function RoutingMemberPicker({
                     aria-label={accountText(provider.name)}
                     aria-expanded={expanded}
                     aria-controls={modelsId}
+                    title={accountText(providerLabel)}
                     onClick={() =>
                       setFolded((previous) => {
                         const next = new Set(previous);
@@ -181,6 +194,11 @@ export function RoutingMemberPicker({
                       size={14}
                     />
                     <AccountLabel>{provider.name}</AccountLabel>
+                    {duplicateName && (
+                      <span className="rt-provider-models-id">
+                        · {provider.id}
+                      </span>
+                    )}
                     {provider.appType && (
                       <span className="rt-provider-models-agent">
                         {provider.appType}
@@ -210,6 +228,7 @@ export function RoutingMemberPicker({
                       modelId: model.id,
                     };
                     const checked = selected.has(routingMemberKey(choice));
+                    const ready = routingMemberAvailable(providers, choice);
                     return (
                       <label
                         key={model.id}
@@ -223,7 +242,7 @@ export function RoutingMemberPicker({
                           disabled={
                             disabled ||
                             (!checked &&
-                              (!provider.taskEligible ||
+                              (!ready ||
                                 members.length >= ROUTING_MEMBER_LIMIT))
                           }
                           onChange={(event) =>
@@ -232,6 +251,9 @@ export function RoutingMemberPicker({
                         />
                         <Check size={13} aria-hidden />
                         <span>{model.name || model.id}</span>
+                        {!ready && provider.taskEligible && (
+                          <small>{t("intentRouting.memberNotReady")}</small>
+                        )}
                       </label>
                     );
                   })}

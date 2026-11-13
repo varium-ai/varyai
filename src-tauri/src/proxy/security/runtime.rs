@@ -59,7 +59,6 @@ impl SecurityRuntimeConfig {
                 .any(|rule| rule.enabled && rule.action == AuditAction::RedactRestore)
                 || self.builtin_action_overrides.iter().any(|(id, action)| {
                     *action == AuditAction::RedactRestore
-                        && id != "catalog:generic-sk-key-notice"
                         && (matches!(id.as_str(), "chinese_id_card" | "chinese_phone_number")
                             || super::builtin_rules::BUILTIN_RULES
                                 .iter()
@@ -473,11 +472,12 @@ mod restore_activation_tests {
         assert!(!runtime.restoration_enabled());
         runtime
             .builtin_action_overrides
-            .insert("catalog:generic-sk-key-notice".into(), restore);
-        runtime
-            .builtin_action_overrides
             .insert("unknown-rule".into(), restore);
         assert!(!runtime.restoration_enabled());
+        runtime
+            .builtin_action_overrides
+            .insert("catalog:generic-sk-key-notice".into(), restore);
+        assert!(runtime.restoration_enabled());
         runtime
             .builtin_action_overrides
             .insert("chinese_phone_number".into(), restore);

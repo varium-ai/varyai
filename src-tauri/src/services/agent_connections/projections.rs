@@ -1,6 +1,6 @@
 use super::{put, FileEdit, Format, Model, Receipt, CONFLICT, FAILED};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub(super) fn named_catalog(
@@ -10,16 +10,33 @@ pub(super) fn named_catalog(
 ) -> (Vec<Model>, String) {
     let mut projected = catalog.to_vec();
     let mut chosen = selected.to_owned();
-    for model in &mut projected {
+    let reserved = catalog
+        .iter()
+        .map(|model| &model.id)
+        .collect::<BTreeSet<_>>();
+    let labels = catalog
+        .iter()
+        .map(|model| &model.name)
+        .collect::<BTreeSet<_>>();
+    let mut order = (0..projected.len()).collect::<Vec<_>>();
+    order.sort_by(|a, b| catalog[*a].id.cmp(&catalog[*b].id));
+    for index in order {
+        let model = &mut projected[index];
         let internal = model.id.clone();
-        let mut name = model_map
-            .iter()
-            .find(|(_, alias)| *alias == &internal)
-            .map(|(wire, _)| wire.clone())
-            .unwrap_or_else(|| model.name.clone());
+        let previous = super::model_wire(model_map, None, &internal);
+        let base = if previous == internal {
+            &model.name
+        } else {
+            previous
+        }
+        .to_owned();
+        let mut name = base.clone();
         let mut duplicate = 2;
-        while model_map.get(&name).is_some_and(|alias| alias != &internal) {
-            name = format!("{} ({duplicate})", model.name);
+        while model_map.get(&name).is_some_and(|alias| alias != &internal)
+            || (reserved.contains(&name) && name != internal)
+            || (name != base && labels.contains(&name))
+        {
+            name = format!("{base} ({duplicate})");
             duplicate += 1;
         }
         if internal == selected {
@@ -51,17 +68,34 @@ pub(super) fn build(
         }
         _ => return Err(FAILED.into()),
     };
-    let (projected, chosen) = if ["grokbuild", "hermes", "kimi", "qwen", "zcode"].contains(&app) {
-        named_catalog(catalog, selected, &mut receipt.model_map)
+    let (projected, chosen) = if app == "gemini" {
+        for model in catalog {
+            // Keep the former URL aliases addressable by existing sessions.
+            receipt
+                .model_map
+                .insert(wire_id(&model.id), model.id.clone());
+        }
+        let mut projection = json!({"models":catalog.iter().map(|model| json!({"slug":model.id,"display_name":model.name})).collect::<Vec<_>>()});
+        let visible = crate::services::intent_routing::client::aliases::project_readable(
+            &mut projection,
+            &mut receipt.model_map,
+        )?;
+        let chosen = crate::services::intent_routing::client::aliases::selected(
+            &visible,
+            &receipt.model_map,
+            selected,
+        )
+        .ok_or(FAILED)?
+        .to_owned();
+        let mut projected = catalog.to_vec();
+        for (model, wire) in projected.iter_mut().zip(visible) {
+            model.id = wire;
+        }
+        (projected, chosen)
     } else {
-        (catalog.to_vec(), selected.to_owned())
+        named_catalog(catalog, selected, &mut receipt.model_map)
     };
-    if app == "gemini" {
-        receipt.model_map = catalog
-            .iter()
-            .map(|m| (wire_id(&m.id), m.id.clone()))
-            .collect();
-    }
+    receipt.visible_models = Some(projected.iter().map(|model| model.id.clone()).collect());
     receipt
         .files
         .push(edit(app, path, &projected, base, token, &chosen)?);
@@ -74,7 +108,7 @@ pub(super) fn build(
                     &["security", "auth", "selectedType"],
                     json!("gemini-api-key"),
                 )?;
-                set(value, &["model", "name"], json!(wire_id(selected)))
+                set(value, &["model", "name"], json!(chosen))
             },
         )?);
     }
@@ -120,7 +154,7 @@ fn edit(
                 for (key, next) in [
                     ("GOOGLE_GEMINI_BASE_URL", base.to_owned()),
                     ("GEMINI_API_KEY", token.to_owned()),
-                    ("GEMINI_MODEL", wire_id(selected)),
+                    ("GEMINI_MODEL", selected.to_owned()),
                 ] {
                     value[key] = json!(next);
                 }
@@ -712,6 +746,50 @@ mod tests {
         file.restore()?;
         assert_eq!(std::fs::read_to_string(path).map_err(|_| FAILED)?, original);
         Ok(())
+    }
+
+    #[test]
+    fn readable_names_are_stable_with_duplicates_reserved_names_and_legacy_maps() {
+        let model = Model {
+            api: "openai-completions",
+            native_model: None,
+            id: "vary-provider/a".into(),
+            name: "Zeta".into(),
+            output_tokens: None,
+            cost: None,
+            context_window: None,
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+            icon: None,
+        };
+        let mut duplicate = model.clone();
+        duplicate.id = "vary-provider/b".into();
+        let mut reserved = model.clone();
+        reserved.id = "vary-provider/c".into();
+        reserved.name = "Zeta (2)".into();
+        let mut maps = Vec::new();
+        for catalog in [
+            vec![model.clone(), duplicate.clone(), reserved.clone()],
+            vec![reserved, duplicate, model.clone()],
+        ] {
+            let legacy = wire_id(&model.id);
+            let mut map = BTreeMap::from([(legacy.clone(), model.id.clone())]);
+            let (named, chosen) = named_catalog(&catalog, &model.id, &mut map);
+            assert_eq!(chosen, "Zeta");
+            assert_eq!(map.get(&legacy), Some(&model.id));
+            for row in named {
+                assert!(!row.id.starts_with("vary-"));
+                assert_eq!(row.name, row.id);
+            }
+            assert_eq!(map["Zeta (2)"], "vary-provider/c");
+            assert_eq!(map["Zeta (3)"], "vary-provider/b");
+            maps.push(map);
+        }
+        assert_eq!(maps[0], maps[1]);
     }
 
     #[test]

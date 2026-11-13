@@ -1246,6 +1246,9 @@
     "portableMode": "当前为便携版，更新需手动下载。",
     "updateAvailable": "检测到新版本：{{version}}",
     "updateCurrentVersion": "当前版本 v{{version}}",
+    "releaseHistoryRange": "v{{from}} 至 v{{to}} 的更新内容",
+    "releaseHistoryLoading": "正在加载期间版本的更新日志…",
+    "releaseHistoryIncomplete": "部分版本的日志未能加载或超出最近 40 个版本，当前展示已获取的内容，不影响更新。",
     "restartToUpdate": "重启以更新",
     "updateRestartHint": "更新完成后，应用将自动重新启动。",
     "releaseNotesUnavailable": "暂未提供更新内容，可前往该版本发布页面查看详情。",
@@ -1395,8 +1398,6 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
-    "cursor": "Cursor Private Inference",
-    "cursor-cli": "Cursor CLI",
     "t3code": "T3 Code"
   },
   "pi": {
@@ -2198,6 +2199,8 @@
     "noSearchResults": "没有匹配的预设供应商。"
   },
   "usage": {
+    "modelFilterScope": "可按请求、响应或计费模型筛选；费用仍按计费模型汇总。",
+    "requestResponseModel": "请求 → 响应",
     "title": "使用统计",
     "subtitle": "查看 AI 模型的使用情况和成本统计",
     "today": "24小时",
@@ -3352,6 +3355,23 @@
       "cloud": "云平台",
       "tool": "开发工具",
       "other": "其他"
+    },
+    "icons": {
+      "generic-model-y": "模型 Y",
+      "generic-model-meta": "模型 Meta",
+      "generic-model-cube": "立方体模型",
+      "generic-component": "组件",
+      "generic-code": "代码",
+      "generic-knowledge": "知识库",
+      "generic-api": "API",
+      "generic-model": "大模型",
+      "generic-output": "输出",
+      "generic-tools": "工具",
+      "generic-text": "文本处理",
+      "generic-http": "HTTP",
+      "generic-model-network": "网络模型",
+      "generic-intent": "意图识别",
+      "generic-memory": "记忆变量"
     }
   },
   "providerIcon": {
@@ -4779,7 +4799,7 @@
     "details": "查看说明",
     "ruleCount": "{{count}} 条规则",
     "autoCreateCompact": "两个及以上供应商提供的同一模型会自动成组（auto/…）。关闭后只展示和使用你创建或编辑过的组。",
-    "title": "全局路由组",
+    "title": "路由组",
     "create": "新建路由组",
     "foldHint": "点击标题收起此路由组",
     "saveOrCancel": "请先保存或取消修改，再收起当前路由组。",
@@ -5011,6 +5031,9 @@
     "gatewayUnavailable": "无法获取网关状态"
   },
   "modelProviders": {
+    "searchPlaceholder": "名称、地址或模型",
+    "searchScope": "搜索供应商名称、接口域名、模型 ID 或名称；空格分隔的条件须同时匹配。",
+    "matchedModels": "匹配模型",
     "sorting": {
       "role": "可排序供应商",
       "handle": "拖动排序 {{provider}}",
@@ -5095,7 +5118,6 @@
     "cursorCliHint": "管理 Cursor 原生模型选择，CLI 请求仍通过 Cursor 服务。",
     "cursorAuto": "Auto · Cursor 原生",
     "t3codeHint": "使用独立的 VaryAI Codex 实例，请在 T3 Code 中使用该实例开始新会话。",
-
     "desktopStartingModelHint": "客户端重新加载配置后，用于新聊天和新任务。请选择可见模型；已有会话保留各自的模型选择。",
     "modelControlHint": "保存本机新会话的默认模型后，需通过 Vary AI 重启客户端才能应用。已有会话和远程运行配置保留各自的选择。",
     "modelControlTitle": "允许管理 {{app}} 的默认模型？",
@@ -5124,7 +5146,7 @@
       "manualChanges": "请自行修改代理或环境变量；Vary 不会修改 shell 配置文件或系统代理设置。“知道了”会保留 Codex 连接；“断开并恢复”会打开单独的确认框，用于恢复 Vary 保存的连接字段。",
       "unavailable": "代理检查暂不可用，目前未确认代理问题。请重新检查。"
     },
-    "viaVary": "经 Vary",
+    "viaVary": "经 magpie",
     "nativeConfiguration": "原生配置",
     "sorting": {
       "role": "可排序工具",
@@ -5153,6 +5175,7 @@
     "nativeDefault": "默认",
     "nativeDefaultHint": "工具配置中未指定启动模型，将沿用工具自身默认；这不表示已选择 Vary 共享模型。",
     "deepseekStartingModelHint": "设置 DeepSeek Harness 新会话的默认模型；已有会话请在客户端内切换模型。",
+    "deepseekRecoveryHint": "请先关闭 Magpie 等其他工具对 DeepSeek Harness 的接管，再点击这里的“重新接入”。重启 Vary 不会修复已损坏的配置。",
     "nativeModelHint": "这里显示工具的原生配置，不代表已接入 Vary。选择共享模型会接入 Vary；“断开并恢复”可返回接入前保存的配置。",
     "nativeUnavailable": "无法读取原生模型",
     "manageVisibleModels": "管理可见模型",
@@ -5198,7 +5221,6 @@
     "sessionHint": "接入已配置。请在工具里开启新会话，并选择 Vary 提供的模型。",
     "verifyHint": "在工具里发一条消息，再到“数据统计”检查请求是否经过 Vary。配置完成本身不代表上游模型已验证可用。",
     "states": {
-      "nativeOnly": "原生模型",
       "codexProxyBlocked": "本地网关经代理访问失败 · 诊断结果",
       "checking": "检测中…",
       "provider_missing": "缺少供应商定义 · 等待修复",
@@ -5266,7 +5288,7 @@
     "china": "中国",
     "sheet": "添加供应商",
     "first": "添加第一个供应商",
-    "findVendor": "搜索厂商或 API 中转",
+    "findVendor": "搜索订阅账号或模型厂商",
     "import": "导入",
     "importHint": "将已有配置导入共享目录，不改变任何工具的选择。",
     "vendor": "模型厂商",
@@ -5277,7 +5299,12 @@
     "discardTitle": "放弃修改？",
     "discardHint": "未保存的修改将会丢失。",
     "discard": "放弃修改",
-    "plan": "套餐"
+    "plan": "套餐",
+    "chooseMethod": "选择一种方式接入模型服务。",
+    "commonProviders": "常用供应商",
+    "subscriptionDescription": "登录已有订阅账号，无需 API 密钥。",
+    "vendorDescription": "接入 OpenAI、Anthropic、DeepSeek 等官方服务。",
+    "importDescription": "从已有工具或配置文件中导入供应商。"
   },
   "modelPicker": {
     "search": "搜索模型或供应商",
@@ -5301,6 +5328,22 @@
     "groupSettings": "路由组设置"
   },
   "routingPage": {
+    "more": "更多",
+    "groupCount": "{{count}} 个路由组",
+    "groupName": "路由组名称",
+    "groupStatus": "状态",
+    "upstreamCount": "上游数量",
+    "requestCount": "请求数",
+    "switchCount": "切换次数",
+    "agentErrorCount": "Agent 错误数",
+    "actions": "操作",
+    "allStatuses": "全部状态",
+    "groupEnabled": "已启用",
+    "groupDisabled": "已停用",
+    "refresh": "刷新",
+    "groupStatsUnavailable": "暂未提供路由组累计统计。",
+    "noGroups": "暂无路由组。新建或导入路由组即可开始使用。",
+
     "apiKey": "API 密钥",
     "oneKey": "单个密钥",
     "accountQuotaLeft": "剩余额度",
@@ -5498,6 +5541,7 @@
       "manual": "只向手动选择的模型发送请求。"
     },
     "export": "导出路由组",
+    "exportStarted": "已开始导出“{{name}}”，请查看下载列表。",
     "previous": "上一页",
     "next": "下一页",
     "sunk": "此前遇到限流 · 已移到末尾",
@@ -5553,6 +5597,8 @@
     "manage": "管理"
   },
   "providerEditor": {
+    "getApiKey": "获取密钥",
+    "endpoints": "端点",
     "holdsTokens": "上下文 {{n}} tokens",
     "idReference": "Agent 以 {{id}}/… 选择它的模型",
     "idMovesReferences": "使用 {{id}} 的 Agent 和路由分组会迁移到新 ID。",
@@ -5589,6 +5635,7 @@
     "streamVerified": "流式已验证",
     "streamUnverified": "流式未验证",
     "accounts": "账号",
+    "keyLimits": "限制",
     "inUse": "使用中",
     "keyPlaceholder": "粘贴 API 密钥",
     "keyModels": "{{count}} 个模型",
@@ -5619,7 +5666,7 @@
     "addKey": "添加另一个密钥",
     "keyName": "密钥名称",
     "keyRunning": "{{count}} 运行中",
-    "keyPoolHint": "勾选要使用的密钥。请求先走第一个，额度用完或被限流时由下一个接上。",
+    "keyPoolHint": "勾选要使用的密钥。请求先走第一个，额度用完或被限流时由下一个接上。 最多添加 64 个备用密钥，每个密钥不超过 16,384 字节。",
     "copyKeyFailed": "无法复制此密钥，请关闭编辑器后重新打开再试。",
     "showKey": "显示",
     "hideKey": "隐藏",

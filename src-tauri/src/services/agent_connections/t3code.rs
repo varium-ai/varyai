@@ -29,7 +29,8 @@ pub(super) fn project(
     if !owned && (read(&config_path)?.is_some() || read(&catalog_path)?.is_some()) {
         return Err(CONFLICT.into());
     }
-    let models = catalog["models"].as_array().ok_or(FAILED)?;
+    let mut catalog = catalog.clone();
+    let mut selected = String::new();
     let settings_edit = FileEdit::prepare(settings.to_path_buf(), |value| {
         if value.get("providers").is_some() {
             // Older T3 schemas need an explicit migration in T3 before integration.
@@ -40,6 +41,19 @@ pub(super) fn project(
                 return Err(CONFLICT.into());
             }
         }
+        let visible = crate::services::intent_routing::client::aliases::project_readable(
+            &mut catalog,
+            &mut receipt.model_map,
+        )?;
+        selected = crate::services::intent_routing::client::aliases::selected(
+            &visible,
+            &receipt.model_map,
+            &receipt.model,
+        )
+        .ok_or(FAILED)?
+        .to_owned();
+        receipt.visible_models = Some(visible);
+        let models = catalog["models"].as_array().ok_or(FAILED)?;
         for (key, next) in [
             ("driver", json!("codex")),
             ("displayName", json!("VaryAI")),
@@ -61,6 +75,7 @@ pub(super) fn project(
                 "customModels",
                 json!(models
                     .iter()
+                    .filter(|model| model["visibility"] != "hide")
                     .map(|model| json!({"slug":model["slug"],"name":model["display_name"]}))
                     .collect::<Vec<_>>()),
             ),
@@ -76,10 +91,7 @@ pub(super) fn project(
                 Some(next),
             )?;
         }
-        for (key, next) in [
-            ("instanceId", json!("varyai")),
-            ("model", json!(receipt.model)),
-        ] {
+        for (key, next) in [("instanceId", json!("varyai")), ("model", json!(selected))] {
             super::put(
                 value,
                 &["defaultModelSelection".into(), key.into()],
@@ -98,7 +110,7 @@ pub(super) fn project(
         config_path,
         Format::Toml,
         |value| {
-            value["model"] = json!(receipt.model);
+            value["model"] = json!(selected);
             value["model_provider"] = json!("varyai");
             value["model_catalog_json"] = json!(catalog_path);
             value["web_search"] = json!("disabled");
@@ -169,11 +181,15 @@ mod tests {
         );
         assert_eq!(
             installed["providerInstances"]["varyai"]["config"]["customModels"][0]["slug"],
-            "vary-provider/example"
+            "Example"
         );
         assert_eq!(
             installed["defaultModelSelection"],
-            json!({"instanceId":"varyai","model":"vary-provider/example"})
+            json!({"instanceId":"varyai","model":"Example"})
+        );
+        assert_eq!(
+            installed["providerInstances"]["varyai"]["config"]["customModels"][0]["name"],
+            "Example"
         );
         let home = std::path::PathBuf::from(
             installed["providerInstances"]["varyai"]["config"]["homePath"]
@@ -184,6 +200,17 @@ mod tests {
             .ok_or(FAILED)?
             .parse()
             .map_err(|_| FAILED)?;
+        assert_eq!(config["model"].as_str(), Some("Example"));
+        let catalog: Value = serde_json::from_str(&read(&home.join("models.json"))?.ok_or(FAILED)?)
+            .map_err(|_| FAILED)?;
+        assert!(
+            catalog["models"]
+                .as_array()
+                .ok_or(FAILED)?
+                .iter()
+                .any(|model| model["slug"] == "vary-provider/example"
+                    && model["visibility"] == "hide")
+        );
         assert_eq!(
             config["model_providers"]["varyai"]["base_url"].as_str(),
             Some("http://127.0.0.1:1/connections/t3code/v1")

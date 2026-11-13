@@ -51,16 +51,7 @@ impl RestorationPolicy {
                     .get(rule.id)
                     .copied()
                     .unwrap_or(rule.default_action);
-                let effective = if rule.id == "catalog:generic-sk-key-notice"
-                    && matches!(
-                        configured,
-                        AuditAction::Block | AuditAction::Redact | AuditAction::RedactRestore
-                    ) {
-                    rule.default_action
-                } else {
-                    configured
-                };
-                (rule.id.to_string(), effective.as_str())
+                (rule.id.to_string(), configured.as_str())
             })
             .chain(["chinese_id_card", "chinese_phone_number"].map(|id| {
                 let action = overrides.get(id).copied().unwrap_or(AuditAction::Redact);

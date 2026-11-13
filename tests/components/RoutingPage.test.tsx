@@ -597,3 +597,75 @@ it("clears live traffic and counters while the gateway is stopped", async () => 
   );
   expect(routingTraceApi.history).not.toHaveBeenCalled();
 });
+
+it.each([
+  { model: "auto/other-group" },
+  { session: "another-session" },
+  { agent: "gemini" },
+])("isolates the focused request from another route with %o", async (scope) => {
+  const other = {
+    ...route,
+    id: "other-request",
+    ...scope,
+    state: "routing",
+    status: 503,
+    candidates: [
+      {
+        providerId: "unrelated",
+        providerName: "Unrelated supplier",
+        model: "other-model",
+      },
+    ],
+    steps: [
+      { kind: "attempt", candidate: 0, atMs: 1 },
+      { kind: "failed", candidate: 0, atMs: 2, status: 503 },
+    ],
+  };
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [route, other],
+    accounts: [],
+    running: true,
+    capacity: 60,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  await screen.findAllByText("Synthetic fallback");
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "Unrelated supplier",
+  );
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent("503");
+});
+it("masks configured API supplier names even when there are no login accounts", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    {
+      schemaVersion: 1,
+      id: "provider-a",
+      name: "Synthetic primary",
+      revision: 1,
+      hasApiKey: true,
+      source: {
+        kind: "api",
+        baseUrl: "https://fixture.invalid/v1",
+        apiFormat: "openai_chat",
+        mode: "picked",
+        models: [],
+        catalog: [],
+        groupsOnly: false,
+      },
+    },
+  ]);
+  const view = show();
+  await screen.findAllByText("Synthetic primary");
+  await waitFor(() => expect(routingUpstreamsApi.list).toHaveBeenCalled());
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.hideAccounts" }),
+  );
+  await waitFor(() =>
+    expect(document.querySelector(".rt-accts .account-mask")).not.toBeNull(),
+  );
+  expect(view.container.innerHTML).not.toContain("Synthetic primary");
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.showAccounts" }),
+  );
+  expect(screen.getAllByText("Synthetic primary").length).toBeGreaterThan(0);
+});

@@ -80,7 +80,9 @@ impl Server {
             let _ = tx.send(());
         }
         if let Some(task) = self.task.take() {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), task).await;
+            // The task cancels and joins every connection before releasing its sockets.
+            // Timing out a JoinHandle would detach that cleanup instead of stopping it.
+            let _ = task.await;
         }
     }
 }
@@ -89,5 +91,33 @@ impl Drop for Server {
         if let Some(tx) = self.stop.take() {
             let _ = tx.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_waits_for_socket_cleanup_beyond_the_old_deadline(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (tx, rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = rx.await;
+            // Model delayed task scheduling during shutdown on a busy runner.
+            tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
+            drop(listener);
+        });
+        Server {
+            stop: Some(tx),
+            task: Some(task),
+        }
+        .stop()
+        .await;
+
+        let _rebound = tokio::net::TcpListener::bind(address).await?;
+        Ok(())
     }
 }

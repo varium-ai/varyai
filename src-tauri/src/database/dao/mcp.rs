@@ -103,8 +103,6 @@ impl Database {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => None,
         };

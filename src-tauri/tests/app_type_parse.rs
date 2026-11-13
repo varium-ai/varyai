@@ -36,3 +36,10 @@ fn t3code_is_an_agent_without_legacy_mcp_or_skill_support() {
     assert!(AppType::all().any(|candidate| candidate == app));
     assert!(!app.supports_local_proxy());
 }
+
+#[test]
+fn removed_cursor_integrations_are_not_accepted_as_apps() {
+    for id in ["cursor", "cursor-cli", "cursor-agent"] {
+        assert!(AppType::from_str(id).is_err());
+    }
+}

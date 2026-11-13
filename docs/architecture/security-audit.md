@@ -54,7 +54,15 @@ This boundary does not establish complete implementation acceptance. See the [hi
 
 ## Current actions
 
-The base credential/PII rules, including private-key material, default to redaction; private RFC1918 IPs default to audit-only. Optional catalog rules default to allow. The persistence boundary normalizes saved/imported `block` settings to `redact`; historical audit events retain their original action. The engine still has protective error paths when redaction fails. The generic `sk-` notice has its own restricted actions.
+The base credential/PII rules, including private-key material, default to redaction; private RFC1918 IPs default to audit-only. Optional catalog rules default to allow. The persistence boundary normalizes saved/imported `block` settings to `redact`; historical audit events retain their original action. The engine still has protective error paths when redaction fails.
+
+The generic `sk-` notice supports audit, allow, redaction and local restoration,
+matching the other key rules. Its default remains allow. Redaction replaces
+matching text with an irreversible placeholder; local restoration uses the same
+captured-policy admission, token authority and supported-route checks as other
+restoration rules. Explicit action changes invalidate the previous restoration
+policy generation. Its prefix pattern remains broad and does not attribute a key
+to a particular provider.
 
 Confirm behavior in `builtin_rules.rs`, `runtime.rs`, and the security DAO before changing settings or documentation.
 

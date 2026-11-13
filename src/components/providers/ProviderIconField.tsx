@@ -1,19 +1,10 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { iconList, getIconMetadata } from "@/icons/extracted";
-import {
-  routingUpstreamsApi,
-  type RoutingUpstream,
-} from "@/lib/api/routingUpstreams";
+import { getIconMetadata } from "@/icons/extracted";
+import { randomBuiltinIcon, searchBuiltinIcons } from "@/icons/builtin";
+import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import { UpstreamIcon } from "./UpstreamIcon";
 
 const MAX_FILE = 1024 * 1024;
@@ -33,12 +24,14 @@ export function ProviderIconField({
   const { t } = useTranslation();
   const fileInput = useRef<HTMLInputElement>(null);
   const [showBuiltin, setShowBuiltin] = useState(false);
-  const [showUrl, setShowUrl] = useState(false);
   const [query, setQuery] = useState("");
-  const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const blocked = disabled || busy;
+  const iconLabel = (name: string) =>
+    t(`iconPicker.icons.${name}`, {
+      defaultValue: getIconMetadata(name)?.displayName ?? name,
+    });
   function choose(icon: string | null) {
     onChange({ ...draft, icon });
     setError("");
@@ -46,22 +39,6 @@ export function ProviderIconField({
   function pending(value: boolean) {
     setBusy(value);
     onBusyChange(value);
-  }
-  async function fetchIcon(automatic: boolean) {
-    const address =
-      automatic && draft.source.kind === "api"
-        ? draft.source.baseUrl
-        : url.trim();
-    if (!address) return;
-    pending(true);
-    setError("");
-    try {
-      choose(await routingUpstreamsApi.fetchIcon(address, automatic));
-    } catch {
-      setError("providerEditor.iconFailed");
-    } finally {
-      pending(false);
-    }
   }
   async function upload(file?: File) {
     if (!file) return;
@@ -142,32 +119,6 @@ export function ProviderIconField({
           >
             {t("providerEditor.choosePicture")}
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button type="button" variant="ghost" disabled={blocked}>
-                {t(
-                  busy
-                    ? "providerEditor.lookingForIcon"
-                    : "providerEditor.getIcon",
-                )}
-                <ChevronDown size={12} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="pv-icon-menu" align="start">
-              <DropdownMenuItem
-                disabled={draft.source.kind !== "api" || !draft.source.baseUrl}
-                onSelect={() => void fetchIcon(true)}
-              >
-                {t("providerEditor.automaticIcon")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setShowUrl(true)}>
-                {t("providerEditor.imageUrl")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => choose("letter")}>
-                {t("providerEditor.letterIcon")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
           <Button
             type="button"
             variant="ghost"
@@ -182,38 +133,12 @@ export function ProviderIconField({
               type="button"
               variant="ghost"
               disabled={blocked}
-              onClick={() => choose(null)}
+              onClick={() => choose(randomBuiltinIcon())}
             >
               {t("providerEditor.defaultIcon")}
             </Button>
           )}
         </div>
-        {showUrl && (
-          <div className="pv-icon-url">
-            <Input
-              type="url"
-              aria-label={t("providerEditor.imageUrl")}
-              placeholder="https://example.com/icon.png"
-              value={url}
-              disabled={blocked}
-              onChange={(event) => setUrl(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void fetchIcon(false);
-                }
-              }}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              disabled={blocked || !url.trim()}
-              onClick={() => void fetchIcon(false)}
-            >
-              {t("providerEditor.useIcon")}
-            </Button>
-          </div>
-        )}
         {showBuiltin && (
           <div className="pv-icon-picker">
             <Input
@@ -225,28 +150,22 @@ export function ProviderIconField({
               onChange={(event) => setQuery(event.target.value)}
             />
             <div className="pv-icon-grid">
-              {iconList
-                .filter((name) =>
-                  `${name} ${getIconMetadata(name)?.displayName ?? ""}`
-                    .toLocaleLowerCase()
-                    .includes(query.trim().toLocaleLowerCase()),
-                )
-                .map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    aria-label={getIconMetadata(name)?.displayName ?? name}
-                    title={getIconMetadata(name)?.displayName ?? name}
-                    aria-pressed={draft.icon === name}
-                    disabled={blocked}
-                    onClick={() => {
-                      choose(name);
-                      setShowBuiltin(false);
-                    }}
-                  >
-                    <UpstreamIcon icon={name} name={name} size={24} />
-                  </button>
-                ))}
+              {searchBuiltinIcons(query, iconLabel).map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  aria-label={iconLabel(name)}
+                  title={iconLabel(name)}
+                  aria-pressed={draft.icon === name}
+                  disabled={blocked}
+                  onClick={() => {
+                    choose(name);
+                    setShowBuiltin(false);
+                  }}
+                >
+                  <UpstreamIcon icon={name} name={name} size={24} />
+                </button>
+              ))}
             </div>
           </div>
         )}

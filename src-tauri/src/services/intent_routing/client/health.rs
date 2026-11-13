@@ -255,10 +255,14 @@ impl Manager {
                     }
                     let mut projection = menu_catalog(&menu, chosen)?;
                     let mut model_map = receipt.model_map.clone();
-                    let visible = aliases::project(&mut projection, &mut model_map)?;
+                    let visible =
+                        aliases::project_menu(&mut projection, &mut model_map, Some(&menu))?;
                     // Repair the recorded publication only. A changed menu must
                     // publish its receipt and native projection through normal refresh.
-                    if model_map != receipt.model_map || visible != receipt.model_aliases {
+                    if model_map != receipt.model_map
+                        || visible != receipt.model_aliases
+                        || !self.runtime.native.matches_catalog(&projection)
+                    {
                         return Err(CONFLICT.into());
                     }
                     let catalog = serde_json::to_string_pretty(&projection).map_err(|_| FAILED)?;

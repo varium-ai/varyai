@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
 import { toast } from "sonner";
-import { Plus, ChevronRight, Download } from "lucide-react";
+import { Plus, ChevronRight, Copy, Trash2 } from "lucide-react";
 import { isImageGenerationModel } from "@/lib/providerModelKind";
 import {
   routingUpstreamsApi,
@@ -37,6 +37,7 @@ import {
 } from "./providerErrorToast";
 import { ProviderListQuota } from "./ProviderListQuota";
 import { subscriptionProviders } from "@/config/subscriptionProviders";
+import { randomBuiltinIcon } from "@/icons/builtin";
 
 const orderStorageKey = "vary-provider-order";
 function readProviderOrder(): string[] {
@@ -90,6 +91,16 @@ export function RoutingUpstreamsPanel({
   const [models, setModels] = useState("");
   const [discovered, setDiscovered] = useState<FetchedModel[]>([]);
   const [apiKey, setApiKey] = useState("");
+  const [discovering, setDiscovering] = useState(false);
+  const discoveryRequest = useRef<object | null>(null);
+  const latestEditorInput = useRef({ draft, apiKey });
+  latestEditorInput.current = { draft, apiKey };
+  useEffect(
+    () => () => {
+      discoveryRequest.current = null;
+    },
+    [],
+  );
   const [deleting, setDeleting] = useState<RoutingUpstream | null>(null);
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const [confirmBulk, setConfirmBulk] = useState(false);
@@ -231,6 +242,8 @@ export function RoutingUpstreamsPanel({
     preset?: GlobalProviderPreset,
     reauth = false,
   ) {
+    discoveryRequest.current = null;
+    setDiscovering(false);
     setStartReauth(reauth);
     setEditorOpen(true);
     setLoadedRecord(record ?? null);
@@ -276,7 +289,9 @@ export function RoutingUpstreamsPanel({
           name: preset?.name ?? "",
           revision: 0,
           hasApiKey: false,
-          ...(preset ? { presetId: preset.id, region: nextRegion } : {}),
+          ...(preset
+            ? { presetId: preset.id, region: nextRegion }
+            : { icon: randomBuiltinIcon() }),
           source: {
             kind: "api",
             baseUrl: preset?.baseUrl ?? "",
@@ -399,6 +414,22 @@ export function RoutingUpstreamsPanel({
       } finally {
         setBusy(false);
       }
+      return;
+    }
+    const validKey = (value: string) =>
+      !!value.trim() &&
+      new TextEncoder().encode(value).length <= 16384 &&
+      !/[\x00-\x1f\x7f-\x9f]/.test(value);
+    if (
+      (apiKey ? !validKey(apiKey) : !draft.hasApiKey) ||
+      (draft.transport?.keys.length ?? 0) > 64 ||
+      draft.transport?.keys.some((key) =>
+        key.key !== undefined
+          ? !validKey(key.key)
+          : !loadedRecord?.transport?.keys.some((saved) => saved.id === key.id),
+      )
+    ) {
+      report("save", "invalid");
       return;
     }
     let raw: unknown;
@@ -530,15 +561,8 @@ export function RoutingUpstreamsPanel({
           : "ANTHROPIC_AUTH_TOKEN",
     });
   }
-  function duplicate() {
-    if (!draft) return;
-    const saved = records.data?.find(
-      (record) => record.id === (loadedRecord?.id ?? draft.id),
-    );
-    if (!saved) return;
-    stageDuplicate(saved);
-  }
   function stageDuplicate(saved: RoutingUpstream) {
+    if (busy || draft || selected || saved.source.kind !== "api") return;
     edit(saved);
     const next = {
       ...structuredClone(saved),
@@ -586,21 +610,45 @@ export function RoutingUpstreamsPanel({
     );
   }
   async function discover() {
-    if (!draft || draft.source.kind !== "api") return [];
-    setBusy(true);
+    if (!draft || draft.source.kind !== "api" || discoveryRequest.current)
+      return [];
+    const source = draft.source;
+    const request = {};
+    discoveryRequest.current = request;
+    setDiscovering(true);
+    const isCurrent = () => {
+      const latest = latestEditorInput.current;
+      return (
+        discoveryRequest.current === request &&
+        activeEditor.current.open &&
+        latest.apiKey === apiKey &&
+        latest.draft?.source.kind === "api" &&
+        latest.draft.source.baseUrl === source.baseUrl &&
+        latest.draft.source.apiFormat === source.apiFormat &&
+        latest.draft.source.authType === source.authType
+      );
+    };
     try {
       const found = await fetchDraftModels();
+      if (!isCurrent()) return [];
       setDiscovered(found);
-      setDraft({
-        ...draft,
-        source: { ...draft.source, catalog: found.map(modelRow) },
-      });
+      setDraft((current) =>
+        current?.source.kind === "api"
+          ? {
+              ...current,
+              source: { ...current.source, catalog: found.map(modelRow) },
+            }
+          : current,
+      );
       return found;
     } catch (cause) {
-      report("fetchModels", cause);
+      if (isCurrent()) report("fetchModels", cause);
       return [];
     } finally {
-      setBusy(false);
+      if (discoveryRequest.current === request) {
+        discoveryRequest.current = null;
+        setDiscovering(false);
+      }
     }
   }
   async function toggle(record: RoutingUpstream, enabled: boolean) {
@@ -687,20 +735,38 @@ export function RoutingUpstreamsPanel({
     }
   }
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  function searchableModels(record: RoutingUpstream) {
+    if (record.source.kind === "codex") return [];
+    return record.source.mode === "picked" || !record.source.catalog.length
+      ? record.source.models
+      : record.source.catalog;
+  }
+  function modelSearchText(row: unknown) {
+    if (!row || typeof row !== "object") return modelId(row);
+    const model = row as Record<string, unknown>;
+    return [
+      modelId(row),
+      model.displayName,
+      (model.modelPreferences as { name?: string } | undefined)?.name,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   const filtered =
     ordered.filter((record) => {
       const text = [
         record.name,
         endpointHost(record),
-        record.source.kind === "api"
-          ? record.source.models.map(modelId).join(" ")
-          : record.source.kind === "subscription"
-            ? subscriptionProviders.find(
-                (p) =>
-                  record.source.kind === "subscription" &&
-                  p.id === record.source.provider,
-              )?.aliases
-            : "ChatGPT Codex",
+        searchableModels(record).map(modelSearchText).join(" "),
+        record.source.kind === "subscription"
+          ? subscriptionProviders.find(
+              (p) =>
+                record.source.kind === "subscription" &&
+                p.id === record.source.provider,
+            )?.aliases
+          : record.source.kind === "codex"
+            ? "ChatGPT Codex"
+            : "",
       ]
         .join(" ")
         .toLocaleLowerCase();
@@ -788,6 +854,11 @@ export function RoutingUpstreamsPanel({
       plans.some((plan) => !!plan) ||
       (record.source.kind !== "api" && record.reauthRequired === false);
     const needsLogin = record.source.kind !== "api" && record.reauthRequired;
+    const matchingModels = searchableModels(record).filter((row) =>
+      terms.some((term) =>
+        modelSearchText(row).toLocaleLowerCase().includes(term),
+      ),
+    );
     return (
       <SortableWorkspaceRow
         key={record.id}
@@ -854,9 +925,20 @@ export function RoutingUpstreamsPanel({
             {!editorOpen && <ProviderListQuota record={record} />}
             {record.source.kind === "api" && (
               <span className="pv-sub">
-                {`${endpointHost(record) || t("providerFlow.custom")} · ${t("modelProviders.modelCount", { count: record.source.models.length })}`}
+                {`${endpointHost(record) || t("providerFlow.custom")} · ${t("modelProviders.modelCount", { count: searchableModels(record).length })}`}
               </span>
             )}
+            {!!matchingModels.length &&
+              !terms.every((term) =>
+                `${record.name} ${endpointHost(record)}`
+                  .toLocaleLowerCase()
+                  .includes(term),
+              ) && (
+                <span className="pv-sub pv-search-match">
+                  {t("modelProviders.matchedModels")}:{" "}
+                  {matchingModels.slice(0, 3).map(modelId).join(", ")}
+                </span>
+              )}
           </span>
         </button>
         <span
@@ -897,6 +979,36 @@ export function RoutingUpstreamsPanel({
           disabled={busy || !!draft || !!selected}
           onCheckedChange={(enabled) => void toggle(record, enabled)}
         />
+        <button
+          type="button"
+          className="pv-row-copy"
+          aria-label={`${t("providerEditor.duplicate")} ${record.name}`}
+          title={`${t("providerEditor.duplicate")} ${record.name}`}
+          aria-haspopup="dialog"
+          disabled={
+            busy || !!draft || !!selected || record.source.kind !== "api"
+          }
+          onClick={(event) => {
+            event.stopPropagation();
+            stageDuplicate(record);
+          }}
+        >
+          <Copy size={14} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="pv-row-delete"
+          aria-label={`${t("common.delete")} ${record.name}`}
+          title={`${t("common.delete")} ${record.name}`}
+          aria-haspopup="dialog"
+          disabled={busy || !!draft || !!selected}
+          onClick={(event) => {
+            event.stopPropagation();
+            setDeleting(record);
+          }}
+        >
+          <Trash2 size={14} aria-hidden="true" />
+        </button>
         <ChevronRight className="pv-chevron" size={11} aria-hidden />
       </SortableWorkspaceRow>
     );
@@ -921,16 +1033,6 @@ export function RoutingUpstreamsPanel({
               onCopied={() => toast.dismiss("provider-error-copy")}
               onCopyFailed={() => report("copy")}
             />
-            <Button
-              variant="outline"
-              className="pv-import-trigger"
-              size="sm"
-              disabled={busy || !!draft || importBusy}
-              onClick={() => setImporting(true)}
-            >
-              <Download size={13} aria-hidden />
-              {t("routingUpstreams.import")}
-            </Button>
             <Button
               ref={addTrigger}
               data-provider-add-trigger
@@ -971,11 +1073,16 @@ export function RoutingUpstreamsPanel({
             className="pv-query"
             type="search"
             aria-label={t("modelProviders.find")}
-            placeholder={t("modelProviders.find")}
+            aria-describedby="provider-search-scope"
+            title={t("modelProviders.searchScope")}
+            placeholder={t("modelProviders.searchPlaceholder")}
             value={query}
             disabled={busy || !!draft}
             onChange={(event) => setQuery(event.target.value)}
           />
+          <span id="provider-search-scope" className="pv-search-scope">
+            {t("modelProviders.searchScope")}
+          </span>
           {selected && (
             <button
               type="button"
@@ -1045,6 +1152,7 @@ export function RoutingUpstreamsPanel({
         <div ref={sheet}>
           <ProviderAddSheet
             onClose={closeAddPage}
+            onImport={() => setImporting(true)}
             onChoose={(preset) => edit(undefined, preset)}
             busy={busy || !!draft || importBusy}
             addedSubscriptions={subscriptionProviders
@@ -1113,9 +1221,21 @@ export function RoutingUpstreamsPanel({
                     )
                   : await routingUpstreamsApi.createCodex();
                 if (!created.codex) throw new Error("unavailable");
+                const confirmed = created.codex.accounts.find(
+                  (row) =>
+                    row.id === accountId || row.aliases?.includes(accountId),
+                );
+                const sameAccount = new Set([
+                  accountId,
+                  ...(confirmed
+                    ? [confirmed.id, ...(confirmed.aliases ?? [])]
+                    : []),
+                ]);
                 created.codex.settings.accounts = [
                   ...new Set([
-                    ...(existing ? created.codex.settings.accounts : []),
+                    ...(existing ? created.codex.settings.accounts : []).map(
+                      (id) => (sameAccount.has(id) ? accountId : id),
+                    ),
                     accountId,
                   ]),
                 ];
@@ -1154,6 +1274,7 @@ export function RoutingUpstreamsPanel({
           discovered={discovered}
           apiKey={apiKey}
           busy={busy}
+          discovering={discovering}
           icon={upstreamIcon(draft)}
           region={region}
           regions={presetRegions}
@@ -1171,15 +1292,10 @@ export function RoutingUpstreamsPanel({
           onProbe={probe}
           onSave={save}
           onClose={closeEditor}
-          onDelete={() => {
-            setDeleting({ ...draft, id: loadedRecord?.id ?? draft.id });
-          }}
-          onDuplicate={duplicate}
           onReturnFocus={() => returnFocus(editorKey)}
           onError={report}
           nestedOpen={discard || !!deleting}
           onProbingChange={setProbing}
-          canDuplicate={draft.source.kind === "api"}
           canSave={
             draft.source.kind !== "subscription" || !!draft.source.accountId
           }
@@ -1214,7 +1330,11 @@ export function RoutingUpstreamsPanel({
         className="mp-dialog pv-confirm"
         isOpen={!!deleting}
         title={t("modelProviders.delete")}
-        message={t("modelProviders.deleteHint")}
+        message={
+          deleting
+            ? `${deleting.name} · ${t("modelProviders.deleteHint")}`
+            : t("modelProviders.deleteHint")
+        }
         pending={busy}
         onCancel={() => setDeleting(null)}
         onConfirm={() => {

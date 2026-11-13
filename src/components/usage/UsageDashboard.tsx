@@ -260,6 +260,7 @@ export function UsageDashboard({
     const names = new Set<string>();
     for (const stat of modelOptionsData ?? []) {
       names.add(stat.model);
+      for (const alias of stat.aliases ?? []) names.add(alias);
     }
     if (model) names.add(model);
     return Array.from(names);
@@ -346,6 +347,7 @@ export function UsageDashboard({
             <SelectTrigger
               className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={model ?? t("usage.filterByModel")}
+              aria-describedby="usage-model-filter-scope"
             >
               <SelectValue />
             </SelectTrigger>
@@ -363,6 +365,12 @@ export function UsageDashboard({
               ))}
             </SelectContent>
           </Select>
+          <span
+            id="usage-model-filter-scope"
+            className="text-xs text-muted-foreground"
+          >
+            {t("usage.modelFilterScope")}
+          </span>
 
           <div className="flex items-center gap-2 ml-auto lg:ml-0">
             <Select

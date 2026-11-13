@@ -1,13 +1,21 @@
-import { useEffect, useId, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Check, Copy, Pencil, Plus } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
 } from "@/lib/api/routingUpstreams";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ProviderCheckbox } from "./ProviderCheckbox";
 import { copyText } from "@/lib/clipboard";
 
 function mask(value: string) {
@@ -25,6 +33,7 @@ export function ProviderKeysField({
   onKeyChange,
   onBusyChange,
   inputRef,
+  keyAction,
 }: {
   draft: RoutingUpstream;
   apiKey: string;
@@ -33,6 +42,7 @@ export function ProviderKeysField({
   onKeyChange: (value: string) => void;
   onBusyChange: (value: boolean) => void;
   inputRef?: RefObject<HTMLInputElement>;
+  keyAction?: ReactNode;
 }) {
   const { t } = useTranslation();
   const id = useId();
@@ -48,7 +58,16 @@ export function ProviderKeysField({
   }, [editing, inputRef]);
   const [show, setShow] = useState(false);
   const [copying, setCopying] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
+  const [copied, setCopied] = useState<{
+    keyId: string;
+    sequence: number;
+  } | null>(null);
+  const copySequence = useRef(0);
+  useEffect(() => {
+    if (!copied) return;
+    const timeout = window.setTimeout(() => setCopied(null), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
   const [error, setError] = useState(false);
   const [modelPicker, setModelPicker] = useState<{
     keyId: string;
@@ -188,7 +207,8 @@ export function ProviderKeysField({
         keys.find((key) => key.id === keyId)?.key ||
         (await routingUpstreamsApi.revealKey(draft.id, draft.revision, keyId));
       await copyText(value);
-      setCopied(keyId);
+      copySequence.current += 1;
+      setCopied({ keyId, sequence: copySequence.current });
     } catch {
       setError(true);
     } finally {
@@ -200,26 +220,39 @@ export function ProviderKeysField({
       <div className="pv-field">
         <label htmlFor={`${id}-new-key`}>{t("modelProviders.apiKey")}</label>
         <div className="pv-field-content">
-          <div className="pv-new-key">
-            <Input
-              id={`${id}-new-key`}
-              ref={inputRef}
-              type={show ? "text" : "password"}
-              value={apiKey}
-              placeholder={t("providerEditor.keyPlaceholder")}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={disabled}
-              onChange={(event) => onKeyChange(event.target.value)}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={disabled}
-              onClick={() => setShow(!show)}
-            >
-              {t(show ? "providerEditor.hideKey" : "providerEditor.showKey")}
-            </Button>
+          <div className="pv-key-entry">
+            <div className="pv-new-key">
+              <Input
+                id={`${id}-new-key`}
+                ref={inputRef}
+                type={show ? "text" : "password"}
+                value={apiKey}
+                placeholder={t("providerEditor.keyPlaceholder")}
+                autoComplete="off"
+                required={!draft.hasApiKey}
+                maxLength={16384}
+                spellCheck={false}
+                disabled={disabled}
+                onChange={(event) => onKeyChange(event.target.value)}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                className="pv-key-visibility"
+                aria-label={t(
+                  show ? "providerEditor.hideKey" : "providerEditor.showKey",
+                )}
+                disabled={disabled}
+                onClick={() => setShow(!show)}
+              >
+                {show ? (
+                  <Eye size={18} aria-hidden="true" />
+                ) : (
+                  <EyeOff size={18} aria-hidden="true" />
+                )}
+              </Button>
+            </div>
+            {keyAction}
           </div>
           <p className="pv-hint">{t("providerEditor.newKeyHint")}</p>
         </div>
@@ -236,303 +269,355 @@ export function ProviderKeysField({
           role="group"
           aria-label={t("providerEditor.savedKeys", { count: keys.length })}
         >
-          <ul className="pv-saved-keys">
-            {keys.map((key, index) => {
-              const summary = summaries.data?.find(
-                (entry) => entry.id === key.id,
-              );
-              const name =
-                key.name || t("providerEditor.additionalKey", { n: index });
-              return (
-                <li
-                  className={`pv-account pv-key-row ${key.enabled ? "" : "off"} ${editing === key.id ? "editing" : ""}`}
-                  key={key.id}
-                >
-                  <button
-                    type="button"
-                    role="checkbox"
-                    aria-checked={key.enabled}
-                    aria-label={t("providerEditor.useKey", { name })}
-                    className="pv-key-check"
-                    disabled={blocked}
-                    onClick={() => toggle(key.id, !key.enabled)}
-                  >
-                    <Check size={13} aria-hidden="true" />
-                  </button>
-                  {editing === key.id ? (
-                    <div className="pv-key-edit">
-                      <div className="pv-key-input">
-                        <label htmlFor={`${id}-key`} className="sr-only">
-                          {t("modelProviders.apiKey")}
-                        </label>
-                        <Input
-                          ref={inputRef ?? replacementInput}
-                          id={`${id}-key`}
-                          type={show ? "text" : "password"}
-                          autoComplete="new-password"
-                          value={key.key ?? ""}
-                          required={
-                            editing === ""
-                              ? !draft.hasApiKey
-                              : !summaries.data?.some(
-                                  (entry) => entry.id === editing,
-                                )
-                          }
-                          disabled={blocked}
-                          onChange={(event) => changeKey(event.target.value)}
-                          placeholder={
-                            summary
-                              ? t("modelProviders.keepKey")
-                              : t("providerEditor.keyPlaceholder")
-                          }
-                        />
-                        {!!key.key && (
-                          <Button
-                            type="button"
-                            variant="ghost"
+          <div className="pv-key-table-scroll">
+            <table
+              className="pv-key-table"
+              aria-label={t("providerEditor.savedKeys", { count: keys.length })}
+            >
+              <colgroup>
+                <col className="pv-key-column" />
+                <col className="pv-key-model-column" />
+                <col className="pv-key-limits-column" />
+                <col className="pv-key-actions-column" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th scope="col">{t("modelProviders.apiKey")}</th>
+                  <th scope="col">{t("modelPicker.models")}</th>
+                  <th scope="col">{t("providerEditor.keyLimits")}</th>
+                  <th scope="col">{t("common.actions")}</th>
+                </tr>
+              </thead>
+              {keys.map((key, index) => {
+                const summary = summaries.data?.find(
+                  (entry) => entry.id === key.id,
+                );
+                const name =
+                  key.name || t("providerEditor.additionalKey", { n: index });
+                const isCopied = copied?.keyId === key.id;
+                return (
+                  <tbody key={key.id}>
+                    <tr
+                      className={`pv-key-row ${key.enabled ? "" : "off"} ${editing === key.id ? "editing" : ""}`}
+                    >
+                      <td>
+                        <div className="pv-key-main">
+                          <ProviderCheckbox
+                            checked={key.enabled}
+                            aria-label={t("providerEditor.useKey", { name })}
                             disabled={blocked}
-                            onClick={() => setShow(!show)}
+                            onCheckedChange={(enabled) =>
+                              toggle(key.id, enabled)
+                            }
+                          />
+                          <span className="pv-key-label" title={name}>
+                            {editing === key.id
+                              ? name
+                              : summary?.label && !key.key
+                                ? summary.label
+                                : key.key
+                                  ? mask(key.key)
+                                  : name}
+                          </span>
+                          <button
+                            type="button"
+                            className={`pv-key-action pv-key-copy${isCopied ? " copied" : ""}`}
+                            aria-label={t(
+                              isCopied
+                                ? "common.copied"
+                                : "providerEditor.copyKey",
+                            )}
+                            title={t(
+                              isCopied
+                                ? "common.copied"
+                                : "providerEditor.copyKey",
+                            )}
+                            disabled={blocked || (!key.key && !summary)}
+                            onClick={() => void copy(key.id)}
+                          >
+                            {isCopied ? (
+                              <Check
+                                key={copied?.sequence}
+                                size={12}
+                                className="pv-key-copy-confirm"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <Copy size={12} aria-hidden="true" />
+                            )}
+                          </button>
+                        </div>
+                      </td>
+                      <td>
+                        {keys.length > 1 || key.models != null ? (
+                          <button
+                            type="button"
+                            className={`pv-key-models${key.models != null ? " set" : ""}`}
+                            disabled={blocked}
+                            aria-expanded={modelPicker?.keyId === key.id}
+                            onClick={() =>
+                              setModelPicker(
+                                modelPicker?.keyId === key.id
+                                  ? null
+                                  : {
+                                      keyId: key.id,
+                                      models: [...(key.models ?? [])],
+                                    },
+                              )
+                            }
                           >
                             {t(
-                              show
-                                ? "providerEditor.hideKey"
-                                : "providerEditor.showKey",
+                              key.models != null
+                                ? "providerEditor.keyModels"
+                                : "providerEditor.keyAllModels",
+                              { count: key.models?.length ?? 0 },
                             )}
-                          </Button>
+                          </button>
+                        ) : (
+                          <span className="pv-key-all-models">
+                            {t("providerEditor.keyAllModels")}
+                          </span>
                         )}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={blocked}
-                          onClick={() => setEditing(null)}
-                        >
-                          {t("common.done")}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <span className="pv-key-label" title={name}>
-                      {summary?.label && !key.key
-                        ? summary.label
-                        : key.key
-                          ? mask(key.key)
-                          : name}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="pv-key-action"
-                    aria-label={t("providerEditor.copyKey")}
-                    title={t("providerEditor.copyKey")}
-                    disabled={blocked || (!key.key && !summary)}
-                    onClick={() => void copy(key.id)}
-                  >
-                    {copied === key.id ? (
-                      <Check size={12} />
-                    ) : (
-                      <Copy size={12} />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="pv-key-action"
-                    aria-label={t("providerEditor.editKey")}
-                    title={t("providerEditor.editKey")}
-                    disabled={blocked}
-                    onClick={() => edit(key.id)}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                  {(keys.length > 1 || key.models != null) && (
-                    <button
-                      type="button"
-                      className={`pv-key-models${key.models != null ? " set" : ""}`}
-                      disabled={blocked}
-                      aria-expanded={modelPicker?.keyId === key.id}
-                      onClick={() =>
-                        setModelPicker(
-                          modelPicker?.keyId === key.id
-                            ? null
-                            : {
-                                keyId: key.id,
-                                models: [...(key.models ?? [])],
-                              },
-                        )
-                      }
-                    >
-                      {t(
-                        key.models != null
-                          ? "providerEditor.keyModels"
-                          : "providerEditor.keyAllModels",
-                        { count: key.models?.length ?? 0 },
-                      )}
-                    </button>
-                  )}
-                  <span className="pv-key-limit">
-                    {summary?.running
-                      ? t("providerEditor.keyRunning", {
-                          count: summary.running,
-                        })
-                      : t("providerEditor.keyUnlimitedConcurrency")}
-                  </span>
-                  <span className="pv-key-limit">
-                    {t("providerEditor.keyNoSpendCap")}
-                  </span>
-                  <span className="pv-key-acts">
-                    {(!key.enabled || several) && (
-                      <button
-                        type="button"
-                        disabled={blocked}
-                        onClick={() => toggle(key.id, !key.enabled)}
-                      >
-                        {t(
-                          key.enabled
-                            ? "providerEditor.keySwitchOff"
-                            : "common.enable",
-                        )}
-                      </button>
-                    )}
-                    {key.id !== "" && (
-                      <button
-                        type="button"
-                        aria-label={t("providerEditor.removeKey")}
-                        disabled={blocked}
-                        onClick={() => remove(key.id)}
-                      >
-                        {t("providerEditor.keyRemove")}
-                      </button>
-                    )}
-                    {active === key.id ? (
-                      <small>
-                        {t(
-                          several
-                            ? "providerEditor.firstKey"
-                            : "providerEditor.inUse",
-                        )}
-                      </small>
-                    ) : (
-                      key.enabled && (
-                        <button
-                          type="button"
-                          disabled={blocked}
-                          onClick={() => prefer(key.id)}
-                        >
-                          {t("providerEditor.makePreferred")}
-                        </button>
-                      )
-                    )}
-                  </span>
-                  {modelPicker?.keyId === key.id && (
-                    <div
-                      className="pv-key-model-picker"
-                      role="group"
-                      aria-label={t("providerEditor.keyModelPicker")}
-                    >
-                      <div className="pv-model-chips">
-                        {[...new Set([...modelIds, ...modelPicker.models])].map(
-                          (model) => (
-                            <button
-                              key={model}
-                              type="button"
-                              className={`pv-model-chip${modelPicker.models.includes(model) ? " selected" : ""}`}
-                              aria-pressed={modelPicker.models.includes(model)}
-                              disabled={blocked}
-                              onClick={() =>
-                                setModelPicker({
-                                  ...modelPicker,
-                                  models: modelPicker.models.includes(model)
-                                    ? modelPicker.models.filter(
-                                        (id) => id !== model,
-                                      )
-                                    : [...modelPicker.models, model],
+                      </td>
+                      <td>
+                        <div className="pv-key-limits">
+                          <span className="pv-key-limit">
+                            {summary?.running
+                              ? t("providerEditor.keyRunning", {
+                                  count: summary.running,
                                 })
-                              }
+                              : t("providerEditor.keyUnlimitedConcurrency")}
+                          </span>
+                          <span className="pv-key-limit">
+                            {t("providerEditor.keyNoSpendCap")}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="pv-key-acts">
+                          <button
+                            type="button"
+                            className="pv-key-action"
+                            aria-label={t("providerEditor.editKey")}
+                            title={t("providerEditor.editKey")}
+                            disabled={blocked}
+                            onClick={() => edit(key.id)}
+                          >
+                            <Pencil size={12} aria-hidden="true" />
+                          </button>
+                          {key.id !== "" && (
+                            <button
+                              type="button"
+                              className="pv-key-action pv-key-delete"
+                              aria-label={t("providerEditor.removeKey")}
+                              title={t("providerEditor.removeKey")}
+                              disabled={blocked}
+                              onClick={() => remove(key.id)}
                             >
-                              {model}
+                              <Trash2 size={12} aria-hidden="true" />
                             </button>
-                          ),
-                        )}
-                      </div>
-                      <p className="pv-hint">
-                        {t("providerEditor.keyModelsHint")}
-                      </p>
-                      <div className="pv-key-model-foot">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={blocked}
-                          onClick={() =>
-                            setModelPicker({
-                              ...modelPicker,
-                              models: [
-                                ...new Set([
-                                  ...modelIds,
-                                  ...modelPicker.models,
-                                ]),
-                              ],
-                            })
-                          }
-                        >
-                          {t("providerEditor.keySelectAvailable")}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={blocked}
-                          onClick={() => saveModels()}
-                        >
-                          {t("providerEditor.keyAllModels")}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={blocked}
-                          onClick={() => setModelPicker(null)}
-                        >
-                          {t("common.cancel")}
-                        </Button>
-                        <Button
-                          type="button"
-                          className="mp-primary"
-                          disabled={blocked || !modelPicker.models.length}
-                          onClick={() => saveModels(modelPicker.models)}
-                        >
-                          {t("common.save")}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  {editing === key.id && (
-                    <div className="pv-key-details pv-stack">
-                      {editing !== "" && (
-                        <Input
-                          aria-label={t("providerEditor.keyName")}
-                          value={key.name}
-                          placeholder={t("providerEditor.keyName")}
-                          disabled={blocked}
-                          onChange={(event) =>
-                            updateTransport({
-                              ...transport,
-                              keys: transport.keys.map((key) =>
-                                key.id === editing
-                                  ? { ...key, name: event.target.value }
-                                  : key,
-                              ),
-                            })
-                          }
-                        />
-                      )}
-                      {summary && (
-                        <p className="pv-hint">
-                          {t("providerEditor.savedKeyHint")}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                          )}
+                          {active === key.id
+                            ? several && (
+                                <small>{t("providerEditor.firstKey")}</small>
+                              )
+                            : key.enabled && (
+                                <button
+                                  type="button"
+                                  disabled={blocked}
+                                  onClick={() => prefer(key.id)}
+                                >
+                                  {t("providerEditor.makePreferred")}
+                                </button>
+                              )}
+                        </span>
+                      </td>
+                    </tr>
+                    {(modelPicker?.keyId === key.id || editing === key.id) && (
+                      <tr className="pv-key-detail-row">
+                        <td colSpan={4}>
+                          {editing === key.id && (
+                            <div className="pv-key-edit">
+                              <div className="pv-key-input">
+                                <label
+                                  htmlFor={`${id}-key`}
+                                  className="sr-only"
+                                >
+                                  {t("modelProviders.apiKey")}
+                                </label>
+                                <Input
+                                  ref={inputRef ?? replacementInput}
+                                  id={`${id}-key`}
+                                  type={show ? "text" : "password"}
+                                  autoComplete="new-password"
+                                  maxLength={16384}
+                                  value={key.key ?? ""}
+                                  required={
+                                    editing === ""
+                                      ? !draft.hasApiKey
+                                      : !summaries.data?.some(
+                                          (entry) => entry.id === editing,
+                                        )
+                                  }
+                                  disabled={blocked}
+                                  onChange={(event) =>
+                                    changeKey(event.target.value)
+                                  }
+                                  placeholder={
+                                    summary
+                                      ? t("modelProviders.keepKey")
+                                      : t("providerEditor.keyPlaceholder")
+                                  }
+                                />
+                                {!!key.key && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    disabled={blocked}
+                                    onClick={() => setShow(!show)}
+                                  >
+                                    {t(
+                                      show
+                                        ? "providerEditor.hideKey"
+                                        : "providerEditor.showKey",
+                                    )}
+                                  </Button>
+                                )}
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  disabled={blocked}
+                                  onClick={() => setEditing(null)}
+                                >
+                                  {t("common.done")}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                          {modelPicker?.keyId === key.id && (
+                            <div
+                              className="pv-key-model-picker"
+                              role="group"
+                              aria-label={t("providerEditor.keyModelPicker")}
+                            >
+                              <div className="pv-model-chips">
+                                {[
+                                  ...new Set([
+                                    ...modelIds,
+                                    ...modelPicker.models,
+                                  ]),
+                                ].map((model) => (
+                                  <button
+                                    key={model}
+                                    type="button"
+                                    className={`pv-model-chip${modelPicker.models.includes(model) ? " selected" : ""}`}
+                                    aria-pressed={modelPicker.models.includes(
+                                      model,
+                                    )}
+                                    disabled={blocked}
+                                    onClick={() =>
+                                      setModelPicker({
+                                        ...modelPicker,
+                                        models: modelPicker.models.includes(
+                                          model,
+                                        )
+                                          ? modelPicker.models.filter(
+                                              (id) => id !== model,
+                                            )
+                                          : [...modelPicker.models, model],
+                                      })
+                                    }
+                                  >
+                                    {model}
+                                  </button>
+                                ))}
+                              </div>
+                              <p className="pv-hint">
+                                {t("providerEditor.keyModelsHint")}
+                              </p>
+                              <div className="pv-key-model-foot">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={blocked}
+                                  onClick={() =>
+                                    setModelPicker({
+                                      ...modelPicker,
+                                      models: [
+                                        ...new Set([
+                                          ...modelIds,
+                                          ...modelPicker.models,
+                                        ]),
+                                      ],
+                                    })
+                                  }
+                                >
+                                  {t("providerEditor.keySelectAvailable")}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={blocked}
+                                  onClick={() => saveModels()}
+                                >
+                                  {t("providerEditor.keyAllModels")}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  disabled={blocked}
+                                  onClick={() => setModelPicker(null)}
+                                >
+                                  {t("common.cancel")}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  className="mp-primary"
+                                  disabled={
+                                    blocked || !modelPicker.models.length
+                                  }
+                                  onClick={() => saveModels(modelPicker.models)}
+                                >
+                                  {t("common.save")}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                          {editing === key.id && (
+                            <div className="pv-key-details pv-stack">
+                              {editing !== "" && (
+                                <Input
+                                  aria-label={t("providerEditor.keyName")}
+                                  value={key.name}
+                                  placeholder={t("providerEditor.keyName")}
+                                  disabled={blocked}
+                                  onChange={(event) =>
+                                    updateTransport({
+                                      ...transport,
+                                      keys: transport.keys.map((key) =>
+                                        key.id === editing
+                                          ? { ...key, name: event.target.value }
+                                          : key,
+                                      ),
+                                    })
+                                  }
+                                />
+                              )}
+                              {summary && (
+                                <p className="pv-hint">
+                                  {t("providerEditor.savedKeyHint")}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                );
+              })}
+            </table>
+          </div>
           <button
             type="button"
             className="pv-key-add"

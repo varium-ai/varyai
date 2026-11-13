@@ -7,7 +7,7 @@ import {
   modelContextBadge,
 } from "@/lib/providerModelContext";
 import { useTranslation } from "react-i18next";
-import { ArrowUpRight, Check } from "lucide-react";
+import { ArrowUpRight, Check, Loader2, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { ProviderCheckbox } from "./ProviderCheckbox";
 import { UpstreamIcon } from "./UpstreamIcon";
 import { ProviderIconField } from "./ProviderIconField";
 import { isImageGenerationModel } from "@/lib/providerModelKind";
@@ -74,6 +75,7 @@ export function ProviderEditorDialog({
   discovered,
   apiKey,
   busy,
+  discovering = false,
   icon,
   region,
   regions,
@@ -91,14 +93,11 @@ export function ProviderEditorDialog({
   onProbe,
   onSave,
   onClose,
-  onDelete,
-  onDuplicate,
   onReturnFocus,
   onError,
   nestedOpen,
   onProbingChange,
   canSave = true,
-  canDuplicate = true,
   loading = false,
 }: {
   open?: boolean;
@@ -110,6 +109,7 @@ export function ProviderEditorDialog({
   discovered: FetchedModel[];
   apiKey: string;
   busy: boolean;
+  discovering?: boolean;
   icon?: string;
   region: string;
   regions: Array<{ id: string; name: string }>;
@@ -127,14 +127,11 @@ export function ProviderEditorDialog({
   onProbe: (model: string) => Promise<ProtocolDetection[]>;
   onSave: (event: React.FormEvent, stagedModels?: unknown[]) => Promise<void>;
   onClose: () => void;
-  onDelete: () => void;
-  onDuplicate: () => void;
   onReturnFocus: () => void;
   onError: ProviderErrorHandler;
   nestedOpen: boolean;
   onProbingChange: (value: boolean) => void;
   canSave?: boolean;
-  canDuplicate?: boolean;
   loading?: boolean;
 }) {
   const { t, i18n } = useTranslation();
@@ -151,17 +148,49 @@ export function ProviderEditorDialog({
   }, [loading]);
   const [showAll, setShowAll] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
-  const [probeModel, setProbeModel] = useState("");
+  const source = draft.source.kind === "api" ? draft.source : null;
+  const preset = globalProviderPresets.find(
+    (value) => value.id === draft.presetId,
+  );
+  const presetRegion =
+    region === "china"
+      ? preset?.china
+      : preset?.regions?.find((value) => value.id === region);
+  const presetWebsite = presetRegion?.website ?? preset?.website;
+  const apiKeyUrl = presetRegion?.apiKeyUrl ?? preset?.apiKeyUrl;
+  const presetEndpoints =
+    source && preset
+      ? {
+          ...(allowedFormats ?? presetRegion?.endpoints ?? preset.endpoints),
+          [source.apiFormat]: source.baseUrl,
+        }
+      : null;
   const [probing, setProbing] = useState(false);
+  const probeRequest = useRef<object | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [iconBusy, setIconBusy] = useState(false);
   const [keyBusy, setKeyBusy] = useState(false);
   useEffect(() => {
-    onProbingChange(probing || accountBusy || iconBusy || keyBusy);
-  }, [probing, accountBusy, iconBusy, keyBusy, onProbingChange]);
+    onProbingChange(accountBusy || iconBusy || keyBusy);
+  }, [accountBusy, iconBusy, keyBusy, onProbingChange]);
   const [results, setResults] = useState<
     Array<{ model: string; results: ProtocolDetection[] }>
   >([]);
+  useEffect(() => {
+    probeRequest.current = null;
+    setProbing(false);
+    setResults([]);
+    return () => {
+      probeRequest.current = null;
+    };
+  }, [
+    open,
+    originalId,
+    apiKey,
+    source?.baseUrl,
+    source?.apiFormat,
+    source?.authType,
+  ]);
   const [retained, setRetained] = useState<unknown[]>(() => {
     try {
       const value: unknown = JSON.parse(models);
@@ -270,48 +299,34 @@ export function ProviderEditorDialog({
     );
   }
   const chatSelected = selected.filter((row) => !isImageGenerationModel(row));
-  async function probe(all: boolean) {
-    if (probing || busy) return;
+  async function probe() {
+    if (probeRequest.current || disabled || !open || !source) return;
+    const request = {};
+    probeRequest.current = request;
     setProbing(true);
-    onProbingChange(true);
     setResults([]);
     try {
-      let ids = all
-        ? chatSelected.map(providerModelId)
-        : [probeModel.trim() || chatSelected.map(providerModelId)[0] || ""];
-      if (!ids[0]) {
+      let model = chatSelected.map(providerModelId).find(Boolean);
+      if (!model) {
         const found = await onFetchProbeModels();
+        if (probeRequest.current !== request) return;
         const chat = found.find((row) => !isImageGenerationModel(row));
-        ids = chat ? [chat.id] : [];
+        model = chat?.id;
       }
-      ids = ids.filter(Boolean).slice(0, 30);
-      let failed = false;
-      for (let at = 0; at < ids.length; at += 3) {
-        const outcomes = await Promise.allSettled(
-          ids.slice(at, at + 3).map(async (model) => ({
-            model,
-            results: await onProbe(model),
-          })),
-        );
-        setResults((old) => [
-          ...old,
-          ...outcomes.flatMap((outcome) =>
-            outcome.status === "fulfilled" ? [outcome.value] : [],
-          ),
-        ]);
-        if (outcomes.some((outcome) => outcome.status === "rejected"))
-          failed = true;
-      }
-      if (failed) onError("testModels");
+      if (!model) return;
+      const detected = await onProbe(model);
+      if (probeRequest.current === request)
+        setResults([{ model, results: detected }]);
     } catch (cause) {
-      onError("testModels", cause);
+      if (probeRequest.current === request) onError("testModels", cause);
     } finally {
-      setProbing(false);
-      onProbingChange(false);
+      if (probeRequest.current === request) {
+        probeRequest.current = null;
+        setProbing(false);
+      }
     }
   }
-  const source = draft.source.kind === "api" ? draft.source : null;
-  const disabled = busy || probing || accountBusy || iconBusy || keyBusy;
+  const disabled = busy || accountBusy || iconBusy || keyBusy;
   let site = "";
   try {
     const url = new URL(
@@ -323,9 +338,10 @@ export function ProviderEditorDialog({
                 draft.source.kind === "subscription" &&
                 provider.id === draft.source.provider,
             )?.website ?? "")
-          : (source?.baseUrl ?? ""),
+          : (presetWebsite ?? source?.baseUrl ?? ""),
     );
-    if (["https:", "http:"].includes(url.protocol)) site = url.origin;
+    if (["https:", "http:"].includes(url.protocol))
+      site = source && presetWebsite ? presetWebsite : url.origin;
   } catch {
     /* An incomplete address is kept in the draft. */
   }
@@ -339,8 +355,19 @@ export function ProviderEditorDialog({
       .toLocaleLowerCase()
       .includes(modelTerm),
   );
-  const preset = globalProviderPresets.find(
-    (value) => value.id === draft.presetId,
+  const selectedIds = new Set(selected.map(providerModelId));
+  const visibleIds = new Set(rows.map(providerModelId));
+  const vendorServed =
+    !!draft.revision &&
+    !!source &&
+    source.mode !== "picked" &&
+    source.mode !== "usage";
+  const allVisibleSelected =
+    rows.length > 0 &&
+    (vendorServed ||
+      rows.every((row) => selectedIds.has(providerModelId(row))));
+  const someVisibleSelected = rows.some((row) =>
+    selectedIds.has(providerModelId(row)),
   );
   const regionAtTop =
     regions.length > 1 &&
@@ -378,10 +405,24 @@ export function ProviderEditorDialog({
     <Button
       type="button"
       variant="ghost"
-      disabled={disabled || !source.baseUrl || (!apiKey && !draft.hasApiKey)}
+      aria-label={t("providerForm.fetchModels")}
+      aria-busy={discovering}
+      disabled={
+        disabled ||
+        discovering ||
+        !source.baseUrl ||
+        (!apiKey && !draft.hasApiKey)
+      }
       onClick={() => void _onDiscover()}
     >
-      {t("providerForm.fetchModels")}
+      {discovering && (
+        <Loader2
+          size={12}
+          className="animate-spin motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+      )}
+      {t(discovering ? "common.loading" : "providerForm.fetchModels")}
     </Button>
   );
   return (
@@ -462,11 +503,22 @@ export function ProviderEditorDialog({
                 onCheckedChange={onEnabledChange}
               />
             )}
+            <Button
+              type="button"
+              variant="ghost"
+              className="pv-editor-close"
+              aria-label={t("common.close")}
+              disabled={disabled || nestedOpen}
+              onClick={onClose}
+            >
+              <X size={20} aria-hidden="true" />
+            </Button>
             <DialogDescription className="sr-only">
               {t("providerEditor.description")}
             </DialogDescription>
           </header>
           <form
+            onInvalidCapture={() => onError("save", "invalid")}
             onSubmit={(event) => {
               if (disabled) event.preventDefault();
               else void onSave(event);
@@ -565,7 +617,7 @@ export function ProviderEditorDialog({
                 <SubscriptionProviderFields
                   editorOpen={open}
                   draft={draft}
-                  disabled={busy || probing}
+                  disabled={busy}
                   startReauth={startReauth}
                   onReauthStarted={onReauthStarted}
                   onChange={onDraftChange}
@@ -577,7 +629,7 @@ export function ProviderEditorDialog({
                 <CodexProviderFields
                   editorOpen={open}
                   draft={draft}
-                  disabled={busy || probing}
+                  disabled={busy}
                   startReauth={startReauth}
                   onReauthStarted={onReauthStarted}
                   onChange={onDraftChange}
@@ -618,57 +670,55 @@ export function ProviderEditorDialog({
                               </button>
                             ))}
                         </div>
-                        <Input
-                          id={`${id}-url`}
-                          aria-label={t("modelProviders.baseUrl")}
-                          required
-                          type="url"
-                          placeholder={
-                            source.apiFormat === "anthropic"
-                              ? "https://…"
-                              : source.apiFormat === "gemini_native"
-                                ? "https://…/v1beta"
-                                : "https://…/v1"
-                          }
-                          disabled={disabled}
-                          value={source.baseUrl}
-                          onChange={(event) => {
-                            setResults([]);
-                            onDraftChange({
-                              ...draft,
-                              source: {
-                                ...source,
-                                baseUrl: event.target.value,
-                              },
-                            });
-                          }}
-                        />
-                        <div className="pv-probe-actions">
+                        <div className="pv-url-control">
+                          <Input
+                            id={`${id}-url`}
+                            aria-label={t("modelProviders.baseUrl")}
+                            required
+                            type="url"
+                            placeholder={
+                              source.apiFormat === "anthropic"
+                                ? "https://…"
+                                : source.apiFormat === "gemini_native"
+                                  ? "https://…/v1beta"
+                                  : "https://…/v1"
+                            }
+                            disabled={disabled}
+                            value={source.baseUrl}
+                            onChange={(event) => {
+                              setResults([]);
+                              onDraftChange({
+                                ...draft,
+                                source: {
+                                  ...source,
+                                  baseUrl: event.target.value,
+                                },
+                              });
+                            }}
+                          />
                           <Button
                             type="button"
-                            variant="outline"
+                            variant="ghost"
+                            className="pv-probe-button"
+                            aria-label={t("providerEditor.detect")}
+                            aria-busy={probing}
                             disabled={
                               disabled ||
+                              probing ||
                               !source.baseUrl ||
                               (!apiKey && !draft.hasApiKey)
                             }
-                            onClick={() => void probe(false)}
+                            onClick={() => void probe()}
                           >
-                            {t(
-                              probing
-                                ? "providerEditor.probing"
-                                : "providerEditor.detect",
+                            {probing && (
+                              <Loader2
+                                size={12}
+                                className="animate-spin motion-reduce:animate-none"
+                                aria-hidden="true"
+                              />
                             )}
+                            {t("providerEditor.detect")}
                           </Button>
-                          <Input
-                            aria-label={t("providerEditor.probeModel")}
-                            placeholder={t("providerEditor.probeModelHint")}
-                            value={probeModel}
-                            disabled={disabled}
-                            onChange={(event) =>
-                              setProbeModel(event.target.value)
-                            }
-                          />
                         </div>
                         {!!results.length && (
                           <div className="pv-probe-results" role="status">
@@ -717,102 +767,131 @@ export function ProviderEditorDialog({
                       onKeyChange(value);
                     }}
                     onBusyChange={setKeyBusy}
+                    keyAction={
+                      apiKeyUrl && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="pv-get-key"
+                          disabled={disabled}
+                          onClick={() =>
+                            void settingsApi
+                              .openExternal(apiKeyUrl)
+                              .catch((cause) => onError("openWebsite", cause))
+                          }
+                        >
+                          {t("providerEditor.getApiKey")}
+                          <ArrowUpRight size={12} aria-hidden="true" />
+                        </Button>
+                      )
+                    }
                   />
                   {!regionAtTop && regionControls}
+                  {presetEndpoints && (
+                    <div className="pv-field">
+                      <span className="pv-field-label">
+                        {t("providerEditor.endpoints")}
+                      </span>
+                      <dl
+                        className="pv-preset-endpoints"
+                        role="group"
+                        aria-label={t("providerEditor.endpoints")}
+                      >
+                        {formats.flatMap(([format, , label]) => {
+                          const url = presetEndpoints[format];
+                          return url
+                            ? [
+                                <div key={format} data-protocol={format}>
+                                  <dt>
+                                    {format === "openai_chat"
+                                      ? "OpenAI"
+                                      : label}
+                                  </dt>
+                                  <dd>
+                                    <code>{url}</code>
+                                  </dd>
+                                </div>,
+                              ]
+                            : [];
+                        })}
+                      </dl>
+                    </div>
+                  )}
                   {(!!draft.revision || !draft.presetId) && (
                     <div className="pv-field">
                       <label htmlFor={`${id}-model-ids`}>
                         {t("modelPicker.models")}
                       </label>
                       <div className="pv-models">
-                        {!draft.revision && (
-                          <div className="pv-model-footer pv-model-create">
-                            <div className="pv-add-model">
-                              {fetchModelsControl}
-                            </div>
-                          </div>
-                        )}
                         <>
-                          {!!chatModels.length && (
-                            <div
-                              className={`pv-model-actions${draft.revision ? "" : " pv-create-model-actions"}`}
-                            >
-                              {!draft.revision && (
-                                <span>
-                                  {t("providerParity.pickedCount", {
-                                    count: chatSelected.length,
-                                    total: chatModels.length,
-                                  })}
-                                </span>
-                              )}
-                              {chatModels.length > 24 && (
-                                <Input
-                                  ref={modelSearchInput}
-                                  type="search"
-                                  className="pv-model-search"
-                                  aria-label={t("providerEditor.filterModels", {
-                                    count: chatModels.length,
-                                  })}
-                                  placeholder={t(
-                                    "providerEditor.filterModels",
-                                    {
-                                      count: chatModels.length,
-                                    },
-                                  )}
-                                  disabled={disabled}
-                                  value={modelSearch}
-                                  onChange={(event) =>
-                                    setModelSearch(event.target.value)
-                                  }
-                                />
-                              )}
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                disabled={disabled}
-                                onClick={() => {
-                                  choose(
-                                    [
-                                      ...new Map(
-                                        [...selected, ...rows].map((row) => [
-                                          providerModelId(row),
-                                          row,
-                                        ]),
-                                      ).values(),
-                                    ].slice(0, 256),
-                                  );
-                                  if (draft.revision)
-                                    onDraftChange({
-                                      ...draft,
-                                      source: { ...source, mode: "picked" },
-                                    });
-                                }}
-                              >
-                                {t("providerEditor.selectAll")}
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                disabled={
-                                  disabled ||
-                                  (!chatSelected.length &&
-                                    source.mode === "picked")
+                          <div className="pv-model-actions">
+                            <label className="pv-model-select-all">
+                              <ProviderCheckbox
+                                checked={
+                                  allVisibleSelected
+                                    ? true
+                                    : someVisibleSelected
+                                      ? "indeterminate"
+                                      : false
                                 }
-                                onClick={() => {
+                                disabled={disabled || !rows.length}
+                                onCheckedChange={(checked) => {
                                   choose(
-                                    selected.filter(isImageGenerationModel),
+                                    checked
+                                      ? [
+                                          ...new Map(
+                                            [...selected, ...rows].map(
+                                              (row) => [
+                                                providerModelId(row),
+                                                row,
+                                              ],
+                                            ),
+                                          ).values(),
+                                        ].slice(0, 256)
+                                      : selected.filter(
+                                          (row) =>
+                                            !visibleIds.has(
+                                              providerModelId(row),
+                                            ),
+                                        ),
                                   );
-                                  if (draft.revision)
+                                  if (draft.revision && source)
                                     onDraftChange({
                                       ...draft,
                                       source: { ...source, mode: "picked" },
                                     });
                                 }}
-                              >
-                                {t("providerEditor.selectNone")}
-                              </Button>
-                            </div>
-                          )}
+                              />
+                              <span>{t("providerEditor.selectAll")}</span>
+                            </label>
+                            {fetchModelsControl}
+                            {!draft.revision && !!chatModels.length && (
+                              <span>
+                                {t("providerParity.pickedCount", {
+                                  count: chatSelected.length,
+                                  total: chatModels.length,
+                                })}
+                              </span>
+                            )}
+                            {chatModels.length > 24 && (
+                              <Input
+                                ref={modelSearchInput}
+                                type="search"
+                                className="pv-model-search"
+                                aria-label={t("providerEditor.filterModels", {
+                                  count: chatModels.length,
+                                })}
+                                placeholder={t("providerEditor.filterModels", {
+                                  count: chatModels.length,
+                                })}
+                                disabled={disabled}
+                                value={modelSearch}
+                                onChange={(event) =>
+                                  setModelSearch(event.target.value)
+                                }
+                              />
+                            )}
+                          </div>
                           <div
                             className="pv-model-chips"
                             role="group"
@@ -852,11 +931,7 @@ export function ProviderEditorDialog({
                                     <Check
                                       size={11}
                                       aria-hidden
-                                      style={{
-                                        visibility: checked
-                                          ? "visible"
-                                          : "hidden",
-                                      }}
+                                      className="pv-model-check"
                                     />
                                     <span>{modelLabel(value)}</span>
                                     {contextLabel(value) && (
@@ -890,13 +965,6 @@ export function ProviderEditorDialog({
                             </p>
                           )}
                         </>
-                        {!!draft.revision && (
-                          <div className="pv-model-footer">
-                            <div className="pv-add-model">
-                              {fetchModelsControl}
-                            </div>
-                          </div>
-                        )}
                         {!draft.revision && (
                           <p className="pv-hint">
                             {t("providerParity.optionalHint")}
@@ -933,31 +1001,10 @@ export function ProviderEditorDialog({
               )}
             </div>
             <footer className="pv-editor-foot">
-              {!!draft.revision && (
-                <>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="pv-delete"
-                    disabled={disabled}
-                    onClick={onDelete}
-                  >
-                    {t("common.delete")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={onDuplicate}
-                    disabled={disabled || !canDuplicate}
-                  >
-                    {t("providerEditor.duplicate")}
-                  </Button>
-                </>
-              )}
-              <span className="pv-foot-space" />
               <Button
                 type="button"
                 variant="ghost"
+                className="pv-cancel"
                 disabled={disabled}
                 onClick={onClose}
               >

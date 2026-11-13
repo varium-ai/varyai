@@ -86,6 +86,13 @@ impl Native {
         });
         Ok(())
     }
+    pub(crate) fn matches_catalog(&self, catalog: &Value) -> bool {
+        self.projection.read().ok().is_some_and(|projection| {
+            projection
+                .as_ref()
+                .is_some_and(|published| &published.catalog == catalog)
+        })
+    }
     pub fn clear_menu(&self) {
         if let Ok(mut projection) = self.projection.write() {
             *projection = None;

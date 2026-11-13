@@ -204,7 +204,6 @@ impl Conditions {
                     "qwen",
                     "zcode",
                     "deepseek-harness",
-                    "cursor",
                     "t3code",
                 ]
                 .contains(&agent.as_str())

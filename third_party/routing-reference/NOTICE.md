@@ -8,6 +8,13 @@ attribution.
 
 ## Pinned source revisions
 
+- `5dd63727ce81c2872c4f87700568ea846b9c1742`: API preset console and key-page
+  metadata, region/plan link selection, and read-only endpoint presentation,
+  reviewed in `internal/provider/presets.go` and
+  `internal/gui/assets/app.js` (`renderEndpoints` and the key-field side actions).
+  Vary AI adapts these into its React preset editor and existing external-link
+  API, retains its current protocol endpoints, and omits referral parameters.
+
 - `745d209dcf5f4d9b7feee416e1848e33502834e6`: Cursor CLI model selection,
   Private Inference environment integration and model capability discovery,
   reviewed in `internal/agent/agents.go`, `cursorlocal.go`,
@@ -15,6 +22,10 @@ attribution.
   `internal/gateway/gateway.go`. T3 Code's provider-instance integration was
   reviewed in `internal/agent/t3code.go`. VaryAI retains its own ownership
   receipts and gives T3 Code a separate Codex home.
+
+- `745d209dcf5f4d9b7feee416e1848e33502834e6`: T3 Code's provider-instance
+  integration, reviewed in `internal/agent/t3code.go`. VaryAI retains its own
+  ownership receipts and gives T3 Code a separate Codex home.
 
 - `7c0a103eb1c4975343456ad4906b21f01fa741f5`: Codex native/managed picker
   merging and translated deferred-tool handling, reviewed in
@@ -276,3 +287,43 @@ form and closes a single-model picker when its current value is clicked without
 rewriting that value. The existing Vary storage identity and revision checks are
 preserved. User-requested removal of manual model entry, bulk testing, model
 preferences and the groups-only checkbox remains in effect.
+
+Provider-copy ID allocation was additionally reviewed at Magpie revision
+`138d806f7a04559015f5591e9540522c917829bf`, in
+`internal/gui/assets/app.js` (`duplicateProvider`, `slug`, and new-provider name
+editing) and `internal/provider/provider.go` (`Slug`, `add`, `AddCopy`, `hostID`,
+and `freeName`), with `internal/provider/provider_test.go` and `copy_test.go` as
+behavioral references. VaryAI independently implements the same ASCII slug,
+hostname fallback, numeric ID collision suffix and display-name collision rules
+when allocating a new provider identity. Existing saved identities are preserved.
+
+## Codex picker names and ordering
+
+The picker follows Magpie revision `6d15f63d52146fcadccef30c9777e45051bcd11c`,
+`internal/provider/models.go` (`entryFor`, `entriesOf`, `ExposedOf`),
+`modelprefs.go` (`Entry.Label`, default suffix mode), `provider_order.go`
+(`ordered`), `autoref.go` (`Group.Ref`), `codex_models.go` (`codexApart`), and
+`internal/codexcat/codexcat.go` (`shownName`). Direct public IDs use
+`provider/model`; saved groups use `group/id`, and discovered groups retain
+`auto/model`. Display labels never allocate IDs. Duplicate full labels use a
+unique provider ID, otherwise the entry ID. Provider and model list order are
+preserved. Historical VaryAI IDs remain hidden and route through existing
+receipts. This adaptation uses the existing VaryAI storage and routing engine;
+it does not add Magpie's optional provider-suffix settings. The Magpie MIT
+notice and license above apply.
+
+## Model picker identity hints
+
+Same-name model hints additionally follow Magpie revision
+`138d806f7a04559015f5591e9540522c917829bf`, in
+`internal/gui/assets/app.js` (`modelTells`, `openPicker`, `tellTag` and
+`renderList`). Only equal labels in the same group receive a hint. Common
+leading and trailing ID path segments are removed; ambiguous shortened hints
+fall back to the complete IDs. VaryAI supplies public model references as
+additional picker metadata and renders the hints beside the existing model
+names. Stored routing aliases, selected values and upstream request model IDs
+are preserved. The Magpie MIT notice and license above apply.
+
+The muted picker hint also follows `.pop li .mtell` in that revision's
+`internal/gui/assets/app.css`: an 11 px font, muted color and compact spacing
+after the model name.

@@ -45,8 +45,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
     qwen: "",
     zcode: "",
     "deepseek-harness": "",
-    cursor: "",
-    "cursor-cli": "",
+
     t3code: "",
   };
   const filename = filenameMap[appId];

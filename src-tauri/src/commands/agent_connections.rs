@@ -128,9 +128,6 @@ pub(crate) async fn get_agent_connection(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<Status, String> {
-    if app == "cursor-cli" {
-        return Ok(cursor_cli_status());
-    }
     if app == "doubaowork" {
         let (active, waiting) = state.proxy_service.doubaowork_connection_status();
         let manager = state.proxy_service.agent_connections.clone();
@@ -314,7 +311,6 @@ pub(crate) async fn list_agent_connections(
         native_compatibility: None,
         configuration_issue: None,
     });
-    statuses.push(cursor_cli_status());
     Ok(statuses)
 }
 #[cfg(test)]
@@ -533,7 +529,15 @@ pub(crate) async fn reapply_agent_connection(
                 .bridge_for(edition)
                 .bridge_retry()?;
         }
-        state.proxy_service.sync_shared_trae_intl(false).await;
+        if !state
+            .proxy_service
+            .agent_connections
+            .bridge_for(edition)
+            .bridge_enabled()
+            || state.proxy_service.prepare_shared_trae(edition).await
+        {
+            state.proxy_service.sync_shared_trae_intl(false).await;
+        }
         return Ok(());
     }
     if app == "trae" {
@@ -548,7 +552,14 @@ pub(crate) async fn reapply_agent_connection(
                 .await
                 .map_err(|_| FAILED)??;
         }
-        state.proxy_service.sync_shared_trae(false).await;
+        if !state.proxy_service.agent_connections.bridge_enabled()
+            || state
+                .proxy_service
+                .prepare_shared_trae(Edition::China)
+                .await
+        {
+            state.proxy_service.sync_shared_trae(false).await;
+        }
         return Ok(());
     }
     state
@@ -569,14 +580,14 @@ pub(crate) async fn reapply_agent_connection(
 #[tauri::command]
 pub(crate) async fn get_agent_model_catalog(
     state: State<'_, AppState>,
-) -> Result<Vec<agent_connections::Model>, String> {
+) -> Result<Vec<agent_connections::PickerModel>, String> {
     state.proxy_service.ensure_global_routing().await?;
     Ok(state
         .proxy_service
         .intent_runtime
         .global_snapshot()?
         .as_ref()
-        .map(|menu| agent_connections::models(menu))
+        .map(|menu| agent_connections::picker_models(menu))
         .unwrap_or_default())
 }
 #[tauri::command]
@@ -637,17 +648,6 @@ pub(crate) async fn set_agent_connection(
     enabled: bool,
     model: Option<String>,
 ) -> Result<(), String> {
-    if app == "cursor-cli" {
-        if !enabled {
-            return Err(FAILED.into());
-        }
-        let _guard = state.proxy_service.lock_switch_for_app(&app).await;
-        return tokio::task::spawn_blocking(move || {
-            agent_connections::cursor::set_native_model(model.as_deref().ok_or(FAILED)?)
-        })
-        .await
-        .map_err(|_| FAILED)?;
-    }
     if app == "doubaowork" {
         return super::proxy::set_proxy_takeover_for_app(app_handle, state, app, enabled).await;
     }
@@ -704,7 +704,9 @@ pub(crate) async fn set_agent_connection(
                 .bridge_for(edition)
                 .bridge_select_model(enabled, model)?;
         }
-        state.proxy_service.sync_shared_trae_intl(false).await;
+        if !enabled || state.proxy_service.prepare_shared_trae(edition).await {
+            state.proxy_service.sync_shared_trae_intl(false).await;
+        }
         return Ok(());
     }
     if app == "trae" {
@@ -740,7 +742,14 @@ pub(crate) async fn set_agent_connection(
             .proxy_service
             .select_shared_trae_connection_model(enabled, model)
             .await?;
-        state.proxy_service.sync_shared_trae(false).await;
+        if !enabled
+            || state
+                .proxy_service
+                .prepare_shared_trae(Edition::China)
+                .await
+        {
+            state.proxy_service.sync_shared_trae(false).await;
+        }
         return Ok(());
     }
     if !agent_connections::APPS.contains(&app.as_str()) {
@@ -929,11 +938,11 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn cursor_and_t3code_connect_refresh_and_disconnect_through_the_public_service(
+    async fn t3code_connect_refresh_and_disconnect_through_the_public_service(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _home = IsolatedHome::new()?;
         let state = upgrade_state().await?;
-        for app in ["cursor", "t3code"] {
+        for app in ["t3code"] {
             assert!(
                 !state
                     .proxy_service
@@ -959,11 +968,7 @@ mod tests {
             );
             assert!(state.proxy_service.intent_runtime.connections.active(app));
             let status = state.proxy_service.get_takeover_status().await?;
-            assert!(if app == "cursor" {
-                status.cursor
-            } else {
-                status.t3code
-            });
+            assert!(status.t3code);
             set_native_connection(&state, app.into(), false, None).await?;
             assert!(
                 !state
@@ -1251,6 +1256,13 @@ mod tests {
             crate::services::intent_routing::menu::prepare(manager, vec![provider], vec![], None)
                 .await?;
         let alias = menu.default_model.as_deref().ok_or("missing model")?;
+        let catalog = agent_connections::models(&menu);
+        let model = catalog
+            .iter()
+            .find(|model| model.id == alias)
+            .ok_or("missing catalog model")?;
+        assert_eq!(model.name, "synthetic");
+        assert_eq!(model.group, "Synthetic");
         let connections = agent_connections::Manager {
             root: _home.dir.path().join("receipts"),
         };
@@ -1261,17 +1273,24 @@ mod tests {
             match app {
                 "claude" => assert_eq!(
                     installed["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
-                    "synthetic · synthetic=effort,xhigh_effort,max_effort"
+                    "synthetic=effort,xhigh_effort,max_effort"
                 ),
                 "pi" => assert_eq!(
                     installed["providers"]["varyai"]["models"][0]["thinkingLevelMap"]["max"],
                     "max"
                 ),
-                "opencode" => assert_eq!(
-                    installed["provider"]["varyai"]["models"][alias]["variants"]["max"]
-                        ["reasoningEffort"],
-                    "max"
-                ),
+                "opencode" => {
+                    let wire = agent_connections::model_wire(
+                        &receipt.model_map,
+                        receipt.visible_models.as_deref(),
+                        alias,
+                    );
+                    assert_eq!(
+                        installed["provider"]["varyai"]["models"][wire]["variants"]["max"]
+                            ["reasoningEffort"],
+                        "max"
+                    );
+                }
                 "workbuddy" => {
                     let row = if installed.is_array() {
                         &installed[0]
@@ -1619,21 +1638,5 @@ mod tests {
         }
         state.proxy_service.stop().await?;
         Ok(())
-    }
-}
-
-fn cursor_cli_status() -> Status {
-    Status {
-        app: "cursor-cli".into(),
-        enabled: false,
-        configured: false,
-        recovery_pending: false,
-        recovery_reason: None,
-        model: None,
-        restart_required: false,
-        reload_state: None,
-        desktop_state: None,
-        native_compatibility: None,
-        configuration_issue: None,
     }
 }

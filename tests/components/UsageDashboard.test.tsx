@@ -120,7 +120,9 @@ describe("UsageDashboard", () => {
 
   it("initializes the today view with the requested app", () => {
     renderDashboard({ initialAppType: "codex" });
-    expect(usageHeroMock).toHaveBeenLastCalledWith(expect.objectContaining({ appType: "codex", range: { preset: "today" } }));
+    expect(usageHeroMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ appType: "codex", range: { preset: "today" } }),
+    );
   });
 
   it("uses the saved refresh interval when mounted", () => {
@@ -184,4 +186,23 @@ describe("UsageDashboard", () => {
       expect(screen.getByTestId("select-30000")).toBeInTheDocument(),
     );
   });
+});
+
+it("offers the observed request and response model IDs alongside billing IDs", () => {
+  useModelStatsMock.mockReturnValue({
+    data: [
+      {
+        model: "billing-model",
+        aliases: ["configured-model", "response-model"],
+        requestCount: 1,
+        totalTokens: 10,
+        totalCost: "0.5",
+        avgCostPerRequest: "0.5",
+      },
+    ],
+  });
+  renderDashboard();
+  for (const model of ["billing-model", "configured-model", "response-model"])
+    expect(screen.getByText(model)).toBeVisible();
+  expect(screen.getByText("usage.modelFilterScope")).toBeVisible();
 });

@@ -6311,8 +6311,6 @@ impl ProviderService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => Ok(String::new()),
         }
@@ -6342,8 +6340,6 @@ impl ProviderService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => Ok(String::new()),
         }
@@ -6997,7 +6993,7 @@ impl ProviderService {
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
         match app_type {
-            AppType::Cursor | AppType::CursorCli | AppType::T3Code => {
+            AppType::T3Code => {
                 return Err(AppError::InvalidInput(
                     "Configure this agent through Agent connections".into(),
                 ))
@@ -7360,8 +7356,6 @@ impl ProviderService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => {
                 // These native formats use apiKey and baseUrl directly on the object.

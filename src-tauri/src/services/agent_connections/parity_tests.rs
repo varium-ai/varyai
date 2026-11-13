@@ -1,6 +1,106 @@
 use super::*;
 use std::sync::Arc;
 
+#[tokio::test]
+#[serial_test::serial]
+async fn catalog_refresh_retains_selected_alias_across_reload_and_resume(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let provider = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({
+            "apiFormat":"openai_responses",
+            "auth":{"OPENAI_API_KEY":"synthetic-only"},
+            "config":"model_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'",
+            "modelCatalog":{"models":[{"model":"first"},{"model":"second"},{"model":"third"}]}
+        }),
+        None,
+    );
+    let menu = crate::services::intent_routing::menu::prepare(
+        Arc::new(
+            crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                dir.path().join("accounts"),
+            ),
+        ),
+        vec![provider],
+        vec![],
+        None,
+    )
+    .await?;
+    let catalog = models(&menu);
+    assert_eq!(catalog.len(), 3);
+    let default = menu.default_model.as_deref().ok_or("fixture default")?;
+    let selected = &catalog
+        .iter()
+        .find(|model| model.id != default)
+        .ok_or("second model")?
+        .id;
+    assert!(!menu.models.contains_key(selected));
+    for app in ["kimi", "qwen"] {
+        let path = dir.path().join(format!("{app}.config"));
+        let manager = Manager {
+            root: dir.path().join(format!("{app}-receipts")),
+        };
+        crate::services::agent_clients::with_test_config(&path, || -> Result<(), String> {
+            manager.install(manager.build(app, &menu, "http://127.0.0.1:1", default)?)?;
+            manager
+                .update(app, &menu, "http://127.0.0.1:1", Some(selected))?
+                .ok_or(FAILED)?;
+            let selected_files = fs::read(&path).map_err(|_| FAILED)?;
+            for _ in 0..3 {
+                let reopened = Manager {
+                    root: manager.root.clone(),
+                };
+                let refreshed = reopened
+                    .refresh(app, &menu, "http://127.0.0.1:1")?
+                    .ok_or(FAILED)?;
+                assert_eq!(&refreshed.model, selected, "{app} refresh");
+                assert_eq!(
+                    reopened.status(app)?.model.as_ref(),
+                    Some(selected),
+                    "{app} status"
+                );
+                assert!(
+                    fs::read(&path).map_err(|_| FAILED)? == selected_files,
+                    "{app} native selection"
+                );
+            }
+            manager.suspend(app)?;
+            let resumed = manager
+                .refresh(app, &menu, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?;
+            assert_eq!(&resumed.model, selected, "{app} resume");
+            let format = resumed.files[0].format;
+            let previous = std::str::from_utf8(&selected_files).map_err(|_| FAILED)?;
+            assert!(
+                format.parse(read(&path)?.as_deref())? == format.parse(Some(previous))?,
+                "{app} resumed native configuration"
+            );
+
+            let mut removed = menu.clone();
+            removed.models.retain(|_, model| &model.alias != selected);
+            removed.groups.remove(selected);
+            let fallback = manager
+                .refresh(app, &removed, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?;
+            assert_eq!(fallback.model, default, "{app} removed model fallback");
+            manager
+                .update(app, &menu, "http://127.0.0.1:1", Some(selected))?
+                .ok_or(FAILED)?;
+            removed.default_model = None;
+            let fallback = manager
+                .refresh(app, &removed, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?;
+            assert!(models(&removed)
+                .iter()
+                .any(|model| model.id == fallback.model));
+            manager.disconnect(app)
+        })?;
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires installed OpenCode CLI"]
 fn installed_opencode_accepts_generated_jsonc() -> Result<(), Box<dyn std::error::Error>> {
@@ -127,12 +227,21 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     let selected = menu.default_model.as_deref().ok_or("fixture default")?;
     let claude_path = crate::config::get_claude_settings_path();
     fs::create_dir_all(claude_path.parent().ok_or("parent")?)?;
-    let original = json!({"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"native"},"model":"native-choice","modelPicker":{"options":[{"model":"native-extra","label":"Native extra"}]}}).to_string();
+    let original = json!({"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"native"},"model":"native-choice","availableModels":["sonnet"],"modelPicker":{"options":[{"model":"native-extra","label":"Native extra"}]}}).to_string();
     fs::write(&claude_path, &original)?;
     let receipt = build("claude", &menu, "http://127.0.0.1:1", selected)?;
     let installed = &receipt.files[0].installed;
     assert_eq!(installed["env"]["CLAUDE_CODE_USE_BEDROCK"], "0");
     assert!(installed["env"].get("ANTHROPIC_MODEL").is_none());
+    for model in models(&menu) {
+        assert!(
+            installed["availableModels"]
+                .as_array()
+                .ok_or("allowlist")?
+                .contains(&json!(model.name)),
+            "shared model missing from the user allowlist"
+        );
+    }
     let name = &models(&menu)[0].name;
     assert_eq!(installed["model"], name.as_str());
     assert_eq!(
@@ -192,7 +301,7 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     let receipt = build("opencode", &menu, "http://127.0.0.1:1", selected)?;
     receipt.files[0].write()?;
     let installed: Value = serde_json::from_str(&fs::read_to_string(&json_path)?)?;
-    assert_eq!(installed["model"], format!("varyai/{selected}"));
+    assert_eq!(installed["model"], format!("varyai/{name}"));
     assert_eq!(installed["small_model"], "mine/small");
     assert_eq!(
         installed["provider"]["mine"]["models"]["small"]["name"],

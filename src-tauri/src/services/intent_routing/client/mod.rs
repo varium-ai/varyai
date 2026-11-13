@@ -11,7 +11,7 @@ use std::{
 };
 use toml_edit::DocumentMut;
 
-mod aliases;
+pub(crate) mod aliases;
 mod health;
 mod thread_lifecycle;
 mod threads;
@@ -902,7 +902,7 @@ impl Manager {
             .map(|receipt| receipt.model_map.clone())
             .or_else(|| identity.as_ref().map(|identity| identity.model_map.clone()))
             .unwrap_or_default();
-        let aliases = aliases::project(&mut projection, &mut model_map)?;
+        let aliases = aliases::project_menu(&mut projection, &mut model_map, menu.as_deref())?;
         let first_alias = aliases.first().ok_or("agentConnections.noModels")?;
         let catalog_bytes = serde_json::to_vec_pretty(&projection).map_err(|_| FAILED)?;
         if let Some(receipt) = &superseded {

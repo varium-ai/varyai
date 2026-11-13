@@ -615,8 +615,7 @@ export function GatewayKeysPanel({
                 catalog?.agents.find((a) => a.id === app)?.localRouting ??
                 false;
               const bound = keys.find((key) => key.agents?.includes(app));
-              const enabled =
-                running && app !== "cursor-cli" && takeoverStatus?.[app];
+              const enabled = running && takeoverStatus?.[app];
               return (
                 <div key={app} className="rounded-lg border p-3 space-y-2">
                   <Label htmlFor={`gateway-agent-${app}`}>{label(app)}</Label>

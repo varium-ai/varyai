@@ -213,26 +213,26 @@ export function RequestLogTable({
                         <TableCell className="text-center">
                           {log.providerName || t("usage.unknownProvider")}
                         </TableCell>
-                        <TableCell className="text-center font-mono text-xs max-w-[200px]">
+                        <TableCell className="text-center font-mono text-xs min-w-[200px] max-w-[360px]">
                           <div
-                            className="truncate"
-                            title={
-                              log.requestModel && log.requestModel !== log.model
-                                ? `${log.requestModel} → ${log.model}`
-                                : log.model
-                            }
+                            className="whitespace-normal break-all"
+                            title={`${t("usage.requestModel")}: ${log.requestModel || log.model} → ${t("usage.responseModel")}: ${log.model}`}
                           >
-                            {log.requestModel &&
-                            log.requestModel !== log.model ? (
-                              <span>
-                                {log.requestModel}
-                                <span className="text-muted-foreground">
-                                  {" → "}
-                                  {log.model}
-                                </span>
-                              </span>
-                            ) : (
-                              log.model
+                            <span>{log.pricingModel || log.model}</span>
+                            {((log.requestModel &&
+                              log.requestModel !==
+                                (log.pricingModel || log.model)) ||
+                              log.model !==
+                                (log.pricingModel || log.model)) && (
+                              <div
+                                className="text-[10px] text-muted-foreground"
+                                aria-label={t("usage.requestResponseModel")}
+                              >
+                                {log.requestModel &&
+                                log.requestModel !== log.model
+                                  ? `${log.requestModel} → ${log.model}`
+                                  : log.model}
+                              </div>
                             )}
                           </div>
                         </TableCell>

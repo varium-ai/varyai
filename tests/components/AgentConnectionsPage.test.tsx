@@ -3420,40 +3420,8 @@ describe("Agent connections", () => {
       }),
     ).toBeEnabled();
   });
-  it("keeps Cursor CLI on its native model choices without a gateway switch", async () => {
-    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
-      "cursor-cli": true,
-    });
-    vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValue([
-      { app: "cursor-cli", available: true, model: "native-example" },
-    ]);
-    mount();
-    const row = await screen.findByRole("article", { name: "apps.cursor-cli" });
-    expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
-    expect(
-      within(row).getByText("agentConnections.cursorCliHint"),
-    ).toBeInTheDocument();
-    const picker = within(row).getByRole("button", {
-      name: "agentConnections.model apps.cursor-cli",
-    });
-    await waitFor(() => expect(picker).toBeEnabled());
-    fireEvent.click(picker);
-    expect(
-      screen.queryByRole("radio", { name: /Shared group/ }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(
-      await screen.findByRole("radio", { name: /agentConnections.cursorAuto/ }),
-    );
-    await waitFor(() =>
-      expect(agentConnectionsApi.set).toHaveBeenCalledWith(
-        "cursor-cli",
-        true,
-        "auto",
-      ),
-    );
-  });
-  it.each(["cursor", "t3code"])(
-    "connects %s to a shared model with its setup boundary visible",
+  it.each(["t3code"])(
+    "connects %s to a shared model without a persistent setup note",
     async (app) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
         [app]: true,
@@ -3461,10 +3429,8 @@ describe("Agent connections", () => {
       mount();
       const row = await screen.findByRole("article", { name: `apps.${app}` });
       expect(
-        within(row).getByText(
-          `agentConnections.${app === "cursor" ? "cursorLocalHint" : "t3codeHint"}`,
-        ),
-      ).toBeInTheDocument();
+        within(row).queryByText("agentConnections.t3codeHint"),
+      ).not.toBeInTheDocument();
       const picker = within(row).getByRole("button", {
         name: `agentConnections.model apps.${app}`,
       });
@@ -3482,6 +3448,36 @@ describe("Agent connections", () => {
       );
     },
   );
+  it("explains how to recover DeepSeek Harness and retries from its switch", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      "deepseek-harness": true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "deepseek-harness",
+        enabled: false,
+        configured: false,
+        model: "vary-auto/shared",
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        restartRequired: false,
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", {
+      name: "apps.deepseek-harness",
+    });
+    expect(
+      within(row).getByText("agentConnections.deepseekRecoveryHint"),
+    ).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("switch"));
+    await waitFor(() =>
+      expect(agentConnectionsApi.reapply).toHaveBeenCalledWith(
+        "deepseek-harness",
+      ),
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
   it.each([false, true])(
     "selects the DeepSeek Harness starting model when connected is %s",
     async (enabled) => {

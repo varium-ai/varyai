@@ -42,8 +42,6 @@ impl McpApps {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => false, // MCP is not managed for these apps.
             AppType::ClaudeDesktop => false,
@@ -70,8 +68,6 @@ impl McpApps {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => {} // MCP is not managed for these apps.
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
@@ -152,8 +148,6 @@ impl SkillApps {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => false,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
@@ -180,8 +174,6 @@ impl SkillApps {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => {}
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
@@ -456,9 +448,6 @@ pub enum AppType {
     Trae,
     #[serde(rename = "trae-intl")]
     TraeIntl,
-    Cursor,
-    #[serde(rename = "cursor-cli")]
-    CursorCli,
     #[serde(rename = "t3code")]
     T3Code,
     DoubaoWork,
@@ -485,8 +474,6 @@ impl AppType {
             AppType::DeepSeekHarness => "deepseek-harness",
             AppType::Trae => "trae",
             AppType::TraeIntl => "trae-intl",
-            AppType::Cursor => "cursor",
-            AppType::CursorCli => "cursor-cli",
             AppType::T3Code => "t3code",
             AppType::DoubaoWork => "doubaowork",
         }
@@ -544,8 +531,6 @@ impl AppType {
             AppType::DeepSeekHarness,
             AppType::Trae,
             AppType::TraeIntl,
-            AppType::Cursor,
-            AppType::CursorCli,
             AppType::T3Code,
             AppType::DoubaoWork,
         ]
@@ -577,8 +562,6 @@ impl FromStr for AppType {
             "deepseek-harness" | "deepseek_harness" => Ok(AppType::DeepSeekHarness),
             "trae" => Ok(AppType::Trae),
             "trae-intl" => Ok(AppType::TraeIntl),
-            "cursor" => Ok(AppType::Cursor),
-            "cursor-cli" | "cursor-agent" => Ok(AppType::CursorCli),
             "t3code" | "t3-code" => Ok(AppType::T3Code),
             "doubaowork" => Ok(AppType::DoubaoWork),
             other => Err(AppError::localized(
@@ -634,8 +617,6 @@ impl CommonConfigSnippets {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => None,
         }
@@ -662,8 +643,6 @@ impl CommonConfigSnippets {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => {}
         }
@@ -1001,8 +980,6 @@ impl MultiAppConfig {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => return Ok(false),
         };
@@ -1058,8 +1035,6 @@ impl MultiAppConfig {
                 | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::TraeIntl
-                | AppType::Cursor
-                | AppType::CursorCli
                 | AppType::T3Code
                 | AppType::DoubaoWork => continue, // Pi didn't exist in v3.6.x, skip
             };

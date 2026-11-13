@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { ProviderEditorDialog } from "@/components/providers/ProviderEditorDialog";
 import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
@@ -90,8 +91,6 @@ function Editor({
         onProbe={onProbe}
         onSave={vi.fn()}
         onClose={vi.fn()}
-        onDelete={vi.fn()}
-        onDuplicate={vi.fn()}
         onReturnFocus={vi.fn()}
         onError={vi.fn()}
         nestedOpen={false}
@@ -150,7 +149,7 @@ it.each([0, 1])(
       within(images).getByRole("button", { name: "vendor-drawing" }),
     ).toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.selectAll" }),
+      screen.getByRole("checkbox", { name: "providerEditor.selectAll" }),
     );
     expect(
       within(chat).getByRole("button", { name: "chat-fixture" }),
@@ -161,7 +160,7 @@ it.each([0, 1])(
   },
 );
 
-it("keeps the filter above the saved model list and its fetch action below", () => {
+it("keeps the filter and adjacent selection/discovery controls above the saved model list", () => {
   render(<Editor />);
   const filter = screen.getByRole("searchbox");
   const list = screen.getByRole("group", { name: "modelPicker.models" });
@@ -172,7 +171,7 @@ it("keeps the filter above the saved model list and its fetch action below", () 
     filter.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(
-    list.compareDocumentPosition(fetch) & Node.DOCUMENT_POSITION_FOLLOWING,
+    fetch.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(screen.queryByLabelText("providerEditor.addModelId")).toBeNull();
   expect(screen.queryByText("providerParity.pickedCount")).toBeNull();
@@ -281,19 +280,41 @@ it("filters model names and IDs without treating the provider name as a model ma
 
 it("can select none from a vendor-served list even when there are no explicit picks", () => {
   render(<Editor vendorMode />);
-  const none = screen.getByRole("button", {
-    name: "providerEditor.selectNone",
+  const all = screen.getByRole("checkbox", {
+    name: "providerEditor.selectAll",
   });
-  expect(none).toBeEnabled();
-  fireEvent.click(none);
+  expect(all).toBeEnabled();
+  expect(all).toHaveClass("pv-checkbox-input");
+  expect(all).toBeChecked();
+  fireEvent.click(all);
   expect(screen.getByRole("button", { name: "chat-fixture" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
-  expect(none).toBeDisabled();
+  expect(all).not.toBeChecked();
 });
 
-it("keeps Magpie's new-provider fetch action above models and its saved-provider action below", () => {
+it("supports mixed selection, the select-all label and Space keyboard toggles", async () => {
+  const user = userEvent.setup();
+  render(<Editor initialModels='[{"model":"chat-fixture"}]' />);
+  const all = screen.getByRole("checkbox", {
+    name: "providerEditor.selectAll",
+  });
+  expect(all).toBePartiallyChecked();
+  await user.click(screen.getByText("providerEditor.selectAll"));
+  expect(all).toBeChecked();
+  expect(all).not.toBePartiallyChecked();
+  all.focus();
+  await user.keyboard("[Space]");
+  expect(all).not.toBeChecked();
+  expect(all).not.toBePartiallyChecked();
+  expect(screen.getByRole("button", { name: "chat-fixture" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+});
+
+it("keeps discovery beside select-all above models for both new and saved providers", () => {
   const { unmount } = render(<Editor revision={0} />);
   expect(
     screen
@@ -307,9 +328,9 @@ it("keeps Magpie's new-provider fetch action above models and its saved-provider
   render(<Editor revision={1} />);
   expect(
     screen
-      .getByRole("group", { name: "modelPicker.models" })
+      .getByRole("button", { name: "providerForm.fetchModels" })
       .compareDocumentPosition(
-        screen.getByRole("button", { name: "providerForm.fetchModels" }),
+        screen.getByRole("group", { name: "modelPicker.models" }),
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(screen.queryByText("providerParity.pickedCount")).toBeNull();

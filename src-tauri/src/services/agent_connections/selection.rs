@@ -20,6 +20,7 @@ fn paths(app: &str) -> &'static [&'static [&'static str]] {
         "zcode" => &[&["config", "defaultModelSelection"]],
         "deepseek-harness" => &[&["selection"]],
         "t3code" => &[
+            &["model"],
             &["defaultModelSelection", "instanceId"],
             &["defaultModelSelection", "model"],
         ],
@@ -63,11 +64,11 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
     if receipt.suspended || paths(&receipt.app).is_empty() {
         return Ok(());
     }
+    let mut selected = None;
+    let mut selection_changed = false;
     for index in 0..receipt.files.len() {
         let file = &receipt.files[index];
-        let live = file
-            .format
-            .parse(file.format.read(&file.path)?.as_deref())?;
+        let live = file.format.parse(super::read(&file.path)?.as_deref())?;
         let mut baseline = file.format.parse(file.original.as_deref())?;
         let mut installed = file.installed.clone();
         let mut changed = false;
@@ -88,6 +89,41 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
             let Some(choice) = at(&live, &path).filter(|choice| valid(choice)) else {
                 continue;
             };
+            let wire = choice
+                .as_str()
+                .or_else(|| choice.get("modelId").and_then(Value::as_str))
+                .or_else(|| choice.pointer("/0/config/model").and_then(Value::as_str));
+            if let Some(wire) = wire {
+                let wire = wire.strip_prefix("varyai/").unwrap_or(wire);
+                let wire = if receipt.app == "claude" {
+                    crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(wire)
+                } else {
+                    wire
+                };
+                let alias = receipt
+                    .model_map
+                    .get(wire)
+                    .or_else(|| {
+                        receipt
+                            .model_map
+                            .values()
+                            .find(|alias| alias.as_str() == wire)
+                    })
+                    .cloned()
+                    .or_else(|| {
+                        ["vary-provider/", "vary-auto/", "auto/"]
+                            .iter()
+                            .any(|prefix| wire.starts_with(prefix))
+                            .then(|| wire.to_owned())
+                    });
+                if let Some(alias) = alias {
+                    let changed = at(&installed, &path) != Some(choice);
+                    if selected.is_none() || (changed && !selection_changed) {
+                        selected = Some(alias);
+                        selection_changed = changed;
+                    }
+                }
+            }
             if at(&installed, &path) == Some(choice) {
                 continue;
             }
@@ -104,6 +140,9 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
         };
         receipt.files[index].installed = installed;
         receipt.files[index].original = original;
+    }
+    if let Some(selected) = selected {
+        receipt.model = selected;
     }
     Ok(())
 }
@@ -122,6 +161,7 @@ fn contains(value: &Value, needle: &str) -> bool {
 fn renamed_model(
     old: &Receipt,
     names: &std::collections::BTreeMap<String, String>,
+    visible: Option<&[String]>,
     file: &super::FileEdit,
     wire: &str,
 ) -> Option<String> {
@@ -146,10 +186,56 @@ fn renamed_model(
                 .flatten()
         })
         .unwrap_or(base);
-    names
-        .iter()
-        .find(|(_, alias_id)| alias_id.as_str() == alias)
-        .map(|(name, _)| format!("{name}{}", &wire[base.len()..]))
+    names.values().any(|id| id == alias).then(|| {
+        let name = super::model_wire(names, visible, alias);
+        format!("{name}{}", &wire[base.len()..])
+    })
+}
+
+fn renamed_choice(
+    old: &Receipt,
+    names: &std::collections::BTreeMap<String, String>,
+    visible: Option<&[String]>,
+    file: &super::FileEdit,
+    choice: &Value,
+) -> Option<Value> {
+    match choice {
+        Value::String(wire) => {
+            let prefixed =
+                matches!(old.app.as_str(), "opencode" | "openclaw") && wire.starts_with("varyai/");
+            let model = if prefixed {
+                &wire["varyai/".len()..]
+            } else {
+                wire
+            };
+            renamed_model(old, names, visible, file, model).map(|name| {
+                Value::String(if prefixed {
+                    format!("varyai/{name}")
+                } else {
+                    name
+                })
+            })
+        }
+        Value::Object(value) => {
+            let field = match old.app.as_str() {
+                "zcode" => "modelId",
+                "deepseek-harness" => "model",
+                _ => return None,
+            };
+            let model = value.get(field)?.as_str()?;
+            let name = renamed_model(old, names, visible, file, model)?;
+            let mut choice = choice.clone();
+            choice[field] = Value::String(name);
+            Some(choice)
+        }
+        Value::Array(values) if old.app == "deepseek-harness" => {
+            let mut choice = choice.clone();
+            let name = renamed_choice(old, names, visible, file, values.first()?.get("config")?)?;
+            choice[0]["config"] = name;
+            Some(choice)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> {
@@ -162,6 +248,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
         .map(|file| file.installed.clone())
         .collect::<Vec<_>>();
     let names = &next.model_map;
+    let visible = next.visible_models.as_deref();
     for file in &mut next.files {
         let prior = old
             .files
@@ -178,7 +265,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
                     if let Some(name) = model
                         .as_str()
                         .and_then(|wire| wire.strip_prefix("varyai/"))
-                        .and_then(|wire| renamed_model(old, names, prior, wire))
+                        .and_then(|wire| renamed_model(old, names, visible, prior, wire))
                     {
                         *model = Value::String(format!("varyai/{name}"));
                     }
@@ -202,15 +289,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             {
                 continue;
             }
-            let renamed = ["claude", "pi", "hermes", "grokbuild"]
-                .contains(&old.app.as_str())
-                .then(|| {
-                    choice
-                        .as_str()
-                        .and_then(|wire| renamed_model(old, names, prior, wire))
-                })
-                .flatten()
-                .map(Value::String);
+            let renamed = renamed_choice(old, names, visible, prior, choice);
             let choice = renamed.as_ref().unwrap_or(choice);
             if old.app == "hermes" && path == ["model", "provider"] && managed(choice, old) {
                 continue;
@@ -270,7 +349,11 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
                 });
             if !managed(choice, old)
                 || model.is_some_and(|model| {
-                    catalogs.iter().any(|catalog| {
+                    visible.is_some_and(|visible| {
+                        visible.iter().any(|wire| {
+                            wire == model || wire == model.strip_prefix("varyai/").unwrap_or(model)
+                        })
+                    }) || catalogs.iter().any(|catalog| {
                         contains(catalog, model)
                             || contains(catalog, model.strip_prefix("varyai/").unwrap_or(model))
                     })
@@ -289,6 +372,55 @@ mod tests {
     use crate::services::agent_connections::{FileEdit, Manager, CONFLICT};
     use serde_json::json;
     use std::{collections::BTreeMap, fs};
+
+    #[test]
+    fn changed_native_selection_wins_over_an_unchanged_secondary_file() -> Result<(), String> {
+        for changed in 0..2 {
+            let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+            let manager = Manager {
+                root: dir.path().join("receipts"),
+            };
+            let env = FileEdit::prepare_format(
+                dir.path().join("env"),
+                super::super::Format::Env,
+                |value| {
+                    value["GEMINI_MODEL"] = json!("Model A");
+                    Ok(())
+                },
+            )?;
+            let settings = FileEdit::prepare(dir.path().join("settings.json"), |value| {
+                value["model"]["name"] = json!("Model A");
+                Ok(())
+            })?;
+            let receipt = Receipt {
+                app: "gemini".into(),
+                token: "synthetic-only".into(),
+                model: "vary-provider/a".into(),
+                model_map: BTreeMap::from([
+                    ("Model A".into(), "vary-provider/a".into()),
+                    ("Model B".into(), "vary-provider/b".into()),
+                ]),
+                visible_models: None,
+                files: vec![env, settings],
+                suspended: false,
+                applied_at_ms: None,
+            };
+            manager.install(receipt.clone())?;
+            let file = &receipt.files[changed];
+            let mut value = file.installed.clone();
+            if changed == 0 {
+                value["GEMINI_MODEL"] = json!("Model B");
+            } else {
+                value["model"]["name"] = json!("Model B");
+            }
+            fs::write(&file.path, file.format.encode(None, &value)?).map_err(|_| FAILED)?;
+            assert_eq!(
+                manager.status("gemini")?.model.as_deref(),
+                Some("vary-provider/b")
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn claude_readable_upgrade_preserves_selected_model_and_context_suffix() -> Result<(), String> {
@@ -448,6 +580,11 @@ mod tests {
             assert!(
                 manager.status(app)?.configured,
                 "{app} model selection is not an ownership conflict"
+            );
+            assert_eq!(
+                manager.status(app)?.model.as_deref(),
+                Some("vary-provider/b"),
+                "{app} adopted model status"
             );
             let old = manager.load(app)?.ok_or(FAILED)?;
             assert_eq!(at(&old.files[0].installed, &choice_path), Some(&choice));

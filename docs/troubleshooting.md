@@ -115,6 +115,26 @@ the desktop picker. This replaces overlapping independent priorities and does
 not introduce a separate native/managed grouping feature.
 Use the corrected backend and refresh model discovery.
 
+## Codex shows numbered provider names or interleaves provider models
+
+Older VaryAI catalogs derived request model IDs from display labels. Removing
+Chinese characters could make different providers collide and add numeric
+suffixes to otherwise distinct labels. Model or provider renames could allocate
+another ID. The corrected Codex publication follows Magpie's default labels:
+`Model · Provider`, with a provider ID or full entry ID appended only when full
+labels match without regard to case. Request IDs use `provider/model`, saved
+groups use `group/id`, and discovered groups keep `auto/model`. Previously
+published IDs remain hidden compatibility entries for saved conversations.
+
+Provider models stay consecutive in the saved provider order and retain the
+vendor or selected model list order. Selecting a default does not reorder the
+picker. Names are displayed as configured, without account-source abbreviations
+or numbered personal sources. Native model merging continues to follow the
+ordering rules above. There are no additional provider section headings.
+Load a build containing the backend fix and refresh the connection's model list.
+The behavior reference and its scope are recorded in
+[the routing reference notice](../third_party/routing-reference/NOTICE.md).
+
 ## Claude Desktop repeatedly retries an official Codex model
 
 A `502 routing_upstream_rejected` can hide an upstream HTTP 400 when Claude
@@ -547,6 +567,20 @@ the shared catalog is delivered only after that restoration succeeds. A closed
 TRAE client therefore shows a pending connection instead of a legacy-owner
 conflict. The transition does not change the global security-audit setting or
 launch an Agent.
+
+### Usage shows different model names or a Pi session provider
+
+The model filter accepts observed request, response and billing model IDs within
+the selected time, application and provider range. Request logs show the billing
+model and, when different, the request and response IDs below it. Cost summaries
+remain grouped by the billing model; display aliases do not rewrite upstream IDs.
+Models that have no usage in the selected range are not listed.
+
+Pi records the local `varyai` adapter as its provider when using the gateway. This
+adapter name does not identify the actual upstream supplier. New imports use the
+Pi session placeholder, and existing Pi session detail logs display `Pi (Session)`.
+Historical rollups lack source metadata and retain their recorded provider
+attribution. No historical costs or provider configuration are rewritten.
 
 ### Claude Desktop refuses a shared connection
 
@@ -1039,3 +1073,27 @@ Google and ChatGPT API reauthentication validates the returned identity before u
 The subscription provider editor reads allowance separately for each retained managed account. Claude uses its managed credential directory, Copilot and Grok use the explicit account ID, and Gemini CLI and Antigravity use the selected Google credential and project. Antigravity prefers shared quota groups when supplied and otherwise shows per-model windows. ChatGPT API has no separate allowance endpoint in this integration and says so. A missing field never implies a full allowance. Refresh failures preserve the last successful meters with a stale notice; a definitive rejected authorization clears the meters and refreshes local sign-in status. Raw vendor errors and credentials are not rendered or retained in the allowance query cache.
 
 Each account has a refresh action and removal action. Removing a managed Copilot or Grok account clears a matching provider draft selection after removal succeeds. The model section supports selecting all, selecting none, manual model IDs, catalog refresh and existing per-model preferences. These controls retain the provider's explicit account binding; they do not enable multi-account fallback for subscription types whose routing schema supports one account.
+
+### Provider catalogs and routing-group recovery
+
+API key formats differ by vendor. Vary AI checks missing values, control
+characters, the 16,384-byte key limit and the limit of 64 additional keys before
+saving. A structurally valid key still needs vendor authentication; saving it
+alone does not establish access to models.
+
+For a Gemini-compatible gateway, model discovery first uses its native catalog.
+If that endpoint is unsupported (404/405), discovery tries the OpenAI catalog
+under the same URL prefix and origin. Explicit catalog overrides are not
+replaced. Gemini account discovery accepts missing quota-bucket metadata without
+inventing preview-model access; authentication and project errors remain errors.
+
+Claude Code custom picker entries require a client that supports `modelPicker`
+(v2.1.242 or later). An existing user model allowlist includes Vary AI's published
+entries while connected. Administrator-managed restrictions still apply. See the
+[official picker reference](https://code.claude.com/docs/en/settings-reference#modelpicker).
+
+Deleting a saved routing group now retains its definition in **Removed groups**,
+including when automatic discovery is off. Restoring validates its provider
+references and current group limits, and advances its revision so stale edits
+cannot overwrite it. A failed restore keeps the removed record. Previously
+deleted manual groups have no retained definition and cannot be reconstructed.

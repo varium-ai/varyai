@@ -3,8 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ProviderIcon } from "./ProviderIcon";
-import { iconList } from "@/icons/extracted";
-import { searchIcons, getIconMetadata } from "@/icons/extracted/metadata";
+import { searchBuiltinIcons } from "@/icons/builtin";
+import { getIconMetadata } from "@/icons/extracted/metadata";
 import { cn } from "@/lib/utils";
 
 interface IconPickerProps {
@@ -22,9 +22,12 @@ export const IconPicker: React.FC<IconPickerProps> = ({
 
   // 过滤图标列表
   const filteredIcons = useMemo(() => {
-    if (!searchQuery) return iconList;
-    return searchIcons(searchQuery);
-  }, [searchQuery]);
+    return searchBuiltinIcons(searchQuery, (name) =>
+      t(`iconPicker.icons.${name}`, {
+        defaultValue: getIconMetadata(name)?.displayName || name,
+      }),
+    );
+  }, [searchQuery, t]);
 
   return (
     <div className="space-y-4">
@@ -48,6 +51,9 @@ export const IconPicker: React.FC<IconPickerProps> = ({
         <div className="grid grid-cols-6 sm:grid-cols-8 lg:grid-cols-10 gap-2">
           {filteredIcons.map((iconName) => {
             const meta = getIconMetadata(iconName);
+            const label = t(`iconPicker.icons.${iconName}`, {
+              defaultValue: meta?.displayName || iconName,
+            });
             const isSelected = value === iconName;
 
             return (
@@ -63,11 +69,11 @@ export const IconPicker: React.FC<IconPickerProps> = ({
                     ? "border-primary bg-primary/10"
                     : "border-transparent",
                 )}
-                title={meta?.displayName || iconName}
+                title={label}
               >
                 <ProviderIcon icon={iconName} name={iconName} size={32} />
                 <span className="text-xs text-muted-foreground truncate w-full text-center">
-                  {meta?.displayName || iconName}
+                  {label}
                 </span>
               </button>
             );

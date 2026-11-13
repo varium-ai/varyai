@@ -563,3 +563,33 @@ it.each(["responsive", "compact"] as const)(
     expect(seat).not.toHaveTextContent("88 小时");
   },
 );
+
+it("resolves a renamed supplier's icon by its public identity while retaining execution identity", () => {
+  show({
+    row: {
+      ...row,
+      candidates: [
+        {
+          ...row.candidates[0],
+          providerId: "immutable-owner",
+          sourceProviderId: "renamed-supplier",
+        },
+      ],
+    },
+    upstreams: [
+      {
+        schemaVersion: 1,
+        id: "renamed-supplier",
+        name: "Configured supplier",
+        revision: 2,
+        hasApiKey: true,
+        icon: "deepseek",
+        source: { kind: "codex" },
+      },
+    ],
+  });
+  expect(document.querySelector(".rt-seat-icon .lucide-box")).toBeNull();
+  expect(
+    document.querySelector('.rt-seat-icon [title="Configured supplier"] svg'),
+  ).not.toBeNull();
+});

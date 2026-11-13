@@ -1657,17 +1657,8 @@ pub(crate) async fn models(provider: SubscriptionProvider, id: &str) -> Result<V
             &json!({"project":project}),
         )
         .await?;
-        let preview = quota["buckets"]
-            .as_array()
-            .ok_or(FAILED)?
-            .iter()
-            .any(|bucket| {
-                bucket["modelId"]
-                    .as_str()
-                    .is_some_and(|s| s.contains("-preview"))
-            });
         let flags = gemini_flags(&account, &project).await;
-        return Ok(gemini_models(&flags, preview));
+        return Ok(gemini_account_catalog(&flags, &quota));
     }
     let body = if provider == SubscriptionProvider::Antigravity {
         antigravity_models(&account, &project).await?
@@ -2063,6 +2054,19 @@ fn flag(flags: &Value, id: i64) -> bool {
         .flatten()
         .any(|flag| flag["flagId"].as_i64() == Some(id) && flag["boolValue"] == true)
 }
+fn gemini_account_catalog(flags: &Value, quota: &Value) -> Vec<Value> {
+    let preview = quota["buckets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|bucket| {
+            bucket["modelId"]
+                .as_str()
+                .is_some_and(|id| id.contains("-preview"))
+        });
+    gemini_models(flags, preview)
+}
+
 fn gemini_models(flags: &Value, preview: bool) -> Vec<Value> {
     let pro = flag(flags, 45760185);
     let no_pro = flag(flags, 45768879);
@@ -2286,6 +2290,24 @@ mod tests {
                 .port()
                 != 15722
         );
+    }
+    #[test]
+    fn gemini_catalog_does_not_require_quota_bucket_metadata() {
+        for quota in [Value::Null, json!({}), json!({"buckets":[]})] {
+            let catalog = gemini_account_catalog(&Value::Null, &quota);
+            assert!(!catalog.is_empty());
+            assert!(catalog.iter().all(|row| row["model"]
+                .as_str()
+                .is_some_and(|id| !id.contains("preview"))));
+        }
+        assert!(gemini_account_catalog(
+            &Value::Null,
+            &json!({"buckets":[{"modelId":"gemini-preview"}]})
+        )
+        .iter()
+        .any(|row| row["model"]
+            .as_str()
+            .is_some_and(|id| id.contains("preview"))));
     }
     #[test]
     fn gemini_catalog_follows_account_experiments_instead_of_quota_bucket_names() {

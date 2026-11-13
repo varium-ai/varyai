@@ -41,12 +41,39 @@ Before changing the distribution repository, endpoint, signing key, or artifact 
 
 ## In-app release notes
 
-The update dialog displays the target version's Markdown notes with headings,
-lists, inline code and external links. It keeps the installed version visible,
+The update dialog displays Markdown notes for published releases newer than the
+installed version and up to the target version, ordered newest first. It keeps
+the installed version visible and supports headings, lists, inline code and external links,
 scrolls the notes independently and keeps update actions fixed below them.
 Installation and portable-download behavior remain unchanged. Release notes do
-not execute HTML or load remote images. This view describes the target release;
-it does not claim to aggregate every release since the installed version.
+not execute HTML or load remote images. For example, updating from `0.3.0` to
+`0.3.4` includes the `0.3.3` and `0.3.2` descriptions rather than showing only
+`0.3.4`.
+
+Only the section matching the interface language is displayed. Start translated
+sections with `<!-- lang:zh -->`, `<!-- lang:zh-TW -->`, or `<!-- lang:ja -->`.
+English can appear before the first marker or after `<!-- lang:en -->`. Regional
+locales first use their exact translation, then the base language (for example,
+Traditional Chinese falls back to `zh`), then English. Empty translations also
+fall back. Keep headings and lists inside each language section. Descriptions
+without markers remain supported as a single English fallback.
+
+Each release has a version heading, and each list item displays its own source
+release version in muted text. Keep each published description specific to that
+release so attribution stays accurate. The list uses compact spacing, with version
+labels following the item text and wrapping together when needed. Relative links
+are resolved against the corresponding release page.
+
+History is fetched independently from the public GitHub releases API. The range
+excludes the installed version, drafts, newer releases, and prereleases for a
+stable target. Semantic version ordering is used instead of publication order or
+string ordering. Duplicate versions are removed, with the target manifest's
+description taking precedence over the public description for that same version.
+Requests are limited to eight seconds, five pages of 100 releases, and the latest
+40 versions in the displayed range. An incomplete-history message is shown when
+requests fail or those bounds omit records. History loading never blocks update
+actions or the immediately available target manifest notes. If the installed
+version is unknown, only the target notes are displayed.
 
 Stage the public Markdown description as `release-assets/release-notes.md` before
 running `scripts/create-updater-manifest.mjs`. The manifest builder embeds that
