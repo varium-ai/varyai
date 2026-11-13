@@ -70,6 +70,20 @@ record exists, or select a shared model to reconnect when the record is missing.
 Restart the client after the complete configuration has been restored, then send
 a new message and check VaryAI's request statistics.
 
+Codex also keeps a model list in `models_cache.json` in its configuration
+directory. That cache can still contain another manager's routing groups after
+the endpoint changes. After a successful connection, explicit reapplication or
+published catalog change, VaryAI expires the cache's `fetched_at` timestamp so
+the next Codex load requests the current list. Disconnecting an owned connection
+expires it as well. Model metadata and other cache fields are retained; an
+unchanged background refresh does not repeatedly expire a fresh cache. Missing,
+malformed or inaccessible caches do not block connection changes. Recovery after
+another manager has taken over leaves that manager's cache untouched.
+Use **Apply again**, then reload Codex through its existing restart action if
+an older installation still shows foreign routing groups. An already open model
+menu may need to be closed and reopened. This refresh does not import or delete
+the other manager's saved routing groups.
+
 Recent Codex CLI versions can connect to a shared app-server daemon whose version
 differs from the CLI executable. Check `codex app-server daemon version` when
 `/model` shows only bundled official models even though the gateway publishes
