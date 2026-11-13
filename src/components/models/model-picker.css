@@ -11,8 +11,7 @@
   --mp-muted: #85858d;
   --mp-faint: #b9b9c2;
   --mp-control: #63636b;
-  --mp-accent: #4f46e5;
-  --mp-model-accent-soft: #eeedfd;
+  --mp-model-accent-soft: color-mix(in srgb, var(--mp-accent) 10%, transparent);
   --mp-model-bg: rgb(255 255 255 / 94%);
   --mp-model-seg-track: #e6e6eb;
   --mp-model-seg-thumb: var(--mp-card);
@@ -52,8 +51,7 @@
   --mp-muted: #8b8b94;
   --mp-faint: #56565f;
   --mp-control: #a1a1aa;
-  --mp-accent: #a5b4fc;
-  --mp-model-accent-soft: #2b2c47;
+  --mp-model-accent-soft: color-mix(in srgb, var(--mp-accent) 16%, transparent);
   --mp-model-bg: rgb(38 38 43 / 96%);
   --mp-model-seg-track: rgb(255 255 255 / 3.5%);
   --mp-model-seg-thumb: rgb(255 255 255 / 15%);

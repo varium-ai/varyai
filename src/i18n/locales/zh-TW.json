@@ -5080,7 +5080,7 @@
       "manualChanges": "請自行修改代理或環境變數；Vary 不會修改 shell 設定檔或系統代理設定。「知道了」會保留 Codex 連線；「中斷連線並還原」會開啟另一個確認對話框，用於還原 Vary 儲存的連線欄位。",
       "unavailable": "代理檢查暫時無法使用，目前未確認代理問題。請重新檢查。"
     },
-    "viaVary": "經 magpie",
+    "viaVary": "經 Vary AI",
     "nativeConfiguration": "原生設定",
     "sorting": {
       "role": "可排序工具",

@@ -5155,7 +5155,7 @@
       "manualChanges": "Apply proxy or environment changes yourself; Vary does not edit shell profiles or system proxy settings. Got it keeps Codex connected. Disconnect and restore opens a separate confirmation for restoring Vary’s saved connection fields.",
       "unavailable": "The proxy check is unavailable. No current proxy issue is confirmed. Try checking again."
     },
-    "viaVary": "via magpie",
+    "viaVary": "via Vary AI",
     "nativeConfiguration": "Native settings",
     "sorting": {
       "role": "Sortable tool",

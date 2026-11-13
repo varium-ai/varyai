@@ -5153,7 +5153,7 @@
       "manualChanges": "请自行修改代理或环境变量；Vary 不会修改 shell 配置文件或系统代理设置。“知道了”会保留 Codex 连接；“断开并恢复”会打开单独的确认框，用于恢复 Vary 保存的连接字段。",
       "unavailable": "代理检查暂不可用，目前未确认代理问题。请重新检查。"
     },
-    "viaVary": "经 magpie",
+    "viaVary": "经 Vary AI",
     "nativeConfiguration": "原生配置",
     "sorting": {
       "role": "可排序工具",
