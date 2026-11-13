@@ -1,14 +1,26 @@
 #![allow(non_snake_case)]
 
 use std::path::Path;
-use tauri::{AppHandle, Emitter};
+use tauri::{ipc::Channel, AppHandle};
+
+mod update_install;
 use tauri_plugin_updater::UpdaterExt;
 
-/// 应用更新下载进度（通过 `update-download-progress` 事件发给前端）。
+/// Progress for one update attempt, delivered through its own IPC channel.
 #[derive(Clone, serde::Serialize)]
-struct UpdateDownloadProgress {
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInstallProgress {
+    phase: &'static str,
     downloaded: u64,
     total: Option<u64>,
+}
+
+static UPDATE_INSTALL: update_install::UpdateInstallState =
+    update_install::UpdateInstallState::new();
+
+#[tauri::command]
+pub async fn cancel_update_download(request_id: String) -> Result<bool, String> {
+    UPDATE_INSTALL.cancel(&request_id)
 }
 
 fn updater_installation_kind(executable: &Path) -> &'static str {
@@ -212,7 +224,17 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
 /// `process.relaunch()`，旧进程可能已经处在 bundle 被替换后的不稳定窗口期。
 /// 这里把退出清理、安装和重启串在同一个后端流程中，避免依赖旧前端继续执行。
 #[tauri::command]
-pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> {
+pub async fn install_update_and_restart(
+    app: AppHandle,
+    request_id: String,
+    on_progress: Channel<UpdateInstallProgress>,
+) -> Result<&'static str, String> {
+    let (attempt, mut cancelled) = UPDATE_INSTALL.begin(&request_id)?;
+    let _ = on_progress.send(UpdateInstallProgress {
+        phase: "checking",
+        downloaded: 0,
+        total: None,
+    });
     let executable = std::env::current_exe().map_err(|e| {
         log::error!("应用更新失败 [path]: 无法确定当前可执行文件: {e}");
         format!("无法确定当前应用路径: {e}")
@@ -234,42 +256,65 @@ pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> 
         );
     }
 
-    let updater = app.updater_builder().build().map_err(|e| {
-        log::error!("应用更新失败 [initialize]: {e}");
-        format!("初始化更新器失败: {e}")
-    })?;
+    let updater = app
+        .updater_builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| {
+            log::error!("应用更新失败 [initialize]: {e}");
+            format!("初始化更新器失败: {e}")
+        })?;
 
-    let Some(update) = updater.check().await.map_err(|e| {
+    let Some(checked) = update_install::run_cancellable(&mut cancelled, updater.check()).await
+    else {
+        return Ok("cancelled");
+    };
+    let Some(mut update) = checked.map_err(|e| {
         log::error!("应用更新失败 [check]: {e}");
         format!("检查更新失败: {e}")
     })?
     else {
         log::info!("应用更新结束 [check]: 没有可用更新");
-        return Ok(false);
+        return Ok("up-to-date");
     };
+    // The check has a bounded timeout; slow package downloads remain cancellable.
+    update.timeout = None;
 
     log::info!("开始下载应用更新: {}", update.version);
-    let progress_handle = app.clone();
+    let _ = on_progress.send(UpdateInstallProgress {
+        phase: "downloading",
+        downloaded: 0,
+        total: None,
+    });
     let mut downloaded: u64 = 0;
-    let bytes = update
-        .download(
-            move |chunk_len, content_len| {
-                downloaded = downloaded.saturating_add(chunk_len as u64);
-                let _ = progress_handle.emit(
-                    "update-download-progress",
-                    UpdateDownloadProgress {
-                        downloaded,
-                        total: content_len,
-                    },
-                );
-            },
-            || {},
-        )
-        .await
-        .map_err(|e| {
-            log::error!("应用更新失败 [download]: {e}");
-            format!("下载更新失败: {e}")
-        })?;
+    let mut total = None;
+    let download = update.download(
+        |chunk_len, content_len| {
+            downloaded = downloaded.saturating_add(chunk_len as u64);
+            total = content_len;
+            let _ = on_progress.send(UpdateInstallProgress {
+                phase: "downloading",
+                downloaded,
+                total,
+            });
+        },
+        || {},
+    );
+    let Some(bytes) = update_install::run_cancellable(&mut cancelled, download).await else {
+        return Ok("cancelled");
+    };
+    let bytes = bytes.map_err(|_| {
+        log::error!("Application update download failed");
+        "UPDATE_DOWNLOAD_FAILED".to_string()
+    })?;
+    if !attempt.start_install()? {
+        return Ok("cancelled");
+    }
+    let _ = on_progress.send(UpdateInstallProgress {
+        phase: "installing",
+        downloaded,
+        total,
+    });
 
     log::info!("开始安装应用更新: {}", update.version);
 
@@ -290,7 +335,7 @@ pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> 
                 "Windows 更新安装失败: {e}。已执行退出前清理，代理或 Live 接管可能已暂停；请重启应用或重新开启代理后再试。"
             )
         })?;
-        Ok(true)
+        Ok("installed")
     }
 
     #[cfg(not(target_os = "windows"))]

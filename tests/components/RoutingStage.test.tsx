@@ -593,3 +593,147 @@ it("resolves a renamed supplier's icon by its public identity while retaining ex
     document.querySelector('.rt-seat-icon [title="Configured supplier"] svg'),
   ).not.toBeNull();
 });
+
+it.each(["responsive", "compact"] as const)(
+  "distinguishes same-named providers in the %s stage without a catalog",
+  (layout) => {
+    const candidates = ["supplier-a", "supplier-b"].map((providerId) => ({
+      providerId,
+      providerName: "Synthetic relay",
+      model: "shared-model",
+    }));
+    show({ layout, row: { ...row, candidates } });
+    const seats = document.querySelectorAll(".rt-accts li");
+    expect(seats).toHaveLength(2);
+    candidates.forEach((candidate, index) => {
+      const label = `Synthetic relay · ${candidate.providerId}`;
+      expect(seats[index].querySelector(".who")).toHaveTextContent(label);
+      expect(seats[index].getAttribute("title")).toContain(label);
+    });
+  },
+);
+
+it("uses the public supplier ID when a configured name is duplicated outside the request", () => {
+  show({
+    row: {
+      ...row,
+      candidates: [
+        {
+          providerId: "internal-execution-owner",
+          sourceProviderId: "supplier-a",
+          providerName: "Synthetic relay",
+          model: "model-a",
+          account: {
+            ...row.candidates[0].account!,
+            label: "Synthetic key label",
+          },
+        },
+      ],
+    },
+    upstreams: ["supplier-a", "supplier-b"].map((id, index) => ({
+      schemaVersion: 1,
+      id,
+      name: index ? " SYNTHETIC RELAY " : "Synthetic relay",
+      revision: 1,
+      hasApiKey: true,
+      source: {
+        kind: "api",
+        baseUrl: "https://fixture.invalid/v1",
+        apiFormat: "openai_chat",
+        mode: "picked",
+        models: [],
+        catalog: [],
+        groupsOnly: false,
+      },
+    })),
+  });
+  const seat = document.querySelector(".rt-accts li")!;
+  expect(seat.querySelector(".who")).toHaveTextContent(
+    "Synthetic relay · supplier-a",
+  );
+  expect(seat.getAttribute("title")).toContain("Synthetic relay · supplier-a");
+  expect(seat.outerHTML).not.toContain("internal-execution-owner");
+  expect(seat).not.toHaveTextContent("Synthetic key label");
+});
+
+it("does not treat one supplier's models, effort variants or execution identities as duplicate providers", () => {
+  show({
+    row: {
+      ...row,
+      candidates: ["model-a", "model-b", "model-b"].map((model, index) => ({
+        providerId: `execution-owner-${index}`,
+        sourceProviderId: "supplier-a",
+        providerName: "Synthetic relay",
+        model,
+        fixedEffort: index === 2 ? "high" : undefined,
+      })),
+    },
+    upstreams: [
+      {
+        schemaVersion: 1,
+        id: "supplier-a",
+        name: "Synthetic relay",
+        revision: 1,
+        hasApiKey: false,
+        source: { kind: "codex" },
+      },
+    ],
+  });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
+  for (const label of document.querySelectorAll(".rt-accts .who")) {
+    expect(label.textContent).toBe("Synthetic relay");
+  }
+});
+
+it("distinguishes same-named providers across concurrent requests", () => {
+  const older: RoutingTrace = {
+    ...row,
+    candidates: [
+      {
+        providerId: "supplier-a",
+        providerName: "Synthetic relay",
+        model: "model-a",
+      },
+    ],
+  };
+  const latest: RoutingTrace = {
+    ...older,
+    id: "newer-request",
+    candidates: [
+      {
+        providerId: "supplier-b",
+        providerName: "Synthetic relay",
+        model: "model-a",
+      },
+    ],
+  };
+  show({ row: latest, concurrent: [older, latest], animate: true });
+  const labels = [...document.querySelectorAll(".rt-accts .who")].map(
+    (label) => label.textContent,
+  );
+  expect(labels).toHaveLength(2);
+  expect(labels).toEqual(
+    expect.arrayContaining([
+      "Synthetic relay · supplier-a",
+      "Synthetic relay · supplier-b",
+    ]),
+  );
+});
+
+it("preserves configured account and key labels when their providers have duplicate names", () => {
+  show({
+    row: {
+      ...row,
+      candidates: row.candidates.map((candidate, index) => ({
+        ...candidate,
+        providerName: "Synthetic relay",
+        account: { ...candidate.account!, label: `Synthetic seat ${index}` },
+      })),
+    },
+  });
+  for (const [index, label] of [
+    ...document.querySelectorAll(".rt-accts .who"),
+  ].entries()) {
+    expect(label.textContent).toBe(`Synthetic seat ${index}`);
+  }
+});

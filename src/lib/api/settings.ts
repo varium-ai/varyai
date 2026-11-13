@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import type { UpdateInstallProgress, UpdateInstallResult } from "@/lib/updater";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   Settings,
   WebDavSyncSettings,
@@ -67,8 +68,20 @@ export const settingsApi = {
     return await invoke("restart_app");
   },
 
-  async installUpdateAndRestart(): Promise<boolean> {
-    return await invoke("install_update_and_restart");
+  async installUpdateAndRestart(
+    requestId: string,
+    onProgress: (progress: UpdateInstallProgress) => void,
+  ): Promise<UpdateInstallResult> {
+    const channel = new Channel<UpdateInstallProgress>();
+    channel.onmessage = onProgress;
+    return await invoke("install_update_and_restart", {
+      requestId,
+      onProgress: channel,
+    });
+  },
+
+  async cancelUpdateDownload(requestId: string): Promise<boolean> {
+    return await invoke("cancel_update_download", { requestId });
   },
 
   async checkUpdates(): Promise<void> {

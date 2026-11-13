@@ -6,7 +6,7 @@ import React, {
   useCallback,
   useRef,
 } from "react";
-import type { UpdateInfo } from "../lib/updater";
+import type { UpdateInfo, UpdateInstallProgress } from "../lib/updater";
 import { checkForUpdate } from "../lib/updater";
 import { extractErrorMessage } from "../utils/errorUtils";
 import { settingsApi } from "@/lib/api";
@@ -17,6 +17,10 @@ interface UpdateContextValue {
   updateInfo: UpdateInfo | null;
   isChecking: boolean;
   isInstalling: boolean;
+  installProgress: UpdateInstallProgress | null;
+  isDownloadStalled: boolean;
+  isCancelling: boolean;
+  cancelUpdate: () => Promise<void>;
   error: string | null;
 
   // 提示状态
@@ -39,6 +43,20 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
+  const [installProgress, setInstallProgress] =
+    useState<UpdateInstallProgress | null>(null);
+  const [isDownloadStalled, setIsDownloadStalled] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const attemptRef = useRef<string | null>(null);
+  const progressRef = useRef<UpdateInstallProgress | null>(null);
+  const cancellingRef = useRef(false);
+  useEffect(() => {
+    setIsDownloadStalled(false);
+    if (!isInstalling || installProgress?.phase !== "downloading") return;
+    const timer = setTimeout(() => setIsDownloadStalled(true), 15000);
+    return () => clearTimeout(timer);
+  }, [isInstalling, installProgress]);
+
   const [error, setError] = useState<string | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
 
@@ -112,9 +130,28 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     setIsInstalling(true);
     setError(null);
 
+    const requestId = crypto.randomUUID();
+    attemptRef.current = requestId;
+    const initial: UpdateInstallProgress = {
+      phase: "checking",
+      downloaded: 0,
+      total: null,
+    };
+    progressRef.current = initial;
+    setInstallProgress(initial);
+    setIsDownloadStalled(false);
     try {
-      const installed = await settingsApi.installUpdateAndRestart();
-      if (!installed) {
+      const result = await settingsApi.installUpdateAndRestart(
+        requestId,
+        (progress) => {
+          if (attemptRef.current !== requestId) return;
+          progressRef.current = progress;
+          setInstallProgress(progress);
+          setIsDownloadStalled(false);
+        },
+      );
+      if (result === "cancelled") return false;
+      if (result === "up-to-date") {
         setHasUpdate(false);
         setUpdateInfo(null);
         setIsDismissed(false);
@@ -126,14 +163,45 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       setIsDismissed(false);
       return true;
     } catch (err) {
-      console.error("安装更新失败:", err);
-      setError(extractErrorMessage(err) || "安装更新失败");
+      console.error("Application update installation failed");
+      setError("UPDATE_INSTALL_FAILED");
       throw err;
     } finally {
+      attemptRef.current = null;
+      progressRef.current = null;
+      cancellingRef.current = false;
+      setInstallProgress(null);
+      setIsDownloadStalled(false);
+      setIsCancelling(false);
       setIsInstalling(false);
       isInstallingRef.current = false;
     }
   }, [hasUpdate]);
+
+  const cancelUpdate = useCallback(async () => {
+    const requestId = attemptRef.current;
+    if (
+      !requestId ||
+      progressRef.current?.phase === "installing" ||
+      cancellingRef.current
+    )
+      return;
+    cancellingRef.current = true;
+    setIsCancelling(true);
+    try {
+      const accepted = await settingsApi.cancelUpdateDownload(requestId);
+      if (!accepted && attemptRef.current === requestId) {
+        cancellingRef.current = false;
+        setIsCancelling(false);
+      }
+    } catch (err) {
+      if (attemptRef.current === requestId) {
+        cancellingRef.current = false;
+        setIsCancelling(false);
+      }
+      throw err;
+    }
+  }, []);
 
   const dismissUpdate = useCallback(() => {
     setIsDismissed(true);
@@ -165,6 +233,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     updateInfo,
     isChecking,
     isInstalling,
+    installProgress,
+    isDownloadStalled,
+    isCancelling,
+    cancelUpdate,
     error,
     isDismissed,
     dismissUpdate,

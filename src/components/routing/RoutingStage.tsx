@@ -131,6 +131,19 @@ export function RoutingStage({
     });
   }
   const candidates = [...seats.values()];
+  const providersByName = new Map<string, Set<string>>();
+  for (const provider of [
+    ...upstreams.map(({ id, name }) => ({ id, name })),
+    ...candidates.map(({ candidate }) => ({
+      id: candidate.sourceProviderId ?? candidate.providerId,
+      name: accountName(candidate),
+    })),
+  ]) {
+    const name = provider.name.trim().toLocaleLowerCase();
+    const ids = providersByName.get(name) ?? new Set<string>();
+    ids.add(provider.id);
+    providersByName.set(name, ids);
+  }
   const candidateIndex = new Map(
     candidates.map(({ candidate }, index) => [candidateKey(candidate), index]),
   );
@@ -450,9 +463,15 @@ export function RoutingStage({
           const accountKind = singleKey
             ? "provider"
             : (candidate.account?.kind ?? "provider");
+          const providerName = accountName(candidate);
+          const duplicateName =
+            (providersByName.get(providerName.trim().toLocaleLowerCase())
+              ?.size ?? 0) > 1;
           const displayName =
             (accountKind !== "provider" && candidate.account?.label) ||
-            accountName(candidate);
+            (duplicateName
+              ? `${providerName} · ${candidate.sourceProviderId ?? candidate.providerId}`
+              : providerName);
           const plan =
             accountKind === "account" ? observation?.plan : undefined;
           const windows =

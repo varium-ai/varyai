@@ -16,6 +16,9 @@
   scrollbar-color: var(--mp-line) transparent;
 }
 .vary-update-dialog > .vary-dialog-footer {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
   padding-top: 14px;
   padding-bottom: 14px;
@@ -175,4 +178,34 @@
     flex-basis: 100%;
     margin-bottom: 2px;
   }
+}
+
+.vary-update-progress {
+  flex: 0 0 100%;
+  min-width: 0;
+}
+.vary-update-progress-label {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 6px;
+  color: var(--mp-fg-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.vary-update-progress-label span {
+  font-variant-numeric: tabular-nums;
+}
+.vary-update-progress progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  accent-color: var(--mp-accent);
+}
+.vary-update-progress-hint {
+  margin-top: 6px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  line-height: 1.6;
 }

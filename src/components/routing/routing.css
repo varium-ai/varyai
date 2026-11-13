@@ -1481,7 +1481,7 @@
   color: var(--rt-fg);
 }
 .vary-routing .rt-group-table-frame {
-  --rt-group-actions-width: 228px;
+  --rt-group-actions-width: 108px;
   position: relative;
   min-width: 0;
 }
@@ -1519,7 +1519,7 @@
 }
 .vary-routing .rt-group-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 0;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
@@ -1541,15 +1541,9 @@
   width: auto;
   border-radius: 6px 0 0 6px;
 }
-.vary-routing .rt-group-table th:nth-child(2) {
-  width: 110px;
-}
-.vary-routing .rt-group-table th:nth-child(3),
-.vary-routing .rt-group-table th:nth-child(4) {
-  width: 100px;
-}
-.vary-routing .rt-group-table th:nth-child(5) {
-  width: 140px;
+.vary-routing .rt-group-table th:nth-child(2),
+.vary-routing .rt-group-table th:nth-child(3) {
+  width: 80px;
 }
 .vary-routing .rt-group-table th:last-child {
   width: var(--rt-group-actions-width);
@@ -1761,16 +1755,6 @@
 .vary-routing .rt-diagnostics > :not(summary) {
   margin-top: 8px;
 }
-.vary-routing .rt-import-result {
-  display: grid;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--rt-fg-2);
-  overflow-wrap: anywhere;
-}
-.vary-routing .rt-import-result > p:first-child {
-  color: var(--mp-green);
-}
 .vary-routing .rt-editor-bar {
   align-items: center;
   padding-top: 12px;
@@ -1889,23 +1873,6 @@
 .vary-routing .rt-group-actions > button {
   flex-shrink: 0;
 }
-.vary-routing .rt-group-table .rt-group-actions > button[role="combobox"] {
-  width: auto;
-  min-width: 0;
-  max-width: 90px;
-  height: 24px;
-  gap: 4px;
-  padding: 0 6px;
-  border: 1px solid var(--rt-line);
-  border-radius: 6px;
-  color: var(--rt-fg-2);
-  font-size: 11px;
-}
-.vary-routing .rt-group-actions > button[role="combobox"] > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-toggle {
   width: 32px;
   height: 18px;
@@ -1921,8 +1888,7 @@
   transform: translateX(14px);
 }
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-edit,
-.vary-routing .rt-group-table .rt-group-actions > .rt-group-delete,
-.vary-routing .rt-group-table .rt-group-actions > .rt-group-more {
+.vary-routing .rt-group-table .rt-group-actions > .rt-group-delete {
   width: 26px;
   height: 26px;
   padding: 6px;
@@ -1934,9 +1900,7 @@
   cursor: not-allowed;
 }
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:hover,
-.vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:focus-visible,
-.vary-routing .rt-group-table .rt-group-actions > .rt-group-more:hover,
-.vary-routing .rt-group-table .rt-group-actions > .rt-group-more:focus-visible {
+.vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:focus-visible {
   background: color-mix(in srgb, var(--rt-accent) 10%, transparent);
   color: var(--rt-accent);
 }
@@ -2771,16 +2735,6 @@
   font-size: 11.5px;
   line-height: 1.45;
 }
-.vary-routing .rt-ghidden {
-  padding: 4px 8px;
-}
-.vary-routing .rt-gremoved {
-  color: var(--mp-muted);
-  font-size: 11.5px;
-}
-.vary-routing .rt-gremoved:hover {
-  color: var(--mp-fg-2);
-}
 
 .vary-routing .rt-empty-hint {
   display: block;
@@ -2801,25 +2755,4 @@
 .vary-routing .rt-group-table .rt-group-actions > button {
   color: var(--rt-accent);
   padding-inline: 0;
-}
-
-.rt-import-dialog textarea {
-  min-height: 168px;
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.rt-import-dialog .rt-import-result {
-  display: grid;
-  gap: 8px;
-  color: var(--mp-fg-2);
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.rt-import-dialog .rt-import-result > p:first-child {
-  color: var(--mp-fg);
-  font-size: 13px;
-  font-weight: 600;
 }

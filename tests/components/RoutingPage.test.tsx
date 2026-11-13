@@ -669,3 +669,53 @@ it("masks configured API supplier names even when there are no login accounts", 
   );
   expect(screen.getAllByText("Synthetic primary").length).toBeGreaterThan(0);
 });
+
+it("masks duplicate supplier labels and email-shaped IDs in the stage and tooltips", async () => {
+  const providers = ["supplier-a", "fixture.account@example.test"].map(
+    (id) => ({
+      schemaVersion: 1 as const,
+      id,
+      name: "Synthetic relay",
+      revision: 1,
+      hasApiKey: false,
+      source: { kind: "codex" as const },
+    }),
+  );
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue(providers);
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        candidates: providers.map((provider) => ({
+          providerId: provider.id,
+          providerName: provider.name,
+          model: "shared-model",
+        })),
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  await screen.findByText("Synthetic relay · supplier-a");
+  await waitFor(() => expect(routingUpstreamsApi.list).toHaveBeenCalled());
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.hideAccounts" }),
+  );
+  const seats = document.querySelector(".rt-accts")!;
+  await waitFor(() =>
+    expect(seats.innerHTML).not.toContain("Synthetic relay"),
+  );
+  expect(seats.querySelector(".account-mask")).not.toBeNull();
+  expect(seats.innerHTML).not.toContain("fixture.account@example.test");
+  expect(seats.textContent).toContain("supplier-a");
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.showAccounts" }),
+  );
+  expect(screen.getByText("Synthetic relay · supplier-a")).toBeInTheDocument();
+  expect(
+    screen.getByText("Synthetic relay · fixture.account@example.test"),
+  ).toBeInTheDocument();
+});

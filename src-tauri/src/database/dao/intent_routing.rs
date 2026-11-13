@@ -349,15 +349,40 @@ impl Database {
                 .filter(|provider| !skipped.contains(&provider.id)),
         )
         .into_iter()
-        .find(|group| group.id == id);
-        let mut keys = vec![format!("hidden:{id}")];
-        if let Some(group) = found {
-            keys.extend(
-                crate::services::intent_routing::legacy_ids(&group)
-                    .into_iter()
-                    .map(|id| format!("hidden:{id}")),
-            );
+        .find(|group| {
+            group.id == id
+                || crate::services::intent_routing::legacy_ids(group)
+                    .iter()
+                    .any(|legacy| legacy == id)
+        })
+        .ok_or("intentRouting.providerUnavailable")?;
+        let catalog = self.intent_routing_catalog_with_providers(None)?;
+        if !catalog
+            .removed_groups
+            .iter()
+            .any(|group| group.id == id || group.id == found.id)
+        {
+            return Err("intentRouting.invalid".into());
         }
+        if catalog.groups.iter().any(|group| group.id == found.id) {
+            return Err("intentRouting.conflict".into());
+        }
+        if catalog.groups.len() >= MAX_GROUPS || found.members.len() > 256 {
+            return Err("intentRouting.limit".into());
+        }
+        if !catalog.auto_create {
+            // Clearing a tombstone alone cannot restore a group while discovery is off.
+            // Saving also clears canonical and legacy tombstones in the same transaction.
+            self.save_intent_routing_group(found)?;
+            return Ok(());
+        }
+        let mut keys = vec![format!("hidden:{id}")];
+        keys.push(format!("hidden:{}", found.id));
+        keys.extend(
+            crate::services::intent_routing::legacy_ids(&found)
+                .into_iter()
+                .map(|id| format!("hidden:{id}")),
+        );
         let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
         let tx = conn.transaction().map_err(|_| FAILED)?;
         for key in keys {

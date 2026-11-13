@@ -2,6 +2,112 @@ use super::*;
 use crate::provider::Provider;
 use serde_json::json;
 
+fn automatic_group_fixture() -> Result<(Database, RoutingGroup), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    for id in ["first", "second"] {
+        let provider = Provider::with_id(
+            id.into(),
+            format!("Synthetic {id}"),
+            json!({"auth":{"OPENAI_API_KEY":"synthetic-only"},"apiFormat":"openai_responses","modelCatalog":{"models":[{"model":"vendor/Synthetic_Model"}]},"config":"model_provider='fixture'\n[model_providers.fixture]\nbase_url='https://fixture.invalid/v1'\nwire_api='responses'"}),
+            None,
+        );
+        db.save_provider("codex", &provider)?;
+        db.register_routing_fixture("codex", id)?;
+    }
+    db.set_intent_routing_auto_create(true)?;
+    let group = db.intent_routing_catalog()?.groups.remove(0);
+    db.delete_intent_routing_group(&group.id, 0)?;
+    Ok((db, group))
+}
+
+#[test]
+fn automatic_group_restore_returns_a_visible_group_with_discovery_off(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (db, group) = automatic_group_fixture()?;
+    db.set_intent_routing_auto_create(false)?;
+    db.restore_discovered_routing_group(&group.id)?;
+    let catalog = db.intent_routing_catalog()?;
+    assert!(!catalog.auto_create);
+    assert!(catalog.removed_groups.is_empty());
+    assert_eq!(catalog.groups.len(), 1);
+    let mut expected = group;
+    expected.auto_generated = false;
+    expected.revision = 1;
+    assert_eq!(catalog.groups[0], expected);
+    assert_eq!(db.list_intent_routing_groups()?, vec![expected]);
+    Ok(())
+}
+
+#[test]
+fn unavailable_automatic_group_restore_retains_its_removal_record(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for auto_create in [false, true] {
+        let (db, group) = automatic_group_fixture()?;
+        db.set_intent_routing_auto_create(auto_create)?;
+        let upstream = db.list_routing_upstreams()?.remove(0);
+        db.delete_routing_upstream(&upstream.id, upstream.revision)?;
+        assert_eq!(
+            db.restore_discovered_routing_group(&group.id),
+            Err("intentRouting.providerUnavailable".into())
+        );
+        let catalog = db.intent_routing_catalog()?;
+        assert!(catalog.groups.is_empty());
+        assert_eq!(catalog.removed_groups.len(), 1);
+        assert_eq!(catalog.removed_groups[0].id, group.id);
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_automatic_group_restore_uses_the_catalog_identity(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for auto_create in [false, true] {
+        let (db, group) = automatic_group_fixture()?;
+        let legacy_id = crate::services::intent_routing::legacy_ids(&group).remove(0);
+        assert_ne!(legacy_id, group.id);
+        db.extension_connection()
+            .lock()
+            .map_err(|_| "synthetic lock")?
+            .execute(
+                "UPDATE intent_routing_preferences SET key=?1, value='true' WHERE key=?2",
+                params![
+                    format!("hidden:{legacy_id}"),
+                    format!("hidden:{}", group.id)
+                ],
+            )?;
+        db.set_intent_routing_auto_create(auto_create)?;
+        let removed = db.intent_routing_catalog()?.removed_groups.remove(0);
+        db.restore_discovered_routing_group(&removed.id)?;
+        let catalog = db.intent_routing_catalog()?;
+        assert_eq!(catalog.auto_create, auto_create);
+        assert!(catalog.removed_groups.is_empty());
+        assert_eq!(catalog.groups.len(), 1);
+        assert_eq!(catalog.groups[0].id, group.id);
+    }
+    Ok(())
+}
+
+#[test]
+fn automatic_group_restore_at_capacity_retains_its_removal_record(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for auto_create in [false, true] {
+        let (db, group) = automatic_group_fixture()?;
+        db.set_intent_routing_auto_create(auto_create)?;
+        for index in 0..MAX_GROUPS {
+            let mut saved = group.clone();
+            saved.id = format!("manual-{index}");
+            saved.model_alias = None;
+            db.save_intent_routing_group(saved)?;
+        }
+        assert_eq!(
+            db.restore_discovered_routing_group(&group.id),
+            Err("intentRouting.limit".into())
+        );
+        assert_eq!(db.intent_routing_catalog()?.removed_groups.len(), 1);
+    }
+    Ok(())
+}
+
 #[test]
 fn saved_group_deletion_is_recoverable_without_reviving_stale_revisions(
 ) -> Result<(), Box<dyn std::error::Error>> {

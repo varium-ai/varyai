@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { flushSync } from "react-dom";
 import { createRoutingTableDragPreview } from "@/lib/routingTableDragPreview";
 
 // The reference implementation's transform-only row sorter, adapted for nested React slots (MIT).
@@ -14,11 +15,26 @@ export function useRoutingRowDrag(
 ) {
   const [drag, setDrag] = useState<{ from: string; to: string } | null>(null);
   const stop = useRef<(() => void) | null>(null);
+  const settling = useRef<Animation[]>([]);
   const suppress = useRef<string | null>(null);
-  useEffect(() => () => stop.current?.(), []);
+  function stopSettling() {
+    for (const animation of settling.current) {
+      animation.onfinish = null;
+      animation.cancel();
+    }
+    settling.current = [];
+  }
+  useEffect(
+    () => () => {
+      stop.current?.();
+      stopSettling();
+    },
+    [],
+  );
   function start(event: PointerEvent<HTMLElement>, id: string) {
     if (event.button !== 0 || event.isPrimary === false) return;
     stop.current?.();
+    stopSettling();
     suppress.current = null;
     const handle = event.currentTarget;
     const row = handle.closest(`[${attribute}]`);
@@ -54,6 +70,7 @@ export function useRoutingRowDrag(
     let to = from;
     let frame = 0;
     let lastTime = 0;
+    let previewTop = boxes[from].top;
     let tablePreview: ReturnType<typeof createRoutingTableDragPreview> = null;
     const styles = slots.map((slot) => slot.style.transform);
     const cells = rows.map((candidate) =>
@@ -89,6 +106,7 @@ export function useRoutingRowDrag(
         Math.min(hi, y - y0 + (scroll?.scrollTop ?? 0) - scroll0),
       );
       const mid = boxes[from].top + dy + height / 2;
+      previewTop = boxes[from].top + dy - ((scroll?.scrollTop ?? 0) - scroll0);
       to = from;
       if (dy > 0)
         while (
@@ -177,8 +195,52 @@ export function useRoutingRowDrag(
       paint(performance.now());
       if (ended) return;
       const target = rows[to].getAttribute(attribute) ?? id;
+      const dropping = moving && target !== id;
+      const animateDrop =
+        dropping &&
+        tablePreview &&
+        !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      // Read the visible positions before removing transforms, then commit the
+      // new order before measuring destinations. The floating row never returns
+      // to its old slot while persistence is pending.
+      const previousTops = animateDrop
+        ? cells.map((rowCells, index) =>
+            rowCells.map((cell) =>
+              index === from ? previewTop : cell.getBoundingClientRect().top,
+            ),
+          )
+        : [];
       cleanup();
-      if (moving && target !== id) onDrop(id, target);
+      if (!dropping) return;
+      flushSync(() => onDrop(id, target));
+      if (!animateDrop) return;
+      const destinations = cells.map((rowCells) =>
+        rowCells.map((cell) => cell.getBoundingClientRect().top),
+      );
+      cells.forEach((rowCells, index) =>
+        rowCells.forEach((cell, cellIndex) => {
+          const delta =
+            previousTops[index][cellIndex] - destinations[index][cellIndex];
+          if (
+            !cell.isConnected ||
+            typeof cell.animate !== "function" ||
+            Math.abs(delta) < 0.5
+          )
+            return;
+          const transform = cellStyles[index][cellIndex] || "none";
+          const animation = cell.animate(
+            [{ transform: `translateY(${delta}px)` }, { transform }],
+            { duration: 180, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+          );
+          settling.current.push(animation);
+          animation.onfinish = () => {
+            animation.cancel();
+            settling.current = settling.current.filter(
+              (entry) => entry !== animation,
+            );
+          };
+        }),
+      );
     }
     function cancel(next?: Event) {
       if (next && "pointerId" in next && next.pointerId !== pointer) return;

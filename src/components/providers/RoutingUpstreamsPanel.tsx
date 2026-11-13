@@ -36,6 +36,7 @@ import {
   type ProviderErrorHandler,
 } from "./providerErrorToast";
 import { ProviderListQuota } from "./ProviderListQuota";
+import { ProviderListSkeleton } from "./ProviderLoading";
 import { subscriptionProviders } from "@/config/subscriptionProviders";
 import { randomBuiltinIcon } from "@/icons/builtin";
 
@@ -922,7 +923,7 @@ export function RoutingUpstreamsPanel({
                 </span>
               )}
             </span>
-            {!editorOpen && <ProviderListQuota record={record} />}
+            <ProviderListQuota record={record} />
             {record.source.kind === "api" && (
               <span className="pv-sub">
                 {`${endpointHost(record) || t("providerFlow.custom")} · ${t("modelProviders.modelCount", { count: searchableModels(record).length })}`}
@@ -1106,7 +1107,7 @@ export function RoutingUpstreamsPanel({
       )}
       {!adding &&
         (records.isPending ? (
-          <p role="status">{t("common.loading")}</p>
+          <ProviderListSkeleton />
         ) : (
           <>
             {records.data?.length === 0 && (

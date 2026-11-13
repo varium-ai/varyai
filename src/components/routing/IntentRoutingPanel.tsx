@@ -2,18 +2,12 @@ import {
   Search,
   Info,
   ChevronDown,
-  Download,
   Settings,
   Pencil,
   Trash2,
-  Ellipsis,
 } from "lucide-react";
 import {
   blankRoutingGroup,
-  importRoutingGroup,
-  importSharedRoutingGroup,
-  shareRoutingGroup,
-  type RoutingImportResult,
   routingTemplates,
   routingLevels,
   validRoutingPattern,
@@ -35,15 +29,8 @@ import { RoutingEmptyIllustration } from "@/components/routing/RoutingEmptyIllus
 import { RoutingRulesEditor } from "@/components/routing/RoutingRulesEditor";
 import { RoutingSegments } from "@/components/routing/RoutingSegments";
 import { RoutingExecutionSettings } from "@/components/routing/RoutingExecutionSettings";
-import { copyText } from "@/lib/clipboard";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
 import { globalProviderPresets } from "@/config/globalProviderPresets";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AppDialog } from "@/components/ui/app-dialog";
 import {
@@ -75,7 +62,6 @@ import {
   type RoutingCatalog,
   type RoutingGroup,
   type RoutingPlanPreview,
-  type RoutingProviderOption,
 } from "@/lib/api/intentRouting";
 
 import "./routing.css";
@@ -103,6 +89,16 @@ const routingOptions = [
 ] as const;
 const sinkable = (routing: RoutingGroup["routing"]) =>
   !["round_robin", "weighted", "manual"].includes(routing ?? "ordered");
+
+function orderGroups(groups: RoutingGroup[], order: string[]) {
+  const positions = new Map(order.map((id, index) => [id, index]));
+  return groups
+    .slice()
+    .sort(
+      (a, b) =>
+        (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity),
+    );
+}
 
 export function IntentRoutingPanel({
   onEditingChange,
@@ -148,11 +144,6 @@ export function IntentRoutingPanel({
   );
   const [filter, setFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState("");
-  const [importError, setImportError] = useState(false);
-  const [imported, setImported] = useState<RoutingImportResult | null>(null);
-  const [groupMenu, setGroupMenu] = useState<string | null>(null);
   const groupDrag = useRoutingRowDrag("data-routing-group", (from, to) => {
     void arrangeGroup(from, to);
   });
@@ -194,9 +185,6 @@ export function IntentRoutingPanel({
       : (groups.data?.matchedMembers?.[draft.id] ?? [])
     : [];
   const [nextDraft, setNextDraft] = useState<RoutingGroup | null>(null);
-  const importFormId = useId();
-  const importInput = useRef<HTMLTextAreaElement>(null);
-  const importButton = useRef<HTMLButtonElement>(null);
   const editorId = useId();
   const editorRef = useRoutingDialogHeight();
   const initialDraft = useRef<RoutingGroup | null>(null);
@@ -243,6 +231,7 @@ export function IntentRoutingPanel({
   const activeGroups = useRef(new Set<string>());
   const catalogMutations = useRef<Promise<void> | null>(null);
   const [reordering, setReordering] = useState(false);
+  const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
   const reorderRequest = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const reloadRequest = useRef<object | null>(null);
@@ -286,11 +275,7 @@ export function IntentRoutingPanel({
       }
     }
   }, [createRequest, groups.data, providers.data, pending, deleting]);
-  useWorkspaceEditing(
-    draftDirty || (importOpen && !!importText.trim()),
-    pending,
-    onEditingChange,
-  );
+  useWorkspaceEditing(draftDirty, pending, onEditingChange);
   const [error, setError] = useState<string | null>(null);
   const [classification, setClassification] = useState('{"intentId":null}');
   const [preview, setPreview] = useState<RoutingPlanPreview | null>(null);
@@ -396,8 +381,6 @@ export function IntentRoutingPanel({
   }
   function openEditor(value: RoutingGroup) {
     initialDraft.current = structuredClone(value);
-    setImportOpen(false);
-    setImportText("");
     setPickingClassifier(false);
     setPatternInput("");
     edit(structuredClone(value));
@@ -410,7 +393,7 @@ export function IntentRoutingPanel({
     );
   }
   function requestEditor(value: RoutingGroup) {
-    if (draftDirty || (importOpen && !!importText.trim())) {
+    if (draftDirty) {
       setNextDraft(value);
     } else {
       openEditor(value);
@@ -480,54 +463,6 @@ export function IntentRoutingPanel({
       setPending(false);
     }
   }
-  async function shareGroup(group: RoutingGroup) {
-    await groupOperation(group.id, async () => {
-      await copyText(shareRoutingGroup(group));
-      toast.success(t("routingPage.copied"));
-    });
-  }
-  function closeImport() {
-    if (pending) return;
-    setImportOpen(false);
-    setImportText("");
-    setImported(null);
-    setImportError(false);
-    setError(null);
-  }
-  async function importGroup() {
-    if (pending || !providers.data) return;
-    setImportError(false);
-    setError(null);
-    let result: RoutingImportResult;
-    try {
-      result = importSharedRoutingGroup(importText, providers.data);
-    } catch {
-      setImportError(true);
-      return;
-    }
-    setPending(true);
-    try {
-      await mutateCatalog(async () => {
-        const names = new Set(
-          currentGroups().map((group) => group.name.toLocaleLowerCase()),
-        );
-        const base = result.group.name;
-        let number = 1;
-        while (names.has(result.group.name.toLocaleLowerCase())) {
-          const suffix = ` ${++number}`;
-          result.group.name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
-        }
-        result.group = await saveGroup(result.group);
-        setImported(result);
-        setImportText("");
-        await refreshRoutingStatus();
-      });
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setPending(false);
-    }
-  }
   async function moveGroup(group: RoutingGroup, offset: number) {
     if (pending || draft || reorderRequest.current) return;
     const all = currentGroups();
@@ -541,6 +476,13 @@ export function IntentRoutingPanel({
   }
   async function arrangeGroup(id: string, target: string) {
     if (pending || draft || reorderRequest.current) return;
+    const previewOrder = currentGroups().map((entry) => entry.id);
+    const source = previewOrder.indexOf(id);
+    const destination = previewOrder.indexOf(target);
+    if (source < 0 || destination < 0 || source === destination) return;
+    previewOrder.splice(destination, 0, ...previewOrder.splice(source, 1));
+    // Keep the dropped order visible through queued writes and catalog refetches.
+    setOptimisticOrder(previewOrder);
     reorderRequest.current = true;
     setReordering(true);
     setError(null);
@@ -552,93 +494,23 @@ export function IntentRoutingPanel({
         if (from < 0 || to < 0 || from === to) return;
         order.splice(to, 0, ...order.splice(from, 1));
         await intentRoutingApi.arrange(order);
+        client.setQueryData<RoutingCatalog>(
+          ["intent-routing-groups"],
+          (catalog) =>
+            catalog
+              ? { ...catalog, groups: orderGroups(catalog.groups, order) }
+              : catalog,
+        );
+        toast.success(t("routingPage.orderSaved"));
         await refreshRoutingStatus();
       });
     } catch (cause) {
       report(cause);
     } finally {
+      setOptimisticOrder(null);
       reorderRequest.current = false;
       setReordering(false);
     }
-  }
-  async function duplicateGroup(group: RoutingGroup) {
-    const availableProviders = providers.data;
-    if (draft || !availableProviders) return;
-    await groupOperation(group.id, () =>
-      mutateCatalog(async () => {
-        try {
-          // A local copy retains unavailable seats and machine-local rules.
-          const duplicate = importRoutingGroup(
-            JSON.stringify(group),
-            [
-              ...availableProviders,
-              ...[
-                ...new Set(
-                  [
-                    ...group.members,
-                    ...(group.classifierTarget ? [group.classifierTarget] : []),
-                  ].map((member) => member.providerId),
-                ),
-              ]
-                .filter(
-                  (id) =>
-                    !availableProviders.some((provider) => provider.id === id),
-                )
-                .map(
-                  (id): RoutingProviderOption => ({
-                    id,
-                    name: id,
-                    taskEligible: false,
-                    classifierEligible: false,
-                  }),
-                ),
-            ].map((provider) => ({
-              ...provider,
-              models: [
-                ...(provider.models ?? []),
-                ...[
-                  ...group.members,
-                  ...(group.classifierTarget ? [group.classifierTarget] : []),
-                ]
-                  .filter((member) => member.providerId === provider.id)
-                  .map((member) => ({
-                    id: member.modelId,
-                    name: member.modelId,
-                  })),
-              ],
-            })),
-          );
-          duplicate.enabled = true;
-          duplicate.name = t("routingPage.copyName", {
-            name: group.name,
-          }).slice(0, 80);
-          const base = duplicate.name;
-          const names = new Set(
-            currentGroups().map((entry) => entry.name.toLocaleLowerCase()),
-          );
-          let number = 1;
-          while (names.has(duplicate.name.toLocaleLowerCase())) {
-            const suffix = ` ${++number}`;
-            duplicate.name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
-          }
-          const saved = await saveGroup(duplicate);
-          const order = currentGroups()
-            .map((entry) => entry.id)
-            .filter((id) => id !== saved.id);
-          const sourceIndex = order.indexOf(group.id);
-          order.splice(
-            sourceIndex < 0 ? order.length : sourceIndex + 1,
-            0,
-            saved.id,
-          );
-          await intentRoutingApi.arrange(order);
-          await refreshRoutingStatus();
-        } catch (cause) {
-          report(cause);
-          await refreshRoutingStatus();
-        }
-      }),
-    );
   }
   async function publishGroup(group: RoutingGroup, enabled: boolean) {
     await groupOperation(group.id, async () => {
@@ -711,53 +583,6 @@ export function IntentRoutingPanel({
     );
   }
 
-  async function changeRouting(
-    group: RoutingGroup,
-    routing: NonNullable<RoutingGroup["routing"]>,
-  ) {
-    await groupOperation(group.id, async () => {
-      await saveGroup({
-        ...group,
-        routing,
-        sink: !!group.sink && sinkable(routing),
-        ...(routing === "manual"
-          ? { manualMemberId: group.manualMemberId ?? group.defaultMemberId }
-          : {}),
-      });
-      await refreshRoutingStatus();
-    });
-  }
-  function routingSelect(
-    group: RoutingGroup,
-    update: (routing: NonNullable<RoutingGroup["routing"]>) => void,
-  ) {
-    return (
-      <Select
-        value={group.routing ?? "ordered"}
-        disabled={
-          pending || isGroupPending(group.id) || (!!draft && group !== draft)
-        }
-        onValueChange={(value) =>
-          update(value as NonNullable<RoutingGroup["routing"]>)
-        }
-      >
-        <SelectTrigger
-          className="h-8 w-auto min-w-24 gap-2 rounded-full text-xs"
-          aria-label={t("intentRouting.routingStrategy")}
-          title={`${t("intentRouting.routingStrategy")}: ${t(`routingPage.strategy.${group.routing ?? "ordered"}`)}`}
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {routingOptions.map(([value, key]) => (
-            <SelectItem key={value} value={value}>
-              {t(`intentRouting.${key}`)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    );
-  }
   function manualSelect(group: RoutingGroup, update: (id: string) => void) {
     return (
       <Select
@@ -808,14 +633,6 @@ export function IntentRoutingPanel({
       await saveGroup({ ...group, manualMemberId });
       await refreshRoutingStatus();
     });
-  }
-  async function restoreGroup(id: string) {
-    await groupOperation(id, () =>
-      mutateCatalog(async () => {
-        await intentRoutingApi.restore(id);
-        await refreshRoutingStatus();
-      }),
-    );
   }
   async function reload() {
     if (reloadRequest.current) return;
@@ -916,7 +733,10 @@ export function IntentRoutingPanel({
       .join(" · ");
   }
   const query = filter.trim().toLocaleLowerCase();
-  const visibleGroups = groups.data?.groups.filter(
+  const orderedGroups = optimisticOrder
+    ? orderGroups(groups.data?.groups ?? [], optimisticOrder)
+    : groups.data?.groups;
+  const visibleGroups = orderedGroups?.filter(
     (group) =>
       group.id === draft?.id ||
       ((statusFilter === "all" ||
@@ -1830,25 +1650,6 @@ export function IntentRoutingPanel({
           <Button
             variant="ghost"
             size="sm"
-            ref={importButton}
-            aria-label={t("routingPage.import")}
-            title={t("routingPage.import")}
-            aria-haspopup="dialog"
-            aria-expanded={importOpen}
-            disabled={pending || !!draft || !!deleting || !!selectedGroups}
-            onClick={() => {
-              setImportOpen(true);
-              setImported(null);
-              setError(null);
-              setImportError(false);
-            }}
-          >
-            <Download size={12} strokeWidth={1.75} aria-hidden="true" />
-            <span>{t("routingPage.import")}</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
             aria-label={t("routingPage.refresh")}
             title={t("routingPage.refresh")}
             aria-busy={refreshing}
@@ -1870,7 +1671,6 @@ export function IntentRoutingPanel({
               pending ||
               !!draft ||
               !!deleting ||
-              importOpen ||
               (!selectedGroups &&
                 (groups.isPending ||
                   groups.isError ||
@@ -1999,21 +1799,19 @@ export function IntentRoutingPanel({
           {t("intentRouting.autoOmitted", { count: groups.data.omittedGroups })}
         </p>
       )}
-      {!draft &&
-        !importOpen &&
-        (error || groups.isError || providers.isError) && (
-          <div role="alert" className="text-sm text-destructive">
-            {t(error || "intentRouting.failed")}{" "}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pending}
-              onClick={() => void reload()}
-            >
-              {t("intentRouting.reload")}
-            </Button>
-          </div>
-        )}
+      {!draft && (error || groups.isError || providers.isError) && (
+        <div role="alert" className="text-sm text-destructive">
+          {t(error || "intentRouting.failed")}{" "}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => void reload()}
+          >
+            {t("intentRouting.reload")}
+          </Button>
+        </div>
+      )}
       {groups.isPending && <p role="status">{t("common.loading")}</p>}
       {groups.data && (
         <div
@@ -2034,18 +1832,13 @@ export function IntentRoutingPanel({
             >
               <thead>
                 <tr>
-                  {[
-                    "groupName",
-                    "upstreamCount",
-                    "requestCount",
-                    "switchCount",
-                    "agentErrorCount",
-                    "actions",
-                  ].map((key) => (
-                    <th key={key} scope="col">
-                      {t(`routingPage.${key}`)}
-                    </th>
-                  ))}
+                  {["groupName", "modelCount", "requestCount", "actions"].map(
+                    (key) => (
+                      <th key={key} scope="col">
+                        {t(`routingPage.${key}`)}
+                      </th>
+                    ),
+                  )}
                 </tr>
               </thead>
               <tbody
@@ -2135,7 +1928,6 @@ export function IntentRoutingPanel({
                             title={t("routingPage.dragHint")}
                             onPointerDown={(event) => {
                               event.preventDefault();
-                              setGroupMenu(null);
                               groupDrag.start(event, group.id);
                             }}
                             onClick={(event) => {
@@ -2265,35 +2057,22 @@ export function IntentRoutingPanel({
                         </div>
                       </td>
                       <td className="rt-group-number">
-                        {
-                          new Set(
-                            [
-                              ...group.members,
-                              ...(groups.data?.matchedMembers?.[group.id] ??
-                                []),
-                            ].map((member) => member.providerId),
-                          ).size
-                        }
+                        {group.members.length +
+                          (groups.data?.matchedMembers?.[group.id]?.length ??
+                            0)}
                       </td>
-                      {["requests", "switches", "errors"].map((metric) => (
-                        <td
-                          key={metric}
-                          className="rt-group-number rt-group-no-stat"
-                          title={t("routingPage.groupStatsUnavailable")}
+                      <td
+                        className="rt-group-number rt-group-no-stat"
+                        title={t("routingPage.groupStatsUnavailable")}
+                      >
+                        <span
+                          aria-label={t("routingPage.groupStatsUnavailable")}
                         >
-                          <span
-                            aria-label={t("routingPage.groupStatsUnavailable")}
-                          >
-                            —
-                          </span>
-                        </td>
-                      ))}
+                          —
+                        </span>
+                      </td>
                       <td>
                         <div className="rt-group-actions">
-                          {routingSelect(
-                            group,
-                            (routing) => void changeRouting(group, routing),
-                          )}
                           <Switch
                             className="rt-group-toggle"
                             aria-label={`${t("intentRouting.publishGateway")} ${group.name}`}
@@ -2356,49 +2135,6 @@ export function IntentRoutingPanel({
                           >
                             <Trash2 size={13} aria-hidden="true" />
                           </Button>
-                          <DropdownMenu
-                            open={groupMenu === group.id}
-                            onOpenChange={(open) =>
-                              setGroupMenu(open ? group.id : null)
-                            }
-                          >
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="rt-group-more"
-                                aria-label={`${t("routingPage.more")} ${group.name}`}
-                                title={t("routingPage.more")}
-                                disabled={
-                                  pending ||
-                                  isGroupPending(group.id) ||
-                                  !!draft ||
-                                  !!deleting ||
-                                  !!selectedGroups
-                                }
-                              >
-                                <Ellipsis size={13} aria-hidden="true" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent
-                              className="mp-row-menu"
-                              align="end"
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              <DropdownMenuItem
-                                disabled={isGroupPending(group.id)}
-                                onSelect={() => void duplicateGroup(group)}
-                              >
-                                {t("routingPage.duplicate")}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                disabled={isGroupPending(group.id)}
-                                onSelect={() => void shareGroup(group)}
-                              >
-                                {t("routingPage.copyShare")}
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>
@@ -2406,7 +2142,7 @@ export function IntentRoutingPanel({
                 })}
                 {!draft && visibleGroups?.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="rt-group-empty">
+                    <td colSpan={4} className="rt-group-empty">
                       <div className="rt-group-empty-content">
                         {!groups.data.groups.length && (
                           <RoutingEmptyIllustration />
@@ -2427,34 +2163,6 @@ export function IntentRoutingPanel({
           </div>
         </div>
       )}
-      {!!groups.data?.removedGroups?.length && (
-        <div className="rt-ghidden">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="rt-gremoved"
-                disabled={pending || !!draft || !!deleting}
-              >
-                {t("intentRouting.removedGroups", {
-                  count: groups.data.removedGroups.length,
-                })}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="mp-row-menu">
-              {groups.data.removedGroups.map((group) => (
-                <DropdownMenuItem
-                  key={group.id}
-                  disabled={isGroupPending(group.id)}
-                  onSelect={() => void restoreGroup(group.id)}
-                >
-                  {group.name} · {t("intentRouting.restoreGroup")}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
       <ConfirmDialog
         isOpen={!!deleting}
         title={t("common.delete")}
@@ -2464,131 +2172,6 @@ export function IntentRoutingPanel({
         onConfirm={() => void remove()}
         onCancel={() => setDeleting(null)}
       />
-
-      <AppDialog
-        open={importOpen}
-        onOpenChange={(open) => {
-          if (!open) closeImport();
-        }}
-        title={t(
-          imported ? "routingPage.importComplete" : "routingPage.import",
-        )}
-        description={imported ? undefined : t("routingPage.importHint")}
-        size="md"
-        className="rt-import-dialog"
-        pending={pending}
-        initialFocusRef={importInput}
-        onCloseAutoFocus={(event) => {
-          if (importButton.current?.isConnected) {
-            event.preventDefault();
-            importButton.current.focus({ preventScroll: true });
-          }
-        }}
-        footer={
-          imported ? (
-            <Button
-              type="button"
-              size="sm"
-              disabled={pending}
-              onClick={closeImport}
-            >
-              {t("common.done")}
-            </Button>
-          ) : (
-            <>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={pending}
-                onClick={closeImport}
-              >
-                {t("common.cancel")}
-              </Button>
-              <Button
-                type="submit"
-                form={importFormId}
-                size="sm"
-                disabled={!importText.trim() || pending || !providers.data}
-              >
-                {t("routingPage.reviewImport")}
-              </Button>
-            </>
-          )
-        }
-      >
-        {imported ? (
-          <div
-            role="status"
-            aria-label={t("routingPage.importComplete")}
-            className="rt-import-result"
-          >
-            <p>{t("routingPage.imported", { name: imported.group.name })}</p>
-            {!!imported.missing.length && (
-              <p>
-                {t("routingPage.importMissing", {
-                  models: imported.missing.join(", "),
-                })}
-              </p>
-            )}
-            {!!imported.instead.length && (
-              <p>
-                {t("routingPage.importInstead", {
-                  models: imported.instead.join(", "),
-                })}
-              </p>
-            )}
-            {!!imported.omittedRules && (
-              <p>
-                {t("routingPage.importRules", { count: imported.omittedRules })}
-              </p>
-            )}
-          </div>
-        ) : (
-          <form
-            id={importFormId}
-            className="space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void importGroup();
-            }}
-          >
-            <label className="block space-y-2 text-xs">
-              <span>{t("routingPage.importLabel")}</span>
-              <Textarea
-                ref={importInput}
-                disabled={pending}
-                value={importText}
-                maxLength={65536}
-                rows={7}
-                onChange={(event) => {
-                  setImportText(event.target.value);
-                  setImportError(false);
-                }}
-              />
-            </label>
-            {importError && (
-              <p role="alert" className="text-xs text-destructive">
-                {t("routingPage.invalidImport")}
-              </p>
-            )}
-            {(error || providers.isError) && (
-              <div role="alert" className="text-xs text-destructive">
-                <p>{t(error || "intentRouting.failed")}</p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={pending}
-                  onClick={() => void reload()}
-                >
-                  {t("intentRouting.reload")}
-                </Button>
-              </div>
-            )}
-          </form>
-        )}
-      </AppDialog>
 
       <AppDialog
         open={!!draft}

@@ -49,6 +49,7 @@ function CodexListQuota({ record }: { record: RoutingUpstream }) {
         label={`${t("subscriptionProvider.allowance")} ${record.name}`}
         items={[]}
         fetching={observation.isFetching}
+        loading={observation.isFetching}
         status={`codexProvider.${record.reauthRequired === true ? "quotaLoginRequired" : observation.isFetching ? "quotaLoading" : observation.isError ? "quotaFailed" : "quotaUnknown"}`}
       />
     );
@@ -93,6 +94,7 @@ function CodexListQuota({ record }: { record: RoutingUpstream }) {
             <SubscriptionQuotaSummary
               label={`${t("subscriptionProvider.allowance")} ${record.name}`}
               fetching={query.isFetching}
+              loading={!query.data && query.isFetching}
               items={tiers.map((tier) => ({
                 tier,
                 label: t(

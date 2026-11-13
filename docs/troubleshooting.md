@@ -2,6 +2,12 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Application update download appears stuck
+
+The update dialog shows preparation, download and installation separately on macOS and Windows. During download it shows received bytes, the total size and percentage when the server supplies a size, or an indeterminate progress bar when the size is unknown. Progress remains in the footer while release notes scroll. After 15 seconds without new data, a message explains that the network may be slow; receiving more data clears that message.
+
+Use **Cancel update** during preparation or download to stop the network request. The dialog remains open with the available version so you can retry or choose **Later**. Cancellation does not install the partially downloaded package, restart the app or stop forwarding. If installation wins the transition race, cancellation is refused and the dialog shows the installation stage. Once installation starts, keep the app open; dismissal and cancellation are locked until the existing platform installation/restart flow completes. Portable builds continue to use manual downloads.
+
 ## Application update installation fails on macOS
 
 The circular update button appears beside Settings in the sidebar when an update

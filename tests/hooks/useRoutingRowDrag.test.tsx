@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
+import { useState } from "react";
 
 function Fixture({ drop }: { drop: (from: string, to: string) => void }) {
   const drag = useRoutingRowDrag("data-routing-group", drop);
@@ -26,8 +27,23 @@ function Fixture({ drop }: { drop: (from: string, to: string) => void }) {
     </div>
   );
 }
-function TableFixture({ drop }: { drop: (from: string, to: string) => void }) {
-  const drag = useRoutingRowDrag("data-routing-group", drop);
+function TableFixture({
+  drop,
+  reorder = false,
+}: {
+  drop: (from: string, to: string) => void;
+  reorder?: boolean;
+}) {
+  const [ids, setIds] = useState(["a", "b", "c"]);
+  const drag = useRoutingRowDrag("data-routing-group", (from, to) => {
+    if (reorder)
+      setIds((previous) => {
+        const next = [...previous];
+        next.splice(next.indexOf(to), 0, ...next.splice(next.indexOf(from), 1));
+        return next;
+      });
+    drop(from, to);
+  });
   return (
     <div className="vary-routing" style={{ width: 700 }}>
       <div
@@ -37,7 +53,7 @@ function TableFixture({ drop }: { drop: (from: string, to: string) => void }) {
       >
         <table className="rt-group-table">
           <tbody data-routing-list>
-            {["a", "b", "c"].map((id) => (
+            {ids.map((id) => (
               <tr key={id} data-routing-group={id} data-testid={id}>
                 <td>
                   <button
@@ -276,6 +292,71 @@ it("lifts a complete inert table preview without moving live table rows or chang
   for (const cell of Array.from(viewport.querySelectorAll<HTMLElement>("td")))
     expect(cell.style.transform).toBe("");
 });
+
+it.each([false, true])(
+  "hands the preview to the committed row without snapping on drop (reduced motion: %s)",
+  (reduced) => {
+    const drop = vi.fn();
+    const view = render(<TableFixture drop={drop} reorder />);
+    const viewport = measureTable();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: reduced })),
+    );
+    const animations: Array<{
+      cancel: ReturnType<typeof vi.fn>;
+      onfinish: (() => void) | null;
+    }> = [];
+    const animate = vi.fn(() => {
+      const animation = { cancel: vi.fn(), onfinish: null };
+      animations.push(animation);
+      return animation;
+    });
+    const row = screen.getByTestId("a");
+    for (const cell of Array.from(
+      viewport.querySelectorAll<HTMLElement>("td"),
+    )) {
+      Object.defineProperty(cell, "animate", {
+        configurable: true,
+        value: animate,
+      });
+      vi.mocked(cell.getBoundingClientRect).mockImplementation(
+        () =>
+          ({
+            top:
+              Array.from(cell.parentElement!.parentElement!.children).indexOf(
+                cell.parentElement!,
+              ) *
+                60 +
+              (Number(
+                /translateY\(([-\d.]+)px\)/.exec(cell.style.transform)?.[1],
+              ) || 0),
+          }) as DOMRect,
+      );
+    }
+    const handle = screen.getByRole("button", { name: "a" });
+    pointer(handle, "pointerdown", 30, 10);
+    pointer(handle, "pointermove", 30, 90);
+    paint();
+    pointer(handle, "pointerup", 30, 90);
+    expect(
+      Array.from(viewport.querySelectorAll("tr")).map(
+        (entry) => entry.dataset.testid,
+      ),
+    ).toEqual(["b", "a", "c"]);
+    expect(document.querySelector("[data-routing-drag-preview]")).toBeNull();
+    expect((row.children[0] as HTMLElement).style.visibility).toBe("");
+    if (reduced) expect(animate).not.toHaveBeenCalled();
+    else
+      expect(animate).toHaveBeenCalledWith(
+        [{ transform: "translateY(20px)" }, { transform: "none" }],
+        expect.objectContaining({ duration: 180 }),
+      );
+    view.unmount();
+    for (const animation of animations)
+      expect(animation.cancel).toHaveBeenCalled();
+  },
+);
 
 it.each(["Escape", "pointercancel", "resize", "unmount"])(
   "removes the table preview and restores original cells on %s",
