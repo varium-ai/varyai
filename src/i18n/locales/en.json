@@ -5550,6 +5550,7 @@
     "next": "Next",
     "sunk": "Rate limited earlier · at the back",
     "arrangeGroup": "Arrange group",
+    "orderSaved": "Group order saved",
     "duplicate": "Duplicate",
     "copyShare": "Copy to share",
     "copyName": "{{name}} copy",

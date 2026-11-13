@@ -5473,6 +5473,7 @@
     "next": "下一頁",
     "sunk": "先前遇到限流 · 已移到末尾",
     "arrangeGroup": "整理路由群組",
+    "orderSaved": "排序已儲存",
     "duplicate": "建立副本",
     "copyShare": "複製以分享",
     "copyName": "{{name}} 副本",

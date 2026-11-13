@@ -104,6 +104,16 @@ const routingOptions = [
 const sinkable = (routing: RoutingGroup["routing"]) =>
   !["round_robin", "weighted", "manual"].includes(routing ?? "ordered");
 
+function orderGroups(groups: RoutingGroup[], order: string[]) {
+  const positions = new Map(order.map((id, index) => [id, index]));
+  return groups
+    .slice()
+    .sort(
+      (a, b) =>
+        (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity),
+    );
+}
+
 export function IntentRoutingPanel({
   onEditingChange,
   createRequest = 0,
@@ -243,6 +253,7 @@ export function IntentRoutingPanel({
   const activeGroups = useRef(new Set<string>());
   const catalogMutations = useRef<Promise<void> | null>(null);
   const [reordering, setReordering] = useState(false);
+  const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
   const reorderRequest = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const reloadRequest = useRef<object | null>(null);
@@ -541,6 +552,13 @@ export function IntentRoutingPanel({
   }
   async function arrangeGroup(id: string, target: string) {
     if (pending || draft || reorderRequest.current) return;
+    const previewOrder = currentGroups().map((entry) => entry.id);
+    const source = previewOrder.indexOf(id);
+    const destination = previewOrder.indexOf(target);
+    if (source < 0 || destination < 0 || source === destination) return;
+    previewOrder.splice(destination, 0, ...previewOrder.splice(source, 1));
+    // Keep the dropped order visible through queued writes and catalog refetches.
+    setOptimisticOrder(previewOrder);
     reorderRequest.current = true;
     setReordering(true);
     setError(null);
@@ -552,11 +570,20 @@ export function IntentRoutingPanel({
         if (from < 0 || to < 0 || from === to) return;
         order.splice(to, 0, ...order.splice(from, 1));
         await intentRoutingApi.arrange(order);
+        client.setQueryData<RoutingCatalog>(
+          ["intent-routing-groups"],
+          (catalog) =>
+            catalog
+              ? { ...catalog, groups: orderGroups(catalog.groups, order) }
+              : catalog,
+        );
+        toast.success(t("routingPage.orderSaved"));
         await refreshRoutingStatus();
       });
     } catch (cause) {
       report(cause);
     } finally {
+      setOptimisticOrder(null);
       reorderRequest.current = false;
       setReordering(false);
     }
@@ -916,7 +943,10 @@ export function IntentRoutingPanel({
       .join(" · ");
   }
   const query = filter.trim().toLocaleLowerCase();
-  const visibleGroups = groups.data?.groups.filter(
+  const orderedGroups = optimisticOrder
+    ? orderGroups(groups.data?.groups ?? [], optimisticOrder)
+    : groups.data?.groups;
+  const visibleGroups = orderedGroups?.filter(
     (group) =>
       group.id === draft?.id ||
       ((statusFilter === "all" ||

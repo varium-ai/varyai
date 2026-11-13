@@ -776,28 +776,45 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
-  it("restores a removed discovered group without saving a manual definition", async () => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [group],
-      autoCreate: true,
-      omittedGroups: 0,
-      removedGroups: [{ id: "auto-fixture", name: "Synthetic shared" }],
-    });
-    vi.mocked(intentRoutingApi.restore).mockResolvedValue();
-    mount();
-    await userEvent.click(
-      await screen.findByRole("button", {
-        name: "intentRouting.removedGroups",
-      }),
-    );
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: /Synthetic shared/ }),
-    );
-    await waitFor(() =>
-      expect(intentRoutingApi.restore).toHaveBeenCalledWith("auto-fixture"),
-    );
-    expect(intentRoutingApi.save).not.toHaveBeenCalled();
-  });
+  it.each([false, true])(
+    "refreshes the visible list after restoring a group with automatic discovery=%s",
+    async (autoCreate) => {
+      let restored = false;
+      vi.mocked(intentRoutingApi.list).mockImplementation(async () => ({
+        groups: restored
+          ? [group, { ...group, id: "auto-fixture", name: "Synthetic shared" }]
+          : [group],
+        autoCreate,
+        omittedGroups: 0,
+        removedGroups: restored
+          ? []
+          : [{ id: "auto-fixture", name: "Synthetic shared" }],
+      }));
+      vi.mocked(intentRoutingApi.restore).mockImplementation(async () => {
+        restored = true;
+      });
+      mount();
+      await userEvent.click(
+        await screen.findByRole("button", {
+          name: "intentRouting.removedGroups",
+        }),
+      );
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: /Synthetic shared/ }),
+      );
+      expect(
+        await screen.findByRole("switch", {
+          name: "intentRouting.publishGateway Synthetic shared",
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "intentRouting.removedGroups" }),
+      ).not.toBeInTheDocument();
+      expect(intentRoutingApi.restore).toHaveBeenCalledWith("auto-fixture");
+      expect(intentRoutingApi.save).not.toHaveBeenCalled();
+      expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
+    },
+  );
   it("removes an untouched automatic group through confirmation instead of saving a disabled override", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
@@ -829,35 +846,38 @@ describe("IntentRoutingPanel", () => {
     );
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
   });
-  it("keeps removed groups recoverable and redacts backend restoration failures", async () => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [group],
-      autoCreate: true,
-      omittedGroups: 0,
-      removedGroups: [{ id: "auto-fixture", name: "Synthetic shared" }],
-    });
-    vi.mocked(intentRoutingApi.restore).mockRejectedValue(
-      "synthetic-private-failure",
-    );
-    mount();
-    await userEvent.click(
-      await screen.findByRole("button", {
-        name: "intentRouting.removedGroups",
-      }),
-    );
-    await userEvent.click(
-      await screen.findByRole("menuitem", { name: /Synthetic shared/ }),
-    );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "intentRouting.failed",
-    );
-    expect(
-      screen.queryByText("synthetic-private-failure"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "intentRouting.removedGroups" }),
-    ).toBeEnabled();
-  });
+  it.each([
+    ["synthetic-private-failure", "intentRouting.failed"],
+    ["intentRouting.providerUnavailable", "intentRouting.providerUnavailable"],
+    ["intentRouting.limit", "intentRouting.limit"],
+  ])(
+    "keeps removed groups recoverable after restoration fails: %s",
+    async (cause, message) => {
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [group],
+        autoCreate: true,
+        omittedGroups: 0,
+        removedGroups: [{ id: "auto-fixture", name: "Synthetic shared" }],
+      });
+      vi.mocked(intentRoutingApi.restore).mockRejectedValue(cause);
+      mount();
+      await userEvent.click(
+        await screen.findByRole("button", {
+          name: "intentRouting.removedGroups",
+        }),
+      );
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: /Synthetic shared/ }),
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      expect(
+        screen.queryByText("synthetic-private-failure"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "intentRouting.removedGroups" }),
+      ).toBeEnabled();
+    },
+  );
   it("omits the duplicate advanced member editor and preserves saved reasoning", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
@@ -1273,21 +1293,121 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    fireEvent.keyDown(
-      await screen.findByRole("button", {
-        name: "routingPage.arrangeGroup Fixture group",
-      }),
-      { key: "ArrowDown", altKey: true },
-    );
+    const handle = await screen.findByRole("button", {
+      name: "routingPage.arrangeGroup Fixture group",
+    });
+    fireEvent.keyDown(handle, { key: "ArrowUp", altKey: true });
+    expect(intentRoutingApi.arrange).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    fireEvent.keyDown(handle, { key: "ArrowDown", altKey: true });
     await waitFor(() =>
       expect(intentRoutingApi.arrange).toHaveBeenCalledWith([
         "next",
         "fixture",
       ]),
     );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledExactlyOnceWith(
+        "routingPage.orderSaved",
+      ),
+    );
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
+
+  it.each(["success", "save failure", "refresh failure"])(
+    "keeps the dropped order visible during persistence and refresh: %s",
+    async (outcome) => {
+      const next = { ...group, id: "next", name: "Next group" };
+      const catalog = {
+        groups: [group, next],
+        autoCreate: false,
+        omittedGroups: 0,
+      };
+      vi.mocked(intentRoutingApi.list).mockResolvedValue(catalog);
+      let finish!: () => void;
+      vi.mocked(intentRoutingApi.arrange).mockImplementation(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            finish = () =>
+              outcome === "save failure"
+                ? reject("intentRouting.conflict")
+                : resolve();
+          }),
+      );
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const { container } = mount(client);
+      const handle = await screen.findByRole("button", {
+        name: "routingPage.arrangeGroup Fixture group",
+      });
+      const rows = () =>
+        Array.from(container.querySelectorAll("[data-routing-group]"));
+      rows().forEach((row, index) => {
+        vi.spyOn(row, "getBoundingClientRect").mockReturnValue({
+          top: index * 60,
+          bottom: (index + 1) * 60,
+          height: 60,
+        } as DOMRect);
+      });
+      const pointer = (type: string, y: number) => {
+        const event = new MouseEvent(type, {
+          bubbles: true,
+          clientY: y,
+          button: 0,
+        });
+        Object.defineProperty(event, "pointerId", { value: 7 });
+        fireEvent(type === "pointerdown" ? handle : document, event);
+      };
+      const order = () =>
+        rows().map((row) => row.getAttribute("data-routing-group"));
+      pointer("pointerdown", 10);
+      pointer("pointermove", 100);
+      pointer("pointerup", 100);
+      expect(order()).toEqual(["next", "fixture"]);
+      expect(intentRoutingApi.arrange).toHaveBeenCalledExactlyOnceWith([
+        "next",
+        "fixture",
+      ]);
+      expect(toast.success).not.toHaveBeenCalled();
+      // An unrelated cache refresh must not briefly restore the old server order.
+      act(() =>
+        client.setQueryData(["intent-routing-groups"], {
+          ...catalog,
+          groups: [{ ...group, name: "Updated fixture" }, next],
+        }),
+      );
+      expect(order()).toEqual(["next", "fixture"]);
+      await screen.findByText("Updated fixture");
+      let finishRefresh!: () => void;
+      vi.mocked(intentRoutingApi.list).mockImplementation(
+        () =>
+          new Promise((resolve, reject) => {
+            finishRefresh = () =>
+              outcome === "refresh failure"
+                ? reject(new Error("Synthetic refresh failure"))
+                : resolve({ ...catalog, groups: [next, group] });
+          }),
+      );
+      await act(async () => finish());
+      if (outcome === "save failure") {
+        expect(toast.success).not.toHaveBeenCalled();
+        expect(order()).toEqual(["fixture", "next"]);
+        expect(screen.getByText("intentRouting.conflict")).toBeInTheDocument();
+        expect(screen.getByText("Updated fixture")).toBeInTheDocument();
+      } else {
+        expect(toast.success).toHaveBeenCalledExactlyOnceWith(
+          "routingPage.orderSaved",
+        );
+        expect(order()).toEqual(["next", "fixture"]);
+        await act(async () => finishRefresh());
+        await waitFor(() => expect(handle).toBeEnabled());
+        expect(order()).toEqual(["next", "fixture"]);
+        expect(toast.success).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
 
   it("shows a success toast only after copying without inserting a status into the row", async () => {
     let finish!: () => void;
