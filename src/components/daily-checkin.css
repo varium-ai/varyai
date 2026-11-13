@@ -317,6 +317,9 @@
   color: var(--mp-accent);
   font-weight: 500;
 }
+.mp-agent-start.mp-agent-checkin-trigger[data-inactive="true"] {
+  color: var(--mp-muted);
+}
 .mp-agent-checkin-trigger[data-complete="true"] > svg:first-child {
   color: var(--mp-green);
 }

@@ -446,3 +446,79 @@ test("Qoder device authorization is independent, cancellable and never claims", 
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("ZCode reads native profile names across providers without exposing token claims", async () => {
+  const fs = require("node:fs/promises");
+  const os = require("node:os");
+  const path = require("node:path");
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "varyai-zcode-profile-"),
+  );
+  const originalHome = os.homedir;
+  const directory = path.join(root, ".zcode/v2");
+  try {
+    os.homedir = () => root;
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(
+      path.join(directory, "telemetry-state.json"),
+      JSON.stringify({ deviceMid: "synthetic-device" }),
+    );
+    const token =
+      "header." +
+      Buffer.from(
+        JSON.stringify({ sub: "synthetic-user", name: "private-token-claim" }),
+      ).toString("base64url") +
+      ".signature";
+    for (const [provider, profile, expected] of [
+      [
+        "bigmodel",
+        {
+          id: "synthetic-user",
+          username: "Synthetic username",
+          displayName: "Synthetic display",
+        },
+        "Synthetic display",
+      ],
+      ["bigmodel", { username: "Synthetic username" }, "Synthetic username"],
+      [
+        "zai",
+        { name: "Synthetic Zai name", email: "fixture@example.test" },
+        "Synthetic Zai name",
+      ],
+      [
+        "zai",
+        { nickname: "  ", name: "", email: "fixture@example.test" },
+        "fixture@example.test",
+      ],
+      [
+        "bigmodel",
+        { displayName: {}, username: "Synthetic username" },
+        "Synthetic username",
+      ],
+      ["zai", {}, null],
+    ]) {
+      await fs.writeFile(
+        path.join(directory, "credentials.json"),
+        JSON.stringify({
+          zcodejwttoken: token,
+          "oauth:active_provider": provider,
+          [`oauth:${provider}:user_info`]: JSON.stringify(profile),
+        }),
+      );
+      const result = await run({
+        app: "zcode",
+        mode: "claim",
+        expectedAccountId: "stale-selection",
+      });
+      assert.equal(result.outcome, "switch_required");
+      assert.equal(result.source, "native");
+      if (expected) assert.equal(result.label, expected);
+      else assert.match(result.label, /^ZCode · [a-f0-9]{6}$/);
+      assert.ok(!JSON.stringify(result).includes("private-token-claim"));
+      assert.ok(!JSON.stringify(result).includes(token));
+    }
+  } finally {
+    os.homedir = originalHome;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

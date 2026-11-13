@@ -615,9 +615,6 @@ pub(crate) fn project(
         let id = format!("shared-catalog{suffix}");
         let route = format!("varyai-{id}");
         let old = value["providers"][key(&id)]["config"]["providers"][&route].clone();
-        if !old.is_null() && old["headers"]["Authorization"] != format!("Bearer {token}") {
-            return Err(FAILED.into());
-        }
         let models = catalog
             .iter()
             .filter(|model| model.api == native_api)

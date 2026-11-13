@@ -414,12 +414,45 @@ fn chats_follow_repeated_native_and_standalone_transitions(
 }
 
 #[test]
-fn explicit_reapply_replaces_an_existing_native_url_and_restores_it_on_disconnect(
+fn explicit_connection_replaces_changed_projection_and_restores_external_baseline(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for previous_url in [
+    let (_dir, manager) = tests::setup();
+    manager.write_projection(&[tests::group()], "synthetic-original", BASE)?;
+    let mut edited: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    edited["model_provider"] = toml_edit::value("external");
+    edited["model"] = toml_edit::value("external-model");
+    edited["theme"] = toml_edit::value("synthetic-theme");
+    fs::write(&manager.config, edited.to_string())?;
+    assert!(manager
+        .write_projection(&[tests::group()], "synthetic-new", BASE)
+        .is_err());
+    manager.write_projection_for_intent(
+        &[tests::group()],
+        "synthetic-new",
+        BASE,
+        None,
+        ApplyIntent::Connect,
+        None,
+    )?;
+    assert!(manager.status()?.configuration_owned);
+    manager.restore()?;
+    let restored: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert_eq!(restored["model_provider"].as_str(), Some("external"));
+    assert_eq!(restored["model"].as_str(), Some("external-model"));
+    assert_eq!(restored["theme"].as_str(), Some("synthetic-theme"));
+    Ok(())
+}
+
+#[test]
+fn explicit_connection_or_reapply_replaces_an_existing_native_url_and_restores_it_on_disconnect(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (previous_url, intent) in [
         "http://127.0.0.1:23456/backend-api/codex",
         "https://synthetic.example/backend-api/codex",
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|url| [ApplyIntent::Connect, ApplyIntent::Reapply].map(|intent| (url, intent)))
+    {
         let (dir, manager) = tests::setup();
         let original = format!("model='original'\nopenai_base_url='{previous_url}'\n");
         fs::write(&manager.config, &original)?;
@@ -439,7 +472,7 @@ fn explicit_reapply_replaces_an_existing_native_url_and_restores_it_on_disconnec
             "synthetic-local",
             BASE,
             Some(NATIVE),
-            ApplyIntent::Reapply,
+            intent,
             None,
         )?;
         let applied: toml::Value = fs::read_to_string(&manager.config)?.parse()?;

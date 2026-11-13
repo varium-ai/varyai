@@ -512,6 +512,7 @@ fn c5_native_evidence_session_ingress_policy_and_legacy_scope_cannot_import() ->
             1,
         ),
         (native_scope(chat(), IngressNamespace::Gateway), SESSION, 1),
+        (native_scope(chat(), IngressNamespace::Shared), SESSION, 1),
         (native_scope(chat(), IngressNamespace::Direct), SESSION, 2),
         (ContinuityScope::LegacyResponses, SESSION, 1),
     ] {

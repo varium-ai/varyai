@@ -46,6 +46,20 @@ Failures are fixed and sanitized. Internal codes, checkpoints, stage labels, mat
 
 These statements describe the tested local contract. They are not a claim of provider compatibility, live-service behavior, installer acceptance or release readiness.
 
+## Authenticated shared model routes
+
+Authenticated shared connections and routing groups reuse the established restoration owners for native Chat, Anthropic Messages and Gemini generation requests when the upstream uses the same protocol. Responses requests from shared Agents reuse the existing Responses owner, including its supported Chat/Anthropic conversion facades. The original supported request text reaches actual-attempt preparation; a separately redacted canonical projection is used only for route classification. Same-protocol shared requests also pass actual-send preparation. JSON and SSE responses reuse bound completion verification and client restoration.
+
+Native shared requests have a separate `Shared` ingress namespace in both token identity and delivered-evidence authentication. Shared Responses use a separate per-Agent namespace. Equal session identifiers cannot reuse direct or other-Agent recovery records. The ordinary direct/gateway admission functions retain their existing route checks; client headers cannot grant shared authority.
+
+Gemini framing is selected by the generation endpoint and query. The selected upstream model replaces the catalog alias in the URL, and internal group model metadata is removed from the Gemini body. Existing generation parameters remain unchanged.
+
+External group requests, specialized account transports, native official targets, Responses namespace flattening and other unsupported protocol conversions do not gain restoration authority. Required restoration on an unsupported route refuses sending with an actionable unsupported-route response; it does not claim the configured rule action was Block. Explicit policy blocks and safe-redaction failures retain their enforcement. Doubao Work's audit-only connection is not a shared model restoration route.
+
+Request notifications report current-turn findings only. Historical supported text remains subject to inspection, redaction and blocking even when repeated historical findings are omitted from audit notifications. This also applies to refused requests and decoded carriers. Failures while building optional audit summaries do not interrupt forwarding.
+
+The local HTTP matrix exercises 18 shared connection identities across four native protocols, JSON/SSE and sensitive-first-turn/safe-follow-up cases. Codex's existing shared Responses conversion tests remain separate. These use synthetic upstreams and do not establish acceptance by installed Agent clients or remote providers.
+
 ## Prepared-request target boundary
 
 A prepared DLP attempt is bound to its final upstream target and sending authority, even when it has no active token mappings. The reqwest path disables automatic redirects for these attempts. Both reqwest and Hyper reject upstream 3xx responses with a fixed status-only DLP error before parsing the response body; neither follows `Location` with the original request body or inherited history permission. Configure the final upstream endpoint directly. Requests without a prepared DLP attempt retain the existing redirect behavior.

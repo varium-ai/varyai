@@ -83,6 +83,7 @@ export function ProfileSwitcher({
   const [newName, setNewName] = useState("");
   const [bundleApps, setBundleApps] = useState<AppId[]>([]);
   const [createBundle, setCreateBundle] = useState(false);
+  const [captureApp, setCaptureApp] = useState<AppId>(activeApp);
   const [pendingUndo, setPendingUndo] = useState<ProfileUndo | null>(null);
   const [undoing, setUndoing] = useState(false);
   const [bundlePreview, setBundlePreview] = useState<Profile | null>(null);
@@ -117,13 +118,13 @@ export function ProfileSwitcher({
         agent.available &&
         (createBundle
           ? bundleApps.includes(agent.app)
-          : agent.app === activeApp),
+          : agent.app === captureApp),
     )
     .map((agent) => agent.app);
   const selectedAvailableApps = agents
     .filter((agent) => agent.available && selectedApps.includes(agent.app))
     .map((agent) => agent.app);
-  const currentAgent = agents.find((agent) => agent.app === activeApp);
+  const currentAgent = agents.find((agent) => agent.app === captureApp);
   const scopedCurrentId =
     data?.currentIds?.byApp?.[activeApp] ??
     (scope ? data?.currentIds?.[CURRENT_ID_KEY[scope]] : null) ??
@@ -171,6 +172,7 @@ export function ProfileSwitcher({
     setNewName("");
     setBundleApps([]);
     setCreateBundle(false);
+    setCaptureApp(activeApp);
   };
 
   const handleCreate = () => {
@@ -278,6 +280,7 @@ export function ProfileSwitcher({
                     setOpen(false);
                     setCreateBundle(false);
                     setBundleApps(selectedAvailableApps);
+                    setCaptureApp(activeApp);
                     setIsCreateOpen(true);
                   }}
                 >
@@ -344,7 +347,7 @@ export function ProfileSwitcher({
                 createBundle
                   ? "profiles.bundle.captureHint"
                   : "profiles.bundle.captureCurrentHint",
-                { app: t(`apps.${activeApp}`) },
+                { app: t(`apps.${captureApp}`) },
               )}
             </DialogDescription>
           </DialogHeader>
@@ -354,9 +357,6 @@ export function ProfileSwitcher({
               onChange={(e) => setNewName(e.target.value)}
               placeholder={t("profiles.namePlaceholder")}
               autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreate();
-              }}
             />
             {duplicateName && (
               <p role="alert" className="mt-2 text-sm text-destructive">
@@ -373,6 +373,25 @@ export function ProfileSwitcher({
               />
               {t("profiles.bundle.create")}
             </label>
+            {!createBundle && (
+              <label className="mt-3 flex flex-col gap-2 text-sm">
+                {t("profiles.bundle.singleAgent")}
+                <select
+                  aria-label={t("profiles.bundle.singleAgent")}
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                  value={captureApp}
+                  onChange={(event) =>
+                    setCaptureApp(event.target.value as AppId)
+                  }
+                >
+                  {agents.map(({ app, available }) => (
+                    <option key={app} value={app} disabled={!available}>
+                      {t(`apps.${app}`)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {!createBundle && currentAgent?.reason && (
               <p className="mt-3 text-sm text-muted-foreground">
                 {t(currentAgent.reason)}

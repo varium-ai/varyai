@@ -7,18 +7,23 @@ Claude and Codex use the same model-mapping actions: **Fetch Models** loads cand
 Generated catalog data must continue to match the backend TOML/JSON contract. The live client configuration and catalog file must refer to the same provider and model IDs. A model list response does not prove that every listed model is callable or included in an account's quota.
 
 Generated model labels use the model name and supplier name without a VaryAI
-suffix. Routing-group labels keep the group name and group designation. Codex wire names use readable ASCII slugs derived from those labels, such as
-`grok-4.5-Synthetic`. Non-ASCII characters and separators become hyphens, and
-repeated hyphens collapse. The picker retains the full Unicode display label;
-the CLI model-change notice uses the ASCII wire name. Codex also places that
-name in `x-codex-routing-hint`, whose header conversion rejects non-ASCII text.
-The connection receipt maps each published name to its stable internal model ID. Duplicate names receive a numeric suffix;
-renaming retains the old name, and a retired name is never reassigned to another
-model during that connection. Legacy hash IDs and previously published names remain accepted by the gateway
-and retain hidden catalog metadata for existing conversations. A client session
-still using a Unicode wire name must reselect the model: its header conversion
-can fail before a request reaches the gateway. Internal routing and continuation
-checks still use the stable ID.
+suffix. Routing-group labels keep the group name and group designation. Codex
+wire identities follow `provider-id/model-id` for direct entries and
+`group/group-id` for saved groups. ASCII identities remain unchanged. If the
+identity contains non-ASCII characters, publication uses a deterministic ASCII
+`vary-provider/alias-<sha256>` identity instead. The picker retains its full
+Unicode display label, and the receipt maps the published identity back to the
+same stable internal target. The actual upstream model ID is not rewritten by
+this compatibility encoding.
+
+Codex places the selected identity in `x-codex-routing-hint`, whose string
+conversion rejects non-ASCII text. Previously published identities remain hidden
+compatibility entries and are never reassigned to another target. Their model
+capabilities are retained. Refresh or reapply the Codex connection after updating,
+restart Codex, then reselect the model inside an existing conversation. A session
+that still uses an old Unicode identity can fail before its request reaches
+VaryAI; restarting alone does not prove its saved selection was replaced.
+Internal routing and continuation checks continue to use the stable target ID.
 
 The shared Codex connection follows the provider identity behavior reviewed at
 [Magpie revision `465928b`](https://github.com/yetone/magpie/tree/465928bccea4fec3537edd6280f7cabb9a0c5bad).

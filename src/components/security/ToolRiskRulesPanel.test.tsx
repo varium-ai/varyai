@@ -16,6 +16,7 @@ import {
   type ToolRiskRuleItem,
 } from "@/types/toolRisk";
 import { ToolRiskRulesPanel } from "./ToolRiskRulesPanel";
+import userEvent from "@testing-library/user-event";
 
 const getRule = vi.fn();
 const saveRule = vi.fn().mockResolvedValue("custom-1");
@@ -221,13 +222,27 @@ describe("ToolRiskRulesPanel revision and exact identity", () => {
     ];
   });
 
+  it("shows the built-in reset hint promptly on the first hover without resetting", async () => {
+    render(<ToolRiskRulesPanel />);
+    const button = screen.getByRole("button", {
+      name: "toolRisk.resetBuiltin",
+    });
+    await userEvent.hover(button);
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 500 }),
+    ).toHaveTextContent("toolRisk.resetBuiltin");
+    expect(resetBuiltinRule).not.toHaveBeenCalled();
+  });
+
   it("passes current revisions to toggle, reset and confirmed deletion", async () => {
     render(<ToolRiskRulesPanel />);
     const customRow = screen.getByText("My rule").closest("tr")!;
     const builtinRow = screen.getByText("Built in").closest("tr")!;
     fireEvent.click(within(customRow).getByRole("switch"));
     fireEvent.click(within(builtinRow).getByRole("switch"));
-    fireEvent.click(screen.getByTitle("toolRisk.resetBuiltin"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "toolRisk.resetBuiltin" }),
+    );
     expect(toggleRule).toHaveBeenCalledWith("custom-1", false, 3);
     expect(toggleRule).toHaveBeenCalledWith("builtin-1", false, 7);
     expect(resetBuiltinRule).toHaveBeenCalledWith("builtin-1", 7);
@@ -615,7 +630,9 @@ describe("ToolRiskRulesPanel visible rules", () => {
     expect(
       screen.getByTestId(`tool-risk-edit-${databaseCustom.id}`),
     ).toBeInTheDocument();
-    expect(screen.getAllByTitle("toolRisk.resetBuiltin")).toHaveLength(2);
+    expect(
+      screen.getAllByRole("button", { name: "toolRisk.resetBuiltin" }),
+    ).toHaveLength(2);
     expect(screen.queryByText("toolRisk.noRules")).not.toBeInTheDocument();
     expect(items).toEqual([databaseBuiltin, databaseCustom, otherBuiltin]);
   });
@@ -648,7 +665,9 @@ describe("ToolRiskRulesPanel visible rules", () => {
     expect(
       screen.getByText(builtinNameKey(databaseBuiltin.id)),
     ).toBeInTheDocument();
-    expect(screen.getByTitle("toolRisk.resetBuiltin")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "toolRisk.resetBuiltin" }),
+    ).toBeInTheDocument();
   });
 
   it.each([

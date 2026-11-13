@@ -5,12 +5,16 @@ Profiles capture selected client configuration so you can restore a known setup 
 ## Capture and apply
 
 1. Configure each client normally and back up its files.
-2. Open **Profiles** in the main window's bottom bar or the tray panel and create a named profile. Both entry points use the same saved profiles and controls. By default, capture the first connected client. Enable **Multi-agent profile** to preselect the connected, supported agents; adjust that selection before saving if needed. The existing **Show profile switcher** preference controls the main-window entry.
+2. Open **Profiles** in the main window's bottom bar or the tray panel and create a named profile. Both entry points use the same saved profiles and controls. By default, capture the current client. Use **Agent to save** to choose a different single agent directly. Enable **Multi-agent profile** to preselect the connected, supported agents; adjust that selection before saving if needed. The existing **Show profile switcher** preference controls the main-window entry.
 3. Review the selected scope before applying a saved profile. Read any validation errors or warnings instead of assuming every category was restored.
 4. After applying, follow the client restart or new-session instructions in the completion notification. A successful apply updates saved configuration; running clients may still need to reload it.
 5. Use the explicit refresh/update action to replace a saved snapshot with the current configuration. Renaming or deleting a profile affects the shared profile entity.
 
+Confirm text entry in the profile name field with Enter as needed, then click the dialog's confirmation button to save. Pressing Enter in the name field does not create a profile, including when confirming an IME candidate.
+
 Every newly created profile uses a configuration snapshot, including profiles containing only one agent. Multi-agent selection can also contain just one supported agent; an empty selection cannot be saved. Older single-client profiles retain their existing format and behavior.
+
+Codex shared selections are captured from the owned model menu, including retained aliases in older saved profiles. Preview resolves the current catalog label; applying and undoing preserve connection ownership and the selected canonical model. Unknown legacy aliases are skipped rather than guessed.
 
 Agents connected through the shared model catalog are selectable without a separate per-agent supplier entry. These profiles capture the selected shared model, supported model-list visibility rules, and resource selections. Applying them uses the current gateway connection and credentials; profile data does not copy connection tokens, account credentials or upstream endpoints. Keep the gateway running when applying a shared-connection profile. Preview skips a shared model whose supplier or routing group was removed, rather than substituting another model. Undo restores both native configuration and the preceding gateway connection receipt.
 

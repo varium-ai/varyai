@@ -457,6 +457,7 @@ pub(super) fn native_delivered_evidence(
         match ingress {
             super::restoration_contract::IngressNamespace::Direct => b"direct",
             super::restoration_contract::IngressNamespace::Gateway => b"gateway",
+            super::restoration_contract::IngressNamespace::Shared => b"shared",
         },
     )?;
     mac.update(

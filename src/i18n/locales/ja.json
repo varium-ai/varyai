@@ -2679,6 +2679,7 @@
   "profiles": {
     "bundle": {
       "create": "複数 Agent の設定（Profile）",
+      "singleAgent": "保存する Agent",
       "chooseAgents": "保存するエージェントを選択",
       "captureCurrentHint": "現在の {{app}} のプロバイダー、モデル設定、対応リソースを保存します。複数エージェントを有効にすると、メイン画面で選択中のエージェントが初期選択されます。",
       "captureHint": "選択した Agent のプロバイダー、モデル設定と一覧、対応する MCP・Skills・指示を保存します。認証情報は設定にコピーされません。",
@@ -5047,6 +5048,7 @@
     "sameAsHint": "グループ検出と不足したカタログ情報の補完で、このモデルを指定したモデルとして扱います。送信するモデル ID は変わりません。"
   },
   "agentConnections": {
+    "conflict": "Agent の設定が保存済みの接続または別の接続と競合しています。外部での設定変更や、クライアント間での設定ディレクトリの重複を確認して再試行してください。既存の設定は保持されています。",
     "cursorLocalHint": "Cursor Private Inference が必要です。接続後に完全に終了して再起動してください。Cursor に保存したゲートウェイ設定が環境の既定値より優先されます。",
     "cursorCliHint": "Cursor のネイティブモデル選択を管理します。CLI リクエストは引き続き Cursor のサービスを使用します。",
     "cursorAuto": "Auto · Cursor ネイティブ",
@@ -5945,6 +5947,8 @@
     "hint_antigravity": "Antigravity アカウントと利用可能なモデルを使用します。Google ログインまたはアカウント JSON のインポートに対応しています。"
   },
   "agentRewards": {
+    "noActivity": "開催中のキャンペーンなし",
+    "nativeAccountManagement": "ここには公式クライアントの現在のアカウントのみ表示されます。公式クライアントでアカウントを追加・切り替えた後、更新してください。VaryAI 内で複数のアカウントを個別に追加する機能は未対応です。",
     "readNative": "クライアントのログインを読み取る",
     "nativeAccessHint": "Qoder CN のローカル認証情報を検出しました。初回は macOS キーチェーンの許可が必要になる場合があります。再ログインは不要です。",
     "sources": {

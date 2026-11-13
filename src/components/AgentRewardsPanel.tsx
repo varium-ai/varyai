@@ -172,7 +172,13 @@ export function AgentRewardsPanel({
         <div className="mp-checkin-accounts">
           <div className="mp-checkin-field">
             <label htmlFor={accountId}>{t("agentRewards.account")}</label>
-            <select id={accountId} value={data?.accountId ?? ""} disabled>
+            <select
+              id={accountId}
+              value={data?.accountId ?? ""}
+              disabled={
+                busy || query.isFetching || query.isError || !data?.accountId
+              }
+            >
               <option value={data?.accountId ?? ""}>
                 {data?.label ??
                   t(
@@ -185,6 +191,9 @@ export function AgentRewardsPanel({
           </div>
           <CheckinAccountTools>
             <p>{t(`agentRewards.descriptions.${app}`)}</p>
+            {(app === "zcode" || app === "trae") && (
+              <p>{t("agentRewards.nativeAccountManagement")}</p>
+            )}
             <Button
               variant="ghost"
               size="sm"

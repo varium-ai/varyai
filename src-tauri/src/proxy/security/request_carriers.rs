@@ -270,6 +270,23 @@ impl CodexRequestCarriers {
         Ok(())
     }
 
+    /// This boundary affects notifications only, never inspection or rewrite authority.
+    pub(super) fn is_historical(&self, id: usize, turn: &super::extractor::CurrentTurn) -> bool {
+        let Some(leaf) = self.leaves.as_slice().get(id) else {
+            return false;
+        };
+        let path = leaf
+            .document
+            .and_then(|document| self.documents.as_slice().get(document))
+            .map_or(&leaf.path, |document| &document.outer_path);
+        match path.as_slice() {
+            [Step::Field(root), Step::Index(index), ..] => {
+                turn.is_historical_item(root.as_str(), *index)
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn visit<'a>(
         &'a self,
         mut visitor: impl FnMut(CarrierLeaf<'a>) -> Result<(), TokenError>,

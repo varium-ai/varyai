@@ -38,6 +38,27 @@ fn receiptless_codex_configuration_is_recovery_work_instead_of_enablement(
 }
 
 #[test]
+fn disconnected_codex_uses_the_last_choice_instead_of_its_restored_native_model() {
+    let status = client::Status {
+        enabled: false,
+        configuration_owned: false,
+        provider_enabled: false,
+        recovery_pending: true,
+        orphaned_config: false,
+        orphan_cleanup_available: false,
+        group_ids: vec![],
+        omitted_entries: 0,
+        native_compatibility: "unsupported".into(),
+        configuration_issue: None,
+    };
+    let restored = codex_connection_status(status, Some("vary-auto/first".into()), None);
+    let remembered = with_remembered_model(restored, Some("vary-auto/second".into()));
+    assert_eq!(remembered.model.as_deref(), Some("vary-auto/second"));
+    assert!(!remembered.enabled);
+    assert!(remembered.recovery_pending);
+}
+
+#[test]
 fn codex_with_an_unowned_recovery_receipt_shows_disabled() {
     let status = client::Status {
         enabled: false,

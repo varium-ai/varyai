@@ -307,3 +307,21 @@ it.each(
     expect(agentRewardsApi.claim).not.toHaveBeenCalled();
   },
 );
+
+it.each(["zcode", "trae"] as const)(
+  "shows the current %s account picker and explains native account management",
+  async (app) => {
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, app });
+    mount(app);
+    await screen.findByText("Synthetic account");
+    expect(
+      screen.getByRole("combobox", { name: "agentRewards.account" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("agentRewards.nativeAccountManagement"),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "agentRewards.authorize" }),
+    ).not.toBeInTheDocument();
+  },
+);

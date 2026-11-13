@@ -309,7 +309,10 @@ impl Manager {
         let now = chrono::Utc::now().timestamp_millis();
         let id = native.account_id.as_ref().map(|id| key(app, id));
         let record = id.as_ref().and_then(|id| store.records.get(id));
-        let confirmed = record.filter(|record| cached(record, native, now));
+        let confirmed = record.filter(|record| {
+            // An absent ZCode offer is distinct from a previously confirmed claim.
+            !(app == "zcode" && native.outcome == Outcome::Inactive) && cached(record, native, now)
+        });
         let saved = native
             .outcome
             .unavailable()
@@ -696,6 +699,39 @@ mod tests {
         native.account_id = Some("another-account".into());
         assert!(!Manager::snapshot("qoder", &store, &native).auto_enabled);
     }
+    #[test]
+    fn zcode_inactive_offer_is_distinct_from_a_cached_claim() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut store = Store::default();
+        store.records.insert(
+            key("zcode", "synthetic-account"),
+            Record {
+                outcome: Outcome::Claimed,
+                credit: None,
+                checked_at: now - 1000,
+                until: now + 60_000,
+                window: Some("synthetic-offer".into()),
+            },
+        );
+        let mut native = Observation::outcome(Outcome::Inactive);
+        native.account_id = Some("synthetic-account".into());
+        let status = Manager::snapshot("zcode", &store, &native);
+        assert_eq!(status.outcome, Outcome::Inactive);
+        assert_eq!(status.saved_outcome, None);
+        assert_eq!(store.records.len(), 1);
+        native.outcome = Outcome::NotChecked;
+        native.window_key = Some("synthetic-offer".into());
+        assert_eq!(
+            Manager::snapshot("zcode", &store, &native).outcome,
+            Outcome::Claimed
+        );
+        native.outcome = Outcome::SignInRequired;
+        assert_eq!(
+            Manager::snapshot("zcode", &store, &native).saved_outcome,
+            Some(Outcome::Claimed)
+        );
+    }
+
     #[test]
     fn confirmed_rewards_expire_at_the_activity_boundary_and_never_mask_a_new_offer() {
         let record = Record {

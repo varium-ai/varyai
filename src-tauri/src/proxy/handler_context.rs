@@ -324,6 +324,49 @@ impl RequestContext {
             copilot_optimizer_config,
         })
     }
+    /// A routed target is already selected. Never resolve native suppliers or
+    /// mutate their current selection while finalizing its owned response.
+    pub(crate) fn for_routed_target(
+        provider: Provider,
+        app: AppType,
+        actor: &'static str,
+        body: &serde_json::Value,
+        session: Option<&str>,
+    ) -> Self {
+        Self {
+            converted_output: false,
+            tool_schemas: crate::proxy::tool_observation::mount::collect_tool_schemas(body, actor),
+            start_time: Instant::now(),
+            app_config: AppProxyConfig {
+                app_type: actor.into(),
+                enabled: true,
+                auto_failover_enabled: false,
+                max_retries: 0,
+                streaming_first_byte_timeout: 0,
+                streaming_idle_timeout: 0,
+                non_streaming_timeout: 0,
+                circuit_failure_threshold: 5,
+                circuit_success_threshold: 2,
+                circuit_timeout_seconds: 60,
+                circuit_error_rate_threshold: 0.5,
+                circuit_min_requests: 10,
+            },
+            providers: vec![provider.clone()],
+            current_provider_id: provider.id.clone(),
+            provider,
+            request_model: body["model"].as_str().unwrap_or("unknown").into(),
+            outbound_model: None,
+            tag: "Routing",
+            app_type_str: actor,
+            app_type: app,
+            session_id: session.unwrap_or_default().into(),
+            session_client_provided: session.is_some(),
+            rectifier_config: RectifierConfig::default(),
+            optimizer_config: OptimizerConfig::default(),
+            copilot_optimizer_config: CopilotOptimizerConfig::default(),
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn for_tool_risk_test(body: &serde_json::Value) -> Self {
         Self {

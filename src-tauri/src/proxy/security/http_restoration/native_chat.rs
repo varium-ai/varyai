@@ -102,6 +102,27 @@ pub(super) fn admit(
     headers: &HeaderMap,
     protocol: Protocol,
 ) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
+    admit_with_ingress(gateway, app, body, headers, protocol, false)
+}
+
+pub(super) fn admit_routed(
+    gateway: &RestorationGateway,
+    app: &AppType,
+    body: &mut Value,
+    headers: &HeaderMap,
+    protocol: Protocol,
+) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
+    admit_with_ingress(gateway, app, body, headers, protocol, true)
+}
+
+fn admit_with_ingress(
+    gateway: &RestorationGateway,
+    app: &AppType,
+    body: &mut Value,
+    headers: &HeaderMap,
+    protocol: Protocol,
+    shared: bool,
+) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
     let Some(state) = gateway.state().map_err(|error| {
         crate::proxy::error::ProxyError::DlpForward(DlpForwardError::from_token_error(error))
     })?
@@ -128,29 +149,40 @@ pub(super) fn admit(
             }
             _ => return Err(DlpForwardError::RestoreUnsupported),
         };
-        let authority = match protocol {
-            Protocol::Chat => RequestAuthority::admit_native_chat(
+        let authority = if shared {
+            RequestAuthority::admit_shared_native(
                 &state.store,
                 app.as_str(),
                 session,
                 snapshot.restoration_policy_revision,
                 state.budget.clone(),
-            ),
-            Protocol::Anthropic => RequestAuthority::admit_native_anthropic(
-                &state.store,
-                app.as_str(),
-                session,
-                snapshot.restoration_policy_revision,
-                state.budget.clone(),
-            ),
-            Protocol::Gemini => RequestAuthority::admit_native_gemini(
-                &state.store,
-                app.as_str(),
-                session,
-                snapshot.restoration_policy_revision,
-                state.budget.clone(),
-            ),
-            _ => return Err(DlpForwardError::RestoreUnsupported),
+                ClientProtocol::new(protocol),
+            )
+        } else {
+            match protocol {
+                Protocol::Chat => RequestAuthority::admit_native_chat(
+                    &state.store,
+                    app.as_str(),
+                    session,
+                    snapshot.restoration_policy_revision,
+                    state.budget.clone(),
+                ),
+                Protocol::Anthropic => RequestAuthority::admit_native_anthropic(
+                    &state.store,
+                    app.as_str(),
+                    session,
+                    snapshot.restoration_policy_revision,
+                    state.budget.clone(),
+                ),
+                Protocol::Gemini => RequestAuthority::admit_native_gemini(
+                    &state.store,
+                    app.as_str(),
+                    session,
+                    snapshot.restoration_policy_revision,
+                    state.budget.clone(),
+                ),
+                _ => return Err(DlpForwardError::RestoreUnsupported),
+            }
         }
         .map_err(DlpForwardError::from_token_error)?;
         let ledger = state

@@ -67,6 +67,7 @@ impl Server {
                  Some(_) = connections.join_next(), if !connections.is_empty()=>{}
                 }
             }
+            drop(listener);
             connections.abort_all();
             while connections.join_next().await.is_some() {}
         });
@@ -104,11 +105,14 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (tx, rx) = oneshot::channel();
+        let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_cleaned = cleaned.clone();
         let task = tokio::spawn(async move {
             let _ = rx.await;
             // Model delayed task scheduling during shutdown on a busy runner.
             tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
             drop(listener);
+            task_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         Server {
             stop: Some(tx),
@@ -117,6 +121,7 @@ mod tests {
         .stop()
         .await;
 
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
         let _rebound = tokio::net::TcpListener::bind(address).await?;
         Ok(())
     }

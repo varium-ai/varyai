@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import i18n from "i18next";
@@ -419,3 +425,70 @@ it.each([false, true])(
     });
   },
 );
+
+it.each([
+  { multi: false, composing: false },
+  { multi: false, composing: true },
+  { multi: true, composing: false },
+  { multi: true, composing: true },
+])(
+  "requires clicking confirm to save a profile (multi=$multi, composing=$composing)",
+  async ({ multi, composing }) => {
+    mount("claude", ["claude", "pi"]);
+    fireEvent.click(await screen.findByRole("combobox"));
+    fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+    if (multi) {
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
+      );
+    }
+    const input = screen.getByPlaceholderText(zh.profiles.namePlaceholder);
+    if (composing) fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "测试方案" } });
+    await act(async () => {
+      fireEvent.keyDown(input, {
+        key: "Enter",
+        code: "Enter",
+        keyCode: composing ? 229 : 13,
+        isComposing: composing,
+      });
+      if (composing) {
+        fireEvent.compositionEnd(input, { data: "测试方案" });
+      }
+    });
+    expect(profilesApi.captureBundle).not.toHaveBeenCalled();
+    expect(profilesApi.create).not.toHaveBeenCalled();
+    expect(input).toBeVisible();
+    expect(input).toHaveValue("测试方案");
+    fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
+    await waitFor(() =>
+      expect(profilesApi.captureBundle).toHaveBeenCalledWith(
+        "测试方案",
+        multi ? ["claude", "pi"] : ["claude"],
+      ),
+    );
+    expect(profilesApi.captureBundle).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("captures another single Agent directly without entering multi-agent mode", async () => {
+  mount("claude");
+  fireEvent.click(await screen.findByRole("combobox"));
+  fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+  fireEvent.change(screen.getByLabelText(zh.profiles.bundle.singleAgent), {
+    target: { value: "pi" },
+  });
+  expect(
+    screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
+  ).not.toBeChecked();
+  fireEvent.change(screen.getByPlaceholderText(zh.profiles.namePlaceholder), {
+    target: { value: "Single Pi fixture" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
+  await waitFor(() =>
+    expect(profilesApi.captureBundle).toHaveBeenCalledWith(
+      "Single Pi fixture",
+      ["pi"],
+    ),
+  );
+});

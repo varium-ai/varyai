@@ -1536,6 +1536,7 @@ fn ge2_lane_json_source(reference: &str) -> Value {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_json_text_exact_native_restoration() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let source = ge2_lane_json_source(&fixture.reference);
@@ -1563,6 +1564,7 @@ fn ge2_lane_json_text_exact_native_restoration() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_json_function_argument_object_uses_decoded_string_leaves() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let mut source = ge2_lane_json_source(&fixture.reference);
@@ -1605,6 +1607,7 @@ fn ge2_lane_json_function_argument_object_uses_decoded_string_leaves() -> TestRe
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_json_failure_and_malformed_reason_projection_rejects_atomically() -> TestResult {
     for reason in [
         Value::Null,
@@ -1686,6 +1689,7 @@ fn ge2_lane_json_failure_and_malformed_reason_projection_rejects_atomically() ->
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_json_strict_shared_validation_and_negative_shapes() -> TestResult {
     use crate::proxy::security::completion_json::JsonCompletion;
 
@@ -1788,6 +1792,7 @@ fn ge2_lane_json_strict_shared_validation_and_negative_shapes() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_json_candidate_part_leaf_isolation_and_signed_units() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let reference = &fixture.reference;
@@ -1924,6 +1929,7 @@ fn ge2_lane_json_candidate_part_leaf_isolation_and_signed_units() -> TestResult 
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn ge2_lane_json_real_pair_proof_sealed_activation_precedes_body() -> TestResult {
     use crate::proxy::security::{
         http_restoration::test_transport,
@@ -2097,6 +2103,7 @@ fn ge2_finalize_sse(
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_whole_content_text_requires_last_yield_continuation() -> TestResult {
     use futures::StreamExt;
     let fixture = Ge2Fixture::new(true)?;
@@ -2141,6 +2148,7 @@ fn ge2_lane_sse_whole_content_text_requires_last_yield_continuation() -> TestRes
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_ordered_candidates_contents_native_args_and_signed_parts() -> TestResult {
     use crate::proxy::security::{
         native_test_support::record_delivery, restoration_core::compose_gemini_snapshots,
@@ -2229,6 +2237,7 @@ fn ge2_sse_proof(
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_invalid_states_framing_and_strict_entity_mismatch_publish_nothing() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let baseline = fixture.budget.used();
@@ -2367,6 +2376,7 @@ fn ge2_lane_sse_invalid_states_framing_and_strict_entity_mismatch_publish_nothin
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_signed_text_and_argument_units_are_immutable() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let baseline = fixture.budget.used();
@@ -2401,6 +2411,7 @@ fn ge2_lane_sse_signed_text_and_argument_units_are_immutable() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_drop_at_every_yield_including_last_never_publishes() -> TestResult {
     use futures::StreamExt;
     for yields in 0..=3 {
@@ -2428,6 +2439,7 @@ fn ge2_lane_sse_drop_at_every_yield_including_last_never_publishes() -> TestResu
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_binding_attempt_entity_and_budget_failures_refund_atomically() -> TestResult {
     use crate::proxy::security::restoration_core::AttemptProvenance;
     let fixture = Ge2Fixture::new(true)?;
@@ -2483,6 +2495,7 @@ fn ge2_lane_sse_binding_attempt_entity_and_budget_failures_refund_atomically() -
 }
 
 #[test]
+#[serial_test::serial]
 fn ge2_lane_sse_unchanged_wire_preserves_crlf_and_charged_bytes_owner() -> TestResult {
     use crate::proxy::security::native_test_support::record_delivery;
     let fixture = Ge2Fixture::new(false)?;
@@ -2617,6 +2630,7 @@ fn ge3_observe<'a>(
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_exact_ordered_contents_and_signed_two_turn_replay() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let source = ge3_source(&fixture.reference);
@@ -2738,6 +2752,7 @@ fn ge3_lane_id_free_single_native_call_result_uses_unambiguous_order_only() -> T
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_inexact_delivered_contents_never_import_dependencies() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let delivered = ge3_deliver_json(&fixture, &ge3_source(&fixture.reference))?;
@@ -2799,6 +2814,7 @@ fn ge3_lane_inexact_delivered_contents_never_import_dependencies() -> TestResult
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_absent_cross_session_provider_protocol_store_retry_isolation() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let delivered = ge3_deliver_json(&fixture, &ge3_source(&fixture.reference))?;
@@ -2892,6 +2908,7 @@ fn ge3_lane_absent_cross_session_provider_protocol_store_retry_isolation() -> Te
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_first_and_edited_function_response_remain_current_dlp() -> TestResult {
     use crate::proxy::security::restoration_contract::HistoryClaim;
     for text in [CONTACT, "Synthetic edited result 13900000000"] {
@@ -2948,6 +2965,7 @@ fn ge3_lane_first_and_edited_function_response_remain_current_dlp() -> TestResul
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_authorized_reference_in_signed_text_or_args_fails_atomically() -> TestResult {
     let fixture = Ge2Fixture::new(true)?;
     let delivered = ge3_deliver_json(&fixture, &ge3_source(&fixture.reference))?;
@@ -3137,6 +3155,7 @@ fn ge3_lane_pair_metadata_exact_capacity_and_work_ceiling_refund() -> TestResult
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_sse_exact_replay_requires_post_last_yield_continuation() -> TestResult {
     use crate::proxy::security::restoration_core::compose_gemini_snapshots;
     use futures::StreamExt;
@@ -3220,6 +3239,7 @@ fn ge3_lane_sse_exact_replay_requires_post_last_yield_continuation() -> TestResu
 }
 
 #[test]
+#[serial_test::serial]
 fn ge3_lane_eviction_removes_history_privilege_not_current_dlp() -> TestResult {
     use std::time::{Duration, Instant};
     let fixture = Ge2Fixture::new(true)?;

@@ -1615,9 +1615,33 @@ async fn execute(
     let inspection_app = consumer_app
         .and_then(|app| app.parse::<crate::app_config::AppType>().ok())
         .unwrap_or_else(|| wire_app.clone());
+    let dlp_request: Option<Arc<super::security::http_restoration::DlpHttpRequest>> = if external {
+        None
+    } else {
+        match super::security::http_restoration::admit_routed_http_request(
+            &state.restoration_gateway,
+            &inspection_app,
+            protocol,
+            &endpoint,
+            &mut body,
+            &parts.headers,
+        ) {
+            Ok(super::security::http_restoration::RestorationAdmission::Admitted(request)) => {
+                Some(Arc::from(request))
+            }
+            Ok(super::security::http_restoration::RestorationAdmission::Intercepted(response)) => {
+                return response
+            }
+            Ok(super::security::http_restoration::RestorationAdmission::Passthrough) => None,
+            Err(super::ProxyError::DlpForward(error)) => {
+                return error.into_routed_app_response(&inspection_app)
+            }
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_inspection_failed"),
+        }
+    };
     let inspection = if external {
         super::security::inspect_external(&wire_app, &consumer, &mut body, &parts.headers)
-    } else {
+    } else if dlp_request.is_none() {
         super::security::inspect_with_context(
             &inspection_app,
             &wire_app,
@@ -1626,6 +1650,8 @@ async fn execute(
             &mut body,
             &parts.headers,
         )
+    } else {
+        Ok(None)
     };
     match inspection {
         Ok(Some(blocked)) => {
@@ -1635,16 +1661,27 @@ async fn execute(
         Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_inspection_failed"),
         _ => {}
     }
-    let inspected_projection =
+    let canonical_projection =
         match super::group_forward::canonical_request(protocol, &body, &endpoint) {
             Ok(value) => value,
             Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_input"),
         };
-    let estimated_tokens = length::estimate(&inspected_projection, &body);
-    let has_images = request_has_images(protocol, &body, &inspected_projection);
+    let routing_body = match &dlp_request {
+        Some(request) => match request.routing_projection(&canonical_projection) {
+            Ok(body) => Some(body),
+            Err(error) => return error.into_routed_app_response(&inspection_app),
+        },
+        None => None,
+    };
+    let inspected_projection = routing_body
+        .as_ref()
+        .map(|(body, _owner)| body)
+        .unwrap_or(&canonical_projection);
+    let estimated_tokens = length::estimate(inspected_projection, &body);
+    let has_images = request_has_images(protocol, &body, inspected_projection);
     let requested_effort =
         crate::services::intent_routing::rules::wire_effort(&body, protocol.format());
-    let folder = crate::services::intent_routing::folders::declared(&inspected_projection);
+    let folder = crate::services::intent_routing::folders::declared(inspected_projection);
     let facts = crate::services::intent_routing::rules::Facts {
         tokens: estimated_tokens
             .map(|estimate| estimate.max(last_input_tokens))
@@ -1701,7 +1738,7 @@ async fn execute(
         && !classifier_candidates.is_empty()
     {
         if let (Some(text), Some(provider)) = (
-            classifier::extract_user_text(&inspected_projection),
+            classifier::extract_user_text(inspected_projection),
             session.classifier.clone(),
         ) {
             let mut eligible = session.group.clone();
@@ -2070,6 +2107,10 @@ async fn execute(
         } else {
             payload
         };
+        if dlp_request.is_some() && (target.upstream.is_none() || official_conversion) {
+            return super::security::http_restoration::DlpForwardError::RestoreUnsupported
+                .into_routed_app_response(&inspection_app);
+        }
         let resolved_subscription = if let Some(provider) = target
             .upstream
             .as_ref()
@@ -2205,7 +2246,10 @@ async fn execute(
         let specialized = resolved_subscription
             .as_ref()
             .is_some_and(super::native_subscription::specialized);
-        let response = if specialized || (protocol != output && !official_conversion) {
+        let response = if dlp_request.is_some()
+            || specialized
+            || (protocol != output && !official_conversion)
+        {
             let Some(upstream) = resolved_subscription.as_ref().or(target.upstream.as_ref()) else {
                 return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
             };
@@ -2214,7 +2258,10 @@ async fn execute(
                 Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_json"),
             };
             bridge_body["model"] = Value::String(target.model.clone());
-            if matches!(agent, "workbuddy" | "workbuddy-ai") && protocol == Protocol::Chat {
+            if matches!(agent, "workbuddy" | "workbuddy-ai")
+                && protocol == Protocol::Chat
+                && protocol != output
+            {
                 super::workbuddy::normalize_chat_for_conversion(&mut bridge_body);
             }
             // Protocol helpers see only allowed caller protocol metadata, never caller credentials.
@@ -2225,6 +2272,11 @@ async fn execute(
                 &mut caller_headers,
             );
             let forward = async {
+                if specialized && dlp_request.is_some() {
+                    return Err(super::ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                    ));
+                }
                 if specialized {
                     return super::native_subscription::forward(
                         upstream,
@@ -2240,6 +2292,12 @@ async fn execute(
                     .await;
                 }
                 let mut observation_extensions = parts.extensions.clone();
+                if let Some(request) = &dlp_request {
+                    observation_extensions.insert(super::group_forward::RoutedRestoration {
+                        request: request.clone(),
+                        actor: agent,
+                    });
+                }
                 if !external {
                     observation_extensions.insert(
                         super::tool_observation::mount::ClientToolObservation(
@@ -2274,6 +2332,9 @@ async fn execute(
             };
             match forwarded {
                 Ok(response) => response,
+                Err(super::ProxyError::DlpForward(error)) => {
+                    return error.into_routed_app_response(&inspection_app)
+                }
                 Err(super::ProxyError::UpstreamError {
                     status,
                     body: error_body,
@@ -3087,5 +3148,9 @@ fn contains_input_image(body: &Value) -> bool {
 
 #[cfg(test)]
 mod global_tests;
+#[cfg(test)]
+mod routed_dlp_agent_matrix;
+#[cfg(test)]
+mod routed_dlp_tests;
 #[cfg(test)]
 mod tests;

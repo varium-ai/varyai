@@ -224,7 +224,7 @@ pub struct RequestForwarder {
     /// `max_attempts = max_retries + 1`，所以 max_retries=0 表示仅尝试一家、
     /// max_retries=3（默认）表示最多 4 家。loop 同时受 providers.len() 自然限制。
     max_attempts: usize,
-    dlp_request: Option<Box<super::security::http_restoration::DlpHttpRequest>>,
+    dlp_request: Option<Arc<super::security::http_restoration::DlpHttpRequest>>,
 }
 
 impl RequestForwarder {
@@ -323,7 +323,15 @@ impl RequestForwarder {
         mut self,
         dlp_request: Option<Box<super::security::http_restoration::DlpHttpRequest>>,
     ) -> Self {
-        self.dlp_request = dlp_request;
+        self.dlp_request = dlp_request.map(Arc::from);
+        self
+    }
+
+    pub(crate) fn with_shared_dlp_request(
+        mut self,
+        request: Arc<super::security::http_restoration::DlpHttpRequest>,
+    ) -> Self {
+        self.dlp_request = Some(request);
         self
     }
 
@@ -2402,6 +2410,17 @@ impl RequestForwarder {
             } else {
                 codex_body
             };
+
+            // The shared group model is routing metadata; Gemini selects it in the URL.
+            if matches!(app_type, AppType::Gemini)
+                && extensions
+                    .get::<super::group_forward::RoutedRestoration>()
+                    .is_some()
+            {
+                if let Some(fields) = request_body.as_object_mut() {
+                    fields.remove("model");
+                }
+            }
 
             if matches!(app_type, AppType::Codex | AppType::GrokBuild)
                 && !codex_responses_to_chat

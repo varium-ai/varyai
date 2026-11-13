@@ -554,7 +554,13 @@ TRAE's displayed product version is distinct from its editor/build version. Doub
 
 ## Client takeover and recovery
 
+### An Agent reopens with the first model instead of the previous choice
+
+Each Agent remembers its last routed model or group independently of its active connection receipt. Turning routing off restores the client configuration without clearing that choice, including after restarting VaryAI or changing between the main window and tray. Re-enabling uses the saved choice while it is still in the current catalog; a removed choice falls back to the current default. The preference contains only the canonical model or group ID in `agent-connections/model-choices/<app>.json` and does not enable routing by itself.
+
 ### Agent switches report configuration conflicts after an upgrade
+
+Explicitly enabling an Agent applies the current connection configuration, replacing older routing fields and colliding shared model IDs. Native clients, Codex and both TRAE editions follow this behavior. Existing recovery information is saved before adopting changed files, and disconnect restores the latest external baseline. Ordinary status polling and catalog refresh do not overwrite externally changed routing fields. File access, malformed configuration and simultaneous writes can still fail; the affected Agent shows the error below its row.
 
 Older installations can retain per-Agent takeover flags and private recovery
 backups. The shared workspace previously displayed those tools as disconnected
@@ -763,7 +769,7 @@ A partial leftover configuration can select `model_provider = "varyai"` without 
 
 An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved ChatGPT login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now distinguishes ChatGPT sign-in from an API key: a supported ChatGPT sign-in keeps account discovery, while an API key alone does not require OpenAI authentication. Keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out, and incomplete login-file reads preserve the established policy.
 
-The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing or reconnecting with a fixed build repairs a still-owned projection; external configuration edits still require the normal conflict/recovery flow. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
+The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing repairs a still-owned projection. Explicitly enabling or reapplying the connection also replaces externally changed routing fields and saves recovery information before writing. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
 
 ### Codex cannot reach local routing through a proxy
 

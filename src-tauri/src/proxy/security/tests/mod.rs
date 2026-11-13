@@ -2188,3 +2188,24 @@ fn workbuddy_editions_use_distinct_audit_conversations() {
         .is_none());
     }
 }
+
+#[tokio::test]
+async fn restore_route_refusal_does_not_claim_the_rule_is_configured_to_block() {
+    for app in [
+        crate::app_config::AppType::Codex,
+        crate::app_config::AppType::Claude,
+        crate::app_config::AppType::Gemini,
+    ] {
+        let response =
+            super::response::build_blocked_response(&app, "dlp_unsupported_route").unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains("隐藏并本地还原"));
+        assert!(message.contains("此请求路径暂不支持安全还原"));
+        assert!(!message.contains("当前处理方式为「拦截」"));
+    }
+}
