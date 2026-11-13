@@ -28,7 +28,7 @@ pub(super) fn project(
             // Older T3 schemas need an explicit migration in T3 before integration.
             return Err(FAILED.into());
         }
-        let visible = crate::services::intent_routing::client::aliases::project(
+        let visible = crate::services::intent_routing::client::aliases::project_readable(
             &mut catalog,
             &mut receipt.model_map,
         )?;
@@ -168,11 +168,11 @@ mod tests {
         );
         assert_eq!(
             installed["providerInstances"]["varyai"]["config"]["customModels"][0]["slug"],
-            "vary-provider/example"
+            "Example"
         );
         assert_eq!(
             installed["defaultModelSelection"],
-            json!({"instanceId":"varyai","model":"vary-provider/example"})
+            json!({"instanceId":"varyai","model":"Example"})
         );
         assert_eq!(
             installed["providerInstances"]["varyai"]["config"]["customModels"][0]["name"],
@@ -187,6 +187,17 @@ mod tests {
             .ok_or(FAILED)?
             .parse()
             .map_err(|_| FAILED)?;
+        assert_eq!(config["model"].as_str(), Some("Example"));
+        let catalog: Value = serde_json::from_str(&read(&home.join("models.json"))?.ok_or(FAILED)?)
+            .map_err(|_| FAILED)?;
+        assert!(
+            catalog["models"]
+                .as_array()
+                .ok_or(FAILED)?
+                .iter()
+                .any(|model| model["slug"] == "vary-provider/example"
+                    && model["visibility"] == "hide")
+        );
         assert_eq!(
             config["model_providers"]["varyai"]["base_url"].as_str(),
             Some("http://127.0.0.1:1/connections/t3code/v1")
@@ -245,6 +256,7 @@ mod tests {
         manager.install(receipt)?;
         let applied = super::super::parse(read(&settings)?.as_deref())?;
         assert_eq!(applied["providerInstances"]["varyai"]["driver"], "codex");
+        assert_eq!(applied["defaultModelSelection"]["model"], "Synthetic-model");
         manager.disconnect("t3code")?;
         assert_eq!(read(&settings)?.as_deref(), Some(source));
         Ok(())

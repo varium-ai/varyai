@@ -80,14 +80,10 @@ impl Server {
         if let Some(tx) = self.stop.take() {
             let _ = tx.send(());
         }
-        if let Some(mut task) = self.task.take() {
-            if tokio::time::timeout(std::time::Duration::from_secs(3), &mut task)
-                .await
-                .is_err()
-            {
-                task.abort();
-                let _ = task.await;
-            }
+        if let Some(task) = self.task.take() {
+            // The task cancels and joins every connection before releasing its sockets.
+            // Timing out a JoinHandle would detach that cleanup instead of stopping it.
+            let _ = task.await;
         }
     }
 }
@@ -102,27 +98,31 @@ impl Drop for Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[tokio::test]
-    async fn stop_joins_a_listener_task_even_after_the_grace_period_expires() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener");
-        let address = listener.local_addr().expect("address");
-        let (started, ready) = tokio::sync::oneshot::channel();
+    async fn stop_waits_for_socket_cleanup_beyond_the_old_deadline(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (tx, rx) = oneshot::channel();
+        let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_cleaned = cleaned.clone();
         let task = tokio::spawn(async move {
-            let _listener = listener;
-            let _ = started.send(());
-            std::future::pending::<()>().await;
+            let _ = rx.await;
+            // Model delayed task scheduling during shutdown on a busy runner.
+            tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
+            drop(listener);
+            task_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
         });
-        ready.await.expect("listener task started");
         Server {
-            stop: None,
+            stop: Some(tx),
             task: Some(task),
         }
         .stop()
         .await;
-        let _rebound = tokio::net::TcpListener::bind(address)
-            .await
-            .expect("shutdown must drop its owned listener");
+
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+        let _rebound = tokio::net::TcpListener::bind(address).await?;
+        Ok(())
     }
 }

@@ -4,11 +4,113 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn project(
+#[cfg(test)]
+pub(super) fn project(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
 ) -> Result<Vec<String>, String> {
     project_menu(catalog, retained, None)
+}
+
+fn wire_name(label: &str) -> String {
+    let ascii = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let name = ascii
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if name.is_empty() {
+        "model".into()
+    } else {
+        name
+    }
+}
+
+/// Projects an Agent-facing catalog to readable ASCII model IDs while retaining
+/// hidden historical aliases for existing sessions.
+pub(crate) fn project_readable(
+    catalog: &mut Value,
+    retained: &mut BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let models = catalog["models"]
+        .as_array_mut()
+        .ok_or("intentRouting.clientFailed")?;
+    let mut entries = models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let id = model["slug"].as_str().ok_or("intentRouting.clientFailed")?;
+            let label = model["display_name"]
+                .as_str()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(id);
+            Ok((id.to_owned(), label.to_owned(), index))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let reserved = entries
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let labels = entries
+        .iter()
+        .map(|(_, label, _)| wire_name(label))
+        .collect::<BTreeSet<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut legacy = Vec::new();
+    for (id, label, index) in entries {
+        let previous = crate::services::agent_connections::model_wire(retained, None, &id);
+        let base = if previous == id {
+            wire_name(&label)
+        } else {
+            previous.to_owned()
+        };
+        let mut name = base.clone();
+        let mut number = 2;
+        while (reserved.contains(&name) && name != id)
+            || retained.get(&name).is_some_and(|owner| owner != &id)
+            || (name != base && labels.contains(&name))
+        {
+            name = format!("{base}-{number}");
+            number += 1;
+        }
+        if !retained.contains_key(&name) && retained.len() >= 16384 {
+            return Err("intentRouting.limit".into());
+        }
+        retained.insert(name.clone(), id.clone());
+        let model = &mut models[index];
+        model["slug"] = Value::String(name.clone());
+        if number > 2 {
+            model["display_name"] = Value::String(format!("{label} ({})", number - 1));
+        }
+        let mut previous = retained
+            .iter()
+            .filter(|(_, owner)| **owner == id)
+            .map(|(wire, _)| wire.clone())
+            .collect::<BTreeSet<_>>();
+        previous.insert(id);
+        previous.remove(&name);
+        for wire in previous {
+            let mut hidden = model.clone();
+            hidden["slug"] = Value::String(wire);
+            hidden["visibility"] = Value::String("hide".into());
+            legacy.push(hidden);
+        }
+    }
+    let visible = models
+        .iter()
+        .filter_map(|model| model["slug"].as_str().map(str::to_owned))
+        .collect();
+    models.extend(legacy);
+    Ok(visible)
 }
 
 pub(super) fn project_menu(
@@ -294,5 +396,38 @@ mod tests {
         ] {
             assert_eq!(value["models"][0][key], value["models"][1][key]);
         }
+    }
+
+    #[test]
+    fn readable_agent_aliases_survive_renaming_and_catalog_reordering() {
+        let mut retained = BTreeMap::new();
+        let mut first = catalog(&[
+            ("vary-provider/a", "Readable Model"),
+            ("vary-provider/b", "Readable Model"),
+            ("vary-provider/c", "Readable-Model-2"),
+        ]);
+        assert_eq!(
+            project_readable(&mut first, &mut retained).unwrap(),
+            ["Readable-Model", "Readable-Model-3", "Readable-Model-2"]
+        );
+        let mut renamed = catalog(&[
+            ("vary-provider/c", "Renamed"),
+            ("vary-provider/a", "Renamed"),
+            ("vary-provider/b", "Renamed"),
+        ]);
+        let names = project_readable(&mut renamed, &mut retained).unwrap();
+        assert_eq!(
+            names,
+            ["Readable-Model-2", "Readable-Model", "Readable-Model-3"]
+        );
+        assert_eq!(retained["Readable-Model"], "vary-provider/a");
+        let hidden = renamed["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "vary-provider/a")
+            .unwrap();
+        assert_eq!(hidden["visibility"], "hide");
+        assert_eq!(hidden["context_window"], 123456);
     }
 }
