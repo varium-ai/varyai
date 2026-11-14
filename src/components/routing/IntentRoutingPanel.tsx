@@ -345,6 +345,7 @@ export function IntentRoutingPanel({
   }
   async function saveGroup(value: RoutingGroup) {
     const saved = await intentRoutingApi.save(value);
+    await client.cancelQueries({ queryKey: ["intent-routing-groups"] });
     client.setQueryData<RoutingCatalog>(
       ["intent-routing-groups"],
       (current) => {
@@ -365,6 +366,7 @@ export function IntentRoutingPanel({
   }
   async function removeGroup(id: string, revision: number) {
     await intentRoutingApi.remove(id, revision);
+    await client.cancelQueries({ queryKey: ["intent-routing-groups"] });
     client.setQueryData<RoutingCatalog>(["intent-routing-groups"], (current) =>
       current
         ? {
@@ -453,11 +455,7 @@ export function IntentRoutingPanel({
     } catch (cause) {
       report(cause);
     } finally {
-      try {
-        await refreshRoutingStatus();
-      } catch (cause) {
-        report(cause);
-      }
+      refreshRoutingStatus();
       if (removedAll) {
         setSelectedGroups(null);
         setConfirmBulk(false);
@@ -496,6 +494,7 @@ export function IntentRoutingPanel({
         if (from < 0 || to < 0 || from === to) return;
         order.splice(to, 0, ...order.splice(from, 1));
         await intentRoutingApi.arrange(order);
+        await client.cancelQueries({ queryKey: ["intent-routing-groups"] });
         client.setQueryData<RoutingCatalog>(
           ["intent-routing-groups"],
           (catalog) =>
@@ -504,7 +503,7 @@ export function IntentRoutingPanel({
               : catalog,
         );
         toast.success(t("routingPage.orderSaved"));
-        await refreshRoutingStatus();
+        refreshRoutingStatus();
       });
     } catch (cause) {
       report(cause);
@@ -517,7 +516,7 @@ export function IntentRoutingPanel({
   async function publishGroup(group: RoutingGroup, enabled: boolean) {
     await groupOperation(group.id, async () => {
       await saveGroup({ ...group, enabled });
-      await refreshRoutingStatus();
+      refreshRoutingStatus();
     });
   }
   function report(cause: unknown) {
@@ -527,14 +526,14 @@ export function IntentRoutingPanel({
       knownErrors.has(key) ? `intentRouting.${key}` : "intentRouting.failed",
     );
   }
-  async function refreshRoutingStatus() {
-    await Promise.all([
+  function refreshRoutingStatus() {
+    void Promise.all([
       client.invalidateQueries({ queryKey: ["intent-routing-groups"] }),
       client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
       client.invalidateQueries({ queryKey: ["intent-routing-providers"] }),
       client.invalidateQueries({ queryKey: ["gateway-catalog"] }),
       client.invalidateQueries({ queryKey: ["agent-model-catalog"] }),
-    ]);
+    ]).catch(report);
   }
   function addPattern(): boolean {
     if (!draft) return false;
@@ -578,7 +577,7 @@ export function IntentRoutingPanel({
       setPatternInput("");
       setPending(false);
       edit(null);
-      await refreshRoutingStatus();
+      refreshRoutingStatus();
     };
     await groupOperation(draft.id, () =>
       draft.revision === 0 ? mutateCatalog(submit) : submit(),
@@ -633,7 +632,7 @@ export function IntentRoutingPanel({
   ) {
     await groupOperation(group.id, async () => {
       await saveGroup({ ...group, manualMemberId });
-      await refreshRoutingStatus();
+      refreshRoutingStatus();
     });
   }
   async function reload() {
@@ -678,7 +677,7 @@ export function IntentRoutingPanel({
             current?.id === target.id ? null : current,
           );
         }
-        await refreshRoutingStatus();
+        refreshRoutingStatus();
       }),
     );
   }

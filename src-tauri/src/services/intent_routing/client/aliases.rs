@@ -5,6 +5,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
+#[path = "magpie_alias_http_tests.rs"]
+mod magpie_http_tests;
+
+#[cfg(test)]
 pub(super) fn project(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
@@ -306,6 +310,41 @@ pub(super) fn project_menu(
     if reserved.len() != entries.len() {
         return Err("intentRouting.clientConflict".into());
     }
+    // Magpie stores Codex subscription choices as codex/<model>, while imported
+    // accounts have their own provider IDs. Bind only an unambiguous published
+    // subscription route, and retain its owner even if that route is removed.
+    let mut codex_legacy: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (index, (canonical, _, _, _)) in entries.iter().enumerate() {
+        let Some(session) = menu
+            .and_then(|menu| menu.groups.get(canonical))
+            .filter(|_| canonical.starts_with("vary-provider/"))
+            .filter(|_| models[index]["visibility"] != "hide")
+        else {
+            continue;
+        };
+        let Some(target) = session.targets.first().filter(|target| target.official) else {
+            continue;
+        };
+        if session.targets.iter().all(|other| {
+            other.official && other.provider_id == target.provider_id && other.model == target.model
+        }) {
+            codex_legacy
+                .entry(format!("codex/{}", target.model))
+                .or_default()
+                .insert(canonical.clone());
+        }
+    }
+    for (wire, owners) in codex_legacy {
+        if owners.len() != 1 || reserved.contains(&wire) || retained.contains_key(&wire) {
+            continue;
+        }
+        if retained.len() >= 16384 {
+            return Err("intentRouting.limit".into());
+        }
+        if let Some(owner) = owners.into_iter().next() {
+            retained.insert(wire, owner);
+        }
+    }
     for (index, (canonical, id, _, _)) in entries.into_iter().enumerate() {
         if retained.get(&id).is_some_and(|owner| owner != &canonical) {
             return Err("intentRouting.clientConflict".into());
@@ -316,7 +355,7 @@ pub(super) fn project_menu(
         retained.insert(id.clone(), canonical.clone());
         models[index]["slug"] = Value::String(id.clone());
         visible.push(id.clone());
-        // Preserve historical VaryAI IDs only as hidden compatibility entries.
+        // Preserve historical selectors only as hidden compatibility entries.
         let mut previous = retained
             .iter()
             .filter(|(_, owner)| **owner == canonical)
@@ -502,7 +541,7 @@ mod tests {
         }
     }
 
-    fn source_menu(sources: &[(&str, &str, bool)]) -> crate::proxy::intent::Menu {
+    pub(super) fn source_menu(sources: &[(&str, &str, bool)]) -> crate::proxy::intent::Menu {
         use crate::proxy::intent::{Menu, Session, Target};
         use std::sync::Arc;
         let mut menu = Menu {
@@ -545,6 +584,108 @@ mod tests {
                 .insert(format!("vary-provider/{id}"), Arc::new(session));
         }
         menu
+    }
+
+    #[test]
+    fn magpie_codex_alias_preserves_the_unique_subscription_source() {
+        let menu = source_menu(&[("account-id", "Codex", true), ("relay", "Relay", false)]);
+        let mut value = catalog(&[
+            ("vary-provider/account-id", "Synthetic model"),
+            ("vary-provider/relay", "Synthetic model"),
+        ]);
+        let mut retained = BTreeMap::new();
+        let visible = project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert_eq!(
+            retained.get("codex/synthetic-model").map(String::as_str),
+            Some("vary-provider/account-id")
+        );
+        assert_eq!(
+            selected(&visible, &retained, "codex/synthetic-model"),
+            Some("account-id/synthetic-model")
+        );
+        let hidden = value["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "codex/synthetic-model")
+            .unwrap();
+        assert_eq!(hidden["visibility"], "hide");
+        assert_eq!(hidden["context_window"], 123456);
+        assert_eq!(visible.len(), 2);
+        assert!(!retained.contains_key("synthetic-model"));
+        assert!(!retained.contains_key("codex/unavailable-model"));
+    }
+
+    #[test]
+    fn magpie_codex_alias_rejects_ambiguous_and_unlisted_sources() {
+        let menu = source_menu(&[("one", "First", true), ("two", "Second", true)]);
+        let mut value = catalog(&[
+            ("vary-provider/one", "First"),
+            ("vary-provider/two", "Second"),
+        ]);
+        let mut retained = BTreeMap::new();
+        project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert!(!retained.contains_key("codex/synthetic-model"));
+
+        let mut value = catalog(&[("vary-provider/one", "Hidden")]);
+        value["models"][0]["visibility"] = json!("hide");
+        let mut retained = BTreeMap::new();
+        project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert!(!retained.contains_key("codex/synthetic-model"));
+
+        let mut menu = menu;
+        let session = menu.groups["vary-provider/one"].clone();
+        menu.groups.insert("vary-auto/group".into(), session);
+        let mut value = catalog(&[("vary-auto/group", "Group")]);
+        let mut retained = BTreeMap::new();
+        project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert!(!retained.contains_key("codex/synthetic-model"));
+    }
+
+    #[test]
+    fn magpie_codex_alias_never_rebinds_after_removal_or_account_ambiguity() {
+        let mut retained = BTreeMap::new();
+        let first = source_menu(&[("original", "Original", true)]);
+        project_menu(
+            &mut catalog(&[("vary-provider/original", "Original")]),
+            &mut retained,
+            Some(&first),
+        )
+        .unwrap();
+        let menu = source_menu(&[("original", "Renamed", true), ("other", "Other", true)]);
+        let mut value = catalog(&[
+            ("vary-provider/other", "Other"),
+            ("vary-provider/original", "Renamed"),
+        ]);
+        let visible = project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert_eq!(
+            selected(&visible, &retained, "codex/synthetic-model"),
+            Some("original/synthetic-model")
+        );
+        let mut value = catalog(&[("vary-provider/other", "Replacement")]);
+        let visible = project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert_eq!(
+            retained.get("codex/synthetic-model").map(String::as_str),
+            Some("vary-provider/original")
+        );
+        assert_eq!(selected(&visible, &retained, "codex/synthetic-model"), None);
+        assert!(!value["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["slug"] == "codex/synthetic-model"));
+    }
+
+    #[test]
+    fn magpie_codex_alias_does_not_override_an_explicit_provider_identity() {
+        let menu = source_menu(&[("account", "Codex", true), ("codex", "API", false)]);
+        let mut value = catalog(&[
+            ("vary-provider/account", "Subscription"),
+            ("vary-provider/codex", "API"),
+        ]);
+        let mut retained = BTreeMap::new();
+        project_menu(&mut value, &mut retained, Some(&menu)).unwrap();
+        assert_eq!(retained["codex/synthetic-model"], "vary-provider/codex");
     }
 
     #[test]

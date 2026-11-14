@@ -720,14 +720,14 @@ impl Manager {
     }
     pub(crate) fn activate_menu_with_selection(
         &self,
-        menu: Arc<crate::proxy::intent::Menu>,
+        menu: impl Into<crate::proxy::intent::PublishedMenu>,
         base: &str,
         native_url: Option<&str>,
         reconnect: bool,
         selected: Option<&str>,
     ) -> Result<(), String> {
         self.activate_menu_with_intent(
-            menu,
+            menu.into(),
             base,
             native_url,
             if reconnect {
@@ -741,17 +741,23 @@ impl Manager {
 
     pub(crate) fn reapply_menu_with_selection(
         &self,
-        menu: Arc<crate::proxy::intent::Menu>,
+        menu: impl Into<crate::proxy::intent::PublishedMenu>,
         base: &str,
         native_url: Option<&str>,
         selected: Option<&str>,
     ) -> Result<(), String> {
-        self.activate_menu_with_intent(menu, base, native_url, ApplyIntent::Reapply, selected)
+        self.activate_menu_with_intent(
+            menu.into(),
+            base,
+            native_url,
+            ApplyIntent::Reapply,
+            selected,
+        )
     }
 
     fn activate_menu_with_intent(
         &self,
-        mut menu: Arc<crate::proxy::intent::Menu>,
+        mut menu: crate::proxy::intent::PublishedMenu,
         base: &str,
         native_url: Option<&str>,
         intent: ApplyIntent,
@@ -764,7 +770,7 @@ impl Manager {
         // or saved connection intent can publish this credential into a fresh runtime.
         if !self.runtime.menu_active() {
             if let Some(identity) = self.connection_identity()? {
-                Arc::make_mut(&mut menu).token = identity.token;
+                Arc::make_mut(&mut menu.menu).token = identity.token;
             }
         }
         let mut groups = menu
@@ -921,7 +927,10 @@ impl Manager {
             .get("model_reasoning_effort")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let menu = self.runtime.menu_snapshot()?.filter(|m| m.token == token);
+        let menu = self
+            .runtime
+            .menu_publication()?
+            .filter(|m| m.token == token);
         let mut projection = if let Some(menu) = &menu {
             let mut ids = groups.iter().map(|group| &group.id).collect::<Vec<_>>();
             ids.sort();

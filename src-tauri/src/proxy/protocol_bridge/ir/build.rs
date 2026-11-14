@@ -520,10 +520,37 @@ fn openai_parts(
 
 fn chat(r: &Request) -> Result<Value, ProxyError> {
     let mut messages = Vec::new();
-    if !r.system.is_empty() {
-        messages.push(json!({"role":"system","content":openai_parts(&r.system,false,false)?}));
-    }
+    let mut system = openai_parts(&r.system, false, false)?;
+    let mut replied = false;
     for m in &r.messages {
+        replied |= m.role == "assistant"
+            || m.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    Part::ToolCall { .. } | Part::ToolResult { .. } | Part::Thinking { .. }
+                )
+            });
+        if matches!(m.role.as_str(), "system" | "developer") {
+            let mut content = openai_parts(&m.parts, false, false)?;
+            if !replied {
+                system.extend(content);
+            } else if !content.is_empty() {
+                // Chat gateways may reject developer roles and later system
+                // messages. Keep updates in place using Magpie's reminder form.
+                let content = if content.iter().all(|part| part["type"] == "text") {
+                    json!(format!(
+                        "<system-reminder>\n{}\n</system-reminder>",
+                        text(&m.parts)
+                    ))
+                } else {
+                    content.insert(0, json!({"type":"text","text":"<system-reminder>\n"}));
+                    content.push(json!({"type":"text","text":"\n</system-reminder>"}));
+                    json!(content)
+                };
+                messages.push(json!({"role":"user","content":content}));
+            }
+            continue;
+        }
         for p in &m.parts {
             if let Part::ToolResult { call_id, parts, .. } = p {
                 let content = openai_parts(parts, false, false)?;
@@ -566,6 +593,18 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         {
             messages.push(message);
         }
+    }
+    if !system.is_empty() {
+        let content = if system.iter().all(|part| part["type"] == "text") {
+            json!(system
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        } else {
+            json!(system)
+        };
+        messages.insert(0, json!({"role":"system","content":content}));
     }
     let mut body = json!({"messages":messages});
     if let Some(n) = r.max_tokens {
@@ -1218,6 +1257,81 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn chat_maps_initial_and_late_instruction_roles_without_losing_content(
+    ) -> Result<(), crate::proxy::ProxyError> {
+        let body = json!({
+            "model":"synthetic", "instructions":"Synthetic root instruction",
+            "input":[
+                {"role":"developer","content":"Synthetic initial instruction"},
+                {"role":"user","content":"Synthetic first question"},
+                {"role":"system","content":"Synthetic initial context"},
+                {"role":"assistant","content":"Synthetic first answer"},
+                {"role":"developer","content":"Synthetic updated instruction"},
+                {"role":"system","content":"Synthetic updated context"},
+                {"role":"user","content":"Synthetic followup"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let before = parsed.clone();
+        let wire = request(&parsed, Protocol::Chat)?;
+        assert_eq!(
+            wire["messages"],
+            json!([
+                {"role":"system","content":"Synthetic root instruction\n\nSynthetic initial instruction\n\nSynthetic initial context"},
+                {"role":"user","content":"Synthetic first question"},
+                {"role":"assistant","content":"Synthetic first answer"},
+                {"role":"user","content":"<system-reminder>\nSynthetic updated instruction\n</system-reminder>"},
+                {"role":"user","content":"<system-reminder>\nSynthetic updated context\n</system-reminder>"},
+                {"role":"user","content":"Synthetic followup"}
+            ])
+        );
+        assert_eq!(
+            parsed, before,
+            "Chat conversion must not mutate the shared IR"
+        );
+        let native = request(&parsed, Protocol::Responses)?;
+        assert_eq!(native["input"][1]["role"], "developer");
+        assert_eq!(native["input"][5]["role"], "developer");
+        Ok(())
+    }
+
+    #[test]
+    fn chat_keeps_instruction_updates_after_tool_turns_in_place(
+    ) -> Result<(), crate::proxy::ProxyError> {
+        let body = json!({"model":"synthetic", "input":[
+            {"role":"developer","content":"Synthetic initial instruction"},
+            {"role":"user","content":"Synthetic question"},
+            {"type":"function_call","call_id":"synthetic-call","name":"lookup","arguments":"{}"},
+            {"type":"function_call_output","call_id":"synthetic-call","output":"Synthetic tool result"},
+            {"role":"developer","content":[
+                {"type":"input_text","text":"Synthetic visual context"},
+                {"type":"input_image","image_url":"https://synthetic.invalid/image.png"}
+            ]},
+            {"role":"user","content":"Synthetic followup"}
+        ]});
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Chat)?;
+        assert_eq!(
+            wire["messages"][0]["content"],
+            "Synthetic initial instruction"
+        );
+        assert_eq!(wire["messages"][2]["tool_calls"][0]["id"], "synthetic-call");
+        assert_eq!(wire["messages"][3]["tool_call_id"], "synthetic-call");
+        assert_eq!(wire["messages"][4]["role"], "user");
+        assert_eq!(
+            wire["messages"][4]["content"],
+            json!([
+                {"type":"text","text":"<system-reminder>\n"},
+                {"type":"text","text":"Synthetic visual context"},
+                {"type":"image_url","image_url":{"url":"https://synthetic.invalid/image.png"}},
+                {"type":"text","text":"\n</system-reminder>"}
+            ])
+        );
+        assert_eq!(wire["messages"][5]["content"], "Synthetic followup");
+        Ok(())
+    }
+
     #[test]
     fn chat_single_text_uses_plain_content_and_keeps_multi_part_content() {
         for (parts, plain) in [

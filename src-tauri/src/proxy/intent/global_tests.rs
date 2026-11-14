@@ -2604,19 +2604,28 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
 #[serial_test::serial]
 async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    check_codex_chat_optional_search("grok-4.5", StatusCode::GONE).await
+    check_codex_chat_optional_search("grok-4.5", StatusCode::GONE, None).await
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn codex_chat_optional_search_is_not_a_generic_provider_capability(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    check_codex_chat_optional_search("gpt-6.1-sol", StatusCode::BAD_REQUEST).await
+    check_codex_chat_optional_search("gpt-6.1-sol", StatusCode::BAD_REQUEST, None).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_chat_unsupported_ultrafast_uses_the_supported_priority_tier(
+) -> Result<(), Box<dyn std::error::Error>> {
+    check_codex_chat_optional_search("gpt-6.1-sol", StatusCode::BAD_REQUEST, Some("ultrafast"))
+        .await
 }
 
 async fn check_codex_chat_optional_search(
     model: &str,
     rejected: StatusCode,
+    tier: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
@@ -2643,6 +2652,9 @@ async fn check_codex_chat_optional_search(
                 }
                 if body["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["function"].get("strict").is_some())) {
                     return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic unsupported Chat strict flag"}}))).into_response();
+                }
+                if body["service_tier"] == "ultrafast" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic unsupported service_tier"}}))).into_response();
                 }
                 if body["stream"] == true {
                     let events = [
@@ -2692,13 +2704,22 @@ async fn check_codex_chat_optional_search(
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     for stream in [false, true] {
-        let response = client.post(format!("http://127.0.0.1:{}/intent/v1/responses", info.port))
+        let mut request = json!({"model":group().alias(),"stream":stream,"store":false,
+            "input":[{"role":"developer","content":"Synthetic developer instruction"},{"role":"user","content":"Synthetic prompt"}],
+            "tools":[{"type":"web_search"},{"type":"namespace","name":"synthetic_namespace","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"strict":true}]}],
+            "tool_choice":"auto","parallel_tool_calls":true,"reasoning":{"effort":"high"}});
+        if let Some(tier) = tier {
+            request["service_tier"] = json!(tier);
+        }
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/intent/v1/responses",
+                info.port
+            ))
             .bearer_auth("synthetic-local-token")
-            .json(&json!({"model":group().alias(),"stream":stream,"store":false,
-                "input":[{"role":"developer","content":"Synthetic developer instruction"},{"role":"user","content":"Synthetic prompt"}],
-                "tools":[{"type":"web_search"},{"type":"namespace","name":"synthetic_namespace","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"strict":true}]}],
-                "tool_choice":"auto","parallel_tool_calls":true,"reasoning":{"effort":"high"}}))
-            .send().await?;
+            .json(&request)
+            .send()
+            .await?;
         assert_eq!(response.status(), StatusCode::OK);
         let text = response.text().await?;
         assert!(text.contains("Synthetic answer"));
@@ -2721,6 +2742,9 @@ async fn check_codex_chat_optional_search(
         assert!(sent.get("web_search_options").is_none());
         assert_eq!(sent["model"], model);
         assert_eq!(sent["stream"], stream);
+        if tier.is_some() {
+            assert_eq!(sent["service_tier"], "priority");
+        }
         assert_eq!(sent["tools"].as_array().map(Vec::len), Some(1));
         assert_eq!(
             sent["tools"][0]["function"]["name"],

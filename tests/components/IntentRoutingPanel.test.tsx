@@ -98,6 +98,24 @@ async function openManagement() {
 }
 
 describe("IntentRoutingPanel", () => {
+  it("unlocks an acknowledged group toggle while catalog queries are still pending", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const view = mount(client);
+    await screen.findByText(group.name);
+    const row = view.container.querySelector(
+      '[data-routing-group="fixture"]',
+    ) as HTMLElement;
+    const toggle = within(row).getByRole("switch");
+    vi.spyOn(client, "invalidateQueries").mockReturnValue(
+      new Promise(() => {}),
+    );
+    fireEvent.click(toggle);
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toBeChecked();
+  });
   it.each([false, true])(
     "keeps independent rows usable and does not release another row's operation (first fails: %s)",
     async (firstFails) => {
@@ -1501,9 +1519,8 @@ describe("IntentRoutingPanel", () => {
     finishSecond();
     await waitFor(() => expect(intentRoutingApi.list).toHaveBeenCalledTimes(2));
     expect(
-      screen.getByRole("dialog", { name: "routingPage.removeSelected" }),
-    ).toBe(activeConfirmation);
-    expect(confirm).toBeDisabled();
+      screen.queryByRole("dialog", { name: "routingPage.removeSelected" }),
+    ).not.toBeInTheDocument();
     finishRefresh({ groups: [], autoCreate: false, omittedGroups: 0 });
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -2776,7 +2793,7 @@ describe("IntentRoutingPanel", () => {
     ).toBeEnabled();
     expect(
       within(list.children[0] as HTMLElement).getByRole("switch"),
-    ).toBeDisabled();
+    ).toBeEnabled();
     finishRefresh();
     await screen.findByText("Saved group");
     expect(screen.queryByRole("form")).not.toBeInTheDocument();

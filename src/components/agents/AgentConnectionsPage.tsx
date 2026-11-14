@@ -287,13 +287,25 @@ export function AgentConnectionsPage({
   const updates = useAgentUpdates(
     APP_IDS.filter((app) => installations.data?.[app]),
   );
-  // Mutation-cache state survives navigation while the native restart continues.
+  // Mutation-cache state survives navigation while native operations continue.
+  const pendingDisconnects = useMutationState({
+    filters: {
+      mutationKey: ["agent-disconnect"],
+      exact: true,
+      status: "pending",
+    },
+    select: (mutation) => mutation.state.variables as AppId,
+  });
   const pendingRestarts = useMutationState({
     filters: { mutationKey: ["agent-restart"], exact: true, status: "pending" },
     select: (mutation) => mutation.state.variables as AppId,
   });
   const rowOperation = (app: AppId): ConnectionOperation | undefined =>
-    pendingRestarts.includes(app) ? "restarting" : operations[app];
+    pendingDisconnects.includes(app)
+      ? "disconnecting"
+      : pendingRestarts.includes(app)
+        ? "restarting"
+        : operations[app];
   const rowBusy = (app: AppId | null) =>
     app !== null && (!!rowOperation(app) || updates.isBusy(app));
   useWorkspaceEditing(false, !!busy || authorizingModel, onEditingChange);
@@ -443,6 +455,26 @@ export function AgentConnectionsPage({
       setAuthorizingModel(false);
       refreshConnectionViews();
     }
+  }
+  const disconnectMutation = useMutation({
+    mutationKey: ["agent-disconnect"],
+    mutationFn: (app: AppId) => agentConnectionsApi.set(app, false, null),
+    retry: false,
+    onError: (_cause, app) => {
+      setError(app, "agentConnections.failed");
+      toast.error(`${name(app)}: ${t("agentConnections.failed")}`);
+    },
+    onSettled: (_data, _error, app) => {
+      refreshConnectionViews();
+      operationLocks.current.delete(app);
+    },
+  });
+  function disconnect(app: AppId) {
+    if (rowBusy(app) || operationLocks.current.has(app)) return;
+    operationLocks.current.add(app);
+    setError(app, null);
+    setDisconnecting(null);
+    disconnectMutation.mutate(app);
   }
   const restartMutation = useMutation({
     mutationKey: ["agent-restart"],
@@ -1653,7 +1685,7 @@ export function AgentConnectionsPage({
             <Button
               className="mp-primary"
               disabled={rowBusy(disconnecting)}
-              onClick={() => disconnecting && void apply(disconnecting, false)}
+              onClick={() => disconnecting && disconnect(disconnecting)}
             >
               {t("agentConnections.disconnectRestore")}
             </Button>

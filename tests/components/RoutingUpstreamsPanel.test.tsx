@@ -196,6 +196,51 @@ describe("global upstream editor", () => {
       ],
     },
   };
+  it("acknowledges a saved toggle while catalog queries are still pending", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => ({
+      ...value,
+      revision: value.revision + 1,
+    }));
+    mount(client);
+    const toggle = await screen.findByRole("switch", {
+      name: `modelPicker.enableProvider ${primary.name}`,
+    });
+    fireEvent.change(screen.getByLabelText("modelProviders.find"), {
+      target: { value: primary.name },
+    });
+    vi.spyOn(client, "invalidateQueries").mockReturnValue(
+      new Promise(() => {}),
+    );
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", {
+          name: `modelPicker.enableProvider ${primary.name}`,
+        }),
+      ).toBeEnabled(),
+    );
+    expect(client.getQueryData(["routing-upstreams"])).toEqual([
+      expect.objectContaining({ id: primary.id, revision: 5, enabled: false }),
+    ]);
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: `modelPicker.enableProvider ${primary.name}`,
+      }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(2),
+    );
+    expect(routingUpstreamsApi.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision: 5, enabled: true }),
+    );
+  });
   it.each([
     [0, "generic-model-y"],
     [0.999, "generic-memory"],
@@ -255,6 +300,39 @@ describe("global upstream editor", () => {
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
         expect.objectContaining({ icon: saved.icon }),
       ),
+    );
+  });
+
+  it("keeps a renamed provider when a background read already returned its new ID", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => {
+      const saved = { ...value, revision: value.revision + 1 };
+      client.setQueryData(["routing-upstreams"], [saved]);
+      return saved;
+    });
+    mount(client);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: `common.edit ${primary.name}`,
+      }),
+    );
+    fireEvent.change(await screen.findByLabelText("ID"), {
+      target: { value: "renamed-provider" },
+    });
+    vi.spyOn(client, "invalidateQueries").mockReturnValue(
+      new Promise(() => {}),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(["routing-upstreams"])).toEqual([
+        expect.objectContaining({ id: "renamed-provider", revision: 5 }),
+      ]),
     );
   });
 

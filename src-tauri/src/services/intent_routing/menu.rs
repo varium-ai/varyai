@@ -427,6 +427,7 @@ pub(crate) async fn prepare(
     Ok(menu)
 }
 
+#[cfg(test)]
 pub(crate) async fn refresh_active(service: &crate::services::ProxyService) {
     let started = Instant::now();
     if service.refresh_global_routing().await.is_err() {
@@ -448,6 +449,11 @@ pub(crate) async fn refresh_active(service: &crate::services::ProxyService) {
         started.elapsed().saturating_sub(synced).as_millis(),
         started.elapsed().as_millis()
     );
+}
+
+/// Queue publication after persistence; slow client locks must not hold a CRUD command open.
+pub(crate) async fn refresh_after_change(service: &crate::services::ProxyService) {
+    service.schedule_routing_refresh().await;
 }
 
 pub(crate) async fn prepare_with_stand_ins(

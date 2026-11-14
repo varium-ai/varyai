@@ -105,7 +105,9 @@ async fn unavailable_historical_models_require_reselection_without_bypassing_aut
                 .as_str()
                 .ok_or("missing guidance")?;
             assert!(message.contains("Select a model"));
-            assert!(message.contains("new conversation"));
+            assert!(message.contains("in this conversation"));
+            assert!(message.contains("retry"));
+            assert!(!message.contains("new conversation"));
         }
         let text = failure.to_string();
         assert!(!text.contains("legacy-provider/legacy-model"));
@@ -1512,7 +1514,9 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
         assert_eq!(failure["error"]["code"], "routing_model_unavailable");
         let message = failure["error"]["message"].as_str().expect("error message");
         assert!(message.contains("Select a model"));
-        assert!(message.contains("new conversation"));
+        assert!(message.contains("in this conversation"));
+        assert!(message.contains("retry"));
+        assert!(!message.contains("new conversation"));
         assert!(!message.contains(unavailable));
         assert!(!failure.to_string().contains("synthetic-private-message"));
         assert_eq!(

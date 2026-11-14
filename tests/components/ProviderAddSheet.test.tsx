@@ -30,6 +30,12 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
 }));
 beforeEach(() => {
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
+  vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => ({
+    ...value,
+    id: value.id || "created",
+    revision: value.revision + 1,
+    hasApiKey: true,
+  }));
 });
 function mount(startAdding = false) {
   return render(
@@ -152,10 +158,6 @@ it("opens directly on the add page when requested by another workspace page", as
   ).toBeInTheDocument();
 });
 it("returns to the list after saving a new provider", async () => {
-  vi.mocked(routingUpstreamsApi.save).mockResolvedValue({
-    id: "created",
-    revision: 1,
-  } as never);
   mount(true);
   fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
   const editor = screen.getByRole("dialog", { name: "DeepSeek" });

@@ -2,6 +2,31 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Provider or routing-group edits wait for a busy Agent
+
+Earlier saves and deletions waited for global catalog preparation, every connected
+Agent's configuration refresh, and Codex menu publication after the database write
+had already succeeded. A busy client could therefore keep an unrelated editor or
+confirmation dialog pending. The UI also waited for its follow-up catalog queries.
+
+Resource commands now return after persistence and enqueue a coalesced background
+refresh. Each Agent retains its own configuration lock and recovery record; a busy
+Agent does not prevent newer changes from reaching other Agents. The UI applies
+the acknowledged record and refreshes lists and status in the background. Explicit
+model discovery and connectivity tests still wait for the requested network work.
+Provider lists share native subscription-account reads within each query, including
+failed reads, and read them again on the next query.
+
+While a changed resource is being published, requests against an older shared
+catalog return `503 routing_catalog_stale`. This also applies to managed models
+on both Codex ingress paths: removed or disabled resources cannot keep forwarding
+through an old client catalog. Retry after synchronization. Ordinary native Codex
+passthrough retains its own authentication and forwarding behavior. If the affected
+Agent reports a configuration conflict, review its status and reconnect it.
+
+Load the updated backend to use this behavior. The synthetic timing and regression
+record is in [Provider and routing CRUD latency](qa/2026-11-14-provider-routing-crud-latency.md).
+
 ## Application update download appears stuck
 
 The update dialog shows preparation, download and installation separately on macOS and Windows. During download it shows received bytes, the total size and percentage when the server supplies a size, or an indeterminate progress bar when the size is unknown. Progress remains in the footer while release notes scroll. After 15 seconds without new data, a message explains that the network may be slow; receiving more data clears that message.
@@ -233,11 +258,34 @@ conversion cannot promise server-enforced strict outputs; use a supported native
 protocol when that guarantee is required. No source protocol or key change is
 needed for the Chat compatibility fix.
 
+Codex's `ultrafast` service tier can produce the same HTTP 400 on a Chat gateway
+that accepts `priority` but does not support `ultrafast`. When converting Responses
+to Chat, VaryAI follows Magpie's capability-based fallback: an unsupported
+`ultrafast` request uses `priority` only when the selected target supports that
+tier. A target explicitly offering `ultrafast` retains it. This does not alter
+native Chat/Responses passthrough, unknown tiers or a target with no supported
+fallback. Converted-request rejection logs include fixed diagnostic hints such
+as `service_tier`, without upstream text or request values. Match the failing
+desktop request's time to that log; a synthetic tier failure alone does not prove
+the cause of a separate desktop failure.
+
 Source edits do not change an already running VaryAI backend. The corrected
 backend must be built and explicitly restarted before retesting the desktop
 conversation. A successful direct request without Codex's tool declarations does
 not validate this path. Reproduce with a fresh Codex conversation and verify a
 terminal response, not merely HTTP 200 or the first streamed bytes.
+
+If the fixed diagnostic hints contain `messages`, check instruction-role
+conversion as well. A Chat gateway can accept `system` at the start yet reject
+Codex's `developer` role or a `system` message after an assistant reply. The same
+endpoint, key and model can therefore work through Magpie while failing through
+an older VaryAI Chat converter. VaryAI now folds initial instruction messages into
+the leading system prompt and keeps later updates in place as labeled
+`<system-reminder>` user messages, following Magpie's compatibility mapping.
+This applies to conversion; native protocol forwarding retains its wire format.
+Verify both a new conversation and a followup after a tool result. The generic
+`routing_upstream_rejected` code alone cannot distinguish this issue from the
+other upstream refusals above.
 
 ## Kimi Code desktop update leaves the installed version unchanged
 
@@ -842,14 +890,24 @@ provider-qualified name from a previous gateway. Restarting or retrying that
 conversation preserves its saved model and can repeat the error. This is
 separate from a gateway outage or expired local credential.
 
-Select a model from the current VaryAI model list inside Codex. If automatic
-compaction blocks the old conversation before the selection takes effect, start
+The error asks you to select a model from the current VaryAI model list in the
+same conversation, then retry. Selecting a model preserves the conversation.
+If automatic compaction blocks it before the selection takes effect, start
 a new conversation and choose the model there. Keep the old conversation for
-reference. Updated migration checks leave incompatible histories on their
-original provider and do not guess a new account or model from a matching name.
-Already migrated conversations still require an explicit model selection; the
-fix does not bulk-rewrite historical choices. See the
-[historical-model verification report](qa/2026-11-06-codex-historical-model-routing.md).
+reference. Provider migration preserves saved model IDs independently of their
+availability; restarting alone does not translate an old gateway's selector.
+
+Updated builds recognize Magpie's `codex/<model>` subscription selectors when
+exactly one published Codex subscription route offers that exact model. The
+hidden compatibility entry uses the existing route and its account policy; an
+API provider offering the same model is not a substitute. The mapping persists
+across catalog refreshes and reconnection. Removing its original route makes
+the old selector unavailable instead of assigning it to another account.
+Multiple matching subscription routes without a retained mapping, unknown
+models, and unavailable sources still require explicit selection. No saved
+conversation model or history is rewritten. Load the updated backend and
+refresh or reconnect the Codex model menu to publish these compatibility
+entries. See the [Magpie selector verification report](qa/2026-11-14-magpie-codex-model-aliases.md).
 
 ### Codex reports routing_unknown_continuation, including in a new conversation
 

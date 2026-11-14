@@ -356,7 +356,7 @@ pub(crate) async fn save_codex_provider(
     let saved = tokio::task::spawn_blocking(move || save_codex_record(&db, upstream, settings))
         .await
         .map_err(|_| "routingUpstreams.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(saved)
 }
 

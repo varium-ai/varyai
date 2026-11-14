@@ -4934,7 +4934,124 @@ it.each([false, true])(
   },
 );
 
-it("reports the failed disconnect action without exposing the internal configuration conflict", async () => {
+it.each([false, true])(
+  "closes disconnect confirmation immediately and keeps other agents and navigation available (compact: %s)",
+  async (compact) => {
+    const state = {
+      app: "codex",
+      enabled: true,
+      configured: true,
+      recoveryPending: false,
+      restartRequired: false,
+      model: "vary-auto/shared",
+    };
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([state]);
+    let finish!: () => void;
+    vi.mocked(agentConnectionsApi.set).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const editing = vi.fn();
+    mount(compact, undefined, editing);
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    if (compact) {
+      fireEvent.click(
+        within(row).getByRole("button", { name: /agentConnections.details/ }),
+      );
+    }
+    const toggle = within(row).getByRole("switch");
+    await waitFor(() => expect(toggle).toBeEnabled());
+    fireEvent.click(toggle);
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", {
+      name: "agentConnections.disconnectRestore",
+    });
+    fireEvent.click(confirm);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.disconnecting",
+      ),
+    );
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-busy", "true");
+    expect(editing).toHaveBeenLastCalledWith({ dirty: false, busy: false });
+    const other = screen.getByRole("article", { name: "apps.claude" });
+    if (compact) {
+      fireEvent.click(
+        within(other).getByRole("button", { name: /agentConnections.details/ }),
+      );
+    }
+    expect(within(other).getByRole("switch")).toBeEnabled();
+    expect(agentConnectionsApi.set).toHaveBeenCalledExactlyOnceWith(
+      "codex",
+      false,
+      null,
+    );
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      { ...state, enabled: false, configured: false },
+    ]);
+    await act(async () => finish());
+    await waitFor(() =>
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.off",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  },
+);
+
+it("preserves a background disconnect across navigation and allows retry after failure", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+    {
+      app: "codex",
+      enabled: true,
+      configured: true,
+      recoveryPending: false,
+      restartRequired: false,
+      model: "vary-auto/shared",
+    },
+  ]);
+  let fail!: (error: unknown) => void;
+  vi.mocked(agentConnectionsApi.set).mockReturnValueOnce(
+    new Promise<void>((_resolve, reject) => {
+      fail = reject;
+    }),
+  );
+  const view = mount(false, client);
+  fireEvent.click(await screen.findByRole("switch", { name: "apps.codex" }));
+  fireEvent.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "agentConnections.disconnectRestore",
+    }),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  view.unmount();
+  mount(false, client);
+  const row = await screen.findByRole("article", { name: "apps.codex" });
+  expect(within(row).getByRole("status")).toHaveTextContent(
+    "agentConnections.states.disconnecting",
+  );
+  expect(within(row).getByRole("switch")).toBeDisabled();
+  await act(async () => fail(new Error("synthetic-private-disconnect-error")));
+  await waitFor(() => expect(within(row).getByRole("switch")).toBeEnabled());
+  expect(within(row).getByRole("status")).not.toHaveTextContent(
+    "agentConnections.states.disconnecting",
+  );
+  expect(toast.error).toHaveBeenCalledWith(
+    "apps.codex: agentConnections.failed",
+  );
+  expect(screen.queryByText(/synthetic-private/)).not.toBeInTheDocument();
+  fireEvent.click(within(row).getByRole("switch"));
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  expect(agentConnectionsApi.set).toHaveBeenCalledTimes(1);
+});
+
+it("reports the failed disconnect action on its row without exposing the internal configuration conflict", async () => {
   vi.mocked(agentConnectionsApi.list).mockResolvedValue([
     {
       app: "codex",
@@ -4956,15 +5073,13 @@ it("reports the failed disconnect action without exposing the internal configura
       name: "agentConnections.disconnectRestore",
     }),
   );
-  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  const row = screen.getByRole("article", { name: "apps.codex" });
+  expect(await within(row).findByRole("alert")).toHaveTextContent(
     "agentConnections.failed",
   );
-  expect(dialog).not.toHaveTextContent("agentConnections.conflict");
-  expect(
-    within(dialog).getByRole("button", {
-      name: "agentConnections.disconnectRestore",
-    }),
-  ).toBeEnabled();
+  expect(row).not.toHaveTextContent("agentConnections.conflict");
+  expect(within(row).getByRole("switch")).toBeEnabled();
   expect(agentConnectionsApi.set).toHaveBeenCalledExactlyOnceWith(
     "codex",
     false,

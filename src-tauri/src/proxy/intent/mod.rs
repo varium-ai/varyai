@@ -13,6 +13,8 @@ mod native_gateway;
 mod official_bridge;
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod publication_tests;
 mod replay_recovery;
 #[cfg(test)]
 mod replay_tests;
@@ -52,7 +54,7 @@ pub(crate) struct Runtime {
     pub(crate) traces: Arc<trace::Store>,
     pub(crate) connections: super::connections::Connections,
     sessions: RwLock<HashMap<String, TemporarySession>>,
-    menu: RwLock<Option<Arc<Menu>>>,
+    menu: RwLock<Option<PublishedMenu>>,
     global: RwLock<Option<Arc<Menu>>>,
     global_generation: std::sync::atomic::AtomicU64,
     reserved: RwLock<std::collections::HashSet<String>>,
@@ -77,6 +79,39 @@ pub(crate) struct MenuModel {
     pub label: String,
     pub description: &'static str,
     pub order: usize,
+}
+/// Keep the resource version with the exact menu used to build a client catalog.
+#[derive(Clone)]
+pub(crate) struct PublishedMenu {
+    pub menu: Arc<Menu>,
+    pub generation: Option<u64>,
+}
+impl PublishedMenu {
+    pub(crate) fn new(menu: Arc<Menu>, generation: u64) -> Self {
+        Self {
+            menu,
+            generation: Some(generation),
+        }
+    }
+    pub(crate) fn current(&self, generation: u64) -> bool {
+        self.generation
+            .is_none_or(|published| published == generation)
+    }
+}
+impl std::ops::Deref for PublishedMenu {
+    type Target = Menu;
+    fn deref(&self) -> &Menu {
+        &self.menu
+    }
+}
+#[cfg(test)]
+impl From<Arc<Menu>> for PublishedMenu {
+    fn from(menu: Arc<Menu>) -> Self {
+        Self {
+            menu,
+            generation: None,
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Menu {
@@ -434,6 +469,16 @@ impl Runtime {
             .map(|menu| menu.clone())
             .map_err(|_| "intentRouting.failed".into())
     }
+    pub(crate) fn global_publication(&self) -> Result<Option<PublishedMenu>, String> {
+        let menu = self.global.read().map_err(|_| "intentRouting.failed")?;
+        Ok(menu.as_ref().map(|menu| {
+            PublishedMenu::new(
+                menu.clone(),
+                self.global_generation
+                    .load(std::sync::atomic::Ordering::Acquire),
+            )
+        }))
+    }
     pub(crate) fn reserve_global_aliases(
         &self,
         aliases: impl IntoIterator<Item = String>,
@@ -488,6 +533,10 @@ impl Runtime {
         }
     }
     pub(crate) fn menu_snapshot(&self) -> Result<Option<Arc<Menu>>, String> {
+        self.menu_publication()
+            .map(|menu| menu.map(|published| published.menu))
+    }
+    pub(crate) fn menu_publication(&self) -> Result<Option<PublishedMenu>, String> {
         self.menu
             .read()
             .map(|menu| menu.clone())
@@ -540,19 +589,19 @@ impl Runtime {
             *v = None;
         }
     }
-    pub fn set_menu(&self, menu: Arc<Menu>) -> Result<Option<Arc<Menu>>, String> {
+    pub fn set_menu(
+        &self,
+        menu: impl Into<PublishedMenu>,
+    ) -> Result<Option<PublishedMenu>, String> {
+        let mut published = menu.into();
         let global = self.global_snapshot()?;
-        let menu = if let Some(global) = global {
-            let mut menu = (*menu).clone();
-            menu.share_scheduling(&global);
-            Arc::new(menu)
-        } else {
-            menu
-        };
+        if let Some(global) = global {
+            Arc::make_mut(&mut published.menu).share_scheduling(&global);
+        }
         let mut slot = self.menu.write().map_err(|_| "intentRouting.failed")?;
-        Ok(slot.replace(menu))
+        Ok(slot.replace(published))
     }
-    pub fn restore_menu(&self, menu: Option<Arc<Menu>>) {
+    pub fn restore_menu(&self, menu: Option<PublishedMenu>) {
         if let Ok(mut slot) = self.menu.write() {
             *slot = menu;
         }
@@ -1170,7 +1219,7 @@ impl Drop for Observer {
 fn error(status: StatusCode, code: &'static str) -> Response {
     let message = match code {
         "routing_model_unavailable" => {
-            "The saved model is unavailable in the current VaryAI model list. Select a model from the current list, or start a new conversation."
+            "This conversation's saved model is unavailable in VaryAI. Select a model from the current list in this conversation, then retry."
         }
         _ => code,
     };
@@ -1219,6 +1268,13 @@ pub(crate) async fn handle(
     if session.is_none() && menu.is_none() {
         return fail(StatusCode::UNAUTHORIZED, "routing_session_expired");
     }
+    if menu
+        .as_ref()
+        .is_some_and(|menu| !menu.current(state.db.routing_generation()))
+    {
+        return catalog_stale();
+    }
+    let generation = menu.as_ref().and_then(|menu| menu.generation);
     crate::codex_client::observe(request.headers());
     if request.uri().query().is_some() {
         return fail(StatusCode::BAD_REQUEST, "routing_query_unsupported");
@@ -1295,7 +1351,7 @@ pub(crate) async fn handle(
         "local-codex".into(),
         menu.is_some(),
         false,
-        None,
+        generation,
         started,
     )
     .await
@@ -2136,6 +2192,17 @@ async fn execute(
         if protocol != Protocol::Gemini {
             selected_body["model"] = Value::String(target.model.clone());
         }
+        if protocol == Protocol::Responses && output == Protocol::Chat {
+            if let Some(tier) = selected_body["service_tier"].as_str().and_then(|asked| {
+                crate::services::intent_routing::speed::fallback_tier(
+                    target.effort.service_tiers.as_deref(),
+                    &target.model,
+                    asked,
+                )
+            }) {
+                selected_body["service_tier"] = Value::String(tier.into());
+            }
+        }
         let payload = match super::pi::json::encode_redacted(&bytes, &original, &selected_body) {
             Ok(payload) => payload,
             Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_unsafe_payload_edit"),
@@ -2461,7 +2528,10 @@ async fn execute(
                     let code = super::protocol_bridge::grok::rejection_code(
                         body.as_deref().unwrap_or_default().as_bytes(),
                     );
-                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}");
+                    let hints = super::protocol_bridge::grok::rejection_hints(
+                        body.as_deref().unwrap_or_default().as_bytes(),
+                    );
+                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}, hints={hints:?}");
                     return fail(
                         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                         code,
