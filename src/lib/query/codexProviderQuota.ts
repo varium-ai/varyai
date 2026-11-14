@@ -8,13 +8,15 @@ import type { SubscriptionQuota } from "@/types/subscription";
 interface AllowanceSnapshot {
   quota?: Pick<
     SubscriptionQuota,
-    "credentialStatus" | "success" | "tiers" | "codex"
+    "credentialStatus" | "success" | "tiers" | "codex" | "accountIdentity"
   >;
   failed: boolean;
+  observedAt?: number;
 }
 
 export function useCodexProviderQuotas(
   accounts: CodexProviderEditor["accounts"],
+  poll = false,
 ) {
   const client = useQueryClient();
   return useQueries({
@@ -32,9 +34,15 @@ export function useCodexProviderQuotas(
             ? previous.quota
             : undefined;
           try {
-            const { credentialStatus, success, tiers, codex } =
+            const { credentialStatus, success, tiers, codex, accountIdentity } =
               await routingUpstreamsApi.codexQuota(account.id);
-            const quota = { credentialStatus, success, tiers, codex };
+            const quota = {
+              credentialStatus,
+              success,
+              tiers,
+              codex,
+              accountIdentity,
+            };
             if (credentialStatus === "expired") {
               void client.invalidateQueries({
                 queryKey: ["routing-upstreams"],
@@ -49,14 +57,20 @@ export function useCodexProviderQuotas(
                   ? (lastGood ?? quota)
                   : quota,
               failed: !success,
+              observedAt: success ? Date.now() : previous?.observedAt,
             };
           } catch {
             // Cache failed attempts too; retain meters without exposing vendor errors.
-            return { quota: lastGood, failed: true };
+            return {
+              quota: lastGood,
+              failed: true,
+              observedAt: previous?.observedAt,
+            };
           }
         },
         enabled: account.ready,
         staleTime: 60_000,
+        refetchInterval: poll ? 60_000 : false,
         retry: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,

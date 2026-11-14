@@ -12,12 +12,14 @@ pub(super) enum Format {
     Json5,
     Toml,
     Yaml,
+    HarnessCredentials,
     Cordis,
     Env,
 }
 impl Format {
     pub(super) fn parse(self, text: Option<&str>) -> Result<Value, String> {
         let value = match self {
+            Self::HarnessCredentials => return super::harness_credentials::parse(text),
             Self::Cordis => return crate::services::deepseek_harness::parse(text.unwrap_or("")),
             Self::Json => return parse(text),
             // Accept legacy receipts for recovery; Jsonc encoding validates the
@@ -64,6 +66,7 @@ impl Format {
     pub(super) fn encode(self, source: Option<&str>, next: &Value) -> Result<String, String> {
         let before = self.parse(source)?;
         match self {
+            Self::HarnessCredentials => super::harness_credentials::encode(source, next),
             Self::Cordis => crate::services::deepseek_harness::encode(source.unwrap_or(""), next),
             Self::Json => serde_json::to_string_pretty(next).map_err(|_| FAILED.into()),
             Self::Jsonc => super::jsonc::encode(source.unwrap_or("{}"), &before, next),

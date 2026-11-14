@@ -71,6 +71,38 @@ async fn subscription_summaries(
     summaries
 }
 
+type NativeAccountSnapshots = Vec<(
+    crate::services::routing_upstreams::SubscriptionProvider,
+    Option<Vec<crate::services::native_subscription::AccountSummary>>,
+)>;
+
+async fn native_account_snapshots<F, Fut>(
+    summaries: &[ProviderSummary],
+    mut read: F,
+) -> NativeAccountSnapshots
+where
+    F: FnMut(crate::services::routing_upstreams::SubscriptionProvider) -> Fut,
+    Fut: std::future::Future<
+        Output = Result<Vec<crate::services::native_subscription::AccountSummary>, String>,
+    >,
+{
+    use crate::services::routing_upstreams::SubscriptionProvider;
+    let mut snapshots = Vec::new();
+    for summary in summaries {
+        if let UpstreamSource::Subscription { provider, .. } = summary.upstream.source {
+            if matches!(
+                provider,
+                SubscriptionProvider::GithubCopilot | SubscriptionProvider::XaiOauth
+            ) || snapshots.iter().any(|(kind, _)| *kind == provider)
+            {
+                continue;
+            }
+            snapshots.push((provider, read(provider).await.ok()));
+        }
+    }
+    snapshots
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CopySource {
@@ -79,7 +111,7 @@ pub(crate) struct CopySource {
 }
 
 async fn refresh(state: &AppState) {
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
 }
 
 #[tauri::command]
@@ -204,6 +236,8 @@ pub(crate) async fn list_routing_upstreams(
         native.is_some(),
     )
     .await;
+    let native_accounts =
+        native_account_snapshots(&summaries, crate::services::native_subscription::list).await;
     // Status queries read local records only. A failed status read is unknown, not logged out.
     for summary in &mut summaries {
         if let UpstreamSource::Subscription {
@@ -244,9 +278,10 @@ pub(crate) async fn list_routing_upstreams(
                         None
                     }
                 }
-                provider => crate::services::native_subscription::list(*provider)
-                    .await
-                    .ok()
+                provider => native_accounts
+                    .iter()
+                    .find(|(kind, _)| kind == provider)
+                    .and_then(|(_, accounts)| accounts.as_ref())
                     .map(|accounts| {
                         let account = accounts.iter().find(|account| &account.id == account_id);
                         (
@@ -473,6 +508,58 @@ mod subscription_tests {
         services::{codex_provider::Settings, routing_upstreams::UpstreamSource},
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    #[tokio::test]
+    async fn provider_list_reads_each_subscription_store_once_including_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::routing_upstreams::SubscriptionProvider;
+        let mut summaries = Vec::new();
+        for provider in [
+            "claude",
+            "claude",
+            "gemini_cli",
+            "gemini_cli",
+            "github_copilot",
+            "xai_oauth",
+        ] {
+            let upstream = serde_json::from_value(serde_json::json!({
+                "schemaVersion":1,"id":format!("synthetic-{}", summaries.len()),
+                "name":"Synthetic provider","revision":1,"hasApiKey":false,
+                "source":{"kind":"subscription","provider":provider,"accountId":"synthetic-account",
+                    "models":[],"catalog":[],"mode":"vendor","groupsOnly":false}
+            }))?;
+            summaries.push(ProviderSummary {
+                upstream,
+                subscription_plans: None,
+                reauth_required: None,
+            });
+        }
+        let mut calls = 0;
+        let snapshots = native_account_snapshots(&summaries, |provider| {
+            calls += 1;
+            std::future::ready(if provider == SubscriptionProvider::Claude {
+                Ok(Vec::new())
+            } else {
+                Err("synthetic read failure".into())
+            })
+        })
+        .await;
+        assert_eq!(calls, 2, "one local read per subscription kind");
+        assert_eq!(snapshots.len(), 2);
+        assert!(snapshots[0].1.as_ref().is_some_and(Vec::is_empty));
+        assert!(
+            snapshots[1].1.is_none(),
+            "an unreadable store is unknown, not logged out"
+        );
+        let fresh = native_account_snapshots(&summaries, |_| {
+            calls += 1;
+            std::future::ready(Ok(Vec::new()))
+        })
+        .await;
+        assert_eq!(calls, 4, "a new query must reread current account state");
+        assert!(fresh.iter().all(|(_, accounts)| accounts.is_some()));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn provider_list_reports_only_selected_local_subscription_plans(

@@ -277,9 +277,8 @@ pub(crate) async fn prepare(
             let display = model_entry
                 .and_then(super::model_preferences::name)
                 .unwrap_or(&model);
-            // Keep the model identity separate from its provider metadata.
-            // The Agent picker renders the provider as a separate source, in
-            // the same way Magpie presents duplicate model IDs.
+            // Qualify display names after visibility filtering, before any Agent
+            // consumes the shared menu. Request identities stay independent.
             let label = display.to_owned();
             if menu.default_model.is_none() || (current && Some(&model) == default.as_ref()) {
                 menu.default_model = Some(alias.clone());
@@ -424,9 +423,11 @@ pub(crate) async fn prepare(
     if menu.groups.is_empty() {
         return Err("intentRouting.providerUnavailable".into());
     }
+    super::client::aliases::qualify_menu_labels(&mut menu);
     Ok(menu)
 }
 
+#[cfg(test)]
 pub(crate) async fn refresh_active(service: &crate::services::ProxyService) {
     let started = Instant::now();
     if service.refresh_global_routing().await.is_err() {
@@ -448,6 +449,11 @@ pub(crate) async fn refresh_active(service: &crate::services::ProxyService) {
         started.elapsed().saturating_sub(synced).as_millis(),
         started.elapsed().as_millis()
     );
+}
+
+/// Queue publication after persistence; slow client locks must not hold a CRUD command open.
+pub(crate) async fn refresh_after_change(service: &crate::services::ProxyService) {
+    service.schedule_routing_refresh().await;
 }
 
 pub(crate) async fn prepare_with_stand_ins(
@@ -549,7 +555,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            ["z-model", "a-model", "shared-model", "shared-model"]
+            [
+                "z-model · 公司",
+                "a-model · 公司",
+                "shared-model · 公司",
+                "shared-model · 测试"
+            ]
         );
         Ok(())
     }
@@ -599,7 +610,7 @@ mod tests {
             provider.settings_config[codex_provider::CATALOGS]["one"].clone();
         let menu = prepare(manager, vec![provider], vec![], None).await?;
         let entry = menu.models.values().next().ok_or("fixture")?;
-        assert_eq!(entry.label, "shared-model");
+        assert_eq!(entry.label, "shared-model · Codex");
         assert_eq!(
             entry.alias,
             format!(
@@ -778,7 +789,7 @@ mod tests {
             ])
         );
         assert!(models.iter().any(|model| model.group == "Subscription"
-            && model.name == "Shared 0"
+            && model.name == "Shared 0 · Subscription"
             && model.context_window == Some(500000)));
         assert!(models.iter().any(|model| model.group == "Relay"));
         let official_alias = models
@@ -942,11 +953,11 @@ mod tests {
         let menu = prepare(manager, vec![source], vec![], None).await?;
         let models = crate::services::agent_connections::models(&menu);
         let model = models.first().ok_or("missing model")?;
-        assert_eq!(model.name, "My model");
+        assert_eq!(model.name, "My model · a");
         assert!(!model.images);
         assert!(model.reasoning_levels.is_empty());
         let pi = crate::services::agent_connections::pi_model(model);
-        assert_eq!(pi["name"], "My model");
+        assert_eq!(pi["name"], "My model · a");
         assert_eq!(pi["reasoning"], false);
         assert_eq!(pi["input"], json!(["text"]));
         {
@@ -1037,7 +1048,10 @@ mod tests {
                     manager.install(receipt.clone())?;
                     let rows = crate::workbuddy_config::read_models()?;
                     assert_eq!(rows[0], native);
-                    let expected = ["shared-model", "shared-model (2)"];
+                    let expected = [
+                        "shared-model · Synthetic supplier (1)",
+                        "shared-model · Synthetic supplier (2)",
+                    ];
                     for (row, name) in rows[1..].iter().zip(expected) {
                         assert_eq!(row["name"], name);
                         assert_eq!(row["id"], name);
@@ -1151,7 +1165,7 @@ mod tests {
         assert_eq!(
             menu.models
                 .values()
-                .filter(|m| m.label == "shared-model")
+                .filter(|m| m.label.starts_with("shared-model · "))
                 .count(),
             2
         );
@@ -1189,14 +1203,14 @@ mod tests {
         let entries = projection["models"].as_array().expect("models");
         let direct = entries
             .iter()
-            .find(|e| e["display_name"] == "shared-model")
+            .find(|e| e["display_name"] == "shared-model · a")
             .expect("direct");
         assert_eq!(direct["context_window"], 1000000);
         assert_eq!(direct["max_context_window"], 1200000);
         assert_eq!(direct["auto_compact_token_limit"], 200000);
         let other = entries
             .iter()
-            .find(|e| e["display_name"] == "other-model")
+            .find(|e| e["display_name"] == "other-model · a")
             .expect("retargeted");
         assert_eq!(other["context_window"], 262144);
         assert_eq!(other["effective_context_window_percent"], 90);
@@ -1518,7 +1532,7 @@ mod tests {
         assert_eq!(menu.groups["vary-auto/saved"].targets.len(), 2);
         assert_eq!(
             menu.models[&direct_id("b", "shared-model")].label,
-            "shared-model"
+            "shared-model · b"
         );
         assert_eq!(menu.models["saved"].label, "Saved · routing group");
         assert!(!Arc::ptr_eq(
@@ -1689,7 +1703,10 @@ mod tests {
             .iter()
             .find(|m| m["slug"] == direct_alias)
             .expect("direct entry");
-        assert_eq!(direct["display_name"], exact_model);
+        assert_eq!(
+            direct["display_name"],
+            format!("{exact_model} · fixture-provider")
+        );
         assert_eq!(direct["description"], "VaryAI direct provider model");
         let saved = models
             .iter()

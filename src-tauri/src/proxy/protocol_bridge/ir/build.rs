@@ -520,10 +520,37 @@ fn openai_parts(
 
 fn chat(r: &Request) -> Result<Value, ProxyError> {
     let mut messages = Vec::new();
-    if !r.system.is_empty() {
-        messages.push(json!({"role":"system","content":openai_parts(&r.system,false,false)?}));
-    }
+    let mut system = openai_parts(&r.system, false, false)?;
+    let mut replied = false;
     for m in &r.messages {
+        replied |= m.role == "assistant"
+            || m.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    Part::ToolCall { .. } | Part::ToolResult { .. } | Part::Thinking { .. }
+                )
+            });
+        if matches!(m.role.as_str(), "system" | "developer") {
+            let mut content = openai_parts(&m.parts, false, false)?;
+            if !replied {
+                system.extend(content);
+            } else if !content.is_empty() {
+                // Chat gateways may reject developer roles and later system
+                // messages. Keep updates in place using Magpie's reminder form.
+                let content = if content.iter().all(|part| part["type"] == "text") {
+                    json!(format!(
+                        "<system-reminder>\n{}\n</system-reminder>",
+                        text(&m.parts)
+                    ))
+                } else {
+                    content.insert(0, json!({"type":"text","text":"<system-reminder>\n"}));
+                    content.push(json!({"type":"text","text":"\n</system-reminder>"}));
+                    json!(content)
+                };
+                messages.push(json!({"role":"user","content":content}));
+            }
+            continue;
+        }
         for p in &m.parts {
             if let Part::ToolResult { call_id, parts, .. } = p {
                 let content = openai_parts(parts, false, false)?;
@@ -567,6 +594,18 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
             messages.push(message);
         }
     }
+    if !system.is_empty() {
+        let content = if system.iter().all(|part| part["type"] == "text") {
+            json!(system
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        } else {
+            json!(system)
+        };
+        messages.insert(0, json!({"role":"system","content":content}));
+    }
     let mut body = json!({"messages":messages});
     if let Some(n) = r.max_tokens {
         body["max_completion_tokens"] = json!(n);
@@ -575,32 +614,21 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         body["stop"] = json!(r.stop);
     }
     let mut tools = Vec::new();
-    let grok = r
-        .model
-        .rsplit('/')
-        .next()
-        .unwrap_or(&r.model)
-        .to_ascii_lowercase()
-        .starts_with("grok");
     let mut omitted_search = false;
     for t in &r.tools {
         if t.kind == "web_search" {
-            // Grok retired Chat live search (410). Codex offers search even on
-            // ordinary turns; only Responses can execute Grok's native search.
-            if grok {
-                omitted_search = true;
-            } else {
-                body["web_search_options"] = native_tool(t, Protocol::Chat)?;
-            }
+            // An optional hosted-search declaration does not establish Chat
+            // search support. Codex sends it on ordinary turns too; generic
+            // Chat gateways reject an invented web_search_options field.
+            omitted_search = true;
             continue;
         }
         if t.kind != "function" {
             return Err(invalid());
         }
-        let mut f = json!({"name":t.name,"description":t.description,"parameters":t.schema});
-        if let Some(strict) = t.strict {
-            f["strict"] = json!(strict);
-        }
+        // Match Magpie's generic Chat conversion: the complete schema is
+        // portable, but a strict flag is not supported by every Chat gateway.
+        let f = json!({"name":t.name,"description":t.description,"parameters":t.schema});
         tools.push(json!({"type":"function","function":f}));
     }
     if omitted_search && tools.is_empty() && r.tool_choice == Some(ToolChoice::Required) {
@@ -1230,6 +1258,81 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn chat_maps_initial_and_late_instruction_roles_without_losing_content(
+    ) -> Result<(), crate::proxy::ProxyError> {
+        let body = json!({
+            "model":"synthetic", "instructions":"Synthetic root instruction",
+            "input":[
+                {"role":"developer","content":"Synthetic initial instruction"},
+                {"role":"user","content":"Synthetic first question"},
+                {"role":"system","content":"Synthetic initial context"},
+                {"role":"assistant","content":"Synthetic first answer"},
+                {"role":"developer","content":"Synthetic updated instruction"},
+                {"role":"system","content":"Synthetic updated context"},
+                {"role":"user","content":"Synthetic followup"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let before = parsed.clone();
+        let wire = request(&parsed, Protocol::Chat)?;
+        assert_eq!(
+            wire["messages"],
+            json!([
+                {"role":"system","content":"Synthetic root instruction\n\nSynthetic initial instruction\n\nSynthetic initial context"},
+                {"role":"user","content":"Synthetic first question"},
+                {"role":"assistant","content":"Synthetic first answer"},
+                {"role":"user","content":"<system-reminder>\nSynthetic updated instruction\n</system-reminder>"},
+                {"role":"user","content":"<system-reminder>\nSynthetic updated context\n</system-reminder>"},
+                {"role":"user","content":"Synthetic followup"}
+            ])
+        );
+        assert_eq!(
+            parsed, before,
+            "Chat conversion must not mutate the shared IR"
+        );
+        let native = request(&parsed, Protocol::Responses)?;
+        assert_eq!(native["input"][1]["role"], "developer");
+        assert_eq!(native["input"][5]["role"], "developer");
+        Ok(())
+    }
+
+    #[test]
+    fn chat_keeps_instruction_updates_after_tool_turns_in_place(
+    ) -> Result<(), crate::proxy::ProxyError> {
+        let body = json!({"model":"synthetic", "input":[
+            {"role":"developer","content":"Synthetic initial instruction"},
+            {"role":"user","content":"Synthetic question"},
+            {"type":"function_call","call_id":"synthetic-call","name":"lookup","arguments":"{}"},
+            {"type":"function_call_output","call_id":"synthetic-call","output":"Synthetic tool result"},
+            {"role":"developer","content":[
+                {"type":"input_text","text":"Synthetic visual context"},
+                {"type":"input_image","image_url":"https://synthetic.invalid/image.png"}
+            ]},
+            {"role":"user","content":"Synthetic followup"}
+        ]});
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Chat)?;
+        assert_eq!(
+            wire["messages"][0]["content"],
+            "Synthetic initial instruction"
+        );
+        assert_eq!(wire["messages"][2]["tool_calls"][0]["id"], "synthetic-call");
+        assert_eq!(wire["messages"][3]["tool_call_id"], "synthetic-call");
+        assert_eq!(wire["messages"][4]["role"], "user");
+        assert_eq!(
+            wire["messages"][4]["content"],
+            json!([
+                {"type":"text","text":"<system-reminder>\n"},
+                {"type":"text","text":"Synthetic visual context"},
+                {"type":"image_url","image_url":{"url":"https://synthetic.invalid/image.png"}},
+                {"type":"text","text":"\n</system-reminder>"}
+            ])
+        );
+        assert_eq!(wire["messages"][5]["content"], "Synthetic followup");
+        Ok(())
+    }
+
+    #[test]
     fn chat_single_text_uses_plain_content_and_keeps_multi_part_content() {
         for (parts, plain) in [
             (json!([{"type":"input_text","text":"Synthetic text"}]), true),
@@ -1363,6 +1466,70 @@ mod tests {
         );
     }
     #[test]
+    fn translated_chat_tools_follow_magpie_without_strict_flags() {
+        for strict in [Some(true), Some(false), None] {
+            let mut tool = json!({"type":"function","name":"lookup","description":"Synthetic lookup",
+                "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}});
+            if let Some(value) = strict {
+                tool["strict"] = json!(value);
+            }
+            let body = json!({"model":"gpt-6.1-sol","input":"Synthetic prompt","tools":[tool],"tool_choice":"required"});
+            let parsed =
+                super::super::parse::request(Protocol::Responses, &body, "/v1/responses").unwrap();
+            let chat = request(&parsed, Protocol::Chat).unwrap();
+            assert!(chat["tools"][0]["function"].get("strict").is_none());
+            assert_eq!(
+                chat["tools"][0]["function"]["parameters"],
+                body["tools"][0]["parameters"]
+            );
+            assert_eq!(
+                chat["tools"][0]["function"]["description"],
+                "Synthetic lookup"
+            );
+            assert_eq!(chat["tool_choice"], "required");
+            assert_eq!(
+                request(&parsed, Protocol::Responses).unwrap()["tools"],
+                body["tools"]
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_chat_models_do_not_imply_native_search_support() {
+        for model in ["gpt-6.1-sol", "claude-sonnet-5-5", "synthetic-model"] {
+            for choice in ["auto", "none", "required"] {
+                let body = json!({"model":model,"input":"Synthetic prompt","stream":true,
+                    "tools":[{"type":"web_search"},{"type":"function","name":"lookup","description":"Synthetic lookup",
+                        "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"strict":false}],
+                    "tool_choice":choice,"parallel_tool_calls":false,"reasoning":{"effort":"high"}});
+                let parsed =
+                    super::super::parse::request(Protocol::Responses, &body, "/v1/responses")
+                        .unwrap();
+                let chat = request(&parsed, Protocol::Chat).unwrap();
+                assert!(chat.get("web_search_options").is_none());
+                assert_eq!(chat["tools"][0]["function"]["name"], "lookup");
+                assert_eq!(
+                    chat["tools"][0]["function"]["description"],
+                    "Synthetic lookup"
+                );
+                assert_eq!(
+                    chat["tools"][0]["function"]["parameters"],
+                    body["tools"][1]["parameters"]
+                );
+                assert!(chat["tools"][0]["function"].get("strict").is_none());
+                assert_eq!(chat["tool_choice"], choice);
+                assert_eq!(chat["parallel_tool_calls"], false);
+                assert_eq!(chat["reasoning_effort"], "high");
+                assert_eq!(chat["messages"][0]["content"], "Synthetic prompt");
+                assert_eq!(
+                    request(&parsed, Protocol::Responses).unwrap()["tools"],
+                    body["tools"]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn grok_chat_omits_optional_native_search_but_keeps_function_tools() {
         for model in ["grok-4.5", "grok-4.7", "xai/GROK-4.6"] {
             for required in [false, true] {
@@ -1382,7 +1549,7 @@ mod tests {
                     chat["tools"][0]["function"]["parameters"],
                     body["tools"][1]["parameters"]
                 );
-                assert_eq!(chat["tools"][0]["function"]["strict"], true);
+                assert!(chat["tools"][0]["function"].get("strict").is_none());
                 assert_eq!(chat["messages"][0]["content"], "Synthetic prompt");
                 assert_eq!(chat["tool_choice"], body["tool_choice"]);
                 assert_eq!(chat["parallel_tool_calls"], true);
@@ -1395,18 +1562,21 @@ mod tests {
                 );
                 let mut other = parsed;
                 other.model = "synthetic-model".into();
-                assert_eq!(
-                    request(&other, Protocol::Chat).unwrap()["web_search_options"],
-                    json!({})
-                );
+                assert!(request(&other, Protocol::Chat)
+                    .unwrap()
+                    .get("web_search_options")
+                    .is_none());
             }
         }
     }
 
     #[test]
-    fn grok_chat_does_not_silently_ignore_required_search_or_leave_dangling_choices() {
-        for choice in ["auto", "none", "required"] {
-            let body = json!({"model":"grok-4.5","input":"Synthetic prompt",
+    fn chat_does_not_silently_ignore_required_search_or_leave_dangling_choices() {
+        for (model, choice) in ["grok-4.5", "gpt-6.1-sol", "synthetic-model"]
+            .into_iter()
+            .flat_map(|model| ["auto", "none", "required"].map(|choice| (model, choice)))
+        {
+            let body = json!({"model":model,"input":"Synthetic prompt",
                 "tools":[{"type":"web_search"}],"tool_choice":choice,"parallel_tool_calls":true});
             let parsed =
                 super::super::parse::request(Protocol::Responses, &body, "/v1/responses").unwrap();
@@ -1457,6 +1627,10 @@ mod tests {
             assert!(request(&parsed, Protocol::Gemini).unwrap()["tools"][0]
                 .get("googleSearch")
                 .is_some());
+            assert!(request(&parsed, Protocol::Chat)
+                .unwrap()
+                .get("web_search_options")
+                .is_none());
         }
     }
     #[test]

@@ -42,7 +42,7 @@ fn request(protocol: Protocol, streaming: bool, history: bool) -> Value {
             json!({"model":WIRE,"messages":[{"role":"system","content":"Synthetic system"},{"role":"user","content":"Synthetic initial turn"}],"max_completion_tokens":128,"temperature":0.25,"top_p":0.9,"stop":["fixture-stop"],"tools":[{"type":"function","function":{"name":"synthetic_tool","parameters":schema(),"strict":false}}]})
         }
         Protocol::Responses => {
-            json!({"model":WIRE,"instructions":"Synthetic system","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic initial turn"}]}],"max_output_tokens":128,"temperature":0.25,"top_p":0.9,"tools":[{"type":"function","name":"synthetic_tool","parameters":schema(),"strict":false}]})
+            json!({"model":WIRE,"instructions":"Synthetic system","input":[{"type":"message","role":"developer","content":"Synthetic initial developer instruction"},{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic initial turn"}]}],"max_output_tokens":128,"temperature":0.25,"top_p":0.9,"tools":[{"type":"function","name":"synthetic_tool","parameters":schema(),"strict":false}]})
         }
         Protocol::Anthropic => {
             json!({"model":WIRE,"system":"Synthetic system","messages":[{"role":"user","content":"Synthetic initial turn"}],"max_tokens":128,"temperature":0.25,"top_p":0.9,"stop_sequences":["fixture-stop"],"tools":[{"name":"synthetic_tool","input_schema":schema()}]})
@@ -70,6 +70,7 @@ fn request(protocol: Protocol, streaming: bool, history: bool) -> Value {
             Protocol::Responses => value["input"].as_array_mut().unwrap().extend([
                 json!({"type":"function_call","call_id":"fixture-call","name":"synthetic_tool","arguments":args().to_string()}),
                 json!({"type":"function_call_output","call_id":"fixture-call","output":"Synthetic tool result"}),
+                json!({"type":"message","role":"developer","content":"Synthetic updated developer instruction"}),
                 json!({"type":"message","role":"user","content":[{"type":"input_text","text":SENSITIVE}]}),
             ]),
             Protocol::Anthropic => value["messages"].as_array_mut().unwrap().extend([
@@ -366,6 +367,29 @@ async fn all_twelve_ir_edges_forward_native_wires_after_security_inspection(
                         for context in ["Synthetic page context", "Synthetic page selection"] {
                             assert!(parsed.messages.iter().any(|message| message.role == "user"
                                 && message.parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text.contains(context)))));
+                        }
+                        if output == Protocol::Chat {
+                            let messages =
+                                body["messages"].as_array().ok_or("missing Chat messages")?;
+                            assert_eq!(
+                                messages[0]["content"],
+                                "Synthetic system\n\nSynthetic initial developer instruction"
+                            );
+                            assert!(messages
+                                .iter()
+                                .all(|message| message["role"] != "developer"));
+                            assert!(messages
+                                .iter()
+                                .skip(1)
+                                .all(|message| message["role"] != "system"));
+                            if history {
+                                let tool_result = messages
+                                    .iter()
+                                    .position(|message| message["role"] == "tool")
+                                    .ok_or("missing tool result")?;
+                                assert_eq!(messages[tool_result + 1]["role"], "user");
+                                assert_eq!(messages[tool_result + 1]["content"], "<system-reminder>\nSynthetic updated developer instruction\n</system-reminder>");
+                            }
                         }
                         assert!(!body.to_string().contains("synthetic-page-context"));
                     }

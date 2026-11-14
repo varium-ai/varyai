@@ -10,11 +10,13 @@ import { subscriptionApi } from "@/lib/api/subscription";
 import type { SubscriptionQuota, QuotaTier } from "@/types/subscription";
 
 import { SubscriptionQuotaSummary } from "./SubscriptionQuotaSummary";
+import { ProviderQuotaCard, type QuotaCardOptions } from "./ProviderQuotaCard";
 
 type Provider = NativeSubscriptionProvider | "github_copilot" | "xai_oauth";
 type Snapshot = {
   quota?: Pick<SubscriptionQuota, "credentialStatus" | "success" | "tiers">;
   failed: boolean;
+  observedAt?: number;
 };
 
 export function SubscriptionAccountQuota({
@@ -24,6 +26,7 @@ export function SubscriptionAccountQuota({
   ready,
   disabled,
   compact = false,
+  card,
 }: {
   provider: Provider;
   id: string;
@@ -31,6 +34,7 @@ export function SubscriptionAccountQuota({
   ready: boolean;
   disabled: boolean;
   compact?: boolean;
+  card?: QuotaCardOptions;
 }) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -39,6 +43,7 @@ export function SubscriptionAccountQuota({
     queryKey,
     enabled: ready && provider !== "chatgpt_api",
     staleTime: 60_000,
+    refetchInterval: card ? 60_000 : false,
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -108,12 +113,13 @@ export function SubscriptionAccountQuota({
               ? (good ?? quota)
               : quota,
           failed: !quota.success,
+          observedAt: quota.success ? Date.now() : previous?.observedAt,
         };
       } catch {
         void client.invalidateQueries({
           queryKey: ["managed-auth-status", provider],
         });
-        return { quota: good, failed: true };
+        return { quota: good, failed: true, observedAt: previous?.observedAt };
       }
     },
   });
@@ -185,6 +191,32 @@ export function SubscriptionAccountQuota({
               : tiers.length
                 ? null
                 : "quotaEmpty";
+  if (card)
+    return (
+      <ProviderQuotaCard
+        name={login}
+        card={card}
+        items={quotaGroups.flatMap((group) => group.tiers)}
+        fetching={query.isFetching}
+        loading={!query.data && query.isFetching}
+        disabled={disabled || !ready || provider === "chatgpt_api"}
+        sample={
+          query.data?.observedAt
+            ? { scope: `${provider}:${id}`, at: query.data.observedAt }
+            : undefined
+        }
+        refresh={() => void query.refetch({ cancelRefetch: false })}
+        status={
+          provider === "chatgpt_api"
+            ? ready
+              ? "subscriptionProvider.quotaUnavailable"
+              : "codexProvider.quotaLoginRequired"
+            : status
+              ? `codexProvider.${status}`
+              : null
+        }
+      />
+    );
   if (compact) {
     return (
       <SubscriptionQuotaSummary

@@ -108,8 +108,8 @@ struct RolloutSessionPayload<'a> {
 
 /// Move every safe, quiet thread from `from` to `to`.
 ///
-/// The receipt is updated after every row, so an interrupted transition can
-/// be resumed by calling this function again. Rollouts are changed only when
+/// The receipt is updated after each legacy row or bounded paginated batch,
+/// so an interrupted transition can be resumed. Rollouts are changed only when
 /// their state row and first metadata event identify the same source provider.
 pub(crate) fn transition(
     home: &Path,
@@ -169,31 +169,18 @@ fn transition_inner(
 ) -> Result<ThreadTransitionReport, String> {
     validate_provider_pair(from, to)?;
     let mut receipt = load_or_create_receipt(home, recovery_dir, from, to)?;
-    let mut report = ThreadTransitionReport::default();
     let (rows, rows_incomplete) = collect_rows(home, from, to);
-    report.incomplete = rows_incomplete;
+    let rows = rows
+        .into_iter()
+        .filter(|row| ids.is_none_or(|ids| ids.contains(&row.id)))
+        .collect::<Vec<_>>();
+    let mut report = paginated::process(home, recovery_dir, &rows, &mut receipt, false)?;
+    report.incomplete |= rows_incomplete;
     let mut seen = HashSet::new();
     let mut scanned_bytes = 0_u64;
 
     for row in rows {
-        if ids.is_some_and(|ids| !ids.contains(&row.id)) {
-            continue;
-        }
-        // Completed and unrelated paginated target rows need no lock or file
-        // inspection. Their writers must not keep other migrations pending.
-        if row.paginated
-            && read_row_provider(&row.db, &row.id)
-                .ok()
-                .flatten()
-                .as_deref()
-                == Some(to)
-            && !receipt.entries.iter().any(|entry| {
-                entry.paginated
-                    && entry.db == row.db
-                    && entry.id == row.id
-                    && entry.state != ReceiptState::Moved
-            })
-        {
+        if row.paginated {
             continue;
         }
         let _writer_lock = match writer_lock::hold(home, &row.id) {
@@ -204,17 +191,6 @@ fn transition_inner(
                 continue;
             }
         };
-        if row.paginated {
-            match paginated::transition(home, recovery_dir, &row, &mut receipt) {
-                Ok(paginated::Transition::Moved) => report.moved += 1,
-                Ok(paginated::Transition::Unchanged) => {}
-                Err(_) => {
-                    report.skipped += 1;
-                    report.incomplete = true;
-                }
-            }
-            continue;
-        }
         let Some(rollout) = safe_rollout_path(home, &row.rollout) else {
             report.skipped += 1;
             report.incomplete = true;
@@ -460,13 +436,26 @@ pub(crate) fn restore(
     };
     validate_receipt(&receipt, from, to)?;
     receipt.version = RECEIPT_VERSION;
-    let mut report = ThreadTransitionReport::default();
+    let paginated_rows = receipt
+        .entries
+        .iter()
+        .filter(|entry| entry.paginated && entry.state != ReceiptState::Restored)
+        .map(|entry| ThreadRow {
+            db: entry.db.clone(),
+            id: entry.id.clone(),
+            rollout: entry.rollout.clone(),
+            paginated: true,
+        })
+        .collect::<Vec<_>>();
+    let mut report = paginated::process(home, recovery_dir, &paginated_rows, &mut receipt, true)?;
     let mut scanned_bytes = 0_u64;
     for index in 0..receipt.entries.len() {
-        if !matches!(
-            receipt.entries[index].state,
-            ReceiptState::Pending | ReceiptState::Moved
-        ) {
+        if receipt.entries[index].paginated
+            || !matches!(
+                receipt.entries[index].state,
+                ReceiptState::Pending | ReceiptState::Moved
+            )
+        {
             continue;
         }
         let entry = receipt.entries[index].clone();
@@ -478,20 +467,6 @@ pub(crate) fn restore(
                 continue;
             }
         };
-        if entry.paginated {
-            match paginated::restore(home, &entry, from, to) {
-                Ok(()) => {
-                    receipt.entries[index].state = ReceiptState::Restored;
-                    persist_receipt(recovery_dir, from, to, &receipt)?;
-                    report.restored += 1;
-                }
-                Err(_) => {
-                    report.skipped += 1;
-                    report.incomplete = true;
-                }
-            }
-            continue;
-        }
         let Some(rollout) = safe_rollout_path(home, &entry.rollout) else {
             report.skipped += 1;
             report.incomplete = true;

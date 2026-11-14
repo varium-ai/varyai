@@ -35,6 +35,8 @@ interface UpdateContextValue {
 
 const UpdateContext = createContext<UpdateContextValue | undefined>(undefined);
 
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const DISMISSED_VERSION_KEY = "ccswitch:update:dismissedVersion";
   const LEGACY_DISMISSED_KEY = "dismissedUpdateVersion"; // 兼容旧键
@@ -218,14 +220,19 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem(LEGACY_DISMISSED_KEY);
   }, []);
 
-  // 应用启动时自动检查更新
+  // Check shortly after startup and keep checking while the app is running.
   useEffect(() => {
-    // 延迟1秒后检查，避免影响启动体验
-    const timer = setTimeout(() => {
+    const checkAutomatically = () => {
+      if (isInstallingRef.current) return;
       checkUpdate().catch(console.error);
-    }, 1000);
+    };
+    const startupTimer = setTimeout(checkAutomatically, 1000);
+    const interval = setInterval(checkAutomatically, UPDATE_CHECK_INTERVAL_MS);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(startupTimer);
+      clearInterval(interval);
+    };
   }, [checkUpdate]);
 
   const value: UpdateContextValue = {

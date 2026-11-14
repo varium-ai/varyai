@@ -26,6 +26,11 @@ struct Instance {
     launched_ms: Option<i64>,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn started_before_change(launched_ms: i64, applied_ms: i64) -> bool {
+    launched_ms < applied_ms.saturating_sub(1000)
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     if instances.is_empty() {
@@ -34,10 +39,11 @@ fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     let Some(applied_ms) = applied_ms else {
         return State::Unknown;
     };
-    if instances
-        .iter()
-        .any(|instance| instance.launched_ms.is_some_and(|time| time <= applied_ms))
-    {
+    if instances.iter().any(|instance| {
+        instance
+            .launched_ms
+            .is_some_and(|time| started_before_change(time, applied_ms))
+    }) {
         return State::RestartRequired;
     }
     if instances
@@ -683,13 +689,16 @@ mod tests {
         assert!(macos::process_gone(i32::MAX));
         let running = vec![instance(first)];
         let runtime = FakeRuntime::new(vec![running.clone(), running, vec![]]);
-        assert_eq!(restart_with(&runtime, first, || true), Ok(()));
+        assert_eq!(
+            restart_with(&runtime, first.map(|time| time + 2000), || true),
+            Ok(())
+        );
         assert!(runtime.events.borrow().contains(&"open"));
     }
 
     #[test]
     fn restart_normally_quits_waits_and_reopens_the_verified_bundle() {
-        let old = vec![instance(Some(1000))];
+        let old = vec![instance(Some(500))];
         let runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
         assert_eq!(restart_with(&runtime, Some(2000), || true), Ok(()));
         assert_eq!(
@@ -707,14 +716,14 @@ mod tests {
 
     #[test]
     fn restart_refuses_stopped_current_unknown_and_mixed_bundles() {
-        let mut other = instance(Some(1000));
+        let mut other = instance(Some(500));
         other.bundle = "/synthetic/Other.app".into();
         for instances in [
             vec![],
             vec![instance(Some(3000))],
             vec![instance(None)],
-            vec![instance(Some(1000)), instance(None)],
-            vec![instance(Some(1000)), other],
+            vec![instance(Some(500)), instance(None)],
+            vec![instance(Some(500)), other],
         ] {
             let runtime = FakeRuntime::new(vec![instances]);
             assert_eq!(
@@ -736,7 +745,7 @@ mod tests {
                 vec!["instances", "instances", "quit", "wait"],
             ),
         ] {
-            let old = vec![instance(Some(1000))];
+            let old = vec![instance(Some(500))];
             let runtime = FakeRuntime::new(vec![old.clone(), old]);
             let checks = RefCell::new(VecDeque::from(checks));
             assert_eq!(
@@ -752,7 +761,7 @@ mod tests {
 
     #[test]
     fn restart_never_quits_a_replacement_or_reopens_over_a_new_instance() {
-        let old = vec![instance(Some(1000))];
+        let old = vec![instance(Some(500))];
         for replacement in [
             Instance {
                 pid: 456,
@@ -787,7 +796,7 @@ mod tests {
 
     #[test]
     fn refused_normal_quit_and_exit_timeout_never_reopen() {
-        let old = vec![instance(Some(1000))];
+        let old = vec![instance(Some(500))];
         for refuse_quit in [true, false] {
             let mut runtime = FakeRuntime::new(vec![old.clone(), old.clone()]);
             if refuse_quit {
@@ -805,21 +814,32 @@ mod tests {
     }
 
     #[test]
+    fn launch_clock_precision_does_not_mark_a_new_desktop_stale() {
+        for started in [4000, 4001, 4999, 5000, 5001] {
+            assert_eq!(
+                assess(&[instance(Some(started))], Some(5000)),
+                State::Current
+            );
+        }
+        assert_eq!(
+            assess(&[instance(Some(3999))], Some(5000)),
+            State::RestartRequired
+        );
+    }
+
+    #[test]
     fn desktop_freshness_tracks_launches_instead_of_configuration_ownership() {
         assert_eq!(assess(&[], Some(2000)), State::Stopped);
         assert_eq!(
-            assess(&[instance(Some(1000))], Some(2000)),
+            assess(&[instance(Some(500))], Some(2000)),
             State::RestartRequired
         );
         assert_eq!(assess(&[instance(Some(3000))], Some(2000)), State::Current);
-        assert_eq!(
-            assess(&[instance(Some(2000))], Some(2000)),
-            State::RestartRequired
-        );
+        assert_eq!(assess(&[instance(Some(2000))], Some(2000)), State::Current);
         assert_eq!(assess(&[instance(None)], Some(2000)), State::Unknown);
         assert_eq!(assess(&[instance(Some(3000))], None), State::Unknown);
         assert_eq!(
-            assess(&[instance(Some(1000)), instance(Some(3000))], Some(2000)),
+            assess(&[instance(Some(500)), instance(Some(3000))], Some(2000)),
             State::RestartRequired
         );
     }

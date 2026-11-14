@@ -603,7 +603,7 @@ type CodexCredentials = (
 
 /// Read the credential store selected by Codex, following Magpie's readCodexLogin.
 /// File mode never consults the keychain; auto alone may fall back to the file.
-fn read_codex_credentials() -> Result<CodexCredentials, String> {
+pub(crate) fn read_codex_credentials() -> Result<CodexCredentials, String> {
     let config =
         std::fs::read_to_string(crate::codex_config::get_codex_config_path()).unwrap_or_default();
     read_codex_credentials_for_store(

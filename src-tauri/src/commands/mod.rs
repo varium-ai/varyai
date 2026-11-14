@@ -106,3 +106,5 @@ pub(crate) use agent_connections::*;
 
 mod native_subscription;
 pub(crate) use native_subscription::*;
+mod quota_panel;
+pub(crate) use quota_panel::*;

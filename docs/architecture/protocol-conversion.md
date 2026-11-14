@@ -67,6 +67,16 @@ their source label and content as user-level context without inventing a tool
 call or elevating the content to system instructions. Ordinary tool results
 still require a nonempty call ID. Native Responses forwarding remains unchanged.
 
+The Chat builder also normalizes instruction roles. Initial `system` and
+`developer` messages join the leading system prompt. After an assistant or tool
+turn, instruction updates stay in their original position as user messages
+wrapped in `<system-reminder>` markers. This follows Magpie's
+[`responseInstructions` and `buildChat`](https://github.com/yetone/magpie/tree/015860f2da6c78e9f9d2cf1fde9a240681776486/internal/gateway)
+mapping: some Chat gateways reject both `developer` roles and later `system`
+messages. Text and media remain present, tool-call/result order is retained, and
+the shared IR is not mutated. Native Chat and Responses forwarding bypass this
+normalization.
+
 ## Streaming and verification
 
 Streams pass through semantic events for message start, text, reasoning,
@@ -139,17 +149,39 @@ scoped references retain the original schema; depth and node budgets also cancel
 expansion without dropping constraints. Only schema-bearing keywords are visited,
 so examples, defaults and properties named `description` or `title` stay intact.
 
-Grok Chat live search is retired: sending `web_search_options`, including an
-empty object, can return HTTP 410. When converting to Chat for a Grok model,
-optional native search declarations are omitted instead of inventing that retired
-field. Function tools, schemas, choices, prompts and reasoning remain intact.
-A search-only request with `tool_choice: "required"` is rejected locally rather
-than silently running without its required tool. If no tools remain, optional
-choices and parallel-tool settings are omitted as well. Native search declarations
-on Responses and search conversion for other models are unchanged. Grok native
-web search requires a Responses-capable upstream; this Chat compatibility rule
-does not implement a replacement search executor. The behavior was checked against
-Magpie's `chat.go` / `gateway.go` search handling at the pinned Grok reference.
+Hosted search is not a generic Chat Completions capability. Codex can offer a
+native `web_search` tool on ordinary turns, but translating that declaration into
+`web_search_options: {}` makes regular Chat gateways reject the whole request
+with HTTP 400; Grok's retired Chat live-search API returns HTTP 410. The Chat
+builder omits these optional native-search declarations while retaining function
+tools, schemas, choices, prompts and reasoning. A search-only request with
+`tool_choice: "required"` is rejected locally rather than silently running without
+its required tool. If no tools remain, optional choices and parallel-tool settings
+are omitted as well. Native Chat passthrough and native search on Responses,
+Anthropic and Gemini retain their own behavior. This conversion rule does not
+implement a replacement search executor; native search needs a supported native
+protocol. Magpie's `chat.go` / `gateway.go` likewise avoid injecting search options
+into ordinary Chat requests, and handle their search execution separately.
+
+Responses-to-Chat routing also fits an unsupported `ultrafast` service tier to
+`priority` when the selected target offers priority without ultrafast. Capability
+discovery and the existing GPT-family fallback determine support, using the real
+target model rather than its local alias. Explicit ultrafast support, other tiers,
+native passthrough and targets without a priority fallback remain unchanged.
+The routing layer edits only this string leaf, preserving opaque numeric values
+and other protocol fields. This follows Magpie's `takesTier` fallback before
+dispatch; it does not replay a rejected inference request.
+
+Generic Chat tool conversion also follows Magpie's `buildChat`: function names,
+descriptions and complete schemas are portable, while the optional `strict` flag
+is omitted. Magpie only opts into emitting that flag in a provider-specific
+adapter (`strictSaid`); ordinary conversion does not enable it. Both the IR
+builder and prepared Codex/DLP converter apply this rule, including flattened
+namespace tools. Schema constraints, tool choices, argument text and DLP
+provenance remain intact. This does not provide server-enforced strict outputs
+through a generic Chat gateway. Native Chat passthrough and native Responses
+keep their existing strict behavior; use those supported native capabilities when
+strict enforcement is required.
 
 Intent routing preserves an explicit upstream rejection's HTTP status instead of
 labeling it a connection failure. Raw upstream error bodies remain private; only
@@ -157,3 +189,11 @@ fixed rejection categories are returned for legacy errors (null required lists,
 regex/schema validation and tool-history pairing); no upstream text is included.
 Existing sanitized upstream errors retain their safe response path. Transport failures
 remain distinct, and ambiguous sends are not replayed at another account.
+
+Converted-request rejection logs also include bounded, fixed diagnostic hints.
+Only recognized error metadata is inspected; request echoes and arbitrary error
+fields are ignored. Hints name known protocol fields or refusal categories,
+never upstream text, parameter values, credentials or tool inputs. They support
+correlating a real desktop failure with a synthetic reproduction; a successful
+isolated greeting alone does not establish desktop compatibility. This diagnostic
+does not change client errors, request conversion or retry decisions.

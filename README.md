@@ -165,7 +165,7 @@ See the [macOS](docs/guides/local-macos-build.md), [Windows](docs/guides/local-w
 
 Vary AI stores independent configuration under `~/.varyai/`, using `varyai.db` and `varyai-ext.db`. Native backup/restore and cloud synchronization use VaryAI storage; old VaryAI installation upgrades are outside this flow. Client-native configuration can still be shared with other managers. See the [storage documentation](docs/architecture/storage.md) for ownership and backup boundaries.
 
-Installation statistics are optional and off by default. Builds without a configured statistics destination do not send reports. Settings provides a separate local consent control; turning it off removes the reporting ID and stops pending reports and retries. The desktop renderer does not load Google Analytics. Startup update checks and requests to your selected providers are separate network behaviors. See [Data and network behavior](docs/data-and-network.md) for details.
+Installation statistics are enabled by default and use Google Analytics directly, with public Measurement ID `G-2R2MZ76G1E`. A separate hidden WebView sends installation-observation, daily-activity and version-change events; the main app view does not load the remote tag. The random installation ID is saved outside configuration export and synchronization. Google also receives connection and WebView device metadata; prompts, conversations, provider credentials and tool content are excluded. Settings → General → Privacy lets users disable reporting, delete the local statistics ID and preserve that choice across restarts. No Vary AI statistics backend or API secret is required. See [Data and network behavior](docs/data-and-network.md) for scope and reporting limits.
 
 ## Documentation
 

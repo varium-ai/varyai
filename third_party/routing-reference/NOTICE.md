@@ -8,6 +8,20 @@ attribution.
 
 ## Pinned source revisions
 
+- `c5b9e448a8bc9bc2a1bf6704e5d8bb3384d084a6`: quick-panel allowance cards,
+  reviewed in `internal/gui/assets/app.js` (`renderPanelQuota`,
+  `panelQuotaCard`), `app.css` and the panel quota lazy-loading/refresh tests.
+  Vary adapts the provider headings, account cards, window rings, used/remaining
+  toggle, named reset times and per-card refresh into its existing React query
+  and quota readers. It does not copy quota history, remote sharing, arrangement
+  controls or account credit/reset policies.
+  The same revision's `internal/provider/balance_probe.go`, `balance.go` and
+  `balance_probe_test.go` inform relay probe ordering, six-hour missing-interface
+  caching and omission of unsupported cards. Vary reuses its bounded Rust
+  read-only probe and React query cache, preserving reported zero balances,
+  retryable failures and stale readings instead of presenting unsupported relays
+  as subscription errors.
+
 - `5dd63727ce81c2872c4f87700568ea846b9c1742`: API preset console and key-page
   metadata, region/plan link selection, and read-only endpoint presentation,
   reviewed in `internal/provider/presets.go` and
@@ -327,3 +341,40 @@ are preserved. The Magpie MIT notice and license above apply.
 The muted picker hint also follows `.pop li .mtell` in that revision's
 `internal/gui/assets/app.css`: an 11 px font, muted color and compact spacing
 after the model name.
+
+The shared picker also follows the default inline source labels from
+`internal/provider/modelprefs.go` (`Entry.Label`) at revision
+`c5b9e448a8bc9bc2a1bf6704e5d8bb3384d084a6`: direct models show
+`Model name · Provider name`, routing groups show `· routing group`, and custom
+names already identifying their source are not suffixed again. These source
+labels are independent of the additional same-name identity hints. Native
+client labels remain unchanged. The Magpie MIT notice and license above apply.
+
+External Agent source-label publication additionally references
+`internal/agent/route.go` (`buildModels`, `listLabels`),
+`internal/provider/models.go` (`entryFor`), and the native model writers in
+`internal/agent/dsh.go`, `workbuddy.go`, `qoder.go`, `hermes.go` and `zcode.go`
+at revision `c5b9e448a8bc9bc2a1bf6704e5d8bb3384d084a6`. Shared display names
+include readable upstream sources before publication. VaryAI keeps historical
+aliases independently from current native display names; its ID-only clients
+publish source-qualified visible aliases while retaining earlier aliases for
+forwarding. The Magpie MIT notice and license above apply.
+
+Codex refresh-hint behavior was additionally reviewed at Magpie revision
+`6d15f63d52146fcadccef30c9777e45051bcd11c`, in
+`internal/agent/connectinfo.go` (`startsWith`, `listedModels`, `changedAt`,
+`StaleCopies`), `internal/agent/codex_app.go` (`ReopenCodexApp`), and
+`internal/provider/codex_app_server.go`. VaryAI independently implements semantic
+route/menu digests and persisted change times in Rust, ignores catalog metadata
+and ordering for refresh hints, and uses its existing idle-safe desktop
+app-server worker for manual refreshes. The implementation targets the desktop worker
+on macOS and Windows; this does not implement Magpie's full terminal, IDE,
+embedded-client and managed-daemon instance classification. The Magpie MIT notice
+and license above apply.
+
+The Agent configuration freshness comparison also references Magpie's
+`internal/agent/connectinfo.go` at commit
+`6d15f63d52146fcadccef30c9777e45051bcd11c`: persistent meaningful-change times,
+startup comparison tolerance, and keeping configuration freshness separate from
+connection ownership. The implementation extends this principle to VaryAI's
+native adapters and their bridge/inspection contracts.

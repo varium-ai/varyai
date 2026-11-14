@@ -65,19 +65,57 @@ fn with_codex_reload(
                     | agent_connections::ReloadState::Failed
             )
         );
-    let desktop_restart = !status.recovery_pending
-        && (desktop_state == Some(agent_connections::desktop::State::RestartRequired)
-            || reload_restart && desktop_state == Some(agent_connections::desktop::State::Current));
-    status.desktop_state = if desktop_restart {
-        Some(agent_connections::desktop::State::RestartRequired)
+    // The worker observes the desktop's actual app-server creation identity.
+    // A replacement can load the current settings while its window stays open.
+    let worker_owns_freshness = matches!(
+        reload,
+        Some(
+            agent_connections::ReloadState::Current
+                | agent_connections::ReloadState::StaleCatalog
+                | agent_connections::ReloadState::WaitingForIdle
+                | agent_connections::ReloadState::Restarting
+        )
+    );
+    status.desktop_state = if worker_owns_freshness
+        && desktop_state == Some(agent_connections::desktop::State::RestartRequired)
+    {
+        Some(agent_connections::desktop::State::Current)
     } else {
         desktop_state
     };
+    let desktop_restart = !status.recovery_pending
+        && status.desktop_state == Some(agent_connections::desktop::State::RestartRequired);
     status.restart_required = reload_restart || desktop_restart;
-    // Prefer a verified desktop-app restart over background app-server reload
-    // when both are pending, so the UI offers one clear action.
-    status.reload_state = if desktop_restart { None } else { reload };
+    status.reload_state = reload;
     status
+}
+
+fn with_doubao_freshness(
+    active: bool,
+    waiting: bool,
+    desktop_state: Option<agent_connections::desktop::State>,
+) -> Status {
+    let desktop_state =
+        if active && desktop_state == Some(agent_connections::desktop::State::RestartRequired) {
+            Some(agent_connections::desktop::State::Current)
+        } else {
+            desktop_state
+        };
+    Status {
+        app: "doubaowork".into(),
+        enabled: active || waiting,
+        configured: active,
+        recovery_pending: false,
+        recovery_reason: None,
+        model: None,
+        restart_required: !active
+            && (waiting
+                || desktop_state == Some(agent_connections::desktop::State::RestartRequired)),
+        reload_state: None,
+        desktop_state,
+        native_compatibility: None,
+        configuration_issue: None,
+    }
 }
 
 /// Diagnose only the currently owned, active Codex route; never repair it here.
@@ -145,21 +183,7 @@ pub(crate) async fn get_agent_connection(
         })
         .await
         .map_err(|_| FAILED)??;
-        let desktop_restart =
-            desktop_state == Some(agent_connections::desktop::State::RestartRequired);
-        return Ok(Status {
-            app,
-            enabled: active || waiting,
-            configured: active,
-            recovery_pending: false,
-            recovery_reason: None,
-            model: None,
-            restart_required: waiting || desktop_restart,
-            reload_state: None,
-            desktop_state,
-            native_compatibility: None,
-            configuration_issue: None,
-        });
+        return Ok(with_doubao_freshness(active, waiting, desktop_state));
     }
     if app == "codex" {
         state.proxy_service.sync_codex_configuration().await;
@@ -308,20 +332,11 @@ pub(crate) async fn list_agent_connections(
     })
     .await
     .map_err(|_| FAILED)??;
-    let desktop_restart = desktop_state == Some(agent_connections::desktop::State::RestartRequired);
-    statuses.push(Status {
-        app: "doubaowork".into(),
-        enabled: audit_active || audit_waiting,
-        configured: audit_active,
-        recovery_pending: false,
-        recovery_reason: None,
-        model: None,
-        restart_required: audit_waiting || desktop_restart,
-        reload_state: None,
+    statuses.push(with_doubao_freshness(
+        audit_active,
+        audit_waiting,
         desktop_state,
-        native_compatibility: None,
-        configuration_issue: None,
-    });
+    ));
     Ok(statuses)
 }
 #[cfg(test)]
@@ -329,7 +344,29 @@ mod desktop_restart_tests {
     use super::*;
 
     #[test]
-    fn stale_chatgpt_catalog_requests_a_full_application_restart() {
+    fn active_doubao_inspection_proves_the_running_client_is_connected() {
+        let status = with_doubao_freshness(
+            true,
+            false,
+            Some(agent_connections::desktop::State::RestartRequired),
+        );
+        assert!(status.configured);
+        assert!(!status.restart_required);
+        assert_eq!(
+            status.desktop_state,
+            Some(agent_connections::desktop::State::Current)
+        );
+        let waiting = with_doubao_freshness(
+            false,
+            true,
+            Some(agent_connections::desktop::State::RestartRequired),
+        );
+        assert!(!waiting.configured);
+        assert!(waiting.restart_required);
+    }
+
+    #[test]
+    fn stale_chatgpt_catalog_keeps_the_background_refresh_reason() {
         let status = Status {
             app: "codex".into(),
             enabled: true,
@@ -351,9 +388,12 @@ mod desktop_restart_tests {
         assert!(status.restart_required);
         assert_eq!(
             status.desktop_state,
-            Some(agent_connections::desktop::State::RestartRequired)
+            Some(agent_connections::desktop::State::Current)
         );
-        assert_eq!(status.reload_state, None);
+        assert_eq!(
+            status.reload_state,
+            Some(agent_connections::ReloadState::StaleCatalog)
+        );
     }
 
     #[test]
@@ -475,28 +515,24 @@ pub(crate) async fn restart_agent_connection(
         if status.configuration_issue.is_some() || status.recovery_pending {
             return Err(agent_connections::CONFLICT.into());
         }
-        let desktop_restart = matches!(
-            desktop_state,
-            Some(
-                agent_connections::desktop::State::RestartRequired
-                    | agent_connections::desktop::State::Current
-            )
-        );
+        let refresh = with_codex_reload(status, reload, desktop_state);
+        let desktop_restart =
+            refresh.desktop_state == Some(agent_connections::desktop::State::RestartRequired);
         let reload_restart = matches!(
-            reload,
+            refresh.reload_state,
             Some(
                 agent_connections::ReloadState::StaleCatalog
                     | agent_connections::ReloadState::Failed
             )
         );
+        if reload_restart {
+            return state.proxy_service.request_codex_reload();
+        }
         if desktop_restart {
             let manager = state.proxy_service.agent_connections.clone();
             return tokio::task::spawn_blocking(move || manager.restart_codex_desktop())
                 .await
                 .map_err(|_| FAILED)?;
-        }
-        if reload_restart {
-            return state.proxy_service.request_codex_reload();
         }
         return Err("agentConnections.restartChanged".into());
     }
@@ -1287,7 +1323,7 @@ mod tests {
             .iter()
             .find(|model| model.id == alias)
             .ok_or("missing catalog model")?;
-        assert_eq!(model.name, "synthetic");
+        assert_eq!(model.name, "synthetic · Synthetic");
         assert_eq!(model.group, "Synthetic");
         let connections = agent_connections::Manager {
             root: _home.dir.path().join("receipts"),
@@ -1299,7 +1335,7 @@ mod tests {
             match app {
                 "claude" => assert_eq!(
                     installed["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
-                    "synthetic=effort,xhigh_effort,max_effort"
+                    "synthetic · synthetic=effort,xhigh_effort,max_effort"
                 ),
                 "pi" => assert_eq!(
                     installed["providers"]["varyai"]["models"][0]["thinkingLevelMap"]["max"],

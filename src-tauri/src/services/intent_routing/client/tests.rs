@@ -2007,7 +2007,10 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
     );
     assert_eq!(actual["models"][0]["input_modalities"], json!(["text"]));
     assert_eq!(actual["models"][1]["slug"], "fixture/balanced-model");
-    assert_eq!(actual["models"][1]["display_name"], "Exact direct label");
+    assert_eq!(
+        actual["models"][1]["display_name"],
+        "Exact direct label · Source"
+    );
     assert_eq!(
         actual["models"][1]["supported_reasoning_levels"]
             .as_array()

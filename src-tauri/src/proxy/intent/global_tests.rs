@@ -92,7 +92,7 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
         "fixture".into(),
         MenuModel {
             alias: alias.clone(),
-            label: "Zeta Model".into(),
+            label: "Zeta Model · Synthetic".into(),
             description: "VaryAI routing group",
             order: 0,
         },
@@ -108,6 +108,14 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
         "claude",
         "pi",
         "workbuddy",
+        "workbuddy-ai",
+        "grokbuild",
+        "hermes",
+        "kimi",
+        "qwen",
+        "zcode",
+        "trae",
+        "trae-intl",
     ];
     let name = "zeta-model";
     use sha2::{Digest, Sha256};
@@ -152,7 +160,7 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
             .json()
             .await?;
         assert_eq!(models["data"][0]["id"], name, "{app}");
-        assert_eq!(models["data"][0]["display_name"], "Zeta Model");
+        assert_eq!(models["data"][0]["display_name"], "Zeta Model · Synthetic");
         if app == "gemini" {
             let models: Value = client
                 .get(format!("{base}/v1beta/models"))
@@ -163,6 +171,7 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
                 .json()
                 .await?;
             assert_eq!(models["models"][0]["name"], format!("models/{name}"));
+            assert_eq!(models["models"][0]["displayName"], "Zeta Model · Synthetic");
         }
         for wire in [name, "a-previous-readable-name", &legacy, &alias] {
             let (endpoint, body) = if app == "gemini" {
@@ -2595,6 +2604,29 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
 #[serial_test::serial]
 async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    check_codex_chat_optional_search("grok-4.5", StatusCode::GONE, None).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_chat_optional_search_is_not_a_generic_provider_capability(
+) -> Result<(), Box<dyn std::error::Error>> {
+    check_codex_chat_optional_search("gpt-6.1-sol", StatusCode::BAD_REQUEST, None).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_chat_unsupported_ultrafast_uses_the_supported_priority_tier(
+) -> Result<(), Box<dyn std::error::Error>> {
+    check_codex_chat_optional_search("gpt-6.1-sol", StatusCode::BAD_REQUEST, Some("ultrafast"))
+        .await
+}
+
+async fn check_codex_chat_optional_search(
+    model: &str,
+    rejected: StatusCode,
+    tier: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
     impl Drop for RestoreSecurity {
@@ -2608,23 +2640,31 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
+    let upstream_model = model.to_owned();
     let task = tokio::spawn(async move {
         axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
             let tx = tx.clone();
+            let upstream_model = upstream_model.clone();
             async move {
                 let _ = tx.send(body.clone()).await;
                 if body.get("web_search_options").is_some() {
-                    return (StatusCode::GONE, Json(json!({"error":{"message":"Synthetic retired Chat search"}}))).into_response();
+                    return (rejected, Json(json!({"error":{"message":"Synthetic unsupported Chat search option"}}))).into_response();
+                }
+                if body["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["function"].get("strict").is_some())) {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic unsupported Chat strict flag"}}))).into_response();
+                }
+                if body["service_tier"] == "ultrafast" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic unsupported service_tier"}}))).into_response();
                 }
                 if body["stream"] == true {
                     let events = [
-                        json!({"id":"synthetic-grok-reply","model":"grok-4.5","choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic answer"},"finish_reason":null}]}),
-                        json!({"id":"synthetic-grok-reply","model":"grok-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                        json!({"id":"synthetic-chat-reply","model":upstream_model,"choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic answer"},"finish_reason":null}]}),
+                        json!({"id":"synthetic-chat-reply","model":upstream_model,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
                     ];
                     let sse = events.iter().map(|event| format!("data: {event}\n\n")).collect::<String>() + "data: [DONE]\n\n";
                     return ([("content-type", "text/event-stream")], sse).into_response();
                 }
-                Json(json!({"id":"synthetic-grok-reply","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})).into_response()
+                Json(json!({"id":"synthetic-chat-reply","object":"chat.completion","model":upstream_model,"choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})).into_response()
             }
         }))).await
     });
@@ -2638,11 +2678,11 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
             .ok_or("missing session")?,
     );
     session.group.levels.clear();
-    session.group.members[0].model_id = "grok-4.5".into();
-    session.targets[0].model = "grok-4.5".into();
+    session.group.members[0].model_id = model.into();
+    session.targets[0].model = model.into();
     let mut provider = Provider::with_id(
         "fixture".into(),
-        "Synthetic Grok".into(),
+        "Synthetic Chat".into(),
         json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}/v1"),"ANTHROPIC_API_KEY":"synthetic-upstream"}}),
         None,
     );
@@ -2664,13 +2704,22 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     for stream in [false, true] {
-        let response = client.post(format!("http://127.0.0.1:{}/intent/v1/responses", info.port))
+        let mut request = json!({"model":group().alias(),"stream":stream,"store":false,
+            "input":[{"role":"developer","content":"Synthetic developer instruction"},{"role":"user","content":"Synthetic prompt"}],
+            "tools":[{"type":"web_search"},{"type":"namespace","name":"synthetic_namespace","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"strict":true}]}],
+            "tool_choice":"auto","parallel_tool_calls":true,"reasoning":{"effort":"high"}});
+        if let Some(tier) = tier {
+            request["service_tier"] = json!(tier);
+        }
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/intent/v1/responses",
+                info.port
+            ))
             .bearer_auth("synthetic-local-token")
-            .json(&json!({"model":group().alias(),"stream":stream,"store":false,
-                "input":[{"role":"developer","content":"Synthetic developer instruction"},{"role":"user","content":"Synthetic prompt"}],
-                "tools":[{"type":"web_search"},{"type":"namespace","name":"synthetic_namespace","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"strict":true}]}],
-                "tool_choice":"auto","parallel_tool_calls":true,"reasoning":{"effort":"high"}}))
-            .send().await?;
+            .json(&request)
+            .send()
+            .await?;
         assert_eq!(response.status(), StatusCode::OK);
         let text = response.text().await?;
         assert!(text.contains("Synthetic answer"));
@@ -2691,8 +2740,11 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
             .await?
             .ok_or("missing request")?;
         assert!(sent.get("web_search_options").is_none());
-        assert_eq!(sent["model"], "grok-4.5");
+        assert_eq!(sent["model"], model);
         assert_eq!(sent["stream"], stream);
+        if tier.is_some() {
+            assert_eq!(sent["service_tier"], "priority");
+        }
         assert_eq!(sent["tools"].as_array().map(Vec::len), Some(1));
         assert_eq!(
             sent["tools"][0]["function"]["name"],
@@ -2702,7 +2754,7 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
             sent["tools"][0]["function"]["parameters"]["required"],
             json!(["text"])
         );
-        assert_eq!(sent["tools"][0]["function"]["strict"], true);
+        assert!(sent["tools"][0]["function"].get("strict").is_none());
         assert_eq!(
             sent["messages"][0]["content"],
             "Synthetic developer instruction"

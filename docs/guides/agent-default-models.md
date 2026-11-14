@@ -2,6 +2,22 @@
 
 The Agent model dropdown is the single model entry point for WorkBuddy, WorkBuddy AI, Qoder CN and Claude Desktop. Claude Desktop's visibility controls are available through **Manage visible models** inside that dropdown.
 
+VaryAI's shared model picker follows Magpie's default inline labels:
+`Model name · Provider name`, including when model names are unique. Routing
+groups use `· routing group`. A custom name already containing its source keeps
+that name without another suffix. Native client models retain their original
+labels. Equal labels within one provider group can additionally show a short
+identity hint. Account masking also covers inline suffixes, accessible labels
+and tooltips. These display labels do not change saved selections or request IDs.
+
+Source labels must also reach each managed Agent's own model list. Provider
+headings such as `Vary AI` identify the gateway, while each model's label
+identifies its upstream source. The shared catalog supplies that label before
+the individual client adapters run. Existing connections refresh display names
+independently of retained request aliases, so an older bare alias cannot erase
+the source suffix. Clients whose model menu only supports IDs receive a readable
+source-qualified alias and retain their previous aliases for existing sessions.
+
 The Agent model selector saves the model for new sessions. Existing conversations retain their own selections. CLI integrations use their supported configuration fields; desktop integrations may need a confirmed restart to reload their configuration. The restart button appears when a running desktop instance predates the applied configuration. A stopped application reads the configuration on launch; a newer instance has no pending restart.
 
 Managed model catalogs and default selections use readable model names, including
@@ -21,6 +37,31 @@ Background catalog refreshes and startup recovery retain the saved Agent model
 while its public alias remains listed, even when that alias differs from the
 catalog's internal key. Removing the selected model allows the connection to
 fall back to the catalog default.
+
+Bulk catalog synchronization and shared-connection restoration run independent
+Agents concurrently. Each Agent retains its own switch lock, ownership checks
+and recovery records. A busy desktop bridge does not hold up another Agent's
+configuration work. Bulk operations still await every participating Agent before
+returning; a pending client is not reported as complete. Unowned Agents do not
+delay restoration of managed connections.
+
+Confirming Disconnect closes the dialog immediately. Restoration continues in
+the background, and the affected Agent row displays "Disconnecting…" with its
+connection controls disabled. Other Agents and navigation remain available;
+leaving and returning to the page retains the pending state. Completion refreshes
+the native connection status. A failure releases the controls, reports a
+sanitized error for that Agent and allows another explicitly confirmed attempt.
+The operation is never retried automatically.
+
+Codex provider changes also reconcile conversation ownership. Paginated history
+is updated in SQLite using one connection per database and transactions of at
+most 64 quiet threads. Each transition batch is journaled durably before its
+database commit, then marked complete while its writer locks remain held.
+Disconnect restores only owned journal entries and preserves external provider
+changes. Paginated rollout files and their byte offsets remain unchanged. Busy
+threads retain the existing background recovery schedule; legacy history keeps
+its file checks and recovery path. The batching code is shared by macOS and
+Windows.
 
 Claude Desktop publishes the chosen visible model first in `inferenceModels` and enables `alwaysStartWithDefaultModel`. The remaining visible models retain their saved order. Hiding the default falls back to the first visible model. Hiding every model leaves no starting model. Disconnect restores the original profile settings. Native observations read the active profile identified by `_meta.json`, rather than a dormant Vary profile.
 

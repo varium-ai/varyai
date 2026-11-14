@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { blankRoutingGroup } from "@/lib/routingGroupTransfer";
 import {
   catalogRoutingMembers,
+  routingGroupHasReadyMember,
+  routingMemberUnavailableReason,
+  routingMemberAvailable,
   selectRoutingMembers,
 } from "@/lib/routingMemberSelection";
 
@@ -128,5 +131,55 @@ describe("routing member selection", () => {
       { providerId: "one", modelId: "same" },
       { providerId: "two", modelId: "same" },
     ]);
+  });
+});
+
+describe("routing readiness", () => {
+  const provider = {
+    id: "one",
+    name: "Synthetic",
+    taskEligible: true,
+    classifierEligible: false,
+    models: [{ id: "same", name: "Same" }],
+  };
+  it.each([
+    { providers: [], reason: "providerMissing" },
+    {
+      providers: [{ ...provider, taskEligible: false }],
+      reason: "providerNotReady",
+    },
+    { providers: [{ ...provider, models: [] }], reason: "modelMissing" },
+    { providers: [provider], reason: null },
+    { providers: [{ ...provider, models: undefined }], reason: null },
+  ])(
+    "reports local readiness consistently: $reason",
+    ({ providers, reason }) => {
+      expect(routingMemberUnavailableReason(providers, a)).toBe(reason);
+      expect(routingMemberAvailable(providers, a)).toBe(reason === null);
+    },
+  );
+
+  it("does not count switched-off pattern members as ready", () => {
+    const group = { ...blankRoutingGroup(), members: [c], off: [a.id] };
+    expect(routingGroupHasReadyMember([provider], group, [a])).toBe(false);
+    expect(
+      routingGroupHasReadyMember([provider], { ...group, off: [] }, [a]),
+    ).toBe(true);
+  });
+
+  it("uses the default target only when a manual selection is absent", () => {
+    const group = {
+      ...blankRoutingGroup(),
+      routing: "manual" as const,
+      members: [a, c],
+      defaultMemberId: a.id,
+    };
+    expect(routingGroupHasReadyMember([provider], group)).toBe(true);
+    expect(
+      routingGroupHasReadyMember([provider], {
+        ...group,
+        manualMemberId: c.id,
+      }),
+    ).toBe(false);
   });
 });

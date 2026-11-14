@@ -13,6 +13,8 @@ mod native_gateway;
 mod official_bridge;
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod publication_tests;
 mod replay_recovery;
 #[cfg(test)]
 mod replay_tests;
@@ -52,7 +54,7 @@ pub(crate) struct Runtime {
     pub(crate) traces: Arc<trace::Store>,
     pub(crate) connections: super::connections::Connections,
     sessions: RwLock<HashMap<String, TemporarySession>>,
-    menu: RwLock<Option<Arc<Menu>>>,
+    menu: RwLock<Option<PublishedMenu>>,
     global: RwLock<Option<Arc<Menu>>>,
     global_generation: std::sync::atomic::AtomicU64,
     reserved: RwLock<std::collections::HashSet<String>>,
@@ -77,6 +79,39 @@ pub(crate) struct MenuModel {
     pub label: String,
     pub description: &'static str,
     pub order: usize,
+}
+/// Keep the resource version with the exact menu used to build a client catalog.
+#[derive(Clone)]
+pub(crate) struct PublishedMenu {
+    pub menu: Arc<Menu>,
+    pub generation: Option<u64>,
+}
+impl PublishedMenu {
+    pub(crate) fn new(menu: Arc<Menu>, generation: u64) -> Self {
+        Self {
+            menu,
+            generation: Some(generation),
+        }
+    }
+    pub(crate) fn current(&self, generation: u64) -> bool {
+        self.generation
+            .is_none_or(|published| published == generation)
+    }
+}
+impl std::ops::Deref for PublishedMenu {
+    type Target = Menu;
+    fn deref(&self) -> &Menu {
+        &self.menu
+    }
+}
+#[cfg(test)]
+impl From<Arc<Menu>> for PublishedMenu {
+    fn from(menu: Arc<Menu>) -> Self {
+        Self {
+            menu,
+            generation: None,
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Menu {
@@ -434,6 +469,16 @@ impl Runtime {
             .map(|menu| menu.clone())
             .map_err(|_| "intentRouting.failed".into())
     }
+    pub(crate) fn global_publication(&self) -> Result<Option<PublishedMenu>, String> {
+        let menu = self.global.read().map_err(|_| "intentRouting.failed")?;
+        Ok(menu.as_ref().map(|menu| {
+            PublishedMenu::new(
+                menu.clone(),
+                self.global_generation
+                    .load(std::sync::atomic::Ordering::Acquire),
+            )
+        }))
+    }
     pub(crate) fn reserve_global_aliases(
         &self,
         aliases: impl IntoIterator<Item = String>,
@@ -488,6 +533,10 @@ impl Runtime {
         }
     }
     pub(crate) fn menu_snapshot(&self) -> Result<Option<Arc<Menu>>, String> {
+        self.menu_publication()
+            .map(|menu| menu.map(|published| published.menu))
+    }
+    pub(crate) fn menu_publication(&self) -> Result<Option<PublishedMenu>, String> {
         self.menu
             .read()
             .map(|menu| menu.clone())
@@ -540,19 +589,19 @@ impl Runtime {
             *v = None;
         }
     }
-    pub fn set_menu(&self, menu: Arc<Menu>) -> Result<Option<Arc<Menu>>, String> {
+    pub fn set_menu(
+        &self,
+        menu: impl Into<PublishedMenu>,
+    ) -> Result<Option<PublishedMenu>, String> {
+        let mut published = menu.into();
         let global = self.global_snapshot()?;
-        let menu = if let Some(global) = global {
-            let mut menu = (*menu).clone();
-            menu.share_scheduling(&global);
-            Arc::new(menu)
-        } else {
-            menu
-        };
+        if let Some(global) = global {
+            Arc::make_mut(&mut published.menu).share_scheduling(&global);
+        }
         let mut slot = self.menu.write().map_err(|_| "intentRouting.failed")?;
-        Ok(slot.replace(menu))
+        Ok(slot.replace(published))
     }
-    pub fn restore_menu(&self, menu: Option<Arc<Menu>>) {
+    pub fn restore_menu(&self, menu: Option<PublishedMenu>) {
         if let Ok(mut slot) = self.menu.write() {
             *slot = menu;
         }
@@ -1170,7 +1219,7 @@ impl Drop for Observer {
 fn error(status: StatusCode, code: &'static str) -> Response {
     let message = match code {
         "routing_model_unavailable" => {
-            "The saved model is unavailable in the current VaryAI model list. Select a model from the current list, or start a new conversation."
+            "This conversation's saved model is unavailable in VaryAI. Select a model from the current list in this conversation, then retry."
         }
         _ => code,
     };
@@ -1219,6 +1268,13 @@ pub(crate) async fn handle(
     if session.is_none() && menu.is_none() {
         return fail(StatusCode::UNAUTHORIZED, "routing_session_expired");
     }
+    if menu
+        .as_ref()
+        .is_some_and(|menu| !menu.current(state.db.routing_generation()))
+    {
+        return catalog_stale();
+    }
+    let generation = menu.as_ref().and_then(|menu| menu.generation);
     crate::codex_client::observe(request.headers());
     if request.uri().query().is_some() {
         return fail(StatusCode::BAD_REQUEST, "routing_query_unsupported");
@@ -1295,7 +1351,7 @@ pub(crate) async fn handle(
         "local-codex".into(),
         menu.is_some(),
         false,
-        None,
+        generation,
         started,
     )
     .await
@@ -1842,7 +1898,24 @@ async fn execute(
                 .iter()
                 .map(|at| candidates[*at])
                 .collect::<Vec<_>>();
-            pool.sort_by_key(|index| session.targets[*index].scheduling.exhausted(now));
+            pool.sort_by_key(|index| {
+                let target = &session.targets[*index];
+                let exhausted = target.scheduling.exhausted(now);
+                let first = target.effort.free != Some(true)
+                    && target
+                        .credentials
+                        .as_ref()
+                        .and_then(|c| c.quota_identity())
+                        .is_some_and(|id| {
+                            crate::services::quota_panel::credits(&id, exhausted)
+                                == crate::services::quota_panel::CreditsMode::First
+                        });
+                if first {
+                    -1
+                } else {
+                    i32::from(exhausted)
+                }
+            });
             for (at, index) in positions.into_iter().zip(pool) {
                 candidates[at] = index;
             }
@@ -1921,6 +1994,22 @@ async fn execute(
             }
         }
     }
+    if pinned.is_none() && !count_tokens {
+        candidates.sort_by_key(|index| {
+            let target = &session.targets[*index];
+            target.effort.free != Some(true)
+                && target
+                    .credentials
+                    .as_ref()
+                    .and_then(|c| c.quota_identity())
+                    .is_some_and(|id| {
+                        crate::services::quota_panel::credits(
+                            &id,
+                            target.scheduling.exhausted(chrono::Utc::now().timestamp()),
+                        ) == crate::services::quota_panel::CreditsMode::Last
+                    })
+        });
+    }
     trace.plan(
         candidates
             .iter()
@@ -1954,7 +2043,16 @@ async fn execute(
     let mut transient: Vec<(usize, usize)> = Vec::new();
     let mut retry_deadline = None;
     let mut replay_recovery = replay_recovery::Recovery::default();
+    let mut reset_deferred = std::collections::VecDeque::<(usize, usize, String)>::new();
+    let mut reset_checked = std::collections::HashSet::<String>::new();
     'attempts: loop {
+        if attempts.is_empty()
+            && !reset_deferred.is_empty()
+            && retry_deadline.is_some_and(|at| Instant::now() >= at)
+        {
+            transient.clear();
+            retry_deadline = None;
+        }
         if attempts.is_empty() && !transient.is_empty() && retry_seconds > 0 {
             let deadline = *retry_deadline
                 .get_or_insert_with(|| Instant::now() + Duration::from_secs(retry_seconds));
@@ -1992,6 +2090,18 @@ async fn execute(
                 continue;
             }
         }
+        if attempts.is_empty() {
+            if let Some((candidate, index, identity)) = reset_deferred.pop_front() {
+                if reset_checked.insert(identity.clone())
+                    && crate::services::quota_panel::auto_week(&identity).await
+                {
+                    if let Some(target) = session.targets.get(index) {
+                        target.scheduling.reset_confirmed();
+                    }
+                }
+                attempts.push_back((candidate, index));
+            }
+        }
         let Some((candidate, index)) = attempts.pop_front() else {
             break;
         };
@@ -2001,6 +2111,26 @@ async fn execute(
         let Some(target) = session.targets.get(index) else {
             return fail(StatusCode::BAD_REQUEST, "routing_invalid_target");
         };
+        if !count_tokens && target.effort.free != Some(true) {
+            if let Some(identity) = target.credentials.as_ref().and_then(|c| c.quota_identity()) {
+                let now = chrono::Utc::now().timestamp();
+                if !reset_checked.contains(&identity)
+                    && crate::services::quota_panel::week_enabled(&identity)
+                    && (target.scheduling.weekly_exhausted(now)
+                        || crate::services::quota_panel::observed_week_full(&identity))
+                {
+                    reset_deferred.push_back((candidate, index, identity));
+                    continue;
+                }
+                if crate::services::quota_panel::credits(
+                    &identity,
+                    target.scheduling.exhausted(now),
+                ) == crate::services::quota_panel::CreditsMode::Off
+                {
+                    continue;
+                }
+            }
+        }
         if refused_models.contains(&(target.provider_id.clone(), target.model.clone()))
             || overflow_tokens.is_some_and(|tokens| {
                 target
@@ -2061,6 +2191,17 @@ async fn execute(
         // Native Gemini selects its exact model in the URL, not in JSON.
         if protocol != Protocol::Gemini {
             selected_body["model"] = Value::String(target.model.clone());
+        }
+        if protocol == Protocol::Responses && output == Protocol::Chat {
+            if let Some(tier) = selected_body["service_tier"].as_str().and_then(|asked| {
+                crate::services::intent_routing::speed::fallback_tier(
+                    target.effort.service_tiers.as_deref(),
+                    &target.model,
+                    asked,
+                )
+            }) {
+                selected_body["service_tier"] = Value::String(tier.into());
+            }
         }
         let payload = match super::pi::json::encode_redacted(&bytes, &original, &selected_body) {
             Ok(payload) => payload,
@@ -2387,7 +2528,10 @@ async fn execute(
                     let code = super::protocol_bridge::grok::rejection_code(
                         body.as_deref().unwrap_or_default().as_bytes(),
                     );
-                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}");
+                    let hints = super::protocol_bridge::grok::rejection_hints(
+                        body.as_deref().unwrap_or_default().as_bytes(),
+                    );
+                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}, hints={hints:?}");
                     return fail(
                         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                         code,

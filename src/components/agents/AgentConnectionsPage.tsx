@@ -1,5 +1,11 @@
 import { Fragment, useId, useRef, useState } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useMutationState,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -144,6 +150,8 @@ export function AgentConnectionsPage({
     isPending: connections.some((query) => query.isPending),
   };
   const installations = useAgentInstallations();
+  const [rescanning, setRescanning] = useState(false);
+  const rescanBusy = rescanning || installations.isFetching;
   const workbuddyCheckin = useQuery({
     queryKey: ["workbuddyCheckin", "accounts"],
     queryFn: workbuddyCheckinApi.accounts,
@@ -279,11 +287,30 @@ export function AgentConnectionsPage({
   const updates = useAgentUpdates(
     APP_IDS.filter((app) => installations.data?.[app]),
   );
+  // Mutation-cache state survives navigation while native operations continue.
+  const pendingDisconnects = useMutationState({
+    filters: {
+      mutationKey: ["agent-disconnect"],
+      exact: true,
+      status: "pending",
+    },
+    select: (mutation) => mutation.state.variables as AppId,
+  });
+  const pendingRestarts = useMutationState({
+    filters: { mutationKey: ["agent-restart"], exact: true, status: "pending" },
+    select: (mutation) => mutation.state.variables as AppId,
+  });
+  const rowOperation = (app: AppId): ConnectionOperation | undefined =>
+    pendingDisconnects.includes(app)
+      ? "disconnecting"
+      : pendingRestarts.includes(app)
+        ? "restarting"
+        : operations[app];
   const rowBusy = (app: AppId | null) =>
-    app !== null && (!!operations[app] || updates.isBusy(app));
+    app !== null && (!!rowOperation(app) || updates.isBusy(app));
   useWorkspaceEditing(false, !!busy || authorizingModel, onEditingChange);
   function beginOperation(app: AppId, operation: ConnectionOperation) {
-    if (updates.isBusy(app) || operationLocks.current.has(app)) return false;
+    if (rowBusy(app) || operationLocks.current.has(app)) return false;
     operationLocks.current.add(app);
     setOperations((current) => ({ ...current, [app]: operation }));
     return true;
@@ -297,6 +324,8 @@ export function AgentConnectionsPage({
     });
   }
   async function rescanInstallations() {
+    if (rescanBusy) return;
+    setRescanning(true);
     try {
       await Promise.all(
         [
@@ -309,6 +338,8 @@ export function AgentConnectionsPage({
       toast.success(t("agentConnections.rescanSuccess"));
     } catch {
       toast.error(t("agentConnections.rescanFailed"));
+    } finally {
+      setRescanning(false);
     }
   }
   function browseTools() {
@@ -425,28 +456,54 @@ export function AgentConnectionsPage({
       refreshConnectionViews();
     }
   }
-  async function restart(app: AppId) {
-    if (!beginOperation(app, "restarting")) return;
+  const disconnectMutation = useMutation({
+    mutationKey: ["agent-disconnect"],
+    mutationFn: (app: AppId) => agentConnectionsApi.set(app, false, null),
+    retry: false,
+    onError: (_cause, app) => {
+      setError(app, "agentConnections.failed");
+      toast.error(`${name(app)}: ${t("agentConnections.failed")}`);
+    },
+    onSettled: (_data, _error, app) => {
+      refreshConnectionViews();
+      operationLocks.current.delete(app);
+    },
+  });
+  function disconnect(app: AppId) {
+    if (rowBusy(app) || operationLocks.current.has(app)) return;
+    operationLocks.current.add(app);
     setError(app, null);
-    try {
-      await agentConnectionsApi.restart(app, true);
-      setRestarting(null);
-    } catch (cause) {
+    setDisconnecting(null);
+    disconnectMutation.mutate(app);
+  }
+  const restartMutation = useMutation({
+    mutationKey: ["agent-restart"],
+    mutationFn: (app: AppId) => agentConnectionsApi.restart(app, true),
+    retry: false,
+    onError: (cause, app) => {
       const allowed = [
         "agentConnections.restartChanged",
         "agentConnections.restartBlocked",
         "agentConnections.restartUnsupported",
       ];
-      setError(
-        app,
+      const message =
         typeof cause === "string" && allowed.includes(cause)
           ? cause
-          : "agentConnections.restartFailed",
-      );
-    } finally {
+          : "agentConnections.restartFailed";
+      setError(app, message);
+      toast.error(t(message));
+    },
+    onSettled: (_data, _error, app) => {
       refreshConnectionViews();
-      endOperation(app);
-    }
+      operationLocks.current.delete(app);
+    },
+  });
+  function restart(app: AppId) {
+    if (rowBusy(app) || operationLocks.current.has(app)) return;
+    operationLocks.current.add(app);
+    setError(app, null);
+    setRestarting(null);
+    restartMutation.mutate(app);
   }
   async function launchDoubao(enabled: boolean) {
     if (!beginOperation("doubaowork", "connecting")) return;
@@ -554,6 +611,7 @@ export function AgentConnectionsPage({
       count: shown.length,
     });
   function row(app: AppId) {
+    const operation = rowOperation(app);
     const connection = connections[APP_IDS.indexOf(app)];
     const state = connection.data;
     const nativeQuery = nativeModels[APP_IDS.indexOf(app)];
@@ -689,7 +747,7 @@ export function AgentConnectionsPage({
           <RefreshCw
             size={11}
             className={
-              operations[app] === "reapplying"
+              operation === "reapplying"
                 ? "animate-spin motion-reduce:animate-none"
                 : ""
             }
@@ -902,18 +960,21 @@ export function AgentConnectionsPage({
                 onDisconnect={() => setDisconnecting("codex")}
               />
             )}
-            {canRestart && !connection.isError && (
+            {(operation === "restarting" ||
+              (canRestart && !connection.isError)) && (
               <button
                 type="button"
                 className="mp-agent-fix"
                 aria-label={t("agentConnections.restart")}
+                aria-busy={operation === "restarting"}
                 disabled={rowBusy(app)}
                 onClick={() => setRestarting(app)}
               >
                 <RefreshCw
                   size={11}
+                  aria-hidden="true"
                   className={
-                    operations[app] === "restarting"
+                    operation === "restarting"
                       ? "animate-spin motion-reduce:animate-none"
                       : ""
                   }
@@ -923,10 +984,10 @@ export function AgentConnectionsPage({
             )}
           </div>
           <p
-            className={`mp-agent-status ${bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operations[app] ? "wait" : ""}`}
+            className={`mp-agent-status ${bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operation ? "wait" : ""}`}
             role="status"
             title={t(
-              `agentConnections.states.${operations[app] && operations[app] !== "visibility" ? operations[app] : status}`,
+              `agentConnections.states.${operation && operation !== "visibility" ? operation : status}`,
               { app: name(app) },
             )}
           >
@@ -937,7 +998,7 @@ export function AgentConnectionsPage({
             )}
             <span className="mp-agent-status-text">
               {t(
-                `agentConnections.states.${operations[app] && operations[app] !== "visibility" ? operations[app] : status}`,
+                `agentConnections.states.${operation && operation !== "visibility" ? operation : status}`,
                 { app: name(app) },
               )}
             </span>
@@ -1072,8 +1133,7 @@ export function AgentConnectionsPage({
                       connected={enabled}
                       models={catalog.data ?? []}
                       disabled={
-                        (!!operations[app] &&
-                          operations[app] !== "visibility") ||
+                        (!!operation && operation !== "visibility") ||
                         updates.isBusy(app) ||
                         !!state?.recoveryPending ||
                         connection.isPending ||
@@ -1165,7 +1225,7 @@ export function AgentConnectionsPage({
                   </>
                 )}
                 {(!catalog.data?.length || catalog.isError) && (
-                  <p className="mt-3 text-xs text-muted-foreground">
+                  <p role="note" className="mp-am-menu-note">
                     {t("agentConnections.noModels")}
                   </p>
                 )}
@@ -1176,7 +1236,7 @@ export function AgentConnectionsPage({
             className="mp-switch"
             aria-label={t(`apps.${app}`)}
             checked={enabled}
-            aria-busy={connection.isPending || !!operations[app]}
+            aria-busy={connection.isPending || !!operation}
             disabled={
               rowBusy(app) ||
               connection.isPending ||
@@ -1281,7 +1341,11 @@ export function AgentConnectionsPage({
           {t("agentConnections.failed")}
         </p>
       )}
-      <AgentUpdatesBar updates={updates} name={name} disabled={!!busy} />
+      <AgentUpdatesBar
+        updates={updates}
+        name={name}
+        disabled={!!busy || pendingRestarts.length > 0}
+      />
       <AgentInstallDialog updates={updates} name={name} />
       <DndContext
         sensors={sensors}
@@ -1385,12 +1449,13 @@ export function AgentConnectionsPage({
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={installations.isFetching}
+                      disabled={rescanBusy}
+                      aria-busy={rescanBusy}
                       onClick={rescanInstallations}
                     >
                       <RefreshCw
                         aria-hidden="true"
-                        className={`mr-2 h-3 w-3${installations.isFetching ? " animate-spin" : ""}`}
+                        className={`mr-2 h-3 w-3${rescanBusy ? " animate-spin" : ""}`}
                       />
                       {t("agentConnections.rescan")}
                     </Button>
@@ -1501,10 +1566,14 @@ export function AgentConnectionsPage({
             variant="ghost"
             size="sm"
             className="mt-3"
-            disabled={installations.isFetching}
+            disabled={rescanBusy}
+            aria-busy={rescanBusy}
             onClick={rescanInstallations}
           >
-            <RefreshCw className="mr-2 h-3 w-3" />
+            <RefreshCw
+              aria-hidden="true"
+              className={`mr-2 h-3 w-3${rescanBusy ? " animate-spin" : ""}`}
+            />
             {t("agentConnections.rescan")}
           </Button>
         </div>
@@ -1616,7 +1685,7 @@ export function AgentConnectionsPage({
             <Button
               className="mp-primary"
               disabled={rowBusy(disconnecting)}
-              onClick={() => disconnecting && void apply(disconnecting, false)}
+              onClick={() => disconnecting && disconnect(disconnecting)}
             >
               {t("agentConnections.disconnectRestore")}
             </Button>

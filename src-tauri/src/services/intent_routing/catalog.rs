@@ -1788,6 +1788,19 @@ impl ExecutionCredentials {
     pub(crate) fn continuation_identity(&self) -> Option<&str> {
         self.continuation.as_deref()
     }
+    /// Preferences follow the selected managed identity, or the verified native user/workspace.
+    pub(crate) fn quota_identity(&self) -> Option<String> {
+        let identity = self
+            .provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.managed_account_id_for("codex_oauth"));
+        let key = identity.as_deref().or(self.continuation.as_deref())?;
+        Some(format!(
+            "{:x}",
+            Sha256::digest(format!("quota-account-v1:{key}").as_bytes())
+        ))
+    }
     pub(crate) fn fingerprint(&self) -> Vec<u8> {
         let mut hash = Sha256::new();
         for value in [&self.key, &self.workspace] {

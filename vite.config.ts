@@ -13,6 +13,10 @@ export default defineConfig(() => {
       outDir: "../dist",
       emptyOutDir: true,
       rollupOptions: {
+        input: {
+          app: path.resolve(__dirname, "src/index.html"),
+          analytics: path.resolve(__dirname, "src/analytics.html"),
+        },
         output: {
           manualChunks: rendererChunk,
         },

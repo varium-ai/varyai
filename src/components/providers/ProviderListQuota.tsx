@@ -9,8 +9,16 @@ import { useCodexProviderQuotas } from "@/lib/query/codexProviderQuota";
 import { ApiProviderQuota } from "./ApiProviderQuota";
 import { SubscriptionAccountQuota } from "./SubscriptionAccountQuota";
 import { SubscriptionQuotaSummary } from "./SubscriptionQuotaSummary";
+import { ProviderQuotaCard, type QuotaCardOptions } from "./ProviderQuotaCard";
+import { CodexQuotaControls } from "./CodexQuotaControls";
 
-function CodexListQuota({ record }: { record: RoutingUpstream }) {
+function CodexListQuota({
+  record,
+  card,
+}: {
+  record: RoutingUpstream;
+  card?: QuotaCardOptions;
+}) {
   const { t } = useTranslation();
   const selected = record.codexSettings?.accounts ??
     record.codex?.settings.accounts ?? ["native"];
@@ -42,8 +50,20 @@ function CodexListQuota({ record }: { record: RoutingUpstream }) {
       );
     }
   }
-  const queries = useCodexProviderQuotas(editor ? accounts : []);
+  const queries = useCodexProviderQuotas(editor ? accounts : [], !!card);
   if (!editor) {
+    if (card)
+      return (
+        <ProviderQuotaCard
+          name={record.name}
+          items={[]}
+          card={card}
+          fetching={observation.isFetching}
+          loading={observation.isFetching}
+          status={`codexProvider.${record.reauthRequired === true ? "quotaLoginRequired" : observation.isFetching ? "quotaLoading" : observation.isError ? "quotaFailed" : "quotaUnknown"}`}
+          refresh={() => void observation.refetch({ cancelRefetch: false })}
+        />
+      );
     return (
       <SubscriptionQuotaSummary
         label={`${t("subscriptionProvider.allowance")} ${record.name}`}
@@ -54,8 +74,9 @@ function CodexListQuota({ record }: { record: RoutingUpstream }) {
       />
     );
   }
+  const Container = card ? "div" : "span";
   return (
-    <span className="pv-list-quotas">
+    <Container className="pv-list-quotas">
       {accounts.map((account, index) => {
         const query = queries[index];
         const quota = query.data?.quota;
@@ -86,6 +107,50 @@ function CodexListQuota({ record }: { record: RoutingUpstream }) {
                     : !tiers.length && !held && balance == null
                       ? "quotaEmpty"
                       : null;
+        if (card)
+          return (
+            <ProviderQuotaCard
+              key={account.id}
+              name={account.login}
+              title={[
+                record.name,
+                account.login,
+                account.plan ??
+                  record.subscriptionPlans?.filter(Boolean).join(" · "),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              card={card}
+              items={tiers.map((tier) => ({
+                tier,
+                label: t(
+                  `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
+                  { defaultValue: tier.name },
+                ),
+              }))}
+              status={status ? `codexProvider.${status}` : null}
+              fetching={query.isFetching}
+              loading={!query.data && query.isFetching}
+              disabled={!account.ready}
+              sample={
+                query.data?.observedAt && quota?.accountIdentity
+                  ? {
+                      scope: `codex:${quota.accountIdentity}`,
+                      at: query.data.observedAt,
+                    }
+                  : undefined
+              }
+              refresh={() => void query.refetch({ cancelRefetch: false })}
+            >
+              {held && <span>{t("codexProvider.quotaHeld")}</span>}
+              {balance != null && (
+                <span>{t("codexProvider.creditBalance", { balance })}</span>
+              )}
+              {account.ready && (
+                <CodexQuotaControls account={account.id} name={account.login} />
+              )}
+            </ProviderQuotaCard>
+          );
         return (
           <span className="pv-list-quota-account" key={account.id}>
             {accounts.length > 1 && (
@@ -112,13 +177,21 @@ function CodexListQuota({ record }: { record: RoutingUpstream }) {
           </span>
         );
       })}
-    </span>
+    </Container>
   );
 }
 
-export function ProviderListQuota({ record }: { record: RoutingUpstream }) {
-  if (record.source.kind === "api") return <ApiProviderQuota record={record} />;
-  if (record.source.kind === "codex") return <CodexListQuota record={record} />;
+export function ProviderListQuota({
+  record,
+  card,
+}: {
+  record: RoutingUpstream;
+  card?: QuotaCardOptions;
+}) {
+  if (record.source.kind === "api")
+    return <ApiProviderQuota record={record} card={card} />;
+  if (record.source.kind === "codex")
+    return <CodexListQuota record={record} card={card} />;
   return (
     <SubscriptionAccountQuota
       provider={record.source.provider}
@@ -127,6 +200,7 @@ export function ProviderListQuota({ record }: { record: RoutingUpstream }) {
       ready={!!record.source.accountId && record.reauthRequired !== true}
       disabled={false}
       compact
+      card={card}
     />
   );
 }

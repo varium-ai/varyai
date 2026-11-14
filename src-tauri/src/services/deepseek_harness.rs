@@ -8,6 +8,7 @@ const START: &str = "# BEGIN VaryAI model providers\n";
 const END: &str = "# END VaryAI model providers\n";
 const PLUGIN: &str = "@deepseek-ai/dsh-llm-pi-ai";
 const FAILED: &str = "agentConnections.failed";
+pub(crate) const GATEWAY_KEY_REF: &str = "VARYAI_HARNESS_GATEWAY_KEY";
 
 pub(crate) fn config_path() -> PathBuf {
     // A test/debug home must not inherit a running Harness instance's home.
@@ -519,6 +520,23 @@ pub(crate) fn candidates(value: &Value) -> Vec<(String, String, Vec<String>)> {
     result
 }
 
+/// Authentication headers remain protected when optional client headers are added.
+fn authentication_headers(profile: &Value) -> Vec<(String, &Value)> {
+    let mut headers = profile["headers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(name, _)| {
+            ["authorization", "x-api-key", "cf-aig-authorization"]
+                .iter()
+                .any(|auth| name.eq_ignore_ascii_case(auth))
+        })
+        .map(|(name, value)| (name.to_ascii_lowercase(), value))
+        .collect::<Vec<_>>();
+    headers.sort_by(|a, b| a.0.cmp(&b.0));
+    headers
+}
+
 /// Native protocol, timeout and compatibility controls do not change route ownership.
 pub(crate) fn adopt(installed: &Value, live: &Value) -> Value {
     let mut adopted = installed.clone();
@@ -544,11 +562,17 @@ pub(crate) fn adopt(installed: &Value, live: &Value) -> Value {
                 current["api"].as_str(),
                 Some("openai-completions" | "openai-responses" | "anthropic-messages")
             );
-            let auth_matches = old["headers"].as_object().is_some_and(|headers| {
-                headers
-                    .iter()
-                    .all(|(name, value)| current["headers"].get(name) == Some(value))
-            });
+            if old.get("apiKeyEnv") != current.get("apiKeyEnv") {
+                continue;
+            }
+            let auth_matches = authentication_headers(old) == authentication_headers(current)
+                && old.get("headers").is_none_or(|headers| {
+                    headers.as_object().is_some_and(|headers| {
+                        headers
+                            .iter()
+                            .all(|(name, value)| current["headers"].get(name) == Some(value))
+                    })
+                });
             if !same_gateway || !known_api || !auth_matches {
                 continue;
             }
@@ -603,7 +627,7 @@ pub(crate) fn project(
     value: &mut Value,
     catalog: &[super::agent_connections::Model],
     base: &str,
-    token: &str,
+    _token: &str,
     selected: &str,
 ) -> Result<(), String> {
     let mut selected_route = None;
@@ -615,6 +639,7 @@ pub(crate) fn project(
         let id = format!("shared-catalog{suffix}");
         let route = format!("varyai-{id}");
         let old = value["providers"][key(&id)]["config"]["providers"][&route].clone();
+
         let models = catalog
             .iter()
             .filter(|model| model.api == native_api)
@@ -647,10 +672,13 @@ pub(crate) fn project(
         } else {
             format!("{base}/v1")
         });
-        if profile.get("headers").is_none() {
-            profile["headers"] = json!({});
+        profile["apiKeyEnv"] = json!(GATEWAY_KEY_REF);
+        if let Some(headers) = profile.get_mut("headers").and_then(Value::as_object_mut) {
+            headers.retain(|name, _| !name.eq_ignore_ascii_case("authorization"));
+            if headers.is_empty() {
+                profile.as_object_mut().ok_or(FAILED)?.remove("headers");
+            }
         }
-        profile["headers"]["Authorization"] = json!(format!("Bearer {token}"));
         if profile.get("streamIdleTimeoutMs").is_none() {
             profile["streamIdleTimeoutMs"] = json!(600_000);
         }

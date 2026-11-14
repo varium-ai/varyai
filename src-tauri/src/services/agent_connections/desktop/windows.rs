@@ -153,10 +153,9 @@ fn freshness(processes: &[Process], applied_ms: Option<i64>) -> State {
             .checked_sub(116_444_736_000_000_000)
             .map(|ticks| (ticks / 10_000) as i64)
     };
-    if processes
-        .iter()
-        .any(|process| launched(process).is_some_and(|launched| launched <= applied_ms))
-    {
+    if processes.iter().any(|process| {
+        launched(process).is_some_and(|launched| super::started_before_change(launched, applied_ms))
+    }) {
         State::RestartRequired
     } else if processes.iter().any(|process| launched(process).is_none()) {
         State::Unknown
@@ -324,6 +323,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn windows_launch_clock_precision_matches_macos() {
+        for started in [4000, 4001, 4999, 5000, 5001] {
+            let mut copy = process();
+            copy.created = 116_444_736_000_000_000 + started * 10_000;
+            assert_eq!(freshness(&[copy], Some(5000)), State::Current);
+        }
+        let mut copy = process();
+        copy.created = 116_444_736_000_000_000 + 3999 * 10_000;
+        assert_eq!(freshness(&[copy], Some(5000)), State::RestartRequired);
+    }
+
+    #[test]
     fn confirmed_chatgpt_restart_reopens_a_current_windows_app() {
         let processes = vec![process()];
         let runtime = Fake::new(vec![processes.clone(), vec![]], Closed::Exited);
@@ -367,7 +378,7 @@ mod tests {
             parent: 4,
             image: r"C:\Program Files\WorkBuddy\WorkBuddy.exe".into(),
             args: vec!["WorkBuddy.exe".into()],
-            created: 116_444_736_010_000_000,
+            created: 116_444_736_005_000_000,
             aumid: None,
         }
     }
