@@ -15,6 +15,38 @@ use std::{
 
 static SINK_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(test)]
+mod quota_policy_tests {
+    use super::*;
+    #[test]
+    fn weekly_reset_never_follows_only_a_five_hour_limit_and_confirmed_resets_clear_health() {
+        let state = Scheduling::new(true);
+        state.update(
+            vec![Window {
+                used: 100.0,
+                seconds: 18000,
+                reset: 90000,
+                sampled: 1000,
+            }],
+            1000,
+        );
+        assert!(!state.weekly_exhausted(1001));
+        state.update(
+            vec![Window {
+                used: 100.0,
+                seconds: 604800,
+                reset: 90000,
+                sampled: 1000,
+            }],
+            1000,
+        );
+        assert!(state.weekly_exhausted(1001));
+        state.reset_confirmed();
+        assert!(!state.weekly_exhausted(1001));
+        assert!(!state.exhausted(1001));
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Window {
     pub used: f64,
@@ -79,6 +111,22 @@ fn decay(value: f64, age: i64, half_life: f64) -> f64 {
     value * (-age.max(0) as f64 / half_life).exp2()
 }
 impl Scheduling {
+    pub(super) fn weekly_exhausted(&self, now: i64) -> bool {
+        self.account.lock().is_ok_and(|state| {
+            state.windows.iter().any(|w| {
+                w.seconds == 604800
+                    && w.used >= 100.0
+                    && w.reset > now
+                    && now.saturating_sub(w.sampled) <= 300
+            })
+        })
+    }
+    pub(super) fn reset_confirmed(&self) {
+        if let Ok(mut state) = self.account.lock() {
+            state.windows.clear();
+        }
+        self.succeeded();
+    }
     pub(super) fn exhausted(&self, now: i64) -> bool {
         self.account.try_lock().is_ok_and(|state| {
             state

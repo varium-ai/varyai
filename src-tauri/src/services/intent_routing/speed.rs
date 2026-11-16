@@ -108,6 +108,21 @@ pub(crate) fn for_model(declared: Option<&[Tier]>, model: &str) -> Vec<Tier> {
     }
 }
 
+/// Fit Codex's newer tier only when the target has a known priority fallback.
+pub(crate) fn fallback_tier(
+    declared: Option<&[Tier]>,
+    model: &str,
+    asked: &str,
+) -> Option<&'static str> {
+    if asked != "ultrafast" {
+        return None;
+    }
+    let tiers = for_model(declared, model);
+    (tiers.iter().any(|tier| tier.id == "priority")
+        && !tiers.iter().any(|tier| tier.id == "ultrafast"))
+    .then_some("priority")
+}
+
 pub(crate) fn advertise(entry: &mut Value, tiers: &[Tier]) {
     entry["service_tiers"] = json!(tiers);
     entry["additional_speed_tiers"] = json!(tiers
@@ -124,6 +139,41 @@ pub(crate) fn advertise(entry: &mut Value, tiers: &[Tier]) {
 mod tests {
     use crate::services::intent_routing::effort::Capability;
     use serde_json::json;
+
+    #[test]
+    fn unsupported_ultrafast_falls_back_only_when_priority_is_supported() {
+        let cases = [
+            (json!({}), "gpt-6.1-sol", "ultrafast", Some("priority")),
+            (json!({}), "synthetic-model", "ultrafast", None),
+            (
+                json!({"service_tiers":[]}),
+                "gpt-6.1-sol",
+                "ultrafast",
+                None,
+            ),
+            (
+                json!({"service_tiers":["priority"]}),
+                "synthetic-model",
+                "ultrafast",
+                Some("priority"),
+            ),
+            (
+                json!({"service_tiers":["priority","ultrafast"]}),
+                "gpt-6.1-sol",
+                "ultrafast",
+                None,
+            ),
+            (json!({}), "gpt-6.1-sol", "priority", None),
+            (json!({}), "gpt-6.1-sol", "synthetic-tier", None),
+        ];
+        for (entry, model, asked, expected) in cases {
+            let capability = Capability::parse(&entry);
+            assert_eq!(
+                super::fallback_tier(capability.service_tiers.as_deref(), model, asked),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn speed_tiers_survive_discovery_and_saved_declarations() {

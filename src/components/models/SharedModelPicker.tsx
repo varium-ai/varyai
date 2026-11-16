@@ -41,10 +41,15 @@ export interface ModelVisibilityControls {
 }
 
 const modelName = (model: ModelChoice) => {
-  const suffix = ` · ${model.group === "routing" ? "routing group" : model.group}`;
-  return model.name.endsWith(suffix)
-    ? model.name.slice(0, -suffix.length)
-    : model.name;
+  const source = model.group === "routing" ? "routing group" : model.group;
+  if (
+    model.source === "native" ||
+    !source ||
+    model.name.includes(" · ") ||
+    model.name.toLowerCase().includes(source.toLowerCase())
+  )
+    return model.name;
+  return `${model.name} · ${source}`;
 };
 const context = (n?: number | null) =>
   !n
@@ -117,7 +122,9 @@ export function SharedModelPicker({
   );
   const tell = (model: ModelChoice) => tells.get(reference(model));
   const choiceLabel = (model: ModelChoice) =>
-    tell(model) ? `${modelName(model)} · ${tell(model)}` : modelName(model);
+    accountText(
+      tell(model) ? `${modelName(model)} · ${tell(model)}` : modelName(model),
+    );
   const identityHint = (model: ModelChoice) =>
     tell(model) ? <span className="mp-am-tell">{tell(model)}</span> : null;
   const [query, setQuery] = useState("");
@@ -151,7 +158,9 @@ export function SharedModelPicker({
         .map(([group]) => group),
     );
   });
-  const railed = agentMenu ? models.length > 0 : groups.size > 2 && wide;
+  const railed = agentMenu
+    ? models.some((model) => model.source !== "native")
+    : groups.size > 2 && wide;
   useEffect(() => {
     const resize = () => setWide(window.innerWidth >= 600);
     window.addEventListener("resize", resize);
@@ -185,7 +194,7 @@ export function SharedModelPicker({
     ) : model.logo ? (
       <ProviderIcon
         icon={model.logo}
-        name={modelName(model)}
+        name={accountText(modelName(model))}
         size={16}
         showFallback={false}
       />
@@ -238,7 +247,13 @@ export function SharedModelPicker({
         .includes(term)) &&
     (view !== "shown" || selected.includes(model.id) || kept.has(model.id));
   const visibleSections = sections
-    .filter(([group]) => provider === null || !!term || group === provider)
+    .filter(
+      ([group]) =>
+        (agentMenu && !railed) ||
+        provider === null ||
+        !!term ||
+        group === provider,
+    )
     .map(([group, rows]) => [group, rows.filter(matches)] as const)
     .filter(([, rows]) => rows.length);
   function bulk(action: "hide" | "show") {
@@ -454,7 +469,9 @@ export function SharedModelPicker({
                     {modelIcon(model)}
                   </span>
                   <span className="mp-am-words">
-                    <span className="mp-am-name">{modelName(model)}</span>
+                    <span className="mp-am-name">
+                      <AccountLabel>{modelName(model)}</AccountLabel>
+                    </span>
                     {identityHint(model)}
                   </span>
                   <span className="mp-am-context">
@@ -597,7 +614,9 @@ export function SharedModelPicker({
                               {agentMenu ? (
                                 <span className="mp-am-words">
                                   <span className="mp-am-name">
-                                    {modelName(model)}
+                                    <AccountLabel>
+                                      {modelName(model)}
+                                    </AccountLabel>
                                   </span>
                                   {identityHint(model)}
                                   <span
@@ -609,18 +628,13 @@ export function SharedModelPicker({
                                         : "agentConnections.viaVary",
                                     )}
                                   </span>
-                                  {model.source !== "native" && (
-                                    <span className="mp-am-source">
-                                      <AccountLabel>
-                                        {groupName(model.group ?? "")}
-                                      </AccountLabel>
-                                    </span>
-                                  )}
                                 </span>
                               ) : (
                                 <span className="mp-am-words">
                                   <span className="mp-am-name">
-                                    {modelName(model)}
+                                    <AccountLabel>
+                                      {modelName(model)}
+                                    </AccountLabel>
                                   </span>
                                   {identityHint(model)}
                                 </span>

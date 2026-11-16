@@ -1,6 +1,99 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
+import { AccountMask, maskedAccountText } from "@/components/AccountLabel";
+
+it.each([
+  { variant: "agent" as const },
+  {},
+  { multiple: true },
+  { readOnly: true },
+])(
+  "keeps Magpie provider suffixes inline for distinct model names with options %j",
+  (options) => {
+    const pick = vi.fn();
+    render(
+      <SharedModelPicker
+        {...options}
+        selected={[]}
+        onPick={pick}
+        models={[
+          { id: "relay/sol", name: "GPT Synthetic Sol", group: "Team Relay" },
+          {
+            id: "relay/terra",
+            name: "GPT Synthetic Terra · Team Relay",
+            group: "Team Relay",
+          },
+          { id: "custom", name: "My Team Relay model", group: "Team Relay" },
+          {
+            id: "native",
+            name: "Native model",
+            group: "Native Client",
+            source: "native",
+          },
+        ]}
+      />,
+    );
+    for (const name of ["GPT Synthetic Sol", "GPT Synthetic Terra"]) {
+      const row = screen.getByTitle(`${name} · Team Relay`);
+      expect(row.querySelector(".mp-am-name")).toHaveTextContent(
+        `${name} · Team Relay`,
+      );
+      expect(row.querySelector(".mp-am-source")).toBeNull();
+    }
+    expect(
+      screen.getByTitle("My Team Relay model").querySelector(".mp-am-name"),
+    ).toHaveTextContent(/^My Team Relay model$/);
+    expect(
+      screen.getByTitle("Native model").querySelector(".mp-am-name"),
+    ).toHaveTextContent(/^Native model$/);
+    if (!options.readOnly) {
+      fireEvent.click(screen.getByTitle("GPT Synthetic Sol · Team Relay"));
+      expect(pick).toHaveBeenCalledExactlyOnceWith("relay/sol");
+    }
+  },
+);
+
+it("masks inline account suffixes in names, accessible labels and tooltips", () => {
+  const source = "Codex · synthetic-person@example.test";
+  const label = `GPT Synthetic · ${source}`;
+  render(
+    <AccountMask masked>
+      <SharedModelPicker
+        variant="agent"
+        selected={[]}
+        models={[{ id: "account/model", name: "GPT Synthetic", group: source }]}
+      />
+    </AccountMask>,
+  );
+  const row = screen.getByRole("radio", {
+    name: maskedAccountText(label, true),
+  });
+  expect(row).toHaveAttribute("title", maskedAccountText(label, true));
+  expect(row.querySelector(".mp-am-name")).toHaveTextContent(
+    "GPT Synthetic · Codex ·",
+  );
+  expect(row).not.toHaveTextContent("synthetic-person@example.test");
+});
+
+it("preserves a source-qualified backend label independently of the account group", () => {
+  render(
+    <SharedModelPicker
+      variant="agent"
+      selected={[]}
+      models={[
+        {
+          id: "account/model",
+          name: "GPT Synthetic · Codex",
+          group: "Codex · synthetic-person@example.test",
+        },
+      ]}
+    />,
+  );
+  expect(
+    screen.getByTitle("GPT Synthetic · Codex").querySelector(".mp-am-name"),
+  ).toHaveTextContent(/^GPT Synthetic · Codex$/);
+});
 
 it("updates provider icons in model rows and the provider rail", () => {
   const first =
@@ -15,7 +108,7 @@ it("updates provider icons in model rows and the provider rail", () => {
     ],
   };
   const { rerender } = render(<SharedModelPicker {...props} />);
-  const row = () => screen.getByRole("radio", { name: "Synthetic model" });
+  const row = () => screen.getByRole("radio", { name: "Synthetic model · gs" });
   const rail = () =>
     within(screen.getByRole("navigation")).getByRole("button", { name: "gs" });
   expect(row().querySelector(".mp-am-logo img")).toHaveAttribute("src", first);
@@ -47,7 +140,7 @@ it("uses the selected built-in or letter provider icon in model rows", () => {
     ],
   };
   const { rerender } = render(<SharedModelPicker {...props} />);
-  const row = () => screen.getByRole("radio", { name: "Synthetic model" });
+  const row = () => screen.getByRole("radio", { name: "Synthetic model · gs" });
   expect(
     row().querySelector('.mp-am-logo path[fill="#3F70FF"]'),
   ).toBeInTheDocument();
@@ -112,8 +205,8 @@ it.each([
         onPick={pick}
       />,
     );
-    const original = screen.getByTitle("GLM-5.3-Flash · gs");
-    const copy = screen.getByTitle("GLM-5.3-Flash · gs-2");
+    const original = screen.getByTitle("GLM-5.3-Flash · gs · gs");
+    const copy = screen.getByTitle("GLM-5.3-Flash · gs · gs-2");
     expect(original.querySelector(".mp-am-tell")).toHaveTextContent(/^gs$/);
     expect(copy.querySelector(".mp-am-tell")).toHaveTextContent(/^gs-2$/);
     if (!options.readOnly) {
@@ -123,8 +216,10 @@ it.each([
     fireEvent.change(screen.getByRole("searchbox"), {
       target: { value: "gs-2" },
     });
-    expect(screen.queryByTitle("GLM-5.3-Flash · gs")).not.toBeInTheDocument();
-    expect(screen.getByTitle("GLM-5.3-Flash · gs-2")).toBeVisible();
+    expect(
+      screen.queryByTitle("GLM-5.3-Flash · gs · gs"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTitle("GLM-5.3-Flash · gs · gs-2")).toBeVisible();
   },
 );
 
@@ -157,7 +252,7 @@ it("keeps encoded classifier selections while displaying public model references
       onPick={pick}
     />,
   );
-  fireEvent.click(screen.getByRole("radio", { name: "GLM · gs-2" }));
+  fireEvent.click(screen.getByRole("radio", { name: "GLM · gs · gs-2" }));
   expect(pick).toHaveBeenCalledExactlyOnceWith(copy);
   expect(screen.queryByText(copy)).not.toBeInTheDocument();
 });
@@ -191,13 +286,15 @@ it.each([
       onPick={pick}
     />,
   );
-  expect(screen.getByTitle("GPT Example")).toHaveTextContent("GPT Example");
-  expect(screen.getByTitle("Smart")).toHaveTextContent("Smart");
+  expect(screen.getByTitle("GPT Example · Vendor")).toHaveTextContent(
+    "GPT Example",
+  );
+  expect(screen.getByTitle("Smart · routing group")).toHaveTextContent("Smart");
   expect(screen.getByTitle("Native model")).toHaveTextContent("Native model");
   expect(container.querySelector('[title^="vary-"]')).toBeNull();
   expect(screen.queryByTitle("vendor/wire-model")).not.toBeInTheDocument();
   if (!options.readOnly) {
-    fireEvent.click(screen.getByTitle("GPT Example"));
+    fireEvent.click(screen.getByTitle("GPT Example · Vendor"));
     expect(pick).toHaveBeenCalledExactlyOnceWith(directId);
   }
 });
@@ -227,14 +324,16 @@ it("uses the same provider panel for single selection without visibility control
     name: "agentConnections.modelProviders",
   });
   fireEvent.click(within(rail).getByRole("button", { name: "Vendor" }));
-  expect(screen.getByRole("radio", { name: "Alpha" })).toBeInTheDocument();
   expect(
-    screen.queryByRole("radio", { name: "Smart" }),
+    screen.getByRole("radio", { name: "Alpha · Vendor" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("radio", { name: "Smart · routing group" }),
   ).not.toBeInTheDocument();
   fireEvent.change(screen.getByRole("searchbox"), {
     target: { value: "Smart" },
   });
-  fireEvent.click(screen.getByRole("radio", { name: "Smart" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Smart · routing group" }));
   expect(pick).toHaveBeenCalledExactlyOnceWith("route");
   expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   expect(
@@ -296,13 +395,17 @@ it("isolates an unnamed provider instead of confusing it with All providers", ()
     }),
   );
   expect(screen.getByRole("radio", { name: "Alpha" })).toBeInTheDocument();
-  expect(screen.queryByRole("radio", { name: "Beta" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("radio", { name: "Beta · Vendor one" }),
+  ).not.toBeInTheDocument();
   fireEvent.click(
     within(screen.getByRole("navigation")).getByRole("button", {
       name: "agentConnections.allProviders",
     }),
   );
-  expect(screen.getByRole("radio", { name: "Beta" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("radio", { name: "Beta · Vendor one" }),
+  ).toBeInTheDocument();
 });
 
 it("keeps a long provider containing the current single choice expanded and disables picks when busy", () => {
@@ -321,7 +424,7 @@ it("keeps a long provider containing the current single choice expanded and disa
       onPick={pick}
     />,
   );
-  expect(screen.getByRole("radio", { name: "Model 8" })).toBeChecked();
+  expect(screen.getByRole("radio", { name: "Model 8 · Vendor" })).toBeChecked();
   rerender(
     <SharedModelPicker
       models={[{ id: "a", name: "Alpha", group: "Vendor" }]}
@@ -331,7 +434,7 @@ it("keeps a long provider containing the current single choice expanded and disa
     />,
   );
   fireEvent.keyDown(screen.getByRole("searchbox"), { key: "ArrowDown" });
-  fireEvent.click(screen.getByRole("radio", { name: "Alpha" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Alpha · Vendor" }));
   expect(pick).not.toHaveBeenCalled();
 });
 
@@ -364,6 +467,63 @@ it("searches the exact model ID without adding reasoning or image badges", () =>
   expect(
     screen.queryByRole("radio", { name: /Unknown model/ }),
   ).not.toBeInTheDocument();
+});
+
+it("omits provider navigation when an Agent menu only has a native model", () => {
+  render(
+    <SharedModelPicker
+      variant="agent"
+      models={[
+        {
+          id: "native",
+          name: "opus[1m]",
+          source: "native",
+          disabled: true,
+        },
+      ]}
+      selected={["native"]}
+    />,
+  );
+  expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  const native = screen.getByRole("radio", { name: "opus[1m]" });
+  expect(native).toBeChecked();
+  expect(native).toBeDisabled();
+  fireEvent.change(screen.getByRole("searchbox"), {
+    target: { value: "missing-model" },
+  });
+  expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+  expect(screen.getByText("modelPicker.empty")).toBeInTheDocument();
+});
+
+it("keeps the native model visible when the last shared provider disappears", () => {
+  const native = {
+    id: "native",
+    name: "opus[1m]",
+    source: "native" as const,
+    disabled: true,
+  };
+  const { rerender } = render(
+    <SharedModelPicker
+      variant="agent"
+      models={[native, { id: "shared", name: "Shared", group: "Vendor" }]}
+      selected={["native"]}
+    />,
+  );
+  fireEvent.click(
+    within(screen.getByRole("navigation")).getByRole("button", {
+      name: "Vendor",
+    }),
+  );
+  expect(screen.queryByRole("radio", { name: native.name })).toBeNull();
+  rerender(
+    <SharedModelPicker
+      variant="agent"
+      models={[native]}
+      selected={["native"]}
+    />,
+  );
+  expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: native.name })).toBeChecked();
 });
 
 it("uses a search-first Agent menu with icon navigation and explicit routing sources", () => {
@@ -402,9 +562,9 @@ it("uses a search-first Agent menu with icon navigation and explicit routing sou
   );
   expect(within(rail).queryByText("Vendor")).not.toBeInTheDocument();
   expect(
-    within(screen.getByRole("radio", { name: "Smart" })).getByText(
-      "agentConnections.viaVary",
-    ),
+    within(
+      screen.getByRole("radio", { name: "Smart · routing group" }),
+    ).getByText("agentConnections.viaVary"),
   ).toBeInTheDocument();
   expect(
     within(screen.getByRole("radio", { name: "Native model" })).queryByText(
@@ -417,18 +577,25 @@ it("uses a search-first Agent menu with icon navigation and explicit routing sou
   expect(disconnect).toHaveBeenCalledOnce();
   expect(pick).not.toHaveBeenCalled();
   fireEvent.click(within(rail).getByRole("button", { name: "Vendor" }));
-  expect(screen.getByRole("radio", { name: "Alpha" })).toBeInTheDocument();
   expect(
-    screen.queryByRole("radio", { name: "Smart" }),
+    screen.getByRole("radio", { name: "Alpha · Vendor" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("radio", { name: "Smart · routing group" }),
   ).not.toBeInTheDocument();
   fireEvent.change(screen.getByRole("searchbox"), {
     target: { value: "Smart" },
   });
   fireEvent.keyDown(screen.getByRole("searchbox"), { key: "ArrowDown" });
-  expect(screen.getByRole("radio", { name: "Smart" })).toHaveFocus();
-  fireEvent.keyDown(screen.getByRole("radio", { name: "Smart" }), {
-    key: "Enter",
-  });
+  expect(
+    screen.getByRole("radio", { name: "Smart · routing group" }),
+  ).toHaveFocus();
+  fireEvent.keyDown(
+    screen.getByRole("radio", { name: "Smart · routing group" }),
+    {
+      key: "Enter",
+    },
+  );
   expect(pick).toHaveBeenCalledExactlyOnceWith("route");
 });
 
@@ -447,16 +614,20 @@ it("moves through available choices with the keyboard and keeps the multi-picker
     />,
   );
   fireEvent.keyDown(screen.getByRole("searchbox"), { key: "ArrowDown" });
-  expect(screen.getByRole("checkbox", { name: "Alpha" })).toHaveFocus();
-  fireEvent.keyDown(screen.getByRole("checkbox", { name: "Alpha" }), {
+  expect(
+    screen.getByRole("checkbox", { name: "Alpha · Vendor" }),
+  ).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("checkbox", { name: "Alpha · Vendor" }), {
     key: "ArrowDown",
   });
-  expect(screen.getByRole("checkbox", { name: "Beta" })).toHaveFocus();
-  fireEvent.keyDown(screen.getByRole("checkbox", { name: "Beta" }), {
+  expect(screen.getByRole("checkbox", { name: "Beta · Vendor" })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("checkbox", { name: "Beta · Vendor" }), {
     key: "Enter",
   });
   expect(pick).toHaveBeenCalledWith("b");
-  expect(screen.getByRole("checkbox", { name: "Alpha" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("checkbox", { name: "Alpha · Vendor" }),
+  ).toBeInTheDocument();
 });
 
 it("does not apply an already selected starting model again", () => {
@@ -468,6 +639,6 @@ it("does not apply an already selected starting model again", () => {
       onPick={pick}
     />,
   );
-  fireEvent.click(screen.getByRole("radio", { name: "Alpha" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Alpha · Vendor" }));
   expect(pick).not.toHaveBeenCalled();
 });

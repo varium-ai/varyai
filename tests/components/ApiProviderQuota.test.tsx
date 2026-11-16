@@ -149,6 +149,28 @@ it("does not invent balances for unsupported providers", async () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument(),
   );
 });
+it("does not render an unsupported relay as a tray quota card", async () => {
+  vi.mocked(routingUpstreamsApi.quota).mockResolvedValue({
+    status: "unsupported",
+    balance: null,
+    tiers: [],
+  });
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApiProviderQuota
+        record={record}
+        card={{ remaining: true, toggle: vi.fn() }}
+      />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("article")).not.toBeInTheDocument(),
+  );
+  expect(routingUpstreamsApi.quota).toHaveBeenCalledExactlyOnceWith("relay", 4);
+  expect(
+    screen.queryByText("subscriptionProvider.quotaUnavailable"),
+  ).not.toBeInTheDocument();
+});
 it.each([
   { ...record, revision: 0 },
   { ...record, hasApiKey: false },

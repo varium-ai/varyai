@@ -25,6 +25,17 @@ The optional `setup.sh` changes the host environment: it can install system pack
 
 A temporary test home also redirects native client paths. A nonempty `CC_SWITCH_TEST_HOME` takes priority over an inherited `DSH_HOME` for Harness configuration so tests launched inside Harness stay isolated. An empty test home represents a machine without configured clients, not just a fresh VaryAI installation. To verify an existing-client installation, prepare private client configuration copies or synthetic existing-client fixtures inside that home. Do not copy rotating OAuth sessions into parallel test clients; use a test API-key provider or a separate authorization. Changing the VaryAI application data root must leave native client paths unchanged. Do not create empty production client files as a substitute for setup, and do not grant OS trust or connection authorization as part of routine checks.
 
+## Desktop text selection
+
+The renderer defaults to `user-select: none` on `body` so navigation, labels,
+and tool lists behave like desktop controls instead of a selectable web page.
+Keep the WebKit-prefixed declaration alongside the standard property for macOS;
+Windows WebView2 uses the same shared stylesheet. Inputs, textareas, editable
+content, CodeMirror content (including read-only editors), and `pre`/`code`
+blocks explicitly retain text selection. Add `select-text` to other content
+that users need to copy; do not enable selection on an entire page or disable
+it with a universal selector or a JavaScript selection handler.
+
 ## Checks
 
 ```bash
@@ -109,9 +120,13 @@ Zod is pinned to 4.6.7 to address GHSA-mrhx-c7xc-m3w5. Its pnpm patch rewords tw
 
 The remaining known development dependency advisory is [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) in `braces` 3.0.3, used by the Tailwind 3 globbing toolchain. As of October 22, 2026, no patched version is published. This package is absent from the production dependency tree. The documented build consumes repository-controlled patterns rather than a public glob-processing API; this limits exposure but does not fix the dependency. Maintainers must revisit the exception when a patch or a compatible toolchain replacement becomes available, or when a workflow starts accepting untrusted patterns. Do not suppress the advisory as though it were fixed.
 
-## Optional statistics destination
+## Google Analytics configuration
 
-Ordinary source builds have no statistics destination and do not report installation statistics. To build a distribution with this optional integration, set `VARYAI_ANALYTICS_BASE_URL` at compile time to an HTTPS base URL operated under your published privacy policy. Runtime reporting still requires explicit opt-in in Settings. Do not include credentials, query parameters or fragments in this URL. See [data and network behavior](data-and-network.md) for the payload and consent lifecycle.
+Desktop statistics use gtag.js directly with Measurement ID `G-2R2MZ76G1E`. Set `VARYAI_GA4_MEASUREMENT_ID` at compile time to override the public ID; an empty or invalid value disables statistics availability. `VARYAI_ANALYTICS_BASE_URL` is no longer used. No Measurement Protocol API secret belongs in the desktop build, and no application server forwards these events.
+
+The `analytics.html` entry runs in an incognito, hidden WebView with no plugin capabilities. Its native command guard permits only token-scoped dispatch acknowledgements. Packaged analytics responses receive a separate Google-only CSP and navigation is restricted to the local analytics asset. The main application CSP stays unchanged. The analytics bundle must not import application state or UI chunks; the production build regression checks its complete static dependency graph. Window-state persistence excludes this WebView, and disabling statistics destroys it.
+
+The general Settings page provides an enabled-by-default switch under Privacy. Existing disabled choices remain disabled. Schema 3 preserves valid legacy IDs but resets earlier backend dispatch markers so that Google receives an initial observation. Invalid state and unavailable local storage disable reporting. See [data and network behavior](data-and-network.md) for the events, Google metadata and dispatch limitations.
 
 ## Development boundaries
 

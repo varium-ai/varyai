@@ -8,6 +8,15 @@ pub(super) fn named_catalog(
     selected: &str,
     model_map: &mut BTreeMap<String, String>,
 ) -> (Vec<Model>, String) {
+    catalog_names(catalog, selected, model_map, false)
+}
+
+fn catalog_names(
+    catalog: &[Model],
+    selected: &str,
+    model_map: &mut BTreeMap<String, String>,
+    names_as_ids: bool,
+) -> (Vec<Model>, String) {
     let mut projected = catalog.to_vec();
     let mut chosen = selected.to_owned();
     let reserved = catalog
@@ -18,13 +27,22 @@ pub(super) fn named_catalog(
         .iter()
         .map(|model| &model.name)
         .collect::<BTreeSet<_>>();
+    let reserved_labels = labels
+        .iter()
+        .map(|label| label.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut displayed = BTreeSet::new();
     let mut order = (0..projected.len()).collect::<Vec<_>>();
     order.sort_by(|a, b| catalog[*a].id.cmp(&catalog[*b].id));
     for index in order {
         let model = &mut projected[index];
         let internal = model.id.clone();
         let previous = super::model_wire(model_map, None, &internal);
-        let base = if previous == internal {
+        // Label edits keep an existing ID that already identifies its source.
+        let has_source = previous
+            .to_lowercase()
+            .contains(&format!(" · {}", model.group.to_lowercase()));
+        let base = if previous == internal || (names_as_ids && !has_source) {
             &model.name
         } else {
             previous
@@ -43,8 +61,18 @@ pub(super) fn named_catalog(
             chosen = name.clone();
         }
         model_map.insert(name.clone(), internal);
-        model.id = name.clone();
-        model.name = name;
+        model.id = name;
+        let label = model.name.clone();
+        let mut display = label.clone();
+        let mut duplicate = 2;
+        while displayed.contains(&display.to_lowercase())
+            || (display != label && reserved_labels.contains(&display.to_lowercase()))
+        {
+            display = format!("{label} ({duplicate})");
+            duplicate += 1;
+        }
+        displayed.insert(display.to_lowercase());
+        model.name = display;
     }
     (projected, chosen)
 }
@@ -92,13 +120,27 @@ pub(super) fn build(
             model.id = wire;
         }
         (projected, chosen)
+    } else if matches!(app, "hermes" | "zcode") {
+        // These clients list IDs without a separate display-name field. Keep
+        // historical aliases routable while publishing source-qualified IDs.
+        catalog_names(catalog, selected, &mut receipt.model_map, true)
     } else {
         named_catalog(catalog, selected, &mut receipt.model_map)
     };
     receipt.visible_models = Some(projected.iter().map(|model| model.id.clone()).collect());
-    receipt
-        .files
-        .push(edit(app, path, &projected, base, token, &chosen)?);
+    let credentials = if app == "deepseek-harness" {
+        Some(super::harness_credentials::prepare(&path, token)?)
+    } else {
+        None
+    };
+    let mut file = edit(app, path, &projected, base, token, &chosen)?;
+    if app == "deepseek-harness" {
+        super::harness_credentials::protect_profile(&mut file)?;
+    }
+    receipt.files.push(file);
+    if let Some(credentials) = credentials {
+        receipt.files.push(credentials);
+    }
     if app == "gemini" {
         receipt.files.push(FileEdit::prepare(
             crate::gemini_config::get_gemini_settings_path(),
@@ -561,6 +603,11 @@ mod tests {
             let profile = &doc["providers"][format!("varyai-provider-shared-catalog{suffix}")]
                 ["config"]["providers"][format!("varyai-shared-catalog{suffix}")];
             assert_eq!(profile["api"], api);
+            assert_eq!(
+                profile["apiKeyEnv"],
+                crate::services::deepseek_harness::GATEWAY_KEY_REF
+            );
+            assert!(profile["headers"].get("Authorization").is_none());
             assert_eq!(profile["streamIdleTimeoutMs"], 600000);
             assert_eq!(profile["models"][0]["maxTokens"], 184464);
             if api == "anthropic-messages" {

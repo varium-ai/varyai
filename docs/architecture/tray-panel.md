@@ -1,7 +1,39 @@
 # Tray Panel
 
 The tray uses the independent `index.html?panel=tray` renderer, with Agent,
-Routing and Security tabs. It must not render the main workspace sidebar.
+Allowances, Routing and Security tabs. It must not render the main workspace sidebar.
+
+Allowances follows Magpie's compact provider/account cards: provider icon and plan,
+account labels, one ring per supported quota window, named reset times, and a
+per-card refresh. The provider header and rings switch between used and remaining
+percentages, defaulting to remaining when no preference has been saved. Preserve
+explicit used/remaining choices and decimal percentages (96.8% remaining is 3.2%
+used). Keep independent model windows visible even when their remainder is zero;
+they must not be dropped or replaced by the family's shared allowance. Only that
+display preference is saved in local storage. The panel uses the existing
+provider/account query keys and their last successful snapshots,
+without storing account or quota responses in browser local storage. Read only
+the accounts selected for the saved provider. Failed refreshes retain the last
+reading with a stale status; login-required, unsupported and failed observations
+must not become zero allowance. Relay balances use the existing API allowance
+reader; direct API vendors without a supported reader are omitted. Load this
+content only while its tab is selected and the panel is active. Refresh reads all
+quota query families; card refresh reads only its account/provider. Main-window
+navigation from this tab opens Providers. Keep the four-tab indicator and keyboard
+wrapping based on the tab count, and preserve the fixed native panel height.
+
+Relay API keys use the existing read-only `/v1/usage`, then `/api/usage/token`
+probe. Hide a relay's card and heading only after an unsupported result; retain
+loading, authentication failures, temporary query failures and real zero balances.
+A failed or unrecognized refresh after a successful reading keeps that reading
+with a stale status. An explicit key rejection clears the previous balance.
+Provider-list, editor and tray views share the same query options and revision
+key. Cache a missing interface for six hours in renderer memory. Keep its query
+observer mounted while the active quota tab is open, so expiry or the header's
+explicit refresh can recover the hidden relay. Reopening within that interval
+reuses the result; a new saved provider revision starts a new query. When every
+candidate is unsupported, show the normal empty state. Closing the active quota
+tab stops its polling.
 
 The native context menu contains Open quick panel, Open main window, Official
 website and Quit, with one separator before Quit. It does not expose a

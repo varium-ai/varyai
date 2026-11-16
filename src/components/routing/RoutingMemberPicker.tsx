@@ -19,6 +19,7 @@ import {
   catalogRoutingMembers,
   routingMemberKey,
   routingMemberAvailable,
+  routingMemberUnavailableReason,
   ROUTING_MEMBER_LIMIT,
 } from "@/lib/routingMemberSelection";
 
@@ -217,7 +218,13 @@ export function RoutingMemberPicker({
               </div>
               {!provider.taskEligible && (
                 <p className="rt-field-hint">
-                  {t("intentRouting.memberNotReady")}
+                  {t(
+                    `intentRouting.memberUnavailable.${
+                      providers.some((entry) => entry.id === provider.id)
+                        ? "providerNotReady"
+                        : "providerMissing"
+                    }`,
+                  )}
                 </p>
               )}
               <ModelDisclosure id={modelsId} expanded={expanded}>
@@ -228,7 +235,11 @@ export function RoutingMemberPicker({
                       modelId: model.id,
                     };
                     const checked = selected.has(routingMemberKey(choice));
-                    const ready = routingMemberAvailable(providers, choice);
+                    const reason = routingMemberUnavailableReason(
+                      providers,
+                      choice,
+                    );
+                    const ready = reason === null;
                     return (
                       <label
                         key={model.id}
@@ -252,7 +263,9 @@ export function RoutingMemberPicker({
                         <Check size={13} aria-hidden />
                         <span>{model.name || model.id}</span>
                         {!ready && provider.taskEligible && (
-                          <small>{t("intentRouting.memberNotReady")}</small>
+                          <small>
+                            {t(`intentRouting.memberUnavailable.${reason}`)}
+                          </small>
                         )}
                       </label>
                     );

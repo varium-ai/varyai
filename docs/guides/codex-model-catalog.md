@@ -165,14 +165,29 @@ its generated catalog; existing ChatGPT-native mode keeps official model metadat
 
 ## Personal-account model labels
 
-Following Magpie's separation of picker labels from model identity, personal
-account sources use a short service label in connected agents' model menus. For
-example, an automatically named `Codex · person@example.test` source publishes
-`GPT-6.1 Sol · Codex`. When multiple visible sources share that short label,
-stable source-ID ordering adds short numbers (`Codex 1`, `Codex 2`). Hidden sources
-do not force visible sources to grow a suffix. Custom source names and custom
-model names are retained. Account records, authentication bindings and request
-model aliases are unchanged; account details remain in the account-management UI.
+Codex model-menu labels keep readable source names separate from request
+identities. Every direct model published by VaryAI includes the same source
+suffix, whether or not another source offers a model with the same name. For
+example, `GPT Synthetic Sol · Team Relay` and
+`GPT Synthetic Terra · Team Relay` remain consistent. Custom model names that
+already contain their source name are not suffixed twice.
+
+Automatically named personal-account sources use a short service label rather
+than account details: `Codex · person@example.test` publishes models with a
+`· Codex` suffix. Custom source names are retained. When visible sources share
+the same name, stable source-ID ordering assigns readable source numbers such
+as `Codex (1)` and `Codex (2)` consistently across their models. Hidden sources
+do not force visible sources to grow a number. Remaining identical custom model
+or group labels use readable numbers, never internal UUIDs or request aliases.
+
+In native ChatGPT mode, the official account's backend list retains its original
+labels and slugs. VaryAI does not append another copy of an official direct model
+already present there; models absent from that list and non-official sources
+remain available. This presentation rule does not change account records,
+authentication bindings, upstream model parameters, request aliases or retained
+aliases used by existing chats. The implementation is shared by macOS and
+Windows. Refresh the Codex connection's catalog and restart Codex when requested
+to reload updated labels; rebuilding source alone does not update a running app.
 
 ## External connection ownership
 
@@ -187,3 +202,33 @@ Turning the switch on after external takeover is an explicit reapplication. It
 uses the externally edited configuration as the new restoration baseline, so a
 later disconnect can restore that configuration. It does not modify the other
 manager's settings. The existing reapply action remains available for recovery.
+
+## Codex refresh hints
+
+A refresh hint describes configuration freshness, not whether inference works.
+Following Magpie's semantic startup snapshot, VaryAI records route/account identity
+and the model menu separately. Reapplying identical settings, changing the
+selected model or effort, refreshing credentials for the same account, and
+rewriting catalog descriptions, priorities or ordering must not advance the
+recorded change times. Menu identity consists of model slugs and visibility.
+Only digests and timestamps are persisted; configuration and credentials are not
+copied into the freshness record. The record survives a VaryAI restart. On the first observation without a semantic
+record, file modification times provide a conservative baseline; a running
+client may still receive a one-time manual refresh hint. Unknown startup state
+never triggers an automatic restart.
+
+The desktop app-server's creation identity, rather than the desktop window's age,
+determines whether it has reloaded. A current replacement clears the desktop
+refresh hint even if the window stayed open. A stale menu keeps its specific
+"model list updated" explanation; it does not imply that current conversations
+cannot send requests. Refreshing the menu is manual. After confirmation, the
+worker waits for idle, rechecks configuration and activity, and restarts only the
+verified desktop app-server. Windows may reopen the application only if the
+ended service has no replacement. Whole-application restart remains a fallback
+when service recovery is unavailable. No successful request alone proves that
+all clients have loaded the current menu.
+
+This freshness check covers the verified Codex desktop app-server on macOS and
+Windows. It does not claim to detect every terminal CLI, editor extension or
+independent managed daemon; those clients may need their own new session or
+refresh.

@@ -21,6 +21,8 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::RwLock;
 
+mod catalog_sync;
+
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
 
@@ -401,6 +403,7 @@ pub struct ProxyService {
     pub(crate) intent_runtime: Arc<crate::proxy::intent::Runtime>,
     pub(crate) agent_connections: Arc<super::agent_connections::Manager>,
     global_routing_lock: Arc<tokio::sync::Mutex<()>>,
+    catalog_sync: Arc<catalog_sync::CatalogSync>,
     pub(crate) intent_client: Arc<super::intent_routing::client::Manager>,
     native_checkpoint_key: std::path::PathBuf,
     codex_thread_worker: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
@@ -488,6 +491,7 @@ impl ProxyService {
             intent_runtime,
             agent_connections,
             global_routing_lock: Arc::default(),
+            catalog_sync: Arc::default(),
             intent_client,
             native_checkpoint_key,
             codex_thread_worker: Arc::default(),
@@ -1186,6 +1190,7 @@ impl ProxyService {
         if self.refresh_global_routing().await.is_err() {
             log::warn!("Global routing catalog is unavailable; stale targets were revoked");
         }
+        self.catalog_sync.pause_clients(false);
         log::info!("代理服务器已启动: {}:{}", info.address, info.port);
         Ok(info)
     }
@@ -1838,7 +1843,7 @@ impl ProxyService {
             self.intent_runtime.connections.revoke("trae");
             return;
         }
-        let running = self.is_running().await && !suspend;
+        let running = self.is_running().await && !suspend && !self.catalog_sync.clients_paused();
         let menu = running
             .then(|| self.intent_runtime.global_snapshot().ok().flatten())
             .flatten();
@@ -1878,7 +1883,7 @@ impl ProxyService {
             self.intent_runtime.connections.revoke(edition.app());
             return;
         }
-        let running = self.is_running().await && !suspend;
+        let running = self.is_running().await && !suspend && !self.catalog_sync.clients_paused();
         let menu = running
             .then(|| self.intent_runtime.global_snapshot().ok().flatten())
             .flatten();
@@ -2750,6 +2755,9 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
+        // A late catalog writer must not undo a client's shutdown restoration.
+        // Writers recheck this flag while holding their own configuration lock.
+        self.catalog_sync.pause_clients(true);
         self.reset_native_status();
         self.intent_runtime.flush_continuations().await;
         let client = self.intent_client.clone();
@@ -2803,55 +2811,64 @@ impl ProxyService {
     }
 
     async fn restore_shared_connections(&self, preserve_intent: bool) -> Result<(), String> {
-        let edition = super::trae_bridge::shared::Edition::International;
-        if self.agent_connections.bridge_for(edition).bridge_owned() {
-            self.intent_runtime.connections.revoke(edition.app());
-            if !preserve_intent {
-                self.agent_connections
-                    .bridge_for(edition)
-                    .bridge_select(false)?;
-            }
-            self.sync_shared_trae_intl(true).await;
+        // Each adapter owns separate files and a separate switch lock. A slow
+        // desktop bridge must not delay restoration of unrelated clients.
+        let results = futures::future::join_all(
+            super::agent_connections::APPS
+                .iter()
+                .copied()
+                .filter(|app| *app != "codex")
+                .chain(["trae", "trae-intl"])
+                .map(|app| self.restore_shared_connection(app, preserve_intent)),
+        )
+        .await;
+        results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map(|_| ())
+    }
+
+    async fn restore_shared_connection(
+        &self,
+        app: &'static str,
+        preserve_intent: bool,
+    ) -> Result<(), String> {
+        use super::{agent_connections::CONFLICT, trae_bridge::shared::Edition};
+        if !self.agent_connections.owns(app) {
+            return Ok(());
         }
-        if self.agent_connections.bridge_owned() {
-            self.intent_runtime.connections.revoke("trae");
-            if !preserve_intent {
-                let manager = self.agent_connections.clone();
-                tokio::task::spawn_blocking(move || manager.bridge_select(false))
-                    .await
-                    .map_err(|_| super::agent_connections::FAILED)??;
-            }
-            self.sync_shared_trae(true).await;
+        let guard = self.lock_switch_for_app(app).await;
+        if !self.agent_connections.owns(app) {
+            return Ok(());
         }
-        let mut failed = false;
-        for app in super::agent_connections::APPS
-            .iter()
-            .copied()
-            .filter(|app| *app != "codex")
-        {
-            if !self.agent_connections.owns(app) {
-                continue;
-            }
-            let _guard = self.lock_switch_for_app(app).await;
-            self.intent_runtime.connections.revoke(app);
-            let manager = self.agent_connections.clone();
-            failed |= !matches!(
-                tokio::task::spawn_blocking(move || {
-                    if preserve_intent {
-                        manager.suspend(app)
-                    } else {
-                        manager.disconnect(app)
-                    }
+        self.intent_runtime.connections.revoke(app);
+        let manager = self.agent_connections.clone();
+        if let Some(edition) = Edition::parse(app) {
+            if !preserve_intent {
+                tokio::task::spawn_blocking(move || match edition {
+                    Edition::China => manager.bridge_select(false),
+                    Edition::International => manager.bridge_for(edition).bridge_select(false),
                 })
-                .await,
-                Ok(Ok(()))
-            );
+                .await
+                .map_err(|_| super::agent_connections::FAILED)??;
+            }
+            drop(guard);
+            match edition {
+                Edition::China => self.sync_shared_trae(true).await,
+                Edition::International => self.sync_shared_trae_intl(true).await,
+            }
+            return Ok(());
         }
-        if failed {
-            Err(super::agent_connections::CONFLICT.into())
-        } else {
-            Ok(())
-        }
+        tokio::task::spawn_blocking(move || {
+            if preserve_intent {
+                manager.suspend(app)
+            } else {
+                manager.disconnect(app)
+            }
+        })
+        .await
+        .map_err(|_| CONFLICT.to_owned())?
+        .map_err(|_| CONFLICT.to_owned())
     }
 
     pub(crate) fn reset_native_status(&self) {
@@ -2998,6 +3015,9 @@ impl ProxyService {
             return;
         }
         let _guard = self.lock_switch_for_app("codex").await;
+        if self.catalog_sync.clients_paused() {
+            return;
+        }
         let Ok(status) = self.get_status().await else {
             return;
         };
@@ -3015,36 +3035,28 @@ impl ProxyService {
         if !self.is_running().await {
             return;
         }
-        let started = std::time::Instant::now();
-        self.sync_codex_configuration().await;
-        log::info!(
-            "Routing client sync completed: client=codex elapsed_ms={}",
-            started.elapsed().as_millis()
-        );
-        let started = std::time::Instant::now();
-        self.sync_shared_trae(false).await;
-        log::info!(
-            "Routing client sync completed: client=trae elapsed_ms={}",
-            started.elapsed().as_millis()
-        );
-        let started = std::time::Instant::now();
-        self.sync_shared_trae_intl(false).await;
-        log::info!(
-            "Routing client sync completed: client=trae-intl elapsed_ms={}",
-            started.elapsed().as_millis()
-        );
-        for app in super::agent_connections::APPS
-            .iter()
-            .copied()
-            .filter(|app| *app != "codex")
-        {
-            let started = std::time::Instant::now();
-            self.sync_shared_agent_catalog(app).await;
-            log::info!(
-                "Routing client sync completed: client={app} elapsed_ms={}",
-                started.elapsed().as_millis()
-            );
-        }
+        // Keep each client's serialization and completion barrier while allowing
+        // other clients to progress during a busy lock or a slow bridge request.
+        futures::future::join_all(
+            super::agent_connections::APPS
+                .iter()
+                .copied()
+                .chain(["trae", "trae-intl"])
+                .map(|app| async move {
+                    let started = std::time::Instant::now();
+                    match app {
+                        "codex" => self.sync_codex_configuration().await,
+                        "trae" => self.sync_shared_trae(false).await,
+                        "trae-intl" => self.sync_shared_trae_intl(false).await,
+                        _ => self.sync_shared_agent_catalog(app).await,
+                    }
+                    log::info!(
+                        "Routing client sync completed: client={app} elapsed_ms={}",
+                        started.elapsed().as_millis()
+                    );
+                }),
+        )
+        .await;
     }
 
     pub(crate) async fn sync_shared_agent_catalog(&self, app: &str) {
@@ -3052,6 +3064,9 @@ impl ProxyService {
             return;
         }
         let _guard = self.lock_switch_for_app(app).await;
+        if self.catalog_sync.clients_paused() {
+            return;
+        }
         let Some(menu) = self.intent_runtime.global_snapshot().ok().flatten() else {
             self.intent_runtime.connections.revoke(app);
             return;
@@ -3176,6 +3191,10 @@ impl ProxyService {
     ) -> Result<super::intent_routing::client::Status, String> {
         use super::intent_routing::{catalog, menu};
         let _guard = self.lock_switch_for_app("codex").await;
+        if !consent && self.catalog_sync.clients_paused() {
+            return Err("intentRouting.proxyRequired".into());
+        }
+        let generation = self.db.routing_generation();
         let result = async {
             if !consent && !self.intent_runtime.menu_active() {
                 return Err("intentRouting.invalid".into());
@@ -3238,7 +3257,7 @@ impl ProxyService {
                 .map_err(|_| "intentRouting.clientFailed")?
                 .port;
             self.activate_codex_groups_inner(
-                Arc::new(menu),
+                crate::proxy::intent::PublishedMenu::new(Arc::new(menu), generation),
                 format!("http://127.0.0.1:{port}/intent/v1"),
                 consent,
                 selected,
@@ -3251,7 +3270,7 @@ impl ProxyService {
                 .map_err(|_| "intentRouting.clientFailed")?
         }
         .await;
-        if result.is_err() {
+        if result.is_err() && self.db.routing_generation() == generation {
             self.reset_native_status();
             if !consent {
                 // Revoke stale targets before releasing the configuration switch lock.
@@ -3274,13 +3293,14 @@ impl ProxyService {
     // The caller owns Codex's switch lock and has already prepared every target.
     async fn activate_codex_groups_inner(
         &self,
-        menu: Arc<crate::proxy::intent::Menu>,
+        menu: impl Into<crate::proxy::intent::PublishedMenu>,
         base: String,
         reconnect: bool,
         selected: Option<String>,
         reapply: bool,
     ) -> Result<(), String> {
         use crate::proxy::intent::native;
+        let menu = menu.into();
         let ordinary = self
             .db
             .get_proxy_config_for_app("codex")
@@ -6156,6 +6176,311 @@ mod tests {
         Ok(())
     }
 
+    async fn agent_latency_fixture() -> Result<ProxyService, Box<dyn std::error::Error>> {
+        let db = Arc::new(Database::memory()?);
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        let info = service.start().await?;
+        let menu = super::super::intent_routing::menu::prepare(
+            service.codex_oauth_manager.clone(),
+            vec![Provider::with_id(
+                "synthetic".into(),
+                "Synthetic".into(),
+                json!({"auth":{"OPENAI_API_KEY":"synthetic-key"},"apiFormat":"openai_responses",
+                    "config":"model='synthetic-model'\nmodel_provider='synthetic'\n[model_providers.synthetic]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'"}),
+                None,
+            )],
+            vec![],
+            None,
+        )
+        .await?;
+        let selected = menu
+            .models
+            .values()
+            .next()
+            .ok_or("missing model")?
+            .alias
+            .clone();
+        for app in ["claude", "gemini"] {
+            let receipt = service.agent_connections.build(
+                app,
+                &menu,
+                &format!("http://127.0.0.1:{}", info.port),
+                &selected,
+            )?;
+            service.agent_connections.install(receipt)?;
+        }
+        service
+            .intent_runtime
+            .set_global(menu, db.routing_generation())?;
+        Ok(service)
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn resource_edit_does_not_wait_for_busy_client_catalogs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for busy_app in ["global", "codex", "trae", "claude"] {
+            let _home = TempHome::new();
+            let service = agent_latency_fixture().await?;
+            let held = if busy_app == "global" {
+                service.global_routing_lock.clone().lock_owned().await
+            } else {
+                service.lock_switch_for_app(busy_app).await
+            };
+            let completed = tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                super::super::intent_routing::menu::refresh_after_change(&service),
+            )
+            .await;
+            drop(held);
+            service.catalog_sync.drain().await;
+            service.stop().await?;
+            assert!(completed.is_ok(), "resource edit waited for {busy_app}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn queued_resource_edits_reach_other_agents_while_codex_is_busy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::intent_routing::menu::refresh_after_change;
+        let _home = TempHome::new();
+        let service = agent_latency_fixture().await?;
+        let provider = Provider::with_id(
+            "synthetic".into(),
+            "Synthetic".into(),
+            json!({"auth":{"OPENAI_API_KEY":"synthetic-key"},"apiFormat":"openai_responses",
+                "config":"model='synthetic-model'\nmodel_provider='synthetic'\n[model_providers.synthetic]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'"}),
+            None,
+        );
+        service.db.save_provider("codex", &provider)?;
+        service.db.set_intent_routing_auto_create(false)?;
+        let mut record = service.db.register_routing_fixture("codex", "synthetic")?;
+        service.refresh_global_routing().await?;
+        service.connect_codex_menu(true, false).await?;
+        let token = service
+            .intent_runtime
+            .menu_snapshot()?
+            .ok_or("menu")?
+            .token
+            .clone();
+        let held = service.lock_switch_for_app("codex").await;
+        let ready = async {
+            for model in ["synthetic-first-edit", "synthetic-newest-edit"] {
+                if let super::super::routing_upstreams::UpstreamSource::Api { models, .. } =
+                    &mut record.source
+                {
+                    *models = vec![json!({"model":model})];
+                }
+                record = service.db.save_routing_upstream(record.clone())?;
+                refresh_after_change(&service).await;
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    loop {
+                        if service
+                            .agent_connections
+                            .load("gemini")?
+                            .is_some_and(|receipt| {
+                                service
+                                    .intent_runtime
+                                    .global_snapshot()
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|menu| menu.groups.get(&receipt.model).cloned())
+                                    .is_some_and(|session| {
+                                        session.targets.iter().any(|target| target.model == model)
+                                    })
+                            })
+                        {
+                            return Ok::<_, String>(());
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await??;
+            }
+            assert!(!service
+                .intent_runtime
+                .menu_publication()?
+                .ok_or("menu")?
+                .current(service.db.routing_generation()));
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        drop(held);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            service.catalog_sync.drain(),
+        )
+        .await?;
+        let current = service.intent_runtime.menu_publication()?.ok_or("menu")?;
+        service.stop().await?;
+        ready?;
+        assert!(current.current(service.db.routing_generation()));
+        assert_eq!(current.token, token);
+        assert!(current.groups.values().any(|session| session
+            .targets
+            .iter()
+            .any(|target| target.model == "synthetic-newest-edit")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn late_catalog_sync_does_not_resume_a_client_during_shutdown(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = TempHome::new();
+        let service = agent_latency_fixture().await?;
+        let menu = service.intent_runtime.global_snapshot()?.ok_or("menu")?;
+        let held = service.lock_switch_for_app("claude").await;
+        let stopping = service.clone();
+        let stop = tokio::spawn(async move { stopping.stop().await });
+        let suspended = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if service
+                    .agent_connections
+                    .load("gemini")?
+                    .is_some_and(|receipt| receipt.suspended)
+                {
+                    return Ok::<_, String>(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        service.sync_shared_agent_catalog("gemini").await;
+        let stayed_suspended = service
+            .agent_connections
+            .load("gemini")?
+            .is_some_and(|receipt| receipt.suspended);
+        drop(held);
+        stop.await??;
+        suspended??;
+        assert!(
+            stayed_suspended,
+            "late publication must not undo shutdown restoration"
+        );
+        service.start().await?;
+        service
+            .intent_runtime
+            .set_global((*menu).clone(), service.db.routing_generation())?;
+        service.sync_shared_agent_catalog("gemini").await;
+        let resumed = service
+            .agent_connections
+            .load("gemini")?
+            .is_some_and(|receipt| !receipt.suspended);
+        service.stop().await?;
+        assert!(
+            resumed,
+            "an explicit restart must allow catalog synchronization again"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn slow_agent_catalog_does_not_delay_other_agent_catalogs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for busy_app in ["codex", "trae", "trae-intl", "claude"] {
+            let _home = TempHome::new();
+            let service = agent_latency_fixture().await?;
+            let held = service.lock_switch_for_app(busy_app).await;
+            let cloned = service.clone();
+            let worker = tokio::spawn(async move { cloned.sync_shared_agent_catalogs().await });
+            let ready = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while !service.intent_runtime.connections.active("gemini") {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+            let waited_for_busy_agent = !worker.is_finished();
+            drop(held);
+            worker.await?;
+            service.stop().await?;
+            assert!(ready.is_ok(), "Gemini catalog waited for {busy_app}");
+            assert!(
+                waited_for_busy_agent,
+                "bulk refresh must still await all agents"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn slow_agent_restore_does_not_delay_other_agent_restoration(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::trae_bridge::shared::Edition;
+        for preserve_intent in [true, false] {
+            for busy_app in ["trae", "trae-intl", "claude"] {
+                let _home = TempHome::new();
+                let service = agent_latency_fixture().await?;
+                let receipt = service
+                    .agent_connections
+                    .load("gemini")?
+                    .ok_or("missing receipt")?;
+                service.intent_runtime.connections.install(&receipt)?;
+                if let Some(edition) = Edition::parse(busy_app) {
+                    service
+                        .agent_connections
+                        .bridge_for(edition)
+                        .bridge_select(true)?;
+                }
+                let held = service.lock_switch_for_app(busy_app).await;
+                let cloned = service.clone();
+                let worker = tokio::spawn(async move {
+                    cloned.restore_shared_connections(preserve_intent).await
+                });
+                let ready = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    while service
+                        .agent_connections
+                        .status("gemini")
+                        .map_or(true, |status| status.configured)
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                })
+                .await;
+                let revoked = !service.intent_runtime.connections.active("gemini");
+                let waited_for_busy_agent = !worker.is_finished();
+                drop(held);
+                worker.await??;
+                service.stop().await?;
+                assert!(ready.is_ok(), "Gemini restoration waited for {busy_app}");
+                assert!(revoked);
+                assert!(
+                    waited_for_busy_agent,
+                    "bulk restoration must still await all agents"
+                );
+                assert_eq!(
+                    service.agent_connections.load("gemini")?.is_some(),
+                    preserve_intent
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn unowned_agent_switch_does_not_delay_shared_restoration(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = TempHome::new();
+        let service = ProxyService::new(Arc::new(Database::memory()?));
+        for app in ["trae", "trae-intl", "opencode"] {
+            let held = service.lock_switch_for_app(app).await;
+            let restored = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                service.restore_shared_connections(true),
+            )
+            .await;
+            drop(held);
+            restored.map_err(|_| "restoration waited for an unowned Agent")??;
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn trae_reconnection_does_not_queue_local_configuration_switches() {
         let service = ProxyService::new(Arc::new(Database::memory().unwrap()));
@@ -8233,27 +8558,35 @@ mod tests {
             .group
             .clone();
         group.members[0].provider_id = sources[0].clone();
-        for _ in 0..3 {
-            let started = std::time::Instant::now();
-            group = db.save_intent_routing_group(group)?;
-            eprintln!(
-                "Routing profile: persistence_us={}",
-                started.elapsed().as_micros()
-            );
-            super::super::intent_routing::menu::refresh_active(&service).await;
-            eprintln!(
-                "Routing profile: save_total_us={}",
-                started.elapsed().as_micros()
-            );
-            assert!(service
-                .intent_runtime
-                .global_current(db.routing_generation()));
-            assert!(service
-                .intent_runtime
-                .menu_snapshot()?
-                .ok_or("menu")?
-                .groups
-                .contains_key("vary-auto/fixture"));
+        for queued in [false, true] {
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                group = db.save_intent_routing_group(group)?;
+                eprintln!(
+                    "Routing profile: persistence_us={}",
+                    started.elapsed().as_micros()
+                );
+                if queued {
+                    super::super::intent_routing::menu::refresh_after_change(&service).await;
+                } else {
+                    super::super::intent_routing::menu::refresh_active(&service).await;
+                }
+                eprintln!(
+                    "Routing profile: queued={} save_total_us={}",
+                    queued,
+                    started.elapsed().as_micros()
+                );
+                service.catalog_sync.drain().await;
+                assert!(service
+                    .intent_runtime
+                    .global_current(db.routing_generation()));
+                assert!(service
+                    .intent_runtime
+                    .menu_snapshot()?
+                    .ok_or("menu")?
+                    .groups
+                    .contains_key("vary-auto/fixture"));
+            }
         }
         service.stop().await?;
         Ok(())

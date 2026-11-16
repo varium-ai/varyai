@@ -1,5 +1,6 @@
 //! TRAE's vendor component API owns account authentication and model storage.
 //! Only explicit message text reaches VaryAI; the helper never exports login credentials.
+mod freshness;
 pub(crate) mod selection;
 pub(crate) mod shared;
 
@@ -412,6 +413,7 @@ fn prepare_connection(directory: &std::path::Path, argv: &std::path::Path) -> Re
         || object.get("remote-debugging-port") == Some(&json!(0));
     if backup.exists() {
         return if random_port {
+            let _ = freshness::record(directory, argv);
             Ok(())
         } else {
             Err(unavailable())
@@ -420,6 +422,7 @@ fn prepare_connection(directory: &std::path::Path, argv: &std::path::Path) -> Re
     // Reuse an existing random endpoint without claiming ownership of its launch setting.
     // This also permits reconnecting after local recovery metadata was removed.
     if random_port {
+        let _ = freshness::record(directory, argv);
         return Ok(());
     }
     // Never replace a user's own debugger configuration.
@@ -431,7 +434,9 @@ fn prepare_connection(directory: &std::path::Path, argv: &std::path::Path) -> Re
     let encoded = serde_json::to_vec(&json!({"original":original,"applied":applied}))
         .map_err(|_| unavailable())?;
     crate::config::atomic_write_private(&backup, &encoded)?;
-    crate::config::atomic_write_private(argv, applied.as_bytes())
+    crate::config::atomic_write_private(argv, applied.as_bytes())?;
+    let _ = freshness::record(directory, argv);
+    Ok(())
 }
 fn restore_connection(directory: &std::path::Path, argv: &std::path::Path) -> Result<(), AppError> {
     let backup = directory.join("launch-backup.json");
@@ -458,7 +463,9 @@ fn restore_connection(directory: &std::path::Path, argv: &std::path::Path) -> Re
             }
         }
     }
-    std::fs::remove_file(backup).map_err(|_| unavailable())
+    std::fs::remove_file(backup).map_err(|_| unavailable())?;
+    let _ = freshness::record(directory, argv);
+    Ok(())
 }
 fn argv_path() -> Result<PathBuf, AppError> {
     Ok(dirs::home_dir()

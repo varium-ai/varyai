@@ -103,6 +103,31 @@ describe("renderer production build", () => {
     expect(plugins.some((name) => /inspector/i.test(name))).toBe(false);
   });
 
+  it("isolates the analytics entry from application state and UI chunks", () => {
+    const entry = chunks.find(
+      (chunk) => chunk.entry && /\/analytics-[^/]+\.js$/.test(chunk.file),
+    );
+    expect(entry).toBeDefined();
+    const graph = new Map(chunks.map((chunk) => [chunk.file, chunk]));
+    const reachable = new Set<string>();
+    const visit = (file: string) => {
+      if (reachable.has(file)) return;
+      reachable.add(file);
+      for (const child of graph.get(file)!.imports) visit(child);
+    };
+    visit(entry!.file);
+    expect([...reachable].some((file) => /desktop-analytics-/.test(file))).toBe(
+      true,
+    );
+    expect(
+      [...reachable].filter((file) =>
+        /(?:app-shared|ui-|vendor-react|locale-|provider-presets|vendor-base)-/.test(
+          file,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
   it("emits bounded chunks with resolvable imports and no static cycles", () => {
     expect(chunks.some((chunk) => chunk.entry)).toBe(true);
     expect(chunks.filter((chunk) => chunk.bytes > 500_000)).toEqual([]);

@@ -276,7 +276,16 @@ pub(super) fn apply(
     connection: &Connection,
 ) -> Result<(), AppError> {
     validate(state, app, connection)?;
-    let menu = menu(state)?;
+    let published = state
+        .proxy_service
+        .intent_runtime
+        .global_publication()
+        .map_err(|_| error("operationFailed"))?
+        .ok_or_else(|| error("noProvider"))?;
+    if !published.current(state.db.routing_generation()) {
+        return Err(error("operationFailed"));
+    }
+    let menu = &published.menu;
     let status = futures::executor::block_on(state.proxy_service.get_status())
         .map_err(|_| error("operationFailed"))?;
     if !status.running {
@@ -284,21 +293,21 @@ pub(super) fn apply(
     }
     if app == &AppType::Codex {
         let client = &state.proxy_service.intent_client;
-        let mut menu = (*menu).clone();
+        let mut published = published.clone();
         if let Some(previous) = state
             .proxy_service
             .intent_runtime
             .menu_snapshot()
             .map_err(|_| error("operationFailed"))?
         {
-            menu.preserve_from(&previous);
+            std::sync::Arc::make_mut(&mut published.menu).preserve_from(&previous);
         }
         let native = client
             .native_owned_url()
             .map_err(|_| error("invalidConfig"))?;
         client
             .activate_menu_with_selection(
-                std::sync::Arc::new(menu),
+                published,
                 &format!("http://127.0.0.1:{}/intent/v1", status.port),
                 native.as_deref(),
                 true,
@@ -327,12 +336,12 @@ pub(super) fn apply(
         .is_some()
     {
         manager
-            .update(app.as_str(), &menu, &origin, Some(&connection.model))
+            .update(app.as_str(), menu, &origin, Some(&connection.model))
             .map_err(|_| error("operationFailed"))?
             .ok_or_else(|| error("noProvider"))?
     } else {
         let receipt = manager
-            .build(app.as_str(), &menu, &origin, &connection.model)
+            .build(app.as_str(), menu, &origin, &connection.model)
             .map_err(|_| error("operationFailed"))?;
         manager
             .install(receipt.clone())

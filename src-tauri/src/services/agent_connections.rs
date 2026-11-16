@@ -6,6 +6,9 @@ mod deepseek_recovery_tests;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
+mod harness_credentials;
+#[cfg(test)]
+mod harness_credentials_tests;
 pub(crate) mod jsonc;
 pub(crate) mod model_control;
 pub(crate) mod native;
@@ -17,6 +20,9 @@ mod projections;
 mod readable_tests;
 mod reasoning;
 mod selection;
+#[cfg(test)]
+mod source_label_tests;
+mod startup;
 pub(crate) mod t3code;
 mod visibility;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
@@ -579,6 +585,13 @@ impl FileEdit {
                 .is_some_and(|text| jsonc::parse(text).is_err())
     }
     fn write(&self) -> Result<(), String> {
+        self.write_document()?;
+        if matches!(self.format, Format::HarnessCredentials) {
+            harness_credentials::secure(&self.path)?;
+        }
+        Ok(())
+    }
+    fn write_document(&self) -> Result<(), String> {
         if self.format.parse(self.original.as_deref())? == self.installed
             && !self.needs_jsonc_repair()
         {
@@ -873,7 +886,7 @@ impl Manager {
             return Ok(());
         }
         let files = Self::desktop_restoration_snapshot(receipt)?;
-        if files == before {
+        if files == before || !startup::restoration_changed(receipt)? {
             return Ok(());
         }
         let freshness = DesktopFreshness {
@@ -1141,6 +1154,7 @@ impl Manager {
             Some(&old),
         )?;
         if next.files.len() != old.files.len()
+            && !harness_credentials::upgrades(&old, &next)
             && !(app == "claude-desktop"
                 && old
                     .files
@@ -1184,6 +1198,9 @@ impl Manager {
                 }
             }
             file.fields = owned;
+        }
+        if !startup::changed(&old, &next) {
+            next.applied_at_ms = old.applied_at_ms;
         }
         if unchanged
             && next.model == old.model
@@ -1234,25 +1251,8 @@ impl Manager {
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
         let receipt = self.load(app)?.ok_or(CONFLICT)?;
-        if app == "deepseek-harness" && receipt.files.len() == 1 {
-            let file = &receipt.files[0];
-            if matches!(file.format, Format::Cordis) {
-                let text = read(&file.path)?;
-                let source = text.as_deref().ok_or(CONFLICT)?;
-                let baseline = file.format.parse(file.original.as_deref())?;
-                let clean = super::deepseek_harness::recover_for_reapply(
-                    source,
-                    &file.installed,
-                    &baseline,
-                )?;
-                let backup = self
-                    .root
-                    .join(format!("deepseek-harness-recovery-{}.yml", new_token()));
-                atomic_write_private(&backup, source.as_bytes()).map_err(|_| FAILED)?;
-                replace_checked(&file.path, Some(source), Some(&clean))?;
-                self.remember_model(app, Some(&receipt.model));
-                return fs::remove_file(self.path(app)?).map_err(|_| FAILED.into());
-            }
+        if app == "deepseek-harness" {
+            return harness_credentials::release(self, &receipt);
         }
         // Explicit reapplication retains external edits as the next connection's baseline.
         for file in &receipt.files {
@@ -1360,22 +1360,49 @@ impl Manager {
         self.root.join("codex-desktop-freshness.json")
     }
 
-    pub fn record_codex_desktop_application(&self) -> Result<(), String> {
-        let config = crate::codex_config::get_codex_config_path();
-        let files = vec![DesktopFingerprint::capture(config)?];
-        let freshness = DesktopFreshness {
-            app: "codex".into(),
-            applied_at_ms: chrono::Utc::now().timestamp_millis(),
-            files,
-        };
-        atomic_write_private(
-            &self.codex_desktop_freshness_path(),
-            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+    #[cfg(any(target_os = "macos", windows, test))]
+    pub(crate) fn codex_startup_freshness(
+        &self,
+        config: &Path,
+    ) -> Result<super::codex_app_server::freshness::Snapshot, String> {
+        super::codex_app_server::freshness::sample(
+            config,
+            &self.root.join("codex-startup-freshness.json"),
         )
         .map_err(|_| FAILED.to_owned())
     }
 
+    pub fn record_codex_desktop_application(&self) -> Result<(), String> {
+        #[cfg(any(target_os = "macos", windows, test))]
+        self.codex_startup_freshness(&crate::codex_config::get_codex_config_path())?;
+        #[cfg(not(any(target_os = "macos", windows, test)))]
+        {
+            let freshness = DesktopFreshness {
+                app: "codex".into(),
+                applied_at_ms: chrono::Utc::now().timestamp_millis(),
+                files: vec![DesktopFingerprint::capture(
+                    crate::codex_config::get_codex_config_path(),
+                )?],
+            };
+            atomic_write_private(
+                &self.codex_desktop_freshness_path(),
+                &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+            )
+            .map_err(|_| FAILED.to_owned())?;
+        }
+        Ok(())
+    }
+
     fn codex_applied_at_ms(&self) -> Result<Option<i64>, String> {
+        // Preserve legacy receipts as a fallback until a semantic snapshot exists.
+        #[cfg(any(target_os = "macos", windows, test))]
+        if let Some(snapshot) = super::codex_app_server::freshness::load(
+            &self.root.join("codex-startup-freshness.json"),
+        )
+        .map_err(|_| FAILED)?
+        {
+            return Ok(snapshot.applied_ms());
+        }
         let Some(text) = read(&self.codex_desktop_freshness_path())? else {
             return Ok(None);
         };
@@ -1402,9 +1429,12 @@ impl Manager {
     pub fn restart_codex_desktop(&self) -> Result<(), String> {
         let applied = self.codex_applied_at_ms()?;
         let expected = applied;
+        let config = DesktopFingerprint::capture(crate::codex_config::get_codex_config_path())?;
         desktop::restart("codex", applied, || {
-            self.codex_applied_at_ms()
-                .is_ok_and(|current| current == expected)
+            config.intact()
+                && self
+                    .codex_applied_at_ms()
+                    .is_ok_and(|current| current == expected)
         })
     }
 
@@ -1519,13 +1549,18 @@ fn build_with_token(
         "claude" => {
             let (catalog, selected) =
                 projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            let selected_label = catalog
+                .iter()
+                .find(|model| model.id == selected)
+                .map(|model| model.name.as_str())
+                .ok_or(EMPTY)?;
             receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
             for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
                 let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { &selected };
                 put(value, &["env".into(), key.into()], Some(json!(next)))?;
             }
             for role in ["SONNET", "OPUS", "HAIKU"] {
-                put(value, &["env".into(), format!("ANTHROPIC_DEFAULT_{role}_MODEL_NAME")], Some(json!(selected)))?;
+                put(value, &["env".into(), format!("ANTHROPIC_DEFAULT_{role}_MODEL_NAME")], Some(json!(selected_label)))?;
             }
             for &key in claude_policy::CLOUD_SWITCHES {
                 put(value, &["env".into(), key.into()], Some(json!("0")))?;
@@ -1609,8 +1644,9 @@ fn build_with_token(
             let previous = rows.iter().filter(|row| row["apiKey"].as_str() == Some(&token)).filter_map(|row| row["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
             rows.retain(|row| row["apiKey"].as_str() != Some(&token) && !named_models.iter().any(|(name, _)| row["id"] == *name));
             for (name, model) in &named_models {
-                // WorkBuddy appends the ID unless it exactly matches the name.
-                let mut row = json!({"id":name,"name":name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
+                // The current source label must not be replaced by a retained
+                // historical request ID, even when the client also shows it.
+                let mut row = json!({"id":name,"name":model.name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
                 reasoning::workbuddy(&mut row, model);
                 if let Some(context) = model.context_window {
                     row["maxInputTokens"] = json!(context);
@@ -2206,7 +2242,7 @@ mod tests {
             }));
         Ok(())
     }
-    fn fixture_menu() -> Menu {
+    pub(super) fn fixture_menu() -> Menu {
         use crate::{
             proxy::intent::{MenuModel, Session, Target},
             services::intent_routing::RoutingGroup,

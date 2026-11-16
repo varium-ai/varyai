@@ -68,19 +68,19 @@ pub(crate) struct Native {
 }
 #[derive(Clone)]
 struct Projection {
-    menu: Arc<super::Menu>,
+    menu: super::PublishedMenu,
     catalog: Value,
     model_map: Arc<BTreeMap<String, String>>,
 }
 impl Native {
     pub fn publish_menu(
         &self,
-        menu: Arc<super::Menu>,
+        menu: impl Into<super::PublishedMenu>,
         catalog: Value,
         model_map: BTreeMap<String, String>,
     ) -> Result<(), &'static str> {
         *self.projection.write().map_err(|_| FAILED)? = Some(Projection {
-            menu,
+            menu: menu.into(),
             catalog,
             model_map: Arc::new(model_map),
         });
@@ -108,7 +108,7 @@ impl Native {
     #[cfg(test)]
     pub(crate) fn menu(&self) -> Result<(Arc<super::Menu>, Value), &'static str> {
         self.projection()
-            .map(|projection| (projection.menu, projection.catalog))
+            .map(|projection| (projection.menu.menu, projection.catalog))
     }
     pub(super) fn canonicalize_model(
         &self,
@@ -573,6 +573,12 @@ pub(crate) async fn handle(
     }
     let projection = state.intent_runtime.native.projection().ok();
     if models {
+        if projection
+            .as_ref()
+            .is_some_and(|p| !p.menu.current(state.db.routing_generation()))
+        {
+            return super::catalog_stale();
+        }
         let catalog = projection
             .as_ref()
             .map(|p| p.catalog.clone())
@@ -673,6 +679,13 @@ pub(crate) async fn handle(
         }
         return response;
     };
+    if menu
+        .as_ref()
+        .is_some_and(|menu| !menu.current(state.db.routing_generation()))
+    {
+        return super::catalog_stale();
+    }
+    let generation = menu.as_ref().and_then(|menu| menu.generation);
     let operation = match super::compaction::operation(&original, legacy) {
         Ok(operation) => operation,
         Err(code) => return super::error(StatusCode::BAD_REQUEST, code),
@@ -731,7 +744,7 @@ pub(crate) async fn handle(
         format!("native-codex:{}", context.identity),
         true,
         false,
-        None,
+        generation,
         Instant::now(),
     )
     .await;

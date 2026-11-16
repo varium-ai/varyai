@@ -31,7 +31,7 @@ Coding assistants can include credentials, configuration, logs and personal data
 
 ### Safe testing and network boundary
 
-The [security testing guide](../guides/security-testing-guide.md) gives synthetic, rule-by-rule examples for the **in-app** DLP and tool-risk sandboxes. The sandboxes neither forward requests to a model nor execute commands or persist security events. The detector runs locally, but that **does not mean the entire application is offline or sends no data**: configured provider traffic, optional opt-in installation statistics and application update checks have separate boundaries. See [data and network behavior](../data-and-network.md). Do not market an unmeasured latency number, zero telemetry, complete protocol coverage or a universal no-leak promise.
+The [security testing guide](../guides/security-testing-guide.md) gives synthetic, rule-by-rule examples for the **in-app** DLP and tool-risk sandboxes. The sandboxes neither forward requests to a model nor execute commands or persist security events. The detector runs locally, but that **does not mean the entire application is offline or sends no data**: configured provider traffic, installation statistics enabled by default and application update checks have separate boundaries. See [data and network behavior](../data-and-network.md). Do not market an unmeasured latency number, zero telemetry, complete protocol coverage or a universal no-leak promise.
 
 ## Proposed, not available as a runtime security feature
 

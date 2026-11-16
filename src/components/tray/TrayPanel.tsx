@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowUp, ExternalLink, RefreshCw, Settings } from "lucide-react";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
@@ -29,8 +29,18 @@ import { APP_IDS } from "@/config/appConfig";
 import appIcon from "@/assets/icons/app-icon.png";
 import "@/components/routing/routing.css";
 import "./tray-panel.css";
+import { TrayQuotaPanel } from "./TrayQuotaPanel";
 
-const tabs = ["agents", "routing", "security"] as const;
+const tabs = ["agents", "quota", "routing", "security"] as const;
+const quotaRoots = [
+  "routing-upstreams",
+  "provider-list-codex-accounts",
+  "codex-provider-quota",
+  "subscription-account-quota",
+  "routing-provider-quota",
+  "codex-quota-management",
+  "quota-panel-history",
+];
 const securityFilter = { view: "security_events" as const };
 export function TrayPanel() {
   const { t } = useTranslation();
@@ -41,6 +51,10 @@ export function TrayPanel() {
   );
   const [active, setActive] = useState(true);
   const [error, setError] = useState(false);
+  const quotaFetching =
+    useIsFetching({
+      predicate: (query) => quotaRoots.includes(String(query.queryKey[0])),
+    }) > 0;
   const frame = useRef<HTMLDivElement>(null);
   const connections = useQuery({
     queryKey: ["agent-connections"],
@@ -59,9 +73,11 @@ export function TrayPanel() {
             "agent-cli-version",
             "agent-desktop-versions",
           ]
-        : tab === "routing"
-          ? ["routing-trace", "intent-routing-groups", "proxyStatus"]
-          : ["security", "securityEvents", "proxyStatus"];
+        : tab === "quota"
+          ? quotaRoots
+          : tab === "routing"
+            ? ["routing-trace", "intent-routing-groups", "proxyStatus"]
+            : ["security", "securityEvents", "proxyStatus"];
     void Promise.all(
       roots.map((root) => client.invalidateQueries({ queryKey: [root] })),
     );
@@ -101,7 +117,9 @@ export function TrayPanel() {
     return () => window.removeEventListener("keydown", escape);
   }, []);
   function open(view: PanelTab | "settings" | "providers") {
-    void trayPanelApi.open(view).catch(() => setError(true));
+    void trayPanelApi
+      .open(view === "quota" ? "providers" : view)
+      .catch(() => setError(true));
   }
   const selectedApps = APP_IDS.filter((app) =>
     connections.data?.some(
@@ -128,9 +146,18 @@ export function TrayPanel() {
         <button
           title={t("trayPanel.refresh")}
           aria-label={t("trayPanel.refresh")}
+          disabled={tab === "quota" && quotaFetching}
+          aria-busy={tab === "quota" && quotaFetching}
           onClick={refresh}
         >
-          <RefreshCw size={14} />
+          <RefreshCw
+            size={14}
+            className={
+              tab === "quota" && quotaFetching
+                ? "animate-spin motion-reduce:animate-none"
+                : undefined
+            }
+          />
         </button>
         <button
           title={t("trayPanel.openMain")}
@@ -151,7 +178,12 @@ export function TrayPanel() {
         className="tray-tabs"
         role="tablist"
         aria-label={t("trayPanel.title")}
-        style={{ "--tab-index": tabs.indexOf(tab) } as CSSProperties}
+        style={
+          {
+            "--tab-index": tabs.indexOf(tab),
+            "--tab-count": tabs.length,
+          } as CSSProperties
+        }
       >
         <span className="tray-tab-selection" aria-hidden="true" />
         {tabs.map((key) => (
@@ -172,10 +204,10 @@ export function TrayPanel() {
                 event.key === "Home"
                   ? 0
                   : event.key === "End"
-                    ? 2
+                    ? tabs.length - 1
                     : (tabs.indexOf(tab) +
-                        (event.key === "ArrowRight" ? 1 : 2)) %
-                      3;
+                        (event.key === "ArrowRight" ? 1 : tabs.length - 1)) %
+                      tabs.length;
               setTab(tabs[index]);
               localStorage.setItem("vary:tray-tab", tabs[index]);
               document.getElementById(`tray-tab-${tabs[index]}`)?.focus();
@@ -208,6 +240,7 @@ export function TrayPanel() {
             />
           )}
           {tab === "routing" && active && <TrayRouting />}
+          {tab === "quota" && active && <TrayQuotaPanel />}
           {tab === "security" && active && <TraySecurity />}
         </div>
       </main>
@@ -224,7 +257,9 @@ export function TrayPanel() {
               {t(
                 tab === "routing"
                   ? "trayPanel.manageRouting"
-                  : "trayPanel.manageSecurity",
+                  : tab === "quota"
+                    ? "trayPanel.manageQuota"
+                    : "trayPanel.manageSecurity",
               )}
             </button>
           )}

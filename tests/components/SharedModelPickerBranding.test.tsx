@@ -35,7 +35,10 @@ it.each([
         />
       </I18nextProvider>,
     );
-    for (const name of ["Synthetic route", "Synthetic model"]) {
+    for (const name of [
+      "Synthetic route · routing group",
+      "Synthetic model · Vendor",
+    ]) {
       const row = screen.getByRole("radio", { name });
       expect(within(row).getByText(label)).toBeVisible();
       expect(row).not.toHaveTextContent(/magpie/i);

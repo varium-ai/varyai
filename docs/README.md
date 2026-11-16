@@ -6,6 +6,7 @@
 - [First-run connection guide](guides/onboarding.md)
 - [Agent updates and background progress](guides/agent-updates.md)
 - [Default models for Agents](guides/agent-default-models.md)
+- [Agent configuration freshness](guides/agent-configuration-freshness.md)
 - [T3 Code integration](guides/t3code.md)
 - [Provider setup and local routing](guides/provider-routing.md)
 - [Subscription accounts and provider execution](guides/subscription-providers.md)

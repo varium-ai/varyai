@@ -402,7 +402,7 @@ pub(crate) async fn set_intent_routing_auto_create(
     tauri::async_runtime::spawn_blocking(move || db.set_intent_routing_auto_create(enabled))
         .await
         .map_err(|_| "intentRouting.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(())
 }
 
@@ -415,7 +415,7 @@ pub(crate) async fn restore_discovered_routing_group(
     tokio::task::spawn_blocking(move || db.restore_discovered_routing_group(&id))
         .await
         .map_err(|_| "intentRouting.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(())
 }
 
@@ -448,7 +448,7 @@ pub(crate) async fn set_routing_auto_group_skip(
     tokio::task::spawn_blocking(move || db.set_routing_auto_group_skip(ids))
         .await
         .map_err(|_| "intentRouting.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(())
 }
 
@@ -461,7 +461,7 @@ pub(crate) async fn set_routing_context_settings(
     tokio::task::spawn_blocking(move || db.set_routing_context_settings(&settings))
         .await
         .map_err(|_| "intentRouting.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(())
 }
 
@@ -476,7 +476,7 @@ pub(crate) async fn arrange_routing_groups(
     tokio::task::spawn_blocking(move || db.set_routing_group_order(order, Some(providers)))
         .await
         .map_err(|_| "intentRouting.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(())
 }
 
@@ -491,9 +491,9 @@ pub(crate) async fn save_intent_routing_group(
         .await
         .map_err(|_| "intentRouting.failed")??;
     let persisted = started.elapsed();
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     log::info!(
-        "Routing save completed: persistence_ms={} publication_ms={} total_ms={}",
+        "Routing save completed: persistence_ms={} queue_ms={} total_ms={}",
         persisted.as_millis(),
         started.elapsed().saturating_sub(persisted).as_millis(),
         started.elapsed().as_millis()
@@ -515,7 +515,7 @@ pub(crate) async fn delete_intent_routing_group(
     })
     .await
     .map_err(|_| "intentRouting.failed")??;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(())
 }
 
@@ -580,7 +580,7 @@ pub(crate) async fn refresh_intent_routing_catalogs(
             .await?
             .1
     };
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(statuses)
 }
 

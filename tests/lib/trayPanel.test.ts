@@ -7,7 +7,8 @@ describe("tray panel boundaries", () => {
     expect(isTrayPanel("?panel=other")).toBe(false);
     expect(isTrayPanel("")).toBe(false);
   });
-  it("only restores the three supported tabs", () => {
+  it("only restores the four supported tabs", () => {
+    expect(panelTab("quota")).toBe("quota");
     expect(panelTab("routing")).toBe("routing");
     expect(panelTab("security")).toBe("security");
     expect(panelTab("providers")).toBe("agents");
