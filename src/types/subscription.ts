@@ -48,6 +48,7 @@ export interface CodexQuotaDetails {
   } | null;
 }
 export interface SubscriptionQuota {
+  accountIdentity?: string | null;
   codex?: CodexQuotaDetails | null;
   tool: string;
   credentialStatus: CredentialStatus;

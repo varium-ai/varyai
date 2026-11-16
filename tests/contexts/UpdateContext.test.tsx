@@ -1,4 +1,10 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settingsApi } from "@/lib/api";
 import { UpdateProvider, useUpdate } from "@/contexts/UpdateContext";
@@ -22,6 +28,11 @@ function Probe() {
       <span>{JSON.stringify(state.installProgress)}</span>
       <span>{state.isDownloadStalled ? "stalled" : "active"}</span>
       <span>{state.error ?? "no error"}</span>
+      <span>{state.isDismissed ? "dismissed" : "visible"}</span>
+      <button onClick={() => void state.checkUpdate().catch(() => {})}>
+        check
+      </button>
+      <button onClick={state.dismissUpdate}>dismiss</button>
       <button onClick={() => void state.installUpdate().catch(() => {})}>
         install
       </button>
@@ -65,8 +76,83 @@ describe("UpdateProvider", () => {
     vi.mocked(settingsApi.cancelUpdateDownload).mockResolvedValue(true);
   });
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     localStorage.clear();
+  });
+
+  it("checks after startup and every six hours, including after dismissing a version", async () => {
+    render(
+      <UpdateProvider>
+        <Probe />
+      </UpdateProvider>,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(999));
+    expect(checkForUpdate).not.toHaveBeenCalled();
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(checkForUpdate).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("dismiss"));
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("dismissed")).toBeVisible();
+
+    vi.mocked(checkForUpdate).mockResolvedValue({
+      status: "available",
+      info: { currentVersion: "0.2.1", availableVersion: "0.2.3" },
+    });
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("visible")).toBeVisible();
+  });
+
+  it("continues polling after a failed automatic check and stops on unmount", async () => {
+    vi.mocked(checkForUpdate).mockRejectedValueOnce(
+      new Error("synthetic failure"),
+    );
+    const view = render(
+      <UpdateProvider>
+        <Probe />
+      </UpdateProvider>,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("available")).toBeVisible();
+    view.unmount();
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not overlap automatic and manual checks", async () => {
+    let resolveCheck!: (value: { status: "up-to-date" }) => void;
+    vi.mocked(checkForUpdate).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    render(
+      <UpdateProvider>
+        <Probe />
+      </UpdateProvider>,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    await act(async () => fireEvent.click(screen.getByText("check")));
+    expect(checkForUpdate).toHaveBeenCalledTimes(1);
+    await act(async () => resolveCheck({ status: "up-to-date" }));
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips automatic checks during installation and resumes afterward", async () => {
+    await mount();
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(1);
+    await act(async () => finish("cancelled"));
+    await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+    expect(checkForUpdate).toHaveBeenCalledTimes(2);
   });
 
   it("tracks checking, byte progress and installation without allowing duplicate installs", async () => {

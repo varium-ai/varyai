@@ -10,6 +10,8 @@ import {
 } from "vitest";
 import { RequestLogTable } from "@/components/usage/RequestLogTable";
 import type { UsageRangeSelection } from "@/types/usage";
+import i18n from "i18next";
+import en from "@/i18n/locales/en.json";
 
 const useRequestLogsMock = vi.hoisted(() => vi.fn());
 const scrollIntoViewMock = vi.fn();
@@ -26,12 +28,7 @@ afterAll(() => {
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (
-      key: string,
-      options?: {
-        defaultValue?: string;
-      },
-    ) => options?.defaultValue ?? key,
+    t: (...args: Parameters<typeof i18n.t>) => i18n.t(...args),
     i18n: {
       resolvedLanguage: "en",
       language: "en",
@@ -77,6 +74,14 @@ vi.mock("@/components/ui/table", () => ({
 describe("RequestLogTable", () => {
   beforeEach(() => {
     scrollIntoViewMock.mockClear();
+    i18n.addResourceBundle(
+      "en",
+      "translation",
+      { usage: en.usage },
+      true,
+      true,
+    );
+    void i18n.changeLanguage("en");
     useRequestLogsMock.mockReset();
     useRequestLogsMock.mockImplementation(
       ({ page = 0, pageSize = 20 }: { page?: number; pageSize?: number }) => ({
@@ -89,6 +94,43 @@ describe("RequestLogTable", () => {
         isLoading: false,
       }),
     );
+  });
+
+  it("uses the plain Codex source name without changing a saved provider's name", () => {
+    useRequestLogsMock.mockReturnValue({
+      data: {
+        data: ["_codex_session", "saved"].map((providerId) => ({
+          requestId: providerId,
+          providerId,
+          providerName: "Codex (Session)",
+          appType: "codex",
+          model: "synthetic-model",
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          totalCostUsd: "0.5",
+          latencyMs: 100,
+          statusCode: 200,
+          createdAt: 1000,
+        })),
+        total: 2,
+      },
+      isLoading: false,
+    });
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        refreshIntervalMs={0}
+      />,
+    );
+    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.queryByText("Provider unattributed")).not.toBeInTheDocument();
+    expect(screen.getByText("Codex (Session)")).toBeVisible();
+    expect(
+      screen.getByRole("columnheader", { name: "Provider / source" }),
+    ).toBeVisible();
   });
 
   it("anchors the shorter last page in view instead of retaining the old bottom scroll position", () => {

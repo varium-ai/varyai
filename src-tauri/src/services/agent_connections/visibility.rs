@@ -59,6 +59,7 @@ impl Manager {
             return Ok(vec![
                 self.root.join("codex-intent.json"),
                 self.root.join("codex-desktop-freshness.json"),
+                self.root.join("codex-startup-freshness.json"),
             ]);
         }
         let mut paths = vec![self.path(app)?];

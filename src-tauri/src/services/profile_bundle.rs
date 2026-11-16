@@ -181,7 +181,7 @@ struct AppSnapshot {
     backup: Option<String>,
     files: Vec<FileState>,
     codex: Option<crate::codex_config::CodexLiveStateSnapshot>,
-    codex_menu: Option<std::sync::Arc<crate::proxy::intent::Menu>>,
+    codex_menu: Option<crate::proxy::intent::PublishedMenu>,
     codex_native: Option<crate::proxy::intent::native::Snapshot>,
     library: library::LibraryBefore,
     library_fingerprint: Value,
@@ -557,7 +557,7 @@ impl AppSnapshot {
                 state
                     .proxy_service
                     .intent_runtime
-                    .menu_snapshot()
+                    .menu_publication()
                     .map_err(|_| error("readFailed"))?
             } else {
                 None

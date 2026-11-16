@@ -470,3 +470,110 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn qoder_refresh_ages_only_effective_startup_changes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let provider = crate::provider::Provider::with_id(
+        "freshness-fixture".into(),
+        "Synthetic freshness".into(),
+        json!({"auth":{"OPENAI_API_KEY":"synthetic-only"},"apiFormat":"openai_chat",
+            "config":"model_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='chat'",
+            "modelCatalog":{"models":[{"model":"alpha"},{"model":"beta"}]}}),
+        None,
+    );
+    let menu = crate::services::intent_routing::menu::prepare(
+        Arc::new(
+            crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                dir.path().join("accounts"),
+            ),
+        ),
+        vec![provider],
+        vec![],
+        None,
+    )
+    .await?;
+    let selected = menu.default_model.as_deref().ok_or("default")?;
+    let manager = Manager {
+        root: dir.path().join("receipts"),
+    };
+    crate::qoder_config::with_test_dir(&dir.path().join("qoder"), || -> Result<(), String> {
+        let mut receipt = manager.build("qoder", &menu, "http://127.0.0.1:1", selected)?;
+        receipt.applied_at_ms = Some(1000);
+        manager.install(receipt)?;
+        let plan_dir = manager.root.join("model-control").join("qoder");
+        atomic_write_private(&plan_dir.join("consent.json"), br#"{"version":1}"#)
+            .map_err(|_| FAILED)?;
+        let old = manager.load("qoder")?.ok_or(FAILED)?;
+        manager.sync_model_control(&old, false)?;
+        let plan: Value = serde_json::from_str(&read(&plan_dir.join("plan.json"))?.ok_or(FAILED)?)
+            .map_err(|_| FAILED)?;
+        atomic_write_private(
+            &plan_dir.join("status.json"),
+            &serde_json::to_vec(&json!({"revision":plan["revision"],"ready":true}))
+                .map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(!manager.model_control_status("qoder")?.pending);
+
+        let mut renamed = menu.clone();
+        for row in renamed.models.values_mut() {
+            row.label = format!("New label {}", row.label);
+        }
+        let refreshed = manager
+            .refresh("qoder", &renamed, "http://127.0.0.1:1")?
+            .ok_or(FAILED)?;
+        assert_eq!(refreshed.applied_at_ms, Some(1000));
+        assert!(!manager.model_control_status("qoder")?.pending);
+        let reopened = Manager {
+            root: manager.root.clone(),
+        };
+        assert_eq!(
+            reopened
+                .refresh("qoder", &renamed, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?
+                .applied_at_ms,
+            Some(1000)
+        );
+
+        // Upstream-only routing changes do not alter the client-facing configuration.
+        let mut rerouted = renamed.clone();
+        for session in rerouted.groups.values_mut() {
+            for target in &mut Arc::make_mut(session).targets {
+                if let Some(provider) = target.upstream.as_mut() {
+                    provider.settings_config["auth"]["OPENAI_API_KEY"] =
+                        json!("synthetic-upstream-replacement");
+                }
+            }
+        }
+        assert_eq!(
+            manager
+                .refresh("qoder", &rerouted, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?
+                .applied_at_ms,
+            Some(1000)
+        );
+        assert!(!manager.model_control_status("qoder")?.pending);
+
+        // Removing a visible model changes the catalog the client reads at startup.
+        let mut fewer = renamed.clone();
+        fewer.models.retain(|_, row| row.alias == selected);
+        fewer.groups.retain(|alias, _| alias == selected);
+        let changed = manager
+            .refresh("qoder", &fewer, "http://127.0.0.1:1")?
+            .ok_or(FAILED)?;
+        assert!(changed.applied_at_ms.is_some_and(|time| time > 1000));
+        assert!(manager.model_control_status("qoder")?.pending);
+        let changed_time = changed.applied_at_ms;
+        assert_eq!(
+            manager
+                .refresh("qoder", &fewer, "http://127.0.0.1:1")?
+                .ok_or(FAILED)?
+                .applied_at_ms,
+            changed_time
+        );
+        Ok(())
+    })?;
+    Ok(())
+}

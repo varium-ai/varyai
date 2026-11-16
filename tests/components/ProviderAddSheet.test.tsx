@@ -30,6 +30,12 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
 }));
 beforeEach(() => {
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
+  vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => ({
+    ...value,
+    id: value.id || "created",
+    revision: value.revision + 1,
+    hasApiKey: true,
+  }));
 });
 function mount(startAdding = false) {
   return render(
@@ -48,10 +54,6 @@ it("opens the provider selection page before opening a provider editor", async (
   await waitFor(() => expect(add).toBeEnabled());
   fireEvent.click(add);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  fireEvent.change(
-    screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
-    { target: { value: "deepseek" } },
-  );
   fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
   expect(
     await screen.findByRole("region", { name: "DeepSeek" }),
@@ -110,9 +112,7 @@ it("moves Add provider to the page header and returns to the filtered list with 
   expect(
     screen.getByRole("heading", { level: 1, name: "providerFlow.sheet" }),
   ).toBeVisible();
-  expect(
-    screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
-  ).toHaveFocus();
+  expect(screen.getByRole("button", { name: "common.back" })).toHaveFocus();
   fireEvent.click(screen.getByRole("button", { name: "common.back" }));
   expect(
     screen.queryByRole("region", { name: "providerFlow.sheet" }),
@@ -131,8 +131,8 @@ it("moves Add provider to the page header and returns to the filtered list with 
 it("opens directly on the add page when requested by another workspace page", async () => {
   mount(true);
   expect(
-    screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
-  ).toBeVisible();
+    screen.queryByRole("searchbox", { name: "providerFlow.findVendor" }),
+  ).not.toBeInTheDocument();
   expect(
     screen.getByRole("heading", { level: 1, name: "providerFlow.sheet" }),
   ).toBeVisible();
@@ -152,10 +152,6 @@ it("opens directly on the add page when requested by another workspace page", as
   ).toBeInTheDocument();
 });
 it("returns to the list after saving a new provider", async () => {
-  vi.mocked(routingUpstreamsApi.save).mockResolvedValue({
-    id: "created",
-    revision: 1,
-  } as never);
   mount(true);
   fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
   const editor = screen.getByRole("dialog", { name: "DeepSeek" });
@@ -244,8 +240,8 @@ it("requires confirmation before discarding edits and returns to the add page", 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
   expect(
-    screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
-  ).toBeInTheDocument();
+    screen.getByRole("region", { name: "providerFlow.sheet" }),
+  ).toBeVisible();
 });
 it("keeps preset endpoints read-only and saves the default transport with the entered key", async () => {
   mount(true);
@@ -342,31 +338,18 @@ it("uses Z.ai's Coding Plan endpoints without exposing the separate endpoint edi
   );
 });
 
-it("clears the vendor search with Escape before returning to the list", async () => {
-  mount();
-  const add = await screen.findByRole("button", { name: "modelProviders.add" });
-  await waitFor(() => expect(add).toBeEnabled());
-  fireEvent.click(add);
-  const search = screen.getByRole("searchbox", {
-    name: "providerFlow.findVendor",
-  });
-  fireEvent.change(search, { target: { value: "moonshot" } });
-  expect(
-    screen.queryByRole("button", { name: "DeepSeek" }),
-  ).not.toBeInTheDocument();
-  fireEvent.keyDown(search, { key: "Escape" });
-  expect(search).toHaveValue("");
-  expect(screen.getByRole("button", { name: "DeepSeek" })).toBeInTheDocument();
-  fireEvent.keyDown(search, { key: "Escape" });
-  expect(
-    screen.queryByRole("region", { name: "providerFlow.sheet" }),
-  ).not.toBeInTheDocument();
-  expect(
-    screen.getByRole("button", { name: "modelProviders.add" }),
-  ).toHaveFocus();
+it("returns focus to Back after cancelling the provider editor", async () => {
+  mount(true);
+  fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
+  const dialog = screen.getByRole("dialog", { name: "DeepSeek" });
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "common.cancel" }),
+  );
+  await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "common.back" })).toHaveFocus();
 });
 
-it("offers managed subscription accounts separately from API vendors and searches their aliases", async () => {
+it("searches subscription aliases inside the subscription directory", async () => {
   mount(true);
   for (const name of [
     "Claude",
@@ -376,9 +359,13 @@ it("offers managed subscription accounts separately from API vendors and searche
   ]) {
     expect(screen.getByRole("button", { name })).toBeVisible();
   }
-  const search = screen.getByRole("searchbox", {
-    name: "providerFlow.findVendor",
+  fireEvent.click(
+    screen.getByRole("button", { name: "providerParity.subscription" }),
+  );
+  const dialog = screen.getByRole("dialog", {
+    name: "providerParity.subscription",
   });
+  const search = within(dialog).getByRole("searchbox");
   fireEvent.change(search, { target: { value: "supergrok" } });
   expect(screen.getByRole("button", { name: "Grok" })).toBeVisible();
   expect(screen.queryByText("providerFlow.noVendor")).not.toBeInTheDocument();
@@ -442,10 +429,7 @@ it.each(["providerParity.subscription", "providerFlow.vendor"])(
   async (name) => {
     mount(true);
     const page = screen.getByRole("region", { name: "providerFlow.sheet" });
-    const search = screen.getByRole("searchbox", {
-      name: "providerFlow.findVendor",
-    });
-    fireEvent.change(search, { target: { value: "gemini" } });
+    expect(within(page).queryByRole("searchbox")).not.toBeInTheDocument();
     const trigger = screen.getByRole("button", { name });
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog", { name });
@@ -458,7 +442,8 @@ it.each(["providerParity.subscription", "providerFlow.vendor"])(
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name })).not.toBeInTheDocument(),
     );
-    expect(search).toHaveValue("gemini");
+    expect(within(page).queryByRole("searchbox")).not.toBeInTheDocument();
+    expect(page.querySelectorAll(".pv-tile")).toHaveLength(8);
     expect(trigger).toHaveFocus();
   },
 );

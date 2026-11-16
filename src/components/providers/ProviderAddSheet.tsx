@@ -5,7 +5,6 @@ import {
   Box,
   ChevronRight,
   Download,
-  Search,
   SlidersHorizontal,
   UserRound,
 } from "lucide-react";
@@ -15,7 +14,6 @@ import {
 } from "@/config/globalProviderPresets";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   subscriptionProviders,
   type SubscriptionProviderId,
@@ -46,7 +44,6 @@ export function ProviderAddSheet({
   busy: boolean;
 }) {
   const { t } = useTranslation();
-  const [query, setQuery] = useState("");
   const [picker, setPicker] = useState<{ group: ProviderGroup; open: boolean }>(
     { group: "subscription", open: false },
   );
@@ -63,26 +60,12 @@ export function ProviderAddSheet({
     setSigning(undefined);
     onClose();
   }
-  const term = query.trim().toLocaleLowerCase();
-  const matchingVendors = globalProviderPresets.filter(
-    (p) =>
-      p.kind === "vendor" &&
-      `${p.id} ${p.name} ${p.baseUrl} ${Object.values(p.china?.endpoints ?? {}).join(" ")} ${p.regions?.map((region) => `${region.name} ${Object.values(region.endpoints).join(" ")}`).join(" ") ?? ""}`
-        .toLocaleLowerCase()
-        .includes(term),
+  const vendors = globalProviderPresets
+    .filter((preset) => preset.kind === "vendor")
+    .slice(0, 4);
+  const subscriptions = subscriptionProviders.filter((provider) =>
+    ["codex", "claude", "gemini_cli", "antigravity"].includes(provider.id),
   );
-  const matchingSubscriptions = subscriptionProviders.filter(
-    (provider) =>
-      provider.id === signing?.provider ||
-      `${provider.name} ${provider.aliases}`.toLocaleLowerCase().includes(term),
-  );
-  const popular = !term;
-  const matches = popular ? matchingVendors.slice(0, 4) : matchingVendors;
-  const subscriptions = popular
-    ? matchingSubscriptions.filter((provider) =>
-        ["codex", "claude", "gemini_cli", "antigravity"].includes(provider.id),
-      )
-    : matchingSubscriptions;
   const methods = [
     {
       id: "subscription",
@@ -126,6 +109,7 @@ export function ProviderAddSheet({
           variant="outline"
           size="icon"
           className="pv-back"
+          autoFocus
           aria-label={t("common.back")}
           disabled={busy}
           onClick={back}
@@ -164,36 +148,13 @@ export function ProviderAddSheet({
       </div>
       <div className="pv-common-heading">
         <h2>{t("providerFlow.commonProviders")}</h2>
-        <div className="pv-vendor-search">
-          <Search size={14} aria-hidden />
-          <Input
-            type="search"
-            autoFocus
-            aria-label={t("providerFlow.findVendor")}
-            placeholder={t("providerFlow.findVendor")}
-            value={query}
-            disabled={busy}
-            onChange={(e) => {
-              setQuery(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.preventDefault();
-                if (query) setQuery("");
-                else if (!busy) {
-                  back();
-                }
-              }
-            }}
-          />
-        </div>
       </div>
       <div className="pv-common-providers">
         {!!subscriptions.length && (
           <div className="pv-vendors">
             <h3>{t("providerParity.subscription")}</h3>
             <div className="pv-vendor-options">
-              <div className={`pv-tiles${popular ? " pv-popular-tiles" : ""}`}>
+              <div className="pv-tiles pv-popular-tiles">
                 {subscriptions.map((provider) => (
                   <button
                     key={provider.id}
@@ -215,9 +176,7 @@ export function ProviderAddSheet({
                       size={22}
                     />
                     <span title={provider.name}>
-                      {popular && provider.id === "codex"
-                        ? "ChatGPT"
-                        : provider.name}
+                      {provider.id === "codex" ? "ChatGPT" : provider.name}
                     </span>
                     {addedSubscriptions.includes(provider.id) && (
                       <span
@@ -241,12 +200,12 @@ export function ProviderAddSheet({
             </div>
           </div>
         )}
-        {!!matches.length && (
+        {!!vendors.length && (
           <div className="pv-vendors">
             <h3>{t("providerFlow.vendor")}</h3>
             <div className="pv-vendor-options">
-              <div className={`pv-tiles${popular ? " pv-popular-tiles" : ""}`}>
-                {matches.map((p) => (
+              <div className="pv-tiles pv-popular-tiles">
+                {vendors.map((p) => (
                   <button
                     key={p.id}
                     type="button"
@@ -260,16 +219,13 @@ export function ProviderAddSheet({
                   >
                     <ProviderIcon icon={p.icon} name={p.name} size={22} />
                     <span title={p.name}>
-                      {popular && p.id === "google" ? "Google" : p.name}
+                      {p.id === "google" ? "Google" : p.name}
                     </span>
                   </button>
                 ))}
               </div>
             </div>
           </div>
-        )}
-        {!matches.length && !subscriptions.length && (
-          <p className="pv-empty">{t("providerFlow.noVendor")}</p>
         )}
       </div>
       <ProviderPickerDialog

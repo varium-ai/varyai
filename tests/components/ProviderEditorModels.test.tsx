@@ -117,11 +117,10 @@ it.each([0, 1])(
       "placeholder",
       "https://…/v1",
     );
-    if (revision)
-      expect(screen.getByLabelText("ID")).toHaveAttribute(
-        "placeholder",
-        "fixture",
-      );
+    expect(screen.queryByLabelText("ID")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("providerEditor.idReference"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("textbox", { name: "providerEditor.addModelId" }),
     ).toBeNull();
@@ -346,7 +345,7 @@ it.each(globalProviderPresets)(
     expect(
       screen.queryByRole("button", { name: "providerEditor.builtinIcons" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText("ID")).not.toHaveAttribute("readonly");
+    expect(screen.queryByLabelText("ID")).not.toBeInTheDocument();
   },
 );
 

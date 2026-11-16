@@ -12,17 +12,41 @@ export function routingMemberKey(
   return JSON.stringify([member.providerId, member.modelId]);
 }
 
+export function routingMemberUnavailableReason(
+  providers: RoutingProviderOption[],
+  member: Pick<RoutingMember, "providerId" | "modelId">,
+): "providerMissing" | "providerNotReady" | "modelMissing" | null {
+  const provider = providers.find(
+    (provider) => provider.id === member.providerId,
+  );
+  if (!provider) return "providerMissing";
+  if (!provider.taskEligible) return "providerNotReady";
+  if (
+    provider.models &&
+    !provider.models.some((model) => model.id === member.modelId)
+  )
+    return "modelMissing";
+  return null;
+}
+
 export function routingMemberAvailable(
   providers: RoutingProviderOption[],
   member: Pick<RoutingMember, "providerId" | "modelId">,
 ) {
-  const provider = providers.find(
-    (provider) => provider.id === member.providerId,
-  );
-  return (
-    !!provider?.taskEligible &&
-    (!provider.models ||
-      provider.models.some((model) => model.id === member.modelId))
+  return routingMemberUnavailableReason(providers, member) === null;
+}
+
+export function routingGroupHasReadyMember(
+  providers: RoutingProviderOption[],
+  group: RoutingGroup,
+  matchedMembers: RoutingMember[] = [],
+) {
+  return [...group.members, ...matchedMembers].some(
+    (member) =>
+      !group.off?.includes(member.id) &&
+      (group.routing !== "manual" ||
+        member.id === (group.manualMemberId ?? group.defaultMemberId)) &&
+      routingMemberAvailable(providers, member),
   );
 }
 

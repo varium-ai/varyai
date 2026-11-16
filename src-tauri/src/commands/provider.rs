@@ -100,7 +100,7 @@ pub async fn add_provider(
     .map_err(|e| format!("供应商添加任务执行失败: {e}"))?;
     if result.is_ok() {
         if let Some(service) = service {
-            crate::services::intent_routing::menu::refresh_active(&service).await;
+            crate::services::intent_routing::menu::refresh_after_change(&service).await;
         }
     }
     result
@@ -127,7 +127,7 @@ pub async fn duplicate_provider(
     .map_err(|e| format!("供应商复制任务执行失败: {e}"))?;
     if result.is_ok() {
         if let Some(service) = service {
-            crate::services::intent_routing::menu::refresh_active(&service).await;
+            crate::services::intent_routing::menu::refresh_after_change(&service).await;
         }
     }
     result
@@ -155,7 +155,7 @@ pub async fn update_provider(
     .map_err(|e| format!("供应商更新任务执行失败: {e}"))?;
     if result.is_ok() {
         if let Some(service) = service {
-            crate::services::intent_routing::menu::refresh_active(&service).await;
+            crate::services::intent_routing::menu::refresh_after_change(&service).await;
         }
     }
     result
@@ -173,7 +173,7 @@ pub async fn delete_provider(
         .await
         .map_err(|_| "Provider deletion task failed".to_string())?
         .map_err(|e| e.to_string())?;
-    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(true)
 }
 
@@ -258,7 +258,7 @@ pub async fn switch_provider(
     .map_err(|e| format!("供应商切换任务执行失败: {e}"))?;
     if result.is_ok() {
         if let Some(service) = service {
-            crate::services::intent_routing::menu::refresh_active(&service).await;
+            crate::services::intent_routing::menu::refresh_after_change(&service).await;
         }
     }
     result

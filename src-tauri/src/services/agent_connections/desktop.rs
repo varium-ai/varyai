@@ -26,6 +26,11 @@ struct Instance {
     launched_ms: Option<i64>,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn started_before_change(launched_ms: i64, applied_ms: i64) -> bool {
+    launched_ms < applied_ms.saturating_sub(1000)
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     if instances.is_empty() {
@@ -34,10 +39,11 @@ fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     let Some(applied_ms) = applied_ms else {
         return State::Unknown;
     };
-    if instances
-        .iter()
-        .any(|instance| instance.launched_ms.is_some_and(|time| time <= applied_ms))
-    {
+    if instances.iter().any(|instance| {
+        instance
+            .launched_ms
+            .is_some_and(|time| started_before_change(time, applied_ms))
+    }) {
         return State::RestartRequired;
     }
     if instances
@@ -172,7 +178,7 @@ trait Runtime {
     fn quit(&self, instance: &Instance) -> Result<(), String>;
     fn wait_for_exit(&self, instances: &[Instance]) -> Result<(), String>;
     fn open(&self, bundle: &std::path::Path) -> Result<(), String>;
-    fn wait_for_open(&self, bundle: &std::path::Path) -> Result<(), String>;
+    fn wait_back(&self, bundle: &std::path::Path, previous: &[Instance]) -> Result<(), String>;
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -207,25 +213,18 @@ fn wait_for_exit_with(
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn wait_for_open_with(
-    runtime: &impl Runtime,
+fn relaunched(
+    live: &[Instance],
     bundle: &std::path::Path,
-    timeout: std::time::Duration,
-) -> Result<(), String> {
-    let start = std::time::Instant::now();
-    loop {
-        let live = runtime.instances()?;
-        if live.iter().any(|app| app.bundle != bundle) {
-            return Err(CHANGED.into());
-        }
-        if live.iter().any(|app| app.launched_ms.is_some()) {
-            return Ok(());
-        }
-        if start.elapsed() >= timeout {
-            return Err(FAILED.into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    previous: &[Instance],
+) -> Result<bool, String> {
+    if live
+        .iter()
+        .any(|app| app.bundle != bundle || app.launched_ms.is_none() || previous.contains(app))
+    {
+        return Err(CHANGED.into());
     }
+    Ok(!live.is_empty())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -275,7 +274,7 @@ fn restart_verified_with(
         return Err(CHANGED.into());
     }
     runtime.open(&target)?;
-    runtime.wait_for_open(&target)
+    runtime.wait_back(&target, &instances)
 }
 
 pub(crate) fn restart(
@@ -571,14 +570,26 @@ mod macos {
                 return Ok(());
             }
             let status = std::process::Command::new("/usr/bin/open")
+                // Request a fresh launch after the verified old process exits;
+                // LaunchServices may still retain its terminated application.
                 .arg("-n")
                 .arg(bundle)
                 .status()
                 .map_err(|_| FAILED)?;
             status.success().then_some(()).ok_or_else(|| FAILED.into())
         }
-        fn wait_for_open(&self, bundle: &std::path::Path) -> Result<(), String> {
-            wait_for_open_with(self, bundle, std::time::Duration::from_secs(20))
+        fn wait_back(&self, bundle: &std::path::Path, previous: &[Instance]) -> Result<(), String> {
+            let start = std::time::Instant::now();
+            loop {
+                let live = self.instances()?;
+                if relaunched(&live, bundle, previous)? {
+                    return Ok(());
+                }
+                if start.elapsed() >= std::time::Duration::from_secs(20) {
+                    return Err(FAILED.into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
     }
 }
@@ -614,7 +625,8 @@ mod tests {
         events: RefCell<Vec<&'static str>>,
         quit_error: Option<&'static str>,
         wait_error: Option<&'static str>,
-        open_wait_error: Option<&'static str>,
+        launch_error: Option<&'static str>,
+        wait_back_error: Option<&'static str>,
     }
 
     impl FakeRuntime {
@@ -624,7 +636,8 @@ mod tests {
                 events: RefCell::new(vec![]),
                 quit_error: None,
                 wait_error: None,
-                open_wait_error: None,
+                launch_error: None,
+                wait_back_error: None,
             }
         }
     }
@@ -649,35 +662,13 @@ mod tests {
         fn open(&self, bundle: &std::path::Path) -> Result<(), String> {
             assert_eq!(bundle, std::path::Path::new("/synthetic/Claude.app"));
             self.events.borrow_mut().push("open");
-            Ok(())
+            self.launch_error.map_or(Ok(()), |error| Err(error.into()))
         }
-        fn wait_for_open(&self, _: &std::path::Path) -> Result<(), String> {
-            self.events.borrow_mut().push("wait_open");
-            self.open_wait_error
+        fn wait_back(&self, _: &std::path::Path, _: &[Instance]) -> Result<(), String> {
+            self.events.borrow_mut().push("wait_back");
+            self.wait_back_error
                 .map_or(Ok(()), |error| Err(error.into()))
         }
-    }
-
-    #[test]
-    fn reopened_bundle_must_be_observed_before_reporting_success() {
-        let target = instance(Some(3000));
-        let runtime = FakeRuntime::new(vec![vec![], vec![target.clone()]]);
-        assert_eq!(
-            wait_for_open_with(&runtime, &target.bundle, std::time::Duration::from_secs(1)),
-            Ok(())
-        );
-        let runtime = FakeRuntime::new(vec![vec![]]);
-        assert_eq!(
-            wait_for_open_with(&runtime, &target.bundle, std::time::Duration::ZERO),
-            Err(FAILED.into())
-        );
-        let mut other = target.clone();
-        other.bundle = "/synthetic/Replacement.app".into();
-        let runtime = FakeRuntime::new(vec![vec![other]]);
-        assert_eq!(
-            wait_for_open_with(&runtime, &target.bundle, std::time::Duration::ZERO),
-            Err(CHANGED.into())
-        );
     }
 
     #[test]
@@ -699,23 +690,67 @@ mod tests {
     }
 
     #[test]
-    fn accepted_open_command_is_not_a_completed_restart() {
-        let old = vec![instance(Some(1000))];
+    fn successful_open_without_a_replacement_is_a_restart_failure() {
+        let old = vec![instance(Some(500))];
         let mut runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
-        runtime.open_wait_error = Some(FAILED);
+        runtime.wait_back_error = Some(FAILED);
         assert_eq!(
-            restart_verified_with(&runtime, Some(2000), || true, true),
+            restart_with(&runtime, Some(2000), || true),
             Err(FAILED.into())
         );
+        assert!(runtime.events.borrow().contains(&"wait_back"));
+    }
+
+    #[test]
+    fn failed_launch_does_not_wait_for_an_unrelated_application() {
+        let old = vec![instance(Some(500))];
+        let mut runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
+        runtime.launch_error = Some(FAILED);
         assert_eq!(
-            runtime
-                .events
-                .borrow()
-                .iter()
-                .filter(|event| **event == "open")
-                .count(),
-            1
+            restart_with(&runtime, Some(2000), || true),
+            Err(FAILED.into())
         );
+        assert!(!runtime.events.borrow().contains(&"wait_back"));
+    }
+
+    #[test]
+    fn relaunch_confirmation_requires_a_new_verified_instance_of_the_same_bundle() {
+        let old = instance(Some(500));
+        let previous = [old.clone()];
+        assert_eq!(relaunched(&[], &old.bundle, &previous), Ok(false));
+        assert_eq!(
+            relaunched(&previous, &old.bundle, &previous),
+            Err(CHANGED.into())
+        );
+        let replacement = Instance {
+            pid: 456,
+            launched_ms: Some(3000),
+            ..old.clone()
+        };
+        assert_eq!(
+            relaunched(&[replacement.clone()], &old.bundle, &previous),
+            Ok(true)
+        );
+        let reused = Instance {
+            launched_ms: Some(3000),
+            ..old.clone()
+        };
+        assert_eq!(relaunched(&[reused], &old.bundle, &previous), Ok(true));
+        for unexpected in [
+            Instance {
+                bundle: "/synthetic/Other.app".into(),
+                ..replacement.clone()
+            },
+            Instance {
+                launched_ms: None,
+                ..replacement
+            },
+        ] {
+            assert_eq!(
+                relaunched(&[unexpected], &old.bundle, &previous),
+                Err(CHANGED.into())
+            );
+        }
     }
 
     #[test]
@@ -814,13 +849,16 @@ mod tests {
         assert!(macos::process_gone(i32::MAX));
         let running = vec![instance(first)];
         let runtime = FakeRuntime::new(vec![running.clone(), running, vec![]]);
-        assert_eq!(restart_with(&runtime, first, || true), Ok(()));
+        assert_eq!(
+            restart_with(&runtime, first.map(|time| time + 2000), || true),
+            Ok(())
+        );
         assert!(runtime.events.borrow().contains(&"open"));
     }
 
     #[test]
     fn restart_normally_quits_waits_and_reopens_the_verified_bundle() {
-        let old = vec![instance(Some(1000))];
+        let old = vec![instance(Some(500))];
         let runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
         assert_eq!(restart_with(&runtime, Some(2000), || true), Ok(()));
         assert_eq!(
@@ -832,21 +870,21 @@ mod tests {
                 "wait",
                 "instances",
                 "open",
-                "wait_open"
+                "wait_back"
             ]
         );
     }
 
     #[test]
     fn restart_refuses_stopped_current_unknown_and_mixed_bundles() {
-        let mut other = instance(Some(1000));
+        let mut other = instance(Some(500));
         other.bundle = "/synthetic/Other.app".into();
         for instances in [
             vec![],
             vec![instance(Some(3000))],
             vec![instance(None)],
-            vec![instance(Some(1000)), instance(None)],
-            vec![instance(Some(1000)), other],
+            vec![instance(Some(500)), instance(None)],
+            vec![instance(Some(500)), other],
         ] {
             let runtime = FakeRuntime::new(vec![instances]);
             assert_eq!(
@@ -868,7 +906,7 @@ mod tests {
                 vec!["instances", "instances", "quit", "wait"],
             ),
         ] {
-            let old = vec![instance(Some(1000))];
+            let old = vec![instance(Some(500))];
             let runtime = FakeRuntime::new(vec![old.clone(), old]);
             let checks = RefCell::new(VecDeque::from(checks));
             assert_eq!(
@@ -884,7 +922,7 @@ mod tests {
 
     #[test]
     fn restart_never_quits_a_replacement_or_reopens_over_a_new_instance() {
-        let old = vec![instance(Some(1000))];
+        let old = vec![instance(Some(500))];
         for replacement in [
             Instance {
                 pid: 456,
@@ -919,7 +957,7 @@ mod tests {
 
     #[test]
     fn refused_normal_quit_and_exit_timeout_never_reopen() {
-        let old = vec![instance(Some(1000))];
+        let old = vec![instance(Some(500))];
         for refuse_quit in [true, false] {
             let mut runtime = FakeRuntime::new(vec![old.clone(), old.clone()]);
             if refuse_quit {
@@ -937,21 +975,32 @@ mod tests {
     }
 
     #[test]
+    fn launch_clock_precision_does_not_mark_a_new_desktop_stale() {
+        for started in [4000, 4001, 4999, 5000, 5001] {
+            assert_eq!(
+                assess(&[instance(Some(started))], Some(5000)),
+                State::Current
+            );
+        }
+        assert_eq!(
+            assess(&[instance(Some(3999))], Some(5000)),
+            State::RestartRequired
+        );
+    }
+
+    #[test]
     fn desktop_freshness_tracks_launches_instead_of_configuration_ownership() {
         assert_eq!(assess(&[], Some(2000)), State::Stopped);
         assert_eq!(
-            assess(&[instance(Some(1000))], Some(2000)),
+            assess(&[instance(Some(500))], Some(2000)),
             State::RestartRequired
         );
         assert_eq!(assess(&[instance(Some(3000))], Some(2000)), State::Current);
-        assert_eq!(
-            assess(&[instance(Some(2000))], Some(2000)),
-            State::RestartRequired
-        );
+        assert_eq!(assess(&[instance(Some(2000))], Some(2000)), State::Current);
         assert_eq!(assess(&[instance(None)], Some(2000)), State::Unknown);
         assert_eq!(assess(&[instance(Some(3000))], None), State::Unknown);
         assert_eq!(
-            assess(&[instance(Some(1000)), instance(Some(3000))], Some(2000)),
+            assess(&[instance(Some(500)), instance(Some(3000))], Some(2000)),
             State::RestartRequired
         );
     }

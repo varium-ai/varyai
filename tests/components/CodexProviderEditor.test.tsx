@@ -211,7 +211,9 @@ it("loads the complete subscription form before mounting the dialog so its openi
   expect(await screen.findByRole("dialog")).toBeVisible();
   expect(screen.getByText("person@example.test")).toBeVisible();
   expect(screen.queryByText("common.loading")).not.toBeInTheDocument();
-  await waitFor(() => expect(screen.getByRole("dialog")).toHaveFocus());
+  await waitFor(() =>
+    expect(screen.getByLabelText("modelProviders.name")).toHaveFocus(),
+  );
 });
 
 it("reports a failed editor load on the provider list without opening a partial form", async () => {

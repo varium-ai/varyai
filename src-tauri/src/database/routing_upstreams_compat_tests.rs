@@ -32,6 +32,175 @@ fn custom() -> RoutingUpstream {
 }
 
 #[test]
+fn provider_names_are_unique_for_create_copy_and_rename() -> Result<(), Box<dyn std::error::Error>>
+{
+    let db = Database::memory()?;
+    let first = db.save_routing_upstream(custom())?;
+    for id in ["", "explicit-duplicate"] {
+        let mut duplicate = custom();
+        duplicate.id = id.into();
+        duplicate.name = "  PORTABLE FIXTURE  ".into();
+        assert_eq!(
+            db.save_routing_upstream(duplicate).err().as_deref(),
+            Some("routingUpstreams.nameExists")
+        );
+    }
+    let mut duplicate = first.clone();
+    duplicate.id.clear();
+    duplicate.revision = 0;
+    assert_eq!(
+        db.save_routing_upstream_copy(duplicate, &first.id, first.revision)
+            .err()
+            .as_deref(),
+        Some("routingUpstreams.nameExists")
+    );
+    let mut other = custom();
+    other.name = "Second relay".into();
+    let other = db.save_routing_upstream(other)?;
+    let mut rename = other.clone();
+    rename.name = " portable fixture ".into();
+    assert_eq!(
+        db.save_routing_upstream(rename).err().as_deref(),
+        Some("routingUpstreams.nameExists")
+    );
+    assert_eq!(
+        db.routing_upstream_editor(&other.id, other.revision)?.name,
+        "Second relay"
+    );
+    let mut own = first.clone();
+    own.name = " PORTABLE FIXTURE ".into();
+    let saved = db.save_routing_upstream(own)?;
+    assert_eq!(saved.id, first.id);
+    assert_eq!(saved.name, "PORTABLE FIXTURE");
+    assert_eq!(db.list_routing_upstreams()?.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn provider_names_allow_legacy_refreshes_and_require_distinct_renames(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let first = db.save_routing_upstream(custom())?;
+    let mut other = custom();
+    other.name = "Other fixture".into();
+    let saved = db.save_routing_upstream(other)?;
+    let mut other = db
+        .private_routing_upstreams()?
+        .into_iter()
+        .find(|record| record.id == saved.id)
+        .ok_or("fixture missing")?;
+    other.name = first.name.clone();
+    db.extension_connection()
+        .lock()
+        .map_err(|_| "fixture")?
+        .execute(
+            "UPDATE routing_upstreams SET config=?1 WHERE id=?2",
+            rusqlite::params![serde_json::to_string(&other)?, other.id],
+        )?;
+    let mut other = db.routing_upstream_editor(&other.id, other.revision)?;
+    other.enabled = false;
+    let mut refreshed = db.save_routing_upstream(other)?;
+    assert!(!refreshed.enabled);
+    refreshed.name = "Distinct relay".into();
+    assert_eq!(db.save_routing_upstream(refreshed)?.name, "Distinct relay");
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_names_qualify_agent_models_and_rename_without_changing_aliases(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::intent_routing::{catalog, menu};
+    let db = std::sync::Arc::new(Database::memory()?);
+    let mut first = custom();
+    first.id = "opaque-source-a".into();
+    first.name = "Relay Alpha".into();
+    let first = db.save_routing_upstream(first)?;
+    let mut second = custom();
+    second.id = "opaque-source-b".into();
+    second.name = "Relay Beta".into();
+    db.save_routing_upstream(second)?;
+    let root = tempfile::tempdir()?;
+    let manager = std::sync::Arc::new(
+        crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(root.path().to_owned()),
+    );
+    let (providers, _) = catalog::prepare_providers(db.clone(), manager.clone(), false).await?;
+    let before = menu::prepare(manager.clone(), providers, vec![], None).await?;
+    let before_models = crate::services::agent_connections::models(&before);
+    assert!(before_models
+        .iter()
+        .any(|m| m.name == "exact-model · Relay Alpha"));
+    assert!(before_models
+        .iter()
+        .any(|m| m.name == "exact-model · Relay Beta"));
+    let mut renamed = first;
+    renamed.name = "Relay Gamma".into();
+    db.save_routing_upstream(renamed)?;
+    let (providers, _) = catalog::prepare_providers(db, manager.clone(), false).await?;
+    let after = menu::prepare(manager, providers, vec![], None).await?;
+    let after_models = crate::services::agent_connections::models(&after);
+    assert_eq!(
+        before_models.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        after_models.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
+    assert!(after_models
+        .iter()
+        .any(|m| m.name == "exact-model · Relay Gamma"));
+    assert!(after_models
+        .iter()
+        .any(|m| m.name == "exact-model · Relay Beta"));
+    let projected = crate::services::intent_routing::client::menu_catalog(&after, "")?;
+    let labels = projected["models"].as_array().ok_or("catalog missing")?;
+    assert!(labels
+        .iter()
+        .any(|m| m["display_name"] == "exact-model · Relay Gamma"));
+    assert!(!labels.iter().any(|m| m["display_name"]
+        .as_str()
+        .is_some_and(|name| name.contains("Relay Alpha"))));
+    Ok(())
+}
+
+#[test]
+fn provider_names_cover_imports_and_roll_back_conflicting_batches(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::provider_import::Selected;
+    let db = Database::memory()?;
+    db.save_routing_upstream(custom())?;
+    let mut imported = custom();
+    imported.id = "imported-relay".into();
+    imported.name = " PORTABLE FIXTURE ".into();
+    if let UpstreamSource::Api { base_url, .. } = &mut imported.source {
+        *base_url = "https://imported.example/v1".into();
+    }
+    let mut distinct = custom();
+    distinct.id = "distinct-import".into();
+    distinct.name = "Distinct import".into();
+    let result = db.import_native_providers(vec![
+        Selected {
+            record: distinct,
+            join: false,
+            overwrite: true,
+        },
+        Selected {
+            record: imported.clone(),
+            join: false,
+            overwrite: true,
+        },
+    ]);
+    assert_eq!(result.err().as_deref(), Some("routingUpstreams.nameExists"));
+    assert_eq!(db.list_routing_upstreams()?.len(), 1);
+    db.import_native_providers(vec![Selected {
+        record: imported,
+        join: false,
+        overwrite: false,
+    }])?;
+    assert!(db
+        .list_routing_upstreams()?
+        .iter()
+        .any(|record| record.name == "PORTABLE FIXTURE (2)"));
+    Ok(())
+}
+
+#[test]
 fn provider_copy_ids_follow_magpie_name_slug_and_collision_rules(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::memory()?;
@@ -41,14 +210,14 @@ fn provider_copy_ids_follow_magpie_name_slug_and_collision_rules(
     let original = db.save_routing_upstream(original)?;
     for (name, expected, expected_name) in [
         ("gs 副本", "gs-2", "gs 副本"),
-        ("gs 副本", "gs-3", "gs 副本 2"),
-        ("GS 副本", "gs-4", "GS 副本 3"),
+        ("gs 另一副本", "gs-3", "gs 另一副本"),
+        ("GS 第三副本", "gs-4", "GS 第三副本"),
         ("gs 複本", "gs-5", "gs 複本"),
         ("gs コピー", "gs-6", "gs コピー"),
         ("gs copy", "gs-copy", "gs copy"),
         ("GS  -- copy", "gs-copy-2", "GS  -- copy"),
         ("Renamed relay", "renamed-relay", "Renamed relay"),
-        ("gs", "gs-7", "gs 2"),
+        ("gs 新副本", "gs-7", "gs 新副本"),
     ] {
         let mut draft = original.clone();
         draft.id.clear();
@@ -122,7 +291,10 @@ async fn api_provider_id_rename_moves_references_and_preserves_agent_and_transpo
         ..Default::default()
     });
     let saved = db.save_routing_upstream(original)?;
-    db.save_routing_upstream(custom())?;
+    let mut other = custom();
+    other.id = "portable-fixture-2".into();
+    other.name = "Other fixture".into();
+    db.save_routing_upstream(other)?;
     let mut group = db.intent_routing_catalog()?.groups.remove(0);
     group.name = "Owned fixture".into();
     group.classifier_target = Some(crate::services::intent_routing::Target {
@@ -215,6 +387,7 @@ async fn api_provider_id_rename_moves_references_and_preserves_agent_and_transpo
     );
     let mut reused = custom();
     reused.id = saved.id.clone();
+    reused.name = "Reused fixture".into();
     db.save_routing_upstream(reused)?;
     let providers = db.routing_providers()?;
     let current = providers
@@ -238,7 +411,9 @@ fn provider_id_rename_rolls_back_every_reference_on_storage_failure(
     let db = Database::memory()?;
     db.set_intent_routing_auto_create(true)?;
     let saved = db.save_routing_upstream(custom())?;
-    db.save_routing_upstream(custom())?;
+    let mut other = custom();
+    other.name = "Other fixture".into();
+    db.save_routing_upstream(other)?;
     let group = db.save_intent_routing_group(db.intent_routing_catalog()?.groups.remove(0))?;
     db.set_routing_auto_group_skip(vec![saved.id.clone()])?;
     db.extension_connection().lock().map_err(|_| "fixture")?.execute_batch("CREATE TRIGGER rename_failure BEFORE UPDATE ON intent_routing_groups BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;")?;
@@ -450,8 +625,10 @@ fn automatic_group_exclusions_preserve_owned_groups_and_unlisted_stand_ins() {
     let db = Database::memory().expect("database");
     db.set_intent_routing_auto_create(true).expect("on");
     let mut saved = Vec::new();
-    for _ in 0..2 {
-        saved.push(db.save_routing_upstream(custom()).expect("provider"));
+    for index in 0..2 {
+        let mut provider = custom();
+        provider.name = format!("Fixture {index}");
+        saved.push(db.save_routing_upstream(provider).expect("provider"));
     }
     let catalog = db.intent_routing_catalog().expect("discovered");
     assert_eq!(catalog.groups.len(), 1);

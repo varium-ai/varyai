@@ -1,11 +1,12 @@
 //! Follow settled Codex routing changes through the desktop app's own app-server.
-//! Catalog changes only offer a manual refresh. Windows desktop recovery is used
+//! Confirmed manual refreshes restart the desktop application. Windows recovery is used
 //! only when an ended app-server has no replacement; every step waits for idle.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
 mod activity;
+pub(crate) mod freshness;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -56,7 +57,7 @@ struct Pending {
 enum Action {
     None,
     Restart(Vec<Instance>),
-    RestartApplication(Vec<Instance>),
+    RestartDesktop(Vec<Instance>),
     Recovered,
     TimedOut,
 }
@@ -250,10 +251,11 @@ impl Monitor {
                 }
                 pending.last_attempt = targets.clone();
                 pending.deadline.get_or_insert(now.saturating_add(20));
-                if targets.iter().any(|target| pending.manual.contains(target)) {
-                    return Action::RestartApplication(targets);
-                }
-                return Action::Restart(targets);
+                return if pending.manual.is_empty() {
+                    Action::Restart(targets)
+                } else {
+                    Action::RestartDesktop(targets)
+                };
             }
         }
         Action::None
@@ -269,6 +271,18 @@ fn terminate_targets(
         .filter(|target| terminate(target).is_err())
         .cloned()
         .collect()
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
+fn restart_observed_desktop(
+    targets: &[Instance],
+    observed: &[Instance],
+    restart: impl FnOnce() -> Result<(), ()>,
+) -> Result<(), ()> {
+    if observed.len() != targets.len() || observed.iter().any(|server| !targets.contains(server)) {
+        return Err(());
+    }
+    restart()
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, ()> {
@@ -337,7 +351,24 @@ fn catalog_sample(config: &Path) -> Result<([u8; 32], u64), ()> {
             return Err(());
         }
         digest.update(path.as_bytes());
-        digest.update(serde_json::to_vec(&value).map_err(|_| ())?);
+        // Only the selectable model identities matter. Reordering entries or
+        // refreshing descriptions, effort metadata and priorities is harmless.
+        let mut models = value["models"]
+            .as_array()
+            .ok_or(())?
+            .iter()
+            .map(|model| {
+                let slug = model.get("slug").and_then(Value::as_str).ok_or(())?;
+                let visibility = model
+                    .get("visibility")
+                    .map(|value| value.as_str().ok_or(()))
+                    .transpose()?
+                    .unwrap_or("");
+                Ok((slug, visibility))
+            })
+            .collect::<Result<Vec<_>, ()>>()?;
+        models.sort_unstable();
+        digest.update(serde_json::to_vec(&models).map_err(|_| ())?);
     }
     Ok((digest.finalize().into(), modified))
 }
@@ -506,10 +537,19 @@ pub(crate) fn start(
             let previous_route = monitor.route;
             let sample_config = config.clone();
             let sample_requests = requests.clone();
+            let sample_desktop = desktop.clone();
             let sample = tokio::task::spawn_blocking(move || {
                 let home = sample_config.parent().ok_or(())?;
                 let route = fingerprint(&sample_config)?;
-                let catalog = catalog_sample(&sample_config).ok();
+                let freshness = sample_desktop
+                    .codex_startup_freshness(&sample_config)
+                    .map_err(|_| ())?;
+                let catalog = catalog_sample(&sample_config).ok().map(|(digest, _)| {
+                    (
+                        digest,
+                        freshness.catalog_changed_us.max(freshness.route_changed_us),
+                    )
+                });
                 let processes = platform::instances(home)?;
                 let since = processes.iter().map(|p| p.started_us).min().unwrap_or(0);
                 let busy = (needs_activity
@@ -537,12 +577,12 @@ pub(crate) fn start(
                     // cannot queue a second refresh against an outdated UI sample.
                     control.state = monitor.snapshot();
                 }
-                let restart_application = matches!(&action, Action::RestartApplication(_));
+                let desktop_restart = matches!(&action, Action::RestartDesktop(_));
                 match action {
-                    Action::Restart(targets) | Action::RestartApplication(targets) => {
+                    Action::Restart(targets) | Action::RestartDesktop(targets) => {
                         let client = manager.clone();
-                        let desktop = desktop.clone();
                         let final_requests = requests.clone();
+                        let final_desktop = desktop.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             let home = config.parent().ok_or(())?;
                             let since = targets.iter().map(|p| p.started_us).min().ok_or(())?;
@@ -562,12 +602,14 @@ pub(crate) fn start(
                             {
                                 return Ok(None);
                             }
-                            if restart_application {
-                                let running = platform::instances(home)?;
-                                if !targets.iter().all(|target| running.contains(target)) {
-                                    return Ok(None);
-                                }
-                                desktop.restart_codex_desktop().map_err(|_| ())?;
+                            if desktop_restart {
+                                // Check observed servers before quitting. Their expected exit
+                                // must not invalidate the configuration guard used to reopen.
+                                restart_observed_desktop(
+                                    &targets,
+                                    &platform::instances(home)?,
+                                    || final_desktop.restart_codex_desktop().map_err(|_| ()),
+                                )?;
                                 return Ok(Some(Vec::new()));
                             }
                             let failed = terminate_targets(&targets, |target| {
@@ -579,14 +621,26 @@ pub(crate) fn start(
                         match result {
                             Ok(Ok(Some(failed))) => {
                                 if failed.is_empty() {
-                                    log::info!("Codex routing changed; waiting for the desktop app-server to restart");
+                                    if desktop_restart {
+                                        log::info!(
+                                            "Codex desktop restarted; waiting for its app-server"
+                                        );
+                                    } else {
+                                        log::info!("Codex routing changed; waiting for the desktop app-server to restart");
+                                    }
                                 } else {
                                     log::warn!("Codex app-server restart remains pending");
                                 }
                             }
                             Ok(Ok(None)) => monitor.defer(),
                             _ => {
-                                log::warn!("Codex app-server restart unavailable");
+                                if desktop_restart {
+                                    monitor.pending = None;
+                                    monitor.failed = true;
+                                    log::warn!("Codex desktop restart unavailable");
+                                } else {
+                                    log::warn!("Codex app-server restart unavailable");
+                                }
                             }
                         }
                     }

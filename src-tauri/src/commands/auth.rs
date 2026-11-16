@@ -442,6 +442,10 @@ mod native_lifecycle_tests {
             proxy_service: service,
             usage_cache: Arc::new(crate::services::UsageCache::new()),
             profile_bundles: Arc::default(),
+            quota_panel: crate::services::quota_panel::Manager::new(
+                dir.path().join("quota-policy.json"),
+                manager.clone(),
+            ),
             codex_oauth_manager: manager,
         };
         (dir, state)

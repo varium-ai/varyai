@@ -85,6 +85,10 @@ export function RoutingUpstreamsPanel({
     refetchInterval: 15_000,
   });
   const [draft, setDraft] = useState<RoutingUpstream | null>(null);
+  const [rejectedName, setRejectedName] = useState<{
+    editor: string;
+    name: string;
+  }>();
   const [editorOpen, setEditorOpen] = useState(false);
   const [loadedRecord, setLoadedRecord] = useState<RoutingUpstream | null>(
     null,
@@ -161,9 +165,37 @@ export function RoutingUpstreamsPanel({
   const editorKey = draft?.revision
     ? (loadedRecord?.id ?? draft.id)
     : `new-${copyFrom?.id ?? "custom"}`;
+  const normalizedName = draft?.name.trim().toLowerCase();
+  const originalName = draft?.revision
+    ? (
+        loadedRecord ?? records.data?.find((record) => record.id === draft.id)
+      )?.name
+        .trim()
+        .toLowerCase()
+    : undefined;
+  const nameError =
+    normalizedName &&
+    ((normalizedName !== originalName &&
+      records.data?.some(
+        (record) =>
+          record.id !==
+            (draft?.revision ? (loadedRecord?.id ?? draft.id) : undefined) &&
+          record.name.trim().toLowerCase() === normalizedName,
+      )) ||
+      (rejectedName?.editor === editorKey &&
+        rejectedName.name === normalizedName))
+      ? t("modelProviders.nameExists")
+      : undefined;
+  function reportSaveError(cause: unknown) {
+    if (cause === "routingUpstreams.nameExists" && normalizedName) {
+      setRejectedName({ editor: editorKey, name: normalizedName });
+    }
+    report("save", cause);
+  }
   const activeEditor = useRef({ key: editorKey, open: editorOpen });
   activeEditor.current = { key: editorKey, open: editorOpen };
   function openAddPage() {
+    setRejectedName(undefined);
     listScroll.current = page.current?.closest("main")?.scrollTop ?? 0;
     setSelected(null);
     setAdding(true);
@@ -208,7 +240,7 @@ export function RoutingUpstreamsPanel({
         ?.focus({ preventScroll: true });
     } else {
       (
-        sheet.current?.querySelector<HTMLInputElement>("input[type=search]") ??
+        sheet.current?.querySelector<HTMLButtonElement>(".pv-back") ??
         addTrigger.current
       )?.focus({ preventScroll: true });
     }
@@ -243,6 +275,7 @@ export function RoutingUpstreamsPanel({
     preset?: GlobalProviderPreset,
     reauth = false,
   ) {
+    setRejectedName(undefined);
     discoveryRequest.current = null;
     setDiscovering(false);
     setStartReauth(reauth);
@@ -367,8 +400,35 @@ export function RoutingUpstreamsPanel({
     setModels("[]");
     setDiscovered([]);
   }
-  async function refresh() {
-    await Promise.all(
+  async function cacheSaved(saved: RoutingUpstream, originalId = saved.id) {
+    await client.cancelQueries({ queryKey: ["routing-upstreams"] });
+    client.setQueryData<RoutingUpstream[]>(["routing-upstreams"], (current) => {
+      const rows = current ?? [];
+      const previous = rows.find((row) => row.id === saved.id);
+      if (previous && previous.revision > saved.revision) return current;
+      const replaced = rows.findIndex(
+        (row) => row.id === originalId || row.id === saved.id,
+      );
+      return replaced >= 0
+        ? rows.flatMap((row, index) =>
+            index === replaced
+              ? [saved]
+              : row.id === originalId || row.id === saved.id
+                ? []
+                : [row],
+          )
+        : [...rows, saved];
+    });
+    return saved;
+  }
+  async function saveRecord(
+    ...args: Parameters<typeof routingUpstreamsApi.save>
+  ) {
+    const saved = await routingUpstreamsApi.save(...args);
+    return cacheSaved(saved, args[2]);
+  }
+  function refresh() {
+    void Promise.all(
       [
         "routing-upstreams",
         "intent-routing-providers",
@@ -378,26 +438,31 @@ export function RoutingUpstreamsPanel({
         "agent-connections",
         "agent-model-catalog",
       ].map((key) => client.invalidateQueries({ queryKey: [key] })),
-    );
+    ).catch((cause) => report("loadProviders", cause));
   }
   async function save(event: React.FormEvent, stagedModels?: unknown[]) {
     event.preventDefault();
     if (!draft) return;
+    if (nameError) {
+      report("save", "routingUpstreams.nameExists");
+      return;
+    }
     if (draft.source.kind === "codex") {
       setBusy(true);
       try {
         if (draft.codex)
-          await routingUpstreamsApi.saveCodex(
-            { ...draft, name: draft.name.trim() },
-            draft.codex.settings,
+          await cacheSaved(
+            await routingUpstreamsApi.saveCodex(
+              { ...draft, name: draft.name.trim() },
+              draft.codex.settings,
+            ),
           );
-        else
-          await routingUpstreamsApi.save({ ...draft, name: draft.name.trim() });
+        else await saveRecord({ ...draft, name: draft.name.trim() });
         setEditorOpen(false);
-        await refresh();
+        refresh();
         if (adding) closeAddPage();
       } catch (cause) {
-        report("save", cause);
+        reportSaveError(cause);
       } finally {
         setBusy(false);
       }
@@ -406,12 +471,12 @@ export function RoutingUpstreamsPanel({
     if (draft.source.kind === "subscription") {
       setBusy(true);
       try {
-        await routingUpstreamsApi.save({ ...draft, name: draft.name.trim() });
+        await saveRecord({ ...draft, name: draft.name.trim() });
         setEditorOpen(false);
-        await refresh();
+        refresh();
         if (adding) closeAddPage();
       } catch (cause) {
-        report("save", cause);
+        reportSaveError(cause);
       } finally {
         setBusy(false);
       }
@@ -470,13 +535,9 @@ export function RoutingUpstreamsPanel({
           ...(apiKey ? { apiKey } : {}),
         },
       };
-      if (copyFrom) await routingUpstreamsApi.save(value, copyFrom);
+      if (copyFrom) await saveRecord(value, copyFrom);
       else if (loadedRecord && value.id !== loadedRecord.id) {
-        const saved = await routingUpstreamsApi.save(
-          value,
-          undefined,
-          loadedRecord.id,
-        );
+        const saved = await saveRecord(value, undefined, loadedRecord.id);
         returnToProvider.current = saved.id;
         const nextOrder = providerOrder.map((id) =>
           id === loadedRecord.id ? saved.id : id,
@@ -487,12 +548,12 @@ export function RoutingUpstreamsPanel({
         } catch {
           /* Sorting remains available for this session. */
         }
-      } else await routingUpstreamsApi.save(value);
+      } else await saveRecord(value);
       setEditorOpen(false);
-      await refresh();
+      refresh();
       if (adding) closeAddPage();
     } catch (cause) {
-      report("save", cause);
+      reportSaveError(cause);
     } finally {
       setBusy(false);
     }
@@ -655,8 +716,8 @@ export function RoutingUpstreamsPanel({
   async function toggle(record: RoutingUpstream, enabled: boolean) {
     setBusy(true);
     try {
-      await routingUpstreamsApi.save({ ...record, enabled });
-      await refresh();
+      await saveRecord({ ...record, enabled });
+      refresh();
     } catch (cause) {
       report("toggle", cause);
     } finally {
@@ -678,7 +739,7 @@ export function RoutingUpstreamsPanel({
     }
     setBusy(true);
     try {
-      const result = await routingUpstreamsApi.save({ ...saved, enabled });
+      const result = await saveRecord({ ...saved, enabled });
       setLoadedRecord((current) =>
         current ? { ...current, enabled, revision: result.revision } : null,
       );
@@ -694,7 +755,7 @@ export function RoutingUpstreamsPanel({
         revision: result.revision,
       };
       initial.current = JSON.stringify(baseline);
-      await refresh();
+      refresh();
     } catch (cause) {
       report("toggle", cause);
     } finally {
@@ -794,6 +855,14 @@ export function RoutingUpstreamsPanel({
       )) {
         await routingUpstreamsApi.remove(record.id, record.revision);
         removed.add(record.id);
+        await client.cancelQueries({ queryKey: ["routing-upstreams"] });
+        client.setQueryData<RoutingUpstream[]>(
+          ["routing-upstreams"],
+          (current) =>
+            current?.filter(
+              (row) => row.id !== record.id || row.revision > record.revision,
+            ),
+        );
       }
     } catch (cause) {
       report("remove", cause);
@@ -805,11 +874,8 @@ export function RoutingUpstreamsPanel({
         );
         return remaining.size ? remaining : null;
       });
-      client.setQueryData<RoutingUpstream[]>(["routing-upstreams"], (current) =>
-        current?.filter((record) => !removed.has(record.id)),
-      );
       setDeletingBulk(false);
-      await refresh();
+      refresh();
     }
   }
   async function openRecord(record: RoutingUpstream, reauth = false) {
@@ -1262,6 +1328,7 @@ export function RoutingUpstreamsPanel({
           key={editorKey}
           open={editorOpen}
           draft={draft}
+          nameError={nameError}
           originalId={loadedRecord?.id ?? draft.id}
           copySourceName={copyFrom ? loadedRecord?.name : undefined}
           another={
@@ -1344,10 +1411,20 @@ export function RoutingUpstreamsPanel({
           void routingUpstreamsApi
             .remove(deleting.id, deleting.revision)
             .then(async () => {
+              await client.cancelQueries({ queryKey: ["routing-upstreams"] });
+              client.setQueryData<RoutingUpstream[]>(
+                ["routing-upstreams"],
+                (current) =>
+                  current?.filter(
+                    (row) =>
+                      row.id !== deleting.id ||
+                      row.revision > deleting.revision,
+                  ),
+              );
               if (draft?.id === deleting.id) {
                 setEditorOpen(false);
               }
-              await refresh();
+              refresh();
             })
             .catch((cause) => report("remove", cause))
             .finally(() => {

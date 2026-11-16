@@ -79,6 +79,36 @@ it("starts a custom provider with only optional model ids, no UUID, switch, mode
     within(dialog).getByRole("radio", { name: "Chat Completions" }),
   ).toHaveAttribute("aria-checked", "true");
 });
+it("requires a unique name before creating a provider", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    {
+      schemaVersion: 1,
+      id: "existing-relay",
+      name: "  relay  ",
+      revision: 1,
+      hasApiKey: false,
+      source: {
+        kind: "api",
+        baseUrl: "https://relay.example/v1",
+        apiFormat: "openai_chat",
+        models: [],
+        catalog: [],
+        mode: "vendor",
+        groupsOnly: false,
+      },
+    },
+  ]);
+  const dialog = await custom();
+  expect(within(dialog).getByLabelText("modelProviders.name")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  expect(
+    within(dialog).getByRole("button", { name: "common.add" }),
+  ).toBeDisabled();
+  fireEvent.submit(dialog.querySelector("form")!);
+  expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+});
 it("fetches one candidate list without automatically picking or saving models", async () => {
   const dialog = await custom();
   fireEvent.click(

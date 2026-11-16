@@ -337,6 +337,14 @@ pub(crate) fn responses_to_chat_completions_with_reasoning_and_history(
 
     let tools = tool_context.chat_tools();
     if !tools.is_empty() {
+        let mut tools = tools.to_vec();
+        for tool in &mut tools {
+            // Match Magpie only at the Chat wire boundary. The shared tool
+            // context still carries strict metadata for native Anthropic.
+            if let Some(function) = tool.get_mut("function").and_then(Value::as_object_mut) {
+                function.remove("strict");
+            }
+        }
         result["tools"] = json!(tools);
     }
 
@@ -3688,10 +3696,38 @@ mod tests {
         assert_eq!(result["messages"][2]["tool_calls"][0]["id"], "call_1");
         assert_eq!(result["messages"][3]["role"], "tool");
         assert_eq!(result["tools"][0]["function"]["name"], "get_weather");
-        assert_eq!(result["tools"][0]["function"]["strict"], true);
+        assert!(result["tools"][0]["function"].get("strict").is_none());
         assert_eq!(result["tool_choice"]["function"]["name"], "get_weather");
         assert_eq!(result["max_tokens"], 100);
         assert_eq!(result["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn translated_chat_tools_follow_magpie_without_strict_flags() {
+        for strict in [Some(true), Some(false), None] {
+            for wrapped in [false, true] {
+                let schema = json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false});
+                let mut definition =
+                    json!({"name":"lookup","description":"Synthetic lookup","parameters":schema});
+                if let Some(value) = strict {
+                    definition["strict"] = json!(value);
+                }
+                let tool = if wrapped {
+                    json!({"type":"function","function":definition,"strict":strict})
+                } else {
+                    definition["type"] = json!("function");
+                    definition
+                };
+                let wire = responses_to_chat_completions(json!({"model":"synthetic-model","input":"Synthetic prompt","tools":[tool],"tool_choice":"required"})).unwrap();
+                assert!(wire["tools"][0]["function"].get("strict").is_none());
+                assert_eq!(wire["tools"][0]["function"]["parameters"], schema);
+                assert_eq!(
+                    wire["tools"][0]["function"]["description"],
+                    "Synthetic lookup"
+                );
+                assert_eq!(wire["tool_choice"], "required");
+            }
+        }
     }
 
     #[test]

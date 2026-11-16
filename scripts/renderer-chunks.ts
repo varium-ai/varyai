@@ -45,6 +45,7 @@ export function rendererChunk(id: string): string | undefined {
     ) {
       return "vendor-charts";
     }
+    if (name === "@tauri-apps/api") return "vendor-tauri";
     if (name.startsWith("@radix-ui/")) return "vendor-radix";
     if (name === "framer-motion" || name.startsWith("motion-")) {
       return "vendor-motion";
@@ -56,6 +57,7 @@ export function rendererChunk(id: string): string | undefined {
 
   if (!file.startsWith(sourceRoot)) return undefined;
   const relative = file.slice(sourceRoot.length);
+  if (relative === "lib/analytics.ts") return "desktop-analytics";
   if (relative.startsWith("i18n/locales/")) {
     return `locale-${path.basename(relative, ".json")}`;
   }

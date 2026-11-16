@@ -10,8 +10,29 @@ use std::collections::HashSet;
 const FAILED: &str = "routingUpstreams.failed";
 const CONFLICT: &str = "routingUpstreams.conflict";
 const LIMIT: &str = "routingUpstreams.limit";
+const NAME_EXISTS: &str = "routingUpstreams.nameExists";
 #[path = "routing_upstreams_identity.rs"]
 mod identity;
+
+fn check_provider_name(
+    records: &[RoutingUpstream],
+    incoming: &RoutingUpstream,
+    current: Option<&RoutingUpstream>,
+) -> Result<(), String> {
+    let name = incoming.name.trim().to_lowercase();
+    // Existing duplicate records remain usable for toggles and account refreshes.
+    // New providers and name changes cannot introduce another collision.
+    if current.is_some_and(|record| record.name.trim().to_lowercase() == name) {
+        return Ok(());
+    }
+    if records.iter().any(|record| {
+        Some(record.id.as_str()) != current.map(|old| old.id.as_str())
+            && record.name.trim().to_lowercase() == name
+    }) {
+        return Err(NAME_EXISTS.into());
+    }
+    Ok(())
+}
 
 fn provider_id_slug(value: &str) -> String {
     value
@@ -218,6 +239,7 @@ impl Database {
         };
         for selection in selected {
             let mut incoming = selection.record;
+            incoming.name = incoming.name.trim().to_owned();
             if selection.overwrite && !selection.join {
                 incoming.has_api_key = false;
                 incoming.validate()?;
@@ -247,6 +269,8 @@ impl Database {
                     tx.execute("DELETE FROM routing_upstreams WHERE id=?1", [&old.id])
                         .map_err(|_| FAILED)?;
                 }
+                records.retain(|record| !legacy.iter().any(|old| old.id == record.id));
+                check_provider_name(&records, &incoming, current.as_ref())?;
                 identity::update(&tx, current.as_ref(), &incoming)?;
                 write_record(&tx, &incoming)?;
                 records.retain(|record| {
@@ -276,7 +300,10 @@ impl Database {
                 incoming.id = uuid::Uuid::new_v4().to_string();
                 let base = incoming.name.clone();
                 let mut suffix = 2;
-                while records.iter().any(|r| r.name == incoming.name) {
+                while records
+                    .iter()
+                    .any(|r| r.name.trim().to_lowercase() == incoming.name.to_lowercase())
+                {
                     incoming.name =
                         format!("{} ({suffix})", base.chars().take(108).collect::<String>());
                     suffix += 1;
@@ -327,6 +354,7 @@ impl Database {
         let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
         let tx = conn.transaction().map_err(|_| FAILED)?;
         let records = read_records(&tx)?;
+        record.name = record.name.trim().to_owned();
         if original_id.is_some_and(|id| !valid_identity(id)) {
             return Err(INVALID.into());
         }
@@ -339,16 +367,6 @@ impl Database {
             let mut suffix = 2;
             while records.iter().any(|r| r.id == record.id) {
                 record.id = format!("{base}-{suffix}");
-                suffix += 1;
-            }
-            let name = record.name.trim().to_string();
-            record.name = name.clone();
-            let mut suffix = 2;
-            while records
-                .iter()
-                .any(|r| r.name.to_lowercase() == record.name.to_lowercase())
-            {
-                record.name = format!("{name} {suffix}");
                 suffix += 1;
             }
         }
@@ -367,6 +385,7 @@ impl Database {
         if current.map_or(0, |r| r.revision) != record.revision {
             return Err(CONFLICT.into());
         }
+        check_provider_name(&records, &record, current)?;
         if let Some(current) = current {
             restore_transport(&mut record, current)?;
             if std::mem::discriminant(&current.source) != std::mem::discriminant(&record.source) {

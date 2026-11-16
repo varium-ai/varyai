@@ -120,13 +120,7 @@ impl Client {
         request_in(&self.directory()?, command, true)
     }
     pub(crate) fn applied_at_ms(self) -> Option<i64> {
-        std::fs::metadata(self.argv_path().ok()?)
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|time| time.as_millis() as i64)
+        super::freshness::applied_at_ms(&self.directory().ok()?, &self.argv_path().ok()?)
     }
     pub(crate) fn prepare(self) -> Result<(), AppError> {
         if self.0 == Edition::China {

@@ -218,6 +218,17 @@ fn shared_scheme_preview_identifies_the_supplier_beside_the_model() -> TestResul
 fn routed_codex_can_apply_native_scheme_and_undo_reinstates_route() -> TestResult {
     let (_home, state, profile) = setup()?;
     let config = crate::codex_config::get_codex_config_path();
+    let freshness = state
+        .proxy_service
+        .agent_connections
+        .profile_paths("codex")?
+        .into_iter()
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name == "codex-startup-freshness.json")
+        })
+        .ok_or("missing startup snapshot path")?;
+    let freshness_before = std::fs::read(&freshness)?;
     let before = std::fs::read(&config)?;
     let auth = std::fs::read(crate::codex_config::get_codex_auth_path())?;
     let preview = ProfileBundleService::preview(&state, &profile.id)?;
@@ -227,8 +238,10 @@ fn routed_codex_can_apply_native_scheme_and_undo_reinstates_route() -> TestResul
     assert_eq!(document["model"].as_str(), Some("model-a"));
     assert!(!state.proxy_service.intent_client.active_or_pending());
     assert!(!state.proxy_service.intent_runtime.menu_active());
+    assert_ne!(std::fs::read(&freshness)?, freshness_before);
     ProfileBundleService::undo(&state, applied.undo_id.as_deref().ok_or("missing undo")?)?;
     assert_eq!(std::fs::read(&config)?, before);
+    assert_eq!(std::fs::read(&freshness)?, freshness_before);
     assert_eq!(
         std::fs::read(crate::codex_config::get_codex_auth_path())?,
         auth

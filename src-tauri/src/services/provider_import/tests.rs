@@ -450,6 +450,7 @@ fn native_import_is_atomic_deduplicates_a_batch_and_retains_redacted_secrets(
     assert!(db.save_routing_upstream(changed).is_err());
     redacted.id.clear();
     redacted.revision = 0;
+    redacted.name = "Updated copy".into();
     assert!(db
         .save_routing_upstream_copy(redacted, &private.id, private.revision)
         .is_ok());
@@ -1328,7 +1329,7 @@ async fn provider_backup_imports_saved_reasoning_preferences_into_shared_agent_c
     let models = crate::services::agent_connections::models(&menu);
     let exact = models
         .iter()
-        .find(|model| model.name == "Custom" && model.group == "Synthetic")
+        .find(|model| model.name == "Custom · Synthetic" && model.group == "Synthetic")
         .ok_or("missing imported model")?;
     let session = menu.groups.get(&exact.id).ok_or("missing imported route")?;
     assert!(session

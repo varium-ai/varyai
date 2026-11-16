@@ -37,6 +37,7 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
     probe: vi.fn(),
     editor: vi.fn(),
     codexQuota: vi.fn(),
+    quota: vi.fn(),
   },
 }));
 function mount(
@@ -63,6 +64,40 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("provider loading", () => {
+  it("does not query API allowances for an original provider or its saved copy", async () => {
+    const source = {
+      kind: "api" as const,
+      apiFormat: "openai_chat" as const,
+      baseUrl: "https://relay.example/v1",
+      models: [{ id: "synthetic-model" }],
+      catalog: [],
+      mode: "vendor" as const,
+      groupsOnly: false,
+    };
+    const rows = ["original", "copy"].map((id) => ({
+      schemaVersion: 1 as const,
+      id,
+      name: `Synthetic ${id}`,
+      revision: 1,
+      hasApiKey: true,
+      source,
+    }));
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue(rows);
+    vi.mocked(routingUpstreamsApi.quota).mockRejectedValue(
+      new Error("synthetic-private-error"),
+    );
+    mount();
+    for (const record of rows) {
+      const row = await screen.findByRole("article", { name: record.name });
+      expect(within(row).getByText(/relay\.example/)).toBeVisible();
+      expect(within(row).queryByRole("status")).not.toBeInTheDocument();
+    }
+    expect(routingUpstreamsApi.quota).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText("codexProvider.quotaFailed"),
+    ).not.toBeInTheDocument();
+  });
+
   it("preserves loaded rows during background refresh", async () => {
     const client = new QueryClient();
     const record = {
@@ -196,6 +231,51 @@ describe("global upstream editor", () => {
       ],
     },
   };
+  it("acknowledges a saved toggle while catalog queries are still pending", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => ({
+      ...value,
+      revision: value.revision + 1,
+    }));
+    mount(client);
+    const toggle = await screen.findByRole("switch", {
+      name: `modelPicker.enableProvider ${primary.name}`,
+    });
+    fireEvent.change(screen.getByLabelText("modelProviders.find"), {
+      target: { value: primary.name },
+    });
+    vi.spyOn(client, "invalidateQueries").mockReturnValue(
+      new Promise(() => {}),
+    );
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", {
+          name: `modelPicker.enableProvider ${primary.name}`,
+        }),
+      ).toBeEnabled(),
+    );
+    expect(client.getQueryData(["routing-upstreams"])).toEqual([
+      expect.objectContaining({ id: primary.id, revision: 5, enabled: false }),
+    ]);
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: `modelPicker.enableProvider ${primary.name}`,
+      }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(2),
+    );
+    expect(routingUpstreamsApi.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision: 5, enabled: true }),
+    );
+  });
   it.each([
     [0, "generic-model-y"],
     [0.999, "generic-memory"],
@@ -258,7 +338,44 @@ describe("global upstream editor", () => {
     );
   });
 
-  it("edits the provider ID like Magpie while preserving the saved credential identity", async () => {
+  it("keeps a renamed provider when a background read already returned its new ID", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => {
+      const saved = {
+        ...value,
+        id: "renamed-provider",
+        revision: value.revision + 1,
+      };
+      client.setQueryData(["routing-upstreams"], [saved]);
+      return saved;
+    });
+    mount(client);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: `common.edit ${primary.name}`,
+      }),
+    );
+    fireEvent.change(await screen.findByLabelText("modelProviders.name"), {
+      target: { value: "Renamed provider" },
+    });
+    vi.spyOn(client, "invalidateQueries").mockReturnValue(
+      new Promise(() => {}),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(["routing-upstreams"])).toEqual([
+        expect.objectContaining({ id: "renamed-provider", revision: 5 }),
+      ]),
+    );
+  });
+
+  it("edits the provider name without exposing or changing its saved identity", async () => {
     const saved = { ...primary, notes: "Synthetic original note" };
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([saved]);
     vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(saved);
@@ -268,14 +385,13 @@ describe("global upstream editor", () => {
         name: "common.edit Synthetic primary",
       }),
     );
-    const id = await screen.findByLabelText("ID");
-    expect(id).toHaveValue(saved.id);
-    expect(id).not.toHaveAttribute("readonly");
+    const name = await screen.findByLabelText("modelProviders.name");
+    expect(screen.queryByLabelText("ID")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("providerEditor.idReference"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("provider.notes")).not.toBeInTheDocument();
-    fireEvent.change(id, { target: { value: "My New ID!" } });
-    fireEvent.blur(id);
-    expect(screen.getByLabelText("ID")).toHaveValue("my-new-id");
-    expect(screen.getByLabelText("ID")).toBe(id);
+    fireEvent.change(name, { target: { value: "Renamed provider" } });
     vi.mocked(routingUpstreamsApi.probe).mockResolvedValue([]);
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.detect" }),
@@ -294,13 +410,117 @@ describe("global upstream editor", () => {
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
-          id: "my-new-id",
+          id: saved.id,
+          name: "Renamed provider",
           notes: "Synthetic original note",
         }),
-        undefined,
-        saved.id,
       ),
     );
+  });
+  it("rejects a duplicate provider name after trimming and case folding, while allowing its own name", async () => {
+    const other = { ...primary, id: "other", name: "Second relay" };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary, other]);
+    vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(primary);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: `common.edit ${primary.name}`,
+      }),
+    );
+    const name = await screen.findByLabelText("modelProviders.name");
+    const save = screen.getByRole("button", { name: "common.save" });
+    expect(save).toBeEnabled();
+    fireEvent.change(name, { target: { value: "  SECOND RELAY  " } });
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "modelProviders.nameExists",
+    );
+    expect(save).toBeDisabled();
+    fireEvent.submit(name.closest("form")!);
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    fireEvent.change(name, { target: { value: "Renamed relay" } });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: primary.id, name: "Renamed relay" }),
+      ),
+    );
+  });
+
+  it.each(["Synthetic primary", "  SYNTHETIC PRIMARY  "])(
+    "allows editing a legacy duplicate with its original normalized name: %s",
+    async (unchangedName) => {
+      const duplicate = {
+        ...primary,
+        id: "legacy-duplicate",
+        name: " SYNTHETIC PRIMARY ",
+      };
+      const other = { ...primary, id: "other", name: "Second relay" };
+      vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+        primary,
+        duplicate,
+        other,
+      ]);
+      vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(primary);
+      mount();
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: `common.edit ${primary.name}`,
+        }),
+      );
+      const name = await screen.findByLabelText("modelProviders.name");
+      const save = screen.getByRole("button", { name: "common.save" });
+      expect(name).toHaveAttribute("aria-invalid", "false");
+      expect(save).toBeEnabled();
+      fireEvent.change(name, { target: { value: "Second relay" } });
+      expect(name).toHaveAttribute("aria-invalid", "true");
+      expect(save).toBeDisabled();
+      fireEvent.change(name, { target: { value: unchangedName } });
+      expect(name).toHaveAttribute("aria-invalid", "false");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(save).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "small-model" }));
+      fireEvent.click(save);
+      await waitFor(() =>
+        expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: primary.id,
+            source: expect.objectContaining({
+              models: [primary.source.models[0]],
+            }),
+          }),
+        ),
+      );
+    },
+  );
+
+  it("keeps a conflicting draft editable when the backend detects a name created after loading", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(primary);
+    vi.mocked(routingUpstreamsApi.save).mockRejectedValue(
+      "routingUpstreams.nameExists",
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: `common.edit ${primary.name}`,
+      }),
+    );
+    const name = await screen.findByLabelText("modelProviders.name");
+    fireEvent.change(name, { target: { value: "Conflicting relay" } });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
+    expect(name).toHaveValue("Conflicting relay");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "modelProviders.nameExists",
+    );
+    expect(toast.error).toHaveBeenCalledWith(
+      "modelProviders.errors.save",
+      expect.objectContaining({ description: "modelProviders.nameExists" }),
+    );
+    fireEvent.change(name, { target: { value: "Available relay" } });
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
   });
   it("saves selected catalog models without exposing removed manual-entry controls", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
@@ -1564,6 +1784,14 @@ describe("global upstream editor", () => {
     expect(screen.getByRole("button", { name: "common.add" })).toBeVisible();
     expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
     expect(screen.getByLabelText("modelProviders.apiKey")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+      target: { value: primary.name },
+    });
+    expect(screen.getByRole("button", { name: "common.add" })).toBeDisabled();
+    fireEvent.submit(
+      screen.getByLabelText("modelProviders.name").closest("form")!,
+    );
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("modelProviders.name"), {
       target: { value: "Synthetic copy" },
     });

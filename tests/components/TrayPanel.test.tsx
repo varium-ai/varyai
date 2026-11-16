@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { TrayPanel } from "@/components/tray/TrayPanel";
 import { trayPanelApi } from "@/lib/trayPanel";
 import { routingTraceApi } from "@/lib/api/routingTrace";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { securityEventsApi } from "@/lib/api/securityEvents";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 import {
@@ -107,6 +108,7 @@ beforeEach(() => {
     page: 1,
     pageSize: 8,
   });
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
 });
 const group: RoutingGroup = {
   id: "synthetic-group",
@@ -133,13 +135,11 @@ function mockGroups(groups: RoutingGroup[]) {
     omittedGroups: 0,
   });
 }
-function mount() {
+function mount(
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      }
-    >
+    <QueryClientProvider client={client}>
       <TrayPanel />
     </QueryClientProvider>,
   );
@@ -162,9 +162,9 @@ it("shows the update entry only for an available version and reopens its dialog"
   expect(updateState.resetDismiss).toHaveBeenCalledOnce();
   expect(updateState.checkUpdate).not.toHaveBeenCalled();
 });
-it("renders exactly three tabs and compact agents, never the main sidebar", async () => {
+it("renders exactly four tabs and compact agents, never the main sidebar", async () => {
   mount();
-  expect(screen.getAllByRole("tab")).toHaveLength(3);
+  expect(screen.getAllByRole("tab")).toHaveLength(4);
   expect(screen.getByTestId("compact-agents")).toHaveTextContent("true");
   expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   expect(screen.getByText("top")).toBeInTheDocument();
@@ -194,9 +194,61 @@ it("opens with neutral focus and preserves keyboard tab navigation", () => {
   const agents = screen.getByRole("tab", { name: "trayPanel.agents" });
   agents.focus();
   fireEvent.keyDown(agents, { key: "ArrowRight" });
+  const quota = screen.getByRole("tab", { name: "trayPanel.quota" });
+  expect(quota).toHaveFocus();
+  expect(quota).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(quota, { key: "ArrowRight" });
   const routing = screen.getByRole("tab", { name: "trayPanel.routing" });
   expect(routing).toHaveFocus();
   expect(routing).toHaveAttribute("aria-selected", "true");
+});
+it("opens and restores allowances, with provider navigation and four-tab keyboard wrapping", async () => {
+  localStorage.setItem("vary:tray-tab", "quota");
+  mount();
+  const quota = screen.getByRole("tab", { name: "trayPanel.quota" });
+  expect(quota).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByText("trayPanel.quotaEmpty")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "trayPanel.openMain" }));
+  expect(trayPanelApi.open).toHaveBeenCalledWith("providers");
+  fireEvent.click(
+    screen.getByRole("button", { name: "trayPanel.manageQuota" }),
+  );
+  expect(trayPanelApi.open).toHaveBeenCalledWith("providers");
+  fireEvent.keyDown(quota, { key: "End" });
+  const security = screen.getByRole("tab", { name: "trayPanel.security" });
+  expect(security).toHaveFocus();
+  fireEvent.keyDown(security, { key: "ArrowRight" });
+  const agents = screen.getByRole("tab", { name: "trayPanel.agents" });
+  expect(agents).toHaveFocus();
+  fireEvent.keyDown(agents, { key: "ArrowLeft" });
+  expect(security).toHaveFocus();
+  fireEvent.keyDown(security, { key: "Home" });
+  expect(agents).toHaveFocus();
+});
+it("loads allowances only when selected and refreshes every allowance query family", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  mount(client);
+  expect(routingUpstreamsApi.list).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("tab", { name: "trayPanel.quota" }));
+  await screen.findByText("trayPanel.quotaEmpty");
+  const refresh = screen.getByRole("button", { name: "trayPanel.refresh" });
+  await waitFor(() => expect(refresh).toBeEnabled());
+  fireEvent.click(refresh);
+  for (const root of [
+    "routing-upstreams",
+    "provider-list-codex-accounts",
+    "codex-provider-quota",
+    "subscription-account-quota",
+    "routing-provider-quota",
+  ]) {
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: [root] });
+  }
+  await waitFor(() =>
+    expect(routingUpstreamsApi.list).toHaveBeenCalledTimes(2),
+  );
 });
 it("keeps the native panel height fixed when content and tabs change", async () => {
   let resize = () => {};

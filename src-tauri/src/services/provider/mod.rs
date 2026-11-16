@@ -333,7 +333,6 @@ mod tests {
     #[serial]
     fn native_codex_switch_records_desktop_freshness_after_success() {
         with_test_home(|state, _| {
-            use sha2::{Digest, Sha256};
             crate::settings::reload_settings().expect("reload synthetic settings");
             let freshness = state
                 .proxy_service
@@ -343,10 +342,11 @@ mod tests {
                 .into_iter()
                 .find(|path| {
                     path.file_name()
-                        .is_some_and(|name| name == "codex-desktop-freshness.json")
+                        .is_some_and(|name| name == "codex-startup-freshness.json")
                 })
                 .expect("freshness path");
             assert!(!freshness.exists());
+            let mut previous_route = None;
             for (id, endpoint) in [
                 ("native-a", "https://a.example.test/v1"),
                 ("native-b", "https://b.example.test/v1"),
@@ -368,14 +368,18 @@ mod tests {
                     std::fs::read(&freshness).expect("successful switch records desktop freshness");
                 let document: Value = serde_json::from_slice(&bytes).expect("freshness JSON");
                 let config = crate::codex_config::get_codex_config_path();
-                let digest = format!(
-                    "{:x}",
-                    Sha256::digest(std::fs::read(&config).expect("native config"))
+                let expected =
+                    crate::services::codex_app_server::freshness::sample(&config, &freshness)
+                        .expect("sample semantic startup state");
+                assert_eq!(
+                    document,
+                    serde_json::to_value(expected).expect("snapshot JSON")
                 );
-                assert_eq!(document["files"][0]["digest"], digest);
-                assert_eq!(document["app"], "codex");
-                assert!(document["appliedAtMs"]
-                    .as_i64()
+                if let Some(previous) = previous_route.replace(document["route"].clone()) {
+                    assert_ne!(document["route"], previous);
+                }
+                assert!(document["routeChangedUs"]
+                    .as_u64()
                     .is_some_and(|time| time > 0));
                 assert!(ProviderService::switch(state, AppType::Codex, "missing").is_err());
                 assert_eq!(

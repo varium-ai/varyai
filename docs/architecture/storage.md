@@ -32,6 +32,15 @@ The serialized Skills option `cc_switch` still means private application storage
 
 ## Format boundaries
 
+Relay balance interface discovery is a device-local, disposable cache at
+`~/.varyai/relay-balance-probes.json`, independent of the database pair and
+portable data-directory overrides. It contains hashed origin/credential
+identities, fixed interface identifiers and expiry times, with no credentials,
+endpoint URLs or balance responses. Found and missing interfaces survive restart;
+temporary network failures remain in memory. Private atomic replacement uses
+the shared macOS/Windows writer. An unreadable, corrupt or unwritable cache does
+not prevent allowance reads. See [tray allowance behavior](tray-panel.md).
+
 | Format                      | Main                         | Extension             | Use                                             |
 | --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------- |
 | Native VaryAI               | 24                           | 8                     | Live independent storage                        |
@@ -65,13 +74,24 @@ Claude Desktop uses the same per-agent routing control as other clients. Its swi
 
 New Codex catalog files are `varyai-model-catalog.json`. The historical catalog name remains readable inside the verified Codex directory. The `custom` provider bucket and `cc-switch-official` route ID remain stable because session history can refer to them.
 
-Public API-provider IDs are editable. The extension preference
+The provider form keeps public API-provider IDs internal. New providers receive
+an automatically assigned ID, and editing a name preserves the existing ID. The
+storage layer retains explicit ID-rename support for compatibility. The extension preference
 `provider_identities` maps renamed or retired public IDs to private execution
 identities. A single extension transaction updates the provider row, routing-group
 members, classifier targets and auto-group exclusions. Retired IDs retain their
 old ownership marker, so reuse cannot inherit another provider's opaque model
 aliases. This metadata uses the existing preference table and requires no shared
 schema migration. Runtime snapshots strip the marker from upstream settings.
+
+Provider names are trimmed and compared without case sensitivity. Creation,
+copying and renaming reject a name already used by another provider inside the
+same extension transaction that writes the record. Failed validation leaves the
+provider and its references unchanged. Existing duplicates can still receive
+updates when their normalized name is unchanged, including edits in the provider
+form, toggles and account refreshes. Both the editor and backend validate a new
+name against other provider IDs. Batch imports also check names when replacing
+records and allocate distinct names for ordinary imported additions.
 
 Per-key model scopes live alongside the existing private API transport JSON:
 `primaryModels` for the primary key and `models` for each backup key. Missing

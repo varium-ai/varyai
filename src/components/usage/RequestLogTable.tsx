@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -26,6 +26,7 @@ import {
 } from "@/types/usage";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
+import { UsageSourceLabel } from "./UsageSourceLabel";
 import {
   formatOutputTokensPerSecond,
   fmtInt,
@@ -60,7 +61,8 @@ export function RequestLogTable({
   const [statusCode, setStatusCode] = useState<number | undefined>(undefined);
   const [page, setPage] = useState(0);
   const [pageInput, setPageInput] = useState("");
-  const tableRef = useRef<HTMLDivElement>(null);
+  const tableRegion = useRef<HTMLDivElement>(null);
+  const lastVisiblePage = useRef<number>();
   const pageSize = 20;
 
   const effectiveFilters: LogFilters = {
@@ -77,6 +79,9 @@ export function RequestLogTable({
     data: result,
     isLoading,
     isFetching,
+    isPlaceholderData,
+    isError,
+    refetch,
   } = useRequestLogs({
     filters: effectiveFilters,
     range,
@@ -90,6 +95,26 @@ export function RequestLogTable({
   const logs = result?.data ?? [];
   const total = result?.total ?? 0;
   const totalPages = Math.ceil(total / pageSize);
+  const displayedPage = result?.page ?? page;
+  const changingPage = isPlaceholderData === true;
+
+  useEffect(() => {
+    if (!result || changingPage) return;
+    const lastPage = Math.max(0, Math.ceil(result.total / pageSize) - 1);
+    if (page > lastPage) setPage(lastPage);
+  }, [result, changingPage, page]);
+
+  useLayoutEffect(() => {
+    if (!result || changingPage || result.page !== page) return;
+    if (
+      lastVisiblePage.current !== undefined &&
+      lastVisiblePage.current !== result.page
+    ) {
+      // A short final page must stay visible in the workspace's scroll area.
+      tableRegion.current?.scrollIntoView?.({ block: "start" });
+    }
+    lastVisiblePage.current = result.page;
+  }, [result, changingPage, page]);
 
   useEffect(() => {
     setPage(0);
@@ -102,19 +127,12 @@ export function RequestLogTable({
     range.preset,
   ]);
 
-  const changePage = (nextPage: number) => {
-    if (nextPage === page) return;
-    // Anchor before a shorter page reduces the scroll container's height.
-    tableRef.current?.scrollIntoView({ block: "start" });
-    setPage(nextPage);
-  };
-
   const handleGoToPage = () => {
     const trimmed = pageInput.trim();
     if (!/^\d+$/.test(trimmed)) return;
     const parsed = Number(trimmed);
     if (parsed < 1 || parsed > totalPages) return;
-    changePage(parsed - 1);
+    setPage(parsed - 1);
     setPageInput("");
   };
 
@@ -122,7 +140,7 @@ export function RequestLogTable({
   const locale = getLocaleFromLanguage(language);
 
   return (
-    <div ref={tableRef} className="space-y-4" aria-busy={isFetching}>
+    <div className="space-y-4" aria-busy={isFetching}>
       <div className="rounded-lg border bg-card/50 p-2 backdrop-blur-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           {/* Status code */}
@@ -159,11 +177,27 @@ export function RequestLogTable({
         </div>
       </div>
 
+      {isError && (
+        <div role="alert" className="flex items-center gap-2 text-sm">
+          <span>{t("usage.queryFailed")}</span>
+          <Button variant="outline" size="sm" onClick={() => void refetch()}>
+            {t("common.retry")}
+          </Button>
+        </div>
+      )}
+      {changingPage && (
+        <div role="status" className="text-sm text-muted-foreground">
+          {t("common.loading")}
+        </div>
+      )}
       {isLoading ? (
         <div className="h-[400px] animate-pulse rounded bg-gray-100" />
       ) : (
         <>
-          <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
+          <div
+            ref={tableRegion}
+            className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto"
+          >
             <Table>
               <TableHeader>
                 <TableRow>
@@ -171,7 +205,7 @@ export function RequestLogTable({
                     {t("usage.time")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
-                    {t("usage.provider")}
+                    {t("usage.providerOrSource")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
                     {t("usage.billingModel")}
@@ -223,7 +257,7 @@ export function RequestLogTable({
                           )}
                         </TableCell>
                         <TableCell className="text-center">
-                          {log.providerName || t("usage.unknownProvider")}
+                          <UsageSourceLabel source={log} />
                         </TableCell>
                         <TableCell className="text-center font-mono text-xs min-w-[200px] max-w-[360px]">
                           <div
@@ -350,8 +384,8 @@ export function RequestLogTable({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={page === 0}
-                onClick={() => changePage(Math.max(0, page - 1))}
+                disabled={changingPage || page === 0}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
@@ -386,10 +420,12 @@ export function RequestLogTable({
                   ) : (
                     <Button
                       key={p}
-                      variant={p === page ? "default" : "outline"}
+                      variant={p === displayedPage ? "default" : "outline"}
+                      aria-current={p === displayedPage ? "page" : undefined}
+                      disabled={changingPage}
                       size="sm"
                       className="h-8 w-8 p-0"
-                      onClick={() => changePage(p)}
+                      onClick={() => setPage(p)}
                     >
                       {p + 1}
                     </Button>
@@ -399,14 +435,15 @@ export function RequestLogTable({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={page >= totalPages - 1}
-                onClick={() => changePage(Math.min(totalPages - 1, page + 1))}
+                disabled={changingPage || page >= totalPages - 1}
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
               >
                 <ChevronRight className="h-4 w-4" />
               </Button>
               <div className="flex items-center gap-1 ml-2">
                 <Input
                   type="text"
+                  disabled={changingPage}
                   value={pageInput}
                   onChange={(e) => setPageInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -415,7 +452,12 @@ export function RequestLogTable({
                   placeholder={t("usage.pageInputPlaceholder")}
                   className="h-8 w-16 text-center text-xs"
                 />
-                <Button variant="outline" size="sm" onClick={handleGoToPage}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={changingPage}
+                  onClick={handleGoToPage}
+                >
                   {t("usage.goToPage")}
                 </Button>
               </div>

@@ -895,14 +895,17 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let mut saved = Vec::new();
-        for models in [vec![], vec![], vec![json!({"model":"selected-model"})]] {
+        for (index, models) in [vec![], vec![], vec![json!({"model":"selected-model"})]]
+            .into_iter()
+            .enumerate()
+        {
             saved.push(db.save_routing_upstream(RoutingUpstream {
                 notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
                 id: String::new(),
-                name: "Synthetic relay".into(),
+                name: format!("Synthetic relay {index}"),
                 revision: 0,
                 enabled: true,
                 has_api_key: false,
@@ -1787,6 +1790,19 @@ impl ExecutionCredentials {
 
     pub(crate) fn continuation_identity(&self) -> Option<&str> {
         self.continuation.as_deref()
+    }
+    /// Preferences follow the selected managed identity, or the verified native user/workspace.
+    pub(crate) fn quota_identity(&self) -> Option<String> {
+        let identity = self
+            .provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.managed_account_id_for("codex_oauth"));
+        let key = identity.as_deref().or(self.continuation.as_deref())?;
+        Some(format!(
+            "{:x}",
+            Sha256::digest(format!("quota-account-v1:{key}").as_bytes())
+        ))
     }
     pub(crate) fn fingerprint(&self) -> Vec<u8> {
         let mut hash = Sha256::new();

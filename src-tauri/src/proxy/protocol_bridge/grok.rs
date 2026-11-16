@@ -355,6 +355,88 @@ mod tests {
     }
 }
 
+/// Emit only fixed labels from recognized error metadata, never upstream text.
+pub(in crate::proxy) fn rejection_hints(body: &[u8]) -> Vec<&'static str> {
+    if body.len() > 64 * 1024 {
+        return vec!["oversized_error"];
+    }
+    let parsed = serde_json::from_slice::<Value>(body);
+    let mut hints = Vec::new();
+    let metadata = match &parsed {
+        Ok(value) => {
+            let error = value.get("error").unwrap_or(value);
+            let mut fields = Vec::new();
+            if let Some(message) = error.as_str() {
+                fields.push(message.to_ascii_lowercase());
+            }
+            for key in ["message", "param", "code", "type"] {
+                if let Some(value) = error.get(key).and_then(Value::as_str) {
+                    fields.push(value.to_ascii_lowercase());
+                }
+            }
+            if value.get("error").is_some() {
+                if let Some(message) = value.get("message").and_then(Value::as_str) {
+                    fields.push(message.to_ascii_lowercase());
+                }
+            }
+            fields
+        }
+        Err(_) => {
+            hints.push("non_json");
+            vec![String::from_utf8_lossy(body).to_ascii_lowercase()]
+        }
+    };
+    for label in ["invalid", "unsupported"] {
+        if parsed.is_ok() && metadata.iter().any(|field| field.contains(label)) {
+            hints.push(label);
+        }
+    }
+    if parsed.is_ok() {
+        for label in [
+            "messages",
+            "tools",
+            "strict",
+            "parameters",
+            "required",
+            "pattern",
+            "tool_call_id",
+            "tool_calls",
+            "reasoning_effort",
+            "reasoning_summary",
+            "service_tier",
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "prompt_cache_key",
+            "parallel_tool_calls",
+            "stream_options",
+            "response_format",
+            "web_search_options",
+        ] {
+            if metadata.iter().any(|field| {
+                field
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|token| token == label)
+            }) {
+                hints.push(label);
+            }
+        }
+    }
+    if metadata.iter().any(|field| {
+        [
+            "header too large",
+            "headers too large",
+            "header fields too large",
+            "header size",
+        ]
+        .iter()
+        .any(|phrase| field.contains(phrase))
+    }) {
+        hints.push("header_size");
+    }
+    hints
+}
+
 /// Classify a rejection using fixed protocol metadata only. Never return any
 /// substring of an upstream error, which may echo credentials or tool input.
 pub(in crate::proxy) fn rejection_code(body: &[u8]) -> &'static str {
@@ -393,6 +475,47 @@ pub(in crate::proxy) fn rejection_code(body: &[u8]) -> &'static str {
 mod rejection_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rejection_hints_only_emit_fixed_labels() {
+        let body = json!({"error":{"message":"Invalid max_completion_tokens; synthetic-private-secret https://synthetic.invalid/private", "param":"max_completion_tokens"}});
+        assert_eq!(
+            rejection_hints(body.to_string().as_bytes()),
+            vec!["invalid", "max_completion_tokens"]
+        );
+        assert_eq!(
+            rejection_hints(b"<html>400 Request Header Too Large; synthetic-private</html>"),
+            vec!["non_json", "header_size"]
+        );
+        assert_eq!(
+            rejection_hints(br#"{"error":{"message":"synthetic-private-only"}}"#),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn rejection_hints_inspect_only_error_metadata_and_bound_the_output() {
+        for body in [
+            json!({"error":{"message":"Unsupported field", "param":"tools[0].function.strict"}}),
+            json!({"message":"Unsupported field tools[0].function.strict"}),
+            json!({"error":"Unsupported field tools[0].function.strict"}),
+        ] {
+            assert_eq!(
+                rejection_hints(body.to_string().as_bytes()),
+                vec!["unsupported", "tools", "strict"]
+            );
+        }
+        let body = json!({
+            "error":{"message":"Synthetic refusal", "param":"synthetic-private-parameter"},
+            "request":{"service_tier":"invalid", "tools":[{"input":"unsupported strict"}]},
+            "api_key":"synthetic-private-secret"
+        });
+        assert!(rejection_hints(body.to_string().as_bytes()).is_empty());
+        assert_eq!(
+            rejection_hints(&vec![b'x'; 65_537]),
+            vec!["oversized_error"]
+        );
+    }
 
     #[test]
     fn rejection_reasons_are_fixed_and_never_echo_upstream_text() {

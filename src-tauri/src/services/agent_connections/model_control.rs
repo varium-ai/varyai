@@ -36,7 +36,7 @@ pub(crate) struct Status {
 }
 
 impl Manager {
-    fn control_dir(&self, app: &str) -> Result<PathBuf, String> {
+    pub(super) fn control_dir(&self, app: &str) -> Result<PathBuf, String> {
         if !supports(app) {
             return Err(FAILED.into());
         }

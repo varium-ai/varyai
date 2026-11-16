@@ -99,6 +99,7 @@ it("retains full allowance and manual refresh in the provider form", async () =>
   await waitFor(() =>
     expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(2),
   );
+  expect(routingUpstreamsApi.quota).toHaveBeenLastCalledWith("relay", 4, true);
 });
 it("retains the last good allowance on a temporary error, with a safe stale message", async () => {
   const client = mount();
@@ -148,6 +149,28 @@ it("does not invent balances for unsupported providers", async () => {
   await waitFor(() =>
     expect(screen.queryByRole("status")).not.toBeInTheDocument(),
   );
+});
+it("does not render an unsupported relay as a tray quota card", async () => {
+  vi.mocked(routingUpstreamsApi.quota).mockResolvedValue({
+    status: "unsupported",
+    balance: null,
+    tiers: [],
+  });
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApiProviderQuota
+        record={record}
+        card={{ remaining: true, toggle: vi.fn() }}
+      />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("article")).not.toBeInTheDocument(),
+  );
+  expect(routingUpstreamsApi.quota).toHaveBeenCalledExactlyOnceWith("relay", 4);
+  expect(
+    screen.queryByText("subscriptionProvider.quotaUnavailable"),
+  ).not.toBeInTheDocument();
 });
 it.each([
   { ...record, revision: 0 },

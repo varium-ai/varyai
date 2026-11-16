@@ -99,6 +99,7 @@ export function ProviderEditorDialog({
   onProbingChange,
   canSave = true,
   loading = false,
+  nameError,
 }: {
   open?: boolean;
   draft: RoutingUpstream;
@@ -133,6 +134,7 @@ export function ProviderEditorDialog({
   onProbingChange: (value: boolean) => void;
   canSave?: boolean;
   loading?: boolean;
+  nameError?: string;
 }) {
   const { t, i18n } = useTranslation();
   const id = useId();
@@ -526,7 +528,7 @@ export function ProviderEditorDialog({
           <form
             onInvalidCapture={() => onError("save", "invalid")}
             onSubmit={(event) => {
-              if (disabled) event.preventDefault();
+              if (disabled || nameError) event.preventDefault();
               else void onSave(event);
             }}
             className="pv-editor-form"
@@ -545,64 +547,52 @@ export function ProviderEditorDialog({
                   onBusyChange={setIconBusy}
                 />
               )}
-              {source && (!draft.presetId || !!draft.revision || another) && (
+              {(!draft.presetId ||
+                !!draft.revision ||
+                another ||
+                !!nameError) && (
                 <div className="pv-field">
                   <label htmlFor={`${id}-name`}>
                     {t("modelProviders.name")}
                   </label>
-                  <Input
-                    ref={name}
-                    id={`${id}-name`}
-                    required={!draft.presetId}
-                    maxLength={120}
-                    disabled={disabled}
-                    placeholder={
-                      another && preset
-                        ? t("providerEditor.anotherNamePlaceholder", {
-                            name: preset.name,
-                          })
-                        : (preset?.name ??
-                          t("providerEditor.customNamePlaceholder"))
-                    }
-                    value={
-                      preset && draft.name === preset.name ? "" : draft.name
-                    }
-                    onChange={(event) =>
-                      onDraftChange({
-                        ...draft,
-                        name: event.target.value || preset?.name || "",
-                      })
-                    }
-                  />
-                </div>
-              )}
-              {source && !!draft.revision && (
-                <div className="pv-field">
-                  <label htmlFor={`${id}-identity`}>ID</label>
                   <div className="pv-field-content">
                     <Input
-                      id={`${id}-identity`}
-                      placeholder={originalId}
-                      value={draft.id}
-                      disabled={disabled}
+                      ref={name}
+                      id={`${id}-name`}
+                      required={!draft.presetId}
                       maxLength={120}
-                      onChange={(event) =>
-                        onDraftChange({ ...draft, id: event.target.value })
+                      disabled={disabled}
+                      aria-invalid={!!nameError}
+                      aria-describedby={
+                        nameError ? `${id}-name-error` : undefined
                       }
-                      onBlur={() =>
+                      placeholder={
+                        another && preset
+                          ? t("providerEditor.anotherNamePlaceholder", {
+                              name: preset.name,
+                            })
+                          : (preset?.name ??
+                            t("providerEditor.customNamePlaceholder"))
+                      }
+                      value={
+                        preset && draft.name === preset.name ? "" : draft.name
+                      }
+                      onChange={(event) =>
                         onDraftChange({
                           ...draft,
-                          id: providerIdSlug(draft.id) || originalId,
+                          name: event.target.value || preset?.name || "",
                         })
                       }
                     />
-                    <p className="pv-hint">
-                      {t("providerEditor.idReference", {
-                        id: draft.id || originalId,
-                      })}
-                      {draft.id !== originalId &&
-                        ` · ${t("providerEditor.idMovesReferences", { id: originalId })}`}
-                    </p>
+                    {nameError && (
+                      <p
+                        id={`${id}-name-error`}
+                        className="pv-error"
+                        role="alert"
+                      >
+                        {nameError}
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -1019,7 +1009,7 @@ export function ProviderEditorDialog({
               <Button
                 type="submit"
                 className="mp-primary"
-                disabled={disabled || !canSave}
+                disabled={disabled || !canSave || !!nameError}
               >
                 {t(
                   loading
