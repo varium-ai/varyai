@@ -109,7 +109,18 @@ async fn source_suffix_reaches_every_agent_projection_and_existing_connections(
         let config = root.path().join(app).join("config");
         crate::services::agent_clients::with_test_config(&config, || -> Result<(), String> {
             let initial = build(app, &menu, "http://127.0.0.1:1", selected)?;
-            let previous = build(app, &legacy, "http://127.0.0.1:1", selected)?;
+            let mut prior_menu = legacy.clone();
+            if matches!(app, "workbuddy" | "workbuddy-ai") {
+                for entry in prior_menu.models.values_mut() {
+                    entry.label = format!("{} · legacy:{} · Relay", entry.label, entry.label);
+                }
+            }
+            let previous = build(app, &prior_menu, "http://127.0.0.1:1", selected)?;
+            if matches!(app, "workbuddy" | "workbuddy-ai") {
+                for file in &previous.files {
+                    file.write()?;
+                }
+            }
             let refreshed = build_with_token(
                 app,
                 &menu,
@@ -132,6 +143,37 @@ async fn source_suffix_reaches_every_agent_projection_and_existing_connections(
                         );
                     }
                 }
+                if matches!(app, "workbuddy" | "workbuddy-ai") {
+                    let document = &receipt.files.first().ok_or(FAILED)?.installed;
+                    let rows = document
+                        .as_array()
+                        .or_else(|| document["models"].as_array())
+                        .ok_or(FAILED)?;
+                    for model in &catalog {
+                        let row = rows
+                            .iter()
+                            .find(|row| row["name"] == model.name)
+                            .ok_or(FAILED)?;
+                        assert_eq!(
+                            row["id"], model.name,
+                            "{app} publishes a historical picker ID"
+                        );
+                        assert_eq!(
+                            model_wire(
+                                &receipt.model_map,
+                                receipt.visible_models.as_deref(),
+                                &model.id
+                            ),
+                            model.name,
+                            "{app} discovery must publish the current picker ID"
+                        );
+                    }
+                    assert_eq!(
+                        rows.len(),
+                        catalog.len(),
+                        "{app} exposes historical aliases as extra rows"
+                    );
+                }
             }
             for (wire, alias) in &previous.model_map {
                 assert_eq!(
@@ -139,6 +181,23 @@ async fn source_suffix_reaches_every_agent_projection_and_existing_connections(
                     Some(alias),
                     "{app} lost a historical request alias"
                 );
+            }
+            if matches!(app, "workbuddy" | "workbuddy-ai") {
+                for file in &refreshed.files {
+                    file.write()?;
+                }
+                let repeated = build_with_token(
+                    app,
+                    &menu,
+                    "http://127.0.0.1:1",
+                    selected,
+                    refreshed.token.clone(),
+                    &ModelVisibility::default(),
+                    Some(&refreshed),
+                )?;
+                assert_eq!(repeated.model_map, refreshed.model_map);
+                assert_eq!(repeated.visible_models, refreshed.visible_models);
+                assert_eq!(repeated.files[0].installed, refreshed.files[0].installed);
             }
             if app == "deepseek-harness" {
                 let file = refreshed

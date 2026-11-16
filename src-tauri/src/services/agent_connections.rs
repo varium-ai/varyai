@@ -1415,15 +1415,7 @@ impl Manager {
     }
 
     pub fn restart_codex_desktop(&self) -> Result<(), String> {
-        let applied = self.codex_applied_at_ms()?;
-        let expected = applied;
-        let config = DesktopFingerprint::capture(crate::codex_config::get_codex_config_path())?;
-        desktop::restart("codex", applied, || {
-            config.intact()
-                && self
-                    .codex_applied_at_ms()
-                    .is_ok_and(|current| current == expected)
-        })
+        desktop::restart("codex", None, || true)
     }
 
     fn doubaowork_freshness_path(&self) -> PathBuf {
@@ -1606,7 +1598,11 @@ fn build_with_token(
         }
         "workbuddy" | "workbuddy-ai" => {
             let path = workbuddy_connection_path(app)?.ok_or(FAILED)?;
-            let (named, _) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            // WorkBuddy can show request IDs alongside names. Publish current
+            // labels as IDs while retaining old aliases for existing chats.
+            let (named, _) =
+                projections::current_catalog(&catalog, selected, &mut receipt.model_map);
+            receipt.visible_models = Some(named.iter().map(|model| model.id.clone()).collect());
             let named_models = named
                 .iter()
                 .map(|model| (model.id.clone(), model))

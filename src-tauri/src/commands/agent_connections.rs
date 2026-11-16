@@ -63,6 +63,7 @@ fn with_codex_reload(
             Some(
                 agent_connections::ReloadState::StaleCatalog
                     | agent_connections::ReloadState::Failed
+                    | agent_connections::ReloadState::WaitingForIdle
             )
         );
     // The worker observes the desktop's actual app-server creation identity.
@@ -474,6 +475,12 @@ pub(crate) async fn authorize_agent_model_control(
         .map_err(|_| FAILED)?
 }
 
+async fn restart_confirmed_agent(
+    restart_desktop: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    restart_desktop.await
+}
+
 #[tauri::command]
 pub(crate) async fn restart_agent_connection(
     state: State<'_, AppState>,
@@ -497,12 +504,19 @@ pub(crate) async fn restart_agent_connection(
             .map_err(|_| FAILED)?;
     }
     if matches!(app.as_str(), "codex" | "workbuddy" | "workbuddy-ai") {
-        // Explicit restart does not depend on connection ownership or reload freshness.
-        return tokio::task::spawn_blocking(move || {
-            agent_connections::desktop::restart_manual(&app)
+        let manager = state.proxy_service.agent_connections.clone();
+        return restart_confirmed_agent(async move {
+            tokio::task::spawn_blocking(move || {
+                if app == "codex" {
+                    manager.restart_codex_desktop()
+                } else {
+                    agent_connections::desktop::restart_manual(&app)
+                }
+            })
+            .await
+            .map_err(|_| FAILED)?
         })
-        .await
-        .map_err(|_| FAILED)?;
+        .await;
     }
     let manager = state.proxy_service.agent_connections.clone();
     tokio::task::spawn_blocking(move || manager.restart_desktop(&app))

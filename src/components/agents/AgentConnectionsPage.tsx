@@ -654,7 +654,8 @@ export function AgentConnectionsPage({
       app === "codex" &&
       !state?.recoveryPending &&
       (state?.reloadState === "stale_catalog" ||
-        state?.reloadState === "failed");
+        state?.reloadState === "failed" ||
+        state?.reloadState === "waiting_for_idle");
     const canRestart =
       !!state &&
       (desktopRestart || codexReloadRestart || !!modelControl?.pending) &&
@@ -1640,11 +1641,15 @@ export function AgentConnectionsPage({
           app: restarting ? name(restarting) : "",
         })}
         description={t(
-          isMac()
-            ? "agentConnections.restartConfirmHintMac"
-            : isWindows()
-              ? "agentConnections.restartConfirmHintWindows"
-              : "agentConnections.restartConfirmHint",
+          restarting === "codex"
+            ? isWindows()
+              ? "agentConnections.codexRestartConfirmHintWindows"
+              : "agentConnections.codexRestartConfirmHint"
+            : isMac()
+              ? "agentConnections.restartConfirmHintMac"
+              : isWindows()
+                ? "agentConnections.restartConfirmHintWindows"
+                : "agentConnections.restartConfirmHint",
         )}
         footer={
           <>

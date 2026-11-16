@@ -14,6 +14,104 @@ pub(super) fn group() -> RoutingGroup {
     super::super::tests::fixture()
 }
 
+#[tokio::test]
+async fn codex_tool_search_catalog_is_published_only_for_supported_routes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::intent::{Menu, Session, Target};
+    use std::{collections::HashMap, time::Instant};
+
+    for (formats, supported) in [
+        (vec![Some("openai_chat")], true),
+        (vec![Some("anthropic")], true),
+        (vec![Some("gemini_native")], true),
+        (vec![None], true),
+        (vec![Some("openai_chat"), None], true),
+        (vec![Some("openai_responses")], false),
+        (vec![Some("openai_chat"), Some("openai_responses")], false),
+        (vec![Some("unknown")], false),
+        (vec![], false),
+    ] {
+        let (_dir, manager) = setup();
+        let mut group = group();
+        group.rules.clear();
+        let prototype = group.members[0].clone();
+        group.members.clear();
+        let mut targets = Vec::new();
+        for (index, format) in formats.iter().enumerate() {
+            let mut member = prototype.clone();
+            member.id = format!("member-{index}");
+            member.provider_id = format!("provider-{index}");
+            let upstream = format.map(|format| {
+                let mut provider = crate::provider::Provider::with_id(
+                    member.provider_id.clone(),
+                    "Synthetic upstream".into(),
+                    json!({}),
+                    None,
+                );
+                provider.meta = Some(crate::provider::ProviderMeta {
+                    api_format: Some(format.into()),
+                    ..Default::default()
+                });
+                provider
+            });
+            targets.push(Target {
+                provider_id: member.provider_id.clone(),
+                model: member.model_id.clone(),
+                fixed_effort: member.effort.clone(),
+                upstream,
+                effort: Default::default(),
+                url: "http://127.0.0.1:1/responses".parse()?,
+                headers: Default::default(),
+                official: format.is_none(),
+                credentials: None,
+                scheduling: Arc::default(),
+            });
+            group.members.push(member);
+        }
+        group.default_member_id = "member-0".into();
+        group.fallback_member_ids = group.members.iter().skip(1).map(|m| m.id.clone()).collect();
+        let alias = group.alias();
+        let session = Arc::new(Session {
+            group,
+            targets,
+            classifier: None,
+            client: reqwest::Client::new(),
+            created: Instant::now(),
+            bindings: Arc::default(),
+        });
+        let menu = Arc::new(Menu {
+            token: "synthetic-local-token".into(),
+            groups: HashMap::from([(alias, session.clone())]),
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            context_settings: Default::default(),
+        });
+        let projected = menu_catalog(&menu, "high")?;
+        assert_eq!(
+            projected["models"][0]["supports_search_tool"], supported,
+            "{formats:?}"
+        );
+        let temporary = super::super::execution::temporary_catalog(&session).await?;
+        let temporary: Value = serde_json::from_slice(&fs::read(temporary)?)?;
+        assert_eq!(temporary["models"][0]["supports_search_tool"], supported);
+        if !formats.is_empty() {
+            manager.activate_menu_with_native(menu, MENU_BASE, Some(NATIVE_ONE), false)?;
+            let (_, native_catalog) = manager.runtime.native.menu()?;
+            assert_eq!(
+                native_catalog["models"][0]["supports_search_tool"],
+                supported
+            );
+            let receipt = manager.load()?.ok_or("missing receipt")?;
+            let disk: Value = serde_json::from_slice(&fs::read(
+                receipt.catalogs.last().ok_or("missing catalog")?,
+            )?)?;
+            assert_eq!(disk, native_catalog);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn assert_restored_config(manager: &Manager, original: &str) {
     let text = fs::read_to_string(&manager.config).expect("restored configuration");
     let mut actual: toml::Value = text.parse().expect("restored TOML");

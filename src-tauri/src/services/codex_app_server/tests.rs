@@ -520,7 +520,7 @@ fn partial_replacements_receive_a_later_route_with_bounded_retries() {
 }
 
 #[test]
-fn manual_catalog_refresh_waits_for_idle_and_observes_replacement() {
+fn catalog_changes_wait_for_a_manual_restart_and_adopt_its_replacement() {
     let mut m = Monitor::default();
     let old = vec![server(10)];
     m.observe([1; 32], old.clone(), false, 0);
@@ -529,35 +529,15 @@ fn manual_catalog_refresh_waits_for_idle_and_observes_replacement() {
     m.observe_catalog(Some([11; 32]), None);
     assert_eq!(m.snapshot(), ReloadState::StaleCatalog);
     assert_eq!(m.observe([1; 32], old.clone(), false, 10), Action::None);
-    m.request_restart(11);
-    assert_eq!(m.snapshot(), ReloadState::WaitingForIdle);
     assert_eq!(m.observe([1; 32], old.clone(), true, 15), Action::None);
-    assert_eq!(
-        m.observe([1; 32], old.clone(), false, 16),
-        Action::RestartDesktop(old)
-    );
-    assert_eq!(m.snapshot(), ReloadState::Restarting);
+    assert_eq!(m.observe([1; 32], old, false, 16), Action::None);
+    assert_eq!(m.snapshot(), ReloadState::StaleCatalog);
     assert_eq!(
         m.observe([1; 32], vec![server(11)], false, 17),
-        Action::Recovered
+        Action::None
     );
     m.observe_catalog(Some([11; 32]), None);
     assert_eq!(m.snapshot(), ReloadState::Current);
-}
-
-#[test]
-fn manual_desktop_restart_rechecks_servers_and_propagates_launch_failure() {
-    let old = vec![server(10)];
-    for observed in [vec![], vec![server(11)], vec![server(10), server(11)]] {
-        assert_eq!(
-            restart_observed_desktop(&old, &observed, || panic!(
-                "must not restart a changed client"
-            )),
-            Err(())
-        );
-    }
-    assert_eq!(restart_observed_desktop(&old, &old, || Err(())), Err(()));
-    assert_eq!(restart_observed_desktop(&old, &old, || Ok(())), Ok(()));
 }
 
 #[test]

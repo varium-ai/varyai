@@ -233,7 +233,41 @@ fn current_background_server_clears_window_age_without_claiming_inference_succes
         assert_eq!(result.reload_state, Some(reload));
         assert_eq!(
             result.restart_required,
-            reload == agent_connections::ReloadState::StaleCatalog
+            matches!(
+                reload,
+                agent_connections::ReloadState::StaleCatalog
+                    | agent_connections::ReloadState::WaitingForIdle
+            )
         );
     }
+}
+
+#[tokio::test]
+async fn confirmed_agent_restart_propagates_native_result_without_connection_gates() {
+    for error in [
+        "agentConnections.restartBlocked",
+        "agentConnections.restartFailed",
+        "agentConnections.restartChanged",
+    ] {
+        let called = std::cell::Cell::new(false);
+        let result = restart_confirmed_agent(async {
+            called.set(true);
+            Err(error.into())
+        })
+        .await;
+        assert!(called.get());
+        assert_eq!(result, Err(error.into()));
+    }
+}
+
+#[tokio::test]
+async fn confirmed_agent_restart_stays_pending_until_native_relaunch_finishes() {
+    let (finish, completion) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let restart = restart_confirmed_agent(async {
+        completion.await.map_err(|_| "synthetic channel closed")?
+    });
+    tokio::pin!(restart);
+    assert!(futures::poll!(&mut restart).is_pending());
+    assert!(finish.send(Ok(())).is_ok());
+    assert_eq!(restart.await, Ok(()));
 }
