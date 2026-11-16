@@ -288,6 +288,18 @@ fn effective_model_sql(alias: &str) -> String {
     format!("COALESCE(NULLIF({alias}.pricing_model, ''), {alias}.model)")
 }
 
+/// Analytics-only publisher aliases; never rewrite stored or forwarded model IDs.
+fn usage_model_filter_aliases(model: &str) -> Option<[String; 2]> {
+    let lower = model.to_ascii_lowercase();
+    for (namespace, family) in [("deepseek-ai/", "deepseek-"), ("zai-org/", "glm-")] {
+        let bare = lower.strip_prefix(namespace).unwrap_or(&lower);
+        if bare.starts_with(family) && !bare.contains('/') {
+            return Some([bare.to_string(), format!("{namespace}{bare}")]);
+        }
+    }
+    None
+}
+
 /// Match provider display names and any observed request, response or billing ID.
 /// Callers filtering providers must include [`providers_join`] in the query.
 fn push_provider_model_filters(
@@ -307,6 +319,18 @@ fn push_provider_model_filters(
         params.push(Box::new(name.to_string()));
     }
     if let Some(m) = model {
+        if let Some(aliases) = usage_model_filter_aliases(m) {
+            conditions.push(format!(
+                "(LOWER({}) IN (?, ?) OR LOWER({log_alias}.model) IN (?, ?) OR LOWER({log_alias}.request_model) IN (?, ?))",
+                effective_model_sql(log_alias)
+            ));
+            for _ in 0..3 {
+                for alias in &aliases {
+                    params.push(Box::new(alias.clone()));
+                }
+            }
+            return;
+        }
         conditions.push(format!(
             "({} = ? OR {log_alias}.model = ? OR {log_alias}.request_model = ?)",
             effective_model_sql(log_alias)
@@ -3817,6 +3841,79 @@ mod tests {
         assert!(request_ids.contains(&"session-matches-error-proxy"));
         assert!(request_ids.contains(&"claude-session-cache-creation-mismatch"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn model_filters_combine_publisher_aliases_without_changing_billing_records(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            for (index, model) in [
+                "deepseek-v4.1-flash",
+                "deepseek-ai/DeepSeek-V4.1-Flash",
+                "zai-org/GLM-5.2-FP8",
+                "glm-5.2-fp8",
+                "deepseek-v4.1",
+                "custom/DeepSeek-V4.1-Flash",
+            ]
+            .iter()
+            .enumerate()
+            {
+                insert_usage_log(
+                    &conn,
+                    &format!("publisher-alias-{index}"),
+                    "pi",
+                    "supplier",
+                    model,
+                    "proxy",
+                    1000,
+                    10,
+                    5,
+                    0,
+                    0,
+                    200,
+                    "0.5",
+                )?;
+            }
+            conn.execute("INSERT INTO usage_daily_rollups (date,app_type,provider_id,model,request_model,pricing_model,request_count,success_count,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,total_cost_usd,avg_latency_ms) VALUES ('2020-01-01','pi','supplier','deepseek-ai/DeepSeek-V4.1-Flash','deepseek-ai/DeepSeek-V4.1-Flash','deepseek-ai/DeepSeek-V4.1-Flash',2,2,20,10,0,0,'1.0',100)", [])?;
+        }
+        for model in ["deepseek-v4.1-flash", "deepseek-ai/DeepSeek-V4.1-Flash"] {
+            let summary = db.get_usage_summary(None, None, Some("pi"), None, Some(model))?;
+            assert_eq!(summary.total_requests, 4);
+            assert_eq!(summary.total_cost.parse::<f64>().ok(), Some(2.0));
+            let logs = db.get_request_logs(
+                &LogFilters {
+                    model: Some(model.into()),
+                    ..Default::default()
+                },
+                0,
+                20,
+            )?;
+            assert_eq!(logs.total, 2);
+            assert!(logs
+                .data
+                .iter()
+                .any(|log| log.model == "deepseek-ai/DeepSeek-V4.1-Flash"));
+            let stats = db.get_model_stats(None, None, Some("pi"), None, Some(model))?;
+            assert_eq!(stats.len(), 2);
+            assert_eq!(stats.iter().map(|stat| stat.request_count).sum::<u64>(), 4);
+        }
+        for model in ["glm-5.2-fp8", "zai-org/GLM-5.2-FP8"] {
+            assert_eq!(
+                db.get_usage_summary(None, None, None, None, Some(model))?
+                    .total_requests,
+                2
+            );
+        }
+        for model in ["deepseek-v4.1", "custom/DeepSeek-V4.1-Flash"] {
+            assert_eq!(
+                db.get_usage_summary(None, None, None, None, Some(model))?
+                    .total_requests,
+                1
+            );
+        }
         Ok(())
     }
 

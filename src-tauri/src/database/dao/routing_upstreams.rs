@@ -383,7 +383,6 @@ impl Database {
                 UpstreamSource::Api {
                     api_key: old_key,
                     base_url: old_url,
-                    api_format: old_format,
                     auth_type: old_auth,
                     ..
                 },
@@ -395,9 +394,7 @@ impl Database {
                         t.primary_protocol.is_none()
                             && t.endpoints.get(api_format) == Some(base_url)
                     });
-                    if (!known_endpoint && (base_url != old_url || api_format != old_format))
-                        || auth_type != old_auth
-                    {
+                    if (!known_endpoint && base_url != old_url) || auth_type != old_auth {
                         return Err(INVALID.into());
                     }
                     *api_key = old_key.clone();

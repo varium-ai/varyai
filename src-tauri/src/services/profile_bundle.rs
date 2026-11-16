@@ -1,5 +1,7 @@
 mod files;
 mod library;
+#[cfg(test)]
+mod mode_tests;
 mod native;
 mod shared;
 use super::trae_bridge::selection as trae;
@@ -180,6 +182,7 @@ struct AppSnapshot {
     files: Vec<FileState>,
     codex: Option<crate::codex_config::CodexLiveStateSnapshot>,
     codex_menu: Option<std::sync::Arc<crate::proxy::intent::Menu>>,
+    codex_native: Option<crate::proxy::intent::native::Snapshot>,
     library: library::LibraryBefore,
     library_fingerprint: Value,
     trees: Vec<files::Tree>,
@@ -559,6 +562,18 @@ impl AppSnapshot {
             } else {
                 None
             },
+            codex_native: if app == AppType::Codex {
+                Some(
+                    state
+                        .proxy_service
+                        .intent_runtime
+                        .native
+                        .snapshot()
+                        .map_err(|_| error("readFailed"))?,
+                )
+            } else {
+                None
+            },
             library: library::LibraryBefore::capture(state, &app)?,
             library_fingerprint: library::fingerprint(state, &app)?,
             trees,
@@ -674,6 +689,19 @@ impl AppSnapshot {
                 .proxy_service
                 .intent_runtime
                 .restore_menu(self.codex_menu.clone());
+            if let Some(snapshot) = &self.codex_native {
+                failed |= state
+                    .proxy_service
+                    .intent_runtime
+                    .native
+                    .restore_snapshot(snapshot)
+                    .is_err();
+            }
+            if !failed && self.codex_menu.is_some() {
+                // Disconnect can return owned chats to their native provider.
+                // Reconcile them after restoring the preceding routed config.
+                failed |= state.proxy_service.intent_client.sync_threads().is_err();
+            }
         }
         if failed {
             Err(error("restoreFailed"))
@@ -1115,15 +1143,24 @@ impl ProfileBundleService {
                     .filter_map(|p| snapshot.providers.iter().find(|target| target.id == p.id))
                     .collect::<Vec<_>>()
             });
+            let shared_codex = if snapshot.app == AppType::Codex {
+                shared::codex_model(state).map_err(|e| agent_error(&snapshot.app, e))?
+            } else {
+                None
+            };
             changes.push(ProfileChange {
                 app: selection.app.as_str().into(),
                 client_sync_pending: snapshot.app == AppType::Trae
                     && state.db.get_bool_flag(trae::PENDING_KEY)?,
-                current_provider: enabled_now
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" · "),
+                current_provider: if shared_codex.is_some() {
+                    "Vary AI".into()
+                } else {
+                    enabled_now
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                },
                 target_provider: enabled_targets
                     .as_ref()
                     .map(|ps| {
@@ -1159,7 +1196,9 @@ impl ProfileBundleService {
                         .and_then(|library| library.preview(state, &snapshot.app))
                         .map_err(|e| agent_error(&snapshot.app, e))?,
                 ),
-                current_models: {
+                current_models: if let Some(model) = shared_codex {
+                    vec![model]
+                } else {
                     let mut values = Vec::new();
                     for provider in enabled_now {
                         values.extend(native::model_labels(
@@ -1326,6 +1365,20 @@ impl ProfileBundleService {
                         .set_current_profile_id(selection.app.as_str(), Some(id))?;
                     return Ok(());
                 }
+                // The reviewed native selection explicitly leaves Codex routing. Keep
+                // ordinary provider guards intact and use the ownership-checked restore.
+                let codex_was_routed = snapshot.app == AppType::Codex
+                    && state.proxy_service.intent_client.active_or_pending();
+                if codex_was_routed {
+                    futures::executor::block_on(
+                        state.proxy_service.intent_runtime.flush_continuations(),
+                    );
+                    state
+                        .proxy_service
+                        .intent_client
+                        .disconnect()
+                        .map_err(|_| error("operationFailed"))?;
+                }
                 ProviderService::save_profile_models_with_lock_held(state, &snapshot.app, target)?;
                 if let Some(providers) = &selection.providers {
                     for saved in providers {
@@ -1384,6 +1437,13 @@ impl ProfileBundleService {
                 if let Some(library) = &selection.library {
                     failure_reason = "profiles.bundle.resourceApplyFailed";
                     library.apply(state, &snapshot.app)?;
+                }
+                if codex_was_routed {
+                    state
+                        .proxy_service
+                        .agent_connections
+                        .set_codex_intent(None, false)
+                        .map_err(|_| error("operationFailed"))?;
                 }
                 state
                     .db

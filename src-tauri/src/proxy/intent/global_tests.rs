@@ -2717,3 +2717,193 @@ async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
     task.abort();
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::tool_observation::channel::test_channel;
+    use crate::services::tool_risk::{
+        response_parser::ResponseProcessor,
+        runtime::{get_tool_risk_runtime, publish_tool_risk_runtime, ToolRiskRuntime},
+        worker::project_event,
+    };
+    struct RestoreRuntimes {
+        tool: ToolRiskRuntime,
+        security: crate::proxy::security::SecurityRuntimeConfig,
+    }
+    impl Drop for RestoreRuntimes {
+        fn drop(&mut self) {
+            publish_tool_risk_runtime(self.tool.clone());
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.security.clone());
+        }
+    }
+    let _restore = RestoreRuntimes {
+        tool: (*get_tool_risk_runtime()).clone(),
+        security: (*crate::proxy::security::get_security_runtime()).clone(),
+    };
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    publish_tool_risk_runtime(ToolRiskRuntime::build(true, 7, Vec::new(), &HashMap::new()));
+    let (_, mut receiver) = test_channel().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/chat/completions", post(|Json(body): Json<Value>| async move {
+            let name = body["tools"][0]["function"]["name"].as_str().unwrap_or_default();
+            let field = if name == "exec_command" { "cmd" } else { "command" };
+            let arguments = json!({field:body["messages"][0]["content"]}).to_string();
+            Json(json!({"id":"synthetic-response","object":"chat.completion","model":"exact-model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":name,"arguments":arguments}}]},"finish_reason":"tool_calls"}]}))
+        }))).await
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu(&format!("http://{address}/v1/chat/completions"));
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing fixture")?,
+    );
+    session.group.levels.clear();
+    let mut provider = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}/v1"),"ANTHROPIC_API_KEY":"synthetic-key"}}),
+        None,
+    );
+    provider.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(provider);
+    runtime.set_menu(Arc::new(published.clone()))?;
+    runtime.set_global(published, 0)?;
+    runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "pi".into(),
+            token: "synthetic-pi".into(),
+            model: group().alias(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for (app, name, field, expected_session) in [
+        ("pi", "bash", "command", "synthetic-client-session"),
+        (
+            "codex",
+            "exec_command",
+            "cmd",
+            "codex_synthetic-client-session",
+        ),
+        (
+            "codex",
+            "shell_command",
+            "command",
+            "codex_synthetic-client-session",
+        ),
+    ] {
+        for (command, verdict, client_session) in [
+            (
+                "chmod u+s /synthetic/fixture",
+                "risky",
+                Some("synthetic-client-session"),
+            ),
+            (
+                "chmod 4755 /synthetic/fixture",
+                "risky",
+                Some("synthetic-client-session"),
+            ),
+            (
+                "chmod 777 /synthetic/fixture",
+                "uncertain",
+                Some("synthetic-client-session"),
+            ),
+            ("chmod 4755 /synthetic/fixture", "risky", None),
+        ] {
+            let parameters =
+                json!({"type":"object","properties":{field:{"type":"string"}},"required":[field]});
+            let (endpoint, token, mut request) = if app == "pi" {
+                (
+                    "/connections/pi/v1/chat/completions",
+                    "synthetic-pi",
+                    json!({
+                        "model":group().alias(),"metadata":{"session_id":client_session},"messages":[{"role":"user","content":command}],
+                        "tools":[{"type":"function","function":{"name":name,"parameters":parameters}}]
+                    }),
+                )
+            } else {
+                (
+                    "/intent/v1/responses",
+                    "synthetic-local-token",
+                    json!({
+                        "model":group().alias(),"metadata":{"session_id":client_session},"input":[{"role":"user","content":command}],
+                        "tools":[{"type":"function","name":name,"parameters":parameters}]
+                    }),
+                )
+            };
+            if client_session.is_none() {
+                request
+                    .as_object_mut()
+                    .ok_or("invalid synthetic request")?
+                    .remove("metadata");
+            }
+            let response = client
+                .post(format!("http://127.0.0.1:{}{endpoint}", info.port))
+                .bearer_auth(token)
+                .json(&request)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{app}: missing successful synthetic reply"
+            );
+            let reply: Value = serde_json::from_slice(&body)?;
+            assert!(if app == "pi" {
+                reply["choices"][0]["message"]["tool_calls"].is_array()
+            } else {
+                reply["output"].is_array()
+            });
+            let piece = tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+                .await?
+                .ok_or("missing synthetic observation")?;
+            let mut processor = ResponseProcessor::default();
+            let mut observations = processor.ingest(&piece);
+            while let Ok(Some(piece)) =
+                tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await
+            {
+                observations.extend(processor.ingest(&piece));
+            }
+            let event = observations
+                .iter()
+                .filter_map(project_event)
+                .find(|event| event.verdict.as_deref() == Some(verdict))
+                .ok_or("Missing applicable shell risk event")?;
+            assert_eq!(event.client_category.as_deref(), Some(app));
+            assert_eq!(event.verdict.as_deref(), Some(verdict), "{app}: {name}");
+            assert_eq!(
+                event.session_id.as_deref(),
+                client_session.map(|_| expected_session)
+            );
+        }
+    }
+    server.stop().await?;
+    upstream.abort();
+    Ok(())
+}

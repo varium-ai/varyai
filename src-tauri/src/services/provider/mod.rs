@@ -329,6 +329,63 @@ mod tests {
         })
     }
 
+    #[test]
+    #[serial]
+    fn native_codex_switch_records_desktop_freshness_after_success() {
+        with_test_home(|state, _| {
+            use sha2::{Digest, Sha256};
+            crate::settings::reload_settings().expect("reload synthetic settings");
+            let freshness = state
+                .proxy_service
+                .agent_connections
+                .profile_paths("codex")
+                .expect("read snapshot paths")
+                .into_iter()
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name == "codex-desktop-freshness.json")
+                })
+                .expect("freshness path");
+            assert!(!freshness.exists());
+            for (id, endpoint) in [
+                ("native-a", "https://a.example.test/v1"),
+                ("native-b", "https://b.example.test/v1"),
+            ] {
+                state
+                    .db
+                    .save_provider(
+                        "codex",
+                        &Provider::with_id(
+                            id.into(),
+                            id.into(),
+                            codex_settings(endpoint, "synthetic-key"),
+                            None,
+                        ),
+                    )
+                    .expect("save synthetic supplier");
+                ProviderService::switch(state, AppType::Codex, id).expect("switch native supplier");
+                let bytes =
+                    std::fs::read(&freshness).expect("successful switch records desktop freshness");
+                let document: Value = serde_json::from_slice(&bytes).expect("freshness JSON");
+                let config = crate::codex_config::get_codex_config_path();
+                let digest = format!(
+                    "{:x}",
+                    Sha256::digest(std::fs::read(&config).expect("native config"))
+                );
+                assert_eq!(document["files"][0]["digest"], digest);
+                assert_eq!(document["app"], "codex");
+                assert!(document["appliedAtMs"]
+                    .as_i64()
+                    .is_some_and(|time| time > 0));
+                assert!(ProviderService::switch(state, AppType::Codex, "missing").is_err());
+                assert_eq!(
+                    std::fs::read(&freshness).expect("unchanged freshness"),
+                    bytes
+                );
+            }
+        });
+    }
+
     fn usage_script_with_credentials(
         api_key: Option<&str>,
         base_url: Option<&str>,
@@ -6066,6 +6123,16 @@ impl ProviderService {
         // （MCP 投影可自愈：下次切换 / 任一 MCP 启停都会重新投影）。
         if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
             log::warn!("切换供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}");
+        }
+
+        if app_type == AppType::Codex
+            && state
+                .proxy_service
+                .agent_connections
+                .record_codex_desktop_application()
+                .is_err()
+        {
+            log::warn!("Could not record Codex desktop freshness after the provider switch");
         }
 
         Ok(result)

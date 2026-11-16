@@ -267,6 +267,7 @@ impl ResponseProcessor {
 }
 fn qualify(mut observations: Vec<ToolObservation>, state: &ResponseState) -> Vec<ToolObservation> {
     for obs in &mut observations {
+        obs.correlation.session_id = state.metadata.session_id.clone();
         if matches!(
             obs.quality.tool_identity,
             ToolIdentityQuality::Source | ToolIdentityQuality::ValidatedMapping
@@ -309,6 +310,7 @@ mod tests {
     use bytes::Bytes;
     fn metadata(transport: Transport, quality: OutputQuality) -> ResponseMetadata {
         ResponseMetadata {
+            session_id: None,
             protocol: "anthropic_messages",
             client: "claude",
             transport,
@@ -321,6 +323,24 @@ mod tests {
         }
     }
     static DIAGNOSTIC_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    #[tokio::test]
+    async fn request_owned_session_reaches_json_observations_without_inventing_missing_ids() {
+        for session in [Some("synthetic-session-a"), None, Some("invalid\nsession")] {
+            let (sender, mut receiver) = create_channel(1);
+            let metadata = metadata(Transport::Json, OutputQuality::Native)
+                .with_session(session.map(str::to_owned));
+            let mut tap = sender.start(metadata, 1).unwrap();
+            tap.push(&Bytes::from_static(br#"{"content":[{"type":"tool_use","id":"synthetic-call","name":"Bash","input":{"command":"chmod 777 /synthetic/fixture"}}]}"#));
+            let mut processor = ResponseProcessor::default();
+            let observations = processor.ingest(&receiver.recv().await.unwrap());
+            assert_eq!(observations.len(), 1);
+            assert_eq!(
+                observations[0].correlation.session_id.as_deref(),
+                session.filter(|id| !id.contains('\n'))
+            );
+        }
+    }
     struct DiagnosticLogger;
     impl log::Log for DiagnosticLogger {
         fn enabled(&self, _: &log::Metadata<'_>) -> bool {
@@ -350,6 +370,7 @@ mod tests {
         for fault in [false, true] {
             let (tx, mut rx) = create_channel(4);
             let metadata = ResponseMetadata {
+                session_id: None,
                 protocol: "openai_chat",
                 client: "codex",
                 transport: Transport::Sse,
@@ -477,6 +498,7 @@ mod tests {
         ] {
             let (tx, mut rx) = create_channel(8);
             let metadata = ResponseMetadata {
+                session_id: None,
                 protocol: "openai_chat",
                 client: "codex",
                 transport: Transport::Sse,

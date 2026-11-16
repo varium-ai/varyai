@@ -268,12 +268,22 @@ export function useRequestLogs({
     statusCode: filters.statusCode,
   };
 
+  const queryKey = usageKeys.logs(key, page, pageSize);
   return useQuery({
-    queryKey: usageKeys.logs(key, page, pageSize),
+    queryKey,
     queryFn: () => {
       const effectiveFilters = { ...filters, ...resolveUsageRange(range) };
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize);
     },
+    // Preserve table height during pagination, but never display a different filter's rows.
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey.length === queryKey.length &&
+      previousQuery.queryKey.every(
+        (value, index) =>
+          index === queryKey.length - 2 || value === queryKey[index],
+      )
+        ? previousData
+        : undefined,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });

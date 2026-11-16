@@ -1,9 +1,28 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { RequestLogTable } from "@/components/usage/RequestLogTable";
 import type { UsageRangeSelection } from "@/types/usage";
 
 const useRequestLogsMock = vi.hoisted(() => vi.fn());
+const scrollIntoViewMock = vi.fn();
+
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoViewMock,
+  });
+});
+afterAll(() => {
+  Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+});
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -57,6 +76,7 @@ vi.mock("@/components/ui/table", () => ({
 
 describe("RequestLogTable", () => {
   beforeEach(() => {
+    scrollIntoViewMock.mockClear();
     useRequestLogsMock.mockReset();
     useRequestLogsMock.mockImplementation(
       ({ page = 0, pageSize = 20 }: { page?: number; pageSize?: number }) => ({
@@ -68,6 +88,26 @@ describe("RequestLogTable", () => {
         },
         isLoading: false,
       }),
+    );
+  });
+
+  it("anchors the shorter last page in view instead of retaining the old bottom scroll position", () => {
+    useRequestLogsMock.mockImplementation(({ page, pageSize }) => ({
+      data: { data: [], total: 48, page, pageSize },
+      isLoading: false,
+    }));
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        refreshIntervalMs={0}
+      />,
+    );
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "3" }));
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ block: "start" });
+    expect(useRequestLogsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2 }),
     );
   });
 

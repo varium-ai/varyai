@@ -67,7 +67,8 @@ pub(super) fn recover_owned_journals(path: &Path, initializing: bool) -> Result<
         let application = i32::from_be_bytes(header[68..72].try_into().map_err(|_| invalid())?);
         if &header[..16] != b"SQLite format 3\0"
             || !(application == APPLICATION_ID
-                && (version == supported || *file == extension.as_path() && version == 6)
+                && (version == supported
+                    || *file == extension.as_path() && matches!(version, 6 | 7))
                 || initializing && application == 0 && (0..supported).contains(&version))
         {
             return Err(invalid());

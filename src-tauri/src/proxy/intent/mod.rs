@@ -1615,6 +1615,8 @@ async fn execute(
     let inspection_app = consumer_app
         .and_then(|app| app.parse::<crate::app_config::AppType>().ok())
         .unwrap_or_else(|| wire_app.clone());
+    let tool_session_id =
+        super::security::audit_session_id(&inspection_app, &parts.headers, &original);
     let dlp_request: Option<Arc<super::security::http_restoration::DlpHttpRequest>> = if external {
         None
     } else {
@@ -2298,6 +2300,9 @@ async fn execute(
                         actor: agent,
                     });
                 }
+                observation_extensions.insert(super::tool_observation::mount::ClientToolSession(
+                    tool_session_id.clone(),
+                ));
                 if !external {
                     observation_extensions.insert(
                         super::tool_observation::mount::ClientToolObservation(
@@ -2634,21 +2639,16 @@ async fn execute(
                 shadow: scoped.shadow.clone(),
                 provider_id: target.provider_id.clone(),
                 session_id: conversation.clone(),
-                observation: Some(super::tool_observation::mount::metadata(
-                    super::tool_observation::parsers::PROTOCOL_OPENAI_RESPONSES,
-                    agent,
-                    super::tool_observation::channel::Transport::Sse,
-                    super::tool_observation::channel::OutputQuality::Native,
-                    super::tool_observation::mount::collect_tool_schemas(
-                        &body,
-                        match protocol {
-                            Protocol::Chat => "openai",
-                            Protocol::Anthropic => "claude",
-                            Protocol::Gemini => "gemini",
-                            Protocol::Responses => "codex",
-                        },
-                    ),
-                )),
+                observation: Some(
+                    super::tool_observation::mount::metadata(
+                        super::tool_observation::parsers::PROTOCOL_OPENAI_RESPONSES,
+                        agent,
+                        super::tool_observation::channel::Transport::Sse,
+                        super::tool_observation::channel::OutputQuality::Native,
+                        super::tool_observation::mount::collect_tool_schemas(&body, agent),
+                    )
+                    .with_session(tool_session_id.clone()),
+                ),
                 reply_observer: Some({
                     let history = scoped.official.clone();
                     Arc::new(move |reply| history.record(reply, index))
@@ -2827,15 +2827,9 @@ async fn execute(
             } else {
                 super::tool_observation::channel::OutputQuality::ConvertedUnknown
             },
-            super::tool_observation::mount::collect_tool_schemas(
-                &body,
-                if protocol == Protocol::Chat {
-                    "openai"
-                } else {
-                    wire_app.as_str()
-                },
-            ),
-        );
+            super::tool_observation::mount::collect_tool_schemas(&body, agent),
+        )
+        .with_session(tool_session_id.clone());
         let account_scheduling = target.scheduling.clone();
         let stream = async_stream::stream! {
             let mut content_timed = false;

@@ -73,12 +73,17 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
     }
 
     Some(ToolRiskEventInput {
+        session_id: crate::proxy::tool_observation::types::normalized_session_id(
+            obs.correlation.session_id.as_deref(),
+        ),
         timestamp: now_millis(),
         source: obs.source.as_str().to_string(),
         stage: obs.stage.as_str().to_string(),
         client_category: obs.tool.client.as_deref().and_then(|client| match client {
             "claude" | "claude_code" => Some("claude".into()),
-            "claude-desktop" | "codex" | "gemini" | "openai" | "grokbuild" => Some(client.into()),
+            "claude-desktop" | "codex" | "gemini" | "openai" | "grokbuild" | "pi" => {
+                Some(client.into())
+            }
             _ => None,
         }),
         operation_category: decision
@@ -364,6 +369,7 @@ mod tests {
         let mut tap = sender
             .start(
                 ResponseMetadata {
+                    session_id: None,
                     protocol: "openai_chat",
                     client: "codex",
                     transport: Transport::Sse,
@@ -756,6 +762,31 @@ mod tests {
 
     #[test]
     #[serial]
+    fn client_session_and_pi_identity_reach_tool_event_projection() {
+        enable_runtime();
+        for client in ["claude", "pi"] {
+            let mut observation = obs(
+                "Bash",
+                serde_json::json!({"command":"chmod 777 /synthetic/fixture"}),
+            );
+            observation.correlation.session_id = Some("synthetic-session-a".into());
+            if client == "pi" {
+                observation.tool.client = Some("pi".into());
+                observation.tool.name = "bash".into();
+                observation.tool.definition_ref =
+                    Some(super::super::adapters::PI_TOOLS_SCHEMA.into());
+            }
+            let event = project_event(&observation).expect("synthetic shell event");
+            assert_eq!(event.client_category.as_deref(), Some(client));
+            assert_eq!(
+                serde_json::to_value(event).unwrap()["sessionId"],
+                "synthetic-session-a"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
     fn disabled_runtime_projects_nothing() {
         set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
         let o = obs("Bash", serde_json::json!({"command": "rm -rf /"}));
@@ -933,6 +964,7 @@ mod tests {
             });
             let (tx, rx) = create_channel(32);
             let metadata = ResponseMetadata {
+                session_id: None,
                 protocol: "anthropic_messages",
                 client: "claude",
                 transport: Transport::Sse,

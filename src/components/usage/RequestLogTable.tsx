@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -60,6 +60,7 @@ export function RequestLogTable({
   const [statusCode, setStatusCode] = useState<number | undefined>(undefined);
   const [page, setPage] = useState(0);
   const [pageInput, setPageInput] = useState("");
+  const tableRef = useRef<HTMLDivElement>(null);
   const pageSize = 20;
 
   const effectiveFilters: LogFilters = {
@@ -72,7 +73,11 @@ export function RequestLogTable({
     statusCode,
   };
 
-  const { data: result, isLoading } = useRequestLogs({
+  const {
+    data: result,
+    isLoading,
+    isFetching,
+  } = useRequestLogs({
     filters: effectiveFilters,
     range,
     page,
@@ -97,12 +102,19 @@ export function RequestLogTable({
     range.preset,
   ]);
 
+  const changePage = (nextPage: number) => {
+    if (nextPage === page) return;
+    // Anchor before a shorter page reduces the scroll container's height.
+    tableRef.current?.scrollIntoView({ block: "start" });
+    setPage(nextPage);
+  };
+
   const handleGoToPage = () => {
     const trimmed = pageInput.trim();
     if (!/^\d+$/.test(trimmed)) return;
     const parsed = Number(trimmed);
     if (parsed < 1 || parsed > totalPages) return;
-    setPage(parsed - 1);
+    changePage(parsed - 1);
     setPageInput("");
   };
 
@@ -110,7 +122,7 @@ export function RequestLogTable({
   const locale = getLocaleFromLanguage(language);
 
   return (
-    <div className="space-y-4">
+    <div ref={tableRef} className="space-y-4" aria-busy={isFetching}>
       <div className="rounded-lg border bg-card/50 p-2 backdrop-blur-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           {/* Status code */}
@@ -339,7 +351,7 @@ export function RequestLogTable({
                 size="sm"
                 variant="outline"
                 disabled={page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                onClick={() => changePage(Math.max(0, page - 1))}
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
@@ -377,7 +389,7 @@ export function RequestLogTable({
                       variant={p === page ? "default" : "outline"}
                       size="sm"
                       className="h-8 w-8 p-0"
-                      onClick={() => setPage(p)}
+                      onClick={() => changePage(p)}
                     >
                       {p + 1}
                     </Button>
@@ -388,7 +400,7 @@ export function RequestLogTable({
                 size="sm"
                 variant="outline"
                 disabled={page >= totalPages - 1}
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                onClick={() => changePage(Math.min(totalPages - 1, page + 1))}
               >
                 <ChevronRight className="h-4 w-4" />
               </Button>

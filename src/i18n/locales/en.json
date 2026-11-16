@@ -6025,6 +6025,8 @@
     "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export."
   },
   "agentRewards": {
+    "currentWindow": "Current window",
+    "qoderCalendarHint": "Dates identify daily reward windows starting at 10:00 (UTC+8). Only service-confirmed windows saved for this account are marked; other dates are unknown, not missed check-ins.",
     "noActivity": "No active campaign",
     "nativeAccountManagement": "Only the current official client account is available here. Add or switch accounts in the official client, then refresh. Adding separate accounts in VaryAI is not supported yet.",
     "readNative": "Read client login",
@@ -6115,6 +6117,10 @@
     "finishFailed": "Could not save setup completion. Please retry; your saved connections will be kept."
   },
   "dailyCheckin": {
+    "campaignTotal": "Total check-ins",
+    "calendar": "Last 7 days",
+    "calendarHint": "Based on official check-in dates. Today is on the right; dates use the service’s UTC+8 day boundary.",
+    "today": "Today",
     "title": "Check-in rewards",
     "streak": "Consecutive check-ins",
     "days": "{{count}} days",

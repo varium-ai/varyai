@@ -134,5 +134,10 @@ it("shows an unavailable template's add action with its unmet requirement", asyn
     name: "routingPage.addTemplate",
   });
   expect(actions.length).toBeGreaterThan(0);
-  for (const action of actions) expect(action).toBeDisabled();
+  for (const action of actions) {
+    expect(action).toBeDisabled();
+    expect(action).toHaveAccessibleDescription(
+      "routingPage.templateNeed_provider",
+    );
+  }
 });

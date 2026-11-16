@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   CheckinAccountTools,
   CheckinNotice,
-  CheckinProgress,
+  WorkBuddyCheckinProgress,
 } from "./CheckinProgress";
 import "./daily-checkin.css";
 
@@ -285,7 +285,11 @@ export function WorkBuddyCheckinPanel({
             {t("common.loading")}
           </p>
         )}
-        <CheckinProgress streak={data?.streak} />
+        <WorkBuddyCheckinProgress
+          totalDays={data?.streak}
+          day={data?.day}
+          checkinDates={data?.checkinDates}
+        />
         <div className="mp-checkin-auto">
           <div>
             <label htmlFor={toggleId}>{t("workbuddy.checkin.autoLabel")}</label>

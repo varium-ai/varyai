@@ -238,8 +238,18 @@ impl Database {
             {
                 continue;
             }
+            let actual = Self::column_signature(conn, table)?;
+            let expected = Self::column_signature(&template, table)?;
+            let legacy_tool_events = version < 8
+                && table == "tool_risk_events"
+                && actual
+                    == expected
+                        .iter()
+                        .filter(|column| column.0 != "session_id")
+                        .cloned()
+                        .collect::<Vec<_>>();
             if !EXTENSION_TABLES.contains(&table.as_str())
-                || Self::column_signature(conn, table)? != Self::column_signature(&template, table)?
+                || actual != expected && !legacy_tool_events
             {
                 return Err(AppError::Database(
                     "未知的 Vary 扩展数据库结构，已保留原库并停止自动迁移。".into(),
@@ -380,6 +390,16 @@ impl Database {
         conn: &Connection,
         template: &Connection,
     ) -> Result<(), AppError> {
+        let has_events: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM vary.sqlite_master WHERE type='table' AND name='tool_risk_events')", [], |row| row.get(0))?;
+        if has_events {
+            let mut statement = conn.prepare("PRAGMA vary.table_info(tool_risk_events)")?;
+            let names = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            if !names.iter().any(|name| name == "session_id") {
+                conn.execute_batch("ALTER TABLE vary.tool_risk_events ADD COLUMN session_id TEXT")?;
+            }
+        }
         let mut stmt = template.prepare("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type='table' DESC")?;
         let rows = stmt.query_map([], |r| {
             Ok((

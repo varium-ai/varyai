@@ -1023,6 +1023,75 @@ describe("Agent connections", () => {
     },
   );
 
+  it.each([false, true])(
+    "follows the selected Doubao account in the reward summary (compact=%s)",
+    async (compact) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        doubaowork: true,
+      });
+      vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+        connected: true,
+        autoConfigured: true,
+        day: "2026-11-16",
+        outcome: "claimed",
+        accounts: [
+          {
+            id: "first",
+            label: "First account",
+            current: true,
+            autoEnabled: true,
+            outcome: "claimed",
+            credit: 400,
+            checkedAt: null,
+            streak: 1,
+            totalDays: 4,
+          },
+          {
+            id: "second",
+            label: "Second account",
+            current: false,
+            autoEnabled: false,
+            outcome: "not_checked",
+            credit: null,
+            checkedAt: null,
+            streak: null,
+            totalDays: null,
+          },
+        ],
+      });
+      mount(compact);
+      const row = await screen.findByRole("article", {
+        name: "apps.doubaowork",
+      });
+      if (compact)
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: "agentConnections.details apps.doubaowork",
+          }),
+        );
+      const trigger = await within(row).findByRole("button", {
+        name: "agentRewards.autoLabel apps.doubaowork",
+      });
+      expect(trigger).toHaveTextContent("dailyCheckin.todayReward");
+      fireEvent.click(trigger);
+      const select = within(row).getByRole("combobox", {
+        name: "doubaowork.checkin.account",
+      });
+      fireEvent.change(select, { target: { value: "second" } });
+      expect(trigger).toHaveAttribute("data-complete", "false");
+      expect(trigger).toHaveTextContent("agentRewards.manualLabel");
+      expect(trigger).not.toHaveTextContent("dailyCheckin.todayReward");
+      fireEvent.click(trigger);
+      fireEvent.click(trigger);
+      expect(select).toHaveValue("second");
+      fireEvent.change(select, { target: { value: "first" } });
+      expect(trigger).toHaveAttribute("data-complete", "true");
+      expect(trigger).toHaveTextContent("dailyCheckin.todayReward");
+      expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+      expect(doubaoCheckinApi.setAutoEnabled).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(
     (["workbuddy", "doubaowork"] as const).flatMap((app) =>
       [false, true].map((allComplete) => ({ app, allComplete })),
@@ -1090,9 +1159,15 @@ describe("Agent connections", () => {
         name: `agentRewards.autoLabel apps.${app}`,
       });
       expect(trigger).toBeEnabled();
-      expect(trigger).toHaveAttribute("data-complete", String(allComplete));
+      const selectedComplete = app === "doubaowork" || allComplete;
+      expect(trigger).toHaveAttribute(
+        "data-complete",
+        String(selectedComplete),
+      );
       expect(trigger).toHaveTextContent(
-        allComplete ? "dailyCheckin.todayChecked" : "agentRewards.autoLabel",
+        selectedComplete
+          ? "dailyCheckin.todayChecked"
+          : "agentRewards.autoLabel",
       );
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
@@ -1721,6 +1796,54 @@ describe("Agent connections", () => {
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps restart failure feedback visible during a single confirmed retry and prevents duplicate calls", async () => {
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "codex",
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        model: "vary-auto/shared",
+        restartRequired: true,
+        desktopState: "restart_required",
+      },
+    ]);
+    let completeRestart!: () => void;
+    vi.mocked(agentConnectionsApi.restart)
+      .mockRejectedValueOnce("agentConnections.restartChanged")
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            completeRestart = resolve;
+          }),
+      );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", {
+      name: "agentConnections.restart",
+    });
+    fireEvent.click(confirm);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "agentConnections.restartChanged",
+    );
+    expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(1);
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(2);
+    expect(confirm).toBeDisabled();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "agentConnections.restartChanged",
+    );
+    await act(async () => completeRestart());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
 
   it.each(["stale_catalog", "failed"] as const)(
     "offers a confirmed Codex reload when the background service is %s",

@@ -988,8 +988,9 @@ mod tests {
             .map_err(|_| "fixture JSON")?;
             assert_eq!(
                 config["providers"]["varyai"]["models"][0]["displayName"],
-                model.name
+                format!("{} · {}", model.name, model.group)
             );
+            assert_eq!(config["providers"]["varyai"]["model"], model.name);
             manager.disconnect("qoder")
         })?;
         let target = &menu

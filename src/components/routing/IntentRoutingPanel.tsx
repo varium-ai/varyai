@@ -1731,6 +1731,7 @@ export function IntentRoutingPanel({
                 <button
                   type="button"
                   className="text primary"
+                  title={template.need ? templateNeed(template) : undefined}
                   disabled={
                     pending ||
                     !!deleting ||

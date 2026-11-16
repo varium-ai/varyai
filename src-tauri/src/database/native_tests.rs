@@ -243,45 +243,50 @@ fn native_storage_recovers_an_interrupted_owned_transaction() {
         .unwrap();
         std::process::exit(0);
     }
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("varyai.db");
-    let db = Database::init_native_at(&path).unwrap();
-    db.set_setting("synthetic-recovery", "before").unwrap();
-    db.extension_connection()
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO security_settings(key,value) VALUES ('synthetic-recovery','before')",
-            [],
-        )
-        .unwrap();
-    drop(db);
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "database::native_tests::native_storage_recovers_an_interrupted_owned_transaction",
-        ])
-        .env("VARYAI_NATIVE_CRASH_FIXTURE", dir.path())
-        .output()
-        .unwrap();
-    assert!(status.status.success());
-    assert!(dir.path().join("varyai.db-journal").exists());
-    let db = Database::init_native_at(&path).unwrap();
-    assert_eq!(
-        db.get_setting("synthetic-recovery").unwrap().as_deref(),
-        Some("before")
-    );
-    let value: String = db
-        .extension_connection()
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT value FROM security_settings WHERE key='synthetic-recovery'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(value, "before");
+    for extension_version in [7, super::NATIVE_EXTENSION_SCHEMA_VERSION] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("varyai.db");
+        let db = Database::init_native_at(&path).unwrap();
+        db.set_setting("synthetic-recovery", "before").unwrap();
+        db.extension_connection()
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO security_settings(key,value) VALUES ('synthetic-recovery','before')",
+                [],
+            )
+            .unwrap();
+        drop(db);
+        let extension = Connection::open(dir.path().join("varyai-ext.db")).unwrap();
+        Database::set_user_version(&extension, extension_version).unwrap();
+        drop(extension);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "database::native_tests::native_storage_recovers_an_interrupted_owned_transaction",
+            ])
+            .env("VARYAI_NATIVE_CRASH_FIXTURE", dir.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        assert!(dir.path().join("varyai.db-journal").exists());
+        let db = Database::init_native_at(&path).unwrap();
+        assert_eq!(
+            db.get_setting("synthetic-recovery").unwrap().as_deref(),
+            Some("before")
+        );
+        let value: String = db
+            .extension_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM security_settings WHERE key='synthetic-recovery'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "before");
+    }
 }
 
 #[test]

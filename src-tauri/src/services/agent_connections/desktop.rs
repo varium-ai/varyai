@@ -172,6 +172,60 @@ trait Runtime {
     fn quit(&self, instance: &Instance) -> Result<(), String>;
     fn wait_for_exit(&self, instances: &[Instance]) -> Result<(), String>;
     fn open(&self, bundle: &std::path::Path) -> Result<(), String>;
+    fn wait_for_open(&self, bundle: &std::path::Path) -> Result<(), String>;
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn wait_for_exit_with(
+    instances: &[Instance],
+    mut discover: impl FnMut() -> Result<Vec<Instance>, String>,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        let live = discover()?;
+        if live.iter().any(|app| {
+            instances.iter().any(|old| {
+                old.pid == app.pid
+                    && (old.bundle != app.bundle
+                        || app.launched_ms.is_some() && app.launched_ms != old.launched_ms)
+            })
+        }) {
+            return Err(CHANGED.into());
+        }
+        if !live
+            .iter()
+            .any(|app| instances.iter().any(|old| old.pid == app.pid))
+        {
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            return Err(RUNNING.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn wait_for_open_with(
+    runtime: &impl Runtime,
+    bundle: &std::path::Path,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        let live = runtime.instances()?;
+        if live.iter().any(|app| app.bundle != bundle) {
+            return Err(CHANGED.into());
+        }
+        if live.iter().any(|app| app.launched_ms.is_some()) {
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            return Err(FAILED.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -220,7 +274,8 @@ fn restart_verified_with(
     if !runtime.instances()?.is_empty() {
         return Err(CHANGED.into());
     }
-    runtime.open(&target)
+    runtime.open(&target)?;
+    runtime.wait_for_open(&target)
 }
 
 pub(crate) fn restart(
@@ -460,12 +515,11 @@ mod macos {
             let mut found = Vec::new();
             for id in ids {
                 for app in applications(id).iter().filter(|app| !app.isTerminated()) {
-                    let instance = identity(&app, ids)?;
-                    // LaunchServices may retain an exiting app after its PID is gone.
-                    if instance.launched_ms.is_none() && process_gone(instance.pid) {
+                    // Ignore stale LaunchServices entries before reading bundle metadata.
+                    if process_gone(app.processIdentifier()) {
                         continue;
                     }
-                    found.push(instance);
+                    found.push(identity(&app, ids)?);
                 }
             }
             found.sort_by_key(|instance| instance.pid);
@@ -487,17 +541,23 @@ mod macos {
             app.terminate().then_some(()).ok_or_else(|| RUNNING.into())
         }
         fn wait_for_exit(&self, instances: &[Instance]) -> Result<(), String> {
-            let start = std::time::Instant::now();
-            loop {
-                let live = self.instances()?;
-                if !live.iter().any(|app| instances.contains(app)) {
-                    return Ok(());
-                }
-                if start.elapsed() > std::time::Duration::from_secs(30) {
-                    return Err(RUNNING.into());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+            // AppKit's terminated state can precede kernel exit or retain stale metadata.
+            // Wait for the original PIDs; metadata loss alone never proves termination.
+            wait_for_exit_with(
+                instances,
+                || {
+                    let mut live = Vec::new();
+                    for instance in instances {
+                        if !process_gone(instance.pid) {
+                            let mut current = instance.clone();
+                            current.launched_ms = process_launched_ms(instance.pid);
+                            live.push(current);
+                        }
+                    }
+                    Ok(live)
+                },
+                std::time::Duration::from_secs(30),
+            )
         }
         fn open(&self, bundle: &std::path::Path) -> Result<(), String> {
             let roots = [
@@ -511,10 +571,14 @@ mod macos {
                 return Ok(());
             }
             let status = std::process::Command::new("/usr/bin/open")
+                .arg("-n")
                 .arg(bundle)
                 .status()
                 .map_err(|_| FAILED)?;
             status.success().then_some(()).ok_or_else(|| FAILED.into())
+        }
+        fn wait_for_open(&self, bundle: &std::path::Path) -> Result<(), String> {
+            wait_for_open_with(self, bundle, std::time::Duration::from_secs(20))
         }
     }
 }
@@ -550,6 +614,7 @@ mod tests {
         events: RefCell<Vec<&'static str>>,
         quit_error: Option<&'static str>,
         wait_error: Option<&'static str>,
+        open_wait_error: Option<&'static str>,
     }
 
     impl FakeRuntime {
@@ -559,6 +624,7 @@ mod tests {
                 events: RefCell::new(vec![]),
                 quit_error: None,
                 wait_error: None,
+                open_wait_error: None,
             }
         }
     }
@@ -585,6 +651,71 @@ mod tests {
             self.events.borrow_mut().push("open");
             Ok(())
         }
+        fn wait_for_open(&self, _: &std::path::Path) -> Result<(), String> {
+            self.events.borrow_mut().push("wait_open");
+            self.open_wait_error
+                .map_or(Ok(()), |error| Err(error.into()))
+        }
+    }
+
+    #[test]
+    fn reopened_bundle_must_be_observed_before_reporting_success() {
+        let target = instance(Some(3000));
+        let runtime = FakeRuntime::new(vec![vec![], vec![target.clone()]]);
+        assert_eq!(
+            wait_for_open_with(&runtime, &target.bundle, std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        let runtime = FakeRuntime::new(vec![vec![]]);
+        assert_eq!(
+            wait_for_open_with(&runtime, &target.bundle, std::time::Duration::ZERO),
+            Err(FAILED.into())
+        );
+        let mut other = target.clone();
+        other.bundle = "/synthetic/Replacement.app".into();
+        let runtime = FakeRuntime::new(vec![vec![other]]);
+        assert_eq!(
+            wait_for_open_with(&runtime, &target.bundle, std::time::Duration::ZERO),
+            Err(CHANGED.into())
+        );
+    }
+
+    #[test]
+    fn shutdown_metadata_loss_is_not_process_exit() {
+        let old = vec![instance(Some(1000))];
+        let runtime = FakeRuntime::new(vec![vec![instance(None)], vec![]]);
+        assert_eq!(
+            wait_for_exit_with(
+                &old,
+                || runtime.instances(),
+                std::time::Duration::from_secs(1)
+            ),
+            Ok(())
+        );
+        assert!(
+            runtime.snapshots.borrow().is_empty(),
+            "shutdown completed before the original PID disappeared"
+        );
+    }
+
+    #[test]
+    fn accepted_open_command_is_not_a_completed_restart() {
+        let old = vec![instance(Some(1000))];
+        let mut runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
+        runtime.open_wait_error = Some(FAILED);
+        assert_eq!(
+            restart_verified_with(&runtime, Some(2000), || true, true),
+            Err(FAILED.into())
+        );
+        assert_eq!(
+            runtime
+                .events
+                .borrow()
+                .iter()
+                .filter(|event| **event == "open")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -700,7 +831,8 @@ mod tests {
                 "quit",
                 "wait",
                 "instances",
-                "open"
+                "open",
+                "wait_open"
             ]
         );
     }

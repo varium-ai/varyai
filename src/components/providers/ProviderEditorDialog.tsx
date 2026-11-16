@@ -308,12 +308,18 @@ export function ProviderEditorDialog({
     try {
       let model = chatSelected.map(providerModelId).find(Boolean);
       if (!model) {
+        const chat = [...available.values()].find(
+          (row) => !isImageGenerationModel(row),
+        );
+        model = providerModelId(chat) || undefined;
+      }
+      if (!model) {
         const found = await onFetchProbeModels();
         if (probeRequest.current !== request) return;
         const chat = found.find((row) => !isImageGenerationModel(row));
         model = chat?.id;
       }
-      if (!model) return;
+      if (!model) throw new Error("unavailable");
       const detected = await onProbe(model);
       if (probeRequest.current === request)
         setResults([{ model, results: detected }]);

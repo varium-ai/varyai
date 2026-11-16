@@ -26,14 +26,16 @@ and revision checks. Catalog reads and startup never import client configuration
 automatically. The retired registry contract is discarded on staging upgrades;
 shared client settings, security policy and observations remain intact.
 
+Extension version 8 adds an optional client session ID to tool-risk events and a session/time index. Both native pairs and internal staging pairs upgrade version 7 transactionally after backup. Existing events retain a null session ID; no historical identity is inferred. Interrupted version 7 native transactions remain recoverable before migration. Shared schema versions and pair identity are unchanged.
+
 The serialized Skills option `cc_switch` still means private application storage and now follows the VaryAI root. Client configuration remains in native client directories. Independent storage does not coordinate two managers concurrently controlling the same client.
 
 ## Format boundaries
 
 | Format                      | Main                         | Extension             | Use                                             |
 | --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------- |
-| Native VaryAI               | 24                           | 7                     | Live independent storage                        |
-| Internal staging layout     | 23                           | 7                     | Backup normalization and compatibility fixtures |
+| Native VaryAI               | 24                           | 8                     | Live independent storage                        |
+| Internal staging layout     | 23                           | 8                     | Backup normalization and compatibility fixtures |
 | Portable database transport | Combined monolithic snapshot | Included in transport | Current VaryAI database backup/restore          |
 
 Native extension v6 pairs created by the independent-storage implementation are

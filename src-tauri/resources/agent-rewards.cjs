@@ -70,11 +70,30 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
       .sort()
       .join("|"),
   );
+  // Only an official daily window identifies a reward date; observation time does not.
+  const dailyStart = nextDay(now, 10) - 86400000;
+  const rewardDate = chosen.every(
+    (c) =>
+      stamp(c.startAt) === dailyStart &&
+      stamp(c.endAt) === dailyStart + 86400000,
+  )
+    ? {
+        rewardDay: new Date(dailyStart + 8 * 3600000)
+          .toISOString()
+          .slice(0, 10),
+      }
+    : {};
   let credit =
     chosen.reduce((sum, c) => sum + (positive(c.benefit?.amount) ?? 0), 0) ||
     null;
   if (!available.length)
-    return { outcome: "already_checked", credit, until, windowKey };
+    return {
+      outcome: "already_checked",
+      credit,
+      until,
+      windowKey,
+      ...rewardDate,
+    };
   if (!claim) return { outcome: "not_checked", credit, until, windowKey };
   credit = 0;
   for (const c of available) {
@@ -89,7 +108,13 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
     credit +=
       positive(body.benefit?.amount) ?? positive(c.benefit?.amount) ?? 0;
   }
-  return { outcome: "claimed", credit: credit || null, until, windowKey };
+  return {
+    outcome: "claimed",
+    credit: credit || null,
+    until,
+    windowKey,
+    ...rewardDate,
+  };
 }
 async function zcodePlans(call, claim, now = Date.now()) {
   const response = await call("/api/v1/marketing/touch?seq=0", "GET");

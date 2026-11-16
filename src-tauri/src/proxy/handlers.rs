@@ -485,6 +485,7 @@ fn claude_upstream_observation_metadata(
         quality,
         ctx.tool_schemas.clone(),
     )
+    .with_session(ctx.tool_session_id.clone())
 }
 
 async fn handle_claude_transform(
@@ -1737,13 +1738,16 @@ async fn handle_codex_xai_native_responses_rewrite(
         let logged_stream = create_logged_passthrough_stream(
             restore_stream,
             ctx.tag,
-            Some(crate::proxy::tool_observation::mount::metadata(
-                "openai_responses",
-                ctx.app_type_str,
-                crate::proxy::tool_observation::channel::Transport::Sse,
-                crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
-                ctx.tool_schemas.clone(),
-            )),
+            Some(
+                crate::proxy::tool_observation::mount::metadata(
+                    "openai_responses",
+                    ctx.app_type_str,
+                    crate::proxy::tool_observation::channel::Transport::Sse,
+                    crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
+                    ctx.tool_schemas.clone(),
+                )
+                .with_session(ctx.tool_session_id.clone()),
+            ),
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
@@ -1898,7 +1902,8 @@ async fn handle_codex_xai_native_responses_rewrite(
             crate::proxy::tool_observation::channel::Transport::Json,
             crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
             ctx.tool_schemas.clone(),
-        ),
+        )
+        .with_session(ctx.tool_session_id.clone()),
     );
     builder
         .body(axum::body::Body::from(restored_bytes))
@@ -1949,6 +1954,7 @@ fn codex_chat_observation_metadata(
         OutputQuality::Native,
         std::sync::Arc::new(definitions),
     )
+    .with_session(ctx.tool_session_id.clone())
 }
 
 pub(super) struct CodexDlpTransformContext<'a> {
@@ -2501,7 +2507,8 @@ pub(super) async fn handle_codex_anthropic_to_responses_transform(
             crate::proxy::tool_observation::channel::Transport::Json,
             crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
             ctx.tool_schemas.clone(),
-        ),
+        )
+        .with_session(ctx.tool_session_id.clone()),
     );
 
     builder
@@ -2579,13 +2586,16 @@ fn build_codex_anthropic_sse_response(
     let logged_stream = create_logged_passthrough_stream(
         sse_stream,
         ctx.tag,
-        Some(crate::proxy::tool_observation::mount::metadata(
-            "openai_responses",
-            ctx.app_type_str,
-            crate::proxy::tool_observation::channel::Transport::Sse,
-            crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
-            ctx.tool_schemas.clone(),
-        )),
+        Some(
+            crate::proxy::tool_observation::mount::metadata(
+                "openai_responses",
+                ctx.app_type_str,
+                crate::proxy::tool_observation::channel::Transport::Sse,
+                crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
+                ctx.tool_schemas.clone(),
+            )
+            .with_session(ctx.tool_session_id.clone()),
+        ),
         usage_collector,
         ctx.streaming_timeout_config(),
         connection_guard,

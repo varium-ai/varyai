@@ -88,6 +88,33 @@ fn menu(state: &AppState) -> Result<std::sync::Arc<crate::proxy::intent::Menu>, 
         .ok_or_else(|| error("noProvider"))
 }
 
+fn model_label(catalog: &[agent_connections::Model], id: &str) -> String {
+    let Some(model) = catalog.iter().find(|model| model.id == id) else {
+        return id.into();
+    };
+    let suffix = format!(" · {}", model.group);
+    if model.group.is_empty() || model.group == "routing" || model.name.ends_with(&suffix) {
+        model.name.clone()
+    } else {
+        format!("{}{suffix}", model.name)
+    }
+}
+
+pub(super) fn codex_model(state: &AppState) -> Result<Option<String>, AppError> {
+    if !available(state, &AppType::Codex)? {
+        return Ok(None);
+    }
+    let model = state
+        .proxy_service
+        .intent_client
+        .selected_model()
+        .map_err(|_| error("invalidConfig"))?
+        .ok_or_else(|| error("nativeModelMissing"))?;
+    let menu = menu(state)?;
+    let catalog = agent_connections::models(&menu);
+    Ok(Some(model_label(&catalog, &model)))
+}
+
 pub(super) fn capture(state: &AppState, app: &AppType) -> Result<Option<Connection>, AppError> {
     if !available(state, app)? {
         return Ok(None);
@@ -201,26 +228,14 @@ pub(super) fn preview(
     validate(state, &selection.app, connection)?;
     let menu = menu(state)?;
     let catalog = agent_connections::models(&menu);
-    let label = |id: &str| {
-        catalog
-            .iter()
-            .find(|model| model.id == id)
-            .map(|model| model.name.clone())
-            .unwrap_or_else(|| id.into())
-    };
+    let label = |id: &str| model_label(&catalog, id);
     if let Some(library) = &selection.library {
         library.validate(state, &selection.app)?;
     }
     let (current, connected) = if selection.app == AppType::Codex {
-        (
-            state
-                .proxy_service
-                .intent_client
-                .selected_model()
-                .map_err(|_| error("invalidConfig"))?
-                .map(|model| label(&model)),
-            available(state, &selection.app)?,
-        )
+        let current = codex_model(state)?;
+        let connected = current.is_some();
+        (current, connected)
     } else {
         let current = agent_connections::native::starting_model(selection.app.as_str())
             .map_err(|_| error("invalidConfig"))?;
