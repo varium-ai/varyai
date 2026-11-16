@@ -978,21 +978,9 @@ impl Manager {
         })
     }
     pub fn restart_desktop(&self, app: &str) -> Result<(), String> {
-        if !self.desktop_selection_matches(app) {
-            return Err(CONFLICT.into());
-        }
-        self.restart_desktop_with(app, |applied_ms, valid| {
-            let applied_ms =
-                if model_control::supports(app) && self.model_control_status(app)?.pending {
-                    Some(chrono::Utc::now().timestamp_millis())
-                } else {
-                    applied_ms
-                };
-            desktop::restart(app, applied_ms, || {
-                self.desktop_selection_matches(app) && valid()
-            })
-        })
+        desktop::restart_manual(app)
     }
+    #[cfg(test)]
     fn restart_desktop_with(
         &self,
         app: &str,
@@ -1470,20 +1458,7 @@ impl Manager {
     }
 
     pub fn restart_doubaowork_desktop(&self) -> Result<(), String> {
-        let applied = read(&self.doubaowork_freshness_path())?
-            .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
-            .filter(|freshness| freshness.app == "doubaowork" && freshness.applied_at_ms > 0)
-            .map(|freshness| freshness.applied_at_ms);
-        let expected = applied;
-        desktop::restart("doubaowork", applied, || {
-            read(&self.doubaowork_freshness_path())
-                .ok()
-                .flatten()
-                .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
-                .filter(|freshness| freshness.app == "doubaowork")
-                .map(|freshness| Some(freshness.applied_at_ms))
-                == Some(expected)
-        })
+        desktop::restart_manual("doubaowork")
     }
 }
 #[cfg(test)]
@@ -1792,7 +1767,8 @@ mod tests {
         crate::workbuddy_config::with_test_dir(&other, || {
             assert!(!manager.desktop_selection_matches("workbuddy"));
             assert!(manager.status("workbuddy").unwrap().desktop_state.is_none());
-            assert_eq!(manager.restart_desktop("workbuddy"), Err(CONFLICT.into()));
+            // Native actions are disabled in tests; config selection must not block a manual restart.
+            assert_ne!(manager.restart_desktop("workbuddy"), Err(CONFLICT.into()));
         });
         manager.disconnect("workbuddy")?;
         crate::workbuddy_config::with_test_dir(&managed, || {

@@ -496,62 +496,18 @@ pub(crate) async fn restart_agent_connection(
             .await
             .map_err(|_| FAILED)?;
     }
-    if app == "codex" {
-        let client = state.proxy_service.intent_client.clone();
-        let manager = state.proxy_service.agent_connections.clone();
-        let reload = state.proxy_service.codex_reload_state();
-        let (status, desktop_state) = tokio::task::spawn_blocking(move || {
-            let status = codex_connection_status(
-                client.status()?,
-                client.selected_model()?,
-                manager.codex_intent()?,
-            );
-            let status = with_remembered_model(status, manager.remembered_model("codex"));
-            let desktop_state = manager.codex_desktop_state(&status)?;
-            Ok::<_, String>((status, desktop_state))
+    if matches!(app.as_str(), "codex" | "workbuddy" | "workbuddy-ai") {
+        // Explicit restart does not depend on connection ownership or reload freshness.
+        return tokio::task::spawn_blocking(move || {
+            agent_connections::desktop::restart_manual(&app)
         })
         .await
-        .map_err(|_| FAILED)??;
-        if status.configuration_issue.is_some() || status.recovery_pending {
-            return Err(agent_connections::CONFLICT.into());
-        }
-        let refresh = with_codex_reload(status, reload, desktop_state);
-        let desktop_restart =
-            refresh.desktop_state == Some(agent_connections::desktop::State::RestartRequired);
-        let reload_restart = matches!(
-            refresh.reload_state,
-            Some(
-                agent_connections::ReloadState::StaleCatalog
-                    | agent_connections::ReloadState::Failed
-            )
-        );
-        if reload_restart {
-            return state.proxy_service.request_codex_reload();
-        }
-        if desktop_restart {
-            let manager = state.proxy_service.agent_connections.clone();
-            return tokio::task::spawn_blocking(move || manager.restart_codex_desktop())
-                .await
-                .map_err(|_| FAILED)?;
-        }
-        return Err("agentConnections.restartChanged".into());
+        .map_err(|_| FAILED)?;
     }
-    let active = state.proxy_service.intent_runtime.connections.active(&app);
     let manager = state.proxy_service.agent_connections.clone();
-    tokio::task::spawn_blocking(move || {
-        // Connected restarts need a live gateway. A disconnected restart instead
-        // validates the token-free restoration fingerprints in the manager.
-        if !active
-            && manager
-                .load(&app)?
-                .is_some_and(|receipt| !receipt.suspended)
-        {
-            return Err(agent_connections::CONFLICT.into());
-        }
-        manager.restart_desktop(&app)
-    })
-    .await
-    .map_err(|_| FAILED)?
+    tokio::task::spawn_blocking(move || manager.restart_desktop(&app))
+        .await
+        .map_err(|_| FAILED)?
 }
 #[tauri::command]
 pub(crate) async fn reapply_agent_connection(

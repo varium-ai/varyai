@@ -1640,21 +1640,11 @@ export function AgentConnectionsPage({
           app: restarting ? name(restarting) : "",
         })}
         description={t(
-          restarting === "codex" &&
-            connections[APP_IDS.indexOf("codex")].data?.desktopState !==
-              "restart_required" &&
-            (connections[APP_IDS.indexOf("codex")].data?.reloadState ===
-              "stale_catalog" ||
-              connections[APP_IDS.indexOf("codex")].data?.reloadState ===
-                "failed")
-            ? isWindows()
-              ? "agentConnections.codexRestartConfirmHintWindows"
-              : "agentConnections.codexRestartConfirmHint"
-            : isMac()
-              ? "agentConnections.restartConfirmHintMac"
-              : isWindows()
-                ? "agentConnections.restartConfirmHintWindows"
-                : "agentConnections.restartConfirmHint",
+          isMac()
+            ? "agentConnections.restartConfirmHintMac"
+            : isWindows()
+              ? "agentConnections.restartConfirmHintWindows"
+              : "agentConnections.restartConfirmHint",
         )}
         footer={
           <>

@@ -392,19 +392,7 @@ pub(crate) async fn forward(
             )
         }
     };
-    let mut url = official_url(endpoint.path());
-    if source_headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .is_some_and(|h| h.starts_with("Bearer sk-"))
-        && url.starts_with(OFFICIAL_ORIGIN)
-    {
-        url = format!("https://api.openai.com/v1{}", endpoint.path());
-    }
-    if let Some(query) = query {
-        url.push('?');
-        url.push_str(query);
-    }
+    let url = target_url(endpoint, &source_headers, query);
     let request = client
         .post(url)
         .headers(outbound_headers(&source_headers))
@@ -423,6 +411,118 @@ pub(crate) async fn forward(
             )
         }
     };
+    relay(super::super::hyper_client::ProxyResponse::Reqwest(upstream))
+}
+
+fn target_url(endpoint: Endpoint, source_headers: &HeaderMap, query: Option<&str>) -> String {
+    let mut url = official_url(endpoint.path());
+    if source_headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| h.starts_with("Bearer sk-"))
+        && url.starts_with(OFFICIAL_ORIGIN)
+    {
+        url = format!("https://api.openai.com/v1{}", endpoint.path());
+    }
+    if let Some(query) = query {
+        url.push('?');
+        url.push_str(query);
+    }
+    url
+}
+
+/// Reuse the Responses restoration owner for official and auxiliary Codex requests.
+/// Account credentials bind the attempt but never enter persistent provider storage.
+pub(crate) async fn forward_restored(
+    endpoint: Endpoint,
+    source_headers: HeaderMap,
+    request: &super::super::security::http_restoration::DlpHttpRequest,
+    query: Option<&str>,
+) -> Result<Response, super::super::error::ProxyError> {
+    use super::super::{
+        error::ProxyError,
+        hyper_client::ProxyResponse,
+        security::{
+            http_restoration::DlpForwardError, response_restoration::ArgumentNormalizationMode,
+        },
+    };
+    const PROVIDER: &str = "native-codex-official";
+    let client = client().map_err(|_| ProxyError::DlpForward(DlpForwardError::Unavailable))?;
+    let headers = outbound_headers(&source_headers);
+    let url = target_url(endpoint, &headers, query);
+    let principal = super::super::forwarder::dlp_auth_principal(&headers);
+    let (mut body, _source_owner) = request
+        .clone_source_body()
+        .map_err(ProxyError::DlpForward)?;
+    let (mut attempt, _input_owner) = request.prepare_owned_attempt_with_operation_for_proxy(
+        None,
+        PROVIDER,
+        "openai_responses",
+        &url,
+        principal.as_deref(),
+        &mut body,
+        Ok,
+    )?;
+    let credentials = request
+        .capture_error_credentials(&headers)
+        .ok_or(ProxyError::DlpForward(DlpForwardError::RedactionFailed))?;
+    let encoded = match attempt
+        .encode_outbound_body(&body)
+        .map_err(ProxyError::DlpForward)?
+    {
+        Some(encoded) => encoded,
+        None => Bytes::from(
+            serde_json::to_vec(&body)
+                .map_err(|_| ProxyError::DlpForward(DlpForwardError::RedactionFailed))?,
+        ),
+    };
+    let outgoing = client
+        .post(&url)
+        .headers(headers)
+        .body(encoded)
+        .build()
+        .map_err(|_| ProxyError::DlpForward(DlpForwardError::RedactionFailed))?;
+    attempt
+        .validate_final_send_binding(
+            PROVIDER,
+            "openai_responses",
+            outgoing.url().as_str(),
+            super::super::forwarder::dlp_auth_principal(outgoing.headers()).as_deref(),
+        )
+        .map_err(ProxyError::DlpForward)?;
+    attempt
+        .validate_final_send_history(&body)
+        .map_err(ProxyError::DlpForward)?;
+    attempt.record_permitted_attempt(PROVIDER, None);
+    let timeout = super::super::http_client::UPSTREAM_HEADER_WAIT;
+    let upstream = super::super::http_client::send_with_header_timeout(
+        reqwest::RequestBuilder::from_parts(client, outgoing),
+        timeout,
+    )
+    .await
+    .map_err(|_| ProxyError::DlpForward(DlpForwardError::Unavailable))?;
+    let upstream = ProxyResponse::Reqwest(upstream);
+    if upstream.status().is_redirection() {
+        return Err(ProxyError::DlpForward(DlpForwardError::UpstreamStatus(
+            upstream.status(),
+        )));
+    }
+    if !upstream.status().is_success() {
+        return Ok(request
+            .read_upstream_error(upstream, &Value::Null, &[], Some(&credentials), timeout)
+            .await
+            .to_response());
+    }
+    let guarded = tokio::time::timeout(timeout, attempt.guard_upstream_response(upstream))
+        .await
+        .map_err(|_| ProxyError::DlpForward(DlpForwardError::RestoreFailed))?
+        .map_err(ProxyError::DlpForward)?;
+    Ok(attempt
+        .restore_client_http_response(relay(guarded), ArgumentNormalizationMode::Exact, None)
+        .await)
+}
+
+fn relay(upstream: super::super::hyper_client::ProxyResponse) -> Response {
     let status = upstream.status();
     let mut headers = upstream.headers().clone();
     strip_hop_headers(&mut headers);

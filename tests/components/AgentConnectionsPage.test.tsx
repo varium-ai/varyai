@@ -1825,12 +1825,8 @@ describe("Agent connections", () => {
           within(row).getByRole("button", { name: "agentConnections.restart" }),
         );
         const dialog = await screen.findByRole("dialog");
-        const key =
-          app === "codex" ? "codexRestartConfirmHint" : "restartConfirmHint";
-        const platformSuffix =
-          app === "codex" && suffix !== "Windows" ? "" : suffix;
         expect(dialog).toHaveAccessibleDescription(
-          `agentConnections.${key}${platformSuffix}`,
+          `agentConnections.restartConfirmHint${suffix}`,
         );
         expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
         fireEvent.click(
@@ -2217,7 +2213,7 @@ describe("Agent connections", () => {
   });
 
   it.each(["stale_catalog", "failed"] as const)(
-    "offers a confirmed Codex reload when the background service is %s",
+    "offers a confirmed whole-app Codex restart when the background service is %s",
     async (reloadState) => {
       vi.mocked(agentConnectionsApi.list).mockResolvedValue([
         {
@@ -2241,9 +2237,7 @@ describe("Agent connections", () => {
         within(row).getByRole("button", { name: "agentConnections.restart" }),
       );
       let dialog = await screen.findByRole("dialog");
-      expect(dialog).toHaveTextContent(
-        "agentConnections.codexRestartConfirmHint",
-      );
+      expect(dialog).toHaveTextContent("agentConnections.restartConfirmHint");
       fireEvent.click(
         within(dialog).getByRole("button", { name: "common.cancel" }),
       );

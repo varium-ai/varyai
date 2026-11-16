@@ -33,6 +33,19 @@ const MAX_NODES: usize = 4096;
 const WORK_LIMIT: usize = 32 * 1024 * 1024;
 const REDACTED: &str = "[REDACTED]";
 
+#[cfg(test)]
+pub(super) mod error_detail_test_support {
+    thread_local! {
+        static UNAVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    pub(in crate::proxy::security) fn unavailable() {
+        UNAVAILABLE.with(|value| value.set(true));
+    }
+    pub(in crate::proxy::security) fn take_unavailable() -> bool {
+        UNAVAILABLE.with(|value| value.replace(false))
+    }
+}
+
 pub(crate) struct SafeUpstreamError {
     status: StatusCode,
     body: Option<Bytes>,

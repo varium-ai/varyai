@@ -189,6 +189,69 @@ const TOOL_NAME: &str = "synthetic_m2_nonexecuting_tool";
 const SESSION: &str = "synthetic-m2-session";
 const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+fn large_tool_catalog() -> Value {
+    Value::Array(
+        (0..20)
+            .map(|index| {
+                let properties: serde_json::Map<String, Value> = (0..12)
+                    .map(|field| {
+                        (
+                            format!("argument_{field}"),
+                            json!({
+                                "type":"string", "description":"Synthetic tool argument description"
+                            }),
+                        )
+                    })
+                    .collect();
+                json!({"type":"function","function":{
+                    "name":format!("synthetic_catalog_tool_{index}"),
+                    "description":"Synthetic tool definition",
+                    "parameters":{"type":"object","properties":properties},"strict":false
+                }})
+            })
+            .collect(),
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn large_tool_catalog_restores_success_and_withholds_unsafe_upstream_errors() -> TestResult {
+    for (mode, stream, success) in [
+        (ReplyMode::Echo, false, true),
+        (ReplyMode::EchoSse, true, true),
+        (ReplyMode::HttpError, false, false),
+        (ReplyMode::NativeSsePrivateError, true, false),
+    ] {
+        let fixture = HttpFixture::new(mode, "chat").await?;
+        let mut body = current_input(stream);
+        body["tools"] = large_tool_catalog();
+        let (status, wire, failed) =
+            collect_wire(fixture.send(chat_request(&body, Some(SESSION))?).await?).await?;
+        let requests = fixture.requests()?;
+        assert_eq!(
+            requests.len(),
+            1,
+            "error-detail preparation must not prevent forwarding"
+        );
+        assert_eq!(requests[0]["tools"], body["tools"]);
+        assert!(!requests[0].to_string().contains(CONTACT));
+        let text = std::str::from_utf8(&wire)?;
+        if success {
+            assert_eq!(status, StatusCode::OK);
+            assert!(!failed && text.contains(CONTACT));
+            assert!(!text.contains("rredact-") && !text.contains("proxy_processing_failed"));
+        } else {
+            assert!(!text.contains(CONTACT) && !text.contains("synthetic-m2-key"));
+            assert!(!text.contains("rredact-") && !text.contains("tool_calls"));
+            assert!(!text.contains("[DONE]"));
+            assert!(!status.is_success() || failed || text.contains("proxy_processing_failed"));
+            fixture.assert_no_publication()?;
+        }
+        assert_eq!(fixture.budget.used(), 0);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum ReplyMode {
     Echo,
@@ -661,6 +724,30 @@ fn assert_private_body_absent(wire: &[u8]) {
             && !text.contains(TOOL_NAME),
         "m2_rejected_response_released_private_content_or_tools"
     );
+}
+
+fn assert_injected_capacity_outcome(
+    fixture: &HttpFixture,
+    status: StatusCode,
+    wire: &[u8],
+    failed: bool,
+) -> TestResult {
+    let optional_failure = super::upstream_error::error_detail_test_support::take_unavailable();
+    if status.is_success() && !failed {
+        assert!(
+            optional_failure,
+            "mandatory allocation failure must still refuse forwarding"
+        );
+        let text = std::str::from_utf8(wire)?;
+        assert!(text.contains(CONTACT) && !text.contains("rredact-"));
+        let requests = fixture.requests()?;
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].to_string().contains(CONTACT));
+    } else {
+        assert_private_body_absent(wire);
+        fixture.assert_no_publication()?;
+    }
+    Ok(())
 }
 
 async fn assert_current_only_identity(invalid: bool) -> TestResult {
@@ -1710,6 +1797,7 @@ async fn m2_chat_http_each_payload_buffer_capacity_failure_is_atomic_and_refunde
         drop(fixture);
         for fail_at in 1..=allocations {
             let fixture = HttpFixture::new(mode, "chat").await?;
+            super::upstream_error::error_detail_test_support::take_unavailable();
             let count = Rc::new(Cell::new(0usize));
             let fired = Rc::new(Cell::new(false));
             let observed = count.clone();
@@ -1732,12 +1820,7 @@ async fn m2_chat_http_each_payload_buffer_capacity_failure_is_atomic_and_refunde
             .await?;
             drop(hook);
             assert!(fired.get(), "m2_capacity_sweep_injection_not_reached");
-            assert!(
-                !status.is_success() || failed,
-                "m2_capacity_sweep_failure_ignored fail_at={fail_at} allocations={allocations} status={status} failed={failed}"
-            );
-            assert_private_body_absent(&wire);
-            fixture.assert_no_publication()?;
+            assert_injected_capacity_outcome(&fixture, status, &wire, failed)?;
             assert!(
                 fixture.budget.used() == 0,
                 "m2_capacity_sweep_retained_payload_budget"
@@ -2048,6 +2131,7 @@ async fn m2_chat_layered_decode_each_capacity_failure_is_atomic_and_refunded() -
     drop(fixture);
     for fail_at in 1..=allocations {
         let fixture = HttpFixture::new(ReplyMode::GzipLayered, "chat").await?;
+        super::upstream_error::error_detail_test_support::take_unavailable();
         let count = Rc::new(Cell::new(0usize));
         let fired = Rc::new(Cell::new(false));
         let observed = count.clone();
@@ -2070,12 +2154,7 @@ async fn m2_chat_layered_decode_each_capacity_failure_is_atomic_and_refunded() -
         .await?;
         drop(hook);
         assert!(fired.get(), "m2_layered_sweep_injection_not_reached");
-        assert!(
-            !status.is_success() || failed,
-            "m2_layered_capacity_failure_ignored fail_at={fail_at} allocations={allocations} status={status} failed={failed}"
-        );
-        assert_private_body_absent(&wire);
-        fixture.assert_no_publication()?;
+        assert_injected_capacity_outcome(&fixture, status, &wire, failed)?;
         assert!(
             fixture.budget.used() == 0,
             "m2_layered_capacity_failure_retained_budget"

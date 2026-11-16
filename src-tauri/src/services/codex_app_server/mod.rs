@@ -124,6 +124,7 @@ impl Monitor {
         ReloadState::Current
     }
 
+    #[cfg(test)]
     fn request_restart(&mut self, now: u64) {
         if self.running.is_empty() {
             return;
@@ -468,7 +469,6 @@ fn fingerprint(config: &Path) -> Result<[u8; 32], ()> {
 #[cfg(any(target_os = "macos", windows))]
 struct Control {
     state: ReloadState,
-    requested: bool,
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -484,23 +484,6 @@ impl Worker {
             .lock()
             .map(|control| control.state)
             .unwrap_or(ReloadState::Failed)
-    }
-
-    /// Queue an explicitly confirmed refresh; only the worker may end a server.
-    pub(crate) fn request_restart(&self) -> Result<(), String> {
-        let mut control = self
-            .control
-            .lock()
-            .map_err(|_| "agentConnections.restartFailed".to_owned())?;
-        if !matches!(
-            control.state,
-            ReloadState::StaleCatalog | ReloadState::Failed
-        ) {
-            return Err("agentConnections.restartChanged".into());
-        }
-        control.requested = true;
-        control.state = ReloadState::WaitingForIdle;
-        Ok(())
     }
 }
 
@@ -520,7 +503,6 @@ pub(crate) fn start(
 ) -> Worker {
     let control = std::sync::Arc::new(std::sync::Mutex::new(Control {
         state: ReloadState::Stopped,
-        requested: false,
     }));
     let worker_control = control.clone();
     let task = tauri::async_runtime::spawn(async move {
@@ -532,8 +514,7 @@ pub(crate) fn start(
             };
             let guard = locks.lock_for_app("codex").await;
             let config = manager.config_path().to_owned();
-            let manual = worker_control.lock().is_ok_and(|control| control.requested);
-            let needs_activity = monitor.pending.is_some() || manual;
+            let needs_activity = monitor.pending.is_some();
             let previous_route = monitor.route;
             let sample_config = config.clone();
             let sample_requests = requests.clone();
@@ -562,19 +543,13 @@ pub(crate) fn start(
             .await;
             if let Ok(Ok((route, catalog, processes, busy))) = sample {
                 let now = clock.elapsed().as_secs();
-                let mut action = monitor.observe(route, processes, busy, now);
+                let action = monitor.observe(route, processes, busy, now);
                 monitor.observe_catalog(
                     catalog.map(|sample| sample.0),
                     catalog.map(|sample| sample.1),
                 );
                 if let Ok(mut control) = worker_control.lock() {
-                    if control.requested {
-                        monitor.request_restart(now);
-                        control.requested = false;
-                        action = Action::None;
-                    }
-                    // Publish before awaiting the final recheck, so another command
-                    // cannot queue a second refresh against an outdated UI sample.
+                    // Publish before awaiting the final automatic-reload recheck.
                     control.state = monitor.snapshot();
                 }
                 let desktop_restart = matches!(&action, Action::RestartDesktop(_));
@@ -682,10 +657,7 @@ pub(crate) fn start(
                 monitor.changed_at = clock.elapsed().as_secs();
             }
             if let Ok(mut control) = worker_control.lock() {
-                // A command queued during this sample stays visible until consumed.
-                if !control.requested {
-                    control.state = monitor.snapshot();
-                }
+                control.state = monitor.snapshot();
             }
             drop(guard);
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;

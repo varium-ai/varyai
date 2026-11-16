@@ -93,26 +93,9 @@ fn bundle_ids(app: &str) -> &'static [&'static str] {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn workbuddy_bundle_ids(dir: &std::path::Path) -> Option<&'static [&'static str]> {
-    match dir.file_name()?.to_str()? {
-        ".workbuddy-ai" => Some(&["com.workbuddy.workbuddy-ai"]),
-        ".workbuddy" => Some(&["com.tencent.workbuddy.mac"]),
-        _ => None,
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn selected_bundle_ids(app: &str) -> Result<&'static [&'static str], String> {
-    if matches!(app, "workbuddy" | "workbuddy-ai") {
-        let expected = bundle_ids(app);
-        workbuddy_bundle_ids(&crate::workbuddy_config::get_workbuddy_dir())
-            .filter(|ids| *ids == expected)
-            .or_else(|| (app == "workbuddy-ai").then_some(expected))
-            .ok_or_else(|| FAILED.into())
-    } else {
-        Ok(bundle_ids(app))
-    }
+    Ok(bundle_ids(app))
 }
 
 /// Resolve the verified running copy, rather than another installation with the same name.
@@ -241,14 +224,15 @@ fn restart_verified_with(
     runtime: &impl Runtime,
     applied_ms: Option<i64>,
     valid: impl Fn() -> bool,
-    allow_current: bool,
+    manual: bool,
 ) -> Result<(), String> {
     if !valid() {
         return Err(super::CONFLICT.into());
     }
     let instances = runtime.instances()?;
     let state = assess(&instances, applied_ms);
-    if (state != State::RestartRequired && !(allow_current && state == State::Current))
+    if (!manual && state != State::RestartRequired)
+        || instances.is_empty()
         || instances
             .iter()
             .any(|instance| instance.launched_ms.is_none())
@@ -275,6 +259,30 @@ fn restart_verified_with(
     }
     runtime.open(&target)?;
     runtime.wait_back(&target, &instances)
+}
+
+/// Explicit user action: configuration freshness is not restart authority.
+pub(crate) fn restart_manual(app: &str) -> Result<(), String> {
+    if !supports_restart(app) {
+        return Err("agentConnections.restartUnsupported".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        restart_manual_with(&macos::Native { app })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::restart_manual(app)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("agentConnections.restartUnsupported".into())
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn restart_manual_with(runtime: &impl Runtime) -> Result<(), String> {
+    restart_verified_with(runtime, None, || true, true)
 }
 
 pub(crate) fn restart(
@@ -610,6 +618,15 @@ mod tests {
         assert!(runtime.events.borrow().contains(&"open"));
     }
 
+    #[test]
+    fn confirmed_restart_accepts_a_current_verified_desktop() {
+        let running = vec![instance(Some(3000))];
+        let runtime = FakeRuntime::new(vec![running.clone(), running, vec![]]);
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert!(runtime.events.borrow().contains(&"quit"));
+        assert!(runtime.events.borrow().contains(&"wait_back"));
+    }
+
     fn instance(launched_ms: Option<i64>) -> Instance {
         Instance {
             pid: 123,
@@ -784,25 +801,21 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn workbuddy_selection_follows_the_managed_config_variant() {
-        for (dir, id) in [
-            (".workbuddy-ai", "com.workbuddy.workbuddy-ai"),
-            (".workbuddy", "com.tencent.workbuddy.mac"),
-        ] {
-            assert_eq!(
-                workbuddy_bundle_ids(std::path::Path::new(dir)),
-                Some(&[id][..])
-            );
+    fn manual_bundle_selection_does_not_depend_on_the_managed_configuration() {
+        for dir in [".workbuddy", ".workbuddy-ai"] {
+            crate::workbuddy_config::with_test_dir(std::path::Path::new(dir), || {
+                assert_eq!(
+                    selected_bundle_ids("workbuddy").unwrap(),
+                    &["com.tencent.workbuddy.mac"]
+                );
+                assert_eq!(
+                    selected_bundle_ids("workbuddy-ai").unwrap(),
+                    &["com.workbuddy.workbuddy-ai"]
+                );
+            });
         }
-        assert_eq!(
-            workbuddy_bundle_ids(std::path::Path::new("/custom/settings")),
-            None
-        );
-        assert_eq!(
-            workbuddy_bundle_ids(std::path::Path::new(".codebuddy")),
-            None
-        );
     }
 
     #[cfg(target_os = "macos")]

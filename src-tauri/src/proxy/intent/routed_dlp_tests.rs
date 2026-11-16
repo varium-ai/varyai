@@ -5,6 +5,122 @@ use crate::{
     proxy::{server::ProxyServer, ProxyConfig},
 };
 use axum::{routing::post, Json, Router};
+use http::HeaderMap;
+
+#[tokio::test]
+#[serial_test::serial]
+async fn official_native_requests_restore_without_a_routing_alias(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct Reset(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset((*crate::proxy::security::get_security_runtime()).clone());
+    let mut policy = crate::proxy::security::SecurityRuntimeConfig::default();
+    policy.builtin_action_overrides.insert(
+        "chinese_id_card".into(),
+        crate::proxy::security::AuditAction::RedactRestore,
+    );
+    crate::proxy::security::runtime::set_security_runtime_for_test(policy);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/responses", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let text = body["input"].as_str().unwrap_or_default();
+                let id = uuid::Uuid::new_v4().simple().to_string();
+                let item = json!({"id":format!("msg_{id}"),"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text,"annotations":[]}]});
+                let response = json!({"id":format!("resp_{id}"),"object":"response","status":"completed","output":[item],"model":"gpt-synthetic"});
+                let stream = body["stream"] == true;
+                let mode = headers.get("x-fixture-mode").and_then(|h| h.to_str().ok()).unwrap_or_default().to_owned();
+                let _ = tx.send((headers, body)).await;
+                if mode == "error" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic refusal 110101199001010015 Bearer synthetic-native-auth"}}))).into_response();
+                }
+                if mode == "redirect" {
+                    return Response::builder().status(StatusCode::TEMPORARY_REDIRECT)
+                        .header(header::LOCATION,"/redirect-target").body(Body::empty()).unwrap();
+                }
+                if stream {
+                    let event = json!({"type":"response.completed","response":response});
+                    Response::builder().header(header::CONTENT_TYPE,"text/event-stream")
+                        .body(Body::from(format!("event: response.completed\ndata: {event}\n\n"))).unwrap()
+                } else { Json(response).into_response() }
+            }
+        }))).await
+    });
+    let _origin = native_gateway::set_test_origin(format!("http://{address}"));
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    );
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let identity = "110101199001010015";
+    for stream in [false, true] {
+        for input in [
+            format!("Synthetic identity: {identity}"),
+            "Ordinary follow-up".to_owned(),
+        ] {
+            let response = client.post(format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port))
+                .bearer_auth("synthetic-native-auth").header("session_id",format!("synthetic-official-{stream}"))
+                .header("chatgpt-account-id","synthetic-account")
+                .json(&json!({"model":"gpt-synthetic","input":input,"stream":stream,"store":false,"reasoning":{"effort":"high"}}))
+                .send().await?;
+            assert_eq!(response.status(), StatusCode::OK, "stream={stream}");
+            let text = response.text().await?;
+            assert!(text.contains(&input));
+            assert!(!text.contains("rredact-"));
+            let (headers, sent) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await?
+                .ok_or("missing upstream request")?;
+            assert_eq!(
+                headers[header::AUTHORIZATION],
+                "Bearer synthetic-native-auth"
+            );
+            assert_eq!(headers["chatgpt-account-id"], "synthetic-account");
+            assert_eq!(sent["reasoning"]["effort"], "high");
+            assert_eq!(sent["model"], "gpt-synthetic");
+            assert!(!sent.to_string().contains(identity));
+        }
+    }
+    for mode in ["error", "redirect"] {
+        let response = client.post(format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port))
+            .bearer_auth("synthetic-native-auth").header("x-fixture-mode",mode)
+            .json(&json!({"model":"gpt-synthetic","input":format!("Synthetic identity: {identity}"),"stream":false}))
+            .send().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        assert!(!status.is_success());
+        if mode == "error" {
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        assert!(
+            !text.contains(identity)
+                && !text.contains("synthetic-native-auth")
+                && !text.contains("rredact-")
+        );
+        let (_, sent) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await?
+            .ok_or("missing negative-case request")?;
+        assert!(!sent.to_string().contains(identity));
+        assert!(
+            rx.try_recv().is_err(),
+            "redirects must not cause an unbound send"
+        );
+    }
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
 
 #[tokio::test]
 #[serial_test::serial]
@@ -35,6 +151,9 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
         axum::serve(listener, Router::new().route("/*path", post(move |Json(body): Json<Value>| {
         let tx = tx.clone(); let sequence = sequence.clone();
         async move {
+            if body["tools"].to_string().contains("\"$ref\"") {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic Grok schema reference rejection"}}))).into_response();
+            }
             let id = format!("synthetic-restored-{}", sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
             let content = &body["messages"].as_array().and_then(|items| items.last()).map(|item| &item["content"]);
             let text = content.and_then(|content| content.as_str().or_else(|| content[0]["text"].as_str())).unwrap_or("missing text").to_owned();
@@ -55,6 +174,8 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
     let session = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing session")?);
     session.group.levels.clear();
     session.group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
+    session.targets[0].model = "grok-4.5".into();
+    session.group.members[0].model_id = "grok-4.5".into();
     let mut upstream = crate::provider::Provider::with_id(
         "fixture".into(),
         "Synthetic".into(),
@@ -138,7 +259,26 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
                 } else {
                     alias.as_str()
                 };
-                let body = json!({"model":model,"stream":stream,(root):messages});
+                let mut body = json!({"model":model,"stream":stream,(root):messages});
+                if root == "messages" {
+                    let properties: serde_json::Map<String, Value> = (0..12)
+                        .map(|index| (format!("argument_{index}"), json!({
+                            "type":"string", "description":"Synthetic tool argument description"
+                        })))
+                        .collect();
+                    body["tools"] = Value::Array((0..20).map(|index| json!({
+                        "type":"function","function":{
+                            "name":format!("synthetic_tool_{index}"),
+                            "description":"Synthetic tool definition",
+                            "parameters":{"type":"object","properties":properties},"strict":false
+                        }
+                    })).collect());
+                } else {
+                    body["tools"] = json!([{"type":"function","name":"synthetic_lookup","parameters":{
+                        "type":"object","properties":{"record":{"anyOf":[{"$ref":"#/$defs/Record"},{"type":"null"}]}},
+                        "$defs":{"Record":{"type":"object","properties":{"label":{"type":"string"}},"required":["label"],"additionalProperties":false}}
+                    }}]);
+                }
                 let response = client
                     .post(format!("http://127.0.0.1:{}{path}", info.port))
                     .bearer_auth(token)
@@ -179,7 +319,16 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
                 );
                 assert!(sent.to_string().contains("rredact-cn_phone-"));
                 assert!(sent.to_string().contains("rredact-cn_id_card-"));
-                assert_eq!(sent["model"], "exact-model");
+                assert_eq!(sent["model"], "grok-4.5");
+                if root == "messages" {
+                    assert_eq!(sent["tools"], body["tools"]);
+                } else {
+                    assert_eq!(
+                        sent["tools"][0]["function"]["parameters"]["properties"]["record"]["anyOf"]
+                            [0],
+                        body["tools"][0]["parameters"]["$defs"]["Record"]
+                    );
+                }
             }
         }
     }
