@@ -870,7 +870,7 @@ export function routingTemplates(
         if (candidates.length < 2)
           return { ...result, need: "providers", of: best.provider.name };
       } else {
-        const low = cheap[0];
+        const low = cheap[0] ?? (key === "templateSmart" ? best : undefined);
         if (!low)
           return {
             ...result,
@@ -878,7 +878,7 @@ export function routingTemplates(
             of: best.model.name || best.model.id,
           };
         if (key === "templateSmart") {
-          candidates = [best, low];
+          candidates = low === best ? [best] : [best, low];
           const classifier = available
             .filter(
               (candidate) =>
@@ -937,8 +937,9 @@ export function routingTemplates(
         });
       };
       if (key === "templateSmart") {
-        addRule(1, "Compaction", { compact: true });
-        if (best.model.images && !cheap[0].model.images)
+        const easyTarget = group.members.length === 1 ? 0 : 1;
+        addRule(easyTarget, "Compaction", { compact: true });
+        if (cheap[0] && best.model.images && !cheap[0].model.images)
           addRule(0, "Images", { images: true });
         addRule(
           0,
@@ -947,7 +948,7 @@ export function routingTemplates(
           "a hard task: designing, debugging, a change across several files, or planning",
         );
         addRule(
-          1,
+          easyTarget,
           "Easy task",
           undefined,
           "an easy task: a quick question, a small edit, a lookup, or running a command",

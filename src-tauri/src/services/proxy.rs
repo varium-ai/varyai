@@ -7311,9 +7311,12 @@ mod tests {
             assert_eq!(preview.changes[0].target_provider, "Vary AI");
             assert_eq!(
                 preview.changes[0].current_models,
-                vec![models[1].name.clone()]
+                vec!["fixture-b · Profile fixture"]
             );
-            assert_eq!(preview.changes[0].models, vec![models[0].name.clone()]);
+            assert_eq!(
+                preview.changes[0].models,
+                vec!["fixture-a · Profile fixture"]
+            );
             let mut external: toml_edit::DocumentMut = std::fs::read_to_string(config)?.parse()?;
             external["theme"] = toml_edit::value("synthetic-external-edit");
             std::fs::write(config, external.to_string())?;
@@ -7380,7 +7383,10 @@ mod tests {
             let preview = profile_bundle::ProfileBundleService::preview(&state, &legacy.id)?;
             assert!(preview.skipped.is_empty());
             assert_eq!(preview.changes[0].target_provider, "Vary AI");
-            assert_eq!(preview.changes[0].models, vec![models[0].name.clone()]);
+            assert_eq!(
+                preview.changes[0].models,
+                vec!["fixture-a · Profile fixture"]
+            );
             let applied =
                 profile_bundle::ProfileBundleService::apply(&state, &legacy.id, &preview.revision)?;
             assert!(applied.success);

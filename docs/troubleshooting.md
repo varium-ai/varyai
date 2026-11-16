@@ -1273,3 +1273,7 @@ including when automatic discovery is off. Restoring validates its provider
 references and current group limits, and advances its revision so stale edits
 cannot overwrite it. A failed restore keeps the removed record. Previously
 deleted manual groups have no retained definition and cannot be reconstructed.
+
+## Desktop restart does not reopen the client
+
+A confirmed desktop restart requests normal termination and waits for the original process identity to exit before reopening the verified installation. On macOS, missing launch metadata does not prove exit; the restart checks the original PID against the kernel and launches a new instance only after exit. On both macOS and Windows, an accepted launch request alone does not count as success: the replacement instance must be observed. A client that refuses to quit or fails to reopen produces a restart error instead of a success message. Retry feedback stays visible while a retry is pending.

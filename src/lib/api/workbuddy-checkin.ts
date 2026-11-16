@@ -21,6 +21,7 @@ export interface WorkBuddyCheckinStatus {
   checkedAt: number | null;
   credit: number | null;
   streak: number | null;
+  checkinDates?: string[] | null;
   creditDelayed: boolean;
 }
 

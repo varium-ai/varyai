@@ -5579,6 +5579,7 @@
     "templateThrifty": "便宜优先",
     "templateSteady": "不中断",
     "templateSmartHint": "复杂任务用最强模型，简单任务和上下文压缩用便宜模型。",
+    "templateSmartSameModelHint": "未找到更便宜的模型，复杂任务、简单任务和上下文压缩将使用同一个模型，不会降低模型成本。",
     "templateThriftyHint": "优先用便宜模型；高推理强度或便宜模型都失败时，用最强模型。",
     "templateSteadyHint": "每家供应商最强的模型依次后备，一家不可用也不打断 Agent。",
     "addTemplate": "添加",
@@ -6074,6 +6075,8 @@
     "hint_antigravity": "使用 Antigravity 账号及其可用模型，支持 Google 登录或导入账号 JSON。"
   },
   "agentRewards": {
+    "currentWindow": "本轮",
+    "qoderCalendarHint": "日期按北京时间每天 10:00 开始的领取周期标注。仅标记本账号已由服务确认并保存在本地的领取记录；其余日期为未知，不代表未签到。",
     "noActivity": "暂无活动",
     "nativeAccountManagement": "此处仅显示官方客户端的当前账号。请在官方客户端添加或切换账号，再回来刷新。暂不支持在 VaryAI 内独立添加多个账号。",
     "readNative": "读取客户端登录",
@@ -6164,6 +6167,10 @@
     "finishFailed": "引导完成状态保存失败，请重试；已保存的连接会保留。"
   },
   "dailyCheckin": {
+    "campaignTotal": "累计签到",
+    "calendar": "最近 7 天签到记录",
+    "calendarHint": "根据官方签到日期展示，今天位于最右侧，日期以官方 UTC+8 日界为准。",
+    "today": "今天",
     "title": "签到福利",
     "streak": "连续签到",
     "days": "{{count}} 天",

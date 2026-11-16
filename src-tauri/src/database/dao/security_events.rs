@@ -307,7 +307,7 @@ impl Queries {
         }
         if let Some(session) = &filter.session_id {
             dlp.bind("session_id = ?", session.clone());
-            tool.and("0=1");
+            tool.bind("session_id = ?", session.clone());
         }
         if let Some(keyword) = &filter.keyword {
             let escaped = keyword
@@ -544,7 +544,7 @@ fn tool_projection(record: ToolRiskEventRecord) -> SecurityEvent {
         last_seen_at: record.timestamp,
         trigger_count: 1,
         app_type: record.client_category.clone(),
-        session_id: None,
+        session_id: record.session_id.clone(),
         risk_level,
         result,
         record: SecurityEventRecord::ToolRisk(record),

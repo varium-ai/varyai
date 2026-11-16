@@ -223,7 +223,7 @@ impl Database {
             || Self::get_user_version(&conn)? != NATIVE_MAIN_SCHEMA_VERSION
             || !matches!(
                 Self::get_user_version(&extension)?,
-                6 | NATIVE_EXTENSION_SCHEMA_VERSION
+                6 | 7 | NATIVE_EXTENSION_SCHEMA_VERSION
             )
         {
             return Err(invalid());
@@ -258,13 +258,13 @@ impl Database {
             .map_err(|_| invalid())?;
             crate::config::atomic_write_private(&manifest_path, &bytes)?;
         }
-        if extension_version == 6 {
+        if extension_version < NATIVE_EXTENSION_SCHEMA_VERSION {
             Self::storage_migration_backup(&conn, path)?;
             Self::storage_migration_backup(&extension, &ext_path)?;
         }
         drop((conn, extension));
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        if extension_version == 6 {
+        if extension_version < NATIVE_EXTENSION_SCHEMA_VERSION {
             Self::attach_extension(&conn, &ext_path)?;
             let upgrade = (|| {
                 let tx = conn.unchecked_transaction()?;

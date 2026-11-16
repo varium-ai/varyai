@@ -14,6 +14,7 @@ import {
   CheckinAccountTools,
   CheckinNotice,
   CheckinProgress,
+  QoderCheckinProgress,
 } from "./CheckinProgress";
 import "./daily-checkin.css";
 
@@ -89,6 +90,10 @@ export function AgentRewardsPanel({
     onSuccess: () => client.invalidateQueries({ queryKey }),
   });
   const data = query.data;
+  const canReadNative =
+    app === "qoder" &&
+    data?.nativeAvailable &&
+    (data.source !== "native" || !data.accountId);
   const browserAccountId =
     data?.browserAccountId ??
     (data?.source !== "native" ? data?.accountId : null);
@@ -199,24 +204,26 @@ export function AgentRewardsPanel({
               size="sm"
               className="mp-checkin-button mp-checkin-quiet"
               disabled={busy || query.isFetching}
-              onClick={() => void query.refetch()}
+              onClick={() => {
+                if (canReadNative) native.mutate();
+                else void query.refetch();
+              }}
             >
               {t("agentRewards.refresh")}
             </Button>
             {app === "qoder" && (
               <>
-                {data?.nativeAvailable &&
-                  (data.source !== "native" || !data.accountId) && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mp-checkin-button"
-                      disabled={busy || query.isFetching}
-                      onClick={() => native.mutate()}
-                    >
-                      {t("agentRewards.readNative")}
-                    </Button>
-                  )}
+                {canReadNative && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mp-checkin-button"
+                    disabled={busy || query.isFetching}
+                    onClick={() => native.mutate()}
+                  >
+                    {t("agentRewards.readNative")}
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -246,13 +253,11 @@ export function AgentRewardsPanel({
             {t(`agentRewards.sources.${data.source}`)}
           </p>
         )}
-        {app === "qoder" &&
-          data?.nativeAvailable &&
-          (data.source !== "native" || !data.accountId) && (
-            <p className="mp-checkin-muted">
-              {t("agentRewards.nativeAccessHint")}
-            </p>
-          )}
+        {canReadNative && (
+          <p className="mp-checkin-muted">
+            {t("agentRewards.nativeAccessHint")}
+          </p>
+        )}
         {loginId && (
           <div className="mp-checkin-actions">
             <p role="status">
@@ -312,7 +317,14 @@ export function AgentRewardsPanel({
             {t("common.loading")}
           </p>
         )}
-        <CheckinProgress streak={null} />
+        {app === "qoder" ? (
+          <QoderCheckinProgress
+            day={data?.rewardDay}
+            confirmedDates={data?.confirmedDates}
+          />
+        ) : (
+          <CheckinProgress streak={null} />
+        )}
         <div className="mp-checkin-auto">
           <div>
             <label htmlFor={autoId}>{t("agentRewards.autoLabel")}</label>

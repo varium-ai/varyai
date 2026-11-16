@@ -522,3 +522,48 @@ test("ZCode reads native profile names across providers without exposing token c
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("Qoder confirms the campaign date, not the observation date, only for daily windows", async () => {
+  const claimed = { ...campaign, claimStatus: "CLAIMED" };
+  const later = Date.UTC(2026, 10, 6, 1);
+  const query = async (value) =>
+    qoderCampaigns(async () => ({ campaigns: [value] }), false, later);
+  assert.equal((await query(claimed)).rewardDay, "2026-11-05");
+  assert.equal((await query(campaign)).rewardDay, undefined);
+  assert.equal(
+    (await query({ ...claimed, startAt: Date.UTC(2026, 10, 4, 2) })).rewardDay,
+    undefined,
+  );
+  assert.equal(
+    (
+      await query({
+        ...claimed,
+        startAt: campaign.startAt + 3600000,
+        endAt: campaign.endAt + 3600000,
+      })
+    ).rewardDay,
+    undefined,
+  );
+  assert.equal(
+    (
+      await qoderCampaigns(
+        async (_, method) =>
+          method === "POST" ? { status: "CLAIMED" } : { campaigns: [campaign] },
+        true,
+        now,
+      )
+    ).rewardDay,
+    "2026-11-05",
+  );
+  assert.equal(
+    (
+      await qoderCampaigns(
+        async (_, method) =>
+          method === "POST" ? { status: "FAILED" } : { campaigns: [campaign] },
+        true,
+        now,
+      )
+    ).rewardDay,
+    undefined,
+  );
+});

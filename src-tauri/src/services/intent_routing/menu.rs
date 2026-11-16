@@ -1001,6 +1001,7 @@ mod tests {
                 config["providers"]["varyai"]["models"][0]["displayName"],
                 model.name
             );
+            assert_eq!(config["providers"]["varyai"]["model"], model.name);
             manager.disconnect("qoder")
         })?;
         let target = &menu

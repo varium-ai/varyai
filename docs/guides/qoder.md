@@ -2,6 +2,13 @@
 
 VaryAI maintains selectable official and API-key provider configurations for the supported installed Qoder CN client. Saving a spare configuration does not itself establish that takeover has been enabled or that the client has reloaded it.
 
+For shared connections, the native model menu uses the current model display name
+and configured supplier name. Routing groups retain their group display name.
+Refreshing the catalog updates those labels while preserving established request
+aliases, so a renamed supplier does not redirect an existing conversation to a
+different model. Qoder must reload its configuration before its menu reflects the
+updated labels.
+
 ## Configuration and protocol
 
 The integration uses the supported client's endpoint/model configuration and stores takeover backups. Unknown fields, other providers and external user changes must be preserved. Restart Qoder after changes that require rereading endpoint or trust configuration.

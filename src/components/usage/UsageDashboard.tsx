@@ -8,6 +8,7 @@ import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
 import {
   KNOWN_APP_TYPES,
+  normalizeUsageModelId,
   type AppTypeFilter,
   type UsageRangeSelection,
 } from "@/types/usage";
@@ -283,8 +284,9 @@ export function UsageDashboard({
   const modelOptions = useMemo(() => {
     const names = new Set<string>();
     for (const stat of modelOptionsData ?? []) {
-      names.add(stat.model);
-      for (const alias of stat.aliases ?? []) names.add(alias);
+      names.add(normalizeUsageModelId(stat.model));
+      for (const alias of stat.aliases ?? [])
+        names.add(normalizeUsageModelId(alias));
     }
     if (model) names.add(model);
     return Array.from(names);

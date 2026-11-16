@@ -232,6 +232,7 @@ async fn personal_and_enterprise_contexts_with_the_same_uid_remain_separate() {
                 "/v2/plugin/auth/token" => json!({"code":0,"data":{"accessToken":"synthetic-browser","refreshToken":"synthetic-refresh","expiresIn":3600}}),
                 "/v2/plugin/login/account" => json!({"code":0,"data":{"uid":"same-user","nickname":"Same person","type":if profiles.fetch_add(1,Ordering::SeqCst) == 0 { "personal" } else { "enterprise" }}}),
                 "/v2/plugin/accounts" => json!({"code":0,"data":{"accounts":[{"uid":"same-user","enterpriseId":"synthetic-team","enterpriseName":"Team","type":"enterprise"}]}}),
+                STATUS_PATH => json!({"code":0,"data":{"active":true,"today_checked_in":false,"streak_days":0,"checkin_dates":[]}}),
                 _ => panic!("authorization does not request billing"),
             })
         }

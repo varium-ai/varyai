@@ -120,19 +120,77 @@ it.each([false, true])(
     ).not.toBeInTheDocument();
   },
 );
-it("shows an unavailable template's add action with its unmet requirement", async () => {
-  vi.mocked(intentRoutingApi.list).mockResolvedValue({
-    groups: [],
-    autoCreate: false,
-    omittedGroups: 0,
-  });
-  vi.mocked(intentRoutingApi.providers).mockResolvedValue([]);
+it.each(["templateSmart", "templateThrifty", "templateSteady"])(
+  "opens %s without models and validates the draft only when saving",
+  async (template) => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([]);
+    mount();
+    const title = await screen.findByText(`routingPage.${template}`);
+    const add = within(title.parentElement!).getByRole("button", {
+      name: "routingPage.addTemplate",
+    });
+    expect(add).toBeEnabled();
+    expect(add).toHaveAccessibleDescription(
+      "routingPage.templateNeed_provider",
+    );
+    fireEvent.click(add);
+    const dialog = await screen.findByRole("dialog");
+    const save = within(dialog).getByRole("button", { name: "common.save" });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["loading", "failed"])(
+  "allows opening a template while the model catalog is %s",
+  async (state) => {
+    if (state === "loading")
+      vi.mocked(intentRoutingApi.providers).mockImplementation(
+        () => new Promise(() => {}),
+      );
+    else
+      vi.mocked(intentRoutingApi.providers).mockRejectedValue(
+        new Error("Synthetic catalog failure"),
+      );
+    mount();
+    const title = await screen.findByText("routingPage.templateSmart");
+    const add = within(title.parentElement!).getByRole("button", {
+      name: "routingPage.addTemplate",
+    });
+    expect(add).toBeEnabled();
+    fireEvent.click(add);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+  },
+);
+
+it("opens the smart template with one model and explains the shared task target", async () => {
+  vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+    {
+      id: "synthetic",
+      name: "Synthetic",
+      taskEligible: true,
+      classifierEligible: true,
+      models: [{ id: "synthetic-strong", name: "Strong", outputPrice: 12 }],
+    },
+  ]);
   mount();
-  const intro = await screen.findByText("routingPage.templateHint");
-  const cards = intro.parentElement!;
-  const actions = within(cards).getAllByRole("button", {
+  const title = await screen.findByText("routingPage.templateSmart");
+  const card = title.parentElement!;
+  expect(
+    within(card).getByText("routingPage.templateSmartSameModelHint"),
+  ).toBeVisible();
+  const add = within(card).getByRole("button", {
     name: "routingPage.addTemplate",
   });
-  expect(actions.length).toBeGreaterThan(0);
-  for (const action of actions) expect(action).toBeDisabled();
+  expect(add).toBeEnabled();
+  fireEvent.click(add);
+  expect(await screen.findByRole("dialog")).toBeVisible();
+  expect(intentRoutingApi.save).not.toHaveBeenCalled();
 });

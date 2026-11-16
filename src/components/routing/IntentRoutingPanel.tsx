@@ -404,7 +404,7 @@ export function IntentRoutingPanel({
     }
   }
   function useTemplate(template: ReturnType<typeof routingTemplates>[number]) {
-    if (template.need || pending || deleting) return;
+    if (pending || deleting) return;
     const name = t(`routingPage.${template.key}`).slice(0, 80);
     const names = new Set(
       groups.data?.groups.map((entry) => entry.name.toLocaleLowerCase()),
@@ -1711,12 +1711,17 @@ export function IntentRoutingPanel({
         >
           <p className="rt-template-intro">{t("routingPage.templateHint")}</p>
           {templates.map((template) => (
-            <div
-              key={template.key}
-              className={template.need ? "off" : undefined}
-            >
+            <div key={template.key}>
               <b>{t(`routingPage.${template.key}`)}</b>
-              <p>{t(`routingPage.${template.key}Hint`)}</p>
+              <p>
+                {t(
+                  template.key === "templateSmart" &&
+                    !template.need &&
+                    template.group.members.length === 1
+                    ? "routingPage.templateSmartSameModelHint"
+                    : `routingPage.${template.key}Hint`,
+                )}
+              </p>
               <span>
                 <AccountLabel title>
                   {template.need
@@ -1730,13 +1735,8 @@ export function IntentRoutingPanel({
                 <button
                   type="button"
                   className="text primary"
-                  disabled={
-                    pending ||
-                    !!deleting ||
-                    providers.isPending ||
-                    providers.isError ||
-                    !!template.need
-                  }
+                  title={template.need ? templateNeed(template) : undefined}
+                  disabled={pending || !!deleting}
                   onClick={() => useTemplate(template)}
                 >
                   {t("routingPage.addTemplate")}

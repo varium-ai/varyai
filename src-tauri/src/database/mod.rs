@@ -95,9 +95,9 @@ use std::sync::{
 pub(crate) const SCHEMA_VERSION: i32 = 24;
 /// Released CC Switch v4.0.21 schema; never follow unreleased main migrations.
 pub(crate) const SHARED_SCHEMA_VERSION: i32 = 23;
-pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 7;
+pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 8;
 pub(crate) const NATIVE_MAIN_SCHEMA_VERSION: i32 = 24;
-pub(crate) const NATIVE_EXTENSION_SCHEMA_VERSION: i32 = 7;
+pub(crate) const NATIVE_EXTENSION_SCHEMA_VERSION: i32 = 8;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {

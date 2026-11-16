@@ -78,6 +78,9 @@ pub(super) async fn forward(
         .await?;
     let mut ctx =
         RequestContext::for_routed_target(provider.clone(), app, routed.actor, body, session);
+    ctx.tool_session_id = extensions
+        .get::<super::super::tool_observation::mount::ClientToolSession>()
+        .and_then(|session| session.0.clone());
     ctx.converted_output = format.is_some();
     ctx.outbound_model = outbound;
     ctx.tool_schemas = schemas;

@@ -4,6 +4,59 @@ use crate::error::AppError;
 use rusqlite::Connection;
 use std::path::Path;
 
+#[test]
+fn v7_tool_session_migration_preserves_both_storage_layouts_and_old_events(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for native in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let path = directory
+            .path()
+            .join(if native { "varyai.db" } else { "cc-switch.db" });
+        let open = || {
+            if native {
+                Database::init_native_at(&path)
+            } else {
+                Database::init_at(&path)
+            }
+        };
+        let db = open()?;
+        db.set_setting("synthetic-session-migration", "preserved")?;
+        {
+            let conn = lock_conn!(db.extension_connection());
+            conn.execute("INSERT INTO intent_routing_preferences VALUES ('synthetic-session-migration','preserved')", [])?;
+            conn.execute("INSERT INTO tool_risk_events(timestamp,source,stage,detection_scope,integrity_status,policy_version) VALUES (1000,'model_response','proposed','in_scope','complete',1)", [])?;
+        }
+        drop(db);
+        let extension_path = Database::extension_path(&path);
+        let extension = Connection::open(&extension_path)?;
+        extension.execute_batch("DROP INDEX IF EXISTS idx_tool_risk_events_session_time; ALTER TABLE tool_risk_events DROP COLUMN session_id; PRAGMA user_version=7;")?;
+        drop(extension);
+        let db = open()?;
+        assert_eq!(
+            db.get_setting("synthetic-session-migration")?.as_deref(),
+            Some("preserved")
+        );
+        let events = db.get_tool_risk_events(10, 0)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, None);
+        {
+            let conn = lock_conn!(db.extension_connection());
+            assert_eq!(Database::get_user_version(&conn)?, EXTENSION_SCHEMA_VERSION);
+            assert_eq!(conn.query_row("SELECT value FROM intent_routing_preferences WHERE key='synthetic-session-migration'", [], |row| row.get::<_, String>(0))?, "preserved");
+        }
+        drop(db);
+        let backups = || {
+            std::fs::read_dir(directory.path().join("backups/storage-split"))
+                .map(|entries| entries.count())
+        };
+        let count = backups()?;
+        assert!(count >= 2);
+        drop(open()?);
+        assert_eq!(backups()?, count);
+    }
+    Ok(())
+}
+
 fn intent_extension(path: &Path, version: i32) -> Result<(), AppError> {
     let db = Database::init_at(path)?;
     drop(db);

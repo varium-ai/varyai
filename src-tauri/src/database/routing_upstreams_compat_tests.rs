@@ -521,6 +521,58 @@ fn key_pool_editor_preserves_private_keys_and_applies_enabled_preference_order(
 }
 
 #[test]
+fn provider_protocol_changes_keep_saved_keys_only_at_the_same_endpoint(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::routing_upstreams::{ImportedKey, ImportedTransport};
+    let db = Database::memory()?;
+    let mut record = custom();
+    record.transport = Some(ImportedTransport {
+        keys: vec![ImportedKey {
+            id: "backup".into(),
+            name: "Backup".into(),
+            key: Some("synthetic-backup-key".into()),
+            enabled: true,
+            api_format: None,
+            models: None,
+        }],
+        ..Default::default()
+    });
+    let mut saved = db.save_routing_upstream(record)?;
+    for format in [
+        "openai_responses",
+        "anthropic",
+        "gemini_native",
+        "openai_chat",
+    ] {
+        let mut value = serde_json::to_value(&saved)?;
+        value["source"]["apiFormat"] = json!(format);
+        saved = db.save_routing_upstream(serde_json::from_value(value)?)?;
+        let private = db.private_routing_upstreams()?.remove(0);
+        assert!(
+            matches!(&private.source, UpstreamSource::Api { api_format, api_key: Some(key), .. }
+            if api_format == format && key == "synthetic-portable-key")
+        );
+        assert!(private
+            .transport
+            .as_ref()
+            .is_some_and(
+                |transport| transport.keys[0].key.as_deref() == Some("synthetic-backup-key")
+            ));
+    }
+    for (field, value) in [
+        ("baseUrl", "https://other.example/v1"),
+        ("authType", "api-key"),
+    ] {
+        let mut draft = serde_json::to_value(&saved)?;
+        draft["source"][field] = json!(value);
+        assert!(db
+            .save_routing_upstream(serde_json::from_value(draft)?)
+            .is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn key_pool_edits_cannot_move_hidden_credentials_to_another_endpoint(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::services::routing_upstreams::{ImportedKey, ImportedTransport};

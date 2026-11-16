@@ -1,3 +1,13 @@
+/** Analytics-only aliases. Keep wire IDs, billing records and custom namespaces intact. */
+export function normalizeUsageModelId(model: string): string {
+  const lower = model.toLowerCase();
+  const bare = lower.replace(
+    /^(?:deepseek-ai\/(?=deepseek-)|zai-org\/(?=glm-))/,
+    "",
+  );
+  return /^(?:deepseek-|glm-)[^/]+$/.test(bare) ? bare : model;
+}
+
 export interface RequestLog {
   requestId: string;
   providerId: string;

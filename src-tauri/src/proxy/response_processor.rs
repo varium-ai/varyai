@@ -193,17 +193,20 @@ pub async fn handle_streaming(
     let logged_stream = create_logged_passthrough_stream(
         stream,
         ctx.tag,
-        Some(crate::proxy::tool_observation::mount::metadata(
-            parser_config.output_protocol,
-            ctx.app_type_str,
-            crate::proxy::tool_observation::channel::Transport::Sse,
-            if ctx.converted_output {
-                crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown
-            } else {
-                crate::proxy::tool_observation::channel::OutputQuality::Native
-            },
-            ctx.tool_schemas.clone(),
-        )),
+        Some(
+            crate::proxy::tool_observation::mount::metadata(
+                parser_config.output_protocol,
+                ctx.app_type_str,
+                crate::proxy::tool_observation::channel::Transport::Sse,
+                if ctx.converted_output {
+                    crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown
+                } else {
+                    crate::proxy::tool_observation::channel::OutputQuality::Native
+                },
+                ctx.tool_schemas.clone(),
+            )
+            .with_session(ctx.tool_session_id.clone()),
+        ),
         usage_collector,
         timeout_config,
         connection_guard,
@@ -257,7 +260,8 @@ pub async fn handle_non_streaming(
                 crate::proxy::tool_observation::channel::OutputQuality::Native
             },
             ctx.tool_schemas.clone(),
-        ),
+        )
+        .with_session(ctx.tool_session_id.clone()),
     );
 
     // 解析并记录使用量。关闭 usage logging 时直接跳过，避免非流式响应整包 JSON parse。
@@ -969,6 +973,7 @@ mod tests {
         let (sender, _receiver) = test_channel().await;
         set_tool_risk_runtime_for_test(ToolRiskRuntime::build(true, 5, vec![], &HashMap::new()));
         let metadata = ResponseMetadata {
+            session_id: None,
             protocol: "anthropic_messages",
             client: "claude",
             transport: Transport::Sse,

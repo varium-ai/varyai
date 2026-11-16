@@ -301,3 +301,27 @@ it("offers the observed request and response model IDs alongside billing IDs", (
     expect(screen.getByText(model)).toBeVisible();
   expect(screen.getByText(en.usage.modelFilterScope)).toBeVisible();
 });
+
+it("offers one filter for publisher-qualified DeepSeek and GLM IDs without merging versions or custom namespaces", () => {
+  useModelStatsMock.mockReturnValue({
+    data: [
+      {
+        model: "deepseek-v4.1-flash",
+        aliases: ["deepseek-ai/DeepSeek-V4.1-Flash"],
+      },
+      { model: "deepseek-ai/DeepSeek-V4.1-Flash", aliases: [] },
+      { model: "zai-org/GLM-5.2-FP8", aliases: ["glm-5.2-fp8"] },
+      { model: "deepseek-v4.1", aliases: [] },
+      { model: "custom/DeepSeek-V4.1-Flash", aliases: [] },
+    ],
+  });
+  renderDashboard();
+  expect(screen.getAllByText("deepseek-v4.1-flash")).toHaveLength(1);
+  expect(
+    screen.queryByText("deepseek-ai/DeepSeek-V4.1-Flash"),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByText("glm-5.2-fp8")).toHaveLength(1);
+  expect(screen.queryByText("zai-org/GLM-5.2-FP8")).not.toBeInTheDocument();
+  expect(screen.getByText("deepseek-v4.1")).toBeVisible();
+  expect(screen.getByText("custom/DeepSeek-V4.1-Flash")).toBeVisible();
+});

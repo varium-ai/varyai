@@ -1918,6 +1918,76 @@ describe("global upstream editor", () => {
     expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
     expect(detectProviderProtocols).not.toHaveBeenCalled();
   });
+  it("probes an available unselected catalog model without requiring another discovery", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      {
+        ...primary,
+        source: {
+          ...primary.source,
+          apiFormat: "gemini_native",
+          models: [],
+          catalog: [
+            { model: "synthetic-image", kind: "image" },
+            { model: "synthetic-chat" },
+          ],
+        },
+      },
+    ]);
+    vi.mocked(routingUpstreamsApi.discover).mockRejectedValue(
+      new Error("synthetic-discovery-unavailable"),
+    );
+    vi.mocked(routingUpstreamsApi.probe).mockResolvedValue([]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.probe).toHaveBeenCalledWith(
+        "primary",
+        4,
+        "synthetic-chat",
+      ),
+    );
+    expect(routingUpstreamsApi.discover).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: expect.objectContaining({ models: [] }),
+        }),
+      ),
+    );
+  });
+  it("reports unavailable detection when discovery returns no chat models", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      { ...primary, source: { ...primary.source, models: [], catalog: [] } },
+    ]);
+    vi.mocked(routingUpstreamsApi.discover).mockResolvedValue([]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "modelProviders.errors.testModels",
+        expect.any(Object),
+      ),
+    );
+    expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    ).toBeEnabled();
+  });
   it("can choose a probe model from discovery without changing the user's model selection", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       { ...primary, source: { ...primary.source, models: [] } },

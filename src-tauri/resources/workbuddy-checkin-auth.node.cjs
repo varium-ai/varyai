@@ -9,6 +9,8 @@ async function run({
   keyAvailable = true,
   request = false,
   deviceFails = false,
+  modern = false,
+  windows = false,
 } = {}) {
   const source = fs.readFileSync(
     path.join(__dirname, "workbuddy-checkin-auth.cjs"),
@@ -89,10 +91,17 @@ async function run({
   const requireMock = (name) => {
     if (name === "node:fs") return fakeFs;
     if (name === "node:path") return path;
-    if (name.endsWith("/main/dist.js"))
+    assert(
+      name.startsWith(
+        windows
+          ? "/synthetic/WorkBuddy/resources/"
+          : "/synthetic/WorkBuddy.app/Contents/Resources/",
+      ),
+    );
+    if (name.endsWith(modern ? "/main/src.js" : "/main/dist.js"))
       return {
-        s() {},
-        T() {
+        [modern ? "t" : "s"]() {},
+        [modern ? "_" : "T"]() {
           return {
             symmetric: keyAvailable
               ? { status: "available", value: { key: "synthetic-sdk-key" } }
@@ -107,7 +116,10 @@ async function run({
   vm.runInNewContext(source, {
     require: requireMock,
     process: {
-      execPath: "/synthetic/WorkBuddy.app/Contents/MacOS/Electron",
+      platform: windows ? "win32" : "darwin",
+      execPath: windows
+        ? "/synthetic/WorkBuddy/WorkBuddy.exe"
+        : "/synthetic/WorkBuddy.app/Contents/MacOS/Electron",
       argv: [
         "Electron",
         request ? "request" : "session",
@@ -146,6 +158,25 @@ test("obtains native device verification only for an explicit request", async ()
   const { result, calls } = await run({ request: true });
   assert.equal(result.deviceToken, "synthetic-device-token");
   assert.equal(calls.device, 1);
+});
+
+test("reads WorkBuddy 5.11.3 exports without changing the session or exposing SDK errors", async () => {
+  const { result, calls } = await run({ modern: true, request: true });
+  assert.equal(result.accessToken, "synthetic-access-token");
+  assert.equal(result.deviceToken, "synthetic-device-token");
+  assert.equal(calls.disposed, 2);
+});
+
+test("modern unavailable keys remain a safe failure", async () => {
+  const { result, output } = await run({ modern: true, keyAvailable: false });
+  assert.deepEqual(result, { error: "credentials_protected" });
+  assert(!output.includes("synthetic-sdk-key"));
+});
+
+test("Windows uses resources beside WorkBuddy.exe for the current SDK", async () => {
+  const { result } = await run({ windows: true, modern: true, request: true });
+  assert.equal(result.accessToken, "synthetic-access-token");
+  assert.equal(result.deviceToken, "synthetic-device-token");
 });
 
 test("expired sessions do not invoke the device SDK", async () => {

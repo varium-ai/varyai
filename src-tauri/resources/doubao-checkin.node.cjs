@@ -11,6 +11,7 @@ async function run(
     switchDuringStatus = false,
     active = true,
     detailResponse,
+    landingResponse,
     detailsFail = false,
     switchDuringDetails = false,
     detailsNeverResolve = false,
@@ -65,15 +66,17 @@ async function run(
           assert.equal(scene, "synthetic-campaign");
           calls.status++;
           if (switchDuringStatus) current = "account-b";
-          return {
-            code: 0,
-            data: active
-              ? {
-                  chosen_type: checked ? 2 : 1,
-                  main_page_info: { buttons: [{ button_type: 2 }] },
-                }
-              : null,
-          };
+          return (
+            landingResponse ?? {
+              code: 0,
+              data: active
+                ? {
+                    chosen_type: checked ? 2 : 1,
+                    main_page_info: { buttons: [{ button_type: 2 }] },
+                  }
+                : null,
+            }
+          );
         },
         async DailyCheckIn() {
           calls.claim++;
@@ -391,4 +394,114 @@ test("an account change during the details request never attributes another acco
   );
   assert.equal(result.outcome, "switch_required");
   assert.equal(result.credit, undefined);
+});
+
+const cardLanding = {
+  code: 0,
+  data: {
+    chosen_type: 3,
+    main_page_info: { buttons: [] },
+    landing_cards: [
+      { task_code: "daily_signin", buttons: [{ interaction_type: 2 }] },
+    ],
+  },
+};
+test("card-based landing exposes an available daily reward and separate day counts without claiming", async () => {
+  const { result, calls, detailCalls } = await run(
+    { mode: "status", expectedAccountId: "account-a" },
+    {
+      landingResponse: cardLanding,
+      detailResponse: {
+        code: 0,
+        data: {
+          tasks: [
+            {
+              task_kind: "daily_signin",
+              daily_checkin: {
+                checked_in_today: false,
+                continuous_days: 0,
+                total_days: 3,
+                last_checkin_date: "2026-11-13",
+                reward: { reward_amount: 400, reward_type: "quota_grant" },
+              },
+            },
+          ],
+        },
+      },
+    },
+  );
+  assert.deepEqual(result, {
+    outcome: "not_checked",
+    credit: 400,
+    streak: 0,
+    totalDays: 3,
+  });
+  assert.equal(calls.claim, 0);
+  assert.equal(detailCalls, 1);
+});
+test("card-based claim rereads completion details and existing completion never claims again", async () => {
+  const claim = await run(
+    { mode: "checkin", expectedAccountId: "account-a" },
+    { landingResponse: cardLanding },
+  );
+  assert.equal(claim.result.outcome, "claimed");
+  assert.equal(claim.result.streak, 4);
+  assert.equal(claim.calls.claim, 1);
+  assert.equal(claim.detailCalls, 2);
+  const checked = await run(
+    { mode: "checkin", expectedAccountId: "account-a" },
+    {
+      landingResponse: { code: 0, data: { chosen_type: 3, landing_cards: [] } },
+      checked: true,
+    },
+  );
+  assert.equal(checked.result.outcome, "already_checked");
+  assert.equal(checked.calls.claim, 0);
+});
+test("card-based landing never claims when details are missing, the account changes or the action is unrelated", async () => {
+  for (const options of [
+    { landingResponse: cardLanding, detailsFail: true },
+    { landingResponse: cardLanding, switchDuringDetails: true },
+    {
+      landingResponse: {
+        code: 0,
+        data: {
+          chosen_type: 3,
+          landing_cards: [
+            { task_code: "unrelated", buttons: [{ interaction_type: 2 }] },
+          ],
+        },
+      },
+    },
+    {
+      landingResponse: {
+        code: 0,
+        data: {
+          chosen_type: 3,
+          landing_cards: [{ task_code: "daily_signin", buttons: [] }],
+        },
+      },
+    },
+    {
+      landingResponse: {
+        code: 0,
+        data: {
+          chosen_type: 3,
+          landing_cards: [
+            cardLanding.data.landing_cards[0],
+            cardLanding.data.landing_cards[0],
+          ],
+        },
+      },
+    },
+  ]) {
+    const { result, calls } = await run(
+      { mode: "checkin", expectedAccountId: "account-a" },
+      options,
+    );
+    assert.ok(
+      ["failed", "switch_required", "inactive"].includes(result.outcome),
+    );
+    assert.equal(calls.claim, 0);
+  }
 });

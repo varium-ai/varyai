@@ -18,6 +18,7 @@ fn missing_native_account_keeps_confirmed_today_without_assigning_it_to_another_
             outcome: Outcome::Claimed,
             credit: Some(100.0),
             streak: Some(2),
+            checkin_dates: None,
             credit_delayed: false,
         },
     );
@@ -142,14 +143,14 @@ async fn status_is_read_only_and_manual_claim_is_cached_across_restarts() {
     assert_eq!(a.credit, Some(30.0));
     assert_eq!(a.streak, Some(3));
     assert!(a.credit_delayed);
-    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 3);
     let mut restarted = Manager::with_paths(f.manager.path.clone(), f.manager.auth_path.clone());
     restarted.endpoint = f.manager.endpoint.clone();
     assert_eq!(
         restarted.check_in(true).await.expect("cached").outcome,
         Outcome::Claimed
     );
-    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 3);
     assert_eq!(std::fs::read(&f.manager.auth_path).expect("auth"), before);
     let persisted = std::fs::read_to_string(&f.manager.path).expect("state");
     for private in [
@@ -182,6 +183,99 @@ async fn skips_claim_when_inactive_or_already_checked_and_accepts_camel_case() {
             assert_eq!(result.credit, Some(10.0));
         }
     }
+}
+
+#[tokio::test]
+async fn official_calendar_survives_claim_and_refresh_without_inventing_consecutive_days() {
+    let data = json!({"active":true,"today_checked_in":true,"streak_days":7,"today_credit":100,
+        "checkin_dates":["2026-11-16","2026-11-13","2026-11-12","2026-11-11","2026-11-05","2026-11-04","2026-11-03"]});
+    let f = fixture(json!({"code":0,"data":data}), reward(), 200, 200).await;
+    let list = f.manager.accounts().await.expect("read-only refresh");
+    let value = serde_json::to_value(list).expect("account JSON");
+    assert_eq!(value["accounts"][0]["status"]["streak"], 7);
+    assert_eq!(
+        value["accounts"][0]["status"]["checkinDates"],
+        data["checkin_dates"]
+    );
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+    let saved = f.manager.status().await.expect("saved status");
+    assert_eq!(
+        serde_json::to_value(saved).expect("status JSON")["checkinDates"],
+        data["checkin_dates"]
+    );
+}
+
+#[tokio::test]
+async fn a_claim_refetches_calendar_instead_of_reusing_the_preclaim_history() {
+    let f = fixture(active(), reward(), 200, 200).await;
+    let result = f.manager.check_in(true).await.expect("claim");
+    assert!(result.checkin_dates.is_none());
+    assert_eq!(f.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn a_read_only_refresh_cannot_erase_a_confirmed_claim_or_invent_dates() {
+    let f = fixture(active(), reward(), 200, 200).await;
+    let claimed = f.manager.check_in(true).await.expect("claim");
+    assert!(claimed.checkin_dates.is_none());
+    let list = f.manager.accounts().await.expect("delayed status refresh");
+    let value = serde_json::to_value(list).expect("accounts JSON");
+    assert_eq!(value["accounts"][0]["status"]["outcome"], "claimed");
+    assert_eq!(value["accounts"][0]["status"]["streak"], 3);
+    assert!(value["accounts"][0]["status"]["checkinDates"].is_null());
+    assert_eq!(f.calls.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn calendar_accepts_only_valid_dates_and_keeps_missing_history_unknown() {
+    assert_eq!(checkin_dates(&json!({})), None);
+    assert_eq!(checkin_dates(&json!({"checkin_dates":[]})), Some(vec![]));
+    for dates in [
+        json!(["2026-02-30"]),
+        json!(["secret-value"]),
+        json!([42]),
+        json!("2026-11-16"),
+    ] {
+        assert_eq!(checkin_dates(&json!({"checkin_dates":dates})), None);
+    }
+    let legacy: Record = serde_json::from_value(json!({"day":"2026-11-16","checkedAt":1,"outcome":"claimed","credit":100,"streak":3,"creditDelayed":false})).expect("legacy record");
+    assert!(legacy.checkin_dates.is_none());
+}
+
+#[tokio::test]
+async fn a_successful_claim_loads_the_postclaim_calendar() {
+    let mut f = fixture(active(), reward(), 200, 200).await;
+    f.task.abort();
+    let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let app = Router::new().fallback(move |req: Request| {
+        let claimed = claimed.clone();
+        async move {
+            if req.uri().path() == CLAIM_PATH {
+                claimed.store(true, Ordering::SeqCst);
+                Json(json!({"code":0,"data":{"credit":100,"streak_days":3}}))
+            } else {
+                assert_eq!(req.uri().path(), STATUS_PATH);
+                let checked = claimed.load(Ordering::SeqCst);
+                Json(json!({"code":0,"data":{"active":true,"today_checked_in":checked,"streak_days":if checked {3} else {2},
+                    "checkin_dates":if checked {vec!["2026-11-16","2026-11-13","2026-11-03"]} else {vec!["2026-11-13","2026-11-03"]}}}))
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("dynamic port");
+    f.manager.endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    f.task = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
+    let status = f.manager.check_in(true).await.expect("claim");
+    assert_eq!(status.outcome, Outcome::Claimed);
+    assert_eq!(
+        status.checkin_dates,
+        Some(vec![
+            "2026-11-16".into(),
+            "2026-11-13".into(),
+            "2026-11-03".into()
+        ])
+    );
 }
 
 #[tokio::test]
@@ -405,7 +499,7 @@ fi
         f.manager.check_in(true).await.expect("claim").outcome,
         Outcome::Claimed
     );
-    assert_eq!(f.device_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(f.device_calls.load(Ordering::SeqCst), 3);
     assert_eq!(
         std::fs::read(&f.manager.auth_path).expect("session"),
         before
@@ -485,6 +579,7 @@ fn beijing_day_boundary_and_retry_rules() {
         outcome: Outcome::Inactive,
         credit: None,
         streak: None,
+        checkin_dates: None,
         credit_delayed: false,
     };
     assert!(!record.should_run(early + 60, false));
@@ -525,6 +620,9 @@ async fn live_native_workbuddy_checkin_status() {
         .map_err(|_| "Official check-in status unavailable")
         .expect("campaign status");
     assert!(status.get("active").is_some_and(Value::is_boolean));
+    if status.get("checkin_dates").is_some() {
+        assert!(checkin_dates(&status).is_some());
+    }
     assert!(!manager.path.exists());
 }
 
@@ -545,7 +643,7 @@ async fn saved_native_auto_preference_is_bound_once_and_does_not_follow_account_
         .run_auto()
         .await
         .expect("new native account is opt-in");
-    assert_eq!(f.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(f.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert!(
         !f.manager
             .status()
