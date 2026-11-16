@@ -166,6 +166,8 @@ pub struct StreamingTimeoutConfig {
 /// - 日志标签
 /// - Session ID（用于日志关联）
 pub struct RequestContext {
+    /// Original client session for observations; never an internal routing affinity.
+    pub tool_session_id: Option<String>,
     pub(crate) converted_output: bool,
     /// Bounded, validated tool schema references from this request only.
     pub tool_schemas: std::sync::Arc<Vec<crate::proxy::tool_observation::channel::ToolSchemaRef>>,
@@ -305,6 +307,7 @@ impl RequestContext {
         };
 
         Ok(Self {
+            tool_session_id: session_result.client_provided.then(|| session_id.clone()),
             converted_output: false,
             tool_schemas,
             start_time,
@@ -334,6 +337,7 @@ impl RequestContext {
         session: Option<&str>,
     ) -> Self {
         Self {
+            tool_session_id: None,
             converted_output: false,
             tool_schemas: crate::proxy::tool_observation::mount::collect_tool_schemas(body, actor),
             start_time: Instant::now(),
@@ -370,6 +374,7 @@ impl RequestContext {
     #[cfg(test)]
     pub(super) fn for_tool_risk_test(body: &serde_json::Value) -> Self {
         Self {
+            tool_session_id: None,
             converted_output: false,
             tool_schemas: crate::proxy::tool_observation::mount::collect_tool_schemas(
                 body, "codex",

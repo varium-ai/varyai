@@ -96,7 +96,7 @@ pub(super) fn build(
         }
         _ => return Err(FAILED.into()),
     };
-    let (projected, chosen) = if app == "gemini" {
+    let (mut projected, chosen) = if app == "gemini" {
         for model in catalog {
             // Keep the former URL aliases addressable by existing sessions.
             receipt
@@ -127,6 +127,20 @@ pub(super) fn build(
     } else {
         named_catalog(catalog, selected, &mut receipt.model_map)
     };
+    if app == "qoder" {
+        // Keep established request aliases while refreshing native display labels.
+        for (model, source) in projected.iter_mut().zip(catalog) {
+            let suffix = format!(" · {}", source.group);
+            model.name = if source.group.is_empty()
+                || source.group == "routing"
+                || source.name.ends_with(&suffix)
+            {
+                source.name.clone()
+            } else {
+                format!("{}{suffix}", source.name)
+            };
+        }
+    }
     receipt.visible_models = Some(projected.iter().map(|model| model.id.clone()).collect());
     let credentials = if app == "deepseek-harness" {
         Some(super::harness_credentials::prepare(&path, token)?)
@@ -468,6 +482,89 @@ pub(super) fn client_config(catalog: &[Model], base: &str, token: &str, selected
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qoder_display_labels_refresh_without_changing_existing_wire_aliases() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        crate::qoder_config::with_test_dir(root.path(), || {
+            let model = Model {
+                api: "openai-completions",
+                native_model: None,
+                output_tokens: None,
+                cost: None,
+                icon: None,
+                id: "synthetic-route-a".into(),
+                name: "Shared model".into(),
+                context_window: None,
+                compact_at: None,
+                group: "Supplier A".into(),
+                reasoning_levels: vec![],
+                reasoning: false,
+                default_reasoning_level: None,
+                images: false,
+            };
+            let mut other = model.clone();
+            other.id = "synthetic-route-b".into();
+            other.group = "Supplier B".into();
+            let mut group = model.clone();
+            group.id = "synthetic-group".into();
+            group.name = "My routing group".into();
+            group.group = "routing".into();
+            let mut catalog = vec![model, other, group];
+            let mut receipt = Receipt {
+                app: "qoder".into(),
+                token: "synthetic-token".into(),
+                model: catalog[0].id.clone(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            };
+            for renamed in [false, true] {
+                if renamed {
+                    catalog[0].name = "Renamed model".into();
+                    catalog[0].group = "Renamed supplier".into();
+                }
+                let old_map = receipt.model_map.clone();
+                receipt.files.clear();
+                build(
+                    "qoder",
+                    &catalog,
+                    "http://127.0.0.1:1",
+                    "synthetic-token",
+                    &catalog[0].id,
+                    &mut receipt,
+                )?;
+                let config = &receipt.files[0].installed["providers"]["varyai"];
+                let rows = config["models"].as_array().ok_or(FAILED)?;
+                for (model, label) in catalog.iter().zip([
+                    if renamed {
+                        "Renamed model · Renamed supplier"
+                    } else {
+                        "Shared model · Supplier A"
+                    },
+                    "Shared model · Supplier B",
+                    "My routing group",
+                ]) {
+                    let wire = super::super::model_wire(
+                        &receipt.model_map,
+                        receipt.visible_models.as_deref(),
+                        &model.id,
+                    );
+                    let row = rows.iter().find(|row| row["model"] == wire).ok_or(FAILED)?;
+                    assert_eq!(row["displayName"], label);
+                    assert_eq!(receipt.model_map.get(wire), Some(&model.id));
+                }
+                assert_eq!(config["model"], "Shared model");
+                if renamed {
+                    assert_eq!(receipt.model_map, old_map);
+                }
+                assert!(!crate::qoder_config::path().exists());
+            }
+            Ok(())
+        })
+    }
 
     #[test]
     fn harness_legacy_receipts_survive_unmarked_client_saves_and_disconnect() -> Result<(), String>

@@ -151,6 +151,7 @@ export interface ToolRiskSettings {
 }
 
 export interface ToolRiskEventRecord {
+  sessionId?: string | null;
   id: number;
   timestamp: number;
   source: string;

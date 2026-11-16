@@ -135,8 +135,7 @@ async function varyaiDoubaoCheckin(input) {
     const successful = (result) =>
       result &&
       (result.code == null || ["0", "200"].includes(String(result.code)));
-    const completedStatus = async (outcome) => {
-      const reward = { credit: null, streak: null, totalDays: null };
+    const readDaily = async () => {
       let timer;
       try {
         const details = await Promise.race([
@@ -151,28 +150,37 @@ async function varyaiDoubaoCheckin(input) {
                 task?.task_kind === "daily_signin" && task.daily_checkin,
             )
           : [];
-        const daily = tasks?.length === 1 ? tasks[0].daily_checkin : null;
-        if (daily?.checked_in_today === true) {
-          const amount = daily.reward?.reward_amount;
-          if (
-            daily.reward?.reward_type === "quota_grant" &&
-            typeof amount === "number" &&
-            Number.isFinite(amount) &&
-            amount >= 0 &&
-            amount <= Number.MAX_SAFE_INTEGER
-          )
-            reward.credit = amount;
-          const days = (value) =>
-            Number.isInteger(value) && value >= 0 && value <= 0xffffffff
-              ? value
-              : null;
-          reward.streak = days(daily.continuous_days);
-          reward.totalDays = days(daily.total_days);
-        }
+        return tasks?.length === 1 ? tasks[0].daily_checkin : null;
       } catch {
         // Reward details must not turn a confirmed check-in into a failure.
+        return null;
       } finally {
         clearTimeout(timer);
+      }
+    };
+    const rewardStatus = async (outcome, observedDaily) => {
+      const reward = { credit: null, streak: null, totalDays: null };
+      const daily =
+        observedDaily === undefined ? await readDaily() : observedDaily;
+      if (
+        daily?.checked_in_today === true ||
+        (outcome === "not_checked" && daily?.checked_in_today === false)
+      ) {
+        const amount = daily.reward?.reward_amount;
+        if (
+          daily.reward?.reward_type === "quota_grant" &&
+          typeof amount === "number" &&
+          Number.isFinite(amount) &&
+          amount >= 0 &&
+          amount <= Number.MAX_SAFE_INTEGER
+        )
+          reward.credit = amount;
+        const days = (value) =>
+          Number.isInteger(value) && value >= 0 && value <= 0xffffffff
+            ? value
+            : null;
+        reward.streak = days(daily.continuous_days);
+        reward.totalDays = days(daily.total_days);
       }
       return input.expectedAccountId === currentId()
         ? { outcome, ...reward }
@@ -183,21 +191,43 @@ async function varyaiDoubaoCheckin(input) {
     if (input.expectedAccountId !== currentId())
       return { outcome: "switch_required" };
     if (Number(status.data?.chosen_type) === 2)
-      return completedStatus("already_checked");
-    if (
-      !status.data ||
-      Number(status.data.chosen_type) !== 1 ||
-      !status.data.main_page_info?.buttons?.some(
-        (button) => Number(button.button_type) === 2,
+      return rewardStatus("already_checked");
+    if (Number(status.data?.chosen_type) === 3) {
+      const daily = await readDaily();
+      if (input.expectedAccountId !== currentId())
+        return { outcome: "switch_required" };
+      if (daily?.checked_in_today === true)
+        return rewardStatus("already_checked", daily);
+      if (daily?.checked_in_today !== false) return { outcome: "failed" };
+      const cards = Array.isArray(status.data.landing_cards)
+        ? status.data.landing_cards.filter(
+            (card) => card?.task_code === "daily_signin",
+          )
+        : [];
+      if (
+        cards.length !== 1 ||
+        !cards[0].buttons?.some(
+          (button) => Number(button.interaction_type) === 2,
+        )
       )
-    )
-      return { outcome: "inactive" };
-    if (input.mode === "status") return { outcome: "not_checked" };
+        return { outcome: "inactive" };
+      if (input.mode === "status") return rewardStatus("not_checked", daily);
+    } else {
+      if (
+        !status.data ||
+        Number(status.data.chosen_type) !== 1 ||
+        !status.data.main_page_info?.buttons?.some(
+          (button) => Number(button.button_type) === 2,
+        )
+      )
+        return { outcome: "inactive" };
+      if (input.mode === "status") return { outcome: "not_checked" };
+    }
     const result = await api.DailyCheckIn({ scene });
     if (input.expectedAccountId !== currentId())
       return { outcome: "switch_required" };
     return successful(result) && result.data?.checked_in === true
-      ? completedStatus("claimed")
+      ? rewardStatus("claimed")
       : { outcome: "failed" };
   } catch {
     return { outcome: "failed" };

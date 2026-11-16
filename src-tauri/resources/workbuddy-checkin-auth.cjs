@@ -10,15 +10,37 @@ async function resolveSession() {
   if (session.auth?.expiresAt > 0 && session.auth.expiresAt <= Date.now()) {
     return { error: "sign_in_required" };
   }
-  const contents = path.resolve(path.dirname(process.execPath), "..");
-  const archive = path.join(contents, "Resources", "app.asar");
-  const crypto = require(archive + "/main/dist.js");
-  const fields = require(archive + "/main/credential-protection.js");
-  crypto.s();
-  fields.t();
-  const capabilities = crypto.T(
-    process._linkedBinding("electron_browser_workbuddy_storage").loggerGet(),
+  const contents =
+    process.platform === "win32"
+      ? path.dirname(process.execPath)
+      : path.resolve(path.dirname(process.execPath), "..");
+  const resources = path.join(
+    contents,
+    process.platform === "win32" ? "resources" : "Resources",
   );
+  const archive = path.join(resources, "app.asar");
+  let crypto;
+  let capabilities;
+  // The installed client renamed its crypto module and exports in 5.11.3.
+  try {
+    crypto = require(archive + "/main/src.js");
+  } catch {
+    crypto = null;
+  }
+  if (typeof crypto?.t === "function" && typeof crypto?._ === "function") {
+    crypto.t();
+    capabilities = crypto._(
+      process._linkedBinding("electron_browser_workbuddy_storage").loggerGet(),
+    );
+  } else {
+    crypto = require(archive + "/main/dist.js");
+    crypto.s();
+    capabilities = crypto.T(
+      process._linkedBinding("electron_browser_workbuddy_storage").loggerGet(),
+    );
+  }
+  const fields = require(archive + "/main/credential-protection.js");
+  fields.t();
   if (capabilities.symmetric.status !== "available") throw new Error();
   let codec;
   try {
@@ -62,7 +84,7 @@ async function resolveSession() {
     ) {
       try {
         const sdk = require(
-          path.join(contents, "Resources/app.asar.unpacked/native/turing-sdk"),
+          path.join(resources, "app.asar.unpacked/native/turing-sdk"),
         );
         if (sdk.isSupported()) {
           sdk.configure(

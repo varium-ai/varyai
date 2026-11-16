@@ -233,6 +233,11 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
         Ok(u) => u,
         Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_invalid_endpoint"),
     };
+    let tool_session_id = super::security::audit_session_id(
+        &crate::app_config::AppType::Pi,
+        &parts.headers,
+        &original,
+    );
     let mut headers = parts.headers;
     strip_hop_headers(&mut headers);
     for name in [
@@ -339,7 +344,8 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
         },
         OutputQuality::Native,
         mount::collect_tool_schemas(&value, "pi"),
-    );
+    )
+    .with_session(tool_session_id);
     let mut collector = usage::Collector::new(protocol);
     let mut upstream = response.bytes_stream();
     use futures::StreamExt;

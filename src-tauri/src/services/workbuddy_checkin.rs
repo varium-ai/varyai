@@ -24,11 +24,15 @@ const NATIVE_AUTH_SCRIPT: &str = include_str!("../../resources/workbuddy-checkin
 const NATIVE_AUTH_MARKER: &[u8] = b"\nVARYAI_WORKBUDDY_AUTH:";
 
 fn native_node_mode_enabled(runtime: &Path) -> bool {
-    let Some(contents) = runtime.parent().and_then(Path::parent) else {
-        return false;
+    #[cfg(target_os = "windows")]
+    let framework = runtime.to_path_buf();
+    #[cfg(not(target_os = "windows"))]
+    let framework = {
+        let Some(contents) = runtime.parent().and_then(Path::parent) else {
+            return false;
+        };
+        contents.join("Frameworks/Electron Framework.framework/Versions/A/Electron Framework")
     };
-    let framework =
-        contents.join("Frameworks/Electron Framework.framework/Versions/A/Electron Framework");
     let Ok(mut file) = std::fs::File::open(framework) else {
         return false;
     };
@@ -71,6 +75,8 @@ struct Record {
     outcome: Outcome,
     credit: Option<f64>,
     streak: Option<u32>,
+    #[serde(default)]
+    checkin_dates: Option<Vec<String>>,
     credit_delayed: bool,
 }
 
@@ -102,7 +108,7 @@ impl Record {
     }
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Store {
     auto_enabled: bool,
@@ -122,10 +128,11 @@ pub(crate) struct Status {
     checked_at: Option<i64>,
     credit: Option<f64>,
     streak: Option<u32>,
+    checkin_dates: Option<Vec<String>>,
     credit_delayed: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Account {
     uid: String,
@@ -165,6 +172,8 @@ pub(crate) struct Manager {
     pending_login: Mutex<Option<accounts::PendingLogin>>,
 }
 
+type Reward = (Outcome, Option<f64>, Option<u32>, bool, Option<Vec<String>>);
+
 impl Manager {
     pub(crate) fn new(path: PathBuf) -> Self {
         let home = crate::config::get_home_dir();
@@ -184,7 +193,12 @@ impl Manager {
         ]
         .into_iter()
         .find(|path| path.is_file());
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        let native_runtime = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|local| local.join("Programs/WorkBuddy/WorkBuddy.exe"))
+            .filter(|path| path.is_file());
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let native_runtime = None;
         let mut manager =
             Self::with_paths(path, base.join("Data/Public/auth/workbuddy-desktop.info"));
@@ -287,9 +301,12 @@ impl Manager {
         {
             return Err(Outcome::CredentialsProtected);
         }
+        let mut command = tokio::process::Command::new(runtime);
+        #[cfg(target_os = "windows")]
+        command.creation_flags(0x08000000);
         let output = tokio::time::timeout(
             Duration::from_secs(10),
-            tokio::process::Command::new(runtime)
+            command
                 .env("ELECTRON_RUN_AS_NODE", "1")
                 .args(["--eval", NATIVE_AUTH_SCRIPT, "--", mode])
                 .arg(&self.auth_path)
@@ -361,6 +378,7 @@ impl Manager {
             checked_at: reward.map(|r| r.checked_at),
             credit: reward.and_then(|r| r.credit),
             streak: reward.and_then(|r| r.streak),
+            checkin_dates: reward.and_then(|r| r.checkin_dates.clone()),
             credit_delayed: reward.is_some_and(|r| r.credit_delayed),
         }
     }
@@ -417,11 +435,11 @@ impl Manager {
     }
 
     async fn claim(&self, account: &Account) -> Record {
-        let result = self.request_claim(account).await;
+        let result = self.request_reward(account, true).await;
         let now = Utc::now().timestamp();
-        let (outcome, credit, streak, credit_delayed) = match result {
+        let (outcome, credit, streak, credit_delayed, checkin_dates) = match result {
             Ok(result) => result,
-            Err(outcome) => (outcome, None, None, false),
+            Err(outcome) => (outcome, None, None, false, None),
         };
         Record {
             day: beijing_day(now),
@@ -429,14 +447,12 @@ impl Manager {
             outcome,
             credit,
             streak,
+            checkin_dates,
             credit_delayed,
         }
     }
 
-    async fn request_claim(
-        &self,
-        account: &Account,
-    ) -> Result<(Outcome, Option<f64>, Option<u32>, bool), Outcome> {
+    async fn request_reward(&self, account: &Account, claim: bool) -> Result<Reward, Outcome> {
         let native = if account.native && self.native_runtime.is_some() {
             self.native_account("request").await.ok()
         } else {
@@ -461,7 +477,7 @@ impl Manager {
                 .and_then(Value::as_bool)
                 .ok_or(CallError::Invalid)?;
             if !active {
-                return Ok((Outcome::Inactive, None, None, false));
+                return Ok((Outcome::Inactive, None, None, false, None));
             }
             let checked = status
                 .get("today_checked_in")
@@ -477,18 +493,43 @@ impl Manager {
                     )?,
                     streak(&status)?,
                     false,
+                    checkin_dates(&status),
+                ));
+            }
+            if !claim {
+                return Ok((
+                    Outcome::NotChecked,
+                    None,
+                    streak(&status)?,
+                    false,
+                    checkin_dates(&status),
                 ));
             }
             let claimed = self.call(&client, account, CLAIM_PATH).await?;
+            let credit = number(&claimed, &["credit"])?;
+            let total_days = streak(&claimed)?;
+            // Claims can omit calendar details. A failed details read must not undo success.
+            let calendar = self
+                .call(&client, account, STATUS_PATH)
+                .await
+                .ok()
+                .filter(|value| {
+                    value
+                        .get("today_checked_in")
+                        .or_else(|| value.get("todayCheckedIn"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                });
             Ok((
                 Outcome::Claimed,
-                number(&claimed, &["credit"])?,
-                streak(&claimed)?,
+                credit,
+                total_days,
                 claimed
                     .get("credit_delayed")
                     .or_else(|| claimed.get("creditDelayed"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                calendar.as_ref().and_then(checkin_dates),
             ))
         }
         .await;
@@ -634,6 +675,18 @@ fn streak(value: &Value) -> Result<Option<u32>, CallError> {
             }
         })
         .transpose()
+}
+
+fn checkin_dates(value: &Value) -> Option<Vec<String>> {
+    let dates = value.get("checkin_dates")?.as_array()?;
+    dates
+        .iter()
+        .map(|value| {
+            let text = value.as_str()?;
+            let date = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
+            (date.format("%Y-%m-%d").to_string() == text).then(|| text.to_owned())
+        })
+        .collect()
 }
 
 fn beijing_time(timestamp: i64) -> Option<DateTime<FixedOffset>> {

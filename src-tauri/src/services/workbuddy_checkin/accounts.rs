@@ -155,10 +155,49 @@ impl Manager {
 
     pub(crate) async fn accounts(&self) -> Result<AccountList, String> {
         let _guard = self.lock.lock().await;
-        let store = self.read_store().await?;
+        let mut store = self.read_store().await?;
         let managed = self.read_managed().await?;
         let native = self.account().await;
         let now = Utc::now().timestamp();
+        let mut observed_store = store.clone();
+        for account in native
+            .iter()
+            .filter(|a| !managed.contains_key(&a.key()))
+            .cloned()
+            .chain(managed.values().map(ManagedAccount::account))
+        {
+            if let Ok((outcome, credit, streak, credit_delayed, checkin_dates)) =
+                self.request_reward(&account, false).await
+            {
+                let current = store
+                    .records
+                    .get(&account.key())
+                    .filter(|r| r.day == beijing_day(now));
+                // A delayed status must not erase today's confirmed claim or its receipt.
+                if current.is_some_and(|r| {
+                    matches!(r.outcome, Outcome::Claimed | Outcome::AlreadyChecked)
+                }) && outcome != Outcome::AlreadyChecked
+                {
+                    continue;
+                }
+                let credit = credit.or_else(|| current.and_then(|r| r.credit));
+                let credit_delayed = credit_delayed || current.is_some_and(|r| r.credit_delayed);
+                let record = Record {
+                    day: beijing_day(now),
+                    checked_at: now,
+                    outcome,
+                    credit,
+                    streak,
+                    credit_delayed,
+                    checkin_dates,
+                };
+                if outcome == Outcome::AlreadyChecked {
+                    store.records.insert(account.key(), record.clone());
+                    self.write_store(&store).await?;
+                }
+                observed_store.records.insert(account.key(), record);
+            }
+        }
         let mut accounts = Vec::new();
         let mut append = |account: Account, source| {
             let id = account.key();
@@ -167,7 +206,7 @@ impl Manager {
             } else {
                 account.label.clone()
             };
-            let status = Self::snapshot(&store, &Ok(account), now);
+            let status = Self::snapshot(&observed_store, &Ok(account), now);
             accounts.push(AccountEntry {
                 id,
                 label,
@@ -197,7 +236,7 @@ impl Manager {
         }
         Ok(AccountList {
             accounts,
-            native_status: Self::snapshot(&store, &native, now),
+            native_status: Self::snapshot(&observed_store, &native, now),
         })
     }
 
@@ -279,6 +318,7 @@ impl Manager {
                 outcome: Outcome::SignInRequired,
                 credit: None,
                 streak: None,
+                checkin_dates: None,
                 credit_delayed: false,
             },
             Err(error) => return Err(error),

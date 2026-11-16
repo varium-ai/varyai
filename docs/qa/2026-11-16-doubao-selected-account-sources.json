@@ -1,0 +1,6 @@
+{
+  "src/components/agents/AgentConnectionsPage.tsx": "e768298696d62c0cae2ad7e9ff0e056f8b0f0de262f4fdd4a238c36c82d3c4d7",
+  "src/components/DoubaoWorkCheckinPanel.tsx": "8eb1fdd39f61bba7e4d93828a29aba2ff28c6793a15b56751c194415233a4cea",
+  "tests/components/AgentConnectionsPage.test.tsx": "da599161b6e32144694e9d99d0616b9baee1e714ccb2afbb05ba250765e92e2d",
+  "docs/guides/daily-checkin.md": "eb8955b61543da495ffeb82fbd3da3641993d8a1d9eafafbdcc300f182afa0f5"
+}

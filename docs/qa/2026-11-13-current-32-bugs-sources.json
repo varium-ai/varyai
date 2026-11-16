@@ -1,0 +1,13 @@
+{
+  "src-tauri/Info.plist": "a3309404e035350cd646cebe229a0e2a19c748886cc240b4c9c65e481d4e642a",
+  "src-tauri/src/database/dao/routing_upstreams.rs": "6b37359436326d4d8c06193d0a97c745a09fec259dac587771feafd429288574",
+  "src-tauri/src/database/routing_upstreams_compat_tests.rs": "38004606c34415c17c3604d6c811da62503ce50b1fb118e7151268d3dc0473cb",
+  "src-tauri/src/services/usage_stats.rs": "4ea601164d8c86d9160a5592137c8e2724e881310c686836fc913ff8f0fdbaf7",
+  "src/components/usage/RequestLogTable.tsx": "7f245fb6485889a4b76c99f2aabd5897f499acc5af0cf92d74b9b2307fa7b4d9",
+  "src/components/usage/UsageDashboard.tsx": "6b23707fc2d801d415a81e69c7b58514c3438847eb4313656edcf6a47e3a9d1a",
+  "src/lib/query/usage.ts": "8c8251f54eb0993d7d1f42a92afe2553fd2616755cd78ec88eb7155207aa56e2",
+  "src/types/usage.ts": "60b7d8a3c8bf0502e1e61a2c36267dead1bd6b74bc2c17ee67e27b4937ce4faf",
+  "tests/components/RequestLogTable.test.tsx": "1eaf6094514e9859b2a3367d687361d3538a7533975bab7e181aec6eb3759d06",
+  "tests/components/UsageDashboard.test.tsx": "bcaaeb7f144e05788ff994e319432a9134c79f69ed9935772898265dd9111e58",
+  "tests/hooks/useRequestLogs.test.tsx": "31b0af30d17d3899aae07d8c708e6c845af34dd5a6deea20d743a41632a91aae"
+}

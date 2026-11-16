@@ -75,6 +75,7 @@ beforeEach(() => {
     outcome: "claimed",
     credit: 30,
     streak: 3,
+    checkinDates: ["2026-11-02", "2026-11-01", "2026-10-31"],
     creditDelayed: true,
   });
   vi.mocked(workbuddyCheckinApi.setAutoEnabled).mockImplementation(
@@ -430,16 +431,11 @@ it.each(["claimed", "already_checked"] as const)(
   },
 );
 
-it("displays the computer's local date instead of the Beijing service day", async () => {
-  const localDate = vi
-    .spyOn(Date.prototype, "toLocaleDateString")
-    .mockReturnValue("local-calendar-date");
-  try {
-    mount();
-    expect(await screen.findByText("local-calendar-date")).toBeInTheDocument();
-    expect(localDate).toHaveBeenCalledWith();
-    expect(screen.queryByText(/2026-11-02/)).not.toBeInTheDocument();
-  } finally {
-    localDate.mockRestore();
-  }
+it("anchors the calendar to the official UTC+8 service day", async () => {
+  mount();
+  expect(await screen.findByText("2026-11-02")).toBeInTheDocument();
+  const days = screen.getAllByRole("listitem");
+  expect(days[0]).toHaveAttribute("data-date", "2026-10-27");
+  expect(days[6]).toHaveAttribute("data-date", "2026-11-02");
+  expect(days[6]).toHaveAttribute("aria-current", "date");
 });

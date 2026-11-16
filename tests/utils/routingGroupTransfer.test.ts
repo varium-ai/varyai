@@ -462,15 +462,83 @@ it("imports reference timeouts, patience, affinity and disabled members without 
   expect(copy.off).not.toEqual(group.off);
 });
 
-it("does not substitute generic context or rotation presets for unavailable the reference implementation templates", () => {
+it("reuses the strongest model for smart tasks while preserving other template requirements", () => {
   const templates = routingTemplates(providers);
   expect(templates).toHaveLength(3);
-  expect(
-    templates.slice(0, 2).every((template) => template.need === "cheap"),
-  ).toBe(true);
+  expect(templates[0].need).toBeUndefined();
+  expect(templates[0].group.members).toHaveLength(1);
+  expect(templates[1].need).toBe("cheap");
   expect(templates[2].group.members.map((member) => member.providerId)).toEqual(
     ["alpha", "beta"],
   );
+});
+
+it("uses one member for both smart task rules without duplicate members or self fallback", () => {
+  const single = [
+    {
+      ...providers[0],
+      models: [
+        {
+          id: "synthetic-strong",
+          name: "Strong",
+          outputPrice: 12,
+          images: true,
+        },
+      ],
+    },
+  ];
+  const template = routingTemplates(single)[0];
+  expect(template.need).toBeUndefined();
+  const { group } = template;
+  expect(group.members).toHaveLength(1);
+  expect(group.defaultMemberId).toBe(group.members[0].id);
+  expect(group.fallbackMemberIds).toEqual([]);
+  expect(group.intentRecognitionEnabled).toBe(true);
+  expect(group.classifierTarget).toEqual({
+    providerId: single[0].id,
+    modelId: "synthetic-strong",
+  });
+  expect(group.rules.map((rule) => rule.name)).toEqual([
+    "Compaction",
+    "Hard task",
+    "Easy task",
+  ]);
+  expect(
+    group.rules.every((rule) => rule.targetMemberId === group.members[0].id),
+  ).toBe(true);
+  group.name = "Synthetic single-model template";
+  expect(
+    importRoutingGroup(JSON.stringify(group), single).members,
+  ).toHaveLength(1);
+  expect(
+    routingTemplates([{ ...single[0], classifierEligible: false }])[0].need,
+  ).toBe("classifier");
+});
+
+it("still uses a separate cheaper model for smart tasks when available", () => {
+  const template = routingTemplates([
+    {
+      ...providers[0],
+      models: [
+        {
+          id: "synthetic-strong",
+          name: "Strong",
+          outputPrice: 12,
+          images: true,
+        },
+        { id: "synthetic-small", name: "Small", outputPrice: 1, images: false },
+      ],
+    },
+  ])[0];
+  expect(template.need).toBeUndefined();
+  expect(template.group.members.map((member) => member.modelId)).toEqual([
+    "synthetic-strong",
+    "synthetic-small",
+  ]);
+  expect(
+    template.group.rules.find((rule) => rule.name === "Easy task")
+      ?.targetMemberId,
+  ).toBe(template.group.members[1].id);
 });
 
 it("round trips an exported Vary group with fresh identities and intact references", () => {

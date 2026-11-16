@@ -577,7 +577,8 @@ impl Database {
                 policy_version INTEGER NOT NULL,
                 rule_ids TEXT,
                 suppressed_count INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                session_id TEXT
             )",
             [],
         )
@@ -591,6 +592,9 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_tool_risk_events_verdict ON tool_risk_events(verdict)",
             [],
         );
+        if Self::has_column(conn, "tool_risk_events", "session_id")? {
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_risk_events_session_time ON tool_risk_events(session_id, timestamp DESC)", [])?;
+        }
         Self::create_tool_risk_command_lists_table(conn)?;
         Self::create_tool_risk_policy_changes_table(conn)?;
 

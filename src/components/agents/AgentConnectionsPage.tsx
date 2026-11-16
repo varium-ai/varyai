@@ -166,6 +166,17 @@ export function AgentConnectionsPage({
     staleTime: 60_000,
     refetchInterval: 60_000,
   });
+  const [doubaoAccountId, setDoubaoAccountId] = useState<string | null>(null);
+  const doubaoAccount =
+    doubaoCheckin.data?.accounts.find(
+      (account) =>
+        account.id ===
+        (doubaoAccountId ??
+          doubaoCheckin.data?.accounts.find((a) => a.current)?.id),
+    ) ??
+    (!doubaoCheckin.data?.connected
+      ? doubaoCheckin.data?.accounts[0]
+      : undefined);
   const rewardApps = APP_IDS.filter(hasAgentRewards);
   const rewards = useQueries({
     queries: rewardApps.map((app) => ({
@@ -184,8 +195,9 @@ export function AgentConnectionsPage({
             (account) => account.status.autoEnabled,
           ))
         : app === "doubaowork"
-          ? (doubaoCheckin.data?.autoConfigured ??
-            doubaoCheckin.data?.accounts.some((account) => account.autoEnabled))
+          ? (doubaoAccount?.autoEnabled ??
+            doubaoCheckin.data?.autoConfigured ??
+            (doubaoCheckin.data ? false : undefined))
           : hasAgentRewards(app)
             ? (rewards[rewardApps.indexOf(app)]?.data?.autoConfigured ??
               rewards[rewardApps.indexOf(app)]?.data?.autoEnabled)
@@ -812,7 +824,9 @@ export function AgentConnectionsPage({
             ? [workbuddyCheckin.data.nativeStatus]
             : []
         : app === "doubaowork"
-          ? (doubaoCheckin.data?.accounts ?? [])
+          ? doubaoAccount
+            ? [doubaoAccount]
+            : []
           : hasAgentRewards(app) && rewards[rewardApps.indexOf(app)]?.data
             ? [rewards[rewardApps.indexOf(app)].data!]
             : [];
@@ -968,7 +982,10 @@ export function AgentConnectionsPage({
                 aria-label={t("agentConnections.restart")}
                 aria-busy={operation === "restarting"}
                 disabled={rowBusy(app)}
-                onClick={() => setRestarting(app)}
+                onClick={() => {
+                  setError(app, null);
+                  setRestarting(app);
+                }}
               >
                 <RefreshCw
                   size={11}
@@ -1307,7 +1324,11 @@ export function AgentConnectionsPage({
             {app === "workbuddy" ? (
               <WorkBuddyCheckinPanel embedded />
             ) : app === "doubaowork" ? (
-              <DoubaoWorkCheckinPanel embedded />
+              <DoubaoWorkCheckinPanel
+                embedded
+                selectedAccountId={doubaoAccountId}
+                onSelectedAccountChange={setDoubaoAccountId}
+              />
             ) : hasAgentRewards(app) ? (
               <AgentRewardsPanel app={app} embedded />
             ) : null}
@@ -1654,7 +1675,9 @@ export function AgentConnectionsPage({
           </>
         }
       >
-        {errorMessage(restarting)}
+        <div className="min-h-10" aria-live="polite">
+          {errorMessage(restarting)}
+        </div>
       </AppDialog>
       <AppDialog
         open={!!disconnecting}

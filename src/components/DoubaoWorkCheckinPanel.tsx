@@ -19,8 +19,12 @@ const queryKey = ["doubaoCheckin"];
 
 export function DoubaoWorkCheckinPanel({
   embedded = false,
+  selectedAccountId,
+  onSelectedAccountChange,
 }: {
   embedded?: boolean;
+  selectedAccountId?: string | null;
+  onSelectedAccountChange?: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const accountId = useId();
@@ -39,7 +43,9 @@ export function DoubaoWorkCheckinPanel({
     query.data?.accounts.find(
       (account) =>
         account.id ===
-        (selectedId ?? query.data.accounts.find((a) => a.current)?.id),
+        (selectedAccountId ??
+          selectedId ??
+          query.data.accounts.find((a) => a.current)?.id),
     ) ?? (!query.data?.connected ? query.data?.accounts[0] : undefined);
   const update = (value: DoubaoCheckinStatus) =>
     client.setQueryData(queryKey, value);
@@ -119,6 +125,7 @@ export function DoubaoWorkCheckinPanel({
               disabled={busy || !query.data?.accounts.length}
               onChange={(event) => {
                 setSelectedId(event.target.value);
+                onSelectedAccountChange?.(event.target.value);
                 claim.reset();
                 auto.reset();
               }}

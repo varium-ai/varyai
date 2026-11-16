@@ -31,6 +31,8 @@ export interface AgentRewardStatus {
   credit: number | null;
   checkedAt: number | null;
   nextCheckAt: number | null;
+  rewardDay?: string | null;
+  confirmedDates?: string[];
 }
 export const agentRewardsApi = {
   nativeAccount: () =>

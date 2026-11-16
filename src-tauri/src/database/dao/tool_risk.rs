@@ -17,6 +17,8 @@ pub struct ToolRiskSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolRiskEventRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub id: i64,
     pub timestamp: i64,
     pub source: String,
@@ -39,6 +41,8 @@ pub struct ToolRiskEventRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolRiskEventInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub timestamp: i64,
     pub source: String,
     pub stage: String,
@@ -558,8 +562,8 @@ fn insert_events<'a>(
             "INSERT INTO tool_risk_events (
             timestamp, source, stage, client_category, operation_category, command_summary,
             detection_scope, integrity_status, verdict, risk_category, severity, reason_code,
-            policy_version, rule_ids, suppressed_count
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)",
+            policy_version, rule_ids, suppressed_count, session_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, ?15)",
         )
         .map_err(db_error)?;
     let mut inserted = 0;
@@ -580,6 +584,9 @@ fn insert_events<'a>(
                 e.reason_code,
                 e.policy_version,
                 to_json_string(&e.rule_ids)?,
+                crate::proxy::tool_observation::types::normalized_session_id(
+                    e.session_id.as_deref()
+                ),
             ])
             .map_err(db_error)?;
     }
@@ -589,6 +596,9 @@ fn insert_events<'a>(
 pub(super) fn read_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRiskEventRecord> {
     let rule_ids: Option<String> = row.get(14)?;
     Ok(ToolRiskEventRecord {
+        session_id: crate::proxy::tool_observation::types::normalized_session_id(
+            row.get::<_, Option<String>>(16)?.as_deref(),
+        ),
         id: row.get(0)?,
         timestamp: row.get(1)?,
         source: row.get(2)?,
@@ -614,7 +624,7 @@ pub(super) fn read_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRiskEv
 pub(super) const EVENT_COLUMNS: &str =
     "id, timestamp, source, stage, client_category, operation_category,
     command_summary, detection_scope, integrity_status, verdict, risk_category, severity,
-    reason_code, policy_version, rule_ids, suppressed_count";
+    reason_code, policy_version, rule_ids, suppressed_count, session_id";
 
 impl Database {
     pub fn get_tool_risk_policy_changes(
@@ -1308,6 +1318,7 @@ mod tests {
 
     fn event() -> ToolRiskEventInput {
         ToolRiskEventInput {
+            session_id: None,
             timestamp: 1000,
             source: "model_response".into(),
             stage: "proposed".into(),
@@ -1323,6 +1334,46 @@ mod tests {
             policy_version: 0,
             rule_ids: vec!["builtin.sensitive_read".into()],
         }
+    }
+
+    #[test]
+    fn tool_sessions_survive_storage_unified_events_and_exact_session_filtering(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::memory()?;
+        for session in [
+            Some("synthetic-session-a"),
+            Some("synthetic-session-b"),
+            None,
+        ] {
+            let mut value = serde_json::to_value(event())?;
+            value["sessionId"] = serde_json::json!(session);
+            db.insert_tool_risk_events_batch(&[serde_json::from_value(value)?])?;
+        }
+        let stored = db.get_tool_risk_events(10, 0)?;
+        assert_eq!(
+            serde_json::to_value(&stored[2])?["sessionId"],
+            "synthetic-session-a"
+        );
+        let filter: crate::database::dao::security_events::SecurityEventFilter =
+            serde_json::from_value(
+                serde_json::json!({"view":"security_events","sessionId":"synthetic-session-a"}),
+            )?;
+        let events = db.get_security_events(&filter, 1, 20)?;
+        assert_eq!(events.total, 1);
+        assert_eq!(
+            events.items[0].session_id.as_deref(),
+            Some("synthetic-session-a")
+        );
+        assert_eq!(
+            db.get_security_events(
+                &serde_json::from_value(serde_json::json!({"view":"security_events"}))?,
+                1,
+                20
+            )?
+            .total,
+            3
+        );
+        Ok(())
     }
 
     fn insert_verdict_events(db: &Database, entries: &[(i64, Option<&str>)]) {

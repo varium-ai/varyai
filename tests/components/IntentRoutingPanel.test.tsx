@@ -815,7 +815,7 @@ describe("IntentRoutingPanel", () => {
       ),
     );
   });
-  it("shows why templates are unavailable instead of offering generic replacements", async () => {
+  it("shows missing template requirements as guidance while allowing draft creation", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [],
       autoCreate: false,
@@ -832,7 +832,7 @@ describe("IntentRoutingPanel", () => {
       name: "routingPage.addTemplate",
     });
     expect(actions).toHaveLength(3);
-    for (const action of actions) expect(action).toBeDisabled();
+    for (const action of actions) expect(action).toBeEnabled();
     expect(
       screen.queryByText("routingPage.templateFallback"),
     ).not.toBeInTheDocument();

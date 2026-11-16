@@ -33,11 +33,18 @@ pub struct ToolSchemaRef {
 }
 #[derive(Clone)]
 pub struct ResponseMetadata {
+    pub session_id: Option<String>,
     pub protocol: &'static str,
     pub client: &'static str,
     pub transport: Transport,
     pub quality: OutputQuality,
     pub definitions: Arc<Vec<ToolSchemaRef>>,
+}
+impl ResponseMetadata {
+    pub fn with_session(mut self, session: Option<String>) -> Self {
+        self.session_id = super::types::normalized_session_id(session.as_deref());
+        self
+    }
 }
 #[derive(Default)]
 pub struct ObservationCounters {
@@ -348,6 +355,7 @@ mod budget_regression_tests {
     }
     fn metadata() -> ResponseMetadata {
         ResponseMetadata {
+            session_id: None,
             protocol: "anthropic_messages",
             client: "claude",
             transport: Transport::Sse,

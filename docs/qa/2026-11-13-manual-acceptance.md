@@ -1,14 +1,17 @@
 # Manual acceptance updates
 
-These results use the current 18-row pending-list numbering. They record the user's live feedback separately from automated regression results. No tracker fields were edited.
+These results use the browser's 41-record list reread on 2026-11-13 without reloading or editing tracker fields. They record the user's live feedback separately from automated regression results. Row numbers refer to this observed order and must be checked again after sorting or filtering changes.
 
 | Current row | Issue                                                                         | User acceptance                                                                                                                                   |
 | ----------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 3           | Claude Code model-list completeness                                           | Accepted by the user on their device. The separate test-device discrepancy was not independently resolved.                                        |
 | 8           | Slow tooltip on the first hover over a built-in tool-risk rule's reset button | Accepted on 2026-11-13. The user reported that the tooltip appeared quickly and explicitly passed the issue. No instrumented timing was recorded. |
-| 18          | Excessively bright switches in the dark theme                                 | Accepted on 2026-11-13. The user explicitly passed the visual brightness check.                                                                   |
+| 11          | Restart requirement after reselecting the current WorkBuddy model             | Accepted on 2026-11-13. The user explicitly passed reselecting the checked model without a new restart requirement.                               |
+| 19          | Excessively bright switches in the dark theme                                 | Accepted on 2026-11-13. Previously called row 18 in the earlier 18-record checklist; matched by issue title to browser row 19.                    |
 
-Rows 1, 2 and 5 were retired at the user's request. Other rows are not accepted by this record. The subsequent planned check is current row 17, direct single-Agent profile creation.
+Browser row 18 is the separate Qoder CN account-refresh report and has not been accepted by the user. The confirmed accepted browser rows are 3, 8, 11 and 19.
+
+Rows 1, 2 and 5 were retired at the user's request. Other rows are not accepted by this record. Row 17 and its IME follow-up remain awaiting retest. The subsequent planned check is current row 12, WorkBuddy hide-and-restore requests.
 
 ## Profile-name IME follow-up during row 17
 

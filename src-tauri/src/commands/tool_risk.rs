@@ -389,6 +389,7 @@ mod tests {
         .into_iter()
         .enumerate()
         .map(|(index, verdict)| ToolRiskEventInput {
+            session_id: None,
             timestamp: index as i64,
             source: "model_response".into(),
             stage: "proposed".into(),

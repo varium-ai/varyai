@@ -1557,13 +1557,24 @@ impl RequestForwarder {
                     super::tool_observation::parsers::PROTOCOL_GEMINI
                 }
             };
-            bridge_context.observation = Some(super::tool_observation::mount::metadata(
-                protocol,
-                client,
-                super::tool_observation::channel::Transport::Json,
-                super::tool_observation::channel::OutputQuality::Native,
-                Arc::new(definitions),
-            ));
+            bridge_context.observation = Some(
+                super::tool_observation::mount::metadata(
+                    protocol,
+                    client,
+                    super::tool_observation::channel::Transport::Json,
+                    super::tool_observation::channel::OutputQuality::Native,
+                    Arc::new(definitions),
+                )
+                .with_session(
+                    extensions
+                        .get::<super::tool_observation::mount::ClientToolSession>()
+                        .map(|session| session.0.clone())
+                        .unwrap_or_else(|| {
+                            self.session_client_provided
+                                .then(|| self.session_id.clone())
+                        }),
+                ),
+            );
         }
         Ok((
             bridge

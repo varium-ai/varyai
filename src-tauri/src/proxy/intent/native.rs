@@ -72,7 +72,22 @@ struct Projection {
     catalog: Value,
     model_map: Arc<BTreeMap<String, String>>,
 }
+/// Trusted in-memory projection retained only for local scheme rollback/undo.
+#[derive(Clone)]
+pub(crate) struct Snapshot(Option<Projection>);
+
 impl Native {
+    pub(crate) fn snapshot(&self) -> Result<Snapshot, &'static str> {
+        self.projection
+            .read()
+            .map(|projection| Snapshot(projection.clone()))
+            .map_err(|_| FAILED)
+    }
+    pub(crate) fn restore_snapshot(&self, snapshot: &Snapshot) -> Result<(), &'static str> {
+        *self.projection.write().map_err(|_| FAILED)? = snapshot.0.clone();
+        self.reset_status();
+        Ok(())
+    }
     pub fn publish_menu(
         &self,
         menu: impl Into<super::PublishedMenu>,

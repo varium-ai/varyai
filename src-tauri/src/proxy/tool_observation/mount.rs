@@ -3,6 +3,10 @@
 #[derive(Clone, Copy)]
 pub(crate) struct ClientToolObservation(pub &'static str);
 
+/// Client-owned session identity, distinct from internal routing affinity.
+#[derive(Clone)]
+pub(crate) struct ClientToolSession(pub Option<String>);
+
 use super::channel::{
     start_response, OutputQuality, ResponseMetadata, ResponseTap, ToolSchemaRef, Transport,
 };
@@ -24,6 +28,7 @@ pub fn metadata(
     definitions: Arc<Vec<ToolSchemaRef>>,
 ) -> ResponseMetadata {
     ResponseMetadata {
+        session_id: None,
         protocol,
         client,
         transport,

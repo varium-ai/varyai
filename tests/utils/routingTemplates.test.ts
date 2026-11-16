@@ -122,13 +122,14 @@ it("keeps unavailable templates with an actionable reason instead of inventing m
     { ...providers[0], models: [providers[0].models![3]] },
   ]);
   expect(one.map((template) => template.need)).toEqual([
-    "cheap",
+    undefined,
     "cheap",
     "providers",
   ]);
-  expect(one.every((template) => template.group.members.length === 0)).toBe(
-    true,
-  );
+  expect(one[0].group.members).toHaveLength(1);
+  expect(
+    one.slice(1).every((template) => template.group.members.length === 0),
+  ).toBe(true);
   expect(
     routingTemplates(
       providers.map((p) => ({ ...p, taskEligible: false })),

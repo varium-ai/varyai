@@ -287,7 +287,8 @@ it.each(
         ? "dailyCheckin.claimedReward"
         : "dailyCheckin.todayReward",
     );
-    expect(screen.getByText("dailyCheckin.noData")).toBeVisible();
+    if (app !== "qoder")
+      expect(screen.getByText("dailyCheckin.noData")).toBeVisible();
     expect(
       screen
         .getAllByRole("listitem")
@@ -325,3 +326,86 @@ it.each(["zcode", "trae"] as const)(
     ).not.toBeInTheDocument();
   },
 );
+
+it.each(["browser", "native"] as const)(
+  "refresh reads the detected %s native login only on explicit interaction",
+  async (source) => {
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({
+      ...initial,
+      source,
+      nativeAvailable: true,
+      accountId: null,
+      label: null,
+      outcome: "credentials_protected",
+    });
+    vi.mocked(agentRewardsApi.nativeAccount).mockResolvedValue({
+      ...initial,
+      source: "native",
+      nativeAvailable: true,
+    });
+    mount();
+    await screen.findByText("agentRewards.nativeAccessHint");
+    expect(agentRewardsApi.nativeAccount).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "agentRewards.refresh" }),
+    );
+    await screen.findByText("Synthetic account");
+    expect(agentRewardsApi.nativeAccount).toHaveBeenCalledOnce();
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+    expect(agentRewardsApi.startLogin).not.toHaveBeenCalled();
+    expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "agentRewards.refresh" }),
+    );
+    await waitFor(() =>
+      expect(agentRewardsApi.status).toHaveBeenCalledTimes(2),
+    );
+    expect(agentRewardsApi.nativeAccount).toHaveBeenCalledOnce();
+  },
+);
+
+it("shows only account-scoped confirmed Qoder dates and does not backfill from checkedAt", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    rewardDay: "2026-11-16",
+    confirmedDates: ["2026-11-14", "2026-11-16"],
+    checkedAt: Date.UTC(2026, 10, 15),
+    outcome: "already_checked",
+  });
+  mount();
+  await screen.findByText("Synthetic account");
+  const days = screen.getAllByRole("listitem");
+  expect(days.map((day) => day.dataset.date)).toEqual([
+    "2026-11-10",
+    "2026-11-11",
+    "2026-11-12",
+    "2026-11-13",
+    "2026-11-14",
+    "2026-11-15",
+    "2026-11-16",
+  ]);
+  expect(days.map((day) => day.dataset.state)).toEqual([
+    "unknown",
+    "unknown",
+    "unknown",
+    "unknown",
+    "complete",
+    "unknown",
+    "complete",
+  ]);
+  expect(screen.queryByText("dailyCheckin.streak")).not.toBeInTheDocument();
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    accountId: "b".repeat(64),
+    rewardDay: "2026-11-16",
+    confirmedDates: [],
+  });
+  fireEvent.click(screen.getByRole("button", { name: "agentRewards.refresh" }));
+  await waitFor(() =>
+    expect(
+      screen
+        .getAllByRole("listitem")
+        .every((day) => day.dataset.state === "unknown"),
+    ).toBe(true),
+  );
+});

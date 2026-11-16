@@ -3,7 +3,13 @@
 mod qoder_native;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 
 const APPS: [&str; 3] = ["trae", "qoder", "zcode"];
@@ -58,6 +64,7 @@ struct Observation {
     credit: Option<f64>,
     until: Option<i64>,
     window_key: Option<String>,
+    reward_day: Option<String>,
 }
 impl Observation {
     fn outcome(outcome: Outcome) -> Self {
@@ -71,6 +78,7 @@ impl Observation {
             credit: None,
             until: None,
             window_key: None,
+            reward_day: None,
         }
     }
     fn validate(mut self) -> Result<Self, String> {
@@ -116,6 +124,8 @@ struct Record {
 struct Store {
     enabled: BTreeMap<String, bool>,
     records: BTreeMap<String, Record>,
+    #[serde(default)]
+    qoder_dates: BTreeMap<String, BTreeSet<String>>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +143,8 @@ pub(crate) struct Status {
     credit: Option<f64>,
     checked_at: Option<i64>,
     next_check_at: Option<i64>,
+    reward_day: Option<String>,
+    confirmed_dates: Vec<String>,
 }
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,6 +192,28 @@ fn cached(record: &Record, native: &Observation, now: i64) -> bool {
             native.outcome,
             Outcome::NotChecked | Outcome::AlreadyChecked | Outcome::Inactive
         )
+}
+// A reward date names the official 10:00 UTC+8 window, not the time we observed it.
+fn qoder_reward_day(now: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(now - 2 * 3_600_000)
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+fn remember_qoder_date(app: &str, store: &mut Store, native: &Observation, now: i64) -> bool {
+    if app != "qoder" || !native.outcome.confirmed() {
+        return false;
+    }
+    let (Some(account), Some(day)) = (&native.account_id, &native.reward_day) else {
+        return false;
+    };
+    if day != &qoder_reward_day(now) {
+        return false;
+    }
+    let dates = store.qoder_dates.entry(key(app, account)).or_default();
+    let changed = dates.insert(day.clone());
+    let first = qoder_reward_day(now - 6 * 86_400_000);
+    dates.retain(|date| date >= &first && date <= day);
+    changed
 }
 impl Manager {
     pub(crate) fn new(path: PathBuf, db: Arc<crate::database::Database>) -> Self {
@@ -363,6 +397,15 @@ impl Manager {
             credit: native.credit.or_else(|| reward.and_then(|r| r.credit)),
             checked_at: record.or(saved).map(|r| r.checked_at),
             next_check_at: native.until.or_else(|| record.or(saved).map(|r| r.until)),
+            reward_day: (app == "qoder").then(|| qoder_reward_day(now)),
+            confirmed_dates: if app == "qoder" {
+                id.as_ref()
+                    .and_then(|id| store.qoder_dates.get(id))
+                    .map(|dates| dates.iter().cloned().collect())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         }
     }
     async fn remember_confirmed(
@@ -383,6 +426,7 @@ impl Manager {
             return Ok(());
         };
         let id = key(app, id);
+        let mut changed = remember_qoder_date(app, store, native, now);
         if !store
             .records
             .get(&id)
@@ -398,6 +442,9 @@ impl Manager {
                     window: native.window_key.clone(),
                 },
             );
+            changed = true;
+        }
+        if changed {
             self.save(store).await?;
         }
         Ok(())
@@ -460,6 +507,7 @@ impl Manager {
             .get(&key(app, id))
             .is_some_and(|r| cached(r, &native, now))
         {
+            self.remember_confirmed(app, store, &native).await?;
             return Ok(Self::snapshot(app, store, &native));
         }
         let result = if native.outcome == Outcome::NotChecked {
@@ -474,6 +522,7 @@ impl Manager {
                     .get(&key(app, id))
                     .is_some_and(|r| r.outcome.confirmed() && now < r.until))
         {
+            remember_qoder_date(app, store, &result, chrono::Utc::now().timestamp_millis());
             store.records.insert(
                 key(app, id),
                 Record {
@@ -601,6 +650,114 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn qoder_dates_persist_per_account_without_inventing_legacy_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rewards.json");
+        let db = Arc::new(crate::database::Database::memory().unwrap());
+        let manager = Manager::new(path.clone(), db.clone());
+        let mut store: Store = serde_json::from_value(json!({"enabled":{}, "records":{}})).unwrap();
+        let mut native = Observation::outcome(Outcome::AlreadyChecked);
+        native.account_id = Some("a".repeat(64));
+        native.until = Some(chrono::Utc::now().timestamp_millis() + 60_000);
+        native.window_key = Some("daily".into());
+        manager
+            .remember_confirmed("qoder", &mut store, &native)
+            .await
+            .unwrap();
+        assert!(Manager::snapshot("qoder", &store, &native)
+            .confirmed_dates
+            .is_empty());
+        native.reward_day = Some(qoder_reward_day(chrono::Utc::now().timestamp_millis()));
+        manager
+            .remember_confirmed("qoder", &mut store, &native)
+            .await
+            .unwrap();
+        manager
+            .remember_confirmed("qoder", &mut store, &native)
+            .await
+            .unwrap();
+        let store = Manager::new(path, db).read().await.unwrap();
+        assert_eq!(
+            Manager::snapshot("qoder", &store, &native).confirmed_dates,
+            vec![native.reward_day.clone().unwrap()]
+        );
+        native.account_id = Some("b".repeat(64));
+        assert!(Manager::snapshot("qoder", &store, &native)
+            .confirmed_dates
+            .is_empty());
+        native.account_id = None;
+        assert!(Manager::snapshot("qoder", &store, &native)
+            .confirmed_dates
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn qoder_claim_paths_remember_confirmed_dates_without_cross_account_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(
+            dir.path().join("rewards.json"),
+            Arc::new(crate::database::Database::memory().unwrap()),
+        );
+        let mut native = Observation::outcome(Outcome::AlreadyChecked);
+        let account = "a".repeat(64);
+        native.account_id = Some(account.clone());
+        native.reward_day = Some(qoder_reward_day(chrono::Utc::now().timestamp_millis()));
+        native.until = Some(chrono::Utc::now().timestamp_millis() + 60_000);
+        native.window_key = Some("daily".into());
+        let mut store = Store::default();
+        assert!(manager
+            .claim_locked("qoder", "other-account", &mut store, native.clone())
+            .await
+            .is_err());
+        assert!(store.qoder_dates.is_empty());
+        let status = manager
+            .claim_locked("qoder", &account, &mut store, native.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            status.confirmed_dates,
+            vec![native.reward_day.clone().unwrap()]
+        );
+        store.qoder_dates.clear();
+        let status = manager
+            .claim_locked("qoder", &account, &mut store, native.clone())
+            .await
+            .unwrap();
+        assert_eq!(status.confirmed_dates, vec![native.reward_day.unwrap()]);
+        assert_eq!(manager.read().await.unwrap().qoder_dates, store.qoder_dates);
+    }
+
+    #[test]
+    fn qoder_calendar_uses_ten_am_boundary_and_only_confirmed_current_windows() {
+        let before = chrono::DateTime::parse_from_rfc3339("2026-11-16T09:59:59+08:00")
+            .unwrap()
+            .timestamp_millis();
+        let now = before + 1000;
+        assert_eq!(qoder_reward_day(before), "2026-11-15");
+        assert_eq!(qoder_reward_day(now), "2026-11-16");
+        let mut store = Store::default();
+        let mut native = Observation::outcome(Outcome::Claimed);
+        native.account_id = Some("a".repeat(64));
+        native.reward_day = Some("2026-11-16".into());
+        assert!(remember_qoder_date("qoder", &mut store, &native, now));
+        assert!(!remember_qoder_date("qoder", &mut store, &native, now));
+        native.outcome = Outcome::Failed;
+        assert!(!remember_qoder_date("qoder", &mut store, &native, now));
+        native.outcome = Outcome::AlreadyChecked;
+        assert!(!remember_qoder_date("trae", &mut store, &native, now));
+        native.reward_day = Some("2026-11-17".into());
+        assert!(!remember_qoder_date("qoder", &mut store, &native, now));
+        native.reward_day = Some("2026-11-15".into());
+        assert!(!remember_qoder_date("qoder", &mut store, &native, now));
+        for offset in 1..9 {
+            let time = now + offset * 86_400_000;
+            native.reward_day = Some(qoder_reward_day(time));
+            assert!(remember_qoder_date("qoder", &mut store, &native, time));
+        }
+        assert_eq!(store.qoder_dates[&key("qoder", &"a".repeat(64))].len(), 7);
+    }
+
     #[tokio::test]
     async fn official_confirmation_survives_reopening_without_a_native_account() {
         let dir = tempfile::tempdir().unwrap();

@@ -182,6 +182,37 @@ trait Runtime {
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn wait_for_exit_with(
+    instances: &[Instance],
+    mut discover: impl FnMut() -> Result<Vec<Instance>, String>,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        let live = discover()?;
+        if live.iter().any(|app| {
+            instances.iter().any(|old| {
+                old.pid == app.pid
+                    && (old.bundle != app.bundle
+                        || app.launched_ms.is_some() && app.launched_ms != old.launched_ms)
+            })
+        }) {
+            return Err(CHANGED.into());
+        }
+        if !live
+            .iter()
+            .any(|app| instances.iter().any(|old| old.pid == app.pid))
+        {
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            return Err(RUNNING.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn relaunched(
     live: &[Instance],
     bundle: &std::path::Path,
@@ -483,12 +514,11 @@ mod macos {
             let mut found = Vec::new();
             for id in ids {
                 for app in applications(id).iter().filter(|app| !app.isTerminated()) {
-                    let instance = identity(&app, ids)?;
-                    // LaunchServices may retain an exiting app after its PID is gone.
-                    if instance.launched_ms.is_none() && process_gone(instance.pid) {
+                    // Ignore stale LaunchServices entries before reading bundle metadata.
+                    if process_gone(app.processIdentifier()) {
                         continue;
                     }
-                    found.push(instance);
+                    found.push(identity(&app, ids)?);
                 }
             }
             found.sort_by_key(|instance| instance.pid);
@@ -510,26 +540,23 @@ mod macos {
             app.terminate().then_some(()).ok_or_else(|| RUNNING.into())
         }
         fn wait_for_exit(&self, instances: &[Instance]) -> Result<(), String> {
-            let start = std::time::Instant::now();
-            loop {
-                let live = self.instances()?;
-                // AppKit can mark an app terminated before its process finishes
-                // cleanup. Launching then can hand the reopen to the exiting copy.
-                let original_alive =
-                    instances
-                        .iter()
-                        .any(|app| match process_launched_ms(app.pid) {
-                            Some(launched) => app.launched_ms == Some(launched),
-                            None => !process_gone(app.pid),
-                        });
-                if !original_alive && !live.iter().any(|app| instances.contains(app)) {
-                    return Ok(());
-                }
-                if start.elapsed() > std::time::Duration::from_secs(30) {
-                    return Err(RUNNING.into());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+            // AppKit's terminated state can precede kernel exit or retain stale metadata.
+            // Wait for the original PIDs; metadata loss alone never proves termination.
+            wait_for_exit_with(
+                instances,
+                || {
+                    let mut live = Vec::new();
+                    for instance in instances {
+                        if !process_gone(instance.pid) {
+                            let mut current = instance.clone();
+                            current.launched_ms = process_launched_ms(instance.pid);
+                            live.push(current);
+                        }
+                    }
+                    Ok(live)
+                },
+                std::time::Duration::from_secs(30),
+            )
         }
         fn open(&self, bundle: &std::path::Path) -> Result<(), String> {
             let roots = [
@@ -642,6 +669,24 @@ mod tests {
             self.wait_back_error
                 .map_or(Ok(()), |error| Err(error.into()))
         }
+    }
+
+    #[test]
+    fn shutdown_metadata_loss_is_not_process_exit() {
+        let old = vec![instance(Some(1000))];
+        let runtime = FakeRuntime::new(vec![vec![instance(None)], vec![]]);
+        assert_eq!(
+            wait_for_exit_with(
+                &old,
+                || runtime.instances(),
+                std::time::Duration::from_secs(1)
+            ),
+            Ok(())
+        );
+        assert!(
+            runtime.snapshots.borrow().is_empty(),
+            "shutdown completed before the original PID disappeared"
+        );
     }
 
     #[test]

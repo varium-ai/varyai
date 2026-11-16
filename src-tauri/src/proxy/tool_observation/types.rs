@@ -128,6 +128,18 @@ pub struct Correlation {
     pub identity_quality: Option<IdentityQuality>,
 }
 
+/// Retain only bounded client IDs; never synthesize or truncate session identity.
+pub(crate) fn normalized_session_id(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 256
+                && !id.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        })
+        .map(str::to_owned)
+}
+
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct ToolIdentity {
     pub client: Option<String>,
