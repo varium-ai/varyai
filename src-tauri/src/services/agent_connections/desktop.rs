@@ -178,6 +178,22 @@ trait Runtime {
     fn quit(&self, instance: &Instance) -> Result<(), String>;
     fn wait_for_exit(&self, instances: &[Instance]) -> Result<(), String>;
     fn open(&self, bundle: &std::path::Path) -> Result<(), String>;
+    fn wait_back(&self, bundle: &std::path::Path, previous: &[Instance]) -> Result<(), String>;
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn relaunched(
+    live: &[Instance],
+    bundle: &std::path::Path,
+    previous: &[Instance],
+) -> Result<bool, String> {
+    if live
+        .iter()
+        .any(|app| app.bundle != bundle || app.launched_ms.is_none() || previous.contains(app))
+    {
+        return Err(CHANGED.into());
+    }
+    Ok(!live.is_empty())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -226,7 +242,8 @@ fn restart_verified_with(
     if !runtime.instances()?.is_empty() {
         return Err(CHANGED.into());
     }
-    runtime.open(&target)
+    runtime.open(&target)?;
+    runtime.wait_back(&target, &instances)
 }
 
 pub(crate) fn restart(
@@ -496,7 +513,16 @@ mod macos {
             let start = std::time::Instant::now();
             loop {
                 let live = self.instances()?;
-                if !live.iter().any(|app| instances.contains(app)) {
+                // AppKit can mark an app terminated before its process finishes
+                // cleanup. Launching then can hand the reopen to the exiting copy.
+                let original_alive =
+                    instances
+                        .iter()
+                        .any(|app| match process_launched_ms(app.pid) {
+                            Some(launched) => app.launched_ms == Some(launched),
+                            None => !process_gone(app.pid),
+                        });
+                if !original_alive && !live.iter().any(|app| instances.contains(app)) {
                     return Ok(());
                 }
                 if start.elapsed() > std::time::Duration::from_secs(30) {
@@ -517,10 +543,26 @@ mod macos {
                 return Ok(());
             }
             let status = std::process::Command::new("/usr/bin/open")
+                // Request a fresh launch after the verified old process exits;
+                // LaunchServices may still retain its terminated application.
+                .arg("-n")
                 .arg(bundle)
                 .status()
                 .map_err(|_| FAILED)?;
             status.success().then_some(()).ok_or_else(|| FAILED.into())
+        }
+        fn wait_back(&self, bundle: &std::path::Path, previous: &[Instance]) -> Result<(), String> {
+            let start = std::time::Instant::now();
+            loop {
+                let live = self.instances()?;
+                if relaunched(&live, bundle, previous)? {
+                    return Ok(());
+                }
+                if start.elapsed() >= std::time::Duration::from_secs(20) {
+                    return Err(FAILED.into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
     }
 }
@@ -556,6 +598,8 @@ mod tests {
         events: RefCell<Vec<&'static str>>,
         quit_error: Option<&'static str>,
         wait_error: Option<&'static str>,
+        launch_error: Option<&'static str>,
+        wait_back_error: Option<&'static str>,
     }
 
     impl FakeRuntime {
@@ -565,6 +609,8 @@ mod tests {
                 events: RefCell::new(vec![]),
                 quit_error: None,
                 wait_error: None,
+                launch_error: None,
+                wait_back_error: None,
             }
         }
     }
@@ -589,7 +635,76 @@ mod tests {
         fn open(&self, bundle: &std::path::Path) -> Result<(), String> {
             assert_eq!(bundle, std::path::Path::new("/synthetic/Claude.app"));
             self.events.borrow_mut().push("open");
-            Ok(())
+            self.launch_error.map_or(Ok(()), |error| Err(error.into()))
+        }
+        fn wait_back(&self, _: &std::path::Path, _: &[Instance]) -> Result<(), String> {
+            self.events.borrow_mut().push("wait_back");
+            self.wait_back_error
+                .map_or(Ok(()), |error| Err(error.into()))
+        }
+    }
+
+    #[test]
+    fn successful_open_without_a_replacement_is_a_restart_failure() {
+        let old = vec![instance(Some(500))];
+        let mut runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
+        runtime.wait_back_error = Some(FAILED);
+        assert_eq!(
+            restart_with(&runtime, Some(2000), || true),
+            Err(FAILED.into())
+        );
+        assert!(runtime.events.borrow().contains(&"wait_back"));
+    }
+
+    #[test]
+    fn failed_launch_does_not_wait_for_an_unrelated_application() {
+        let old = vec![instance(Some(500))];
+        let mut runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
+        runtime.launch_error = Some(FAILED);
+        assert_eq!(
+            restart_with(&runtime, Some(2000), || true),
+            Err(FAILED.into())
+        );
+        assert!(!runtime.events.borrow().contains(&"wait_back"));
+    }
+
+    #[test]
+    fn relaunch_confirmation_requires_a_new_verified_instance_of_the_same_bundle() {
+        let old = instance(Some(500));
+        let previous = [old.clone()];
+        assert_eq!(relaunched(&[], &old.bundle, &previous), Ok(false));
+        assert_eq!(
+            relaunched(&previous, &old.bundle, &previous),
+            Err(CHANGED.into())
+        );
+        let replacement = Instance {
+            pid: 456,
+            launched_ms: Some(3000),
+            ..old.clone()
+        };
+        assert_eq!(
+            relaunched(&[replacement.clone()], &old.bundle, &previous),
+            Ok(true)
+        );
+        let reused = Instance {
+            launched_ms: Some(3000),
+            ..old.clone()
+        };
+        assert_eq!(relaunched(&[reused], &old.bundle, &previous), Ok(true));
+        for unexpected in [
+            Instance {
+                bundle: "/synthetic/Other.app".into(),
+                ..replacement.clone()
+            },
+            Instance {
+                launched_ms: None,
+                ..replacement
+            },
+        ] {
+            assert_eq!(
+                relaunched(&[unexpected], &old.bundle, &previous),
+                Err(CHANGED.into())
+            );
         }
     }
 
@@ -709,7 +824,8 @@ mod tests {
                 "quit",
                 "wait",
                 "instances",
-                "open"
+                "open",
+                "wait_back"
             ]
         );
     }

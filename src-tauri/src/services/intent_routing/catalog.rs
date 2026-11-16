@@ -895,14 +895,17 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let mut saved = Vec::new();
-        for models in [vec![], vec![], vec![json!({"model":"selected-model"})]] {
+        for (index, models) in [vec![], vec![], vec![json!({"model":"selected-model"})]]
+            .into_iter()
+            .enumerate()
+        {
             saved.push(db.save_routing_upstream(RoutingUpstream {
                 notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
                 id: String::new(),
-                name: "Synthetic relay".into(),
+                name: format!("Synthetic relay {index}"),
                 revision: 0,
                 enabled: true,
                 has_api_key: false,

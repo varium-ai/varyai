@@ -9,6 +9,11 @@ export interface QuotaCardOptions {
   toggle: () => void;
 }
 
+function poolLabel(name: string): string {
+  const [family, version] = name.split(/[ &]+/);
+  return /^\d/.test(version ?? "") ? `${family} ${version}` : family;
+}
+
 export function ProviderQuotaCard({
   name,
   items,
@@ -36,44 +41,75 @@ export function ProviderQuotaCard({
 }) {
   const { t, i18n } = useTranslation();
   const resets = items.flatMap(({ tier, label }) =>
-    tier.resetsAt && Number.isFinite(Date.parse(tier.resetsAt))
+    tier.utilization > 0 &&
+    tier.resetsAt &&
+    Number.isFinite(Date.parse(tier.resetsAt))
       ? [
-          `${label} · ${t("codexProvider.resets", {
-            time: new Date(tier.resetsAt).toLocaleString(i18n.language),
-          })}`,
+          {
+            label,
+            at: new Date(tier.resetsAt),
+          },
         ]
       : [],
   );
+  const resetText = (compact: boolean) =>
+    resets
+      .map(({ label, at }) => {
+        const today = at.toDateString() === new Date().toDateString();
+        const time = at.toLocaleString(
+          i18n.language,
+          compact
+            ? {
+                ...(today
+                  ? {}
+                  : { month: "short" as const, day: "numeric" as const }),
+                hour: "2-digit",
+                minute: "2-digit",
+              }
+            : undefined,
+        );
+        return `${label} · ${t("codexProvider.resets", { time })}`;
+      })
+      .join(compact ? " · " : "\n");
   return (
     <article
       className="tray-quota-card"
+      data-many={items.length > 4 || undefined}
       aria-label={name}
       aria-busy={fetching}
       title={title ?? name}
     >
-      <div className="tray-quota-info">
-        <div className="tray-quota-who">{name}</div>
-        <div className="tray-quota-line">
-          <span title={resets.join("\n")}>
-            {status ? t(status) : (resets[0] ?? t("trayPanel.quotaCurrent"))}
-          </span>
-          <button
-            type="button"
-            className="tray-quota-refresh"
-            aria-label={`${t("codexProvider.refreshQuota")} ${name}`}
-            disabled={disabled || fetching}
-            aria-busy={fetching}
-            onClick={refresh}
-          >
-            <RefreshCw
-              size={12}
-              aria-hidden="true"
-              className={
-                fetching ? "animate-spin motion-reduce:animate-none" : undefined
-              }
-            />
-          </button>
-        </div>
+      <div className="tray-quota-who" title={title ?? name}>
+        {name}
+      </div>
+      <div className="tray-quota-line">
+        <span title={resetText(false)}>
+          {status
+            ? t(status)
+            : resetText(true) ||
+              t(
+                items.length &&
+                  items.every(({ tier }) => tier.utilization === 0)
+                  ? "quotaPanel.unused"
+                  : "trayPanel.quotaCurrent",
+              )}
+        </span>
+        <button
+          type="button"
+          className="tray-quota-refresh"
+          aria-label={`${t("codexProvider.refreshQuota")} ${name}`}
+          disabled={disabled || fetching}
+          aria-busy={fetching}
+          onClick={refresh}
+        >
+          <RefreshCw
+            size={12}
+            aria-hidden="true"
+            className={
+              fetching ? "animate-spin motion-reduce:animate-none" : undefined
+            }
+          />
+        </button>
       </div>
       {loading ? (
         <div className="tray-quota-rings" aria-hidden="true">
@@ -98,15 +134,15 @@ export function ProviderQuotaCard({
                   key={`${tier.name}-${index}`}
                   onClick={card.toggle}
                   aria-label={`${label} · ${percent}% · ${t(card.remaining ? "trayPanel.quotaRemaining" : "trayPanel.quotaUsed")}`}
-                  title={
+                  title={`${label}${
                     tier.resetsAt && Number.isFinite(Date.parse(tier.resetsAt))
-                      ? t("codexProvider.resets", {
+                      ? `\n${t("codexProvider.resets", {
                           time: new Date(tier.resetsAt).toLocaleString(
                             i18n.language,
                           ),
-                        })
-                      : undefined
-                  }
+                        })}`
+                      : ""
+                  }`}
                 >
                   <span
                     className="tray-quota-dial"
@@ -116,18 +152,18 @@ export function ProviderQuotaCard({
                     aria-valuemax={100}
                     aria-valuenow={percent}
                   >
-                    <svg viewBox="0 0 36 36" aria-hidden="true">
+                    <svg viewBox="0 0 34 34" aria-hidden="true">
                       <circle
                         className="tray-quota-track"
-                        cx="18"
-                        cy="18"
-                        r="15"
+                        cx="17"
+                        cy="17"
+                        r="15.5"
                       />
                       <circle
                         className="tray-quota-fill"
-                        cx="18"
-                        cy="18"
-                        r="15"
+                        cx="17"
+                        cy="17"
+                        r="15.5"
                         pathLength="100"
                         strokeDasharray={`${percent} 100`}
                       />
@@ -137,7 +173,7 @@ export function ProviderQuotaCard({
                   <span className="tray-quota-window" title={label}>
                     {family ? (
                       <>
-                        <span>{family[1]}</span>
+                        <span>{poolLabel(family[1])}</span>
                         <span>{family[2]}</span>
                       </>
                     ) : (

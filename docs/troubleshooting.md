@@ -148,6 +148,18 @@ Use the corrected backend and refresh model discovery.
 
 ## Codex shows numbered provider names or interleaves provider models
 
+Provider names are checked for uniqueness when creating, copying or renaming
+them, after trimming outer whitespace and ignoring case. Editing keeps the
+current provider's ID excluded, and an unchanged normalized name remains valid
+even when historical duplicate names exist. If the editor reports a conflict
+immediately on opening an unchanged name, load a build with the corrected
+frontend validation. Giving old duplicates distinct names also makes their
+models easier to distinguish. The shared picker and Agent catalogs use
+those supplier names to distinguish identical model names. Existing duplicate
+sources retain a readable fallback until renamed; no provider is reassigned or
+deleted automatically. After a rename, refresh the client's model discovery if
+it still shows a cached label. Saved request aliases remain valid.
+
 Older VaryAI catalogs derived request model IDs from display labels. Removing
 Chinese characters could make different providers collide and add numeric
 suffixes to otherwise distinct labels. Model or provider renames could allocate
@@ -335,6 +347,8 @@ Claude Desktop and WorkBuddy can retain the model catalog they read when startin
 The restart action also remains available after disconnecting while a running copy still holds the previous connection. VaryAI keeps only a private timestamp and file fingerprints for this check, and refuses the action after an external edit or replacement process invalidates it. Configuration repair, restart and successful upstream inference are separate states. A configured row still needs a message in the tool and a corresponding request in Statistics for validation.
 
 The Codex connection belongs to the ChatGPT desktop app in the reported installation. This ChatGPT build uses the `com.openai.codex` bundle identifier. A confirmed manual restart closes and reopens the verified running application bundle, including `ChatGPT.app`, rather than launching a terminal CLI or only replacing its internal service. A current application can still be explicitly restarted; launch age alone does not invalidate the user's confirmed request. Configuration and process identity checks still reject an unsafe or replaced target. Automatic route-change handling remains separate from this manual whole-application restart.
+
+On macOS, restart waits for the original process to exit even if the system already marks its application as terminated, then requests a fresh launch of the same bundle. Success requires a new verified application instance within 20 seconds; a successful `open` command alone is insufficient. Windows also waits for the application to return. A confirmed Codex restart prompted by a stale model catalog uses the whole-application path after waiting for idle and rechecking configuration and service identities. If the application quits but does not return, reopen it manually and report the restart failure; a changed or unidentified installation is never replaced with a guessed launch target.
 
 For unsupported or unidentified installations, fully quit and reopen the tool yourself. CLI tools read changes in a new process or session. TRAE uses its own acknowledged bridge delivery and cleanup; follow its pending-bridge guidance and use **Apply again** to retry delivery. A pending bridge alone is not evidence that restarting would fix it.
 
@@ -643,7 +657,20 @@ TRAE client therefore shows a pending connection instead of a legacy-owner
 conflict. The transition does not change the global security-audit setting or
 launch an Agent.
 
-### Usage shows different model names or a Pi session provider
+### Usage shows different model names or session import sources
+
+The usage source filter includes recorded suppliers and usage imported from local
+client session logs. Entries previously named `Codex (Session)`, `Claude (Session)`
+or `Pi (Session)` are import placeholders, not providers created in the Providers
+page. They display as `Codex`, `Claude` and `Pi` alongside the other sources,
+without a separate group or import suffix. Source statistics and request logs
+use the same plain names. The currently selected provider cannot establish who
+served a historical session, so these records are not reassigned automatically.
+
+Source filtering still uses the original recorded names. A real provider with a
+session-like name keeps its name; if a real provider shares a placeholder's name,
+the combined name filter retains that raw label. Usage totals and saved provider
+configuration are unchanged.
 
 The model filter accepts observed request, response and billing model IDs within
 the selected time, application and provider range. Request logs show the billing
@@ -653,7 +680,7 @@ Models that have no usage in the selected range are not listed.
 
 Pi records the local `varyai` adapter as its provider when using the gateway. This
 adapter name does not identify the actual upstream supplier. New imports use the
-Pi session placeholder, and existing Pi session detail logs display `Pi (Session)`.
+Pi session placeholder, and existing Pi session detail logs display `Pi`.
 Historical rollups lack source metadata and retain their recorded provider
 attribution. No historical costs or provider configuration are rewritten.
 

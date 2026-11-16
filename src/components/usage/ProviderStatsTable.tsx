@@ -10,6 +10,7 @@ import {
 import { useProviderStats } from "@/lib/query/usage";
 import { fmtUsd } from "./format";
 import type { UsageRangeSelection } from "@/types/usage";
+import { UsageSourceLabel } from "./UsageSourceLabel";
 
 interface ProviderStatsTableProps {
   range: UsageRangeSelection;
@@ -44,7 +45,7 @@ export function ProviderStatsTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{t("usage.provider", "Provider")}</TableHead>
+            <TableHead>{t("usage.providerOrSource")}</TableHead>
             <TableHead className="text-right">
               {t("usage.requests", "请求数")}
             </TableHead>
@@ -76,7 +77,7 @@ export function ProviderStatsTable({
             stats?.map((stat) => (
               <TableRow key={stat.providerId}>
                 <TableCell className="font-medium">
-                  {stat.providerName}
+                  <UsageSourceLabel source={stat} />
                 </TableCell>
                 <TableCell className="text-right">
                   {stat.requestCount.toLocaleString()}

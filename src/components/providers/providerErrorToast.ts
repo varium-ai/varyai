@@ -34,6 +34,7 @@ export function showProviderError(
     "limit",
     "referenced",
     "sourceUnavailable",
+    "nameExists",
   ].includes(code)
     ? `modelProviders.${code}`
     : code === "invalid"

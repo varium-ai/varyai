@@ -143,6 +143,47 @@ it("shows relay balances and window rings using the saved provider revision", as
     7,
   );
 });
+it.each([0, 42])(
+  "keeps relay balances and rings without a trend chart at %s percent used",
+  async (utilization) => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([relay]);
+    vi.mocked(routingUpstreamsApi.quota).mockResolvedValue({
+      status: "ready",
+      balance: 5.25,
+      tiers: [
+        {
+          name: "daily",
+          utilization,
+          resetsAt: new Date((now + 3600) * 1000).toISOString(),
+        },
+      ],
+    });
+    const history = [
+      { at: now - 3600, remaining: 100, resetsAt: now + 3600, span: 86400 },
+    ];
+    vi.mocked(quotaPanelApi.history).mockResolvedValue(history);
+    vi.mocked(quotaPanelApi.note).mockResolvedValue(history);
+    mount();
+    const card = await screen.findByRole("article", { name: "Relay" });
+    expect(await within(card).findByText(/Balance:.*5.25/)).toBeVisible();
+    expect(within(card).getByRole("meter")).toHaveAttribute(
+      "aria-valuenow",
+      String(utilization),
+    );
+    expect(within(card).queryByRole("img")).not.toBeInTheDocument();
+    fireEvent.click(
+      within(card).getByRole("button", {
+        name: "codexProvider.refreshQuota Relay",
+      }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(2),
+    );
+    expect(quotaPanelApi.history).not.toHaveBeenCalled();
+    expect(quotaPanelApi.note).not.toHaveBeenCalled();
+  },
+);
 it("removes unsupported relay cards and headings while retaining a reported zero balance", async () => {
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
     relay,
@@ -179,6 +220,7 @@ it("shows an empty state when every relay is unsupported and can retry from the 
   expect(await screen.findByText(/Balance:.*5.25/)).toBeVisible();
   expect(screen.queryByText("trayPanel.quotaEmpty")).not.toBeInTheDocument();
   expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(2);
+  expect(routingUpstreamsApi.quota).toHaveBeenLastCalledWith(relay.id, 7, true);
 });
 it.each(["failed", "unauthorized"])(
   "keeps %s relay queries visible for retry",
@@ -303,6 +345,41 @@ it("probes a hidden relay six hours after the observation even if the tab reopen
   expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(2);
   client.clear();
 });
+it("retries a hidden relay after a temporary discovery failure in five minutes", async () => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([relay]);
+  vi.mocked(routingUpstreamsApi.quota).mockResolvedValue({
+    ...unsupported,
+    retryAfterMs: 5 * 60_000,
+  });
+  const view = mount(client);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("region")).not.toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5 * 60_000 - 1000);
+  });
+  expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(1);
+  vi.mocked(routingUpstreamsApi.quota).mockResolvedValue({
+    status: "ready",
+    balance: 5.25,
+    tiers: [],
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(2);
+  expect(screen.getByText(/Balance:.*5.25/)).toBeVisible();
+  expect(routingUpstreamsApi.quota).toHaveBeenLastCalledWith(relay.id, 7);
+  view.unmount();
+  client.clear();
+});
 it("names unavailable observations instead of inventing a zero balance", async () => {
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
     {
@@ -364,7 +441,13 @@ it("keeps model pools and their window spans distinct", async () => {
   const card = await screen.findByRole("article", { name: "Antigravity" });
   expect(await within(card).findByText("5h")).toBeVisible();
   expect(within(card).getByText("7d")).toBeVisible();
-  expect(within(card).getAllByText("Claude & GPT")).toHaveLength(2);
+  expect(within(card).getAllByText("Claude")).toHaveLength(2);
+  expect(
+    within(card).getByRole("meter", { name: "Claude & GPT 5h" }),
+  ).toBeVisible();
+  expect(
+    within(card).getByRole("meter", { name: "Claude & GPT 7d" }),
+  ).toBeVisible();
 });
 it("defaults to remaining percentages and retains an exhausted independent model pool", async () => {
   localStorage.removeItem("vary:tray-quota-left");

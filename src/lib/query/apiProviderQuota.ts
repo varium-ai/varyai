@@ -14,6 +14,9 @@ interface AllowanceSnapshot {
 
 export type ApiProviderQuotaObservation = UseQueryResult<AllowanceSnapshot>;
 
+export const apiProviderQuotaKey = (record: RoutingUpstream) =>
+  ["routing-provider-quota", record.id, record.revision] as const;
+
 export function apiProviderQuotaEnabled(record: RoutingUpstream) {
   return (
     record.source.kind === "api" &&
@@ -29,15 +32,21 @@ export function apiProviderQuotaOptions(
   client: QueryClient,
   poll = false,
 ) {
-  const queryKey = ["routing-provider-quota", record.id, record.revision];
+  const queryKey = apiProviderQuotaKey(record);
   const missingInterfaceTtl = 6 * 60 * 60_000;
+  const unsupportedTtl = (snapshot?: AllowanceSnapshot) => {
+    const retry = snapshot?.quota?.retryAfterMs;
+    return retry != null && Number.isFinite(retry)
+      ? Math.max(1000, Math.min(missingInterfaceTtl, retry))
+      : missingInterfaceTtl;
+  };
   return {
     queryKey,
     enabled: apiProviderQuotaEnabled(record),
     retry: false,
     staleTime: (query: { state: { data?: AllowanceSnapshot } }) =>
       query.state.data?.quota?.status === "unsupported"
-        ? missingInterfaceTtl
+        ? unsupportedTtl(query.state.data)
         : 60_000,
     gcTime: missingInterfaceTtl,
     refetchInterval: (query: {
@@ -47,7 +56,8 @@ export function apiProviderQuotaOptions(
         ? query.state.data?.quota?.status === "unsupported"
           ? Math.max(
               1000,
-              missingInterfaceTtl - (Date.now() - query.state.dataUpdatedAt),
+              unsupportedTtl(query.state.data) -
+                (Date.now() - query.state.dataUpdatedAt),
             )
           : 60_000
         : false,
@@ -57,10 +67,9 @@ export function apiProviderQuotaOptions(
       const snapshot = client.getQueryData<AllowanceSnapshot>(queryKey);
       const previous = snapshot?.quota;
       try {
-        const quota = await routingUpstreamsApi.quota(
-          record.id,
-          record.revision,
-        );
+        const quota = await (client.getQueryState(queryKey)?.isInvalidated
+          ? routingUpstreamsApi.quota(record.id, record.revision, true)
+          : routingUpstreamsApi.quota(record.id, record.revision));
         if (quota.status === "unsupported" && previous?.status === "ready") {
           return {
             quota: previous,

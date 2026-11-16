@@ -2235,7 +2235,7 @@
     "freshInput": "Fresh Input",
     "cacheHitRate": "Cache Hit Rate",
     "requestLogs": "Request Logs",
-    "providerStats": "Provider Stats",
+    "providerStats": "Source Stats",
     "modelStats": "Model Stats",
     "time": "Time",
     "provider": "Provider",
@@ -2324,6 +2324,7 @@
     "allSources": "All Sources",
     "allModels": "All Models",
     "filterBySource": "Filter by source",
+    "providerOrSource": "Provider / source",
     "filterByModel": "Filter by model",
     "refreshInterval": "Auto-refresh interval",
     "refreshOff": "Off",
@@ -5045,6 +5046,7 @@
     "gatewayUnavailable": "Gateway status unavailable"
   },
   "modelProviders": {
+    "nameExists": "A provider with this name already exists. Choose a different name.",
     "searchPlaceholder": "Name, endpoint or model",
     "searchScope": "Search names, endpoint hosts and model IDs or names. Space-separated terms must all match.",
     "matchedModels": "Matching models",
@@ -5930,6 +5932,7 @@
     "setupReadFailed": "Cannot read the VaryAI storage location. Check the data-directory setting and permissions."
   },
   "quotaPanel": {
+    "unused": "Not used yet",
     "autoResets": "Auto-use resets:",
     "whenWeekExhausted": "When the weekly allowance runs out",
     "beforeExpiry": "Before a reset expires",

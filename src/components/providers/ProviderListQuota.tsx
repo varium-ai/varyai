@@ -189,7 +189,7 @@ export function ProviderListQuota({
   card?: QuotaCardOptions;
 }) {
   if (record.source.kind === "api")
-    return <ApiProviderQuota record={record} card={card} />;
+    return card ? <ApiProviderQuota record={record} card={card} /> : null;
   if (record.source.kind === "codex")
     return <CodexListQuota record={record} card={card} />;
   return (
