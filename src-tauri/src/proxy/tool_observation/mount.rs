@@ -78,6 +78,9 @@ pub fn collect_tool_schemas(body: &Value, client: &str) -> Arc<Vec<ToolSchemaRef
     collect_tool_schemas_from_tools(tools, client)
 }
 
+// Catalog scanning counts extension tools as well as supported built-ins.
+const MAX_CATALOG_TOOLS: usize = 1024;
+
 /// Borrow actual outbound definitions so size limits precede any payload copy.
 pub(crate) fn collect_tool_schemas_from_tools(
     tools: &[Value],
@@ -92,7 +95,7 @@ pub(crate) fn collect_tool_schemas_from_tools(
         "pi" => PI_TOOLS_SCHEMA,
         _ => return Arc::new(Vec::new()),
     };
-    if tools.len() > 64 {
+    if tools.len() > MAX_CATALOG_TOOLS {
         return Arc::new(Vec::new());
     }
     let mut candidates = Vec::new();
@@ -101,12 +104,12 @@ pub(crate) fn collect_tool_schemas_from_tools(
             candidates.push(tool);
             continue;
         };
-        if declarations.len() > 64 {
+        if candidates.len().saturating_add(declarations.len()) > MAX_CATALOG_TOOLS {
             return Arc::new(Vec::new());
         }
         candidates.extend(declarations.iter());
     }
-    if candidates.len() > 64 {
+    if candidates.len() > MAX_CATALOG_TOOLS {
         return Arc::new(Vec::new());
     }
     let mut names = std::collections::HashMap::new();
@@ -300,6 +303,27 @@ mod protocol_regression_tests {
         assert!(collect_tool_schemas_from_tools(&[oversized], "codex").is_empty());
     }
     #[test]
+    fn catalog_scan_budget_retains_builtin_and_rejects_overflow_and_late_duplicates() {
+        let tool = json!({"type":"function","name":"exec_command","parameters":{
+            "type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]
+        }});
+        let extension = json!({"type":"function","name":"synthetic_extension"});
+        let mut tools = vec![extension.clone(); MAX_CATALOG_TOOLS - 1];
+        tools.push(tool.clone());
+        assert_eq!(collect_tool_schemas_from_tools(&tools, "codex").len(), 1);
+        tools.push(extension);
+        assert!(collect_tool_schemas_from_tools(&tools, "codex").is_empty());
+        let mut duplicate = tools[..330].to_vec();
+        duplicate.push(tool.clone());
+        let mut alias = tool;
+        alias["name"] = json!(" exec_command ");
+        duplicate.push(alias);
+        assert!(collect_tool_schemas_from_tools(&duplicate, "codex").is_empty());
+        let overflow = json!({"functionDeclarations":tools});
+        assert!(collect_tool_schemas_from_tools(&[overflow], "gemini").is_empty());
+    }
+
+    #[test]
     fn verified_request_schema_is_required_for_semantic_mapping() {
         let body = json!({"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]});
         let defs = collect_tool_schemas(&body, "claude");
@@ -342,6 +366,84 @@ mod upstream_stream_tests {
             ),
         )
     }
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn large_catalog_keeps_permission_risk_events_for_codex_and_pi() {
+        struct Reset(ToolRiskRuntime);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_tool_risk_runtime_for_test(self.0.clone());
+            }
+        }
+        let _reset = Reset((*get_tool_risk_runtime()).clone());
+        for (client, tool, field) in [("codex", "exec_command", "cmd"), ("pi", "bash", "command")] {
+            for transport in [Transport::Json, Transport::Sse] {
+                let (_, mut rx) = test_channel().await;
+                let mut metadata = enable();
+                let mut tools: Vec<Value> = (0..330)
+                    .map(|index| {
+                        json!({
+                            "type":"function","name":format!("synthetic_extension_{index}"),
+                            "parameters":{"type":"object","properties":{}}
+                        })
+                    })
+                    .collect();
+                tools.push(json!({"type":"function","name":tool,"parameters":{
+                    "type":"object","properties":{(field):{"type":"string"}},"required":[field]
+                }}));
+                metadata.client = client;
+                metadata.transport = transport;
+                metadata.session_id = Some("synthetic-large-catalog-session".into());
+                metadata.definitions = collect_tool_schemas_from_tools(&tools, client);
+                let call = json!({"index":0,"id":"synthetic-call","type":"function","function":{
+                    "name":tool,"arguments":json!({(field):"chmod 4755 /tmp/synthetic-permission-fixture"}).to_string()
+                }});
+                let bytes = if transport == Transport::Json {
+                    Bytes::from(json!({"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[call]},"finish_reason":"tool_calls"}]}).to_string())
+                } else {
+                    let delta = json!({"choices":[{"index":0,"delta":{"tool_calls":[call]}}]});
+                    let end =
+                        json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+                    Bytes::from(format!("data: {delta}\n\ndata: {end}\n\n"))
+                };
+                if transport == Transport::Json {
+                    observe_non_streaming(&bytes, metadata);
+                } else {
+                    let output =
+                        observe_stream(futures::stream::iter(vec![Ok(bytes.clone())]), metadata)
+                            .collect::<Vec<_>>()
+                            .await;
+                    assert_eq!(output.len(), 1);
+                    assert_eq!(output[0].as_ref().unwrap(), &bytes);
+                }
+                let piece = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let observations = ResponseProcessor::default().ingest(&piece);
+                assert_eq!(observations.len(), 1);
+                let event = crate::services::tool_risk::worker::project_event(&observations[0])
+                    .expect(
+                        "known permission-changing tool must produce an event in a large catalog",
+                    );
+                assert_eq!(
+                    event.verdict.as_deref(),
+                    Some("risky"),
+                    "client={client}, streaming={}",
+                    transport == Transport::Sse
+                );
+                assert!(event
+                    .rule_ids
+                    .iter()
+                    .any(|id| id == "builtin.privilege_change"));
+                assert_eq!(
+                    event.session_id.as_deref(),
+                    Some("synthetic-large-catalog-session")
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn error_and_client_drop_preserve_bytes_but_never_complete_pending_call() {
