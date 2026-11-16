@@ -47,6 +47,7 @@ pub(crate) async fn temporary_catalog_with_settings(
         !session.targets.is_empty() && session.targets.iter().all(|t| t.official),
         &mut catalog["models"][0],
     );
+    super::client::advertise_tool_search(&mut catalog["models"][0], session);
     tokio::task::spawn_blocking(move || {
         use std::io::Write;
         let mut file = tempfile::Builder::new()

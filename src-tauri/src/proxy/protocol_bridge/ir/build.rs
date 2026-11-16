@@ -146,16 +146,21 @@ fn custom_function(native: &Value, namespace: Option<&str>) -> Result<Tool, Prox
 fn portable_tool(tool: &Tool) -> Result<Vec<Tool>, ProxyError> {
     match tool.kind.as_str() {
         "tool_search" => {
-            if !client_tool_search(tool.native.as_ref().ok_or_else(invalid)?) {
+            let native = tool.native.as_ref().ok_or_else(invalid)?;
+            if !client_tool_search(native) {
+                return Err(invalid());
+            }
+            let (description, schema) =
+                crate::proxy::providers::transform_codex_chat::tool_search_definition(native);
+            if !schema.is_object() && !schema.is_boolean() {
                 return Err(invalid());
             }
             Ok(vec![Tool {
                 kind: "function".into(),
                 native: None,
                 name: crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_PROXY_NAME.into(),
-                description: crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_DESCRIPTION
-                    .into(),
-                schema: crate::proxy::providers::transform_codex_chat::tool_search_parameters(),
+                description,
+                schema,
                 strict: None,
                 deferred: false,
             }])
@@ -1795,6 +1800,32 @@ mod tests {
                 .contains("c3ludGhldGlj"));
         }
     }
+    #[test]
+    fn codex_tool_search_preserves_the_client_discovery_contract() -> Result<(), ProxyError> {
+        let declaration = json!({
+            "type":"tool_search", "execution":"client",
+            "description":"Search the synthetic records and calendar namespaces when needed.",
+            "parameters":{"type":"object","properties":{
+                "query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":5}
+            },"required":["query","limit"],"additionalProperties":false}
+        });
+        let source = json!({"model":"synthetic","input":"Hello","tools":[declaration]});
+        let parsed = super::super::parse::request(Protocol::Responses, &source, "/v1/responses")?;
+        for target in [Protocol::Chat, Protocol::Anthropic, Protocol::Gemini] {
+            let built = request(&parsed, target)?;
+            let portable = super::super::parse::request(
+                target,
+                &built,
+                "/v1beta/models/synthetic:generateContent",
+            )?;
+            let search = portable.tools.first().ok_or_else(invalid)?;
+            assert_eq!(search.name, "tool_search");
+            assert_eq!(search.description, declaration["description"]);
+            assert_eq!(search.schema, declaration["parameters"]);
+        }
+        Ok(())
+    }
+
     #[test]
     fn responses_client_tool_search_supports_initial_and_loaded_tool_turns() {
         let declaration = json!({"type":"tool_search","execution":"client"});

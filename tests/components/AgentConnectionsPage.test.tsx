@@ -2131,8 +2131,91 @@ describe("Agent connections", () => {
     },
   );
 
+  it.each([
+    ["Macintosh", "current", "stale_catalog"],
+    ["Windows NT 10.0", "current", "stale_catalog"],
+    ["Macintosh", "restart_required", "stopped"],
+    ["Windows NT 10.0", "restart_required", "stopped"],
+    ["Macintosh", "current", "waiting_for_idle"],
+    ["Windows NT 10.0", "current", "waiting_for_idle"],
+  ] as const)(
+    "confirms an immediate Codex restart on %s (%s, %s) and waits for its actual result",
+    async (userAgent, desktopState, reloadState) => {
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(userAgent);
+      const platform = vi
+        .spyOn(navigator, "platform", "get")
+        .mockReturnValue("");
+      let fail!: (cause: string) => void;
+      vi.mocked(agentConnectionsApi.restart).mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            fail = reject;
+          }),
+      );
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "codex",
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: true,
+          desktopState,
+          reloadState,
+        },
+      ]);
+      try {
+        mount();
+        const row = await screen.findByRole("article", { name: "apps.codex" });
+        fireEvent.click(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        );
+        const dialog = await screen.findByRole("dialog");
+        expect(dialog).toHaveAccessibleDescription(
+          userAgent.startsWith("Windows")
+            ? "agentConnections.codexRestartConfirmHintWindows"
+            : "agentConnections.codexRestartConfirmHint",
+        );
+        expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+        fireEvent.click(
+          within(dialog).getByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        await waitFor(() =>
+          expect(agentConnectionsApi.restart).toHaveBeenCalledWith(
+            "codex",
+            true,
+          ),
+        );
+        expect(within(row).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.restarting",
+        );
+        expect(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        ).toBeDisabled();
+        await act(async () => fail("agentConnections.restartBlocked"));
+        await waitFor(() =>
+          expect(toast.error).toHaveBeenCalledWith(
+            "agentConnections.restartBlocked",
+          ),
+        );
+        expect(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        ).toBeEnabled();
+      } finally {
+        if (fail)
+          await act(async () => fail("agentConnections.restartBlocked"));
+        ua.mockRestore();
+        platform.mockRestore();
+      }
+    },
+  );
+
   it.each(["waiting_for_idle", "restarting"] as const)(
-    "shows Codex reload progress %s without offering another restart",
+    "shows Codex automatic reload progress %s and permits manual override only while waiting",
     async (reloadState) => {
       vi.mocked(agentConnectionsApi.list).mockResolvedValue([
         {
@@ -2152,9 +2235,11 @@ describe("Agent connections", () => {
           ? "agentConnections.states.waitingForIdle"
           : "agentConnections.states.reloading",
       );
-      expect(
-        within(row).queryByRole("button", { name: "agentConnections.restart" }),
-      ).not.toBeInTheDocument();
+      const restart = within(row).queryByRole("button", {
+        name: "agentConnections.restart",
+      });
+      if (reloadState === "waiting_for_idle") expect(restart).toBeEnabled();
+      else expect(restart).not.toBeInTheDocument();
       expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
     },
   );

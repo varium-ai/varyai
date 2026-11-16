@@ -233,7 +233,88 @@ fn current_background_server_clears_window_age_without_claiming_inference_succes
         assert_eq!(result.reload_state, Some(reload));
         assert_eq!(
             result.restart_required,
-            reload == agent_connections::ReloadState::StaleCatalog
+            matches!(
+                reload,
+                agent_connections::ReloadState::StaleCatalog
+                    | agent_connections::ReloadState::WaitingForIdle
+            )
         );
+    }
+}
+
+fn codex_restart_fixture(reload: agent_connections::ReloadState) -> Status {
+    with_codex_reload(
+        Status {
+            app: "codex".into(),
+            enabled: true,
+            configured: true,
+            recovery_pending: false,
+            recovery_reason: None,
+            model: None,
+            restart_required: false,
+            reload_state: None,
+            desktop_state: None,
+            native_compatibility: None,
+            configuration_issue: None,
+        },
+        Some(reload),
+        Some(agent_connections::desktop::State::Current),
+    )
+}
+
+#[tokio::test]
+async fn confirmed_codex_restart_enters_native_lifecycle_without_queuing_for_idle() {
+    use agent_connections::ReloadState;
+    for reload in [
+        ReloadState::StaleCatalog,
+        ReloadState::Failed,
+        ReloadState::WaitingForIdle,
+    ] {
+        let called = std::cell::Cell::new(false);
+        let result = restart_confirmed_codex(codex_restart_fixture(reload), async {
+            called.set(true);
+            Err("agentConnections.restartBlocked".into())
+        })
+        .await;
+        assert!(
+            called.get(),
+            "confirmed {reload:?} restart must enter the native lifecycle"
+        );
+        assert_eq!(result, Err("agentConnections.restartBlocked".into()));
+    }
+}
+
+#[tokio::test]
+async fn confirmed_codex_restart_stays_pending_until_native_relaunch_finishes() {
+    let (finish, completion) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let restart = restart_confirmed_codex(
+        codex_restart_fixture(agent_connections::ReloadState::StaleCatalog),
+        async { completion.await.map_err(|_| "synthetic channel closed")? },
+    );
+    tokio::pin!(restart);
+    assert!(futures::poll!(&mut restart).is_pending());
+    assert!(finish.send(Ok(())).is_ok());
+    assert_eq!(restart.await, Ok(()));
+}
+
+#[tokio::test]
+async fn confirmed_codex_restart_preserves_conflict_and_changed_state_guards() {
+    for reload in [
+        agent_connections::ReloadState::StaleCatalog,
+        agent_connections::ReloadState::WaitingForIdle,
+        agent_connections::ReloadState::Current,
+    ] {
+        let mut status = codex_restart_fixture(reload);
+        status.recovery_pending = reload != agent_connections::ReloadState::Current;
+        let expected = if status.recovery_pending {
+            agent_connections::CONFLICT
+        } else {
+            "agentConnections.restartChanged"
+        };
+        let result = restart_confirmed_codex(status, async {
+            panic!("invalid state must not enter the native lifecycle")
+        })
+        .await;
+        assert_eq!(result, Err(expected.into()));
     }
 }

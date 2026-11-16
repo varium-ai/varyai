@@ -8,6 +8,14 @@ attribution.
 
 ## Pinned source revisions
 
+- `e97271f02741ec12111e7641c0e669062a6e9b04`: Codex catalog file reuse and
+  malformed-list recovery, reviewed in `internal/agent/codex.go`
+  (`codexIn`, `writeOwnList`, `catalogParses`). Magpie keeps one
+  `magpie-models.json` path. VaryAI reuses its latest owned catalog path,
+  preserves historical paths and aliases, and uses its existing guarded file
+  replacement with rollback when configuration publication fails. Refreshes
+  no longer consume a cumulative 64-file publication allowance.
+
 - `c5b9e448a8bc9bc2a1bf6704e5d8bb3384d084a6`: quick-panel allowance cards,
   reviewed in `internal/gui/assets/app.js` (`renderPanelQuota`,
   `panelQuotaCard`), `app.css` and the panel quota lazy-loading/refresh tests.

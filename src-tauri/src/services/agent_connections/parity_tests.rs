@@ -351,7 +351,14 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     assert_eq!(restored["theme"], "edited");
     assert!(restored.get("model").is_none());
     assert!(fs::read_to_string(&jsonc)?.contains("// retained comment"));
-    for app in ["claude", "kimi", "qwen", "zcode", "workbuddy"] {
+    for app in [
+        "claude",
+        "kimi",
+        "qwen",
+        "zcode",
+        "workbuddy",
+        "workbuddy-ai",
+    ] {
         let first = build(app, &menu, "http://127.0.0.1:1", selected)?;
         assert!(!first.model_map.is_empty(), "{app}");
         let mut renamed = menu.clone();
@@ -367,7 +374,27 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
             &ModelVisibility::default(),
             Some(&first),
         )?;
-        assert_eq!(first.model_map, second.model_map, "{app}");
+        if matches!(app, "workbuddy" | "workbuddy-ai") {
+            assert_eq!(second.model_map.len(), first.model_map.len() + 1, "{app}");
+            for (wire, alias) in &first.model_map {
+                assert_eq!(second.model_map.get(wire), Some(alias), "{app}");
+            }
+            assert_eq!(
+                second.model_map.get("Renamed").map(String::as_str),
+                Some(selected)
+            );
+            assert_eq!(
+                model_wire(
+                    &second.model_map,
+                    second.visible_models.as_deref(),
+                    selected
+                ),
+                "Renamed",
+                "{app} must publish the current name while retaining old request aliases"
+            );
+        } else {
+            assert_eq!(first.model_map, second.model_map, "{app}");
+        }
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     assert!(matches!(

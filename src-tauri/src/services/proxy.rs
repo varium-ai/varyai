@@ -1061,22 +1061,6 @@ impl ProxyService {
         }
     }
 
-    pub(crate) fn request_codex_reload(&self) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", windows))]
-        {
-            self.codex_app_server_worker
-                .lock()
-                .map_err(|_| "agentConnections.restartFailed")?
-                .as_ref()
-                .ok_or("agentConnections.restartUnsupported")?
-                .request_restart()
-        }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            Err("agentConnections.restartUnsupported".into())
-        }
-    }
-
     pub(crate) async fn lock_switch_for_app(
         &self,
         app_type: &str,

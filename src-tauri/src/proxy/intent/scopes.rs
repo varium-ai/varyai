@@ -125,6 +125,7 @@ pub(super) enum HistoryPolicy {
     #[default]
     Strict,
     Portable,
+    VisibleChatReplay,
     ResponsesReplay,
 }
 impl HistoryPolicy {
@@ -254,6 +255,12 @@ impl Conversations {
             if (saved != expected || saved.is_empty())
                 && !matches!(policy, HistoryPolicy::ResponsesReplay)
             {
+                // A complete visible Chat transcript does not depend on a
+                // retired target's server-side state. Start a fresh scope for
+                // the explicitly selected single target after configuration edits.
+                if matches!(policy, HistoryPolicy::VisibleChatReplay) && length::portable(body) {
+                    continue;
+                }
                 return Err("routing_unknown_continuation");
             }
             if entries.len() >= MAX_CONVERSATIONS {
