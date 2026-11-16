@@ -5579,6 +5579,7 @@
     "templateThrifty": "便宜优先",
     "templateSteady": "不中断",
     "templateSmartHint": "复杂任务用最强模型，简单任务和上下文压缩用便宜模型。",
+    "templateSmartSameModelHint": "未找到更便宜的模型，复杂任务、简单任务和上下文压缩将使用同一个模型，不会降低模型成本。",
     "templateThriftyHint": "优先用便宜模型；高推理强度或便宜模型都失败时，用最强模型。",
     "templateSteadyHint": "每家供应商最强的模型依次后备，一家不可用也不打断 Agent。",
     "addTemplate": "添加",

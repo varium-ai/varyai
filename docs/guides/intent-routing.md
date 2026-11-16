@@ -89,6 +89,8 @@ Use **Manage** beside **Refresh** only for list selection and bulk removal. It d
 
 The three template cards remain visible above the list for both empty and populated catalogs, including while batch management is active. Choose **Add** on a card to open its suggested models and rules in the editor, then review and save. Templates are independent of Manage and do not save or publish a group when opened.
 
+The smart template can reuse one task model when no cheaper model is available. Hard tasks, easy tasks and compaction then reference one member, without duplicate members or self fallback. Its card explains that this does not reduce model costs. The classifier still requires a compatible provider. The cheaper-model requirement for the thrift template and the separate-provider requirement for the resilience template remain unchanged.
+
 Row operations track pending state by group ID. Publishing, changing a manual target or deleting a group disables only that group's conflicting controls. Other rows, templates and the toolbar remain available during background synchronization. Saving closes the editor after persistence and keeps only the saved row busy until synchronization finishes. Completion or failure of one operation never releases another operation's controls. Membership and ordering writes are serialized against the latest catalog so concurrent removals and reordering retain all current group IDs. Sorting temporarily disables drag handles while other row actions remain available.
 
 Reload only shows a spinning icon on its own button and prevents repeated clicks

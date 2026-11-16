@@ -5583,6 +5583,7 @@
     "templateThrifty": "Cheap first",
     "templateSteady": "Never stuck",
     "templateSmartHint": "A hard task goes to the strongest model, an easy one and compaction to a cheap one.",
+    "templateSmartSameModelHint": "No cheaper model was found. Hard tasks, easy tasks and compaction use the same model, without reducing model costs.",
     "templateThriftyHint": "A cheap model first; the strongest for high reasoning, or when the cheap ones fail.",
     "templateSteadyHint": "The strongest model of each provider, each behind the other: one down does not stop the Agent.",
     "addTemplate": "Add",

@@ -1716,7 +1716,15 @@ export function IntentRoutingPanel({
               className={template.need ? "off" : undefined}
             >
               <b>{t(`routingPage.${template.key}`)}</b>
-              <p>{t(`routingPage.${template.key}Hint`)}</p>
+              <p>
+                {t(
+                  template.key === "templateSmart" &&
+                    !template.need &&
+                    template.group.members.length === 1
+                    ? "routingPage.templateSmartSameModelHint"
+                    : `routingPage.${template.key}Hint`,
+                )}
+              </p>
               <span>
                 <AccountLabel title>
                   {template.need

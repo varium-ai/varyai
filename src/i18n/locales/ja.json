@@ -5505,6 +5505,7 @@
     "templateThrifty": "安価なモデルを優先",
     "templateSteady": "止まらない",
     "templateSmartHint": "難しい課題は最強のモデルへ、簡単な課題と圧縮は安価なモデルへ。",
+    "templateSmartSameModelHint": "安価なモデルが見つからないため、難しい課題・簡単な課題・圧縮に同じモデルを使用します。モデルのコスト削減にはなりません。",
     "templateThriftyHint": "安価なモデルを優先し、高い推論強度や失敗時には最強のモデルを使用。",
     "templateSteadyHint": "各プロバイダーの最強モデルを順に使用し、1社が停止しても Agent を継続。",
     "addTemplate": "追加",
