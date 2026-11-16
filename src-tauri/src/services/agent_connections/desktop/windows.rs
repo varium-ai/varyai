@@ -344,6 +344,21 @@ mod tests {
         );
         assert!(runtime.events.borrow().contains(&"launch"));
     }
+
+    #[test]
+    fn windows_restart_requires_a_replacement_after_a_successful_launch() {
+        let processes = vec![process()];
+        let mut runtime = Fake::new(vec![processes.clone(), vec![]], Closed::Exited);
+        runtime.fail = Some("wait_back");
+        assert_eq!(
+            restart_verified_processes(&runtime, processes, Some(0), || true, true),
+            Err(RUNNING.into())
+        );
+        assert_eq!(
+            *runtime.events.borrow(),
+            ["close", "wait_closed", "launch", "wait_back"]
+        );
+    }
     use std::{cell::RefCell, collections::VecDeque};
     #[test]
     fn qoder_windows_identity_rejects_other_install_roots_and_other_products() {

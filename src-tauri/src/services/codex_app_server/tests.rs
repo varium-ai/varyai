@@ -534,7 +534,7 @@ fn manual_catalog_refresh_waits_for_idle_and_observes_replacement() {
     assert_eq!(m.observe([1; 32], old.clone(), true, 15), Action::None);
     assert_eq!(
         m.observe([1; 32], old.clone(), false, 16),
-        Action::Restart(old)
+        Action::RestartDesktop(old)
     );
     assert_eq!(m.snapshot(), ReloadState::Restarting);
     assert_eq!(
@@ -543,6 +543,21 @@ fn manual_catalog_refresh_waits_for_idle_and_observes_replacement() {
     );
     m.observe_catalog(Some([11; 32]), None);
     assert_eq!(m.snapshot(), ReloadState::Current);
+}
+
+#[test]
+fn manual_desktop_restart_rechecks_servers_and_propagates_launch_failure() {
+    let old = vec![server(10)];
+    for observed in [vec![], vec![server(11)], vec![server(10), server(11)]] {
+        assert_eq!(
+            restart_observed_desktop(&old, &observed, || panic!(
+                "must not restart a changed client"
+            )),
+            Err(())
+        );
+    }
+    assert_eq!(restart_observed_desktop(&old, &old, || Err(())), Err(()));
+    assert_eq!(restart_observed_desktop(&old, &old, || Ok(())), Ok(()));
 }
 
 #[test]

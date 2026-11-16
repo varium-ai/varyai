@@ -2162,7 +2162,7 @@
     "freshInput": "新增輸入",
     "cacheHitRate": "快取命中率",
     "requestLogs": "請求日誌",
-    "providerStats": "Provider 統計",
+    "providerStats": "來源統計",
     "modelStats": "模型統計",
     "time": "時間",
     "provider": "供應商",
@@ -2251,6 +2251,7 @@
     "allSources": "全部來源",
     "allModels": "全部模型",
     "filterBySource": "依來源篩選",
+    "providerOrSource": "供應商 / 來源",
     "filterByModel": "依模型篩選",
     "refreshInterval": "自動重新整理間隔",
     "refreshOff": "關閉",
@@ -4972,6 +4973,7 @@
     "gatewayUnavailable": "無法取得閘道狀態"
   },
   "modelProviders": {
+    "nameExists": "供應商名稱已存在，請換一個名稱。",
     "searchPlaceholder": "名稱、位址或模型",
     "searchScope": "搜尋供應商名稱、介面網域、模型 ID 或名稱；空格分隔的條件須同時符合。",
     "matchedModels": "符合的模型",
@@ -5853,6 +5855,7 @@
     "setupReadFailed": "無法讀取 VaryAI 儲存位置，請檢查資料目錄設定和權限。"
   },
   "quotaPanel": {
+    "unused": "尚未使用",
     "autoResets": "自動使用重置卡：",
     "whenWeekExhausted": "週額度用完時",
     "beforeExpiry": "重置卡到期前",

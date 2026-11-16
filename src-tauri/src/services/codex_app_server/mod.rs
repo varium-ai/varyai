@@ -1,5 +1,5 @@
 //! Follow settled Codex routing changes through the desktop app's own app-server.
-//! Catalog changes only offer a manual refresh. Windows desktop recovery is used
+//! Confirmed manual refreshes restart the desktop application. Windows recovery is used
 //! only when an ended app-server has no replacement; every step waits for idle.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -57,6 +57,7 @@ struct Pending {
 enum Action {
     None,
     Restart(Vec<Instance>),
+    RestartDesktop(Vec<Instance>),
     Recovered,
     TimedOut,
 }
@@ -250,7 +251,11 @@ impl Monitor {
                 }
                 pending.last_attempt = targets.clone();
                 pending.deadline.get_or_insert(now.saturating_add(20));
-                return Action::Restart(targets);
+                return if pending.manual.is_empty() {
+                    Action::Restart(targets)
+                } else {
+                    Action::RestartDesktop(targets)
+                };
             }
         }
         Action::None
@@ -266,6 +271,18 @@ fn terminate_targets(
         .filter(|target| terminate(target).is_err())
         .cloned()
         .collect()
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
+fn restart_observed_desktop(
+    targets: &[Instance],
+    observed: &[Instance],
+    restart: impl FnOnce() -> Result<(), ()>,
+) -> Result<(), ()> {
+    if observed.len() != targets.len() || observed.iter().any(|server| !targets.contains(server)) {
+        return Err(());
+    }
+    restart()
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, ()> {
@@ -560,10 +577,12 @@ pub(crate) fn start(
                     // cannot queue a second refresh against an outdated UI sample.
                     control.state = monitor.snapshot();
                 }
+                let desktop_restart = matches!(&action, Action::RestartDesktop(_));
                 match action {
-                    Action::Restart(targets) => {
+                    Action::Restart(targets) | Action::RestartDesktop(targets) => {
                         let client = manager.clone();
                         let final_requests = requests.clone();
+                        let final_desktop = desktop.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             let home = config.parent().ok_or(())?;
                             let since = targets.iter().map(|p| p.started_us).min().ok_or(())?;
@@ -583,6 +602,16 @@ pub(crate) fn start(
                             {
                                 return Ok(None);
                             }
+                            if desktop_restart {
+                                // Check observed servers before quitting. Their expected exit
+                                // must not invalidate the configuration guard used to reopen.
+                                restart_observed_desktop(
+                                    &targets,
+                                    &platform::instances(home)?,
+                                    || final_desktop.restart_codex_desktop().map_err(|_| ()),
+                                )?;
+                                return Ok(Some(Vec::new()));
+                            }
                             let failed = terminate_targets(&targets, |target| {
                                 platform::terminate(target, home)
                             });
@@ -592,14 +621,26 @@ pub(crate) fn start(
                         match result {
                             Ok(Ok(Some(failed))) => {
                                 if failed.is_empty() {
-                                    log::info!("Codex routing changed; waiting for the desktop app-server to restart");
+                                    if desktop_restart {
+                                        log::info!(
+                                            "Codex desktop restarted; waiting for its app-server"
+                                        );
+                                    } else {
+                                        log::info!("Codex routing changed; waiting for the desktop app-server to restart");
+                                    }
                                 } else {
                                     log::warn!("Codex app-server restart remains pending");
                                 }
                             }
                             Ok(Ok(None)) => monitor.defer(),
                             _ => {
-                                log::warn!("Codex app-server restart unavailable");
+                                if desktop_restart {
+                                    monitor.pending = None;
+                                    monitor.failed = true;
+                                    log::warn!("Codex desktop restart unavailable");
+                                } else {
+                                    log::warn!("Codex app-server restart unavailable");
+                                }
                             }
                         }
                     }

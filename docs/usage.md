@@ -6,6 +6,13 @@ Vary AI manages client configuration and can route supported model traffic throu
 
 Select a client, add a provider, review its endpoint, credentials and models, then save. Select or enable the provider using that integration's controls. Some clients switch one active configuration; others maintain multiple explicitly configured providers. Reload the client when required.
 
+Give each provider a distinct name. The editor rejects duplicates after trimming
+outer whitespace and ignoring case, including when creating or copying a provider.
+Editing a provider without changing its normalized name remains allowed, even
+for historical duplicates. Changing its name requires a unique name. Model choices
+use the saved supplier name in `Model · Provider` labels, including Agent catalogs.
+Renaming a provider updates these labels while preserving its model references.
+
 Use your own credentials. A preset is a configuration starting point, not an endorsement, subscription or guarantee of access. See [provider setup and routing](guides/provider-routing.md) for API-format selection and verification.
 
 ## Start with independent storage
@@ -43,6 +50,18 @@ Workspace and client-specific configuration panels operate on local files. Revie
 ## Statistics, backups and updates
 
 The statistics view summarizes recorded usage; coverage depends on the observed traffic and available usage fields. It is not the provider's billing ledger. Security event counts likewise depend on enabled rules and successful event collection.
+
+Request-log pagination keeps the current table and page controls visible while
+the next page loads. Navigation waits for that response, and a short final page
+scrolls the table back into view. If the record count shrinks, the list moves to
+the last available page; an empty result remains a usable empty table. A failed
+page query shows a generic error and Retry without exposing diagnostic details.
+Changing the time range or source clears the previous scope's rows while loading.
+
+The source filter lists recorded suppliers and local client usage together.
+Local session sources use plain app names such as `Codex`, `Claude` and `Pi` in
+the filter, source statistics and request logs. These display names do not add
+providers or assign historical usage to the currently selected supplier.
 
 Backups and synchronization can include credentials and private client configuration. Keep them private and use the existing restore/import workflow rather than manually replacing one database file. Vary AI uses the independent `varyai.db` and `varyai-ext.db` pair; see [storage and recovery](architecture/storage.md).
 

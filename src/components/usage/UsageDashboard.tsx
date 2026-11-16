@@ -51,8 +51,14 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usageApi } from "@/lib/api/usage";
 import { toast } from "sonner";
+import {
+  getSessionSourceApp,
+  getUsageSourceLabel,
+  type UsageSource,
+} from "./source";
 
 const APP_FILTER_OPTIONS: AppTypeFilter[] = ["all", ...KNOWN_APP_TYPES];
+type UsageSourceOption = Required<UsageSource>;
 
 const DEFAULT_REFRESH_INTERVAL_MS = 30000;
 const REFRESH_INTERVAL_OPTIONS_MS = [0, 5000, 10000, 30000, 60000] as const;
@@ -94,9 +100,8 @@ export function UsageDashboard({
   const queryClient = useQueryClient();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
   const [appType, setAppType] = useState<string>(initialAppType);
-  const [providerName, setProviderName] = useState<string | undefined>(
-    undefined,
-  );
+  const [selectedSource, setSelectedSource] = useState<UsageSourceOption>();
+  const providerName = selectedSource?.providerName;
   const [model, setModel] = useState<string | undefined>(undefined);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(() =>
     normalizeRefreshInterval(savedRefreshIntervalMs),
@@ -114,12 +119,14 @@ export function UsageDashboard({
   const changeAppType = (next: AppTypeFilter) => {
     setAppType(next);
     if (next !== appType) {
-      setProviderName(undefined);
+      setSelectedSource(undefined);
       setModel(undefined);
     }
   };
   const changeProviderName = (next: string | undefined) => {
-    setProviderName(next);
+    setSelectedSource(
+      providerOptions.find((source) => source.providerName === next),
+    );
     if (next !== providerName) {
       setModel(undefined);
     }
@@ -246,15 +253,32 @@ export function UsageDashboard({
   );
 
   const providerOptions = useMemo(() => {
-    const names = new Set<string>();
+    const sources = new Map<string, UsageSourceOption>();
     for (const stat of providerOptionsData ?? []) {
-      names.add(stat.providerName);
+      const previous = sources.get(stat.providerName);
+      if (!previous) {
+        sources.set(stat.providerName, stat);
+      } else if (getSessionSourceApp(previous) !== getSessionSourceApp(stat)) {
+        // Name filters can include a saved provider and a session placeholder.
+        // Keep the raw name when the filter does not identify only imports.
+        sources.set(stat.providerName, {
+          providerId: "",
+          providerName: stat.providerName,
+        });
+      }
     }
-    // 数据刷新后选中项可能掉出列表（如改了时间范围）；补回去保证 Select
-    // 仍能渲染选中文案，用户看得见才能主动清除。
-    if (providerName) names.add(providerName);
-    return Array.from(names);
-  }, [providerOptionsData, providerName]);
+    // Retain the selected label when it leaves the range.
+    if (
+      selectedSource?.providerName &&
+      !sources.has(selectedSource.providerName)
+    ) {
+      sources.set(selectedSource.providerName, selectedSource);
+    }
+    return Array.from(sources.values());
+  }, [providerOptionsData, selectedSource]);
+  const selectedSourceOption = providerOptions.find(
+    (source) => source.providerName === providerName,
+  );
 
   const modelOptions = useMemo(() => {
     const names = new Set<string>();
@@ -321,20 +345,25 @@ export function UsageDashboard({
           >
             <SelectTrigger
               className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
-              title={providerName ?? t("usage.filterBySource")}
+              title={
+                selectedSourceOption
+                  ? getUsageSourceLabel(selectedSourceOption, t)
+                  : t("usage.filterBySource")
+              }
+              aria-label={t("usage.filterBySource")}
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="max-w-[280px]">
               <SelectItem value="all">{t("usage.allSources")}</SelectItem>
-              {providerOptions.map((name) => (
+              {providerOptions.map((source) => (
                 <SelectItem
-                  key={name}
-                  value={encodeOptionValue(name)}
-                  title={name}
+                  key={source.providerName}
+                  value={encodeOptionValue(source.providerName)}
+                  title={getUsageSourceLabel(source, t)}
                   className="[&>span]:min-w-0 [&>span]:truncate"
                 >
-                  {name}
+                  {getUsageSourceLabel(source, t)}
                 </SelectItem>
               ))}
             </SelectContent>

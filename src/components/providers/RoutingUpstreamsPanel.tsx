@@ -85,6 +85,10 @@ export function RoutingUpstreamsPanel({
     refetchInterval: 15_000,
   });
   const [draft, setDraft] = useState<RoutingUpstream | null>(null);
+  const [rejectedName, setRejectedName] = useState<{
+    editor: string;
+    name: string;
+  }>();
   const [editorOpen, setEditorOpen] = useState(false);
   const [loadedRecord, setLoadedRecord] = useState<RoutingUpstream | null>(
     null,
@@ -161,9 +165,37 @@ export function RoutingUpstreamsPanel({
   const editorKey = draft?.revision
     ? (loadedRecord?.id ?? draft.id)
     : `new-${copyFrom?.id ?? "custom"}`;
+  const normalizedName = draft?.name.trim().toLowerCase();
+  const originalName = draft?.revision
+    ? (
+        loadedRecord ?? records.data?.find((record) => record.id === draft.id)
+      )?.name
+        .trim()
+        .toLowerCase()
+    : undefined;
+  const nameError =
+    normalizedName &&
+    ((normalizedName !== originalName &&
+      records.data?.some(
+        (record) =>
+          record.id !==
+            (draft?.revision ? (loadedRecord?.id ?? draft.id) : undefined) &&
+          record.name.trim().toLowerCase() === normalizedName,
+      )) ||
+      (rejectedName?.editor === editorKey &&
+        rejectedName.name === normalizedName))
+      ? t("modelProviders.nameExists")
+      : undefined;
+  function reportSaveError(cause: unknown) {
+    if (cause === "routingUpstreams.nameExists" && normalizedName) {
+      setRejectedName({ editor: editorKey, name: normalizedName });
+    }
+    report("save", cause);
+  }
   const activeEditor = useRef({ key: editorKey, open: editorOpen });
   activeEditor.current = { key: editorKey, open: editorOpen };
   function openAddPage() {
+    setRejectedName(undefined);
     listScroll.current = page.current?.closest("main")?.scrollTop ?? 0;
     setSelected(null);
     setAdding(true);
@@ -208,7 +240,7 @@ export function RoutingUpstreamsPanel({
         ?.focus({ preventScroll: true });
     } else {
       (
-        sheet.current?.querySelector<HTMLInputElement>("input[type=search]") ??
+        sheet.current?.querySelector<HTMLButtonElement>(".pv-back") ??
         addTrigger.current
       )?.focus({ preventScroll: true });
     }
@@ -243,6 +275,7 @@ export function RoutingUpstreamsPanel({
     preset?: GlobalProviderPreset,
     reauth = false,
   ) {
+    setRejectedName(undefined);
     discoveryRequest.current = null;
     setDiscovering(false);
     setStartReauth(reauth);
@@ -410,6 +443,10 @@ export function RoutingUpstreamsPanel({
   async function save(event: React.FormEvent, stagedModels?: unknown[]) {
     event.preventDefault();
     if (!draft) return;
+    if (nameError) {
+      report("save", "routingUpstreams.nameExists");
+      return;
+    }
     if (draft.source.kind === "codex") {
       setBusy(true);
       try {
@@ -425,7 +462,7 @@ export function RoutingUpstreamsPanel({
         refresh();
         if (adding) closeAddPage();
       } catch (cause) {
-        report("save", cause);
+        reportSaveError(cause);
       } finally {
         setBusy(false);
       }
@@ -439,7 +476,7 @@ export function RoutingUpstreamsPanel({
         refresh();
         if (adding) closeAddPage();
       } catch (cause) {
-        report("save", cause);
+        reportSaveError(cause);
       } finally {
         setBusy(false);
       }
@@ -516,7 +553,7 @@ export function RoutingUpstreamsPanel({
       refresh();
       if (adding) closeAddPage();
     } catch (cause) {
-      report("save", cause);
+      reportSaveError(cause);
     } finally {
       setBusy(false);
     }
@@ -1291,6 +1328,7 @@ export function RoutingUpstreamsPanel({
           key={editorKey}
           open={editorOpen}
           draft={draft}
+          nameError={nameError}
           originalId={loadedRecord?.id ?? draft.id}
           copySourceName={copyFrom ? loadedRecord?.name : undefined}
           another={

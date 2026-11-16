@@ -1,9 +1,11 @@
 //! Read-only allowance observations for relay API keys.
 
+mod probe_cache;
+
 use crate::services::subscription::QuotaTier;
 use serde::Serialize;
 use serde_json::Value;
-use std::time::Duration;
+use std::{sync::LazyLock, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +21,8 @@ pub(crate) struct Allowance {
     pub status: Status,
     pub balance: Option<f64>,
     pub tiers: Vec<QuotaTier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 impl Allowance {
     fn empty(status: Status) -> Self {
@@ -26,6 +30,7 @@ impl Allowance {
             status,
             balance: None,
             tiers: vec![],
+            retry_after_ms: None,
         }
     }
 }
@@ -86,6 +91,7 @@ fn parse_sub2api(body: &Value) -> Option<Allowance> {
         status: Status::Ready,
         balance,
         tiers,
+        retry_after_ms: None,
     })
 }
 
@@ -99,6 +105,7 @@ fn parse_new_api(body: &Value) -> Option<Allowance> {
         status: Status::Ready,
         balance: Some(balance),
         tiers: vec![],
+        retry_after_ms: None,
     })
 }
 
@@ -117,82 +124,71 @@ fn origin(base: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+static PROBES: LazyLock<probe_cache::ProbeCache> = LazyLock::new(|| {
+    probe_cache::ProbeCache::new(
+        crate::config::get_device_config_dir().join("relay-balance-probes.json"),
+    )
+});
+
 /// Only the key's own queries are probed; panel login tokens are never requested.
-pub(crate) async fn query(base: &str, key: &str) -> Result<Allowance, String> {
-    if key.trim().is_empty() {
-        return Ok(Allowance::empty(Status::Unauthorized));
+pub(crate) async fn query(base: &str, key: &str, force: bool) -> Result<Allowance, String> {
+    PROBES.query(base, key, force).await
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Endpoint {
+    Sub2api,
+    NewApi,
+}
+impl Endpoint {
+    const ALL: [Self; 2] = [Self::Sub2api, Self::NewApi];
+    fn path(self) -> &'static str {
+        match self {
+            Self::Sub2api => "/v1/usage",
+            Self::NewApi => "/api/usage/token",
+        }
     }
-    let origin = origin(base)?;
+}
+
+async fn read(origin: &reqwest::Url, key: &str, endpoint: Endpoint) -> Result<Allowance, String> {
     let client =
         crate::proxy::http_client::get_without_redirects().map_err(|_| FAILED.to_owned())?;
-    let mut failed = false;
-    let mut rejected = false;
-    for path in ["/v1/usage", "/api/usage/token"] {
-        let url = origin.join(path).map_err(|_| FAILED.to_owned())?;
-        let response = client
-            .get(url)
-            .bearer_auth(key)
-            .header("Accept", "application/json")
-            .timeout(Duration::from_secs(8))
-            .send()
-            .await;
-        let mut response = match response {
-            Ok(response) => response,
-            Err(_) => {
-                failed = true;
-                continue;
-            }
-        };
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            rejected = true;
-            continue;
-        }
-        if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            failed = true;
-            continue;
-        }
-        if !status.is_success() {
-            continue;
-        }
-        let mut bytes = vec![];
-        let mut read_failed = false;
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) if bytes.len() + chunk.len() <= 1024 * 1024 => {
-                    bytes.extend_from_slice(&chunk)
-                }
-                Ok(Some(_)) | Err(_) => {
-                    failed = true;
-                    read_failed = true;
-                    break;
-                }
-                Ok(None) => break,
-            }
-        }
-        if read_failed {
-            continue;
-        }
-        let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
-            continue;
-        };
-        let reading = if path == "/v1/usage" {
-            parse_sub2api(&body)
-        } else {
-            parse_new_api(&body)
-        };
-        if let Some(reading) = reading {
-            return Ok(reading);
-        }
+    let url = origin
+        .join(endpoint.path())
+        .map_err(|_| FAILED.to_owned())?;
+    let mut response = client
+        .get(url)
+        .bearer_auth(key)
+        .header("Accept", "application/json")
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|_| FAILED.to_owned())?;
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Ok(Allowance::empty(Status::Unauthorized));
     }
-    if failed {
+    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(FAILED.into());
     }
-    Ok(Allowance::empty(if rejected {
-        Status::Unauthorized
-    } else {
-        Status::Unsupported
-    }))
+    if !status.is_success() {
+        return Ok(Allowance::empty(Status::Unsupported));
+    }
+    let mut bytes = vec![];
+    while let Some(chunk) = response.chunk().await.map_err(|_| FAILED.to_owned())? {
+        if bytes.len() + chunk.len() > 1024 * 1024 {
+            return Err(FAILED.into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let reading = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|body| match endpoint {
+            Endpoint::Sub2api => parse_sub2api(&body),
+            Endpoint::NewApi => parse_new_api(&body),
+        });
+    Ok(reading.unwrap_or_else(|| Allowance::empty(Status::Unsupported)))
 }
 
 #[cfg(test)]
@@ -297,7 +293,11 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
-        let result = query(&format!("http://{addr}/v1"), "synthetic-key").await;
+        let dir = tempfile::tempdir()?;
+        let cache = probe_cache::ProbeCache::new(dir.path().join("probes.json"));
+        let result = cache
+            .query(&format!("http://{addr}/v1"), "synthetic-key", false)
+            .await;
         server.abort();
         let quota = result?;
         assert_eq!(quota.balance, Some(3.0));

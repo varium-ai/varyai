@@ -450,6 +450,7 @@ fn native_import_is_atomic_deduplicates_a_batch_and_retains_redacted_secrets(
     assert!(db.save_routing_upstream(changed).is_err());
     redacted.id.clear();
     redacted.revision = 0;
+    redacted.name = "Updated copy".into();
     assert!(db
         .save_routing_upstream_copy(redacted, &private.id, private.revision)
         .is_ok());

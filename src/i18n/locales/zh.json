@@ -2235,7 +2235,7 @@
     "freshInput": "新增输入",
     "cacheHitRate": "缓存命中率",
     "requestLogs": "请求日志",
-    "providerStats": "Provider 统计",
+    "providerStats": "来源统计",
     "modelStats": "模型统计",
     "time": "时间",
     "provider": "供应商",
@@ -2324,6 +2324,7 @@
     "allSources": "全部来源",
     "allModels": "全部模型",
     "filterBySource": "按来源筛选",
+    "providerOrSource": "供应商 / 来源",
     "filterByModel": "按模型筛选",
     "refreshInterval": "自动刷新间隔",
     "refreshOff": "关闭",
@@ -5045,6 +5046,7 @@
     "gatewayUnavailable": "无法获取网关状态"
   },
   "modelProviders": {
+    "nameExists": "供应商名称已存在，请换一个名称。",
     "searchPlaceholder": "名称、地址或模型",
     "searchScope": "搜索供应商名称、接口域名、模型 ID 或名称；空格分隔的条件须同时匹配。",
     "matchedModels": "匹配模型",
@@ -5926,6 +5928,7 @@
     "setupReadFailed": "无法读取 VaryAI 存储位置，请检查数据目录设置和权限。"
   },
   "quotaPanel": {
+    "unused": "尚未使用",
     "autoResets": "自动使用重置卡：",
     "whenWeekExhausted": "周额度用完时",
     "beforeExpiry": "重置卡到期前",

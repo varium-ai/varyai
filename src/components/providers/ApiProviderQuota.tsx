@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import {
   apiProviderQuotaEnabled,
+  apiProviderQuotaKey,
   apiProviderQuotaOptions,
   type ApiProviderQuotaObservation,
 } from "@/lib/query/apiProviderQuota";
@@ -33,6 +34,12 @@ export function ApiProviderQuotaView({
   observation: query,
 }: ApiProviderQuotaProps & { observation: ApiProviderQuotaObservation }) {
   const { t, i18n } = useTranslation();
+  const client = useQueryClient();
+  const refresh = () =>
+    void client.invalidateQueries(
+      { queryKey: apiProviderQuotaKey(record), exact: true },
+      { cancelRefetch: false },
+    );
   const quota = query.data?.quota;
   if (!apiProviderQuotaEnabled(record) || quota?.status === "unsupported")
     return null;
@@ -65,15 +72,7 @@ export function ApiProviderQuotaView({
         fetching={query.isFetching}
         loading={!query.data && query.isFetching}
         disabled={disabled}
-        sample={
-          query.data?.observedAt
-            ? {
-                scope: `api:${record.id}:${record.revision}`,
-                at: query.data.observedAt,
-              }
-            : undefined
-        }
-        refresh={() => void query.refetch({ cancelRefetch: false })}
+        refresh={refresh}
       >
         {quota?.balance != null && Number.isFinite(quota.balance) && (
           <span>
@@ -119,7 +118,7 @@ export function ApiProviderQuotaView({
             type="button"
             aria-label={`${t("codexProvider.refreshQuota")} ${record.name}`}
             disabled={disabled || query.isFetching}
-            onClick={() => void query.refetch({ cancelRefetch: false })}
+            onClick={refresh}
           >
             <RefreshCw
               size={12}

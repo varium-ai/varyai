@@ -303,6 +303,7 @@ fn normalized_discovery_preserves_legacy_manual_overrides_and_hidden_groups() {
     a.settings_config["modelCatalog"] = json!({"models":[{"model":"gpt-5.6-sol"}]});
     let mut b = a.clone();
     b.id = "second".into();
+    b.name = "Second fixture".into();
     db.save_provider("codex", &a).expect("a");
     db.register_routing_fixture("codex", &a.id)
         .expect("explicit import");
@@ -632,6 +633,7 @@ fn automatic_groups_default_to_off_until_explicitly_enabled() {
     for id in ["first", "second"] {
         let mut source = provider();
         source.id = id.into();
+        source.name = format!("Fixture {id}");
         source.settings_config["modelCatalog"] = json!({"models":[{"model":"shared-model"}]});
         db.save_provider("codex", &source).expect("provider");
         db.register_routing_fixture("codex", id)
@@ -672,6 +674,7 @@ fn automatic_groups_follow_catalogs_and_preserve_user_overrides_and_hides() {
         .is_empty());
     let mut b = a.clone();
     b.id = "second".into();
+    b.name = "Second fixture".into();
     b.settings_config["modelCatalog"] = json!({"models":[
         {"model":"shared-model"}, {"model":"model-case:batch"}, {"model":"dated-2026-02-01"}
     ]});
@@ -809,6 +812,7 @@ fn discovery_tracks_catalogs_independently_of_transport_eligibility() {
     a.settings_config["modelCatalog"] = json!({"models":[{"model":"shared"}]});
     let mut b = a.clone();
     b.id = "second".into();
+    b.name = "Second fixture".into();
     b.category = Some("official".into());
     db.save_provider("codex", &a).expect("a");
     db.register_routing_fixture("codex", &a.id)
@@ -862,6 +866,7 @@ fn discovery_tracks_catalogs_independently_of_transport_eligibility() {
     for i in 0..15 {
         let mut extra = b.clone();
         extra.id = format!("extra-{i}");
+        extra.name = format!("Extra fixture {i}");
         db.save_provider("codex", &extra).expect("extra");
         db.register_routing_fixture("codex", &extra.id)
             .expect("explicit import");

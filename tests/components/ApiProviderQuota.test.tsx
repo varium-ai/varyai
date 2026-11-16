@@ -99,6 +99,7 @@ it("retains full allowance and manual refresh in the provider form", async () =>
   await waitFor(() =>
     expect(routingUpstreamsApi.quota).toHaveBeenCalledTimes(2),
   );
+  expect(routingUpstreamsApi.quota).toHaveBeenLastCalledWith("relay", 4, true);
 });
 it("retains the last good allowance on a temporary error, with a safe stale message", async () => {
   const client = mount();

@@ -2161,7 +2161,7 @@
     "freshInput": "新規入力",
     "cacheHitRate": "キャッシュヒット率",
     "requestLogs": "リクエストログ",
-    "providerStats": "プロバイダー統計",
+    "providerStats": "ソース統計",
     "modelStats": "モデル統計",
     "time": "時間",
     "provider": "プロバイダー",
@@ -2250,6 +2250,7 @@
     "allSources": "すべてのソース",
     "allModels": "すべてのモデル",
     "filterBySource": "ソースで絞り込む",
+    "providerOrSource": "プロバイダー / ソース",
     "filterByModel": "モデルで絞り込む",
     "refreshInterval": "自動更新間隔",
     "refreshOff": "オフ",
@@ -4971,6 +4972,7 @@
     "gatewayUnavailable": "状態を取得できません"
   },
   "modelProviders": {
+    "nameExists": "同じ名前のプロバイダーが存在します。別の名前を入力してください。",
     "searchPlaceholder": "名前・接続先・モデル",
     "searchScope": "提供元名、接続先ホスト、モデルID・名前を検索します。空白で区切った条件はすべて一致する必要があります。",
     "matchedModels": "一致したモデル",
@@ -5852,6 +5854,7 @@
     "setupReadFailed": "VaryAI の保存先を読み取れません。データディレクトリの設定とアクセス権を確認してください。"
   },
   "quotaPanel": {
+    "unused": "まだ使用していません",
     "autoResets": "リセットカードの自動使用：",
     "whenWeekExhausted": "週間利用枠を使い切ったとき",
     "beforeExpiry": "リセットカードの有効期限前",

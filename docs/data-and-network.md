@@ -61,12 +61,16 @@ GET requests to `/v1/usage`, falling back to `/api/usage/token` on the configure
 origin. These requests carry the selected API key as a bearer credential, use
 eight-second per-request timeouts, do not follow redirects, and read at most
 1 MiB per response. They send no inference prompts. Returned balances and quota
-windows refresh once a minute while the tab is active. A relay with no recognized
-query is hidden and its result cached for six hours in renderer memory, then
-probed again while the tab remains open. The header's explicit refresh can retry
-sooner; saving a new provider revision also starts a new query. Failed refreshes
-retain a previous valid reading with a stale indicator, while authentication
-rejection clears it. Leaving or closing the tab stops its automatic polling.
+windows refresh once a minute while the tab is active. The Providers list does
+not query API allowances, including for copied providers. Interface discovery
+is shared by origin and credential digest, independent of provider IDs and
+revisions. Found interfaces are cached for 24 hours and missing interfaces for
+six hours in a private device-local file; it stores no credentials, endpoint
+URLs or balances. Initial discovery failures hide the card and are retried after
+five minutes, without persisting the temporary failure. Explicit refresh bypasses
+discovery expiry. Failed reads of a known interface retain a previous valid
+reading with a stale indicator, while authentication rejection clears it.
+Leaving or closing the tab stops its automatic polling.
 
 New API-key provider and connection-preset forms automatically discover models after URL/key editing ends, then send bounded inference probes to the configured supplier to select a verified protocol. Each check can send up to eight small requests and may incur supplier charges. Existing configurations and manual protocol selections require an explicit detection action. See [provider setup](guides/provider-routing.md#reuse-a-named-connection) for model selection and verification limits.
 

@@ -22,18 +22,63 @@ quota query families; card refresh reads only its account/provider. Main-window
 navigation from this tab opens Providers. Keep the four-tab indicator and keyboard
 wrapping based on the tab count, and preserve the fixed native panel height.
 
-Relay API keys use the existing read-only `/v1/usage`, then `/api/usage/token`
-probe. Hide a relay's card and heading only after an unsupported result; retain
-loading, authentication failures, temporary query failures and real zero balances.
-A failed or unrecognized refresh after a successful reading keeps that reading
-with a stale status. An explicit key rejection clears the previous balance.
-Provider-list, editor and tray views share the same query options and revision
-key. Cache a missing interface for six hours in renderer memory. Keep its query
-observer mounted while the active quota tab is open, so expiry or the header's
-explicit refresh can recover the hidden relay. Reopening within that interval
-reuses the result; a new saved provider revision starts a new query. When every
-candidate is unsupported, show the normal empty state. Closing the active quota
-tab stops its polling.
+Quota card styling follows Magpie's `panelQuotaCard` and `quotaSpark` at
+[`58f24cc`](https://github.com/yetone/magpie/tree/58f24cc23527776b5f1958cfd4a8092a659bdfb5/internal/gui/assets).
+Use 34-point rings with 3-point strokes, compact two-line pool labels, and amber
+for nearly exhausted windows. Keep the complete pool name and reset timestamp
+in each ring's tooltip. Show short local reset times in the account subtitle;
+unused windows say so instead of filling the subtitle with future deadlines.
+Up to four rings sit beside the account's two text rows. More rings use the
+card's full width below the account information and wrap from the left on narrow
+screens, keeping every independent model window visible.
+
+Subscription cards' 30-point sparkline shows the first window's current cycle,
+as Magpie's tray does. Its solid indigo line contains only observed readings;
+the faint dashed diagonal is an even-consumption reference. Shade the observed interval green
+above that diagonal and amber below it. A single reading is a small round stroke
+without a filled band or invented history. Named pools resolve their own window
+suffixes, including `Gemini · five_hour`. Small deadline drift must not erase
+history: use Magpie's five-minute tolerance and rolling-window handling, breaking
+the line at a genuine reset or allowance grant. History failures remain auxiliary
+and must not remove the current allowance reading. These components and styles
+are shared by the macOS and Windows renderers.
+
+Relay API cards show their balance, supported window rings and refresh control
+without a quota sparkline. Do not mount history readers or record renderer
+samples for these cards, even when a window has a reset timestamp and earlier
+samples exist. This keeps balance cards compact and avoids an unexplained
+consumption reference line under an unused daily allowance.
+
+Relay API keys use the read-only `/v1/usage`, then `/api/usage/token` probe.
+The Providers list omits API allowances entirely and does not mount their query
+observers, including for a newly saved copy. Subscription rows retain their
+existing allowance summaries. API allowance cards remain available in the tray.
+
+Interface discovery follows Magpie's origin-and-key cache rather than provider
+IDs: copies using the same origin and credential share discovery, including
+concurrent requests. Cache a found interface for 24 hours, a missing interface
+for six hours, and a temporary discovery failure for five minutes. Found and
+missing interfaces survive restart in the device-local
+`~/.varyai/relay-balance-probes.json`; temporary discovery failures do not. Store
+only a digest of the origin and credential, a fixed interface identifier, and
+expiry. Do not persist balances, credentials or endpoint URLs. Cache read/write
+failures remain auxiliary. This cache and private atomic replacement run on both
+macOS and Windows without database schema changes.
+
+An unsuccessful first discovery hides the card and heading. Explicit credential
+rejection remains visible. An already discovered interface still reports query
+failures; a failed or unrecognized refresh after a successful reading keeps that
+reading with a stale status. An explicit key rejection clears the previous
+balance. Each successful observation reads a fresh balance at the discovered
+interface; it does not reuse another provider's balance snapshot.
+
+Renderer observations remain keyed by provider ID and revision. Hidden relay
+observers stay mounted while the active quota tab is open, polling again at the
+backend's remaining discovery interval. Card and header refresh explicitly
+bypass discovery expiry, so a missing interface can recover immediately. When
+every candidate is unsupported, show the normal empty state. Closing the active
+quota tab stops its polling. These changes align discovery and list presentation;
+they do not add Magpie's configurable Balance URL or Auto-detect editor controls.
 
 The native context menu contains Open quick panel, Open main window, Official
 website and Quit, with one separator before Quit. It does not expose a
