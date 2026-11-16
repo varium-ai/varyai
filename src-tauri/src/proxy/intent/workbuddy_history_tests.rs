@@ -241,6 +241,114 @@ impl Fixture {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn workbuddy_visible_chat_resumes_after_a_saved_target_configuration_refresh(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    for (agent, streaming) in [
+        ("workbuddy", false),
+        ("workbuddy", true),
+        ("workbuddy-ai", false),
+        ("workbuddy-ai", true),
+    ] {
+        let mut fixture = Fixture::new("openai_chat").await?;
+        if agent == "workbuddy-ai" {
+            fixture.root = fixture.root.replace("/workbuddy/", "/workbuddy-ai/");
+            fixture
+                .runtime
+                .connections
+                .install(&crate::services::agent_connections::Receipt {
+                    app: agent.into(),
+                    token: TOKEN.into(),
+                    model: fixture.grok_alias.clone(),
+                    model_map: Default::default(),
+                    visible_models: None,
+                    files: vec![],
+                    suspended: false,
+                    applied_at_ms: None,
+                })?;
+        }
+        let dir = tempfile::tempdir()?;
+        fixture
+            .runtime
+            .prepare_continuations(dir.path().join("continuations.json"))
+            .await;
+        let mut request = json!({"model":fixture.grok_alias,"stream":streaming,"messages":[
+            {"role":"user","content":"Synthetic opening"}
+        ]});
+        let first = fixture
+            .client
+            .post(&fixture.root)
+            .bearer_auth(TOKEN)
+            .json(&request)
+            .send()
+            .await?;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert!(first.text().await?.contains("Synthetic Grok answer"));
+        fixture.runtime.flush_continuations().await;
+
+        let mut menu = (*fixture
+            .runtime
+            .global_snapshot()?
+            .ok_or("missing synthetic menu")?)
+        .clone();
+        let target = Arc::make_mut(
+            menu.groups
+                .get_mut(&fixture.grok_alias)
+                .ok_or("missing synthetic route")?,
+        );
+        target.bindings = Arc::default();
+        target.targets[0]
+            .upstream
+            .as_mut()
+            .ok_or("missing synthetic provider")?
+            .settings_config["modelCatalog"] =
+            json!({"models":[{"model":"grok-4.5","reasoningLevels":["low","high"]}]});
+        fixture.runtime.set_global(menu, 0)?;
+
+        request["messages"]
+            .as_array_mut()
+            .ok_or("missing synthetic messages")?
+            .extend([
+                json!({"role":"assistant","content":"Synthetic Grok answer"}),
+                json!({"role":"user","content":"Synthetic follow-up"}),
+            ]);
+        let mut sealed = request.clone();
+        sealed["messages"][1]["reasoning_details"] =
+            json!([{"type":"reasoning.encrypted","data":"synthetic-sealed-state"}]);
+        let rejected = fixture
+            .client
+            .post(&fixture.root)
+            .bearer_auth(TOKEN)
+            .json(&sealed)
+            .send()
+            .await?;
+        assert_eq!(rejected.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            fixture.sends.load(Ordering::SeqCst),
+            1,
+            "sealed state reached a changed target"
+        );
+        let next = fixture
+            .client
+            .post(&fixture.root)
+            .bearer_auth(TOKEN)
+            .json(&request)
+            .send()
+            .await?;
+        assert_eq!(
+            next.status(),
+            StatusCode::OK,
+            "visible chat is self-contained after refresh, stream={streaming}"
+        );
+        assert!(next.text().await?.contains("Synthetic Grok answer"));
+        assert_eq!(fixture.sends.load(Ordering::SeqCst), 2);
+        fixture.stop().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn workbuddy_can_select_grok_with_complete_visible_tool_history(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _security = security();

@@ -233,6 +233,25 @@ do not reload the active gateway; an explicit backend restart is still necessary
 Do not clear credentials or conversation history as a workaround for this 400.
 See the [verification record](qa/2026-11-06-gemini-tool-combination.md).
 
+## Codex reports `max_output_tokens` on a greeting
+
+Codex sends its operating instructions and tool declarations along with the
+visible message. A routing catalog that disables `supports_search_tool` makes
+Codex include every connected tool's full definition even on the first greeting.
+The reported failure included 259 tools in a 437 KB request, no client output cap,
+and an incomplete response without text or usable token accounting.
+
+VaryAI now advertises client tool discovery for Chat, Anthropic and Gemini
+conversion routes and official Codex routes. All eligible targets in a group must
+support it; unknown native Responses gateways keep the conservative setting.
+The conversion retains Codex's discovery description and parameter schema, and
+loads the tools returned by a subsequent search. Refresh the connection's model
+catalog with the updated backend and use a new conversation to adopt the metadata.
+
+An incomplete response and missing usage alone do not establish the number of
+tokens consumed. If the error persists after the catalog refresh, compare the
+request's actual output cap, tool count and upstream termination information.
+
 ## Codex Chat requests fail with HTTP 400 or 410
 
 HTTP 400 with `routing_upstream_rejected` can also come from Grok rejecting
@@ -348,7 +367,9 @@ The restart action also remains available after disconnecting while a running co
 
 The Codex connection belongs to the ChatGPT desktop app in the reported installation. This ChatGPT build uses the `com.openai.codex` bundle identifier. A confirmed manual restart closes and reopens the verified running application bundle, including `ChatGPT.app`, rather than launching a terminal CLI or only replacing its internal service. A current application can still be explicitly restarted; launch age alone does not invalidate the user's confirmed request. Configuration and process identity checks still reject an unsafe or replaced target. Automatic route-change handling remains separate from this manual whole-application restart.
 
-On macOS, restart waits for the original process to exit even if the system already marks its application as terminated, then requests a fresh launch of the same bundle. Success requires a new verified application instance within 20 seconds; a successful `open` command alone is insufficient. Windows also waits for the application to return. A confirmed Codex restart prompted by a stale model catalog uses the whole-application path after waiting for idle and rechecking configuration and service identities. If the application quits but does not return, reopen it manually and report the restart failure; a changed or unidentified installation is never replaced with a guessed launch target.
+On macOS, restart waits for the original process to exit even if the system already marks its application as terminated, then requests a fresh launch of the same bundle. Success requires a new verified application instance within 20 seconds; a successful `open` command alone is insufficient. Windows also waits for the application to return. A confirmed Codex restart immediately enters this whole-application path, even when tasks are running or an automatic configuration refresh is waiting for idle. The confirmation explains that running tasks will be interrupted and unsent drafts may be lost. The row stays busy until the native restart finishes and reports quit refusals or relaunch failures instead of treating a queued request as success. Configuration and process identity checks still apply. If the application quits but does not return, reopen it manually and report the restart failure; a changed or unidentified installation is never replaced with a guessed launch target.
+
+Automatic Codex configuration refreshes continue to wait for idle, including the existing quiet period after a request and conservative handling of unreadable activity records. Their waiting status keeps **Restart** available for an explicitly confirmed immediate restart. A running Codex instance is not itself proof that a task is active.
 
 For unsupported or unidentified installations, fully quit and reopen the tool yourself. CLI tools read changes in a new process or session. TRAE uses its own acknowledged bridge delivery and cleanup; follow its pending-bridge guidance and use **Apply again** to retry delivery. A pending bridge alone is not evidence that restarting would fix it.
 
@@ -365,6 +386,18 @@ Explicitly switching Codex routing off restores the previous native configuratio
 A `400 Unsupported field in cross-protocol request` from local routing means the request could not be converted before contacting the provider. WorkBuddy sends Chat Completions requests, including local conversation markers and optional reasoning controls. Use a build that handles these markers during conversion and preserves explicit reasoning and verbosity controls for a Responses upstream. An explicit `reasoning_effort: "none"` also disables reasoning when converting to Anthropic or Gemini.
 
 Reload the updated VaryAI backend, leave WorkBuddy routing enabled, and retry the message. Ordinary Chat forwarding and official WorkBuddy traffic retain their native payloads. Unsupported protocol semantics still produce an explicit error rather than silently dropping model settings or tool data.
+
+## WorkBuddy returns HTTP 409 before any routing candidate appears
+
+`routing_unknown_continuation` is a local continuation ownership rejection, before an upstream request. A saved conversation records its exact destination configuration. Older builds also reject a complete, ordinary text transcript when that configuration changes during a catalog refresh, even though the request contains no server-owned continuation state.
+
+For authenticated WorkBuddy and WorkBuddy AI Chat requests with one selected destination, a complete visible text transcript can now start a fresh scope after a configuration change. The request content is preserved. Tool history, opaque reasoning, signed content and multi-destination routes retain their existing ownership checks. Load the updated VaryAI backend and retry the affected text conversation; restarting WorkBuddy alone does not update the gateway's validation logic.
+
+## WorkBuddy repeats a model name inside one menu entry
+
+Older connection receipts can retain a request ID such as `Example model · old-source:Example model · Supplier`. Refreshing only the separate display name leaves that historical ID in the native configuration, where a client can still display it. WorkBuddy and WorkBuddy AI now publish their current source-qualified labels as picker IDs and explicitly use those IDs for model discovery. Historical aliases remain routable for existing conversations but do not create additional picker rows.
+
+After loading the updated backend, refresh the Agent connection configuration and let WorkBuddy reload its model list. Models with the same upstream ID from different saved suppliers remain separate entries, each labeled with its supplier name. A routing-group entry also remains separate from a direct supplier entry.
 
 ## Local proxy port conflicts
 
@@ -868,6 +901,29 @@ A partial leftover configuration can select `model_provider = "varyai"` without 
 An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved ChatGPT login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now distinguishes ChatGPT sign-in from an API key: a supported ChatGPT sign-in keeps account discovery, while an API key alone does not require OpenAI authentication. Keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out, and incomplete login-file reads preserve the established policy.
 
 The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing repairs a still-owned projection. Explicitly enabling or reapplying the connection also replaces externally changed routing fields and saves recovery information before writing. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
+
+### Codex stops connecting after many model-menu refreshes
+
+Older builds wrote a new catalog file whenever the model menu changed and
+rejected publication once the connection record contained 64 paths. Disconnect
+retained those paths for existing conversations, so reconnecting could hit the
+same limit. This was a VaryAI publication limit, not a Codex model or request
+quota. A failed automatic refresh could leave the local menu inactive and later
+requests could report `routing_session_expired`.
+
+Updated builds reuse the latest owned catalog file across changes and reconnects,
+including existing records with 64 paths. They preserve historical files, model
+aliases and the retained local credential. Catalog changes still expire the
+model cache. A failed configuration write restores the previous catalog without
+overwriting a concurrent edit; malformed catalog contents receive a private
+recovery copy before repair. The same implementation runs on macOS and Windows.
+
+Use a build containing this backend fix, then reconnect Codex in Tools. No
+database edits or deletion of identity, catalog, authentication or conversation
+files are required. If an already running Codex still shows the previous model
+list, use its restart action after saving active work. This fixes catalog
+publication exhaustion; an upstream sign-in rejection needs separate diagnosis.
+See the [catalog reuse verification report](qa/2026-11-16-codex-catalog-reuse.md).
 
 ### Codex cannot reach local routing through a proxy
 

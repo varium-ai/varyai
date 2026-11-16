@@ -1631,7 +1631,11 @@ fn build_with_token(
         }
         "workbuddy" | "workbuddy-ai" => {
             let path = workbuddy_connection_path(app)?.ok_or(FAILED)?;
-            let (named, _) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            // WorkBuddy can show request IDs alongside names. Publish current
+            // labels as IDs while retaining old aliases for existing chats.
+            let (named, _) =
+                projections::current_catalog(&catalog, selected, &mut receipt.model_map);
+            receipt.visible_models = Some(named.iter().map(|model| model.id.clone()).collect());
             let named_models = named
                 .iter()
                 .map(|model| (model.id.clone(), model))

@@ -63,6 +63,7 @@ fn with_codex_reload(
             Some(
                 agent_connections::ReloadState::StaleCatalog
                     | agent_connections::ReloadState::Failed
+                    | agent_connections::ReloadState::WaitingForIdle
             )
         );
     // The worker observes the desktop's actual app-server creation identity.
@@ -474,6 +475,21 @@ pub(crate) async fn authorize_agent_model_control(
         .map_err(|_| FAILED)?
 }
 
+async fn restart_confirmed_codex(
+    refresh: Status,
+    restart_desktop: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    if refresh.configuration_issue.is_some() || refresh.recovery_pending {
+        return Err(agent_connections::CONFLICT.into());
+    }
+    if !refresh.restart_required {
+        return Err("agentConnections.restartChanged".into());
+    }
+    // Explicit confirmation permits interrupting active tasks. The native lifecycle
+    // still verifies the configuration, application identity, exit and relaunch.
+    restart_desktop.await
+}
+
 #[tauri::command]
 pub(crate) async fn restart_agent_connection(
     state: State<'_, AppState>,
@@ -512,29 +528,14 @@ pub(crate) async fn restart_agent_connection(
         })
         .await
         .map_err(|_| FAILED)??;
-        if status.configuration_issue.is_some() || status.recovery_pending {
-            return Err(agent_connections::CONFLICT.into());
-        }
         let refresh = with_codex_reload(status, reload, desktop_state);
-        let desktop_restart =
-            refresh.desktop_state == Some(agent_connections::desktop::State::RestartRequired);
-        let reload_restart = matches!(
-            refresh.reload_state,
-            Some(
-                agent_connections::ReloadState::StaleCatalog
-                    | agent_connections::ReloadState::Failed
-            )
-        );
-        if reload_restart {
-            return state.proxy_service.request_codex_reload();
-        }
-        if desktop_restart {
-            let manager = state.proxy_service.agent_connections.clone();
-            return tokio::task::spawn_blocking(move || manager.restart_codex_desktop())
+        let manager = state.proxy_service.agent_connections.clone();
+        return restart_confirmed_codex(refresh, async move {
+            tokio::task::spawn_blocking(move || manager.restart_codex_desktop())
                 .await
-                .map_err(|_| FAILED)?;
-        }
-        return Err("agentConnections.restartChanged".into());
+                .map_err(|_| FAILED)?
+        })
+        .await;
     }
     let active = state.proxy_service.intent_runtime.connections.active(&app);
     let manager = state.proxy_service.agent_connections.clone();

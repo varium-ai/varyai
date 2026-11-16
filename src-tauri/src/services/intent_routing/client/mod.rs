@@ -12,6 +12,7 @@ use std::{
 use toml_edit::DocumentMut;
 
 pub(crate) mod aliases;
+mod catalog_file;
 mod health;
 mod model_cache;
 mod thread_lifecycle;
@@ -19,6 +20,8 @@ mod threads;
 pub(crate) use health::ConfigurationIssue;
 #[cfg(test)]
 mod alias_tests;
+#[cfg(test)]
+mod catalog_publication_tests;
 #[cfg(test)]
 mod mode_tests;
 #[cfg(test)]
@@ -403,6 +406,35 @@ pub(crate) fn catalog(
         .collect::<Vec<_>>();
     Ok(json!({"models":models}))
 }
+
+pub(super) fn advertise_tool_search(model: &mut Value, session: &crate::proxy::intent::Session) {
+    // Codex otherwise inlines every connected tool's full schema on every turn.
+    // Converted routes implement client discovery as a callable function. Keep
+    // unknown native Responses gateways conservative: they may reject that type.
+    let mut targets = session.menu_targets().peekable();
+    let supported = targets.peek().is_some()
+        && targets.all(|target| {
+            target.official
+                || target.upstream.as_ref().is_some_and(|provider| {
+                    crate::services::subscription_provider::binding(provider).is_none()
+                        && matches!(
+                            provider
+                                .meta
+                                .as_ref()
+                                .and_then(|meta| meta.api_format.as_deref()),
+                            Some(
+                                "openai_chat"
+                                    | "chat_completions"
+                                    | "anthropic"
+                                    | "anthropic_messages"
+                                    | "gemini_native"
+                            )
+                        )
+                })
+        });
+    model["supports_search_tool"] = json!(supported);
+}
+
 pub(crate) fn menu_catalog(
     menu: &crate::proxy::intent::Menu,
     chosen: &str,
@@ -455,6 +487,7 @@ pub(crate) fn menu_catalog(
                 let vendor =
                     !session.targets.is_empty() && session.targets.iter().all(|t| t.official);
                 metadata.publish(&menu.context_settings, typed, vendor, model);
+                advertise_tool_search(model, session);
             }
             if let Some(entry) = menu.models.get(&group.id) {
                 model["slug"] = json!(entry.alias);
@@ -956,7 +989,7 @@ impl Manager {
             .unwrap_or_default();
         let aliases = aliases::project_menu(&mut projection, &mut model_map, menu.as_deref())?;
         let first_alias = aliases.first().ok_or("agentConnections.noModels")?;
-        let catalog_bytes = serde_json::to_vec_pretty(&projection).map_err(|_| FAILED)?;
+        let catalog_text = serde_json::to_string_pretty(&projection).map_err(|_| FAILED)?;
         if let Some(receipt) = &superseded {
             let backup = self.receipt.parent().ok_or(FAILED)?.join(format!(
                 "codex-reapply-recovery-{}.json",
@@ -978,27 +1011,22 @@ impl Manager {
             .map(|r| r.catalogs.clone())
             .or_else(|| identity.map(|identity| identity.catalogs))
             .unwrap_or_default();
-        let reusable = catalogs.last().filter(|path| {
-            path.parent() == self.receipt.parent()
-                && read(path)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|text| text.as_bytes() == catalog_bytes)
-        });
+        // Reuse our latest catalog across changes and reconnects. Historical
+        // paths remain available to older clients without imposing a usage limit.
+        let reusable = catalogs
+            .iter()
+            .rev()
+            .find(|path| self.owns_catalog_path(path));
         let new_catalog = reusable.is_none();
-        let catalog_path = if let Some(path) = reusable {
-            path.clone()
-        } else {
-            if catalogs.len() >= 64 {
-                return Err("intentRouting.limit".into());
-            }
-            let path = self.receipt.parent().ok_or(FAILED)?.join(format!(
+        let catalog_path = match reusable {
+            Some(path) => path.clone(),
+            None => self.receipt.parent().ok_or(FAILED)?.join(format!(
                 "vary-routing-catalog-{}.json",
                 uuid::Uuid::new_v4().simple()
-            ));
-            crate::config::atomic_write_private(&path, &catalog_bytes).map_err(|_| FAILED)?;
-            path
+            )),
         };
+        let previous_catalog = read(&catalog_path)?;
+        let catalog_changed = previous_catalog.as_deref() != Some(catalog_text.as_str());
         let native_mode = beside_sign_in(&self.config, &doc, old.as_ref(), native.is_some());
         let current_model = doc.get("model").and_then(|v| v.as_str()).unwrap_or("");
         let keep_native_model = native_mode
@@ -1068,7 +1096,7 @@ impl Manager {
         let table = doc["model_providers"].as_table_like_mut().ok_or(CONFLICT)?;
         table.insert(PROVIDER, toml_edit::Item::Table(provider));
         if new_catalog {
-            catalogs.push(catalog_path);
+            catalogs.push(catalog_path.clone());
         }
         let mut receipt = Receipt {
             version: 2,
@@ -1107,23 +1135,24 @@ impl Manager {
             thread_sync_pending: false,
             thread_restore_pending: false,
         };
-        if crate::config::atomic_write_private(
-            &self.receipt,
-            &serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
-        )
-        .is_err()
-        {
-            if let Some(path) = receipt.catalogs.last().filter(|_| new_catalog) {
-                let _ = fs::remove_file(path);
-            }
-            return Err(FAILED.into());
-        }
+        catalog_file::publish(
+            &catalog_path,
+            previous_catalog.as_deref(),
+            &catalog_text,
+            || {
+                crate::config::atomic_write_private(
+                    &self.receipt,
+                    &serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
+                )
+                .map_err(|_| FAILED)?;
+                replace_checked(&self.config, current.as_deref(), Some(&receipt.installed))
+            },
+        )?;
         let cache_changed = intent != ApplyIntent::Refresh
-            || new_catalog
+            || catalog_changed
             || current
                 .as_deref()
                 .is_none_or(|current| !projection_owned(current, &receipt.installed));
-        replace_checked(&self.config, current.as_deref(), Some(&receipt.installed))?;
         if let Some(menu) = menu {
             self.runtime
                 .native

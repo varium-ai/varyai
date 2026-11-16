@@ -3,19 +3,34 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+#[derive(Clone, Copy)]
+enum PickerIds {
+    Retained,
+    SourceQualified,
+    CurrentLabels,
+}
+
 pub(super) fn named_catalog(
     catalog: &[Model],
     selected: &str,
     model_map: &mut BTreeMap<String, String>,
 ) -> (Vec<Model>, String) {
-    catalog_names(catalog, selected, model_map, false)
+    catalog_names(catalog, selected, model_map, PickerIds::Retained)
+}
+
+pub(super) fn current_catalog(
+    catalog: &[Model],
+    selected: &str,
+    model_map: &mut BTreeMap<String, String>,
+) -> (Vec<Model>, String) {
+    catalog_names(catalog, selected, model_map, PickerIds::CurrentLabels)
 }
 
 fn catalog_names(
     catalog: &[Model],
     selected: &str,
     model_map: &mut BTreeMap<String, String>,
-    names_as_ids: bool,
+    picker_ids: PickerIds,
 ) -> (Vec<Model>, String) {
     let mut projected = catalog.to_vec();
     let mut chosen = selected.to_owned();
@@ -42,7 +57,10 @@ fn catalog_names(
         let has_source = previous
             .to_lowercase()
             .contains(&format!(" · {}", model.group.to_lowercase()));
-        let base = if previous == internal || (names_as_ids && !has_source) {
+        let base = if previous == internal
+            || matches!(picker_ids, PickerIds::CurrentLabels)
+            || (matches!(picker_ids, PickerIds::SourceQualified) && !has_source)
+        {
             &model.name
         } else {
             previous
@@ -123,7 +141,12 @@ pub(super) fn build(
     } else if matches!(app, "hermes" | "zcode") {
         // These clients list IDs without a separate display-name field. Keep
         // historical aliases routable while publishing source-qualified IDs.
-        catalog_names(catalog, selected, &mut receipt.model_map, true)
+        catalog_names(
+            catalog,
+            selected,
+            &mut receipt.model_map,
+            PickerIds::SourceQualified,
+        )
     } else {
         named_catalog(catalog, selected, &mut receipt.model_map)
     };

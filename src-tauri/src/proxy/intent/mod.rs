@@ -1534,6 +1534,11 @@ async fn execute(
         None
     };
     let responses_replay = protocol == Protocol::Responses && agent == "codex";
+    let visible_chat_replay = matches!(agent, "workbuddy" | "workbuddy-ai")
+        && protocol == Protocol::Chat
+        && session.targets.len() == 1
+        && !opaque_continuation(protocol, &original)
+        && length::portable(&projection);
     let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
         || session.targets.iter().all(|target| target.official))
         && protocol != Protocol::Responses
@@ -1546,6 +1551,8 @@ async fn execute(
     } else {
         let policy = if responses_replay {
             scopes::HistoryPolicy::ResponsesReplay
+        } else if visible_chat_replay {
+            scopes::HistoryPolicy::VisibleChatReplay
         } else if portable_tool_history {
             scopes::HistoryPolicy::Portable
         } else {

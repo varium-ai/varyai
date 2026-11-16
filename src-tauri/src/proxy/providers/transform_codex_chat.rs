@@ -60,6 +60,19 @@ pub(crate) fn tool_search_parameters() -> Value {
         "required": ["query"]
     })
 }
+
+pub(crate) fn tool_search_definition(tool: &Value) -> (String, Value) {
+    let description = tool["description"]
+        .as_str()
+        .unwrap_or(TOOL_SEARCH_DESCRIPTION)
+        .to_owned();
+    let parameters = tool
+        .get("parameters")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(tool_search_parameters);
+    (description, parameters)
+}
 const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 const CHAT_TOOL_NAME_MAX_LEN: usize = 64;
 const CUSTOM_TOOL_INPUT_DESCRIPTION: &str = "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description.";
@@ -185,13 +198,14 @@ impl CodexToolContext {
         self.add_chat_tool(name, spec, chat_tool);
     }
 
-    fn add_tool_search_tool(&mut self) {
+    fn add_tool_search_tool(&mut self, tool: &Value) {
+        let (description, parameters) = tool_search_definition(tool);
         let chat_tool = json!({
             "type": "function",
             "function": {
                 "name": TOOL_SEARCH_PROXY_NAME,
-                "description": TOOL_SEARCH_DESCRIPTION,
-                "parameters": tool_search_parameters()
+                "description": description,
+                "parameters": parameters
             }
         });
         let spec = CodexToolSpec {
@@ -232,7 +246,7 @@ impl CodexToolContext {
             Value::Object(_) => match tool.get("type").and_then(|v| v.as_str()) {
                 Some("function") => self.add_function_tool(tool, None),
                 Some("custom") => self.add_custom_tool(tool),
-                Some("tool_search") => self.add_tool_search_tool(),
+                Some("tool_search") => self.add_tool_search_tool(tool),
                 Some("namespace") => self.add_namespace_tool(tool),
                 _ => {}
             },
@@ -3884,6 +3898,30 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[test]
+    fn codex_tool_search_legacy_conversion_preserves_the_discovery_contract(
+    ) -> Result<(), ProxyError> {
+        let declaration = json!({
+            "type":"tool_search", "execution":"client",
+            "description":"Search the synthetic records and calendar namespaces when needed.",
+            "parameters":{"type":"object","properties":{
+                "query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":5}
+            },"required":["query","limit"],"additionalProperties":false}
+        });
+        let result = responses_to_chat_completions(json!({
+            "model":"synthetic", "input":"Hello", "tools":[declaration]
+        }))?;
+        assert_eq!(
+            result["tools"][0]["function"]["description"],
+            declaration["description"]
+        );
+        assert_eq!(
+            result["tools"][0]["function"]["parameters"],
+            declaration["parameters"]
+        );
+        Ok(())
     }
 
     #[test]

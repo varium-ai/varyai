@@ -1,6 +1,6 @@
 //! Follow settled Codex routing changes through the desktop app's own app-server.
-//! Confirmed manual refreshes restart the desktop application. Windows recovery is used
-//! only when an ended app-server has no replacement; every step waits for idle.
+//! Automatic refreshes wait for idle. Confirmed manual restarts use the separate
+//! desktop lifecycle. Windows recovery applies only when an ended server has no replacement.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
@@ -47,7 +47,6 @@ struct Monitor {
 
 struct Pending {
     old: Vec<Instance>,
-    manual: Vec<Instance>,
     last_attempt: Vec<Instance>,
     deadline: Option<u64>,
     replacement_deadline: Option<u64>,
@@ -57,7 +56,6 @@ struct Pending {
 enum Action {
     None,
     Restart(Vec<Instance>),
-    RestartDesktop(Vec<Instance>),
     Recovered,
     TimedOut,
 }
@@ -124,26 +122,6 @@ impl Monitor {
         ReloadState::Current
     }
 
-    fn request_restart(&mut self, now: u64) {
-        if self.running.is_empty() {
-            return;
-        }
-        let old: Vec<_> = self.running.iter().map(|s| s.identity.clone()).collect();
-        for server in &mut self.running {
-            server.attempted = false;
-            server.attempts = 0;
-        }
-        self.pending = Some(Pending {
-            manual: old.clone(),
-            old,
-            last_attempt: Vec::new(),
-            deadline: None,
-            replacement_deadline: None,
-        });
-        self.failed = false;
-        self.changed_at = now;
-    }
-
     fn observe(&mut self, route: [u8; 32], running: Vec<Instance>, busy: bool, now: u64) -> Action {
         let changed = self.route != Some(route);
         if changed {
@@ -179,7 +157,6 @@ impl Monitor {
         if !stale.is_empty() {
             let pending = self.pending.get_or_insert_with(|| Pending {
                 old: Vec::new(),
-                manual: Vec::new(),
                 last_attempt: Vec::new(),
                 deadline: None,
                 replacement_deadline: None,
@@ -200,9 +177,7 @@ impl Monitor {
             self.running
                 .iter()
                 .find(|server| &server.identity == identity)
-                .is_none_or(|server| {
-                    server.attempted || server.route != route || pending.manual.contains(identity)
-                })
+                .is_none_or(|server| server.attempted || server.route != route)
         });
         if pending.old.is_empty() {
             self.pending = None;
@@ -251,11 +226,7 @@ impl Monitor {
                 }
                 pending.last_attempt = targets.clone();
                 pending.deadline.get_or_insert(now.saturating_add(20));
-                return if pending.manual.is_empty() {
-                    Action::Restart(targets)
-                } else {
-                    Action::RestartDesktop(targets)
-                };
+                return Action::Restart(targets);
             }
         }
         Action::None
@@ -271,18 +242,6 @@ fn terminate_targets(
         .filter(|target| terminate(target).is_err())
         .cloned()
         .collect()
-}
-
-#[cfg(any(target_os = "macos", windows, test))]
-fn restart_observed_desktop(
-    targets: &[Instance],
-    observed: &[Instance],
-    restart: impl FnOnce() -> Result<(), ()>,
-) -> Result<(), ()> {
-    if observed.len() != targets.len() || observed.iter().any(|server| !targets.contains(server)) {
-        return Err(());
-    }
-    restart()
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, ()> {
@@ -466,41 +425,18 @@ fn fingerprint(config: &Path) -> Result<[u8; 32], ()> {
 }
 
 #[cfg(any(target_os = "macos", windows))]
-struct Control {
-    state: ReloadState,
-    requested: bool,
-}
-
-#[cfg(any(target_os = "macos", windows))]
 pub(crate) struct Worker {
     task: tokio::task::AbortHandle,
-    control: std::sync::Arc<std::sync::Mutex<Control>>,
+    state: std::sync::Arc<std::sync::Mutex<ReloadState>>,
 }
 
 #[cfg(any(target_os = "macos", windows))]
 impl Worker {
     pub(crate) fn snapshot(&self) -> ReloadState {
-        self.control
+        self.state
             .lock()
-            .map(|control| control.state)
+            .map(|state| *state)
             .unwrap_or(ReloadState::Failed)
-    }
-
-    /// Queue an explicitly confirmed refresh; only the worker may end a server.
-    pub(crate) fn request_restart(&self) -> Result<(), String> {
-        let mut control = self
-            .control
-            .lock()
-            .map_err(|_| "agentConnections.restartFailed".to_owned())?;
-        if !matches!(
-            control.state,
-            ReloadState::StaleCatalog | ReloadState::Failed
-        ) {
-            return Err("agentConnections.restartChanged".into());
-        }
-        control.requested = true;
-        control.state = ReloadState::WaitingForIdle;
-        Ok(())
     }
 }
 
@@ -518,11 +454,8 @@ pub(crate) fn start(
     requests: std::sync::Arc<crate::proxy::client_activity::Activity>,
     desktop: std::sync::Arc<super::agent_connections::Manager>,
 ) -> Worker {
-    let control = std::sync::Arc::new(std::sync::Mutex::new(Control {
-        state: ReloadState::Stopped,
-        requested: false,
-    }));
-    let worker_control = control.clone();
+    let state = std::sync::Arc::new(std::sync::Mutex::new(ReloadState::Stopped));
+    let worker_state = state.clone();
     let task = tauri::async_runtime::spawn(async move {
         let mut monitor = Monitor::default();
         let clock = std::time::Instant::now();
@@ -532,8 +465,7 @@ pub(crate) fn start(
             };
             let guard = locks.lock_for_app("codex").await;
             let config = manager.config_path().to_owned();
-            let manual = worker_control.lock().is_ok_and(|control| control.requested);
-            let needs_activity = monitor.pending.is_some() || manual;
+            let needs_activity = monitor.pending.is_some();
             let previous_route = monitor.route;
             let sample_config = config.clone();
             let sample_requests = requests.clone();
@@ -562,27 +494,18 @@ pub(crate) fn start(
             .await;
             if let Ok(Ok((route, catalog, processes, busy))) = sample {
                 let now = clock.elapsed().as_secs();
-                let mut action = monitor.observe(route, processes, busy, now);
+                let action = monitor.observe(route, processes, busy, now);
                 monitor.observe_catalog(
                     catalog.map(|sample| sample.0),
                     catalog.map(|sample| sample.1),
                 );
-                if let Ok(mut control) = worker_control.lock() {
-                    if control.requested {
-                        monitor.request_restart(now);
-                        control.requested = false;
-                        action = Action::None;
-                    }
-                    // Publish before awaiting the final recheck, so another command
-                    // cannot queue a second refresh against an outdated UI sample.
-                    control.state = monitor.snapshot();
+                if let Ok(mut state) = worker_state.lock() {
+                    *state = monitor.snapshot();
                 }
-                let desktop_restart = matches!(&action, Action::RestartDesktop(_));
                 match action {
-                    Action::Restart(targets) | Action::RestartDesktop(targets) => {
+                    Action::Restart(targets) => {
                         let client = manager.clone();
                         let final_requests = requests.clone();
-                        let final_desktop = desktop.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             let home = config.parent().ok_or(())?;
                             let since = targets.iter().map(|p| p.started_us).min().ok_or(())?;
@@ -602,16 +525,6 @@ pub(crate) fn start(
                             {
                                 return Ok(None);
                             }
-                            if desktop_restart {
-                                // Check observed servers before quitting. Their expected exit
-                                // must not invalidate the configuration guard used to reopen.
-                                restart_observed_desktop(
-                                    &targets,
-                                    &platform::instances(home)?,
-                                    || final_desktop.restart_codex_desktop().map_err(|_| ()),
-                                )?;
-                                return Ok(Some(Vec::new()));
-                            }
                             let failed = terminate_targets(&targets, |target| {
                                 platform::terminate(target, home)
                             });
@@ -621,26 +534,14 @@ pub(crate) fn start(
                         match result {
                             Ok(Ok(Some(failed))) => {
                                 if failed.is_empty() {
-                                    if desktop_restart {
-                                        log::info!(
-                                            "Codex desktop restarted; waiting for its app-server"
-                                        );
-                                    } else {
-                                        log::info!("Codex routing changed; waiting for the desktop app-server to restart");
-                                    }
+                                    log::info!("Codex routing changed; waiting for the desktop app-server to restart");
                                 } else {
                                     log::warn!("Codex app-server restart remains pending");
                                 }
                             }
                             Ok(Ok(None)) => monitor.defer(),
                             _ => {
-                                if desktop_restart {
-                                    monitor.pending = None;
-                                    monitor.failed = true;
-                                    log::warn!("Codex desktop restart unavailable");
-                                } else {
-                                    log::warn!("Codex app-server restart unavailable");
-                                }
+                                log::warn!("Codex app-server restart unavailable");
                             }
                         }
                     }
@@ -681,11 +582,8 @@ pub(crate) fn start(
                 // A failed read is not evidence of a stable final configuration.
                 monitor.changed_at = clock.elapsed().as_secs();
             }
-            if let Ok(mut control) = worker_control.lock() {
-                // A command queued during this sample stays visible until consumed.
-                if !control.requested {
-                    control.state = monitor.snapshot();
-                }
+            if let Ok(mut state) = worker_state.lock() {
+                *state = monitor.snapshot();
             }
             drop(guard);
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -693,6 +591,6 @@ pub(crate) fn start(
     });
     Worker {
         task: task.inner().abort_handle(),
-        control,
+        state,
     }
 }
