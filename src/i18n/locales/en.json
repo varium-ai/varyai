@@ -2207,6 +2207,10 @@
   },
   "usage": {
     "modelFilterScope": "Filter by request, response or billing model. Costs stay grouped by billing model.",
+    "routingModelOption": "{{models}} (routing ID)",
+    "routingModelOptionDisambiguated": "{{label}} · {{id}}",
+    "unknownRoutingModelOption": "Unknown historical model · {{id}}",
+    "providerModelOption": "{{model}} · {{provider}}",
     "requestResponseModel": "Request → response",
     "title": "Usage Statistics",
     "subtitle": "View AI model usage and cost statistics",

@@ -46,6 +46,7 @@ pub(crate) mod subscription_provider;
 pub mod sync_protocol;
 pub mod tool_risk;
 pub mod usage_cache;
+pub(crate) mod usage_model_labels;
 pub mod usage_stats;
 pub mod webdav;
 pub mod webdav_auto_sync;

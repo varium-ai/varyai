@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   UsageSummaryByApp,
+  UsageModelLabel,
   DailyStats,
   ProviderStats,
   ModelStats,
@@ -17,6 +18,8 @@ import type { AppId } from "./types";
 import type { TemplateType } from "@/config/constants";
 
 export const usageApi = {
+  getModelLabels: (modelIds: string[]): Promise<UsageModelLabel[]> =>
+    invoke("get_usage_model_labels", { modelIds }),
   // Provider usage script methods
   query: async (providerId: string, appId: AppId): Promise<UsageResult> => {
     return invoke("queryProviderUsage", { providerId, app: appId });

@@ -25,6 +25,23 @@ The optional `setup.sh` changes the host environment: it can install system pack
 
 A temporary test home also redirects native client paths. A nonempty `CC_SWITCH_TEST_HOME` takes priority over an inherited `DSH_HOME` for Harness configuration so tests launched inside Harness stay isolated. An empty test home represents a machine without configured clients, not just a fresh VaryAI installation. To verify an existing-client installation, prepare private client configuration copies or synthetic existing-client fixtures inside that home. Do not copy rotating OAuth sessions into parallel test clients; use a test API-key provider or a separate authorization. Changing the VaryAI application data root must leave native client paths unchanged. Do not create empty production client files as a substitute for setup, and do not grant OS trust or connection authorization as part of routine checks.
 
+## Native file dialog languages
+
+macOS chooses the language of native Open and Save panels using the app's
+supported bundle localizations and the user's preferred app/system languages.
+Both `src-tauri/Info.plist` for packaged builds and the development bundle
+created by `src-tauri/src/macos_dev_bundle.rs` declare English, Simplified
+Chinese, Traditional Chinese, and Japanese. Keep these declarations aligned
+when changing the supported languages. The regression test asks Foundation to
+resolve language preferences against both bundle types without launching an app.
+
+After changing bundle metadata, rebuild and restart the native development
+process; refreshing the renderer alone does not update the running bundle's
+language selection. Packaged acceptance requires a newly built app and a manual
+check of the native panel. Renderer language settings are independent of macOS
+app language preferences. Windows uses its native file dialog language selection
+and does not consume macOS bundle metadata.
+
 ## Desktop text selection
 
 The renderer defaults to `user-select: none` on `body` so navigation, labels,

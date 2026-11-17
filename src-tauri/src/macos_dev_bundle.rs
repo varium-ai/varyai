@@ -108,6 +108,13 @@ fn prepare_bundle(source: &Path, config: &tauri::Config, icon: &Path) -> io::Res
 <key>CFBundleExecutable</key><string>{binary}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array>
+<string>en</string>
+<string>zh-Hans</string>
+<string>zh-Hant</string>
+<string>ja</string>
+</array>
 <key>CFBundleVersion</key><string>{version}</string>
 <key>CFBundleShortVersionString</key><string>{version}</string>
 <key>CFBundleIconFile</key><string>icon.icns</string>
@@ -135,6 +142,61 @@ mod tests {
             app_for_executable(Path::new("/tmp/Vary AI.app/varyai")),
             None
         );
+    }
+
+    #[test]
+    fn native_dialog_languages_follow_system_preferences_in_both_bundle_types() {
+        use objc2_foundation::{NSArray, NSBundle, NSString};
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("synthetic-varyai");
+        let icon = temp.path().join("synthetic.icns");
+        fs::write(&source, b"synthetic executable").unwrap();
+        fs::write(&icon, b"synthetic icon").unwrap();
+        let config: tauri::Config = serde_json::from_str(
+            r#"{"identifier":"com.example.varyai-language-test","productName":"Synthetic Vary AI"}"#,
+        )
+        .unwrap();
+        let executable = prepare_bundle(&source, &config, &icon).unwrap();
+        let development = app_for_executable(&executable).unwrap();
+        let packaged = temp.path().join("Synthetic Packaged.app");
+        fs::create_dir_all(packaged.join("Contents/Resources")).unwrap();
+        fs::write(
+            packaged.join("Contents/Info.plist"),
+            include_bytes!("../Info.plist"),
+        )
+        .unwrap();
+
+        for (kind, path) in [("packaged", packaged), ("development", development)] {
+            let bundle = NSBundle::bundleWithPath(&NSString::from_str(path.to_str().unwrap()))
+                .expect("synthetic bundle should be readable without launching an application");
+            let available = bundle.localizations();
+            for (preferences, expected) in [
+                (vec!["zh-CN", "en-US"], "zh-Hans"),
+                (vec!["zh-Hans-CN", "en-US"], "zh-Hans"),
+                (vec!["zh-TW", "en-US"], "zh-Hant"),
+                (vec!["zh-HK", "en-US"], "zh-Hant"),
+                (vec!["en-US", "zh-CN"], "en"),
+                (vec!["ja-JP", "en-US"], "ja"),
+                (vec!["fr-FR", "zh-CN", "en-US"], "zh-Hans"),
+            ] {
+                let preferred = NSArray::from_retained_slice(
+                    &preferences
+                        .iter()
+                        .map(|language| NSString::from_str(language))
+                        .collect::<Vec<_>>(),
+                );
+                let resolved = NSBundle::preferredLocalizationsFromArray_forPreferences(
+                    &available,
+                    Some(&preferred),
+                );
+                assert_eq!(
+                    resolved.firstObject().map(|language| language.to_string()),
+                    Some(expected.to_owned()),
+                    "{kind} bundle with preferences {preferences:?}"
+                );
+            }
+        }
     }
 
     #[test]

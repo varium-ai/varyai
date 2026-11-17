@@ -16,7 +16,7 @@ use std::{
 
 pub(crate) const MAX_MENU_ENTRIES: usize = 256;
 
-fn direct_id(provider: &str, model: &str) -> String {
+pub(crate) fn direct_id(provider: &str, model: &str) -> String {
     let mut hash = Sha256::new();
     for value in [provider, model] {
         hash.update(value.len().to_be_bytes());

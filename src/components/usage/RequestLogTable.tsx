@@ -1,3 +1,4 @@
+import { getUsageModelDisplayName } from "./modelOptions";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -36,6 +37,7 @@ import {
 } from "./format";
 
 interface RequestLogTableProps {
+  modelNames?: Readonly<Record<string, string>>;
   range: UsageRangeSelection;
   rangeLabel: string;
   appType?: string;
@@ -46,6 +48,7 @@ interface RequestLogTableProps {
 }
 
 export function RequestLogTable({
+  modelNames = {},
   range,
   rangeLabel,
   appType: dashboardAppType,
@@ -55,6 +58,10 @@ export function RequestLogTable({
   onRangeChange,
 }: RequestLogTableProps) {
   const { t, i18n } = useTranslation();
+  const modelName = (id: string) =>
+    getUsageModelDisplayName(id, modelNames, (shortId) =>
+      t("usage.unknownRoutingModelOption", { id: shortId }),
+    );
 
   // 应用/Provider/模型筛选已上移到 Dashboard 顶栏（全局生效）；
   // 这里只保留日志特有的状态码筛选。
@@ -262,9 +269,11 @@ export function RequestLogTable({
                         <TableCell className="text-center font-mono text-xs min-w-[200px] max-w-[360px]">
                           <div
                             className="whitespace-normal break-all"
-                            title={`${t("usage.requestModel")}: ${log.requestModel || log.model} → ${t("usage.responseModel")}: ${log.model}`}
+                            title={`${t("usage.requestModel")}: ${modelName(log.requestModel || log.model)} → ${t("usage.responseModel")}: ${modelName(log.model)}`}
                           >
-                            <span>{log.pricingModel || log.model}</span>
+                            <span>
+                              {modelName(log.pricingModel || log.model)}
+                            </span>
                             {((log.requestModel &&
                               log.requestModel !==
                                 (log.pricingModel || log.model)) ||
@@ -276,8 +285,8 @@ export function RequestLogTable({
                               >
                                 {log.requestModel &&
                                 log.requestModel !== log.model
-                                  ? `${log.requestModel} → ${log.model}`
-                                  : log.model}
+                                  ? `${modelName(log.requestModel)} → ${modelName(log.model)}`
+                                  : modelName(log.model)}
                               </div>
                             )}
                           </div>

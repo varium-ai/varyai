@@ -1,10 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
+import { getUsageRoutingModelId } from "@/types/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
 import type {
   LogFilters,
   UsageRangeSelection,
   UsageScopeFilters,
+  UsageModelLabel,
 } from "@/types/usage";
 
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
@@ -122,6 +124,8 @@ export const usageKeys = {
       page,
       pageSize,
     ] as const,
+  modelLabels: (ids: string[]) =>
+    [...usageKeys.all, "model-labels", ids] as const,
   pricing: () => [...usageKeys.all, "pricing"] as const,
   script: (providerId: string, appType: string) =>
     [...usageKeys.all, providerId, appType] as const,
@@ -332,5 +336,45 @@ export function useDeleteModelPricing() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: usageKeys.all });
     },
+  });
+}
+
+/** Resolve presentation metadata independently of usage queries and forwarding. */
+export function useUsageModelLabels(
+  models: string[],
+  options?: UsageQueryOptions,
+) {
+  const queryClient = useQueryClient();
+  const ids = Array.from(
+    new Set(models.flatMap((model) => getUsageRoutingModelId(model) ?? [])),
+  ).sort();
+  return useQuery({
+    queryKey: usageKeys.modelLabels(ids),
+    enabled: ids.length > 0,
+    queryFn: async (): Promise<UsageModelLabel[]> => {
+      const labels: UsageModelLabel[] = [];
+      for (let start = 0; start < ids.length; start += 512) {
+        try {
+          labels.push(
+            ...(await usageApi.getModelLabels(ids.slice(start, start + 512))),
+          );
+        } catch {
+          // Keep the last known names when optional metadata cannot be read.
+          const batch = new Set(ids.slice(start, start + 512));
+          labels.push(
+            ...(
+              queryClient.getQueryData<UsageModelLabel[]>(
+                usageKeys.modelLabels(ids),
+              ) ?? []
+            ).filter((label) => batch.has(label.id)),
+          );
+        }
+      }
+      return labels;
+    },
+    placeholderData: (previous) => previous,
+    retry: false,
+    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   });
 }
