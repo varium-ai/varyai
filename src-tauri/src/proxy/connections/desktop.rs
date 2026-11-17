@@ -1,4 +1,5 @@
 //! Desktop's automatic model choices follow the user's lead model, as in Magpie.
+pub(crate) mod probe_recovery;
 use super::Connection;
 use crate::proxy::intent::Menu;
 use http::HeaderMap;
@@ -320,6 +321,8 @@ pub(super) fn probe(body: &Value) -> bool {
     body["max_tokens"] == 1
         && body.get("system").is_none()
         && body.get("tools").is_none()
+        && body.get("previous_response_id").is_none()
+        && body.get("conversation").is_none()
         && body["messages"].as_array().is_some_and(|messages| {
             messages.len() == 1 && messages[0]["role"] == "user" && messages[0]["content"] == "."
         })

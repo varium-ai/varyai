@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
 
+mod refresh;
+
 const CACHE_TTL: i64 = 24 * 60 * 60;
 const FAILED: &str = "intentRouting.failed";
 
@@ -290,7 +292,8 @@ pub(crate) async fn prepare_providers(
     manager: Arc<CodexOAuthManager>,
     refresh: bool,
 ) -> Result<(Vec<Provider>, Vec<CatalogStatus>), String> {
-    use futures::{stream, StreamExt};
+    let started = tokio::time::Instant::now();
+    let deadline = refresh.then_some(started + refresh::TOTAL_BUDGET);
     let read_db = db.clone();
     let providers = tauri::async_runtime::spawn_blocking(move || {
         read_db.routing_providers().map(|providers| {
@@ -303,15 +306,16 @@ pub(crate) async fn prepare_providers(
     .await
     .map_err(|_| FAILED)?
     .map_err(|_| FAILED)?;
-    let results = stream::iter(providers.into_values())
-        .map(|provider| prepare_editor_pool(db.clone(), manager.clone(), provider, refresh))
-        .buffered(4)
-        .collect::<Vec<_>>()
-        .await;
+    let results = refresh::collect(
+        providers.into_values(),
+        deadline,
+        refresh::UPSTREAM_BUDGET,
+        |provider, refresh| prepare_editor_pool(db.clone(), manager.clone(), provider, refresh),
+    )
+    .await?;
     let mut providers = Vec::new();
     let mut statuses = Vec::new();
-    for result in results {
-        let (mut provider, status) = result?;
+    for (mut provider, status) in results {
         crate::services::codex_provider::filter_models(&mut provider);
         crate::services::routing_upstreams::filter_models(&mut provider);
         providers.push(provider);
@@ -319,7 +323,28 @@ pub(crate) async fn prepare_providers(
             statuses.push(status);
         }
     }
-    super::model_context::prepare(&mut providers, refresh).await;
+    let catalogs_elapsed = started.elapsed();
+    let enriched = if let Some(deadline) =
+        deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
+    {
+        tokio::time::timeout_at(
+            deadline,
+            super::model_context::prepare(&mut providers, true),
+        )
+        .await
+        .is_ok()
+    } else {
+        false
+    };
+    if !enriched {
+        super::model_context::prepare(&mut providers, false).await;
+    }
+    log::info!(
+        "Routing catalog preparation completed: network_refresh={refresh} providers={} catalogs_ms={} metadata_ms={} timeouts={}",
+        providers.len(), catalogs_elapsed.as_millis(),
+        started.elapsed().saturating_sub(catalogs_elapsed).as_millis(),
+        statuses.iter().filter(|status| status.reason == Some("timeout")).count(),
+    );
     let labels = crate::services::usage_model_labels::labels_for_providers(&providers);
     let label_db = db.clone();
     if !matches!(
@@ -336,7 +361,7 @@ pub(crate) async fn prepare_missing_catalogs(
     db: Arc<Database>,
     manager: Arc<CodexOAuthManager>,
 ) -> Result<Vec<CatalogStatus>, String> {
-    use futures::{stream, StreamExt};
+    let deadline = tokio::time::Instant::now() + refresh::TOTAL_BUDGET;
     let (providers, _) = prepare_providers(db.clone(), manager.clone(), false).await?;
     let missing = providers
         .into_iter()
@@ -375,16 +400,17 @@ pub(crate) async fn prepare_missing_catalogs(
         .map_err(|_| FAILED)??
         .into_iter()
         .filter(|provider| missing.contains(&provider.id));
-    let results = stream::iter(missing)
-        .map(|provider| prepare_editor_pool(db.clone(), manager.clone(), provider, true))
-        .buffered(4)
-        .collect::<Vec<_>>()
-        .await;
-    results
+    let results = refresh::collect(
+        missing,
+        Some(deadline),
+        refresh::UPSTREAM_BUDGET,
+        |provider, refresh| prepare_editor_pool(db.clone(), manager.clone(), provider, refresh),
+    )
+    .await?;
+    Ok(results
         .into_iter()
-        .map(|result| result.map(|(_, status)| status))
-        .collect::<Result<Vec<_>, _>>()
-        .map(|statuses| statuses.into_iter().flatten().collect())
+        .filter_map(|(_, status)| status)
+        .collect())
 }
 
 async fn prepare_editor_pool(
@@ -400,19 +426,32 @@ async fn prepare_editor_pool(
     let mut catalogs = serde_json::Map::new();
     let mut models = std::collections::BTreeMap::new();
     let mut latest = None;
-    for mut variant in codex_provider::variants(&provider) {
-        // Never hydrate another identity from an already prepared account catalog.
-        variant
-            .settings_config
-            .as_object_mut()
-            .map(|o| o.remove(CATALOGS));
-        let account = variant
-            .meta
-            .as_ref()
-            .and_then(|m| m.managed_account_id_for("codex_oauth"))
-            .unwrap_or_else(|| "native".into());
-        let (prepared, status) =
-            prepare_provider(db.clone(), manager.clone(), variant, refresh).await?;
+    use futures::{stream, StreamExt};
+    let mut prepared = stream::iter(codex_provider::variants(&provider).into_iter().enumerate())
+        .map(|(index, mut variant)| {
+            let db = db.clone();
+            let manager = manager.clone();
+            async move {
+                // Each account is hydrated only from its own cache and identity.
+                variant
+                    .settings_config
+                    .as_object_mut()
+                    .map(|o| o.remove(CATALOGS));
+                let account = variant
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.managed_account_id_for("codex_oauth"))
+                    .unwrap_or_else(|| "native".into());
+                let result = prepare_provider(db, manager, variant, refresh).await;
+                (index, account, result)
+            }
+        })
+        .buffer_unordered(refresh::CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    prepared.sort_by_key(|(index, _, _)| *index);
+    for (_, account, result) in prepared {
+        let (prepared, status) = result?;
         let rows = prepared
             .settings_config
             .pointer("/modelCatalog/models")
@@ -484,7 +523,13 @@ pub(crate) async fn prepare_provider(
     if refresh {
         let fetch = async {
             let token = if let Some(id) = &identity.managed_id {
-                manager.get_valid_token_for_account(id).await.ok()?
+                let manager = manager.clone();
+                let id = id.clone();
+                refresh::complete_authentication(async move {
+                    manager.get_valid_token_for_account(&id).await.ok()
+                })
+                .await
+                .flatten()?
             } else {
                 identity.native_token.clone()?
             };
@@ -873,6 +918,156 @@ fn discovery_names(value: &Value) -> std::collections::BTreeMap<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn catalog_refresh_starts_queued_providers_before_the_first_slow_provider_finishes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
+        use axum::{extract::Path, routing::get, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let db = Arc::new(Database::memory()?);
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut order = Vec::new();
+        for index in 0..5 {
+            let upstream = db.save_routing_upstream(RoutingUpstream {
+                schema_version: 1,
+                id: String::new(),
+                name: format!("Synthetic timing relay {index}"),
+                revision: 0,
+                enabled: true,
+                has_api_key: false,
+                notes: None,
+                icon: None,
+                preset_id: None,
+                region: None,
+                codex_settings: None,
+                transport: None,
+                source: UpstreamSource::Api {
+                    base_url: format!("http://{address}/{index}/v1"),
+                    api_key: Some("synthetic-timing-key".into()),
+                    api_format: "openai_chat".into(),
+                    models: vec![],
+                    catalog: vec![],
+                    mode: crate::services::codex_provider::ModelMode::Vendor,
+                    groups_only: false,
+                    auth_type: None,
+                },
+            })?;
+            order.push((upstream.id, index));
+        }
+        order.sort();
+        let first = order[0].1;
+        let last = order[4].1;
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate = release.clone();
+        let app = Router::new().route(
+            "/:index/v1/models",
+            get(move |Path(index): Path<usize>| {
+                let gate = gate.clone();
+                async move {
+                    if index == first {
+                        gate.notified().await;
+                    }
+                    if index == last {
+                        gate.notify_one();
+                    }
+                    Json(json!({"data":[{"id":"synthetic-shared-model"}]}))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            prepare_providers(db, manager, true),
+        )
+        .await;
+        release.notify_waiters();
+        server.abort();
+        let (providers, statuses) = result??;
+        assert_eq!(providers.len(), 5);
+        assert_eq!(statuses.len(), 5);
+        assert!(statuses.iter().all(|status| status.status == "updated"));
+        assert!(providers.iter().map(|p| &p.id).is_sorted());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bounded_catalog_timeout_reloads_the_real_cache_without_changing_saved_configuration(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::get, Json, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}/v1", listener.local_addr()?);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let app = Router::new().route("/v1/models", get(move || {
+            let observed = observed.clone();
+            async move {
+                if observed.fetch_add(1, Ordering::SeqCst) > 0 { std::future::pending::<()>().await; }
+                Json(json!({"data":[{"id":"synthetic-cached-model","context_length":1000000,"supported_reasoning_levels":[{"effort":"high"}]}]}))
+            }
+        }));
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let db = Arc::new(Database::memory()?);
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let saved = json!({
+            "apiFormat":"openai_responses",
+            "env":{"ANTHROPIC_BASE_URL":base,"ANTHROPIC_AUTH_TOKEN":"synthetic-cache-key"},
+            "auth":{"OPENAI_API_KEY":"synthetic-cache-key"},
+            "config":format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='{base}'\nwire_api='responses'"),
+            "modelCatalog":{"models":[]}
+        });
+        let original = Provider::with_id(
+            "synthetic-cache-provider".into(),
+            "Synthetic cache relay".into(),
+            saved.clone(),
+            None,
+        );
+        db.save_provider("codex", &original)?;
+        let mut hydrated = original.clone();
+        assert_eq!(
+            prepare_static_context(db.clone(), &mut hydrated, true)
+                .await
+                .status,
+            "updated"
+        );
+        let rows = refresh::collect(
+            vec![original],
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1)),
+            std::time::Duration::from_millis(30),
+            |provider, refresh| prepare_provider(db.clone(), manager.clone(), provider, refresh),
+        )
+        .await?;
+        server.abort();
+        let (provider, status) = &rows[0];
+        assert_eq!(
+            status
+                .as_ref()
+                .map(|status| (status.status, status.reason, status.model_count)),
+            Some(("cached", Some("timeout"), 1))
+        );
+        assert_eq!(
+            provider.settings_config["modelCatalog"]["models"][0]["model"],
+            "synthetic-cached-model"
+        );
+        assert_eq!(
+            super::super::effort::Capability::for_provider(provider, "synthetic-cached-model")
+                .levels,
+            ["high"]
+        );
+        assert_eq!(
+            db.get_all_providers("codex")?["synthetic-cache-provider"].settings_config,
+            saved
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn missing_catalog_discovery_reuses_stored_connection_cache_without_changing_selections(

@@ -5291,6 +5291,10 @@
     "groupEnabled": "已啟用",
     "groupDisabled": "已停用",
     "refresh": "重新整理",
+    "refreshHint": "從已儲存的模型目錄重新讀取路由群組。",
+    "syncModels": "同步模型",
+    "syncModelsHint": "從已啟用的上游更新模型目錄；慢速上游逾時後沿用快取。",
+    "syncModelsResult": "上游：已更新 {{updated}} 個，沿用快取 {{cached}} 個，暫時無法使用 {{unavailable}} 個。",
     "groupStatsUnavailable": "尚未提供路由群組累計統計。",
     "noGroups": "尚無路由群組。新增或匯入路由群組即可開始使用。",
 
@@ -5638,6 +5642,7 @@
     "importedAccountHint": "此匯入帳號或自訂連線保留原有驗證及連線設定。你可以在這裡修改共用名稱和啟用狀態。"
   },
   "agentUpdates": {
+    "waitingForExit": "待更新 · 結束應用程式後重試",
     "update": "更新至 {{version}}",
     "updating": "更新中…",
     "all": "全部更新",

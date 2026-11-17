@@ -5368,6 +5368,10 @@
     "groupEnabled": "Enabled",
     "groupDisabled": "Disabled",
     "refresh": "Refresh",
+    "refreshHint": "Reload routing groups from saved model catalogs.",
+    "syncModels": "Sync models",
+    "syncModelsHint": "Fetch model catalogs from enabled upstreams. Slow upstreams retain their cached catalogs.",
+    "syncModelsResult": "Upstreams: {{updated}} updated, {{cached}} using cache, {{unavailable}} unavailable.",
     "groupStatsUnavailable": "Group totals are not available yet.",
     "noGroups": "No routing groups yet. Create a group or import one to get started.",
 
@@ -5715,6 +5719,7 @@
     "importedAccountHint": "This imported account or custom connection keeps its existing authentication and transport settings. Its shared name and enabled state can be changed here."
   },
   "agentUpdates": {
+    "waitingForExit": "Waiting to update · quit the app, then retry",
     "update": "Update to {{version}}",
     "updating": "Updating…",
     "all": "Update all",

@@ -62,7 +62,8 @@ export function AgentVersionTag({
     cli?.version ?? (desktop?.source === "cli" ? desktop.version : null);
   const appVersion =
     app !== "codex" && desktop?.source === "desktop" ? desktop.version : null;
-  if (!cliVersion && !appVersion) return null;
+  const waitingForExit = updates.deferred.includes(app);
+  if (!cliVersion && !appVersion && !waitingForExit) return null;
   const updating = updates.active.includes(app);
   return (
     <div className="mp-agent-cli">
@@ -109,6 +110,11 @@ export function AgentVersionTag({
           App {appVersion}
         </span>
       )}
+      {waitingForExit && (
+        <span className="mp-agent-version" role="status">
+          {t("agentUpdates.waitingForExit")}
+        </span>
+      )}
     </div>
   );
 }
@@ -122,7 +128,11 @@ export function AgentUpdatesBar({
   disabled: boolean;
 }) {
   const { t } = useTranslation();
-  const { results, progress, active } = updates;
+  const { progress, active } = updates;
+  const results = updates.results.filter(
+    (result) => result.outcome !== "deferred",
+  );
+  const onlyDeferred = updates.results.length > 0 && results.length === 0;
   const changes = results
     .map((r) =>
       t(`agentUpdates.${r.failureReason ? "failedReason" : r.outcome}`, {
@@ -178,7 +188,7 @@ export function AgentUpdatesBar({
         });
   return (
     <>
-      {updates.showBar && (
+      {updates.showBar && (!onlyDeferred || updateBusy) && (
         <div
           className={`mp-agent-updates${failed ? " failed" : ""}`}
           role="status"
