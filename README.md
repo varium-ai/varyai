@@ -5,6 +5,14 @@
 </p>
 
 <p align="center">
+  <a href="https://www.varyai.net/"><strong>中文官网</strong></a> &nbsp;·&nbsp;
+  <a href="https://www.varyai.net/download"><strong>下载安装</strong></a> &nbsp;·&nbsp;
+  <a href="https://www.varyai.net/docs?section=getting-started&amp;item=quickstart"><strong>快速接入</strong></a> &nbsp;·&nbsp;
+  <a href="https://github.com/varium-ai/varyai/releases/latest">最新版本</a> &nbsp;·&nbsp;
+  <a href="https://github.com/varium-ai/varyai/issues">问题反馈</a>
+</p>
+
+<p align="center">
   A local AI gateway for your coding workflow.<br>
   Connect providers. Inspect outbound text. Understand model usage.
 </p>
