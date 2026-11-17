@@ -6709,6 +6709,11 @@ mod tests {
         let native_capability = replacement_capability.clone();
         let run = Arc::new(AtomicBool::new(true));
         let (native_models, reject_target, running) = (models.clone(), reject.clone(), run.clone());
+        let helper_revision: u64 = include_str!("../../resources/trae-bridge/agent.cjs")
+            .lines()
+            .find_map(|line| line.strip_prefix("const REVISION = "))
+            .and_then(|value| value.trim_end_matches(';').parse().ok())
+            .expect("bundled TRAE helper revision");
         let worker = std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
                 let (mut socket, _) = match listener.accept() {
@@ -6728,7 +6733,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":19,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":helper_revision,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {

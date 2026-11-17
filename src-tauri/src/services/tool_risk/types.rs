@@ -324,7 +324,7 @@ pub const KNOWN_CLIENTS: &[&str] = &[
     "trae-intl",
     "doubaowork",
 ];
-pub const KNOWN_SOURCES: &[&str] = &["model_response", "client_hook", "mcp_rpc"];
+pub const KNOWN_SOURCES: &[&str] = &["model_response", "client_hook", "mcp_rpc", "client_report"];
 pub const OPERATION_FIELDS: &[&str] = &[
     "/target_path",
     "/command",

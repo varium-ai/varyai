@@ -162,6 +162,7 @@ export function SecurityEventDetailsDialog({
                           proxy: "securityEvents.sourceProxy",
                           hook: "securityEvents.sourceHook",
                           client_hook: "securityEvents.sourceHook",
+                          client_report: "securityEvents.sourceClientReport",
                           mcp_rpc: "securityEvents.sourceMcpRpc",
                           model_response: "securityEvents.sourceModelResponse",
                         })}{" "}
@@ -173,6 +174,7 @@ export function SecurityEventDetailsDialog({
                           proposed: "securityEvents.stageProposed",
                           pre_execution: "securityEvents.stagePreExecution",
                           rpc_submitted: "securityEvents.stageRpcSubmitted",
+                          reported: "securityEvents.stageReported",
                         })}
                       </>,
                     )}

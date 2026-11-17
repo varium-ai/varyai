@@ -1,7 +1,13 @@
 //! Native background lifecycle observation, separate from request DLP interception.
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::watch;
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
@@ -24,7 +30,7 @@ async fn rpc(
     .map_err(|_| ())?
 }
 
-pub(super) async fn run(mut stop: watch::Receiver<bool>) {
+pub(super) async fn run(mut stop: watch::Receiver<bool>, legacy: Arc<AtomicBool>) {
     let mut failed = false;
     loop {
         if *stop.borrow() {
@@ -32,7 +38,7 @@ pub(super) async fn run(mut stop: watch::Receiver<bool>) {
         }
         if crate::services::tool_risk::runtime::collection_enabled() {
             if let Some(endpoint) = super::discover().await {
-                let result = connect(&endpoint, stop.clone()).await;
+                let result = connect(&endpoint, stop.clone(), &legacy).await;
                 if result.is_err() && !failed {
                     log::warn!("[ToolRisk] client=doubaowork native_hook=unavailable; native execution unchanged");
                 }
@@ -46,7 +52,11 @@ pub(super) async fn run(mut stop: watch::Receiver<bool>) {
     }
 }
 
-async fn connect(endpoint: &str, stop: watch::Receiver<bool>) -> Result<(), ()> {
+async fn connect(
+    endpoint: &str,
+    stop: watch::Receiver<bool>,
+    legacy: &AtomicBool,
+) -> Result<(), ()> {
     let (mut socket, _) = tokio::time::timeout(
         Duration::from_secs(2),
         tokio_tungstenite::connect_async(endpoint),
@@ -78,7 +88,8 @@ async fn connect(endpoint: &str, stop: watch::Receiver<bool>) -> Result<(), ()> 
     .await?;
     let session = attached["sessionId"].as_str().ok_or(())?;
     let binding = format!("{BINDING_PREFIX}{}", uuid::Uuid::new_v4().simple());
-    let result = observe(&mut socket, &mut next, session, &binding, stop).await;
+    let result = observe(&mut socket, &mut next, session, &binding, stop, legacy).await;
+    legacy.store(false, Ordering::Release);
     let _ = rpc(
         &mut socket,
         &mut next,
@@ -121,6 +132,7 @@ async fn observe(
     session: &str,
     binding: &str,
     mut stop: watch::Receiver<bool>,
+    legacy: &AtomicBool,
 ) -> Result<(), ()> {
     rpc(socket, next, Some(session), "Runtime.enable", json!({})).await?;
     rpc(
@@ -260,6 +272,7 @@ async fn observe(
             if let Some(observation) =
                 crate::proxy::tool_observation::native::doubao_observation(&value)
             {
+                legacy.store(true, Ordering::Release);
                 crate::proxy::tool_observation::channel::observe_native(observation);
             }
         }

@@ -1,4 +1,4 @@
-//! Trusted native hooks retain their pre-execution provenance in the bounded worker queue.
+//! Native hooks and structured reports retain their distinct provenance in the bounded queue.
 use super::types::*;
 use serde_json::Value;
 
@@ -32,6 +32,52 @@ fn hook_observation(
     if value["hook_event_name"] != "PreToolUse" || value["tool_name"] != name {
         return None;
     }
+    native_observation(
+        client,
+        schema,
+        protocol,
+        name,
+        value,
+        (
+            ObservationSource::ClientHook,
+            ObservationStage::PreExecution,
+        ),
+    )
+}
+
+pub(crate) fn doubao_report_observation(
+    session: &str,
+    message: &str,
+    block: &str,
+    command: &str,
+) -> Option<ToolObservation> {
+    let value = serde_json::json!({"session_id":session,"tool_input":{"command":command}});
+    let mut observation = native_observation(
+        "doubaowork",
+        crate::services::tool_risk::adapters::DOUBAO_REPORT_SCHEMA,
+        "doubao_shell_report",
+        "shell",
+        &value,
+        (ObservationSource::ClientReport, ObservationStage::Reported),
+    )?;
+    // A display block is not a native tool-call ID.
+    observation.correlation.item_id = normalized_session_id(Some(block));
+    observation.scope_id = format!("doubaowork:{session}:{message}");
+    observation.quality.origin = QualityOrigin::Converted;
+    observation.quality.tool_identity = ToolIdentityQuality::ValidatedMapping;
+    observation.quality.input_fidelity = InputFidelity::ValidatedConversion;
+    observation.validate().ok()?;
+    Some(observation)
+}
+
+fn native_observation(
+    client: &'static str,
+    schema: &'static str,
+    protocol: &str,
+    name: &str,
+    value: &Value,
+    provenance: (ObservationSource, ObservationStage),
+) -> Option<ToolObservation> {
     let input = value.get("tool_input").filter(|input| input.is_object())?;
     let command = input.get("command")?.as_str()?;
     if command.trim().is_empty() || bounded_input_size(input).is_err() {
@@ -42,8 +88,8 @@ fn hook_observation(
     let observation = ToolObservation {
         schema_version: 1,
         observation_id: scope.clone(),
-        source: ObservationSource::ClientHook,
-        stage: ObservationStage::PreExecution,
+        source: provenance.0,
+        stage: provenance.1,
         execution_scope: ExecutionScope::Client,
         protocol: protocol.into(),
         scope_id: scope,
@@ -159,14 +205,22 @@ mod tests {
         let policy = collection_policy_version();
         let (_, mut receiver) = super::super::channel::test_channel().await;
         let mut parser = ResponseProcessor::default();
-        for client in ["trae", "trae-intl", "doubaowork"] {
+        for client in ["trae", "trae-intl", "doubaowork", "doubao-report"] {
             let name = if client == "doubaowork" {
                 "Bash"
             } else {
                 "RunCommand"
             };
             let value = json!({"hook_event_name":"PreToolUse","tool_name":name,"session_id":"synthetic-session","tool_use_id":"synthetic-call","tool_input":{"command":"chmod 4755 /synthetic/fixture"}});
-            let observation = if client == "doubaowork" {
+            let reported = client == "doubao-report";
+            let observation = if reported {
+                doubao_report_observation(
+                    "synthetic-session",
+                    "synthetic-message",
+                    "synthetic-block",
+                    "chmod 4755 /synthetic/fixture",
+                )
+            } else if client == "doubaowork" {
                 doubao_observation(&value)
             } else {
                 trae_observation(client, &value)
@@ -179,9 +233,26 @@ mod tests {
             let observations = parser.ingest(&piece);
             assert_eq!(observations.len(), 1);
             let event = project_event(&observations[0]).unwrap();
-            assert_eq!(event.source, "client_hook");
-            assert_eq!(event.stage, "pre_execution");
-            assert_eq!(event.client_category.as_deref(), Some(client));
+            assert_eq!(
+                event.source,
+                if reported {
+                    "client_report"
+                } else {
+                    "client_hook"
+                }
+            );
+            assert_eq!(
+                event.stage,
+                if reported {
+                    "reported"
+                } else {
+                    "pre_execution"
+                }
+            );
+            assert_eq!(
+                event.client_category.as_deref(),
+                Some(if reported { "doubaowork" } else { client })
+            );
             assert_eq!(event.verdict.as_deref(), Some("risky"));
             crate::services::tool_risk::service::persist_events_for_generation(
                 &db,
@@ -191,13 +262,22 @@ mod tests {
             .unwrap();
         }
         let events = db.get_tool_risk_events_after(0, 10, policy).unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         assert!(events.iter().all(|event| event
             .session_id
             .as_deref()
             .is_some_and(|session| session.ends_with("_synthetic-session"))));
         publish_tool_risk_runtime(ToolRiskRuntime::default());
         super::super::channel::observe_native(trae_observation("trae", &json!({"hook_event_name":"PreToolUse","tool_name":"RunCommand","tool_input":{"command":"echo synthetic"}})).unwrap());
+        super::super::channel::observe_native(
+            doubao_report_observation(
+                "synthetic-session",
+                "synthetic-message",
+                "synthetic-block",
+                "chmod 4755 /synthetic/fixture",
+            )
+            .unwrap(),
+        );
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(20), receiver.recv())
                 .await

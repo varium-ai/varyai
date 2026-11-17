@@ -1424,18 +1424,22 @@ test("failed compatible reconnect restores original fields and ownership", async
   assert.equal(await b.matches(id, config), true);
 });
 
-test("new shared models are bounded to four concurrent creates and one publication refresh", async () => {
+test("native whole-catalog writes preserve every model without overlapping creates", async () => {
   const f = fixture();
   let active = 0,
     peak = 0,
     refreshes = 0;
-  const add = f.service.addCustomModel;
+  let nextId = 0;
   f.service.addCustomModel = async (fields) => {
     active++;
     peak = Math.max(peak, active);
     try {
+      // A native writer can save a full snapshot after asynchronous work.
+      const snapshot = [...f.models];
       await new Promise((resolve) => setTimeout(resolve, 1));
-      return await add(fields);
+      snapshot.push({ ...fields, custom_model_id: `snapshot-${++nextId}` });
+      f.models.splice(0, f.models.length, ...snapshot);
+      return { code: 0 };
     } finally {
       active--;
     }
@@ -1453,12 +1457,12 @@ test("new shared models are bounded to four concurrent creates and one publicati
     apiKey: "synthetic",
     models: Array.from({ length: 10 }, (_, i) => ({ model: `model-${i}` })),
   });
-  assert.equal(peak, 4);
+  assert.equal(peak, 1);
   assert.equal(refreshes, 3);
   assert.equal(f.models.length, 10);
 });
 
-test("failed concurrent creation waits for its peers and rolls back only new rows", async () => {
+test("failed creation stops subsequent writes and rolls back only new rows", async () => {
   const f = fixture();
   f.models.push({
     custom_model_id: "native",
@@ -1492,10 +1496,10 @@ test("failed concurrent creation waits for its peers and rolls back only new row
       baseUrl: "http://127.0.0.1:1/connections/trae/v1",
       apiKey: "synthetic",
       models: [
-        { model: "fail" },
         { model: "first" },
         { model: "second" },
         { model: "third" },
+        { model: "fail" },
         { model: "not-started" },
       ],
     }),

@@ -656,6 +656,7 @@ export function AgentConnectionsPage({
         state?.reloadState === "failed" ||
         state?.reloadState === "waiting_for_idle");
     const canRestart =
+      app !== "doubaowork" &&
       !!state &&
       (state.restartRequired ||
         desktopRestart ||
@@ -689,7 +690,12 @@ export function AgentConnectionsPage({
         disabled={rowBusy(app) || connection.isPending || connection.isError}
         onClick={() => void launchDoubao(enabled)}
       >
-        {t("homeAudit.doubaoLaunch")}
+        {t(
+          state?.desktopState === "current" ||
+            state?.desktopState === "restart_required"
+            ? "homeAudit.doubaoRestart"
+            : "homeAudit.doubaoLaunch",
+        )}
       </Button>
     );
     const status =
@@ -975,31 +981,32 @@ export function AgentConnectionsPage({
                 onDisconnect={() => setDisconnecting("codex")}
               />
             )}
-            {(operation === "restarting" ||
-              (canRestart && !connection.isError)) && (
-              <button
-                type="button"
-                className="mp-agent-fix"
-                aria-label={t("agentConnections.restart")}
-                aria-busy={operation === "restarting"}
-                disabled={rowBusy(app)}
-                onClick={() => {
-                  setError(app, null);
-                  setRestarting(app);
-                }}
-              >
-                <RefreshCw
-                  size={11}
-                  aria-hidden="true"
-                  className={
-                    operation === "restarting"
-                      ? "animate-spin motion-reduce:animate-none"
-                      : ""
-                  }
-                />
-                <span>{t("agentConnections.restart")}</span>
-              </button>
-            )}
+            {app !== "doubaowork" &&
+              (operation === "restarting" ||
+                (canRestart && !connection.isError)) && (
+                <button
+                  type="button"
+                  className="mp-agent-fix"
+                  aria-label={t("agentConnections.restart")}
+                  aria-busy={operation === "restarting"}
+                  disabled={rowBusy(app)}
+                  onClick={() => {
+                    setError(app, null);
+                    setRestarting(app);
+                  }}
+                >
+                  <RefreshCw
+                    size={11}
+                    aria-hidden="true"
+                    className={
+                      operation === "restarting"
+                        ? "animate-spin motion-reduce:animate-none"
+                        : ""
+                    }
+                  />
+                  <span>{t("agentConnections.restart")}</span>
+                </button>
+              )}
           </div>
           <p
             className={`mp-agent-status ${bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operation ? "wait" : ""}`}
@@ -1310,6 +1317,12 @@ export function AgentConnectionsPage({
               <>
                 <p className="text-xs text-muted-foreground">
                   {t("agentConnections.bridgeHint", { app: name(app) })}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t("agentConnections.traeHooksPurpose")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t("agentConnections.traeHooksSetup")}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {t(`agentConnections.states.${status}`, { app: name(app) })}
@@ -1761,6 +1774,12 @@ export function AgentConnectionsPage({
         }
       >
         <div className="space-y-4">
+          {isTrae(setup) && (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>{t("agentConnections.traeHooksPurpose")}</p>
+              <p>{t("agentConnections.traeHooksSetup")}</p>
+            </div>
+          )}
           {!nativePicker(setup) && !needsModelControl(setup) ? (
             <fieldset disabled={rowBusy(setup)} className="space-y-3">
               <legend className="mb-2 text-sm">

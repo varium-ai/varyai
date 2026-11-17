@@ -358,20 +358,15 @@ function createBridge(
         });
       }
       const missing = plans.filter((plan) => !plan.match);
-      // Settle every in-flight write before rollback; native model mutations are bounded.
-      for (let offset = 0; offset < missing.length; offset += 4) {
-        const results = await Promise.allSettled(
-          missing.slice(offset, offset + 4).map(async (plan) => {
-            const result = await service.addCustomModel({
-              ...plan.fields,
-              display_name: plan.initialName,
-            });
-            if (result.code !== 0) throw modelFailure("add", result.code);
-            created.push(plan);
-          }),
-        );
-        const failure = results.find((result) => result.status === "rejected");
-        if (failure) throw failure.reason;
+      // Native creates may rewrite a whole catalog snapshot; overlapping writes lose rows.
+      // Publish once after creation, without the previous per-model refresh overhead.
+      for (const plan of missing) {
+        const result = await service.addCustomModel({
+          ...plan.fields,
+          display_name: plan.initialName,
+        });
+        if (result.code !== 0) throw modelFailure("add", result.code);
+        created.push(plan);
       }
       if (created.length) {
         await refreshModels();

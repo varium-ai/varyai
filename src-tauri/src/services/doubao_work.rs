@@ -1,4 +1,6 @@
 //! Doubao Work's native Chromium connection, independent of other clients.
+mod report_transport;
+mod tool_reports;
 mod tool_risk;
 use base64::Engine;
 use futures::{SinkExt, StreamExt};
@@ -38,7 +40,9 @@ impl Manager {
         let (tx, mut stop) = watch::channel(false);
         let active = self.connected.clone();
         let task = tokio::spawn(async move {
-            let mut tools = tokio::spawn(tool_risk::run(stop.clone()));
+            let legacy = Arc::new(AtomicBool::new(false));
+            let mut tools = tokio::spawn(tool_risk::run(stop.clone(), legacy.clone()));
+            let mut reports = tokio::spawn(report_transport::run(stop.clone(), legacy));
             loop {
                 if *stop.borrow() {
                     break;
@@ -58,6 +62,12 @@ impl Manager {
                 .is_err()
             {
                 tools.abort();
+            }
+            if tokio::time::timeout(Duration::from_secs(3), &mut reports)
+                .await
+                .is_err()
+            {
+                reports.abort();
             }
         });
         *worker = Some((tx, task));

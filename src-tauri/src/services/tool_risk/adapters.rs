@@ -24,6 +24,7 @@ pub const HERMES_TOOLS_SCHEMA: &str = "builtin:hermes:tools:v1";
 pub const GROKBUILD_TOOLS_SCHEMA: &str = "builtin:grokbuild:tools:v1";
 pub const TRAE_TOOLS_SCHEMA: &str = "builtin:trae:tools:v1";
 pub const TRAE_INTL_TOOLS_SCHEMA: &str = "builtin:trae-intl:tools:v1";
+pub const DOUBAO_REPORT_SCHEMA: &str = "builtin:doubaowork:tool-reports:v1";
 pub const DOUBAO_TOOLS_SCHEMA: &str = "builtin:doubaowork:tools:v1";
 pub const OPENAI_TOOLS_SCHEMA: &str = "builtin:openai:tools:v1";
 
@@ -122,6 +123,19 @@ impl Adapter {
 }
 
 fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
+    if obs.source == ObservationSource::ClientReport {
+        return (obs.stage == ObservationStage::Reported
+            && obs.execution_scope == ExecutionScope::Client
+            && obs.tool.client.as_deref() == Some("doubaowork")
+            && obs.tool.name == "shell"
+            && obs.tool.namespace.is_none()
+            && obs.tool.server_id.is_none()
+            && obs.tool.definition_ref.as_deref() == Some(DOUBAO_REPORT_SCHEMA)
+            && obs.quality.origin == QualityOrigin::Converted
+            && obs.quality.tool_identity == ToolIdentityQuality::ValidatedMapping
+            && obs.quality.input_fidelity == InputFidelity::ValidatedConversion)
+            .then_some(Adapter::Shell("command"));
+    }
     if !matches!(
         obs.quality.tool_identity,
         ToolIdentityQuality::Source | ToolIdentityQuality::ValidatedMapping

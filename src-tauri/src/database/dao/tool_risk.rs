@@ -2315,6 +2315,7 @@ mod source_scope_duplicate_tests {
         rule.origin = RuleOrigin::Custom;
         rule.selector.sources = Some(vec![
             "mcp_rpc".into(),
+            "client_report".into(),
             "model_response".into(),
             "client_hook".into(),
             "model_response".into(),
