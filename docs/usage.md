@@ -51,6 +51,10 @@ Workspace and client-specific configuration panels operate on local files. Revie
 
 The statistics view summarizes recorded usage; coverage depends on the observed traffic and available usage fields. It is not the provider's billing ledger. Security event counts likewise depend on enabled rules and successful event collection.
 
+The statistics page keeps the automatic session-scanning toggle and offers manual
+synchronization when scanning is disabled. Cost-pricing configuration and Codex
+usage-maintenance panels are no longer displayed on this page.
+
 Request-log pagination keeps the current table and page controls visible while
 the next page loads. Navigation waits for that response, and a short final page
 scrolls the table back into view. If the record count shrinks, the list moves to

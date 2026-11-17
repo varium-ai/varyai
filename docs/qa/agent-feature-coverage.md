@@ -4,6 +4,68 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Statistics maintenance panel removal
+
+The statistics dashboard removes the cost-pricing accordion and Codex usage
+maintenance accordion, including the rebuild confirmation dialog. This is a
+shared renderer change on macOS, Windows and Linux. Automatic session scanning,
+manual synchronization when scanning is disabled, recorded costs and backend
+pricing/rebuild APIs retain their existing behavior. Inventory was checked against
+`src/config/appConfig.tsx` and `services/agent_connections.rs` before implementation.
+
+Each row uses the statistics dashboard entry point. Existing protocol/native
+adapters are unchanged; this UI removal does not invoke an adapter or require
+native client execution. Synthetic verification passed on macOS for each Agent with
+automatic scanning enabled and disabled, absent maintenance controls, visible
+request logs, manual-sync visibility and the scan toggle callback. Native client
+self-tests and Windows/Linux execution are not exercised by this change and are
+not claimed as accepted.
+
+| Agent ID | Entry point | Protocol/native adapters and runtime | UI state | Verification |
+| --- | --- | --- | --- | --- |
+| `claude` | Statistics; CLI | Unchanged Messages adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `claude-desktop` | Statistics; desktop | Unchanged desktop Messages adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `codex` | Statistics; CLI/desktop | Unchanged Responses, rollout accounting and rebuild API | Remove both panels and rebuild dialog; retain scan controls | Synthetic passed (macOS); native untested |
+| `gemini` | Statistics; CLI | Unchanged Gemini adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `grokbuild` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `opencode` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `openclaw` | Statistics | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `hermes` | Statistics; CLI | Unchanged Chat adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `pi` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `workbuddy` | Statistics; China desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `workbuddy-ai` | Statistics; international desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `qoder` | Statistics; China desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `doubaowork` | Statistics; desktop | Unchanged separate native audit/launch integration | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `trae` | Statistics; China edition | Unchanged native Chat bridge and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `trae-intl` | Statistics; international edition | Unchanged native Chat bridge and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `kimi` | Statistics; CLI/desktop | Unchanged native provider projection and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `qwen` | Statistics; CLI | Unchanged Chat adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `zcode` | Statistics; desktop | Unchanged native protocol projection and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `deepseek-harness` | Statistics | Unchanged Chat/Responses/Messages adapters and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `t3code` | Statistics; desktop | Unchanged Responses/managed Codex adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+
+Verification on 2026-11-17 used the working-tree changes to `UsageDashboard.tsx`,
+`UsageDashboard.test.tsx`, this ledger and `docs/usage.md` over revision
+`8207f3efd7dc5eaf28ec191f7d9b2eafde6f704c`. Host: macOS 15.3.1 arm64;
+Node 24.11.0, pnpm 10.12.3, Rust/Cargo 1.98.1.
+
+- Passed: `pnpm typecheck`, `pnpm format:check`, `pnpm build:renderer`,
+  `pnpm test:unit` (322 files, 4,339 tests), `pnpm audit --prod`,
+  `cargo check --manifest-path src-tauri/Cargo.toml` and
+  `cargo fmt --check --manifest-path src-tauri/Cargo.toml`.
+- Passed helper checks: `pnpm test:dev`, `pnpm test:macos-dmg`,
+  `pnpm test:trae-bridge`, `pnpm test:model-default`, `pnpm test:pi-session`,
+  `pnpm test:workbuddy-checkin-auth`, `pnpm test:doubao-checkin`,
+  `pnpm test:agent-rewards`, `pnpm test:qoder-codec`,
+  `node --test scripts/tests/ci-policy.node.mjs` and
+  `python3 -B scripts/tests/recover-shared-v23.test.py`.
+- Incomplete: `cargo test --lib --manifest-path src-tauri/Cargo.toml`,
+  `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` and
+  `cargo test --manifest-path src-tauri/Cargo.toml` failed during compilation or
+  linking with disk-full errors. Failed compilation objects were cleaned up.
+  No native client self-tests or remote CI runs were performed; Windows/Linux
+  verification remains untested. No application was launched or installed.
+
 ## Catalog refresh and continuation ownership
 
 Assessment started on 2026-11-17 before implementation. The implemented fix

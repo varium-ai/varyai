@@ -11,6 +11,7 @@ import i18n from "i18next";
 import en from "@/i18n/locales/en.json";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
+import { APP_IDS } from "@/config/appConfig";
 
 const useProviderStatsMock = vi.hoisted(() => vi.fn());
 const useModelStatsMock = vi.hoisted(() => vi.fn());
@@ -74,10 +75,6 @@ vi.mock("@/components/usage/ModelStatsTable", () => ({
   ModelStatsTable: () => <div data-testid="model-stats-table" />,
 }));
 
-vi.mock("@/components/usage/PricingConfigPanel", () => ({
-  PricingConfigPanel: () => <div data-testid="pricing-config-panel" />,
-}));
-
 vi.mock("@/components/usage/UsageDateRangePicker", () => ({
   UsageDateRangePicker: () => <button type="button">date-range</button>,
 }));
@@ -130,7 +127,7 @@ describe("UsageDashboard", () => {
     i18n.addResourceBundle(
       "en",
       "translation",
-      { usage: en.usage },
+      { usage: en.usage, settings: en.settings },
       true,
       true,
     );
@@ -143,6 +140,48 @@ describe("UsageDashboard", () => {
     useProviderStatsMock.mockReturnValue({ data: [] });
     useModelStatsMock.mockReturnValue({ data: [] });
   });
+
+  it.each(
+    ["all", ...APP_IDS].flatMap((appType) =>
+      [true, false].map((autoSync) => ({ appType, autoSync })),
+    ),
+  )(
+    "omits pricing and Codex maintenance for $appType with auto sync $autoSync",
+    ({ appType, autoSync }) => {
+      const onSessionAutoSyncEnabledChange = vi.fn();
+      renderDashboard({
+        initialAppType: appType,
+        sessionAutoSyncEnabled: autoSync,
+        onSessionAutoSyncEnabledChange,
+      });
+
+      expect(
+        screen.queryByRole("button", {
+          name: new RegExp(en.settings.advanced.pricing.title),
+        }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: new RegExp(en.usage.rebuildCodex.title),
+        }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("request-log-table")).toBeInTheDocument();
+      const syncButton = screen.queryByRole("button", {
+        name: en.usage.sessionSync.syncNow,
+      });
+      if (autoSync) {
+        expect(syncButton).not.toBeInTheDocument();
+      } else {
+        expect(syncButton).toBeInTheDocument();
+      }
+      const toggle = screen.getByRole("switch", {
+        name: en.usage.sessionSync.title,
+      });
+      expect(toggle).toHaveAttribute("aria-checked", String(autoSync));
+      fireEvent.click(toggle);
+      expect(onSessionAutoSyncEnabledChange).toHaveBeenCalledWith(!autoSync);
+    },
+  );
 
   it("initializes the today view with the requested app", () => {
     renderDashboard({ initialAppType: "codex" });
