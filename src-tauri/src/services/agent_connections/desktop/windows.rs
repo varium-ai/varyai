@@ -19,7 +19,7 @@ enum Closed {
 
 trait Runtime {
     fn processes(&self) -> Result<Vec<Process>, String>;
-    fn open_installed(&self) -> Result<(), String>;
+    fn open_installed(&self, valid: impl Fn() -> bool) -> Result<(), String>;
     fn close(&self, processes: &[Process]) -> Result<(), String>;
     fn wait_closed(&self, processes: &[Process]) -> Result<Closed, String>;
     fn end_tree(&self, main: &Process) -> Result<(), String>;
@@ -258,29 +258,64 @@ fn restart_processes(
     restart_verified_processes(runtime, processes, applied_ms, valid, false)
 }
 
+fn verified_replacement(live: &[Process], previous: &[Process]) -> Result<bool, String> {
+    if live.is_empty() {
+        return Ok(false);
+    }
+    Ok(
+        normalize(&main_process(live)?.image) == normalize(&main_process(previous)?.image)
+            && !live.iter().any(|process| {
+                previous
+                    .iter()
+                    .any(|old| old.pid == process.pid && old.created == process.created)
+            }),
+    )
+}
+
 fn restart_verified_processes(
     runtime: &impl Runtime,
-    processes: Vec<Process>,
+    mut processes: Vec<Process>,
     applied_ms: Option<i64>,
     valid: impl Fn() -> bool,
     manual: bool,
 ) -> Result<(), String> {
-    if manual && processes.is_empty() {
-        if !valid() {
-            return Err(super::super::CONFLICT.into());
+    for attempt in 0..3 {
+        if manual && processes.is_empty() {
+            return runtime.open_installed(valid);
         }
-        return runtime.open_installed();
-    }
-    let state = freshness(&processes, applied_ms);
-    if !manual && state != State::RestartRequired {
-        return Err(CHANGED.into());
+        let state = freshness(&processes, applied_ms);
+        if !manual && state != State::RestartRequired {
+            return Err(CHANGED.into());
+        }
+        main_process(&processes)?;
+        if !valid() {
+            return Err(CHANGED.into());
+        }
+        let latest = runtime.processes()?;
+        if latest == processes {
+            break;
+        }
+        if !manual || attempt == 2 {
+            return Err(CHANGED.into());
+        }
+        processes = latest;
     }
     let main = main_process(&processes)?;
-    if !valid() || runtime.processes()? != processes {
-        return Err(CHANGED.into());
-    }
     runtime.close(&processes)?;
-    if runtime.wait_closed(&processes)? == Closed::Remains {
+    let closed = match runtime.wait_closed(&processes) {
+        Ok(closed) => closed,
+        Err(error) if manual && error == CHANGED => {
+            if !valid() {
+                return Err(super::super::CONFLICT.into());
+            }
+            if verified_replacement(&runtime.processes()?, &processes)? {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
+    if closed == Closed::Remains {
         if !valid() {
             return Err(super::super::CONFLICT.into());
         }
@@ -295,7 +330,11 @@ fn restart_verified_processes(
     if !valid() {
         return Err(super::super::CONFLICT.into());
     }
-    if !runtime.processes()?.is_empty() {
+    let live = runtime.processes()?;
+    if !live.is_empty() {
+        if manual && verified_replacement(&live, &processes)? {
+            return Ok(());
+        }
         return Err(CHANGED.into());
     }
     runtime.launch(main)?;
@@ -400,7 +439,7 @@ pub(super) fn restart(
         return Err("agentConnections.restartUnsupported".into());
     }
     if super::super::model_control::authorized(app) && state(app, applied_ms) == State::Stopped {
-        return native::open_installed(app, valid);
+        return native::open_model_control(app, valid);
     }
     let runtime = native::Native { app };
     if app == "codex" {
@@ -448,10 +487,97 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_restart_opens_an_already_stopped_windows_desktop() {
+    fn manual_restart_opens_a_stopped_windows_desktop() {
         let runtime = Fake::new(vec![vec![]], Closed::Exited);
         assert_eq!(restart_manual_with(&runtime), Ok(()));
         assert_eq!(*runtime.events.borrow(), ["open_installed"]);
+    }
+
+    #[test]
+    fn manual_restart_resamples_windows_processes_before_close() {
+        let old = vec![process()];
+        let replacement = vec![Process {
+            pid: 456,
+            ..process()
+        }];
+        let runtime = Fake::new(
+            vec![old, replacement.clone(), replacement, vec![]],
+            Closed::Exited,
+        );
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert_eq!(
+            *runtime.events.borrow(),
+            ["close", "wait_closed", "launch", "wait_back"]
+        );
+    }
+
+    #[test]
+    fn manual_restart_accepts_a_verified_windows_relaunch_during_close() {
+        let old = vec![process()];
+        let replacement = vec![Process {
+            pid: 456,
+            created: process().created + 10000,
+            ..process()
+        }];
+        let runtime = Fake::new(vec![old.clone(), old, replacement], Closed::Exited);
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert_eq!(*runtime.events.borrow(), ["close", "wait_closed"]);
+    }
+
+    #[test]
+    fn manual_restart_handles_native_windows_replacement_discovery() {
+        let old = vec![process()];
+        let replacement = vec![Process {
+            pid: 456,
+            created: process().created + 10000,
+            ..process()
+        }];
+        let mut runtime = Fake::new(vec![old.clone(), old, replacement], Closed::Exited);
+        runtime.wait_changed = true;
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert_eq!(*runtime.events.borrow(), ["close", "wait_closed"]);
+    }
+
+    #[test]
+    fn manual_restart_never_accepts_a_live_original_windows_process_as_replacement() {
+        let old = vec![process()];
+        let altered = vec![Process {
+            args: vec!["changed".into()],
+            ..process()
+        }];
+        let mut runtime = Fake::new(vec![old.clone(), old, altered], Closed::Exited);
+        runtime.wait_changed = true;
+        assert_eq!(restart_manual_with(&runtime), Err(CHANGED.into()));
+        assert_eq!(*runtime.events.borrow(), ["close", "wait_closed"]);
+    }
+
+    #[test]
+    fn manual_restart_bounds_windows_discovery_races_without_closing() {
+        let snapshots = (1..=4)
+            .map(|pid| vec![Process { pid, ..process() }])
+            .collect();
+        let runtime = Fake::new(snapshots, Closed::Exited);
+        assert_eq!(restart_manual_with(&runtime), Err(CHANGED.into()));
+        assert!(runtime.events.borrow().is_empty());
+    }
+
+    #[test]
+    fn manual_restart_rejects_unidentified_or_other_windows_replacements() {
+        for replacement in [
+            Process {
+                created: 0,
+                ..process()
+            },
+            Process {
+                image: r"C:\Program Files\Other\Other.exe".into(),
+                ..process()
+            },
+        ] {
+            let old = vec![process()];
+            let runtime = Fake::new(vec![old.clone(), old, vec![replacement]], Closed::Exited);
+            assert_eq!(restart_manual_with(&runtime), Err(CHANGED.into()));
+            assert_eq!(*runtime.events.borrow(), ["close", "wait_closed"]);
+        }
     }
 
     #[test]
@@ -559,6 +685,7 @@ mod tests {
         events: RefCell<Vec<&'static str>>,
         closed: Closed,
         fail: Option<&'static str>,
+        wait_changed: bool,
     }
     impl Fake {
         fn new(snapshots: Vec<Vec<Process>>, closed: Closed) -> Self {
@@ -567,6 +694,7 @@ mod tests {
                 events: RefCell::new(vec![]),
                 closed,
                 fail: None,
+                wait_changed: false,
             }
         }
         fn event(&self, name: &'static str) -> Result<(), String> {
@@ -579,9 +707,6 @@ mod tests {
         }
     }
     impl Runtime for Fake {
-        fn open_installed(&self) -> Result<(), String> {
-            self.event("open_installed")
-        }
         fn processes(&self) -> Result<Vec<Process>, String> {
             Ok(self
                 .snapshots
@@ -589,11 +714,18 @@ mod tests {
                 .pop_front()
                 .expect("unexpected discovery"))
         }
+        fn open_installed(&self, valid: impl Fn() -> bool) -> Result<(), String> {
+            assert!(valid());
+            self.event("open_installed")
+        }
         fn close(&self, _: &[Process]) -> Result<(), String> {
             self.event("close")
         }
         fn wait_closed(&self, _: &[Process]) -> Result<Closed, String> {
             self.event("wait_closed")?;
+            if self.wait_changed {
+                return Err(CHANGED.into());
+            }
             Ok(self.closed)
         }
         fn end_tree(&self, _: &Process) -> Result<(), String> {

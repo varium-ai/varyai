@@ -326,9 +326,6 @@ fn shell(file: &str, args: Option<&str>) -> Result<(), String> {
     }
 }
 impl Runtime for Native<'_> {
-    fn open_installed(&self) -> Result<(), String> {
-        open_installed(self.app, || true)
-    }
     fn processes(&self) -> Result<Vec<Process>, String> {
         if cfg!(test) || std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
             return Err(FAILED.into());
@@ -374,6 +371,31 @@ impl Runtime for Native<'_> {
         }
         processes.sort_by_key(|process| process.pid);
         Ok(processes)
+    }
+    fn open_installed(&self, valid: impl Fn() -> bool) -> Result<(), String> {
+        let image = if self.app == "codex" {
+            None
+        } else {
+            Some(installed_image(self.app)?)
+        };
+        if !valid() {
+            return Err(super::super::super::CONFLICT.into());
+        }
+        if !self.processes()?.is_empty() {
+            return Err(CHANGED.into());
+        }
+        if let Some(image) = image {
+            if !super::super::super::model_control::launch(self.app, &image)? {
+                let arguments = super::super::launch_arguments(self.app).join(" ");
+                shell(
+                    &image.to_string_lossy(),
+                    (!arguments.is_empty()).then_some(arguments.as_str()),
+                )?;
+            }
+        } else {
+            launch_package(launch_aumid(self.app, None).ok_or(FAILED)?)?;
+        }
+        self.wait_back()
     }
     fn close(&self, processes: &[Process]) -> Result<(), String> {
         let _handles = processes
@@ -460,17 +482,7 @@ impl Runtime for Native<'_> {
     }
     fn launch(&self, main: &Process) -> Result<(), String> {
         if let Some(id) = launch_aumid(self.app, main.aumid.as_deref()) {
-            let explorer = std::env::var_os("SystemRoot")
-                .map(std::path::PathBuf::from)
-                .ok_or(FAILED)?
-                .join("explorer.exe");
-            if !explorer.is_file() {
-                return Err(FAILED.into());
-            }
-            return shell(
-                &explorer.to_string_lossy(),
-                Some(&format!(r"shell:AppsFolder\{id}")),
-            );
+            return launch_package(id);
         }
         let mut image = std::path::PathBuf::from(&main.image);
         if let Some(parent) = image.parent().filter(|parent| {
@@ -513,32 +525,36 @@ impl Runtime for Native<'_> {
     }
 }
 
-pub(super) fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    let programs = std::env::var("ProgramFiles").unwrap_or_default();
-    let runtime = Native { app };
-    if !valid() || !runtime.processes()?.is_empty() {
+fn launch_package(id: &str) -> Result<(), String> {
+    let explorer = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .ok_or(FAILED)?
+        .join("explorer.exe");
+    if !explorer.is_file() {
+        return Err(FAILED.into());
+    }
+    shell(
+        &explorer.to_string_lossy(),
+        Some(&format!(r"shell:AppsFolder\{id}")),
+    )
+}
+
+pub(super) fn open_model_control(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
+    let image = installed_image(app)?;
+    if !valid() || !(Native { app }).processes()?.is_empty() {
         return Err(CHANGED.into());
     }
-    if app == "codex" {
-        // The package identity is stable even when no desktop process exists.
-        let explorer = std::env::var_os("SystemRoot")
-            .map(std::path::PathBuf::from)
-            .ok_or(FAILED)?
-            .join("explorer.exe");
-        if !explorer.is_file() {
-            return Err(FAILED.into());
-        }
-        shell(
-            &explorer.to_string_lossy(),
-            Some(r"shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App"),
-        )?;
-        return runtime.wait_back();
+    if !super::super::super::model_control::launch(app, &image)? {
+        return Err(FAILED.into());
     }
+    Native { app }.wait_back()
+}
+
+fn installed_image(app: &str) -> Result<std::path::PathBuf, String> {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let programs = std::env::var("ProgramFiles").unwrap_or_default();
     let mut candidates = installed_images(app, &local, &programs);
     if app == "claude-desktop" {
-        // Include versioned Squirrel and Store installations, using the same
-        // product/path validation as running-process discovery.
         for root in [
             std::path::PathBuf::from(&local).join("AnthropicClaude"),
             std::path::PathBuf::from(&programs).join("WindowsApps"),
@@ -561,7 +577,7 @@ pub(super) fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), 
             }
         }
     }
-    let image = candidates
+    candidates
         .into_iter()
         .map(std::path::PathBuf::from)
         .find(|path| {
@@ -569,16 +585,5 @@ pub(super) fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), 
                 && !path.is_symlink()
                 && matches_image(app, &path.to_string_lossy(), &local, &programs)
         })
-        .ok_or(FAILED)?;
-    if !valid() || !runtime.processes()?.is_empty() {
-        return Err(CHANGED.into());
-    }
-    if !super::super::super::model_control::launch(app, &image)? {
-        let arguments = super::super::launch_arguments(app).join(" ");
-        shell(
-            &image.to_string_lossy(),
-            (!arguments.is_empty()).then_some(arguments.as_str()),
-        )?;
-    }
-    runtime.wait_back()
+        .ok_or_else(|| FAILED.into())
 }

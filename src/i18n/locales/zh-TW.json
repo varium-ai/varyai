@@ -5225,7 +5225,6 @@
     "codexRestartConfirmHint": "請先儲存工作。Vary 會立即結束並重新開啟 Codex，執行中的工作將被中斷，未傳送的草稿可能遺失。應用程式拒絕結束時會提示失敗，請自行處理後重試。",
     "codexRestartConfirmHintWindows": "請先儲存工作。Vary 會立即結束並重新開啟 Codex，執行中的工作將被中斷，未傳送的草稿可能遺失。Windows 上要求關閉後仍未結束的應用程式處理程序可能被終止。",
     "restartFailed": "重新啟動失敗。請儲存工作，完全結束該應用程式，再從系統應用程式列表重新開啟。",
-    "restartChanged": "無法確認要重新啟動的應用程式程序。請完全結束該應用程式，再點擊「重新啟動」；若仍失敗，請手動開啟。",
     "restartBlocked": "應用程式尚未結束。請儲存工作並完全結束該應用程式，再點擊「重新啟動」。",
     "restartUnsupported": "此工具在目前平台不支援自動重新啟動。",
     "restartConfirmationRequired": "請先確認重新啟動此應用程式。",

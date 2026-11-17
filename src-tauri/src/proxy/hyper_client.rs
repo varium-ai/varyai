@@ -56,20 +56,23 @@ type HyperClient = Client<
 >;
 
 /// Lazily-initialized hyper client with header-case preservation enabled.
-fn global_hyper_client() -> &'static HyperClient {
-    static CLIENT: OnceLock<HyperClient> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        let connector = HttpsConnectorBuilder::new()
-            .with_webpki_roots()
-            .https_or_http()
-            .enable_http1()
-            .build();
+fn global_hyper_client() -> Result<&'static HyperClient, ProxyError> {
+    static CLIENT: OnceLock<Result<HyperClient, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let connector = HttpsConnectorBuilder::new()
+                .with_tls_config(super::upstream_tls::client_config()?)
+                .https_or_http()
+                .enable_http1()
+                .build();
 
-        Client::builder(TokioExecutor::new())
-            .http1_preserve_header_case(true)
-            .http1_title_case_headers(true)
-            .build(connector)
-    })
+            Ok(Client::builder(TokioExecutor::new())
+                .http1_preserve_header_case(true)
+                .http1_title_case_headers(true)
+                .build(connector))
+        })
+        .as_ref()
+        .map_err(|error| ProxyError::ForwardFailed(error.clone()))
 }
 
 /// 响应体读取上限（128 MiB）。正常非流式补全响应只有几十到几百 KiB；超过则视为
@@ -317,7 +320,7 @@ pub async fn send_request(
     *req.headers_mut() = headers;
     *req.extensions_mut() = original_extensions;
 
-    let client = global_hyper_client();
+    let client = global_hyper_client()?;
     let resp = tokio::time::timeout(timeout, client.request(req))
         .await
         .map_err(|_| ProxyError::Timeout(format!("请求超时: {}s", timeout.as_secs())))?
@@ -421,7 +424,7 @@ async fn send_raw_request(
     };
 
     if scheme == "https" {
-        let tls_connector = global_tls_connector();
+        let tls_connector = global_tls_connector()?;
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| ProxyError::ForwardFailed(format!("Invalid server name: {e}")))?;
         let mut tls_stream = tls_connector
@@ -505,7 +508,7 @@ async fn connect_via_proxy(
 
     // Wrap with TLS if the proxy URL uses https://
     let mut stream: ProxyStream = if parsed.scheme() == "https" {
-        let tls_connector = global_tls_connector();
+        let tls_connector = global_tls_connector()?;
         let server_name = rustls::pki_types::ServerName::try_from(proxy_host.to_string())
             .map_err(|e| ProxyError::ForwardFailed(format!("Invalid proxy server name: {e}")))?;
         let tls_stream = tls_connector
@@ -586,21 +589,17 @@ async fn connect_via_proxy(
 /// Loads both webpki roots AND native system certificates so that
 /// proxy MITM CAs (e.g. Clash, mitmproxy) installed in the system
 /// keychain are trusted through the CONNECT tunnel.
-fn global_tls_connector() -> &'static tokio_rustls::TlsConnector {
-    static CONNECTOR: OnceLock<tokio_rustls::TlsConnector> = OnceLock::new();
-    CONNECTOR.get_or_init(|| {
-        let mut root_store = rustls::RootCertStore::empty();
-        // Baseline: Mozilla/webpki roots
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        // Native system certs (includes user-installed proxy CAs)
-        let native = rustls_native_certs::load_native_certs();
-        let (added, _errors) = root_store.add_parsable_certificates(native.certs);
-        log::debug!("[HyperClient] TLS root store: webpki + {added} native certs");
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
-    })
+fn global_tls_connector() -> Result<&'static tokio_rustls::TlsConnector, ProxyError> {
+    static CONNECTOR: OnceLock<Result<tokio_rustls::TlsConnector, String>> = OnceLock::new();
+    CONNECTOR
+        .get_or_init(|| {
+            let config = super::upstream_tls::client_config()?;
+            Ok(tokio_rustls::TlsConnector::from(std::sync::Arc::new(
+                config,
+            )))
+        })
+        .as_ref()
+        .map_err(|error| ProxyError::ForwardFailed(error.clone()))
 }
 
 /// Build raw HTTP/1.1 headers with original casing, without copying the body.

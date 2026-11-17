@@ -5300,7 +5300,6 @@
     "codexRestartConfirmHint": "Save your work first. Vary will immediately quit and reopen Codex, interrupting running tasks. Unsent drafts may be lost. If the app refuses to quit, resolve it and retry.",
     "codexRestartConfirmHintWindows": "Save your work first. Vary will immediately quit and reopen Codex, interrupting running tasks. Unsent drafts may be lost. On Windows, remaining application processes may be ended after a close request.",
     "restartFailed": "Could not restart this application. Save your work, fully quit the app, then open it again from your system application list.",
-    "restartChanged": "Could not identify a single application instance to restart. Fully quit the app, then click Restart again. If it still fails, open the app manually.",
     "restartBlocked": "The application did not exit. Save your work and fully quit it, then click Restart again.",
     "restartUnsupported": "Automatic restart is not supported for this tool on this platform.",
     "restartConfirmationRequired": "Confirm before restarting this application.",

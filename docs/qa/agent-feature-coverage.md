@@ -212,3 +212,46 @@ TRAE reconnect now overwrites compatible owned rows in place while still writing
 Doubao's two explicit buttons now delegate to the same consent/takeover/audit-launch command. The audit launcher uses verified desktop lifecycle handling instead of rejecting an already-running client. A running verified instance quits and reopens; a stopped client opens directly. Both use loopback-only, dynamic-port Chromium audit arguments. macOS LaunchServices and the Windows native launch branches share the argument selector, and all other Agent arguments remain unchanged. The existing automatic audit launcher is still macOS-only; Windows lifecycle/launcher acceptance is not claimed. No native application was restarted or installed during implementation.
 
 Final verification for the uncommitted TRAE reconnect/batching and Doubao audit-restart changes over `1c53f58f`, on the same macOS 26.6.2 / arm64, Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3 host: `pnpm typecheck`, `cargo check --tests --manifest-path src-tauri/Cargo.toml`, `node --check` for the four changed TRAE helper/test scripts, targeted Prettier, `cargo fmt --check --manifest-path src-tauri/Cargo.toml` and `git diff --check` passed. The existing unrelated `quota_panel::Manager::expiring` dead-code warning remains. Rust tests were compiled, JavaScript syntax was checked, and no tests were executed under the user's preference. Native concurrency/rollback performance, Doubao restart-to-audit acceptance, Windows/Linux native jobs and full CI acceptance remain pending. Read-only local helper health/list requests confirmed the international bridge was reachable and its outbox delivered; no native configuration or running client was changed during diagnosis. No commit, push, app installation or app restart was performed; Codex routing stayed untouched.
+
+## Provider TLS compatibility and confirmed desktop restart races
+
+Assessment for the provider TLS and pending desktop restart changes on
+2026-11-17 covers the full inventory below. Provider discovery/protocol detection
+uses the common Reqwest client; routed HTTP requests use its bound client or the
+original-header/Hyper transports. Five synthetic TLS regressions cover these
+transports, repeated connections, certificate checks and session resumption.
+The live provider check establishes one authorized provider's catalog and
+inference behavior, not native acceptance for every Agent.
+
+Confirmed restart enters from the Agents row and confirmation dialog. The dialog
+closes on confirmation while the row retains progress and localized failure
+feedback. Supported macOS bundle and Windows process adapters resample a bounded
+pre-quit discovery race, wait for a verified return, and reject unidentified
+replacements. Automatic configuration guards are retained. CLI-only sessions and
+unsupported native platform adapters gain no process restart action. Existing
+macOS-only desktop identities remain explicit; this change does not add Windows
+support for them. Synthetic lifecycle tests never inspect or restart installed
+applications. Native per-Agent acceptance remains pending on every platform.
+
+| Agent ID | Provider TLS path and entry | Confirmed restart adapter and UI | Verification and remaining native acceptance |
+| --- | --- | --- | --- |
+| `claude` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `claude-desktop` | Shared API routing; provider discovery | Agents confirmation; macOS and Windows identity adapters; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
+| `codex` | Native Responses/managed API routing; provider discovery | Agents confirmation; macOS and Windows package/bundle identity; Linux unsupported | Synthetic lifecycle/TLS; native pending; keep the user's route off |
+| `gemini` | Shared Gemini/API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `pi` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `workbuddy` | Shared API routing; provider discovery | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
+| `workbuddy-ai` | Shared API routing; provider discovery | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
+| `qoder` | Shared API routing; provider discovery | Agents confirmation; Qoder CN macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
+| `kimi` | Shared API routing; provider discovery | macOS desktop bundle; CLI session separate; Windows/Linux restart unsupported | Synthetic macOS orchestration/TLS; native pending |
+| `qwen` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `opencode` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `grokbuild` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `openclaw` | Shared API routing; provider discovery | No native desktop lifecycle adapter | Shared TLS fixtures; native client not rechecked |
+| `hermes` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
+| `zcode` | Shared API routing; provider discovery | macOS desktop bundle; Windows/Linux restart unsupported | Synthetic macOS orchestration/TLS; native pending |
+| `deepseek-harness` | Shared API routing; provider discovery | macOS desktop bundle; Windows/Linux restart unsupported | Synthetic macOS orchestration/TLS; native pending |
+| `t3code` | Shared API routing; provider discovery | No native desktop lifecycle adapter | Shared TLS fixtures; native client not rechecked |
+| `trae` | Existing native integration and shared provider discovery | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked |
+| `trae-intl` | Existing native integration and shared provider discovery | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked |
+| `doubaowork` | Native audit integration has no editable provider projection; native collector unchanged | Agents confirmation on macOS; Windows/Linux restart unsupported | Synthetic macOS orchestration; native integration not rechecked |
