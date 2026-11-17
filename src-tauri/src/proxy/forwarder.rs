@@ -3260,131 +3260,152 @@ impl RequestForwarder {
         let injected = upstream_error_test_support::take(&filtered_body);
         #[cfg(not(test))]
         let injected: Option<Result<ProxyResponse, ProxyError>> = None;
-        let response = if let Some(injected) = injected {
-            if let Some(attempt) = dlp_attempt.as_ref() {
-                attempt
-                    .validate_final_send_binding(
-                        &provider.id,
-                        protocol,
-                        &url,
-                        dlp_auth_principal(&ordered_headers).as_deref(),
-                    )
-                    .map_err(ProxyError::DlpForward)?;
-                attempt
-                    .validate_final_send_history(&filtered_body)
-                    .map_err(ProxyError::DlpForward)?;
-                attempt.record_permitted_attempt(&provider.id, None);
-            }
-            injected?
-        } else if is_socks_proxy || !preserve_exact_header_case || codex_oauth_client.is_some() {
-            // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
-            // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
-            log::debug!(
+        let probe_protocol = exact_bridge.map(|bridge| bridge.output);
+        let mut probe_recovery = super::connections::desktop::probe_recovery::Recovery::new(
+            self.dlp_request.is_none()
+                && extensions.get::<super::connections::desktop::Purpose>()
+                    == Some(&super::connections::desktop::Purpose::Probe),
+            probe_protocol.unwrap_or(super::protocol_bridge::Protocol::Anthropic),
+        );
+        let mut body_bytes = body_bytes;
+        let mut injected = injected;
+        let response = loop {
+            let response = if let Some(injected) = injected.take() {
+                if let Some(attempt) = dlp_attempt.as_ref() {
+                    attempt
+                        .validate_final_send_binding(
+                            &provider.id,
+                            protocol,
+                            &url,
+                            dlp_auth_principal(&ordered_headers).as_deref(),
+                        )
+                        .map_err(ProxyError::DlpForward)?;
+                    attempt
+                        .validate_final_send_history(&filtered_body)
+                        .map_err(ProxyError::DlpForward)?;
+                    attempt.record_permitted_attempt(&provider.id, None);
+                }
+                injected?
+            } else if is_socks_proxy || !preserve_exact_header_case || codex_oauth_client.is_some()
+            {
+                // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
+                // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
+                log::debug!(
                 "[Forwarder] Using pooled reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy})"
             );
-            // Internal redirects cannot inherit a prepared attempt's target authority.
-            let bound_attempt = dlp_attempt.is_some();
-            #[cfg(test)]
-            let test_client = final_send_binding_test_support::client(bound_attempt)?;
-            #[cfg(not(test))]
-            let test_client: Option<reqwest::Client> = None;
-            let client = if let Some(client) = test_client {
-                client
-            } else if let Some(client) = codex_oauth_client {
-                client
-            } else if bound_attempt {
-                super::http_client::get_without_redirects().map_err(|_| {
-                    ProxyError::DlpForward(
-                        super::security::http_restoration::DlpForwardError::ContextUnavailable,
-                    )
-                })?
-            } else {
-                super::http_client::get()
-            };
-            let mut request = client.request(method.clone(), &url);
-            if request_is_streaming {
-                // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
-                // 的首包/静默期超时控制，避免长流被总时长误杀。
-                request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
-            } else {
-                request = request.timeout(if self.non_streaming_timeout.is_zero() {
-                    std::time::Duration::from_secs(600)
-                } else {
-                    self.non_streaming_timeout
-                });
-            }
-            for (key, value) in &ordered_headers {
-                request = request.header(key, value);
-            }
-            if let Some(attempt) = dlp_attempt.as_ref() {
-                attempt
-                    .validate_final_send_binding(
-                        &provider.id,
-                        protocol,
-                        &url,
-                        dlp_auth_principal(&ordered_headers).as_deref(),
-                    )
-                    .map_err(ProxyError::DlpForward)?;
-                attempt
-                    .validate_final_send_history(&filtered_body)
-                    .map_err(ProxyError::DlpForward)?;
-                attempt.record_permitted_attempt(&provider.id, None);
-            }
-            #[cfg(test)]
-            final_send_binding_test_support::observe_transport(true);
-            let send = request.body(body_bytes).send();
-            let send_result = if request_is_streaming {
-                let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
-                    timeout
-                } else {
-                    self.streaming_first_byte_timeout
-                };
-                tokio::time::timeout(header_timeout, send)
-                    .await
-                    .map_err(|_| {
-                        ProxyError::Timeout(format!(
-                            "流式响应首包超时: {}s（上游未返回响应头）",
-                            header_timeout.as_secs()
-                        ))
+                // Internal redirects cannot inherit a prepared attempt's target authority.
+                let bound_attempt = dlp_attempt.is_some();
+                #[cfg(test)]
+                let test_client = final_send_binding_test_support::client(bound_attempt)?;
+                #[cfg(not(test))]
+                let test_client: Option<reqwest::Client> = None;
+                let client = if let Some(client) = test_client {
+                    client
+                } else if let Some(client) = codex_oauth_client.clone() {
+                    client
+                } else if bound_attempt {
+                    super::http_client::get_without_redirects().map_err(|_| {
+                        ProxyError::DlpForward(
+                            super::security::http_restoration::DlpForwardError::ContextUnavailable,
+                        )
                     })?
+                } else {
+                    super::http_client::get()
+                };
+                let mut request = client.request(method.clone(), &url);
+                if request_is_streaming {
+                    // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
+                    // 的首包/静默期超时控制，避免长流被总时长误杀。
+                    request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
+                } else {
+                    request = request.timeout(if self.non_streaming_timeout.is_zero() {
+                        std::time::Duration::from_secs(600)
+                    } else {
+                        self.non_streaming_timeout
+                    });
+                }
+                for (key, value) in &ordered_headers {
+                    request = request.header(key, value);
+                }
+                if let Some(attempt) = dlp_attempt.as_ref() {
+                    attempt
+                        .validate_final_send_binding(
+                            &provider.id,
+                            protocol,
+                            &url,
+                            dlp_auth_principal(&ordered_headers).as_deref(),
+                        )
+                        .map_err(ProxyError::DlpForward)?;
+                    attempt
+                        .validate_final_send_history(&filtered_body)
+                        .map_err(ProxyError::DlpForward)?;
+                    attempt.record_permitted_attempt(&provider.id, None);
+                }
+                #[cfg(test)]
+                final_send_binding_test_support::observe_transport(true);
+                let send = request.body(body_bytes.clone()).send();
+                let send_result = if request_is_streaming {
+                    let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
+                        timeout
+                    } else {
+                        self.streaming_first_byte_timeout
+                    };
+                    tokio::time::timeout(header_timeout, send)
+                        .await
+                        .map_err(|_| {
+                            ProxyError::Timeout(format!(
+                                "流式响应首包超时: {}s（上游未返回响应头）",
+                                header_timeout.as_secs()
+                            ))
+                        })?
+                } else {
+                    send.await
+                };
+                let reqwest_resp = send_result.map_err(map_reqwest_send_error)?;
+                ProxyResponse::Reqwest(reqwest_resp)
             } else {
-                send.await
+                // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
+                // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
+                let uri: http::Uri = url.parse().map_err(|e| {
+                    ProxyError::ForwardFailed(format!(
+                        "Invalid upstream URL ({target_for_log}): {e}"
+                    ))
+                })?;
+                if let Some(attempt) = dlp_attempt.as_ref() {
+                    attempt
+                        .validate_final_send_binding(
+                            &provider.id,
+                            protocol,
+                            &url,
+                            dlp_auth_principal(&ordered_headers).as_deref(),
+                        )
+                        .map_err(ProxyError::DlpForward)?;
+                    attempt
+                        .validate_final_send_history(&filtered_body)
+                        .map_err(ProxyError::DlpForward)?;
+                    attempt.record_permitted_attempt(&provider.id, None);
+                }
+                #[cfg(test)]
+                final_send_binding_test_support::observe_transport(false);
+                super::hyper_client::send_request(
+                    uri,
+                    &target_for_log,
+                    method.clone(),
+                    ordered_headers.clone(),
+                    extensions.clone(),
+                    body_bytes.clone(),
+                    timeout,
+                    upstream_proxy_url.as_deref(),
+                )
+                .await?
             };
-            let reqwest_resp = send_result.map_err(map_reqwest_send_error)?;
-            ProxyResponse::Reqwest(reqwest_resp)
-        } else {
-            // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
-            // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
-            let uri: http::Uri = url.parse().map_err(|e| {
-                ProxyError::ForwardFailed(format!("Invalid upstream URL ({target_for_log}): {e}"))
-            })?;
-            if let Some(attempt) = dlp_attempt.as_ref() {
-                attempt
-                    .validate_final_send_binding(
-                        &provider.id,
-                        protocol,
-                        &url,
-                        dlp_auth_principal(&ordered_headers).as_deref(),
-                    )
-                    .map_err(ProxyError::DlpForward)?;
-                attempt
-                    .validate_final_send_history(&filtered_body)
-                    .map_err(ProxyError::DlpForward)?;
-                attempt.record_permitted_attempt(&provider.id, None);
+            let (response, retry) = probe_recovery.inspect(response, &body_bytes).await;
+            if let Some(retry) = retry {
+                body_bytes = retry.into();
+                ordered_headers.remove(http::header::CONTENT_LENGTH);
+                continue;
             }
-            #[cfg(test)]
-            final_send_binding_test_support::observe_transport(false);
-            super::hyper_client::send_request(
-                uri,
-                &target_for_log,
-                method.clone(),
-                ordered_headers,
-                extensions.clone(),
-                body_bytes,
-                timeout,
-                upstream_proxy_url.as_deref(),
-            )
-            .await?
+            break response;
         };
 
         // Isolate prepared errors before legacy diagnostics; success admission stays lease-bound.

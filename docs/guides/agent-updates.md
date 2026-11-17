@@ -67,8 +67,8 @@ Homebrew refusal to load an untrusted tap gets a specific, sanitized explanation
 Vary does not change Homebrew trust settings automatically.
 
 Desktop update failures show a localized explanation for known failure codes:
-download, package verification, archive extraction, application exit,
-replacement, recovery, changed installation, unsupported channel/platform, or
+download, package verification, archive extraction, replacement, recovery,
+changed installation, unsupported channel/platform, or
 missing installation. Unknown errors and raw CLI output remain private. A
 successful command still requires an observed version increase before the UI
 reports success. Pi's obsolete fixed "Individual settings" label is removed;
@@ -78,3 +78,20 @@ The explicitly ignored publisher acceptance test downloads and stages Qoder CN,
 Doubao Work, and Kimi Code packages, then checks their signature, identity,
 architecture, and version. It never installs or launches these applications and
 is separate from the synthetic default test suite.
+
+If a desktop application stays open after its updater requests a normal quit,
+the update is deferred. Its version row shows a muted **Waiting to update** hint,
+and its update button becomes available again. No global error banner is shown
+for that condition, and it counts as neither an updated tool nor a failed tool in
+the final batch notice. Other updates continue. The row hint survives workspace
+navigation and unrelated update tasks during the current renderer session; a
+retry clears it for that tool. Nothing is automatically retried or reported as
+installed. Save work, fully quit the target application and click its update
+button again when ready.
+
+On macOS, the updater waits for the original process IDs to disappear from the
+kernel instead of relying on AppKit's cached `isTerminated` state. Permission or
+unknown process-state results retain the waiting state. It does not force-quit
+an application or replace it while a captured process is still present. Existing
+Windows/Linux desktop-updater limitations remain unchanged; the deferred-result
+presentation is shared renderer code on every supported platform.

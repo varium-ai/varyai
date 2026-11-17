@@ -303,6 +303,15 @@ async fn workbuddy_visible_chat_resumes_after_a_saved_target_configuration_refre
             .ok_or("missing synthetic provider")?
             .settings_config["modelCatalog"] =
             json!({"models":[{"model":"grok-4.5","reasoningLevels":["low","high"]}]});
+        // Discovery alone keeps ownership. A request-shaping setting still
+        // changes the destination and must retain this recovery boundary.
+        target.targets[0]
+            .upstream
+            .as_mut()
+            .ok_or("missing synthetic provider")?
+            .meta
+            .get_or_insert_with(Default::default)
+            .prompt_cache_key = Some("synthetic-reconfigured-cache".into());
         fixture.runtime.set_global(menu, 0)?;
 
         request["messages"]

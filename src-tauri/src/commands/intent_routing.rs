@@ -569,6 +569,7 @@ pub(crate) async fn refresh_intent_routing_catalogs(
     oauth: State<'_, CodexOAuthState>,
     missing_only: Option<bool>,
 ) -> Result<Vec<CatalogStatus>, String> {
+    let started = std::time::Instant::now();
     let statuses = if missing_only == Some(true) {
         crate::services::intent_routing::catalog::prepare_missing_catalogs(
             state.db.clone(),
@@ -581,6 +582,14 @@ pub(crate) async fn refresh_intent_routing_catalogs(
             .1
     };
     crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
+    log::info!(
+        "Routing catalog synchronization completed: missing_only={} elapsed_ms={} updated={} cached={} unavailable={} timeouts={}",
+        missing_only == Some(true), started.elapsed().as_millis(),
+        statuses.iter().filter(|s| s.status == "updated").count(),
+        statuses.iter().filter(|s| s.status == "cached").count(),
+        statuses.iter().filter(|s| s.status == "unavailable").count(),
+        statuses.iter().filter(|s| s.reason == Some("timeout")).count(),
+    );
     Ok(statuses)
 }
 

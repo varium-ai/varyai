@@ -5364,6 +5364,10 @@
     "groupEnabled": "已启用",
     "groupDisabled": "已停用",
     "refresh": "刷新",
+    "refreshHint": "从已保存的模型目录重新读取路由组。",
+    "syncModels": "同步模型",
+    "syncModelsHint": "从已启用的上游更新模型目录；慢上游超时后沿用缓存。",
+    "syncModelsResult": "上游：已更新 {{updated}} 个，沿用缓存 {{cached}} 个，暂不可用 {{unavailable}} 个。",
     "groupStatsUnavailable": "暂未提供路由组累计统计。",
     "noGroups": "暂无路由组。新建或导入路由组即可开始使用。",
 
@@ -5711,6 +5715,7 @@
     "importedAccountHint": "此导入账号或自定义连接保留原有认证及连接设置。你可以在这里修改共享名称和启用状态。"
   },
   "agentUpdates": {
+    "waitingForExit": "待更新 · 退出应用后重试",
     "update": "更新到 {{version}}",
     "updating": "更新中…",
     "all": "全部更新",

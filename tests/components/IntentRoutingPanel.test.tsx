@@ -21,7 +21,7 @@ import { intentRoutingApi, type RoutingGroup } from "@/lib/api/intentRouting";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { routingTemplates } from "@/lib/routingGroupTransfer";
-vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), message: vi.fn() } }));
 
 vi.mock("@/components/routing/RoutingClient", () => ({
   RoutingClient: () => null,
@@ -2925,6 +2925,56 @@ describe("IntentRoutingPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("refreshes the cached group list without starting upstream catalog synchronization", async () => {
+    vi.mocked(intentRoutingApi.refreshCatalogs).mockReturnValue(
+      new Promise(() => {}),
+    );
+    mount();
+    const reload = await screen.findByRole("button", {
+      name: "routingPage.refresh",
+    });
+    await waitFor(() => expect(reload).toBeEnabled());
+    vi.mocked(intentRoutingApi.list).mockClear();
+    fireEvent.click(reload);
+    await waitFor(() => expect(intentRoutingApi.list).toHaveBeenCalledOnce());
+    await waitFor(() => expect(reload).toHaveAttribute("aria-busy", "false"));
+    expect(intentRoutingApi.refreshCatalogs).not.toHaveBeenCalled();
+  });
+
+  it("keeps cached refresh and group editing available during explicit model sync", async () => {
+    let finish!: (value: []) => void;
+    vi.mocked(intentRoutingApi.refreshCatalogs).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mount();
+    const sync = await screen.findByRole("button", {
+      name: "routingPage.syncModels",
+    });
+    await waitFor(() => expect(sync).toBeEnabled());
+    fireEvent.click(sync);
+    fireEvent.click(sync);
+    expect(intentRoutingApi.refreshCatalogs).toHaveBeenCalledOnce();
+    expect(sync).toHaveAttribute("aria-busy", "true");
+    const reload = screen.getByRole("button", { name: "routingPage.refresh" });
+    expect(reload).toBeEnabled();
+    vi.mocked(intentRoutingApi.list).mockClear();
+    fireEvent.click(reload);
+    await waitFor(() => expect(intentRoutingApi.list).toHaveBeenCalledOnce());
+    await waitFor(() => expect(reload).toHaveAttribute("aria-busy", "false"));
+    expect(sync).toHaveAttribute("aria-busy", "true");
+    fireEvent.click(screen.getByRole("button", { name: "common.edit" }));
+    fireEvent.change(screen.getByLabelText("intentRouting.name"), {
+      target: { value: "Unsaved during sync" },
+    });
+    await act(async () => finish([]));
+    await waitFor(() => expect(sync).toHaveAttribute("aria-busy", "false"));
+    expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
+      "Unsaved during sync",
+    );
+  });
+
   it.each([true, false])(
     "keeps controls and new drafts available during refresh (empty list: %s)",
     async (empty) => {
@@ -2934,13 +2984,7 @@ describe("IntentRoutingPanel", () => {
         omittedGroups: 0,
       };
       vi.mocked(intentRoutingApi.list).mockResolvedValue(snapshot);
-      let finishCatalog!: (value: []) => void;
       let finishList!: (value: typeof snapshot) => void;
-      vi.mocked(intentRoutingApi.refreshCatalogs).mockReturnValueOnce(
-        new Promise((resolve) => {
-          finishCatalog = resolve;
-        }),
-      );
       mount();
       const reload = await screen.findByRole("button", {
         name: "routingPage.refresh",
@@ -2969,12 +3013,11 @@ describe("IntentRoutingPanel", () => {
       });
       expect(create).toBeEnabled();
       fireEvent.click(reload);
-      expect(intentRoutingApi.refreshCatalogs).toHaveBeenCalledOnce();
+      expect(intentRoutingApi.refreshCatalogs).not.toHaveBeenCalled();
       fireEvent.click(create);
       const name = screen.getByLabelText("intentRouting.name");
       expect(name).toBeEnabled();
       fireEvent.change(name, { target: { value: "Draft during refresh" } });
-      await act(async () => finishCatalog([]));
       expect(reload).toHaveAttribute("aria-busy", "true");
       expect(name).toBeEnabled();
       await act(async () => finishList(snapshot));
@@ -2988,13 +3031,45 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
+  it("reports partial model sync without losing cached groups", async () => {
+    vi.mocked(intentRoutingApi.refreshCatalogs).mockResolvedValue([
+      { providerId: "updated", status: "updated", modelCount: 2 },
+      {
+        providerId: "slow",
+        status: "cached",
+        modelCount: 3,
+        reason: "timeout",
+      },
+      {
+        providerId: "missing",
+        status: "unavailable",
+        modelCount: 0,
+        reason: "timeout",
+      },
+    ]);
+    mount();
+    const sync = await screen.findByRole("button", {
+      name: "routingPage.syncModels",
+    });
+    await waitFor(() => expect(sync).toBeEnabled());
+    fireEvent.click(sync);
+    await waitFor(() =>
+      expect(toast.message).toHaveBeenCalledWith(
+        "routingPage.syncModelsResult",
+      ),
+    );
+    await waitFor(() => expect(sync).toHaveAttribute("aria-busy", "false"));
+    expect(screen.getByText("Fixture group")).toBeVisible();
+    expect(intentRoutingApi.setAutoCreate).not.toHaveBeenCalled();
+  });
+
   it("ends refresh loading after a safe error and allows retry", async () => {
     vi.mocked(intentRoutingApi.refreshCatalogs)
       .mockRejectedValueOnce("synthetic-private-refresh-error")
       .mockResolvedValue([]);
     mount();
     const reload = await screen.findByRole("button", {
-      name: "routingPage.refresh",
+      name: "routingPage.syncModels",
     });
     await waitFor(() => expect(reload).toBeEnabled());
     fireEvent.click(reload);
@@ -3027,7 +3102,7 @@ describe("IntentRoutingPanel", () => {
     );
     mount();
     const reload = await screen.findByRole("button", {
-      name: "routingPage.refresh",
+      name: "routingPage.syncModels",
     });
     await waitFor(() => expect(reload).toBeEnabled());
     fireEvent.click(reload);
@@ -3070,7 +3145,7 @@ describe("IntentRoutingPanel", () => {
       ]);
       mount();
       const reload = await screen.findByRole("button", {
-        name: "routingPage.refresh",
+        name: "routingPage.syncModels",
       });
       await waitFor(() => expect(reload).toBeEnabled());
       fireEvent.click(reload);
@@ -3100,7 +3175,7 @@ describe("IntentRoutingPanel", () => {
     mount();
     await screen.findByText("Fixture group");
     fireEvent.click(
-      screen.getByRole("button", { name: "routingPage.refresh" }),
+      screen.getByRole("button", { name: "routingPage.syncModels" }),
     );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "intentRouting.failed",
@@ -3131,7 +3206,7 @@ describe("IntentRoutingPanel", () => {
     );
     const panel = mount();
     const reload = await screen.findByRole("button", {
-      name: "routingPage.refresh",
+      name: "routingPage.syncModels",
     });
     await waitFor(() => expect(reload).toBeEnabled());
     fireEvent.click(reload);

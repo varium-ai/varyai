@@ -248,7 +248,6 @@ describe("Agent versions and updates", () => {
     ["checksum", "verification"],
     ["signature", "verification"],
     ["archive", "archive"],
-    ["running", "running"],
     ["replace", "replace"],
     ["restore", "restore"],
     ["changed", "changed"],
@@ -285,6 +284,68 @@ describe("Agent versions and updates", () => {
       translate.mockRestore();
     },
   );
+  it.each<AppId>([
+    "claude-desktop",
+    "workbuddy",
+    "qoder",
+    "doubaowork",
+    "trae",
+    "trae-intl",
+    "kimi",
+    "zcode",
+    "deepseek-harness",
+  ])(
+    "keeps a deferred desktop update local and neutral for %s",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+        [app]: {
+          supported: true,
+          installed: true,
+          version: "1.0.0",
+          latest_version: "1.1.0",
+          source: "desktop",
+        },
+      });
+      vi.mocked(settingsApi.updateDesktopAgent).mockRejectedValue("running");
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      fireEvent.click(
+        await within(row).findByRole("button", { name: "agentUpdates.update" }),
+      );
+      expect(
+        await within(row).findByText("agentUpdates.waitingForExit"),
+      ).toBeInTheDocument();
+      expect(document.querySelector(".mp-agent-updates")).toBeNull();
+      expect(screen.queryByText(/agentUpdates.failed/)).not.toBeInTheDocument();
+      const retry = within(row).getByRole("button", {
+        name: "agentUpdates.update",
+      });
+      expect(retry).toBeEnabled();
+      vi.mocked(settingsApi.updateDesktopAgent).mockImplementation(async () => {
+        vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+          [app]: {
+            supported: true,
+            installed: true,
+            version: "1.1.0",
+            latest_version: "1.1.0",
+            source: "desktop",
+          },
+        });
+      });
+      fireEvent.click(retry);
+      expect(await within(row).findByText("App 1.1.0")).toBeInTheDocument();
+      expect(
+        within(row).queryByText("agentUpdates.waitingForExit"),
+      ).not.toBeInTheDocument();
+      expect(
+        await screen.findByText(/agentUpdates.changed/),
+      ).toBeInTheDocument();
+      expect(settingsApi.updateDesktopAgent).toHaveBeenCalledTimes(2);
+    },
+  );
   it("explains a Homebrew trust block without disclosing raw CLI output", async () => {
     const translate = vi.spyOn(i18n, "t");
     vi.mocked(settingsApi.runToolLifecycleAction).mockRejectedValue(
@@ -304,6 +365,61 @@ describe("Agent versions and updates", () => {
     );
     expect(screen.queryByText(/synthetic-private-tap/)).not.toBeInTheDocument();
     translate.mockRestore();
+  });
+  it("retains another app's deferred hint while a CLI update succeeds", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      kimi: true,
+      qwen: true,
+    });
+    vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+      kimi: {
+        supported: true,
+        installed: true,
+        version: "1.0.0",
+        latest_version: "1.1.0",
+        source: "desktop",
+      },
+    });
+    vi.mocked(settingsApi.updateDesktopAgent).mockRejectedValue("running");
+    mount();
+    const desktop = await screen.findByRole("article", { name: "apps.kimi" });
+    fireEvent.click(
+      await within(desktop).findByRole("button", {
+        name: "agentUpdates.update",
+      }),
+    );
+    expect(
+      await within(desktop).findByText("agentUpdates.waitingForExit"),
+    ).toBeInTheDocument();
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      async () => {
+        vi.mocked(settingsApi.getToolVersions).mockResolvedValue(
+          versions("qwen", "1.1.0"),
+        );
+      },
+    );
+    const cli = await screen.findByRole("article", { name: "apps.qwen" });
+    fireEvent.click(
+      await within(cli).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    await within(cli).findByText("1.1.0");
+    expect(
+      within(desktop).getByText("agentUpdates.waitingForExit"),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".mp-agent-updates.failed")).toBeNull();
+    expect(screen.queryByText(/agentUpdates.failed/)).not.toBeInTheDocument();
+  });
+  it("does not reinterpret CLI errors as a deferred desktop update", async () => {
+    vi.mocked(settingsApi.runToolLifecycleAction).mockRejectedValue("running");
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.claude" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    expect(await screen.findByText("agentUpdates.failed")).toBeInTheDocument();
+    expect(
+      within(row).queryByText("agentUpdates.waitingForExit"),
+    ).not.toBeInTheDocument();
   });
   it.each(["unchanged", "unreadable", "cli"])(
     "does not claim a desktop upgrade succeeded when its version is %s",

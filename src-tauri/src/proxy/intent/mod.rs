@@ -1,6 +1,10 @@
 //! Global group execution and explicit Codex projections, isolated from provider switching.
 #[cfg(test)]
 mod capacity_tests;
+#[cfg(test)]
+mod catalog_continuation_http_tests;
+#[cfg(test)]
+mod catalog_continuation_tests;
 mod checkpoint;
 mod compaction;
 #[cfg(test)]
@@ -237,12 +241,34 @@ pub(crate) struct Target {
     pub scheduling: Arc<scheduling::Scheduling>,
 }
 impl Target {
+    fn continuation_settings(provider: &crate::provider::Provider) -> std::borrow::Cow<'_, Value> {
+        // Discovery changes model visibility/capabilities, not the account or
+        // transport that owns existing calls. Keep every other setting exact.
+        match provider.settings_config.as_object() {
+            Some(settings) if settings.contains_key("modelCatalog") => {
+                std::borrow::Cow::Owned(Value::Object(
+                    settings
+                        .iter()
+                        .filter(|(key, _)| key.as_str() != "modelCatalog")
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ))
+            }
+            _ => std::borrow::Cow::Borrowed(&provider.settings_config),
+        }
+    }
     fn matches_member(&self, member: &crate::services::intent_routing::Member) -> bool {
         self.provider_id == member.provider_id
             && self.model == member.model_id
             && self.fixed_effort == member.effort
     }
     fn continuation_destination(&self) -> Option<String> {
+        self.continuation_fingerprint(false)
+    }
+    fn legacy_continuation_destination(&self) -> Option<String> {
+        self.continuation_fingerprint(true)
+    }
+    fn continuation_fingerprint(&self, include_catalog: bool) -> Option<String> {
         use sha2::{Digest, Sha256};
         let mut headers = self
             .headers
@@ -256,10 +282,14 @@ impl Target {
             None if self.official => return None,
             None => None,
         };
-        let provider = self
-            .upstream
-            .as_ref()
-            .map(|p| (&p.settings_config, &p.meta));
+        let provider = self.upstream.as_ref().map(|p| {
+            let settings = if include_catalog {
+                std::borrow::Cow::Borrowed(&p.settings_config)
+            } else {
+                Self::continuation_settings(p)
+            };
+            (settings, &p.meta)
+        });
         let mut snapshot = serde_json::to_value((
             "continuation-destination-v1",
             &self.provider_id,
@@ -286,7 +316,7 @@ impl Target {
             && self.url == other.url
             && match (&self.upstream, &other.upstream) {
                 (Some(a), Some(b)) => {
-                    a.settings_config == b.settings_config
+                    Self::continuation_settings(a) == Self::continuation_settings(b)
                         && match (serde_json::to_value(&a.meta), serde_json::to_value(&b.meta)) {
                             (Ok(a), Ok(b)) => a == b,
                             _ => false,
@@ -329,7 +359,7 @@ impl Target {
                 url
             };
             if gemini(a) && gemini(b) {
-                a.settings_config == b.settings_config
+                Self::continuation_settings(a) == Self::continuation_settings(b)
                     && account_url(&self.url) == account_url(&other.url)
             } else {
                 self.url == other.url
@@ -1519,7 +1549,8 @@ async fn execute(
         Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_input"),
     };
     let named_conversation = identity::named(&parts.headers).is_some();
-    let conversation = Some(identity::affinity(&parts.headers, &bytes));
+    let desktop_probe = desktop_purpose == Some(super::connections::desktop::Purpose::Probe);
+    let conversation = (!desktop_probe).then(|| identity::affinity(&parts.headers, &bytes));
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
     }
@@ -1545,8 +1576,8 @@ async fn execute(
         && session.targets.len() == 1
         && !opaque_continuation(protocol, &original)
         && completed_tool_history(&projection);
-    // Counting history must not claim or change its generation continuation.
-    let scoped = if count_tokens {
+    // Counts and standalone startup probes cannot claim or change conversation ownership.
+    let scoped = if count_tokens || desktop_probe {
         Arc::new(scopes::Conversation::default())
     } else {
         let policy = if responses_replay {
@@ -2611,6 +2642,10 @@ async fn execute(
                 url.query_pairs_mut().append_pair("alt", "sse");
             }
             let mut payload = payload;
+            let mut probe_recovery = super::connections::desktop::probe_recovery::Recovery::new(
+                desktop_purpose == Some(super::connections::desktop::Purpose::Probe),
+                output,
+            );
             loop {
                 let mut request = session
                     .client
@@ -2644,6 +2679,13 @@ async fn execute(
                         )
                     }
                 };
+                let probe_status = response.status().as_u16();
+                let (response, retry) = probe_recovery.inspect(response, &payload).await;
+                if let Some(retry) = retry {
+                    payload = retry;
+                    trace.step(trace::Kind::Retry, Some(candidate), Some(probe_status));
+                    continue;
+                }
                 if !responses_replay || response.status().is_success() {
                     break response;
                 }

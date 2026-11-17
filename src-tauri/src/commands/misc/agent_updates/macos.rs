@@ -249,16 +249,25 @@ fn quit_running(id: &str, target: &Path) -> Result<bool, String> {
                 .is_some_and(|path| Path::new(&path.to_string()) == target)
         })
         .collect();
+    let pids = apps
+        .iter()
+        .map(|app| app.processIdentifier())
+        .collect::<Vec<_>>();
     for app in &apps {
         app.terminate();
     }
-    let start = std::time::Instant::now();
-    while apps.iter().any(|app| !app.isTerminated()) {
-        if start.elapsed() > std::time::Duration::from_secs(30) {
-            return Err("running".to_owned());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    wait_for_update_exit(
+        || {
+            pids.iter().any(|&pid| {
+                // AppKit can retain stale termination metadata; only kernel absence proves exit.
+                !(pid > 0
+                    && unsafe { libc::kill(pid, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH))
+            })
+        },
+        std::time::Duration::from_secs(30),
+        std::thread::sleep,
+    )?;
     Ok(!apps.is_empty())
 }
 

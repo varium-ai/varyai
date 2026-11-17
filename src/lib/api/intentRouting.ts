@@ -128,7 +128,7 @@ export interface RoutingCatalogStatus {
   providerId: string;
   status: "updated" | "cached" | "unavailable";
   modelCount: number;
-  reason?: "notSignedIn" | "requestFailed" | "empty";
+  reason?: "notSignedIn" | "requestFailed" | "empty" | "timeout";
 }
 export const intentRoutingApi = {
   discoverCatalogs: () =>

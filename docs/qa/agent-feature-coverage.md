@@ -4,6 +4,173 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Statistics maintenance panel removal
+
+The statistics dashboard removes the cost-pricing accordion and Codex usage
+maintenance accordion, including the rebuild confirmation dialog. This is a
+shared renderer change on macOS, Windows and Linux. Automatic session scanning,
+manual synchronization when scanning is disabled, recorded costs and backend
+pricing/rebuild APIs retain their existing behavior. Inventory was checked against
+`src/config/appConfig.tsx` and `services/agent_connections.rs` before implementation.
+
+Each row uses the statistics dashboard entry point. Existing protocol/native
+adapters are unchanged; this UI removal does not invoke an adapter or require
+native client execution. Synthetic verification passed on macOS for each Agent with
+automatic scanning enabled and disabled, absent maintenance controls, visible
+request logs, manual-sync visibility and the scan toggle callback. Native client
+self-tests and Windows/Linux execution are not exercised by this change and are
+not claimed as accepted.
+
+| Agent ID | Entry point | Protocol/native adapters and runtime | UI state | Verification |
+| --- | --- | --- | --- | --- |
+| `claude` | Statistics; CLI | Unchanged Messages adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `claude-desktop` | Statistics; desktop | Unchanged desktop Messages adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `codex` | Statistics; CLI/desktop | Unchanged Responses, rollout accounting and rebuild API | Remove both panels and rebuild dialog; retain scan controls | Synthetic passed (macOS); native untested |
+| `gemini` | Statistics; CLI | Unchanged Gemini adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `grokbuild` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `opencode` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `openclaw` | Statistics | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `hermes` | Statistics; CLI | Unchanged Chat adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `pi` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `workbuddy` | Statistics; China desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `workbuddy-ai` | Statistics; international desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `qoder` | Statistics; China desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `doubaowork` | Statistics; desktop | Unchanged separate native audit/launch integration | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `trae` | Statistics; China edition | Unchanged native Chat bridge and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `trae-intl` | Statistics; international edition | Unchanged native Chat bridge and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `kimi` | Statistics; CLI/desktop | Unchanged native provider projection and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `qwen` | Statistics; CLI | Unchanged Chat adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `zcode` | Statistics; desktop | Unchanged native protocol projection and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `deepseek-harness` | Statistics | Unchanged Chat/Responses/Messages adapters and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| `t3code` | Statistics; desktop | Unchanged Responses/managed Codex adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+
+Verification on 2026-11-17 used the working-tree changes to `UsageDashboard.tsx`,
+`UsageDashboard.test.tsx`, this ledger and `docs/usage.md` over revision
+`8207f3efd7dc5eaf28ec191f7d9b2eafde6f704c`. Host: macOS 15.3.1 arm64;
+Node 24.11.0, pnpm 10.12.3, Rust/Cargo 1.98.1.
+
+- Passed: `pnpm typecheck`, `pnpm format:check`, `pnpm build:renderer`,
+  `pnpm test:unit` (322 files, 4,339 tests), `pnpm audit --prod`,
+  `cargo check --manifest-path src-tauri/Cargo.toml` and
+  `cargo fmt --check --manifest-path src-tauri/Cargo.toml`.
+- Passed helper checks: `pnpm test:dev`, `pnpm test:macos-dmg`,
+  `pnpm test:trae-bridge`, `pnpm test:model-default`, `pnpm test:pi-session`,
+  `pnpm test:workbuddy-checkin-auth`, `pnpm test:doubao-checkin`,
+  `pnpm test:agent-rewards`, `pnpm test:qoder-codec`,
+  `node --test scripts/tests/ci-policy.node.mjs` and
+  `python3 -B scripts/tests/recover-shared-v23.test.py`.
+- Incomplete: `cargo test --lib --manifest-path src-tauri/Cargo.toml`,
+  `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` and
+  `cargo test --manifest-path src-tauri/Cargo.toml` failed during compilation or
+  linking with disk-full errors. Failed compilation objects were cleaned up.
+  No native client self-tests or remote CI runs were performed; Windows/Linux
+  verification remains untested. No application was launched or installed.
+
+## Catalog refresh and continuation ownership
+
+Assessment started on 2026-11-17 before implementation. The implemented fix
+excludes only `modelCatalog` from a forwarding destination's continuation identity. Authentication,
+actual destination changes, ambiguous owners and opaque-state checks remain in
+force. Existing model pickers and connection controls remain the entry points;
+no new UI action or native configuration format is required. Shared Rust behavior
+applies to macOS, Windows and Linux wherever the existing Agent adapter is
+supported. Native application acceptance is separate from synthetic HTTP tests.
+
+| Agent ID | Entry point and protocol/native adapter | Pre-fix runtime risk and current UI | Verification |
+| --- | --- | --- | --- |
+| `claude` | Shared connection; Messages; CLI | Catalog refresh can invalidate strict ownership; existing picker | HTTP refresh/restart passed; native unverified |
+| `claude-desktop` | Shared connection; Messages; desktop aliases | Observed local 409 after catalog sync; existing picker | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `codex` | Managed and native Responses; CLI/desktop | Replay avoids some 409s, but catalog changes can lose affinity | HTTP refresh/restart passed; native unverified |
+| `gemini` | Shared connection; Gemini CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `pi` | Shared connection; provider-selected protocols; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `workbuddy` | Shared connection; Chat; China desktop | Visible text recovery exists; tool/opaque history remains exposed | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `workbuddy-ai` | Shared connection; Chat; international desktop | Same strict tool/opaque history as China edition | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `qoder` | Shared connection; Chat; China desktop | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `kimi` | Shared connection; native provider projection; CLI/desktop | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `qwen` | Shared connection; Chat; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `opencode` | Shared connection; provider-selected protocols; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `grokbuild` | Shared connection; provider-selected protocols; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `openclaw` | Shared connection; provider-selected protocols | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `hermes` | Shared connection; Chat; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `zcode` | Shared connection; native protocol projection; desktop | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `deepseek-harness` | Shared connection; Chat/Responses/Messages; native credentials | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `t3code` | Shared connection; Responses; managed Codex instance | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
+| `trae` | Native bridge to shared Chat; China edition | Observed call/payload ownership still depends on target identity | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `trae-intl` | Native bridge to shared Chat; international edition | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `doubaowork` | Separate native audit/launch adapter | No shared model-catalog forwarding destination; not affected by this identity change | Source assessment; native unverified |
+
+Implementation and verification details are recorded in
+[the continuation refresh report](2026-11-17-catalog-continuation.md).
+
+## Desktop update exit feedback
+
+Assessment started on 2026-11-17 before implementation. An update that waits for
+its target application to quit is deferred, with a neutral hint on that Agent's
+version row. It does not produce a global failure banner or count as a successful
+update. Existing updater eligibility, native replacement/rollback and shared
+update guards remain in effect. macOS exit checks must observe kernel process
+exit rather than cached AppKit termination metadata. Windows automatic desktop
+replacement remains unsupported; shared feedback applies wherever an updater
+returns the recognized deferred outcome.
+
+| Agent ID | Entry point and protocol/native adapter | Runtime and UI assessment | Verification |
+| --- | --- | --- | --- |
+| `claude` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `claude-desktop` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `codex` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `gemini` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `pi` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `workbuddy` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `workbuddy-ai` | Existing version row and native/regional adapter | No existing automatic desktop update path; retain unsupported/absent behavior on every platform | Source assessment and shared update regressions passed; native not rechecked |
+| `qoder` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `kimi` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `qwen` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `opencode` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `grokbuild` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `openclaw` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `hermes` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
+| `zcode` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `deepseek-harness` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `t3code` | Existing version row and native/regional adapter | No existing automatic desktop update path; retain unsupported/absent behavior on every platform | Source assessment and shared update regressions passed; native not rechecked |
+| `trae` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `trae-intl` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `doubaowork` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+
+See [the update feedback report](2026-11-17-desktop-update-feedback.md).
+
+## Desktop startup probe compatibility
+
+Assessment started on 2026-11-17 before implementation. The exact authenticated
+Claude Desktop startup probe must be isolated from saved conversation ownership
+and may retry once after an explicit upstream requirement to enable thinking. Actual upstream success remains required. Ordinary requests,
+credential failures and security decisions retain their existing behavior. The
+adapter runs in shared Rust on macOS and Windows; native acceptance is separate.
+
+| Agent ID | Entry point and protocol/native adapter | Runtime and UI assessment | Verification |
+| --- | --- | --- | --- |
+| `claude` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `claude-desktop` | Authenticated native startup probe; Messages to Messages/Chat/Responses/Gemini | Implemented isolated request-local probe state and bounded compatibility retry; native gateway banner clears only on upstream success | 22 shared-ingress/recovery regressions passed on macOS, including stale ownership, four upstream protocols and both policy states; installed old backend returned 409; updated macOS startup check accepted with banner removed; native Windows pending |
+| `codex` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `gemini` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `pi` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `workbuddy` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `workbuddy-ai` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `qoder` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `kimi` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `qwen` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `opencode` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `grokbuild` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `openclaw` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `hermes` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `zcode` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `deepseek-harness` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `t3code` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `trae` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `trae-intl` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| `doubaowork` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+
+See [the startup probe report](2026-11-17-desktop-startup-probe.md).
+
 ## Tool-call risk warnings: current gaps
 
 The full feature remains incomplete. Gateway connectivity and DLP text inspection do not establish tool-call observation. Registered native shell semantics require structured tool calls and a matching enabled risk policy. Warnings and records observe proposed calls; they do not block local execution.
@@ -106,3 +273,39 @@ applications. Native per-Agent acceptance remains pending on every platform.
 | `trae` | Existing native integration and shared provider discovery | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked |
 | `trae-intl` | Existing native integration and shared provider discovery | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked |
 | `doubaowork` | Native audit integration has no editable provider projection; native collector unchanged | Agents confirmation on macOS; Windows/Linux restart unsupported | Synthetic macOS orchestration; native integration not rechecked |
+
+
+## Routing list refresh and bounded catalog synchronization
+
+Implementation assessment before the 2026-11-17 change: the Routing page has one
+shared entry for all Agents. A local list refresh must use cached catalogs;
+explicit model synchronization may fetch catalogs, with bounded concurrency and
+a shared network deadline. Publication continues through the existing global
+and per-client queues. No native protocol, credential, configuration-consent,
+or request forwarding contract changes. The common Rust and React paths apply
+to macOS, Windows and Linux; native integration support remains as recorded above.
+
+| Agent ID | Entry and runtime path | Protocol/native adapter impact | UI and planned verification | Native acceptance |
+| --- | --- | --- | --- | --- |
+| `claude` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `claude-desktop` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `codex` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `gemini` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `pi` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `workbuddy` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `workbuddy-ai` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `qoder` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `opencode` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `grokbuild` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `openclaw` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `hermes` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `kimi` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `qwen` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `zcode` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `deepseek-harness` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `t3code` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `trae` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `trae-intl` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `doubaowork` | Shared cached list and explicit catalog sync; existing publication queue | No editable model projection; existing native audit integration retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+
+Shared synthetic regressions passed on macOS. Full host checks are recorded with the verification results; native per-Agent acceptance and remote Windows/Linux/macOS CI remain pending. This assessment does not claim per-Agent native acceptance.
