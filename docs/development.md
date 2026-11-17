@@ -77,6 +77,8 @@ Claude Desktop, WorkBuddy, WorkBuddy AI and Qoder CN process inspection and conf
 
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
 
+Codex default-model restart checks must use the same platform guard as the app-server freshness module (`macos`, `windows`, or `test`). Normal Linux builds have no model-application timestamp and must not request a desktop restart. Keep the normal Linux Clippy build in CI: unit-test builds enable the freshness module and cannot detect an unguarded reference.
+
 Codex rollout activity reads the modification time and bounded event suffix from
 the same open file handle. Windows can retain an old modification time even on
 that handle while a writer keeps the rollout open, so freshness also considers

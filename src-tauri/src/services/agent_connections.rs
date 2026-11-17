@@ -1418,11 +1418,14 @@ impl Manager {
         if status.recovery_pending {
             return Ok(false);
         }
+        #[cfg(any(target_os = "macos", windows, test))]
         let applied = super::codex_app_server::freshness::load(
             &self.root.join("codex-startup-freshness.json"),
         )
         .map_err(|_| FAILED)?
         .and_then(|snapshot| snapshot.model_applied_ms());
+        #[cfg(not(any(target_os = "macos", windows, test)))]
+        let applied: Option<i64> = None;
         Ok(applied.is_some_and(|applied| {
             desktop::state("codex", Some(applied)) == Some(desktop::State::RestartRequired)
         }))
