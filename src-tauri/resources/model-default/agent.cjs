@@ -4,6 +4,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const { applyDefault } = require("./renderer.cjs");
+const { applyConversationDefault } = require("./conversations.cjs");
 
 function isTarget(target, resources, app) {
   if (target.type !== "page") return false;
@@ -129,7 +130,8 @@ async function apply(pipe, sessionId, plan, verifiedKey) {
   const result = await pipe.call(
     "Runtime.evaluate",
     {
-      expression: `(${applyDefault.toString()})(globalThis,${JSON.stringify({ ...plan, ...(key ? { nativeKey: key } : {}) })})`,
+      expression: `(async()=>{const plan=${JSON.stringify({ ...plan, ...(key ? { nativeKey: key } : {}) })};(${applyDefault.toString()})(globalThis,plan);return (${applyConversationDefault.toString()})(globalThis,plan)})()`,
+      awaitPromise: true,
       returnByValue: true,
     },
     sessionId,

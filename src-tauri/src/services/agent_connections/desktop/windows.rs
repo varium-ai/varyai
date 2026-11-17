@@ -19,6 +19,7 @@ enum Closed {
 
 trait Runtime {
     fn processes(&self) -> Result<Vec<Process>, String>;
+    fn open_installed(&self) -> Result<(), String>;
     fn close(&self, processes: &[Process]) -> Result<(), String>;
     fn wait_closed(&self, processes: &[Process]) -> Result<Closed, String>;
     fn end_tree(&self, main: &Process) -> Result<(), String>;
@@ -29,6 +30,34 @@ trait Runtime {
 
 fn normalize(path: &str) -> String {
     path.replace('/', "\\").to_ascii_lowercase()
+}
+
+fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
+    let mut images = Vec::new();
+    if !programs.is_empty() {
+        let relative: &[&str] = match app {
+            "workbuddy" => &[r"WorkBuddy\WorkBuddy.exe"],
+            "workbuddy-ai" => &[r"WorkBuddy AI\WorkBuddy.exe", r"WorkBuddy-AI\WorkBuddy.exe"],
+            "qoder" => &[r"Qoder CN\Qoder CN.exe"],
+            "trae" => &[r"Trae CN\Trae CN.exe"],
+            "trae-intl" => &[r"Trae\Trae.exe"],
+            _ => &[],
+        };
+        images.extend(relative.iter().map(|path| format!(r"{programs}\{path}")));
+    }
+    if !local.is_empty() {
+        let relative = match app {
+            "qoder" => Some(r"Programs\Qoder CN\Qoder CN.exe"),
+            "trae" => Some(r"Programs\Trae CN\Trae CN.exe"),
+            "trae-intl" => Some(r"Programs\Trae\Trae.exe"),
+            "claude-desktop" => Some(r"AnthropicClaude\claude.exe"),
+            _ => None,
+        };
+        if let Some(path) = relative {
+            images.push(format!(r"{local}\{path}"));
+        }
+    }
+    images
 }
 
 fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
@@ -212,6 +241,12 @@ fn restart_verified_processes(
     valid: impl Fn() -> bool,
     manual: bool,
 ) -> Result<(), String> {
+    if manual && processes.is_empty() {
+        if !valid() {
+            return Err(super::super::CONFLICT.into());
+        }
+        return runtime.open_installed();
+    }
     let state = freshness(&processes, applied_ms);
     if !manual && state != State::RestartRequired {
         return Err(CHANGED.into());
@@ -317,7 +352,7 @@ pub(super) fn restart(
         return Err("agentConnections.restartUnsupported".into());
     }
     if super::super::model_control::authorized(app) && state(app, applied_ms) == State::Stopped {
-        return native::open_model_control(app, valid);
+        return native::open_installed(app, valid);
     }
     let runtime = native::Native { app };
     if app == "codex" {
@@ -362,6 +397,46 @@ mod tests {
         assert_eq!(restart_manual_with(&runtime), Ok(()));
         assert!(runtime.events.borrow().contains(&"launch"));
         assert!(runtime.events.borrow().contains(&"wait_back"));
+    }
+
+    #[test]
+    fn confirmed_restart_opens_an_already_stopped_windows_desktop() {
+        let runtime = Fake::new(vec![vec![]], Closed::Exited);
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert_eq!(*runtime.events.borrow(), ["open_installed"]);
+    }
+
+    #[test]
+    fn stopped_windows_restart_reports_an_unsuccessful_launch() {
+        let mut runtime = Fake::new(vec![vec![]], Closed::Exited);
+        runtime.fail = Some("open_installed");
+        assert_eq!(restart_manual_with(&runtime), Err(RUNNING.into()));
+        assert_eq!(*runtime.events.borrow(), ["open_installed"]);
+    }
+
+    #[test]
+    fn stopped_windows_install_candidates_retain_agent_identity() {
+        let local = r"C:\Users\synthetic\AppData\Local";
+        let programs = r"C:\Program Files";
+        for app in [
+            "workbuddy",
+            "workbuddy-ai",
+            "qoder",
+            "trae",
+            "trae-intl",
+            "claude-desktop",
+        ] {
+            let images = installed_images(app, local, programs);
+            assert!(!images.is_empty(), "{app}");
+            assert!(
+                images
+                    .iter()
+                    .all(|image| matches_image(app, image, local, programs)),
+                "{app}"
+            );
+            assert!(installed_images(app, "", "").is_empty());
+        }
+        assert!(installed_images("unknown", local, programs).is_empty());
     }
 
     #[test]
@@ -441,6 +516,9 @@ mod tests {
         }
     }
     impl Runtime for Fake {
+        fn open_installed(&self) -> Result<(), String> {
+            self.event("open_installed")
+        }
         fn processes(&self) -> Result<Vec<Process>, String> {
             Ok(self
                 .snapshots

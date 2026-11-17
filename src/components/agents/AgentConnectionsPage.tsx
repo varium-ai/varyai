@@ -1105,7 +1105,11 @@ export function AgentConnectionsPage({
                   aria-label={`${t("agentConnections.model")} ${name(app)}`}
                   title={
                     needsModelControl(app)
-                      ? t("agentConnections.modelControlHint")
+                      ? t(
+                          app === "qoder"
+                            ? "agentConnections.modelControlHint"
+                            : "agentConnections.workbuddyModelControlHint",
+                        )
                       : !enabled
                         ? `${nativeLabel}\n${t(
                             nativeAvailable
@@ -1178,7 +1182,11 @@ export function AgentConnectionsPage({
                             : app === "deepseek-harness"
                               ? t("agentConnections.deepseekStartingModelHint")
                               : needsModelControl(app)
-                                ? t("agentConnections.modelControlHint")
+                                ? t(
+                                    app === "qoder"
+                                      ? "agentConnections.modelControlHint"
+                                      : "agentConnections.workbuddyModelControlHint",
+                                  )
                                 : app === "claude-desktop"
                                   ? t(
                                       "agentConnections.desktopStartingModelHint",
@@ -1609,7 +1617,11 @@ export function AgentConnectionsPage({
         title={t("agentConnections.modelControlTitle", {
           app: modelControlRequest ? name(modelControlRequest.app) : "",
         })}
-        description={t("agentConnections.modelControlConsent")}
+        description={t(
+          modelControlRequest?.app === "qoder"
+            ? "agentConnections.modelControlConsent"
+            : "agentConnections.workbuddyModelControlConsent",
+        )}
         footer={
           <>
             <Button

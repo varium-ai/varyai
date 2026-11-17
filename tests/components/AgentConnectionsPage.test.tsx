@@ -908,6 +908,17 @@ describe("Agent connections", () => {
       const dialog = await screen.findByRole("dialog", {
         name: "agentConnections.modelControlTitle",
       });
+      expect(dialog).toHaveAccessibleDescription(
+        app === "qoder"
+          ? "agentConnections.modelControlConsent"
+          : "agentConnections.workbuddyModelControlConsent",
+      );
+      expect(trigger).toHaveAttribute(
+        "title",
+        app === "qoder"
+          ? "agentConnections.modelControlHint"
+          : "agentConnections.workbuddyModelControlHint",
+      );
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
       expect(agentConnectionsApi.authorizeModelControl).not.toHaveBeenCalled();
       expect(agentConnectionsApi.restart).not.toHaveBeenCalled();

@@ -1414,6 +1414,20 @@ impl Manager {
         Ok(desktop::state("codex", applied))
     }
 
+    pub fn codex_model_restart_required(&self, status: &Status) -> Result<bool, String> {
+        if status.recovery_pending {
+            return Ok(false);
+        }
+        let applied = super::codex_app_server::freshness::load(
+            &self.root.join("codex-startup-freshness.json"),
+        )
+        .map_err(|_| FAILED)?
+        .and_then(|snapshot| snapshot.model_applied_ms());
+        Ok(applied.is_some_and(|applied| {
+            desktop::state("codex", Some(applied)) == Some(desktop::State::RestartRequired)
+        }))
+    }
+
     pub fn restart_codex_desktop(&self) -> Result<(), String> {
         desktop::restart("codex", None, || true)
     }

@@ -3,7 +3,7 @@ use super::*;
 
 pub(crate) const CONSENT: &str = "agentConnections.modelControlConsent";
 const UNAVAILABLE: &str = "agentConnections.modelControlUnavailable";
-const ADAPTER_REVISION: u32 = 1;
+const ADAPTER_REVISION: u32 = 2;
 
 pub(crate) fn supports(app: &str) -> bool {
     matches!(app, "workbuddy" | "workbuddy-ai" | "qoder")
@@ -91,6 +91,11 @@ impl Manager {
             return Ok(());
         }
         use sha2::{Digest, Sha256};
+        let adapter_revision = if receipt.app == "qoder" {
+            1
+        } else {
+            ADAPTER_REVISION
+        };
         let model = super::model_wire(
             &receipt.model_map,
             receipt.visible_models.as_deref(),
@@ -100,7 +105,7 @@ impl Manager {
             "{:x}",
             Sha256::digest(
                 serde_json::to_vec(&json!([
-                    ADAPTER_REVISION,
+                    adapter_revision,
                     receipt.model,
                     model,
                     receipt.applied_at_ms,
@@ -109,7 +114,7 @@ impl Manager {
                 .map_err(|_| FAILED)?
             )
         );
-        let plan = json!({"app":receipt.app,"revision":revision,"model":model,"restore":restore,"adapterRevision":ADAPTER_REVISION});
+        let plan = json!({"app":receipt.app,"revision":revision,"model":model,"restore":restore,"adapterRevision":adapter_revision});
         atomic_write_private(
             &self.control_dir(&receipt.app)?.join("plan.json"),
             &serde_json::to_vec(&plan).map_err(|_| FAILED)?,
@@ -140,6 +145,10 @@ impl Manager {
             (
                 "renderer.cjs",
                 include_str!("../../../resources/model-default/renderer.cjs"),
+            ),
+            (
+                "conversations.cjs",
+                include_str!("../../../resources/model-default/conversations.cjs"),
             ),
         ] {
             atomic_write_private(&dir.join(name), source.as_bytes()).map_err(|_| FAILED)?;
@@ -177,6 +186,40 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn existing_workbuddy_conversation_adapter_does_not_change_qoder_revision() -> Result<(), String>
+    {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().into(),
+        };
+        for (app, expected) in [("workbuddy", 2), ("workbuddy-ai", 2), ("qoder", 1)] {
+            let control = manager.control_dir(app)?;
+            atomic_write_private(&control.join("consent.json"), br#"{"version":1}"#)
+                .map_err(|_| FAILED)?;
+            manager.sync_model_control(
+                &Receipt {
+                    app: app.into(),
+                    token: "synthetic-credential".into(),
+                    model: "synthetic-model".into(),
+                    model_map: BTreeMap::new(),
+                    visible_models: None,
+                    files: vec![],
+                    suspended: false,
+                    applied_at_ms: Some(123),
+                },
+                false,
+            )?;
+            let plan: Value =
+                serde_json::from_str(&read(&control.join("plan.json"))?.ok_or(FAILED)?)
+                    .map_err(|_| FAILED)?;
+            assert_eq!(plan["adapterRevision"], expected);
+            assert_eq!(plan["model"], "synthetic-model");
+            assert!(!plan.to_string().contains("synthetic-credential"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn control_requires_explicit_device_local_consent_and_exact_persisted_readback(
     ) -> Result<(), String> {

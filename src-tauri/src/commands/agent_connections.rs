@@ -56,6 +56,7 @@ fn with_codex_reload(
     mut status: Status,
     reload: Option<agent_connections::ReloadState>,
     desktop_state: Option<agent_connections::desktop::State>,
+    model_restart_required: bool,
 ) -> Status {
     let reload_restart = !status.recovery_pending
         && matches!(
@@ -77,7 +78,10 @@ fn with_codex_reload(
                 | agent_connections::ReloadState::Restarting
         )
     );
-    status.desktop_state = if worker_owns_freshness
+    status.desktop_state = if model_restart_required && !status.recovery_pending {
+        // A current app-server proves route freshness, not that the desktop loaded its new default model.
+        Some(agent_connections::desktop::State::RestartRequired)
+    } else if worker_owns_freshness
         && desktop_state == Some(agent_connections::desktop::State::RestartRequired)
     {
         Some(agent_connections::desktop::State::Current)
@@ -199,7 +203,13 @@ pub(crate) async fn get_agent_connection(
             );
             let status = with_remembered_model(status, manager.remembered_model("codex"));
             let desktop_state = manager.codex_desktop_state(&status)?;
-            Ok(with_codex_reload(status, reload, desktop_state))
+            let model_restart = manager.codex_model_restart_required(&status)?;
+            Ok(with_codex_reload(
+                status,
+                reload,
+                desktop_state,
+                model_restart,
+            ))
         })
         .await
         .map_err(|_| FAILED)?;
@@ -302,7 +312,13 @@ pub(crate) async fn list_agent_connections(
         );
         let status = with_remembered_model(status, manager.remembered_model("codex"));
         let desktop_state = manager.codex_desktop_state(&status)?;
-        Ok::<_, String>(with_codex_reload(status, reload, desktop_state))
+        let model_restart = manager.codex_model_restart_required(&status)?;
+        Ok::<_, String>(with_codex_reload(
+            status,
+            reload,
+            desktop_state,
+            model_restart,
+        ))
     })
     .await
     .map_err(|_| FAILED)??;
@@ -385,6 +401,7 @@ mod desktop_restart_tests {
             status,
             Some(agent_connections::ReloadState::StaleCatalog),
             Some(agent_connections::desktop::State::Current),
+            false,
         );
         assert!(status.restart_required);
         assert_eq!(
@@ -774,6 +791,14 @@ pub(crate) async fn set_agent_connection(
         return Err(FAILED.into());
     }
     if app == "codex" {
+        // Baseline older receipts before changing the default; a failed observation must not block the switch.
+        let manager = state.proxy_service.agent_connections.clone();
+        if !matches!(
+            tokio::task::spawn_blocking(move || manager.record_codex_desktop_application()).await,
+            Ok(Ok(()))
+        ) {
+            log::warn!("Codex pre-switch desktop freshness observation remains unavailable");
+        }
         let desired = if enabled {
             model.clone()
         } else {

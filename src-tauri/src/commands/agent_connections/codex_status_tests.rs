@@ -168,6 +168,7 @@ fn reload_progress_never_implies_configuration_ownership_or_inference_success() 
             codex_connection_status(status, None, None),
             Some(reload),
             None,
+            false,
         );
         assert!(!result.enabled && !result.configured && result.recovery_pending);
         assert!(
@@ -225,6 +226,7 @@ fn current_background_server_clears_window_age_without_claiming_inference_succes
             codex_connection_status(status, None, None),
             Some(reload),
             Some(agent_connections::desktop::State::RestartRequired),
+            false,
         );
         assert_eq!(
             result.desktop_state,
@@ -270,4 +272,48 @@ async fn confirmed_agent_restart_stays_pending_until_native_relaunch_finishes() 
     assert!(futures::poll!(&mut restart).is_pending());
     assert!(finish.send(Ok(())).is_ok());
     assert_eq!(restart.await, Ok(()));
+}
+
+#[test]
+fn default_model_restart_survives_a_current_background_server() {
+    let status = Status {
+        app: "codex".into(),
+        enabled: true,
+        configured: true,
+        recovery_pending: false,
+        recovery_reason: None,
+        model: Some("synthetic-new-default".into()),
+        restart_required: false,
+        reload_state: None,
+        desktop_state: None,
+        native_compatibility: None,
+        configuration_issue: None,
+    };
+    let pending = with_codex_reload(
+        status.clone(),
+        Some(agent_connections::ReloadState::Current),
+        Some(agent_connections::desktop::State::RestartRequired),
+        true,
+    );
+    assert!(pending.restart_required);
+    assert_eq!(
+        pending.desktop_state,
+        Some(agent_connections::desktop::State::RestartRequired)
+    );
+    let current = with_codex_reload(
+        status.clone(),
+        Some(agent_connections::ReloadState::Current),
+        Some(agent_connections::desktop::State::Current),
+        false,
+    );
+    assert!(!current.restart_required);
+    let mut recovery = status;
+    recovery.recovery_pending = true;
+    let recovery = with_codex_reload(
+        recovery,
+        Some(agent_connections::ReloadState::Current),
+        None,
+        true,
+    );
+    assert!(!recovery.restart_required);
 }

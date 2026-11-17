@@ -4,7 +4,69 @@ const assert = require("node:assert/strict");
 const { PassThrough } = require("node:stream");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const vm = require("node:vm");
 const { isTarget, Pipe, apply } = require("./agent.cjs");
+
+test("WorkBuddy readiness waits for the native existing-session model write and readback", async () => {
+  const values = new Map();
+  let model = "previous",
+    finish;
+  const scope = vm.createContext({
+    localStorage: {
+      get length() {
+        return values.size;
+      },
+      key: (index) => [...values.keys()][index] ?? null,
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key),
+    },
+    async __wbInvoke(channel, _subject, ...args) {
+      if (channel === "wb:conversations:list")
+        return {
+          items: [{ id: "synthetic-session", transport: "local" }],
+          total: 1,
+        };
+      if (channel === "wb:conversations:configSetModel") {
+        await new Promise((resolve) => {
+          finish = resolve;
+        });
+        model = args[1];
+        return;
+      }
+      assert.equal(channel, "wb:conversations:get");
+      return {
+        info: { id: "synthetic-session", transport: "local" },
+        configManager: { model },
+      };
+    },
+  });
+  const pipe = {
+    async call(method, params) {
+      assert.equal(method, "Runtime.evaluate");
+      assert.equal(params.awaitPromise, true);
+      return {
+        result: { value: await vm.runInContext(params.expression, scope) },
+      };
+    },
+  };
+  let completed = false;
+  const applying = apply(pipe, "session", {
+    app: "workbuddy",
+    model: "next",
+    revision: "one",
+    restore: false,
+  }).then(() => {
+    completed = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completed, false);
+  assert.equal(model, "previous");
+  finish();
+  await applying;
+  assert.equal(completed, true);
+  assert.equal(model, "custom-local:next");
+});
 
 test("accepts only the installed client's main renderer, excluding previews and browser tabs", () => {
   const resources = path.resolve("synthetic/Resources");
