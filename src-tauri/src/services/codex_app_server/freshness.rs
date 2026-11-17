@@ -9,13 +9,29 @@ pub(crate) struct Snapshot {
     version: u8,
     route: [u8; 32],
     catalog: [u8; 32],
+    #[serde(default)]
+    model: Option<[u8; 32]>,
+    #[serde(default)]
+    model_changed_us: u64,
     pub(crate) route_changed_us: u64,
     pub(crate) catalog_changed_us: u64,
 }
 
 impl Snapshot {
     pub(crate) fn applied_ms(&self) -> Option<i64> {
-        i64::try_from(self.route_changed_us.max(self.catalog_changed_us) / 1000).ok()
+        i64::try_from(
+            self.route_changed_us
+                .max(self.catalog_changed_us)
+                .max(self.model_changed_us)
+                / 1000,
+        )
+        .ok()
+    }
+
+    pub(crate) fn model_applied_ms(&self) -> Option<i64> {
+        (self.model_changed_us > 0)
+            .then(|| i64::try_from(self.model_changed_us / 1000).ok())
+            .flatten()
     }
 }
 
@@ -32,6 +48,16 @@ pub(crate) fn load(receipt: &Path) -> Result<Option<Snapshot>, ()> {
 /// Call under the Codex switch lock. Persist digests only, never source values.
 pub(crate) fn sample(config: &Path, receipt: &Path) -> Result<Snapshot, ()> {
     let route = fingerprint(config)?;
+    let doc = super::config_doc(config)?;
+    let profile = super::selected_profile(&doc)?;
+    let model = profile
+        .and_then(|profile| profile.get("model"))
+        .or_else(|| doc.get("model"));
+    if model.is_some_and(|model| !model.is_str()) {
+        return Err(());
+    }
+    use sha2::Digest;
+    let model: [u8; 32] = sha2::Sha256::digest(serde_json::to_vec(&model).map_err(|_| ())?).into();
     let (catalog, catalog_modified) = catalog_sample(config)?;
     let route_modified = modified_us(config)?;
     let previous = load(receipt)?;
@@ -49,6 +75,13 @@ pub(crate) fn sample(config: &Path, receipt: &Path) -> Result<Snapshot, ()> {
         version: 1,
         route,
         catalog,
+        model: Some(model),
+        model_changed_us: previous.as_ref().map_or(route_modified, |old| {
+            // Establish a baseline for old receipts without inventing an explicit model change.
+            old.model.map_or(0, |before| {
+                changed(before == model, old.model_changed_us, route_modified)
+            })
+        }),
         route_changed_us: previous.as_ref().map_or(route_modified, |old| {
             changed(old.route == route, old.route_changed_us, route_modified)
         }),
@@ -85,7 +118,7 @@ mod tests {
         let first = sample(&config, &receipt).map_err(|_| "sample")?;
         let receipt_bytes = fs::read(&receipt)?;
         let receipt_time = fs::metadata(&receipt)?.modified()?;
-        fs::write(&config, text.replace("'one'", "'two'"))?;
+        fs::write(&config, format!("# harmless rewrite\n{text}"))?;
         fs::write(
             &catalog,
             r#"{"models":[{"slug":"two","priority":9},{"slug":"one","description":"changed"}]}"#,
@@ -101,6 +134,68 @@ mod tests {
         assert_eq!(changed.route_changed_us, first.route_changed_us);
         assert!(changed.catalog_changed_us > first.catalog_changed_us);
         assert_eq!(sample(&config, &receipt).map_err(|_| "sample")?, changed);
+        Ok(())
+    }
+
+    #[test]
+    fn changing_default_model_has_independent_persisted_freshness(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join("config.toml");
+        let receipt = dir.path().join("freshness.json");
+        fs::write(&config, "model='synthetic-first'\n")?;
+        let first = sample(&config, &receipt).map_err(|_| "sample")?;
+        fs::write(&config, "model='synthetic-second'\n")?;
+        let changed = sample(&config, &receipt).map_err(|_| "sample")?;
+        assert_ne!(
+            changed, first,
+            "default model changes must request a desktop restart"
+        );
+        assert_eq!(changed.route_changed_us, first.route_changed_us);
+        assert_eq!(changed.catalog_changed_us, first.catalog_changed_us);
+        assert_eq!(sample(&config, &receipt).map_err(|_| "sample")?, changed);
+        Ok(())
+    }
+
+    #[test]
+    fn model_freshness_uses_the_active_profile_and_upgrades_old_receipts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join("config.toml");
+        let receipt = dir.path().join("freshness.json");
+        let text = "model='synthetic-root'\nprofile='active'\n[profiles.active]\nmodel='synthetic-profile'\n";
+        fs::write(&config, text)?;
+        let first = sample(&config, &receipt).map_err(|_| "sample")?;
+        let mut legacy = serde_json::to_value(&first)?;
+        legacy
+            .as_object_mut()
+            .ok_or("legacy snapshot")?
+            .remove("model");
+        legacy
+            .as_object_mut()
+            .ok_or("legacy snapshot")?
+            .remove("modelChangedUs");
+        fs::write(&receipt, serde_json::to_vec(&legacy)?)?;
+        let upgraded = sample(&config, &receipt).map_err(|_| "sample")?;
+        assert_eq!(upgraded.route_changed_us, first.route_changed_us);
+        assert_eq!(upgraded.catalog_changed_us, first.catalog_changed_us);
+        assert_eq!(upgraded.model_applied_ms(), None);
+        fs::write(
+            &config,
+            text.replace("synthetic-root", "synthetic-unused-root"),
+        )?;
+        assert_eq!(sample(&config, &receipt).map_err(|_| "sample")?, upgraded);
+        fs::write(
+            &config,
+            text.replace("synthetic-profile", "synthetic-new-profile"),
+        )?;
+        let changed = sample(&config, &receipt).map_err(|_| "sample")?;
+        assert!(changed.model_applied_ms().is_some());
+        assert_eq!(changed.route_changed_us, upgraded.route_changed_us);
+        assert_eq!(changed.catalog_changed_us, upgraded.catalog_changed_us);
+        let saved = fs::read_to_string(&receipt)?;
+        assert!(!saved.contains("synthetic-new-profile"));
+        assert!(!saved.contains("synthetic-root"));
         Ok(())
     }
 

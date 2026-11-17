@@ -55,14 +55,20 @@ it with a universal selector or a JavaScript selection handler.
 
 ## Checks
 
+Agent-facing features must satisfy the [mandatory all-Agent coverage rules](../AGENTS.md#mandatory-agent-feature-coverage). Update the [coverage ledger](qa/agent-feature-coverage.md) from the full Agent inventory, implement each applicable native/protocol path, and record synthetic tests and platform-specific native acceptance separately. Do not treat shared routing, one client's successful test or an undocumented exclusion as all-Agent support.
+
+The unit suite checks every feature matrix against frontend `APP_IDS` and the backend shared connection registry; adding an Agent without updating all recorded feature matrices fails that contract. A complete inventory is required in addition to implementation and native acceptance evidence.
+
 ```bash
 pnpm typecheck
 pnpm build:renderer
 pnpm test:unit
 pnpm test:dev
+node --test scripts/tests/ci-policy.node.mjs
 pnpm test:macos-dmg
 pnpm test:trae-bridge
 pnpm test:model-default
+pnpm test:pi-session
 pnpm test:workbuddy-checkin-auth
 pnpm test:doubao-checkin
 pnpm test:agent-rewards
@@ -84,15 +90,21 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ### Commit and CI acceptance
 
+PRs retain path-filtered frontend, three-platform backend and applicable WSL2 checks. A main push skips duplicate heavy checks only when GitHub identifies its exact commit as a merged PR and that PR's latest CI run succeeded. Direct pushes, unsuccessful or pending PR CI, and API lookup failures retain the checks. Manual runs always run the full suite. Repository merge protection must continue to require PR CI; this optimization does not validate changes combined after the checked PR run.
+
+CI disables development/test debug information to reduce compilation and cache size while retaining assertions and test coverage. Cargo cache keys include the OS, architecture, compiler, manifests, profile and revision, with compatible-prefix restoration so successful builds can save refreshed caches. PR caches remain scoped to their PR; a manual run on main can seed the default-branch cache. The first run with a new compiler or cache profile still requires compilation.
+
 Before committing, run the applicable checks above on the final changes and compare them with `.github/workflows/ci.yml`. Include the helper tests and production dependency audit, rather than reporting only renderer and Rust unit tests. Record the checked revision or working-tree changes, OS, toolchain, commands, outcomes and unavailable checks. Fix relevant failures before committing; disclose any required check that cannot run. Changes made after verification require rerunning the affected checks.
 
 After pushing, inspect the workflow for the exact pushed revision and follow it until the required jobs finish. Report pending, skipped and failed jobs explicitly. Backend acceptance includes the applicable Linux, Windows and macOS jobs and the Windows-to-WSL2 contract when the workflow requires it. Local success on one platform is not cross-platform CI acceptance. Use failed job logs to establish the cause; do not bypass a check or weaken an assertion merely to make CI green. All required checks must pass for the revision being merged. If remote results cannot be obtained, report verification as incomplete.
 
 Use `pnpm exec vitest run <test-files>` to select frontend tests during development; focused tests do not replace the required checks before committing. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
 
-Claude Desktop, WorkBuddy, WorkBuddy AI and Qoder CN process inspection and confirmed restart support macOS and verified Windows installations. Keep native helpers behind their platform guards; pure freshness, selection and lifecycle orchestration compile under `cfg(test)` so synthetic fixtures run on every CI platform. Desktop integrations on Linux report `unsupported`. macOS requests a normal quit; Windows asks windows to close before ending verified remaining processes when necessary. Restart confirmation text shows only the current operating system's guidance. Tests must use fake runtimes and never inspect, quit, signal or launch installed applications. Codex has a separate idle-aware app-server worker for automatic route changes. Explicitly confirmed manual restarts immediately enter the native whole-application lifecycle, even during active tasks, and await its actual result; confirmation text must explain the interruption. The manual action remains available while an automatic refresh is waiting for idle. Configuration and process identity guards remain mandatory. The automatic worker's gateway activity guard covers the response body lifetime and a ten-second quiet period without modifying frames or trailers. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
+Claude Desktop, WorkBuddy, WorkBuddy AI and Qoder CN process inspection and confirmed restart support macOS and verified Windows installations. Keep native helpers behind their platform guards; pure freshness, selection and lifecycle orchestration compile under `cfg(test)` so synthetic fixtures run on every CI platform. Desktop integrations on Linux report `unsupported`. macOS requests a normal quit; Windows asks windows to close before ending verified remaining processes when necessary. Restart confirmation text shows only the current operating system's guidance. Tests must use fake runtimes and never inspect, quit, signal or launch installed applications. Codex has a separate idle-aware app-server worker for automatic route changes. Explicitly confirmed manual restarts immediately enter the native whole-application lifecycle, even during active tasks, and await its actual result; confirmation text must explain the interruption. The manual action remains available while an automatic refresh is waiting for idle. Confirmed manual restarts do not depend on configuration freshness: restart a running app, or open its verified installed copy when stopped. Process identity checks remain mandatory; automatic refresh retains its configuration guards. The automatic worker's gateway activity guard covers the response body lifetime and a ten-second quiet period without modifying frames or trailers. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
 
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
+
+Codex default-model restart checks must use the same platform guard as the app-server freshness module (`macos`, `windows`, or `test`). Normal Linux builds have no model-application timestamp and must not request a desktop restart. Keep the normal Linux Clippy build in CI: unit-test builds enable the freshness module and cannot detect an unguarded reference.
 
 Codex rollout activity reads the modification time and bounded event suffix from
 the same open file handle. Windows can retain an old modification time even on

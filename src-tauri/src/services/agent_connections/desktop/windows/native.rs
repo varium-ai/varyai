@@ -326,6 +326,9 @@ fn shell(file: &str, args: Option<&str>) -> Result<(), String> {
     }
 }
 impl Runtime for Native<'_> {
+    fn open_installed(&self) -> Result<(), String> {
+        open_installed(self.app, || true)
+    }
     fn processes(&self) -> Result<Vec<Process>, String> {
         if cfg!(test) || std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
             return Err(FAILED.into());
@@ -505,21 +508,54 @@ impl Runtime for Native<'_> {
     }
 }
 
-pub(super) fn open_model_control(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
+pub(super) fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
     let programs = std::env::var("ProgramFiles").unwrap_or_default();
-    let candidates = match app {
-        "workbuddy" => vec![format!(r"{programs}\WorkBuddy\WorkBuddy.exe")],
-        "workbuddy-ai" => vec![
-            format!(r"{programs}\WorkBuddy AI\WorkBuddy.exe"),
-            format!(r"{programs}\WorkBuddy-AI\WorkBuddy.exe"),
-        ],
-        "qoder" => vec![
-            format!(r"{programs}\Qoder CN\Qoder CN.exe"),
-            format!(r"{local}\Programs\Qoder CN\Qoder CN.exe"),
-        ],
-        _ => return Err(FAILED.into()),
-    };
+    let runtime = Native { app };
+    if !valid() || !runtime.processes()?.is_empty() {
+        return Err(CHANGED.into());
+    }
+    if app == "codex" {
+        // The package identity is stable even when no desktop process exists.
+        let explorer = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .ok_or(FAILED)?
+            .join("explorer.exe");
+        if !explorer.is_file() {
+            return Err(FAILED.into());
+        }
+        shell(
+            &explorer.to_string_lossy(),
+            Some(r"shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App"),
+        )?;
+        return runtime.wait_back();
+    }
+    let mut candidates = installed_images(app, &local, &programs);
+    if app == "claude-desktop" {
+        // Include versioned Squirrel and Store installations, using the same
+        // product/path validation as running-process discovery.
+        for root in [
+            std::path::PathBuf::from(&local).join("AnthropicClaude"),
+            std::path::PathBuf::from(&programs).join("WindowsApps"),
+        ] {
+            if !root.is_absolute() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(root) {
+                let mut versioned = Vec::new();
+                for entry in entries.flatten() {
+                    for relative in ["claude.exe", r"app\claude.exe"] {
+                        let path = entry.path().join(relative);
+                        if matches_image(app, &path.to_string_lossy(), &local, &programs) {
+                            versioned.push(path.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+                versioned.sort();
+                candidates.extend(versioned.into_iter().rev());
+            }
+        }
+    }
     let image = candidates
         .into_iter()
         .map(std::path::PathBuf::from)
@@ -529,11 +565,11 @@ pub(super) fn open_model_control(app: &str, valid: impl Fn() -> bool) -> Result<
                 && matches_image(app, &path.to_string_lossy(), &local, &programs)
         })
         .ok_or(FAILED)?;
-    if !valid() || !(Native { app }).processes()?.is_empty() {
+    if !valid() || !runtime.processes()?.is_empty() {
         return Err(CHANGED.into());
     }
     if !super::super::super::model_control::launch(app, &image)? {
-        return Err(FAILED.into());
+        shell(&image.to_string_lossy(), None)?;
     }
-    Native { app }.wait_back()
+    runtime.wait_back()
 }

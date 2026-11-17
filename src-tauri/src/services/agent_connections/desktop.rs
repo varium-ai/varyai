@@ -158,6 +158,7 @@ const RUNNING: &str = "agentConnections.restartBlocked";
 #[cfg(any(target_os = "macos", test))]
 trait Runtime {
     fn instances(&self) -> Result<Vec<Instance>, String>;
+    fn open_installed(&self) -> Result<(), String>;
     fn quit(&self, instance: &Instance) -> Result<(), String>;
     fn wait_for_exit(&self, instances: &[Instance]) -> Result<(), String>;
     fn open(&self, bundle: &std::path::Path) -> Result<(), String>;
@@ -230,6 +231,9 @@ fn restart_verified_with(
         return Err(super::CONFLICT.into());
     }
     let instances = runtime.instances()?;
+    if manual && instances.is_empty() {
+        return runtime.open_installed();
+    }
     let state = assess(&instances, applied_ms);
     if (!manual && state != State::RestartRequired)
         || instances.is_empty()
@@ -347,14 +351,12 @@ fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
     if !valid() || !macos::bundle_matches(&target, ids, &roots) {
         return Err(if valid() { CHANGED } else { super::CONFLICT }.into());
     }
-    if macos::launch_model_control(app, &target)? {
-        return Ok(());
+    let runtime = macos::Native { app };
+    if !runtime.instances()?.is_empty() {
+        return Err(CHANGED.into());
     }
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg(&target)
-        .status()
-        .map_err(|_| FAILED)?;
-    status.success().then_some(()).ok_or_else(|| FAILED.into())
+    runtime.open(&target)?;
+    runtime.wait_back(&target, &[])
 }
 
 // Internal app-server fallback; public desktop selection remains unchanged.
@@ -514,6 +516,9 @@ mod macos {
         })
     }
     impl Runtime for Native<'_> {
+        fn open_installed(&self) -> Result<(), String> {
+            open_installed(self.app, || true)
+        }
         fn instances(&self) -> Result<Vec<Instance>, String> {
             if cfg!(test) || std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
                 return Err(FAILED.into());
@@ -627,6 +632,21 @@ mod tests {
         assert!(runtime.events.borrow().contains(&"wait_back"));
     }
 
+    #[test]
+    fn confirmed_restart_opens_an_already_stopped_desktop() {
+        let runtime = FakeRuntime::new(vec![vec![]]);
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert_eq!(*runtime.events.borrow(), ["instances", "open_installed"]);
+    }
+
+    #[test]
+    fn stopped_restart_reports_an_unsuccessful_launch() {
+        let mut runtime = FakeRuntime::new(vec![vec![]]);
+        runtime.launch_error = Some(FAILED);
+        assert_eq!(restart_manual_with(&runtime), Err(FAILED.into()));
+        assert_eq!(*runtime.events.borrow(), ["instances", "open_installed"]);
+    }
+
     fn instance(launched_ms: Option<i64>) -> Instance {
         Instance {
             pid: 123,
@@ -660,6 +680,10 @@ mod tests {
     }
 
     impl Runtime for FakeRuntime {
+        fn open_installed(&self) -> Result<(), String> {
+            self.events.borrow_mut().push("open_installed");
+            self.launch_error.map_or(Ok(()), |error| Err(error.into()))
+        }
         fn instances(&self) -> Result<Vec<Instance>, String> {
             self.events.borrow_mut().push("instances");
             Ok(self

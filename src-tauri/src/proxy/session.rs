@@ -170,6 +170,34 @@ pub(crate) fn extract_client_session_id(
     body: &serde_json::Value,
     client_format: &str,
 ) -> Option<SessionIdResult> {
+    if client_format == "pi" {
+        for name in [
+            "x-vary-pi-session-id",
+            "x-session-id",
+            "session_id",
+            "session-id",
+            "x-session-affinity",
+        ] {
+            let values = headers.get_all(name);
+            if values.iter().count() != 1 {
+                continue;
+            }
+            if let Some(id) = values
+                .iter()
+                .next()
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    crate::proxy::tool_observation::types::normalized_session_id(Some(value))
+                })
+            {
+                return Some(SessionIdResult {
+                    session_id: id,
+                    source: SessionIdSource::Header,
+                    client_provided: true,
+                });
+            }
+        }
+    }
     if client_format == "zcode" {
         if let Some(id) = headers
             .get("x-session-id")
@@ -383,6 +411,36 @@ fn generate_new_session_id() -> SessionIdResult {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pi_native_session_headers_are_recognized_without_using_request_ids() {
+        for name in [
+            "x-vary-pi-session-id",
+            "x-session-id",
+            "session_id",
+            "x-session-affinity",
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(name, "synthetic-pi-session".parse().unwrap());
+            let session = super::extract_client_session_id(&headers, &serde_json::json!({}), "pi");
+            assert_eq!(
+                session.map(|v| v.session_id).as_deref(),
+                Some("synthetic-pi-session"),
+                "{name}"
+            );
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-client-request-id",
+            "synthetic-request-only".parse().unwrap(),
+        );
+        assert!(super::extract_client_session_id(&headers, &serde_json::json!({}), "pi").is_none());
+        for id in ["", "has space", &"x".repeat(257)] {
+            headers.insert("x-vary-pi-session-id", id.parse().unwrap());
+            assert!(
+                super::extract_client_session_id(&headers, &serde_json::json!({}), "pi").is_none()
+            );
+        }
+    }
     use super::*;
     use serde_json::json;
 

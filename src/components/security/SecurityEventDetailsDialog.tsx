@@ -24,6 +24,7 @@ import {
   securityEventOutboundLabel,
   securityEventResultLabel,
   securityEventRiskLabel,
+  securityEventSessionId,
   toolCategoryLabel,
   toolReasonLabel,
   toolSeverityLabel,
@@ -132,7 +133,7 @@ export function SecurityEventDetailsDialog({
               </div>
               {field(
                 "security.sessionId",
-                event.sessionId ||
+                securityEventSessionId(event) ||
                   t(
                     event.eventType === "dlp"
                       ? "security.sessionUnknown"

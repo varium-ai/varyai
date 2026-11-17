@@ -2,6 +2,7 @@
 //!
 //! Pi owns account login and the active provider/model in `settings.json`.
 //! Vary AI only manages explicit provider entries in `models.json`.
+pub(crate) mod session;
 
 use crate::config::{atomic_write_private, get_home_dir};
 use crate::error::AppError;

@@ -10,6 +10,11 @@ pub const CLAUDE_DESKTOP_TOOLS_SCHEMA: &str = "builtin:claude-desktop:tools:v1";
 pub const CODEX_TOOLS_SCHEMA: &str = "builtin:codex:tools:v1";
 pub const GEMINI_TOOLS_SCHEMA: &str = "builtin:gemini:tools:v1";
 pub const PI_TOOLS_SCHEMA: &str = "builtin:pi:tools:v1";
+pub const WORKBUDDY_TOOLS_SCHEMA: &str = "builtin:workbuddy:tools:v1";
+pub const WORKBUDDY_AI_TOOLS_SCHEMA: &str = "builtin:workbuddy-ai:tools:v1";
+pub const QODER_TOOLS_SCHEMA: &str = "builtin:qoder:tools:v1";
+pub const KIMI_TOOLS_SCHEMA: &str = "builtin:kimi:tools:v1";
+pub const QWEN_TOOLS_SCHEMA: &str = "builtin:qwen:tools:v1";
 pub const OPENAI_TOOLS_SCHEMA: &str = "builtin:openai:tools:v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +137,11 @@ fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
         "gemini" => GEMINI_TOOLS_SCHEMA,
         "openai" => OPENAI_TOOLS_SCHEMA,
         "pi" => PI_TOOLS_SCHEMA,
+        "workbuddy" => WORKBUDDY_TOOLS_SCHEMA,
+        "workbuddy-ai" => WORKBUDDY_AI_TOOLS_SCHEMA,
+        "qoder" => QODER_TOOLS_SCHEMA,
+        "kimi" => KIMI_TOOLS_SCHEMA,
+        "qwen" => QWEN_TOOLS_SCHEMA,
         _ => return None,
     };
     if obs.tool.definition_ref.as_deref() != Some(schema) {
@@ -139,6 +149,8 @@ fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
     }
     match (client, obs.tool.name.as_str()) {
         ("pi", "bash") => Some(Adapter::Shell("command")),
+        ("kimi", "Shell") | ("qwen", "run_shell_command") => Some(Adapter::Shell("command")),
+        ("workbuddy" | "workbuddy-ai" | "qoder", "Bash") => Some(Adapter::Shell("command")),
         ("pi", "read") => Some(Adapter::Read("path")),
         ("pi", "write" | "edit") => Some(Adapter::Write("path")),
         ("claude" | "claude_code" | "claude-desktop", "Bash") => Some(Adapter::Shell("command")),

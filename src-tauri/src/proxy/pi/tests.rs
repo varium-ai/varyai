@@ -12,6 +12,85 @@ use std::sync::{
 
 #[tokio::test]
 #[serial_test::serial]
+async fn pi_gemini_native_session_reaches_tool_events_without_leaking_private_headers() {
+    use crate::proxy::tool_observation::channel::test_channel;
+    use crate::services::tool_risk::{
+        response_parser::ResponseProcessor, runtime::*, worker::project_event,
+    };
+    struct Reset(ToolRiskRuntime);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_tool_risk_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset((*get_tool_risk_runtime()).clone());
+    set_tool_risk_runtime_for_test(ToolRiskRuntime::build(true, 7, vec![], &Default::default()));
+    let (_, mut rx) = test_channel().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        axum::serve(listener, Router::new().fallback(|headers: http::HeaderMap| async move {
+            assert!(!headers.contains_key("x-vary-pi-session-id"));
+            axum::Json(json!({"candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":{"name":"bash","args":{"command":"chmod 4755 /synthetic/fixture"}}}]},"finishReason":"STOP"}]}))
+        })).await.unwrap();
+    });
+    let runtime = Arc::new(crate::services::pi_routing::Runtime::default());
+    let provider = Provider::with_id(
+        "source".into(),
+        "Synthetic".into(),
+        json!({
+            "api":"google-generative-ai","baseUrl":format!("{origin}/v1beta"),"apiKey":"synthetic-key",
+            "models":[{"id":"gemini-synthetic"}]
+        }),
+        None,
+    );
+    *runtime.catalog.write().unwrap() = Some(Arc::new(
+        Catalog::build(
+            &[provider],
+            &["source".into()],
+            "http://127.0.0.1:1",
+            "synthetic-local",
+        )
+        .unwrap(),
+    ));
+    let server = crate::proxy::server::ProxyServer::new(
+        crate::proxy::ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(crate::database::Database::memory().unwrap()),
+        None,
+    )
+    .with_pi_runtime(runtime);
+    let info = server.start().await.unwrap();
+    let model = alias("source", "gemini-synthetic");
+    let response = reqwest::Client::new().post(format!("http://127.0.0.1:{}/pi/v1beta/models/{model}:generateContent", info.port))
+        .header("x-goog-api-key", "synthetic-local").header("x-vary-pi-session-id", "synthetic-native-session")
+        .json(&json!({"contents":[],"tools":[{"functionDeclarations":[{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]}]}))
+        .send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = response.bytes().await.unwrap();
+    let piece = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let observations = ResponseProcessor::default().ingest(&piece);
+    let event = observations
+        .iter()
+        .find_map(project_event)
+        .expect("native Pi shell risk event");
+    assert_eq!(
+        event.session_id.as_deref(),
+        Some("synthetic-native-session")
+    );
+    assert_eq!(event.client_category.as_deref(), Some("pi"));
+    assert_eq!(event.verdict.as_deref(), Some("risky"));
+    server.stop().await.unwrap();
+    upstream.abort();
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn pi_gateway_auth_exact_routing_and_lossless_streaming() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let calls = Arc::new(AtomicUsize::new(0));

@@ -1041,6 +1041,9 @@ impl Manager {
             }
         }
         self.sync_model_control(&receipt, false)?;
+        if receipt.app == "pi" {
+            crate::pi_config::session::ensure_installed();
+        }
         self.remember_model(&receipt.app, Some(&receipt.model));
         Ok(())
     }
@@ -1057,6 +1060,9 @@ impl Manager {
         let Some(old) = self.load(app)? else {
             return Ok(None);
         };
+        if app == "pi" && !old.suspended {
+            crate::pi_config::session::ensure_installed();
+        }
         let model = selected
             .or_else(|| menu.stand_in_direct(&old.model))
             .or_else(|| {
@@ -1412,6 +1418,23 @@ impl Manager {
         // Connected, pending-intent, and restored fingerprints all need the same
         // desktop freshness check so the restart action stays consistent.
         Ok(desktop::state("codex", applied))
+    }
+
+    pub fn codex_model_restart_required(&self, status: &Status) -> Result<bool, String> {
+        if status.recovery_pending {
+            return Ok(false);
+        }
+        #[cfg(any(target_os = "macos", windows, test))]
+        let applied = super::codex_app_server::freshness::load(
+            &self.root.join("codex-startup-freshness.json"),
+        )
+        .map_err(|_| FAILED)?
+        .and_then(|snapshot| snapshot.model_applied_ms());
+        #[cfg(not(any(target_os = "macos", windows, test)))]
+        let applied: Option<i64> = None;
+        Ok(applied.is_some_and(|applied| {
+            desktop::state("codex", Some(applied)) == Some(desktop::State::RestartRequired)
+        }))
     }
 
     pub fn restart_codex_desktop(&self) -> Result<(), String> {

@@ -308,6 +308,11 @@ pub const KNOWN_CLIENTS: &[&str] = &[
     "gemini",
     "openai",
     "pi",
+    "workbuddy",
+    "workbuddy-ai",
+    "qoder",
+    "kimi",
+    "qwen",
 ];
 pub const KNOWN_SOURCES: &[&str] = &["model_response", "client_hook", "mcp_rpc"];
 pub const OPERATION_FIELDS: &[&str] = &[
@@ -594,6 +599,29 @@ mod tests {
     #[test]
     fn valid_custom_rule_passes() {
         assert!(custom_rule().validate().is_ok());
+    }
+
+    #[test]
+    fn workbuddy_clients_can_scope_custom_rules_and_exact_native_tools() {
+        for (client, tool) in [
+            ("workbuddy", "Bash"),
+            ("workbuddy-ai", "Bash"),
+            ("qoder", "Bash"),
+            ("kimi", "Shell"),
+            ("qwen", "run_shell_command"),
+        ] {
+            let mut rule = custom_rule();
+            rule.selector.clients = Some(vec![client.into()]);
+            assert!(rule.validate().is_ok());
+            assert!(ToolRef {
+                client: client.into(),
+                name: tool.into(),
+                namespace: None,
+                definition_ref: Some(format!("builtin:{client}:tools:v1")),
+                server_identity: None,
+            }
+            .is_valid());
+        }
     }
 
     #[test]

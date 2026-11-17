@@ -1125,6 +1125,20 @@ impl ProxyService {
             Self::pi_origin(&config.listen_address, config.listen_port)?;
         }
 
+        // Existing Pi connections need the helper even before a catalog is published.
+        let manager = self.agent_connections.clone();
+        let pi_routing = self.pi_routing.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if pi_routing.enabled().unwrap_or(false)
+                || manager
+                    .load("pi")
+                    .is_ok_and(|receipt| receipt.is_some_and(|receipt| !receipt.suspended))
+            {
+                crate::pi_config::session::ensure_installed();
+            }
+        })
+        .await;
+
         // 3. 若已在运行：确保持久化状态（如需要）并返回当前信息
         if let Some(server) = self.server.read().await.as_ref() {
             let status = server.get_status().await;
@@ -6136,6 +6150,57 @@ mod tests {
     use serial_test::serial;
     use std::env;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    #[serial]
+    async fn starting_existing_pi_connection_installs_session_extension_without_catalog(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for state in [None, Some(true), Some(false)] {
+            let directory = TempDir::new()?;
+            let agent = directory.path().join("pi");
+            let _agent = crate::pi_config::test_support::TestAgentDir::at(&agent);
+            std::fs::create_dir_all(&agent)?;
+            let settings = agent.join("settings.json");
+            std::fs::write(&settings, r#"{"theme":"synthetic"}"#)?;
+            let db = Arc::new(Database::memory()?);
+            use_ephemeral_proxy_port(&db).await;
+            let mut service = ProxyService::new_with_codex_oauth_manager(
+                db,
+                Arc::new(CodexOAuthManager::new(directory.path().join("oauth"))),
+            );
+            service.agent_connections = Arc::new(super::super::agent_connections::Manager {
+                root: directory.path().join("receipts"),
+            });
+            if let Some(suspended) = state {
+                std::fs::create_dir_all(&service.agent_connections.root)?;
+                std::fs::write(
+                    service.agent_connections.root.join("pi.json"),
+                    serde_json::to_vec(&json!({
+                        "app":"pi", "token":"synthetic", "model":"synthetic",
+                        "model_map":{}, "suspended":suspended,
+                        "files":[{"path":settings,"original":null,"installed":{},"fields":[]}]
+                    }))?,
+                )?;
+            }
+            assert!(service.intent_runtime.global_snapshot()?.is_none());
+            let extension = agent.join("extensions/varyai-session-id.js");
+            service.start().await?;
+            let installed = extension.is_file();
+            if installed {
+                std::fs::remove_file(&extension)?;
+                service.start().await?;
+            }
+            let repaired_while_running = extension.is_file();
+            service.stop().await?;
+            assert_eq!(installed, state == Some(false));
+            assert_eq!(repaired_while_running, state == Some(false));
+            assert_eq!(
+                std::fs::read_to_string(settings)?,
+                r#"{"theme":"synthetic"}"#
+            );
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     #[serial]

@@ -346,6 +346,7 @@ impl Manager {
         }
         // Retaining the previous receipt makes a crash between the two atomic writes recoverable.
         *self.runtime.catalog.write().map_err(|_| "piRouting.busy")? = Some(Arc::new(catalog));
+        crate::pi_config::session::ensure_installed();
         Ok(())
     }
     pub fn disable(&self) -> Result<(), String> {
