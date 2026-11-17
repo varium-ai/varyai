@@ -2186,7 +2186,7 @@ describe("Agent connections", () => {
     ]);
     let completeRestart!: () => void;
     vi.mocked(agentConnectionsApi.restart)
-      .mockRejectedValueOnce("agentConnections.restartChanged")
+      .mockRejectedValueOnce("agentConnections.restartBlocked")
       .mockImplementationOnce(
         () =>
           new Promise<void>((resolve) => {
@@ -2204,9 +2204,9 @@ describe("Agent connections", () => {
     });
     fireEvent.click(confirm);
     expect(
-      await within(row).findByText("agentConnections.restartChanged"),
+      await within(row).findByText("agentConnections.restartBlocked"),
     ).toBeVisible();
-    expect(toast.error).toHaveBeenCalledWith("agentConnections.restartChanged");
+    expect(toast.error).toHaveBeenCalledWith("agentConnections.restartBlocked");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(1);
     fireEvent.click(
@@ -2228,6 +2228,45 @@ describe("Agent connections", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+  });
+
+  it("never renders the internal restart state-change error or traps the confirmation", async () => {
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "codex",
+        enabled: true,
+        configured: true,
+        model: "vary-auto/shared",
+        recoveryPending: false,
+        desktopState: "restart_required",
+        restartRequired: true,
+      },
+    ]);
+    vi.mocked(agentConnectionsApi.restart).mockRejectedValue(
+      "agentConnections.restartChanged",
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    expect(
+      await within(row).findByText("agentConnections.restartFailed"),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("agentConnections.restartChanged"),
+    ).not.toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalledWith(
+      "agentConnections.restartChanged",
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
   });
 
   it.each(["stale_catalog", "failed"] as const)(

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f2e9" />
+    <title>The Slow Lane — A Pelican's Ride</title>
+    <style>
+      :root { color-scheme: light; --paper: #f6f2e9; --ink: #344c4a; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--paper); color: var(--ink); font-family: Arial, sans-serif; }
+      main { width: min(1240px, 100%); min-height: 100svh; margin: auto; padding: 35px 48px 25px; display: flex; flex-direction: column; }
+      header, footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+      header { padding-bottom: 21px; border-bottom: 1px solid #344c4a25; }
+      .brand { font-size: 12px; letter-spacing: .22em; font-weight: 700; display: flex; align-items: center; gap: 11px; }
+      .mark { width: 24px; height: 24px; border: 1px solid var(--ink); border-radius: 50%; display: grid; place-items: center; font-size: 16px; }
+      .edition, .caption { font-size: 11px; letter-spacing: .09em; }
+      .intro { text-align: center; padding-top: 32px; }
+      .eyebrow { color: #9e6b50; font-size: 10px; font-weight: 700; letter-spacing: .23em; text-transform: uppercase; }
+      h1 { margin: 12px 0 8px; font: normal clamp(32px, 4.5vw, 58px)/1.1 Georgia, serif; letter-spacing: -.045em; }
+      .intro p { margin: 0; font-size: 13px; color: #78827a; }
+      .art { flex: 1; display: grid; align-items: center; min-height: 0; }
+      canvas { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 620; }
+      footer { padding-top: 19px; border-top: 1px solid #344c4a25; }
+      .caption { color: #7a8177; line-height: 1.8; }
+      .caption strong { color: var(--ink); font-weight: 500; }
+      .controls { display: flex; gap: 9px; }
+      button { min-height: 40px; border: 1px solid #344c4a40; border-radius: 22px; padding: 0 18px; font: 11px Arial, sans-serif; letter-spacing: .04em; background: transparent; color: var(--ink); cursor: pointer; }
+      button:hover { background: #e7e9df; }
+      button:focus-visible { outline: 2px solid #b86a4e; outline-offset: 4px; }
+      #pause { min-width: 110px; }
+      @media (max-width: 600px) {
+        main { padding: 23px 21px; }
+        .edition { font-size: 9px; letter-spacing: .02em; }
+        .brand { font-size: 10px; gap: 8px; }
+        .intro { padding-top: 42px; }
+        .art { margin: 10px -21px; overflow: hidden; }
+        canvas { width: 150%; max-width: none; margin-left: -25%; }
+        footer { align-items: flex-start; gap: 12px; }
+        .caption { font-size: 9px; letter-spacing: .01em; }
+        button { padding: 0 12px; }
+        #pause { min-width: 87px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand"><span class="mark" aria-hidden="true">↗</span> THE SLOW LANE</div>
+        <span class="edition">FIELD NOTES &nbsp; / &nbsp; No. 001</span>
+      </header>
+      <div class="intro">
+        <div class="eyebrow">A little coastal daydream</div>
+        <h1>Nowhere to be. Just the sea.</h1>
+        <p>Two wheels, a sea breeze, and one very happy pelican.</p>
+      </div>
+      <div class="art">
+        <canvas id="scene" width="1200" height="620" role="img" aria-label="An animated white pelican wearing a green helmet and a rust-colored scarf pedals a teal bicycle beside the sea. Clouds, coastal plants, and a lighthouse pass in the background.">A pelican riding a bicycle along the coast.</canvas>
+      </div>
+      <footer>
+        <div class="caption"><strong>A GOOD DAY TO TAKE THE LONG WAY.</strong><br />An endless ride along the coast.</div>
+        <div class="controls" aria-label="Animation controls">
+          <button id="speed" type="button" aria-label="Cycling speed: 1 times">1× speed</button>
+          <button id="pause" type="button" aria-pressed="false">Ⅱ &nbsp; Pause</button>
+        </div>
+      </footer>
+    </main>
+    <script>
+      (() => {
+        'use strict';
+        const canvas = document.getElementById('scene');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const W = 1200, H = 620, TAU = Math.PI * 2;
+        const C = { paper: '#f6f2e9', ink: '#344c4a', sea: '#b9d1c9', seaLine: '#8fafaa', sand: '#e7dac2', rust: '#b86548', orange: '#e9b25e', pouch: '#edc88b', white: '#fffdf2', shade: '#dedfd0', teal: '#4b8580', tire: '#354743', green: '#738b6b' };
+        let time = 0, lastTime = null, speed = 1, frame = null;
+        const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+        let paused = motion.matches;
+
+        function path(points, fill, stroke = null, width = 2) {
+          ctx.beginPath();
+          points(ctx);
+          if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+          if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke(); }
+        }
+        function line(points, color, width = 2) {
+          path(c => { c.moveTo(...points[0]); points.slice(1).forEach(p => c.lineTo(...p)); }, null, color, width);
+        }
+        function ellipse(x, y, rx, ry, fill, stroke = null, width = 2) {
+          path(c => c.ellipse(x, y, rx, ry, 0, 0, TAU), fill, stroke, width);
+        }
+        function cloud(x, y, scale) {
+          ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+          path(c => { c.moveTo(-65, 12); c.bezierCurveTo(-70, -9, -45, -18, -29, -11); c.bezierCurveTo(-28, -44, 19, -45, 27, -18); c.bezierCurveTo(49, -28, 66, -5, 65, 12); c.closePath(); }, '#fffcf3');
+          ctx.restore();
+        }
+        function bird(x, y, scale, phase) {
+          const flap = Math.sin(time * 2.4 + phase) * 6;
+          path(c => { c.moveTo(x - 15 * scale, y + flap); c.quadraticCurveTo(x - 5 * scale, y - 8 * scale, x, y); c.quadraticCurveTo(x + 7 * scale, y - 9 * scale, x + 17 * scale, y + flap); }, null, C.ink, 1.8);
+        }
+        function plant(x, y, scale, phase) {
+          ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+          const wind = Math.sin(time * 2 + phase) * 5;
+          line([[0, 0], [wind - 3, -58]], C.green, 2);
+          [[-19,-25,-4,-17], [17,-42,-2,-31], [-22,-55,-4,-40], [10,-72,-3,-54]].forEach(([x1,y1,x2,y2]) => {
+            path(c => { c.moveTo(x2 + wind * .3, y2); c.quadraticCurveTo(x1 - 5 + wind, y1 - 2, x1 + wind, y1 - 7); c.quadraticCurveTo(x1 + 11 + wind, y1 - 9, x2 + wind * .3, y2); }, C.green);
+          });
+          ctx.restore();
+        }
+        function background() {
+          ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+          ellipse(872, 124, 61, 61, '#efd5a0');
+          cloud(((205 - time * 8) % 1450 + 1450) % 1450 - 120, 140, .94);
+          cloud(((686 - time * 5) % 1450 + 1450) % 1450 - 120, 87, .57);
+          cloud(((1190 - time * 9) % 1450 + 1450) % 1450 - 120, 191, .77);
+          path(c => { c.moveTo(40, 321); c.bezierCurveTo(255, 296, 365, 333, 549, 316); c.bezierCurveTo(770, 300, 975, 317, 1160, 295); c.lineTo(1160, 428); c.lineTo(40, 428); c.closePath(); }, C.sea);
+          for (let i = 0; i < 23; i++) {
+            const x = ((i * 167 - time * (11 + i % 3) + 1300) % 1110 + 1110) % 1110 + 45;
+            const y = 331 + (i * 29 % 84);
+            line([[x, y], [Math.min(x + 18 + i % 4 * 9, 1158), y]], i % 3 ? '#f2f3e5' : C.seaLine, 1.5);
+          }
+          const lx = ((1005 - time * 4 + 1350) % 1350 + 1350) % 1350;
+          path(c => { c.moveTo(lx - 90, 319); c.quadraticCurveTo(lx - 10, 286, lx + 75, 317); }, '#95aca0');
+          path(c => { c.moveTo(lx - 17, 309); c.lineTo(lx - 10, 238); c.lineTo(lx + 10, 238); c.lineTo(lx + 17, 309); c.closePath(); }, C.white);
+          path(c => { c.moveTo(lx - 13, 267); c.lineTo(lx + 13, 267); c.lineTo(lx + 15, 280); c.lineTo(lx - 15, 280); c.closePath(); }, C.rust);
+          ctx.fillStyle = C.ink; ctx.fillRect(lx - 12, 230, 24, 12);
+          path(c => { c.moveTo(lx - 18, 230); c.lineTo(lx, 215); c.lineTo(lx + 18, 230); c.closePath(); }, C.rust);
+          ctx.fillStyle = '#f0d59c'; ctx.fillRect(lx - 5, 232, 10, 7);
+          bird(300 - time * 3 % 150, 203, .8, 0); bird(348 - time * 3 % 150, 185, .56, 1);
+          path(c => { c.moveTo(40, 416); c.bezierCurveTo(280, 395, 388, 434, 641, 414); c.bezierCurveTo(848, 396, 1000, 416, 1160, 404); c.lineTo(1160, 516); c.lineTo(40, 516); c.closePath(); }, C.sand);
+          line([[40, 483], [1160, 483]], '#c7bda9', 1);
+          for (let i = 0; i < 10; i++) {
+            const x = ((i * 139 - time * 104) % 1350 + 1350) % 1350 - 75;
+            line([[x, 506], [x + 43, 506]], '#c7bda9', 2);
+          }
+          for (let i = 0; i < 6; i++) {
+            const x = ((i * 241 - time * 104) % 1480 + 1480) % 1480 - 100;
+            plant(x, 453, .55 + i % 2 * .18, i);
+          }
+        }
+        function wheel(x, y, angle) {
+          ellipse(x, y, 74, 74, C.paper, C.tire, 9);
+          ellipse(x, y, 66, 66, null, '#b5b8a7', 1.5);
+          ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+          for (let i = 0; i < 12; i++) {
+            const a = i * TAU / 12;
+            line([[0, 0], [Math.cos(a) * 65, Math.sin(a) * 65]], '#a3afa3', 1.2);
+          }
+          line([[56, -6], [63, -6]], C.rust, 4);
+          ctx.restore();
+          ellipse(x, y, 6, 6, '#d8cbb4', C.ink, 2);
+        }
+        function leg(hip, foot, back) {
+          const dx = foot[0] - hip[0], dy = foot[1] - hip[1];
+          const distance = Math.hypot(dx, dy);
+          const length = 64;
+          const bend = Math.sqrt(Math.max(0, length * length - distance * distance / 4));
+          const knee = [(hip[0] + foot[0]) / 2 + dy / distance * bend, (hip[1] + foot[1]) / 2 - dx / distance * bend];
+          line([hip, knee, foot], back ? '#b88d52' : '#d9a45e', 9);
+          path(c => { c.moveTo(foot[0] - 7, foot[1] - 3); c.lineTo(foot[0] + 20, foot[1] - 2); c.quadraticCurveTo(foot[0] + 30, foot[1] + 7, foot[0] + 12, foot[1] + 8); c.lineTo(foot[0] - 8, foot[1] + 6); c.closePath(); }, back ? '#b88d52' : C.orange, C.ink, 1.5);
+          line([[foot[0] - 12, foot[1] + 10], [foot[0] + 21, foot[1] + 10]], C.ink, 5);
+        }
+        function pelican(bob) {
+          ctx.save(); ctx.translate(0, bob);
+          // The tail, body, neck, and bill form a continuous riding silhouette.
+          path(c => { c.moveTo(495, 294); c.lineTo(449, 278); c.lineTo(461, 306); c.lineTo(447, 311); c.quadraticCurveTo(473, 332, 513, 323); c.closePath(); }, C.shade, C.ink, 2.5);
+          path(c => { c.moveTo(491, 275); c.bezierCurveTo(512, 245, 555, 253, 575, 267); c.bezierCurveTo(604, 264, 613, 233, 610, 195); c.bezierCurveTo(607, 164, 614, 132, 641, 129); c.bezierCurveTo(674, 122, 695, 148, 687, 174); c.bezierCurveTo(682, 195, 656, 203, 654, 231); c.bezierCurveTo(653, 279, 635, 324, 591, 337); c.bezierCurveTo(543, 353, 488, 332, 485, 304); c.quadraticCurveTo(480, 289, 491, 275); c.closePath(); }, C.white, C.ink, 2.8);
+          path(c => { c.moveTo(640, 198); c.bezierCurveTo(627, 236, 639, 271, 605, 302); c.bezierCurveTo(586, 322, 553, 328, 526, 322); c.bezierCurveTo(570, 352, 621, 332, 639, 294); c.quadraticCurveTo(657, 253, 654, 231); c.closePath(); }, '#e8e7d9');
+          // The deep throat pouch distinguishes the pelican's long bill.
+          path(c => { c.moveTo(676, 168); c.lineTo(808, 179); c.bezierCurveTo(791, 209, 725, 235, 691, 213); c.quadraticCurveTo(674, 199, 676, 168); c.closePath(); }, C.pouch, C.ink, 2.5);
+          path(c => { c.moveTo(673, 164); c.quadraticCurveTo(742, 162, 813, 175); c.quadraticCurveTo(824, 178, 813, 183); c.lineTo(678, 179); c.closePath(); }, C.orange, C.ink, 2.5);
+          line([[690, 186], [791, 183]], '#c19559', 1);
+          ellipse(663, 155, 10, 11, '#efe8ca'); ellipse(665, 155, 4.5, 5, C.ink);
+          ellipse(666.5, 153, 1.4, 1.4, C.white);
+          line([[653, 139], [668, 137]], C.ink, 2);
+          // A small cycling helmet with a fastened chin strap.
+          path(c => { c.moveTo(605, 143); c.bezierCurveTo(605, 104, 652, 90, 679, 115); c.quadraticCurveTo(688, 124, 687, 140); c.closePath(); }, C.green, C.ink, 2.5);
+          path(c => { c.moveTo(617, 135); c.quadraticCurveTo(618, 116, 634, 111); c.moveTo(640, 134); c.quadraticCurveTo(640, 115, 648, 110); c.moveTo(663, 134); c.quadraticCurveTo(664, 119, 660, 115); }, null, '#b6c4a0', 4);
+          line([[600, 143], [693, 141]], C.ink, 5);
+          path(c => { c.moveTo(619, 147); c.lineTo(632, 183); c.lineTo(646, 188); }, null, C.ink, 2);
+          // A wind-blown scarf is redrawn as a soft traveling wave.
+          const wave = Math.sin(time * 6) * 6;
+          path(c => { c.moveTo(624, 227); c.bezierCurveTo(590, 225, 565, 210 + wave, 535, 217 - wave); c.lineTo(540, 228 - wave); c.lineTo(530, 235 - wave); c.bezierCurveTo(565, 226 + wave, 592, 244, 626, 240); c.closePath(); }, C.rust, C.ink, 1.5);
+          path(c => { c.moveTo(619, 218); c.quadraticCurveTo(637, 227, 654, 220); c.lineTo(652, 236); c.quadraticCurveTo(630, 244, 617, 233); c.closePath(); }, C.rust, C.ink, 2);
+          // The forward wing rests on the handlebars.
+          path(c => { c.moveTo(536, 272); c.bezierCurveTo(560, 253, 586, 274, 608, 288); c.quadraticCurveTo(627, 299, 682, 289); c.quadraticCurveTo(698, 289, 697, 298); c.bezierCurveTo(671, 319, 627, 327, 597, 315); c.bezierCurveTo(569, 305, 539, 316, 525, 291); }, C.shade, C.ink, 2.5);
+          path(c => { c.moveTo(544, 284); c.quadraticCurveTo(570, 294, 592, 298); c.moveTo(539, 295); c.quadraticCurveTo(562, 305, 581, 306); }, null, '#acb5a3', 2);
+          ctx.restore();
+        }
+        function bicycle() {
+          const angle = time * 3.4, bob = Math.sin(angle * 2) * 2;
+          const crank = [595, 414], radius = 28;
+          const foot = [crank[0] + Math.cos(angle) * radius, crank[1] + Math.sin(angle) * radius];
+          const farFoot = [crank[0] - Math.cos(angle) * radius, crank[1] - Math.sin(angle) * radius];
+          ellipse(596, 502, 214, 10, '#344c4a13');
+          wheel(466, 417, angle * .88); wheel(744, 417, angle * .88);
+          leg([553, 322 + bob], farFoot, true);
+          // Chain and frame remain behind the rider's near leg.
+          path(c => { c.moveTo(465, 405); c.lineTo(595, 392); c.bezierCurveTo(626, 390, 629, 435, 596, 436); c.lineTo(465, 429); c.quadraticCurveTo(451, 419, 465, 405); }, null, '#788477', 2);
+          const tubes = [[[466,417],[545,337],[595,414],[466,417]], [[545,337],[700,337],[595,414]], [[700,337],[744,417]], [[700,337],[685,298]]];
+          tubes.forEach(p => line(p, C.ink, 11));
+          tubes.forEach(p => line(p, C.teal, 7));
+          line([[545,337],[538,321]], C.ink, 6);
+          path(c => { c.moveTo(511, 318); c.quadraticCurveTo(537, 310, 564, 320); c.lineTo(563, 327); c.lineTo(516, 326); c.closePath(); }, '#845c48', C.ink, 2.5);
+          path(c => { c.moveTo(685, 299); c.lineTo(705, 287); c.quadraticCurveTo(724, 279, 730, 293); c.quadraticCurveTo(738, 309, 719, 309); }, null, C.ink, 6);
+          line([[706,287],[716,285]], '#a17a55', 7);
+          path(c => { c.moveTo(724, 303); c.quadraticCurveTo(748, 333, 748, 377); }, null, C.ink, 1.4);
+          path(c => { c.arc(466, 417, 84, Math.PI * 1.07, Math.PI * 1.91); }, null, '#a9b7a2', 5);
+          path(c => { c.arc(744, 417, 84, Math.PI * 1.12, Math.PI * 1.91); }, null, '#a9b7a2', 5);
+          ellipse(595, 414, 22, 22, '#d7d6bf', C.ink, 2);
+          line([farFoot, crank, foot], '#657368', 5);
+          ellipse(595, 414, 5, 5, C.ink);
+          pelican(bob);
+          leg([562, 327 + bob], foot, false);
+        }
+        function draw() {
+          ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+          ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+          background(); bicycle();
+          for (let i = 0; i < 4; i++) {
+            const x = ((i * 397 + 150 - time * 146) % 1600 + 1600) % 1600 - 200;
+            plant(x, 548, .8 + i % 2 * .2, i + 2);
+          }
+        }
+        function resize() {
+          const ratio = Math.min(window.devicePixelRatio || 1, 2);
+          const width = Math.max(1, Math.round(canvas.getBoundingClientRect().width * ratio));
+          canvas.width = width; canvas.height = Math.round(width * H / W);
+          draw();
+        }
+        function tick(timestamp) {
+          frame = null;
+          if (paused || document.hidden) { lastTime = null; return; }
+          if (lastTime !== null) time += Math.min((timestamp - lastTime) / 1000, .05) * speed;
+          lastTime = timestamp; draw(); frame = requestAnimationFrame(tick);
+        }
+        function syncPlayback() {
+          if (frame !== null) cancelAnimationFrame(frame);
+          frame = null; lastTime = null;
+          const button = document.getElementById('pause');
+          button.textContent = paused ? '▶  Resume' : 'Ⅱ  Pause';
+          button.setAttribute('aria-pressed', String(paused));
+          if (!paused && !document.hidden) frame = requestAnimationFrame(tick);
+        }
+        document.getElementById('pause').addEventListener('click', () => { paused = !paused; syncPlayback(); });
+        document.getElementById('speed').addEventListener('click', event => {
+          speed = speed === 1 ? 1.5 : speed === 1.5 ? .5 : 1;
+          event.currentTarget.textContent = `${speed}× speed`;
+          event.currentTarget.setAttribute('aria-label', `Cycling speed: ${speed} times`);
+        });
+        motion.addEventListener('change', event => { paused = event.matches; syncPlayback(); });
+        document.addEventListener('visibilitychange', syncPlayback);
+        window.addEventListener('resize', resize);
+        resize(); syncPlayback();
+      })();
+    </script>
+  </body>
+</html>

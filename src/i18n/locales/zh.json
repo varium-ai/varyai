@@ -5298,7 +5298,6 @@
     "codexRestartConfirmHint": "请先保存工作。Vary 会立即退出并重新打开 Codex，运行中的任务将被中断，未发送的草稿可能丢失。应用拒绝退出时会提示失败，请自行处理后重试。",
     "codexRestartConfirmHintWindows": "请先保存工作。Vary 会立即退出并重新打开 Codex，运行中的任务将被中断，未发送的草稿可能丢失。Windows 上请求关闭后仍未退出的应用进程可能被结束。",
     "restartFailed": "重启失败。请保存工作，完全退出该应用，再从系统应用列表重新打开。",
-    "restartChanged": "无法确认要重启的应用进程。请完全退出该应用，再点击“重启”；仍失败时请手动打开。",
     "restartBlocked": "应用尚未退出。请保存工作并完全退出该应用，再点击“重启”。",
     "restartUnsupported": "此工具在当前平台不支持自动重启。",
     "restartConfirmationRequired": "请先确认重启此应用。",
