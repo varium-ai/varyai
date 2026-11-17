@@ -494,7 +494,6 @@ export function AgentConnectionsPage({
     retry: false,
     onError: (cause, app) => {
       const allowed = [
-        "agentConnections.restartChanged",
         "agentConnections.restartBlocked",
         "agentConnections.restartUnsupported",
       ];
@@ -1683,11 +1682,7 @@ export function AgentConnectionsPage({
             </Button>
           </>
         }
-      >
-        <div className="min-h-10" aria-live="polite">
-          {errorMessage(restarting)}
-        </div>
-      </AppDialog>
+      />
       <AppDialog
         open={!!disconnecting}
         pending={rowBusy(disconnecting)}

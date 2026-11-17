@@ -408,7 +408,7 @@ The Codex connection belongs to the ChatGPT desktop app in the reported installa
 
 On macOS, restart waits for the original process to exit even if the system already marks its application as terminated, then requests a fresh launch of the same bundle. Success requires a new verified application instance within 20 seconds; a successful `open` command alone is insufficient. Windows also waits for the application to return. A confirmed Codex restart immediately enters this whole-application path, even when tasks are running or an automatic configuration refresh is waiting for idle. The confirmation explains that running tasks will be interrupted and unsent drafts may be lost. The row stays busy until the native restart finishes and reports quit refusals or relaunch failures instead of treating a queued request as success. Verified application process identity checks still apply; manual restart does not require unchanged connection configuration. If the application quits but does not return, reopen it manually and report the restart failure; a changed or unidentified installation is never replaced with a guessed launch target.
 
-If the selected desktop app has already exited, a confirmed restart opens its verified installed copy directly and waits for it to return. An empty process list is not a configuration conflict. This also allows another restart attempt after the previous attempt quit the app but failed to reopen it. Restart errors explain whether to fully quit the application and retry, or reopen it from the system application list.
+Confirmed manual restarts read the current process state instead of asking you to refresh the Agents page. If a supported desktop has stopped, VaryAI opens its verified installation and waits for it to return. Process changes before quitting are resampled a bounded number of times; an already verified replacement after the original exits does not need another launch. The confirmation closes when you proceed, and errors appear on the Agent row without blocking navigation. Internal state-change diagnostics are not displayed. Quit refusals, unverified targets and launch failures still report an operation failure.
 
 Automatic Codex configuration refreshes continue to wait for idle, including the existing quiet period after a request and conservative handling of unreadable activity records. Their waiting status keeps **Restart** available for an explicitly confirmed immediate restart. A running Codex instance is not itself proof that a task is active.
 
@@ -493,6 +493,33 @@ An upstream that implements `/v1/chat/completions` may not implement `/v1/respon
 Protocol detection uses a bounded 1,024-token output budget so reasoning models can finish thinking before returning the short test answer. Older 128-token probes could receive only reasoning with `max_tokens` or `incomplete`, even when authentication and the API format worked. Detection still requires the exact test answer and normal completion; a truncated response never establishes compatibility.
 
 A successful minimal Responses probe does not establish support for every model and native coding-agent input. If ZCode receives an upstream 502, compare the same synthetic request with another model on that gateway. Current company acceptance passes with GLM while the reported Qwen model can fail on ZCode's full input despite accepting a minimal message. Preserve the original protocol parameters when diagnosing this difference; record the model ID and a sanitized status, without credentials or raw client input.
+
+### Model discovery fails while another client reaches the same provider
+
+A TLS connection can close before the provider receives an HTTP request or
+checks the API key. A generic model-list failure is therefore not evidence of
+invalid credentials. Compare the same endpoint and authentication, then separate
+TLS handshake failures from HTTP authentication and response-parsing errors.
+
+Discovery, protocol detection, and both forwarding transports now share an
+explicit TLS provider with TLS 1.3 hybrid `X25519MLKEM768` key exchange, alongside
+classical groups and TLS 1.2. Its modern ClientHello differs from older
+platform-native TLS and ring handshakes, including the offered key shares.
+This resolves reproducible early connection closes on affected provider or
+network gateways; it does not establish that a gateway requires hybrid key
+exchange, since it can still negotiate a classical group. The shared configuration
+keeps certificate and hostname verification enabled and loads both native system
+certificates and Mozilla roots. Session tickets remain cached, but a previous
+classical negotiation does not replace the next connection's initial hybrid
+key shares: affected gateways can close that shorter, cached-group hello too.
+Proxy choices, redirect restrictions, headers, and API protocols
+retain their existing behavior on macOS and Windows.
+
+Load the updated backend before retrying model discovery. Changing a base URL,
+replacing a valid key, disabling certificate checks, or manually adding a model
+does not repair a TLS handshake failure. A successful model list still requires
+a separate inference check for the selected model. See the
+[TLS verification record](qa/2026-11-17-provider-tls-compatibility.md).
 
 ### Gemini model discovery fails with a valid API key
 

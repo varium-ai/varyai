@@ -46,10 +46,13 @@ pub(crate) mod switch_lock;
 pub mod thinking_budget_rectifier;
 pub mod thinking_optimizer;
 pub mod thinking_rectifier;
+#[cfg(test)]
+mod tls_compat_tests;
 pub(crate) mod tool_media;
 pub mod tool_observation;
 pub(crate) mod trae;
 pub(crate) mod types;
+mod upstream_tls;
 pub mod usage;
 pub(crate) mod workbuddy;
 
