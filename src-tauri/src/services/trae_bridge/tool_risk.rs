@@ -120,7 +120,7 @@ fn sync_inner(edition: Edition, origin: Option<&str>) -> Result<(), AppError> {
                 .into_iter()
                 .collect()
         });
-    let desired = if let Some(origin) = origin {
+    let desired: Option<Value> = if let Some(origin) = origin {
         let url = url::Url::parse(origin).map_err(|_| unavailable())?;
         if url.scheme() != "http"
             || url.host_str() != Some("127.0.0.1")

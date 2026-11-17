@@ -1193,6 +1193,12 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
     >::new()));
     let running = Arc::new(AtomicBool::new(true));
     let (server_models, run) = (models.clone(), running.clone());
+    let helper_revision: u64 = include_str!("../resources/trae-bridge/agent.cjs")
+        .lines()
+        .find_map(|line| line.strip_prefix("const REVISION = "))
+        .and_then(|value| value.strip_suffix(';'))
+        .and_then(|value| value.parse().ok())
+        .expect("bundled TRAE helper revision");
     let worker = std::thread::spawn(move || {
         while run.load(Ordering::Relaxed) {
             let (mut socket, _) = match listener.accept() {
@@ -1209,7 +1215,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
                 .unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let result=match request["op"].as_str().unwrap(){
-            "health"=>json!({"ready":true,"enabled":false,"revision":18,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
+            "health"=>json!({"ready":true,"enabled":false,"revision":helper_revision,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
             "replace"=>{
                 let mut models = server_models.lock().unwrap();
