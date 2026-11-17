@@ -96,6 +96,57 @@ describe("RequestLogTable", () => {
     );
   });
 
+  it("uses readable names for billing/request/response fields and unknown historical aliases", () => {
+    const known = `model-${"a".repeat(64)}`;
+    const unknown = `model-${"b".repeat(64)}`;
+    useRequestLogsMock.mockReturnValue({
+      data: {
+        data: [
+          {
+            requestId: "synthetic-record",
+            appType: "opencode",
+            providerId: "_opencode_session",
+            model: `vary-provider/${unknown}`,
+            requestModel: `vary-provider/${known}`,
+            pricingModel: known,
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalCostUsd: "0.5",
+            latencyMs: 100,
+            statusCode: 200,
+            createdAt: 1000,
+          },
+        ],
+        total: 1,
+      },
+      isLoading: false,
+    });
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        refreshIntervalMs={0}
+        modelNames={{ [known]: "Synthetic Model · Synthetic supplier" }}
+      />,
+    );
+    expect(
+      screen.getByText("Synthetic Model · Synthetic supplier"),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Synthetic Model · Synthetic supplier → Unknown historical model · bbbbbbbbbbbb",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(`vary-provider/${known}`),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(`vary-provider/${unknown}`),
+    ).not.toBeInTheDocument();
+  });
+
   it("uses the plain Codex source name without changing a saved provider's name", () => {
     useRequestLogsMock.mockReturnValue({
       data: {

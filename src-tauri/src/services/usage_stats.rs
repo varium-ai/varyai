@@ -290,6 +290,9 @@ fn effective_model_sql(alias: &str) -> String {
 
 /// Analytics-only publisher aliases; never rewrite stored or forwarded model IDs.
 fn usage_model_filter_aliases(model: &str) -> Option<[String; 2]> {
+    if let Some(id) = crate::services::usage_model_labels::canonical_id(model) {
+        return Some([id.to_owned(), format!("vary-provider/{id}")]);
+    }
     let lower = model.to_ascii_lowercase();
     for (namespace, family) in [("deepseek-ai/", "deepseek-"), ("zai-org/", "glm-")] {
         let bare = lower.strip_prefix(namespace).unwrap_or(&lower);
@@ -320,10 +323,20 @@ fn push_provider_model_filters(
     }
     if let Some(m) = model {
         if let Some(aliases) = usage_model_filter_aliases(m) {
-            conditions.push(format!(
-                "(LOWER({}) IN (?, ?) OR LOWER({log_alias}.model) IN (?, ?) OR LOWER({log_alias}.request_model) IN (?, ?))",
-                effective_model_sql(log_alias)
-            ));
+            let case_insensitive = crate::services::usage_model_labels::canonical_id(m).is_none();
+            let fields = [
+                effective_model_sql(log_alias),
+                format!("{log_alias}.model"),
+                format!("{log_alias}.request_model"),
+            ];
+            let matches = fields.map(|field| {
+                if case_insensitive {
+                    format!("LOWER({field}) IN (?, ?)")
+                } else {
+                    format!("{field} IN (?, ?)")
+                }
+            });
+            conditions.push(format!("({})", matches.join(" OR ")));
             for _ in 0..3 {
                 for alias in &aliases {
                     params.push(Box::new(alias.clone()));
@@ -3841,6 +3854,77 @@ mod tests {
         assert!(request_ids.contains(&"session-matches-error-proxy"));
         assert!(request_ids.contains(&"claude-session-cache-creation-mismatch"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn routing_model_namespaces_filter_the_same_history_without_rewriting_billing(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let bare = format!("model-{}", "a".repeat(64));
+        let qualified = format!("vary-provider/{bare}");
+        let custom = format!("custom/{bare}");
+        {
+            let conn = lock_conn!(db.conn);
+            for (index, model) in [&bare, &qualified, &custom].into_iter().enumerate() {
+                insert_usage_log(
+                    &conn,
+                    &format!("routing-alias-{index}"),
+                    "codex",
+                    "supplier",
+                    model,
+                    "proxy",
+                    local_ts(2020, 1, 1, 12, 0, 0),
+                    10,
+                    5,
+                    0,
+                    0,
+                    200,
+                    "0.5",
+                )?;
+            }
+            conn.execute("UPDATE proxy_request_logs SET model='actual-response',pricing_model='actual-billing' WHERE request_id='routing-alias-1'", [])?;
+            conn.execute("INSERT INTO usage_daily_rollups (date,app_type,provider_id,model,request_model,pricing_model,request_count,success_count,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,total_cost_usd,avg_latency_ms) VALUES ('2020-01-01','codex','supplier',?1,?1,?1,2,2,20,10,0,0,'1.0',100)", [&qualified])?;
+        }
+        for model in [&bare, &qualified] {
+            let summary = db.get_usage_summary(None, None, None, None, Some(model))?;
+            assert_eq!(summary.total_requests, 4);
+            assert_eq!(summary.total_cost.parse::<f64>().ok(), Some(2.0));
+            let logs = db.get_request_logs(
+                &LogFilters {
+                    model: Some(model.clone()),
+                    ..Default::default()
+                },
+                0,
+                20,
+            )?;
+            assert_eq!(logs.total, 2);
+            assert!(logs
+                .data
+                .iter()
+                .any(|log| log.pricing_model.as_deref() == Some("actual-billing")));
+            let stats = db.get_model_stats(None, None, None, None, Some(model))?;
+            assert_eq!(stats.iter().map(|stat| stat.request_count).sum::<u64>(), 4);
+            assert!(stats.iter().any(|stat| stat.model == "actual-billing"));
+            assert_eq!(
+                db.get_daily_trends(
+                    Some(local_ts(2020, 1, 1, 0, 0, 0)),
+                    Some(local_ts(2020, 1, 3, 0, 0, 0)),
+                    None,
+                    None,
+                    Some(model),
+                )?
+                .iter()
+                .map(|stat| stat.request_count)
+                .sum::<u64>(),
+                4
+            );
+        }
+        assert_eq!(
+            db.get_usage_summary(None, None, None, None, Some(&custom))?
+                .total_requests,
+            1
+        );
         Ok(())
     }
 

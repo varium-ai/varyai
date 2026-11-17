@@ -1,3 +1,4 @@
+import { getUsageModelDisplayName } from "./modelOptions";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -12,6 +13,7 @@ import { fmtUsd } from "./format";
 import type { UsageRangeSelection } from "@/types/usage";
 
 interface ModelStatsTableProps {
+  modelNames?: Readonly<Record<string, string>>;
   range: UsageRangeSelection;
   appType?: string;
   providerName?: string;
@@ -20,6 +22,7 @@ interface ModelStatsTableProps {
 }
 
 export function ModelStatsTable({
+  modelNames = {},
   range,
   appType,
   providerName,
@@ -27,6 +30,10 @@ export function ModelStatsTable({
   refreshIntervalMs,
 }: ModelStatsTableProps) {
   const { t } = useTranslation();
+  const modelName = (id: string) =>
+    getUsageModelDisplayName(id, modelNames, (shortId) =>
+      t("usage.unknownRoutingModelOption", { id: shortId }),
+    );
   const { data: stats, isLoading } = useModelStats(
     range,
     { appType, providerName, model },
@@ -71,9 +78,9 @@ export function ModelStatsTable({
             </TableRow>
           ) : (
             stats?.map((stat) => (
-              <TableRow key={stat.model}>
+              <TableRow key={modelName(stat.model)}>
                 <TableCell className="font-mono text-sm">
-                  {stat.model}
+                  {modelName(stat.model)}
                 </TableCell>
                 <TableCell className="text-right">
                   {stat.requestCount.toLocaleString()}
