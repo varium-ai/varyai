@@ -45,6 +45,7 @@ import {
   securityEventOutboundLabel,
   securityEventResultLabel,
   securityEventRiskLabel,
+  securityEventSessionId,
 } from "./securityEventLabels";
 
 type Option = { value: string; label: string };
@@ -730,9 +731,9 @@ export function SecurityEventsPanel({
                         <td className="px-4 py-4 font-mono text-xs">
                           <span
                             className="block truncate"
-                            title={event.sessionId || undefined}
+                            title={securityEventSessionId(event) || undefined}
                           >
-                            {event.sessionId ||
+                            {securityEventSessionId(event) ||
                               t(
                                 event.eventType === "dlp"
                                   ? "security.sessionUnknown"

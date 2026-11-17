@@ -1041,6 +1041,9 @@ impl Manager {
             }
         }
         self.sync_model_control(&receipt, false)?;
+        if receipt.app == "pi" {
+            crate::pi_config::session::ensure_installed();
+        }
         self.remember_model(&receipt.app, Some(&receipt.model));
         Ok(())
     }
@@ -1057,6 +1060,9 @@ impl Manager {
         let Some(old) = self.load(app)? else {
             return Ok(None);
         };
+        if app == "pi" && !old.suspended {
+            crate::pi_config::session::ensure_installed();
+        }
         let model = selected
             .or_else(|| menu.stand_in_direct(&old.model))
             .or_else(|| {

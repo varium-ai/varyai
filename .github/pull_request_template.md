@@ -36,6 +36,8 @@
 ## Checklist
 
 - [ ] Recorded actual validation results and platform limits
+- [ ] Assessed every supported Agent and edition against the mandatory coverage rules; updated the Agent coverage ledger and recorded implementation, regressions and native/platform acceptance separately
+- [ ] No missing or unverified Agent path is presented as complete; any narrower Agent scope was explicitly accepted by the user
 - [ ] Updated documentation for behavior or configuration changes
 - [ ] Updated applicable i18n files for user-facing text changes (zh/en/ja/zh-TW)
 - [ ] Removed secrets and private data from code, logs, screenshots, and fixtures

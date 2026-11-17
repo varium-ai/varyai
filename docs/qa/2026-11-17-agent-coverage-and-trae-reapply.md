@@ -1,0 +1,27 @@
+# Agent coverage gaps and explicit TRAE replacement
+
+## Reports and live evidence
+
+The user reported missing tool-risk warnings in Kimi Code, Qwen Code, TRAE CN, ZCode, DeepSeek Harness and T3 Code. Earlier reports also identified Doubao Work. The complete feature is not implemented across all supported Agents. [The coverage ledger](agent-feature-coverage.md) enumerates all 20 frontend Agent identities, including the three native integrations outside the shared connection registry, with implementation and native acceptance tracked separately.
+
+Kimi and Qwen were absent from semantic schema collection, semantic adaptation, client validation and event client projection. Their official native shell contracts use `Shell` and `run_shell_command`, respectively, with a required string `command`. The repair registers each original client identity explicitly. Regressions cover positive and invalid schema declarations, large JSON/SSE catalogs, matching and disabled `kubectl delete` blacklist policy, shared-routing preservation and optional session propagation. No policy, blacklist or user Agent configuration is changed by these tests.
+
+TRAE CN and international screenshots showed a generic client-rejection label. Subsequent read-only queries through their existing native bridge found both ready, both shared catalog outboxes delivered, and all 58 saved models matching native configuration. The user confirmed that the UI had recovered. The earlier native failure code was not retained, so its exact cause remains unknown; this is not evidence that the screenshot was a native refusal to overwrite an old configuration.
+
+## Explicit TRAE reconfiguration
+
+Previously, explicit shared reconnection cleared the pending state and retried ordinary model updates. Native model identity fields are immutable through that update API, so retrying could still reject changed owned model identities. First connection/re-enabling and explicit reconnection now persist a replacement intention and invoke the existing native replacement transaction. That transaction replaces VaryAI-managed models, preserves unowned native models, and restores recoverable managed models when a replacement fails. Routine refreshes and default-model selections do not request replacement; a pending explicit intention survives delivery failures and clears only after successful delivery. Old outboxes default the new flag to false. Both editions share this behavior.
+
+The generic row label now says configuration is incomplete and offers reconnection, rather than attributing every write/readback failure to client rejection. All four runtime languages are updated. This does not implement TRAE tool-risk observation; that remains a separate missing native collector in the coverage ledger.
+
+## Mandatory delivery rule
+
+`AGENTS.md`, the development guide and the PR checklist now require a full inventory-based assessment for Agent-facing features, per-Agent native/protocol implementation and regressions, separate synthetic/native/platform acceptance, and explicit reporting of missing paths. A feature cannot be declared complete across Agents while entries remain missing or unverified. A narrower scope requires the user's explicit acceptance. New Agents must be assessed against existing cross-Agent features as part of their addition. A unit contract compares every recorded feature matrix with the union of frontend `APP_IDS` and backend shared connection IDs; omitting an Agent fails the unit suite.
+
+## Verification
+
+The Kimi/Qwen schema regression failed before registration and passed afterward. The explicit replacement-intention regression failed before the repair. The initial backend run is recorded at `/tmp/varyai-all-agent-followup-backend.log`, and renderer/helper checks at `/tmp/varyai-all-agent-followup-frontend.log`; final backend results are recorded below. Reproduction logs are `/tmp/varyai-kimi-qwen-risk-before.log` and `/tmp/varyai-trae-explicit-replace-before.log`. Native Kimi/Qwen retests, explicit TRAE replacement acceptance and native Windows acceptance remain pending. No all-Agent completion claim, application packaging, commit or push is included.
+
+On macOS 26.6.2 arm64, Rust/Cargo 1.98.1, Node 20.20.2 and pnpm 10.12.3, the complete renderer suite passed 4,259 tests across 318 files. Type checking, renderer production build, renderer formatting and all 66 TRAE bridge helper tests passed. The subsequent full-inventory contract passed separately, with type checking and formatting rerun for its final source.
+
+The first complete backend run exposed an incorrect new fixture expectation: Kimi and Qwen preserve existing app-prefixed audit session namespaces. The assertions were corrected to those established identities without changing production session extraction. The final complete run at `/tmp/varyai-all-agent-followup-backend-final.log` passed 7,829 tests (7,664 library and 165 integration), with zero failures and 21 ignored. Rust formatting, `cargo check` and Clippy with warnings denied passed. An independent concurrent Linux conditional-compilation fix was preserved; affected final-tree checks and four Codex freshness regressions were rerun at `/tmp/varyai-all-agent-followup-final-tree.log`. Remote CI and native Linux/Windows acceptance were not established by these local macOS checks. Final source/configuration fingerprints are at `/tmp/varyai-all-agent-followup-hashes.json`.

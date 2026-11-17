@@ -81,9 +81,8 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
         stage: obs.stage.as_str().to_string(),
         client_category: obs.tool.client.as_deref().and_then(|client| match client {
             "claude" | "claude_code" => Some("claude".into()),
-            "claude-desktop" | "codex" | "gemini" | "openai" | "grokbuild" | "pi" => {
-                Some(client.into())
-            }
+            "claude-desktop" | "codex" | "gemini" | "openai" | "grokbuild" | "pi" | "workbuddy"
+            | "workbuddy-ai" | "qoder" | "kimi" | "qwen" => Some(client.into()),
             _ => None,
         }),
         operation_category: decision
@@ -782,6 +781,69 @@ mod tests {
                 serde_json::to_value(event).unwrap()["sessionId"],
                 "synthetic-session-a"
             );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn kubectl_delete_blacklist_warns_for_pi_and_both_workbuddy_editions() {
+        use super::super::classifier::{CommandListEntry, CommandListType, CommandMatchKind};
+        use super::super::types::{RiskCategory, Severity};
+        struct Restore(ToolRiskRuntime);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_tool_risk_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*get_tool_risk_runtime()).clone());
+        enable_runtime();
+        let mut runtime = (*get_tool_risk_runtime()).clone();
+        runtime.command_lists.push(CommandListEntry {
+            id: "synthetic-kubectl-delete".into(),
+            revision: 1,
+            list_type: CommandListType::Blacklist,
+            match_kind: CommandMatchKind::Prefix,
+            pattern: "kubectl delete".into(),
+            enabled: true,
+            severity: Severity::High,
+            risk_category: RiskCategory::DestructiveChange,
+        });
+        set_tool_risk_runtime_for_test(runtime);
+        for (client, tool, schema) in [
+            ("pi", "bash", "builtin:pi:tools:v1"),
+            ("workbuddy", "Bash", "builtin:workbuddy:tools:v1"),
+            ("workbuddy-ai", "Bash", "builtin:workbuddy-ai:tools:v1"),
+            ("qoder", "Bash", "builtin:qoder:tools:v1"),
+            ("kimi", "Shell", "builtin:kimi:tools:v1"),
+            ("qwen", "run_shell_command", "builtin:qwen:tools:v1"),
+        ] {
+            let mut observation = obs(
+                tool,
+                serde_json::json!({
+                    "command":"kubectl delete pod vary-test-nonexistent-dry-run --dry-run=client"
+                }),
+            );
+            observation.tool.client = Some(client.into());
+            observation.tool.definition_ref = Some(schema.into());
+            runtime = (*get_tool_risk_runtime()).clone();
+            runtime.command_lists[0].enabled = false;
+            set_tool_risk_runtime_for_test(runtime.clone());
+            let unconfigured = project_event(&observation).expect("unclassified shell event");
+            assert_eq!(
+                unconfigured.verdict.as_deref(),
+                Some("uncertain"),
+                "{client}"
+            );
+            assert!(unconfigured.rule_ids.is_empty());
+            runtime.command_lists[0].enabled = true;
+            set_tool_risk_runtime_for_test(runtime.clone());
+            let event = project_event(&observation).expect("configured shell blacklist event");
+            assert_eq!(event.verdict.as_deref(), Some("risky"), "{client}");
+            assert_eq!(event.client_category.as_deref(), Some(client));
+            assert!(event
+                .rule_ids
+                .iter()
+                .any(|id| id == "synthetic-kubectl-delete"));
         }
     }
 

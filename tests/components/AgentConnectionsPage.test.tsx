@@ -1055,6 +1055,9 @@ describe("Agent connections", () => {
         within(row).getByRole("button", { name: "agentConnections.restart" }),
       ).toBeEnabled(),
     );
+    expect(within(row).getByRole("status")).toHaveTextContent(
+      "agentConnections.states.modelControlPending",
+    );
   });
   it.each([false, true])(
     "does not label Pi as requiring individual configuration (compact: %s)",

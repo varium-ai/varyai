@@ -38,6 +38,10 @@ it with a universal selector or a JavaScript selection handler.
 
 ## Checks
 
+Agent-facing features must satisfy the [mandatory all-Agent coverage rules](../AGENTS.md#mandatory-agent-feature-coverage). Update the [coverage ledger](qa/agent-feature-coverage.md) from the full Agent inventory, implement each applicable native/protocol path, and record synthetic tests and platform-specific native acceptance separately. Do not treat shared routing, one client's successful test or an undocumented exclusion as all-Agent support.
+
+The unit suite checks every feature matrix against frontend `APP_IDS` and the backend shared connection registry; adding an Agent without updating all recorded feature matrices fails that contract. A complete inventory is required in addition to implementation and native acceptance evidence.
+
 ```bash
 pnpm typecheck
 pnpm build:renderer
@@ -47,6 +51,7 @@ node --test scripts/tests/ci-policy.node.mjs
 pnpm test:macos-dmg
 pnpm test:trae-bridge
 pnpm test:model-default
+pnpm test:pi-session
 pnpm test:workbuddy-checkin-auth
 pnpm test:doubao-checkin
 pnpm test:agent-rewards

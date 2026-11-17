@@ -51,7 +51,7 @@ async function applyConversationDefault(scope, plan) {
     let total;
     // Snapshot metadata before model writes can reorder the native conversation list.
     for (let page = 1; ; page++) {
-      const result = await invoke("list", {
+      const result = await invoke("listScope", "local", {
         transport: "local",
         page,
         size: 100,

@@ -5242,6 +5242,7 @@
     "sessionHint": "Connection configured. Start a new session in this tool and choose a model from Vary’s shared catalog.",
     "verifyHint": "Send a message in the tool, then check Statistics to verify that requests reach Vary. A configured connection alone does not verify an upstream model.",
     "states": {
+      "modelControlPending": "Model configuration not confirmed · restart through Vary AI to retry",
       "codexProxyBlocked": "Local gateway blocked via proxy · diagnostic",
       "checking": "Checking…",
       "provider_missing": "Provider definition missing · waiting for repair",
@@ -5259,7 +5260,7 @@
       "inactive": "Connection needs to be resumed",
       "orphaned": "Connection recovery record is missing",
       "bridgePending": "Waiting for {{app}} connection · delivery or cleanup pending",
-      "bridgeModelRejected": "{{app}} model write failed · configuration rejected by the client",
+      "bridgeModelRejected": "{{app}} model configuration is incomplete · Reconnect to retry",
       "bridgeSelectionPending": "{{app}} connected · starting model awaits a ready chat window",
       "auditConnected": "Official session inspection active",
       "auditWaiting": "Waiting for an inspectable official session",

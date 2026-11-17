@@ -22,7 +22,7 @@ test("WorkBuddy readiness waits for the native existing-session model write and 
       removeItem: (key) => values.delete(key),
     },
     async __wbInvoke(channel, _subject, ...args) {
-      if (channel === "wb:conversations:list")
+      if (channel === "wb:conversations:listScope")
         return {
           items: [{ id: "synthetic-session", transport: "local" }],
           total: 1,

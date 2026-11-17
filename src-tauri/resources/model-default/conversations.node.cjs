@@ -21,8 +21,9 @@ function fixture(app) {
     async __wbInvoke(channel, subject, ...args) {
       assert.equal(subject, undefined);
       calls.push({ channel, args });
-      if (channel === "wb:conversations:list") {
-        const { page, size, transport } = args[0];
+      if (channel === "wb:conversations:listScope") {
+        assert.equal(args[0], "local");
+        const { page, size, transport } = args[1];
         assert.equal(transport, "local");
         return {
           items: sessions.slice((page - 1) * size, page * size),
@@ -70,7 +71,7 @@ for (const app of ["workbuddy", "workbuddy-ai"]) {
       103,
     );
     const lastList = f.calls.findLastIndex(
-      (call) => call.channel === "wb:conversations:list",
+      (call) => call.channel === "wb:conversations:listScope",
     );
     const firstWrite = f.calls.findIndex(
       (call) => call.channel === "wb:conversations:configSetModel",
@@ -124,7 +125,7 @@ test("native refusal and failed readback never claim that the default reached ol
           configManager: { model: "previous" },
         };
       const result = await invoke(channel, subject, ...args);
-      return failure === "partial" && channel === "wb:conversations:list"
+      return failure === "partial" && channel === "wb:conversations:listScope"
         ? { ...result, partial: true }
         : result;
     };
@@ -185,7 +186,7 @@ test("incomplete, oversized and repeated native list pages never start model wri
   ]) {
     const f = fixture("workbuddy");
     f.scope.__wbInvoke = async (channel) => {
-      assert.equal(channel, "wb:conversations:list");
+      assert.equal(channel, "wb:conversations:listScope");
       return result;
     };
     await assert.rejects(
@@ -194,4 +195,23 @@ test("incomplete, oversized and repeated native list pages never start model wri
     );
     assert.equal(f.sessions[0].model, "custom-local:previous");
   }
+});
+
+test("local model migration does not depend on cloud conversation availability", async () => {
+  const f = fixture("workbuddy-ai");
+  const invoke = f.scope.__wbInvoke;
+  f.scope.__wbInvoke = async (channel, subject, ...args) => {
+    if (channel === "wb:conversations:list")
+      return {
+        items: [],
+        total: 0,
+        partial: true,
+        providerErrors: [{ provider: "cloud" }],
+      };
+    return invoke(channel, subject, ...args);
+  };
+  assert.deepEqual(await applyConversationDefault(f.scope, f.plan), {
+    applied: true,
+  });
+  assert.equal(f.sessions[0].model, "custom-local:next");
 });

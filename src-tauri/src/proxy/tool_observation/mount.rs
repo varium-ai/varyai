@@ -14,7 +14,8 @@ use super::channel::{
 use super::parsers::{PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES};
 use crate::services::tool_risk::adapters::{
     CLAUDE_DESKTOP_TOOLS_SCHEMA, CLAUDE_TOOLS_SCHEMA, CODEX_TOOLS_SCHEMA, GEMINI_TOOLS_SCHEMA,
-    OPENAI_TOOLS_SCHEMA, PI_TOOLS_SCHEMA,
+    KIMI_TOOLS_SCHEMA, OPENAI_TOOLS_SCHEMA, PI_TOOLS_SCHEMA, QODER_TOOLS_SCHEMA, QWEN_TOOLS_SCHEMA,
+    WORKBUDDY_AI_TOOLS_SCHEMA, WORKBUDDY_TOOLS_SCHEMA,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -93,6 +94,11 @@ pub(crate) fn collect_tool_schemas_from_tools(
         "gemini" => GEMINI_TOOLS_SCHEMA,
         "openai" => OPENAI_TOOLS_SCHEMA,
         "pi" => PI_TOOLS_SCHEMA,
+        "workbuddy" => WORKBUDDY_TOOLS_SCHEMA,
+        "workbuddy-ai" => WORKBUDDY_AI_TOOLS_SCHEMA,
+        "qoder" => QODER_TOOLS_SCHEMA,
+        "kimi" => KIMI_TOOLS_SCHEMA,
+        "qwen" => QWEN_TOOLS_SCHEMA,
         _ => return Arc::new(Vec::new()),
     };
     if tools.len() > MAX_CATALOG_TOOLS {
@@ -151,6 +157,8 @@ pub(crate) fn collect_tool_schemas_from_tools(
         }
         let field = match (client, name) {
             ("pi", "bash") => "command",
+            ("kimi", "Shell") | ("qwen", "run_shell_command") => "command",
+            ("workbuddy" | "workbuddy-ai" | "qoder", "Bash") => "command",
             ("pi", "read" | "write" | "edit") => "path",
             ("claude" | "claude-desktop", "Bash") => "command",
             ("claude" | "claude-desktop", "Read" | "Write" | "Edit") => "file_path",
@@ -368,7 +376,7 @@ mod upstream_stream_tests {
     }
     #[tokio::test]
     #[serial_test::serial]
-    async fn large_catalog_keeps_permission_risk_events_for_codex_and_pi() {
+    async fn large_catalog_keeps_permission_risk_events_for_supported_shell_clients() {
         struct Reset(ToolRiskRuntime);
         impl Drop for Reset {
             fn drop(&mut self) {
@@ -376,7 +384,15 @@ mod upstream_stream_tests {
             }
         }
         let _reset = Reset((*get_tool_risk_runtime()).clone());
-        for (client, tool, field) in [("codex", "exec_command", "cmd"), ("pi", "bash", "command")] {
+        for (client, tool, field) in [
+            ("codex", "exec_command", "cmd"),
+            ("pi", "bash", "command"),
+            ("workbuddy", "Bash", "command"),
+            ("workbuddy-ai", "Bash", "command"),
+            ("qoder", "Bash", "command"),
+            ("kimi", "Shell", "command"),
+            ("qwen", "run_shell_command", "command"),
+        ] {
             for transport in [Transport::Json, Transport::Sse] {
                 let (_, mut rx) = test_channel().await;
                 let mut metadata = enable();
@@ -440,6 +456,7 @@ mod upstream_stream_tests {
                     event.session_id.as_deref(),
                     Some("synthetic-large-catalog-session")
                 );
+                assert_eq!(event.client_category.as_deref(), Some(client));
             }
         }
     }
@@ -538,5 +555,48 @@ mod pi_tests {
             "pi"
         )
         .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod workbuddy_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn workbuddy_shell_identity_requires_the_matching_client_and_valid_command_schema() {
+        for (client, name, schema) in [
+            ("workbuddy", "Bash", WORKBUDDY_TOOLS_SCHEMA),
+            ("workbuddy-ai", "Bash", WORKBUDDY_AI_TOOLS_SCHEMA),
+            ("qoder", "Bash", QODER_TOOLS_SCHEMA),
+            ("kimi", "Shell", "builtin:kimi:tools:v1"),
+            ("qwen", "run_shell_command", "builtin:qwen:tools:v1"),
+        ] {
+            let input = json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]});
+            for tool in [
+                json!({"name":name,"input_schema":input}),
+                json!({"type":"function","function":{"name":name,"parameters":input}}),
+            ] {
+                let definitions = collect_tool_schemas(&json!({"tools":[tool.clone()]}), client);
+                assert_eq!(definitions.len(), 1);
+                assert_eq!(definitions[0].schema, schema);
+                assert!(
+                    collect_tool_schemas(&json!({"tools":[tool.clone(),tool]}), client).is_empty()
+                );
+            }
+            for tool in [
+                json!({"name":"bash","input_schema":input}),
+                json!({"name":name,"namespace":"synthetic-extension","input_schema":input}),
+                json!({"name":name,"input_schema":{"type":"object","properties":{"command":{"type":"number"}},"required":["command"]}}),
+                json!({"name":name,"input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}),
+            ] {
+                assert!(collect_tool_schemas(&json!({"tools":[tool]}), client).is_empty());
+            }
+            assert!(collect_tool_schemas(
+                &json!({"tools":[{"name":name,"input_schema":input}]}),
+                "openai"
+            )
+            .is_empty());
+        }
     }
 }

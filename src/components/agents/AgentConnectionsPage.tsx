@@ -719,25 +719,27 @@ export function AgentConnectionsPage({
               ? "codexProxyBlocked"
               : reloadStatus
                 ? reloadStatus
-                : canRestart
-                  ? enabled
-                    ? "restartRequired"
-                    : "restoredRestartRequired"
-                  : enabled
-                    ? gateway.isError
-                      ? "unavailable"
-                      : gateway.data?.running
-                        ? state?.configured
-                          ? app === "doubaowork"
-                            ? "auditConnected"
-                            : state.desktopState === "restart_required"
-                              ? "restartRequired"
-                              : "configured"
-                          : app === "doubaowork"
-                            ? "auditWaiting"
-                            : "recovery"
-                        : "gatewayStopped"
-                    : "off";
+                : enabled && modelControl?.pending && !desktopRestart
+                  ? "modelControlPending"
+                  : canRestart
+                    ? enabled
+                      ? "restartRequired"
+                      : "restoredRestartRequired"
+                    : enabled
+                      ? gateway.isError
+                        ? "unavailable"
+                        : gateway.data?.running
+                          ? state?.configured
+                            ? app === "doubaowork"
+                              ? "auditConnected"
+                              : state.desktopState === "restart_required"
+                                ? "restartRequired"
+                                : "configured"
+                            : app === "doubaowork"
+                              ? "auditWaiting"
+                              : "recovery"
+                          : "gatewayStopped"
+                      : "off";
     const bypassed = status === "recovery";
     const reapplyButton = state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(

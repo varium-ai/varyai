@@ -2772,7 +2772,7 @@ async fn check_codex_chat_optional_search(
 
 #[tokio::test]
 #[serial_test::serial]
-async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
+async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::proxy::tool_observation::channel::test_channel;
     use crate::services::tool_risk::{
@@ -2800,7 +2800,8 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let upstream = tokio::spawn(async move {
-        axum::serve(listener, Router::new().route("/v1/chat/completions", post(|Json(body): Json<Value>| async move {
+        axum::serve(listener, Router::new().route("/v1/chat/completions", post(|headers: http::HeaderMap, Json(body): Json<Value>| async move {
+            assert!(!headers.contains_key("x-vary-pi-session-id"));
             let name = body["tools"][0]["function"]["name"].as_str().unwrap_or_default();
             let field = if name == "exec_command" { "cmd" } else { "command" };
             let arguments = json!({field:body["messages"][0]["content"]}).to_string();
@@ -2830,18 +2831,20 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
     session.targets[0].upstream = Some(provider);
     runtime.set_menu(Arc::new(published.clone()))?;
     runtime.set_global(published, 0)?;
-    runtime
-        .connections
-        .install(&crate::services::agent_connections::Receipt {
-            app: "pi".into(),
-            token: "synthetic-pi".into(),
-            model: group().alias(),
-            model_map: Default::default(),
-            visible_models: None,
-            files: vec![],
-            suspended: false,
-            applied_at_ms: None,
-        })?;
+    for app in ["pi", "workbuddy", "workbuddy-ai", "qoder", "kimi", "qwen"] {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: format!("synthetic-{app}"),
+                model: group().alias(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
     let server = ProxyServer::new(
         ProxyConfig {
             listen_port: 0,
@@ -2855,6 +2858,26 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
     let client = reqwest::Client::builder().no_proxy().build()?;
     for (app, name, field, expected_session) in [
         ("pi", "bash", "command", "synthetic-client-session"),
+        ("kimi", "Shell", "command", "kimi_synthetic-client-session"),
+        (
+            "qwen",
+            "run_shell_command",
+            "command",
+            "qwen_synthetic-client-session",
+        ),
+        ("qoder", "Bash", "command", "qoder_synthetic-client-session"),
+        (
+            "workbuddy",
+            "Bash",
+            "command",
+            "workbuddy_synthetic-client-session",
+        ),
+        (
+            "workbuddy-ai",
+            "Bash",
+            "command",
+            "workbuddy-ai_synthetic-client-session",
+        ),
         (
             "codex",
             "exec_command",
@@ -2888,10 +2911,10 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
         ] {
             let parameters =
                 json!({"type":"object","properties":{field:{"type":"string"}},"required":[field]});
-            let (endpoint, token, mut request) = if app == "pi" {
+            let (endpoint, token, mut request) = if app != "codex" {
                 (
-                    "/connections/pi/v1/chat/completions",
-                    "synthetic-pi",
+                    format!("/connections/{app}/v1/chat/completions"),
+                    format!("synthetic-{app}"),
                     json!({
                         "model":group().alias(),"metadata":{"session_id":client_session},"messages":[{"role":"user","content":command}],
                         "tools":[{"type":"function","function":{"name":name,"parameters":parameters}}]
@@ -2899,8 +2922,8 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
                 )
             } else {
                 (
-                    "/intent/v1/responses",
-                    "synthetic-local-token",
+                    "/intent/v1/responses".into(),
+                    "synthetic-local-token".into(),
                     json!({
                         "model":group().alias(),"metadata":{"session_id":client_session},"input":[{"role":"user","content":command}],
                         "tools":[{"type":"function","name":name,"parameters":parameters}]
@@ -2913,12 +2936,19 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
                     .ok_or("invalid synthetic request")?
                     .remove("metadata");
             }
-            let response = client
+            let mut call = client
                 .post(format!("http://127.0.0.1:{}{endpoint}", info.port))
-                .bearer_auth(token)
-                .json(&request)
-                .send()
-                .await?;
+                .bearer_auth(token);
+            if app == "pi" {
+                request
+                    .as_object_mut()
+                    .ok_or("invalid synthetic request")?
+                    .remove("metadata");
+                if let Some(id) = client_session {
+                    call = call.header("x-vary-pi-session-id", id);
+                }
+            }
+            let response = call.json(&request).send().await?;
             let status = response.status();
             let body = response.bytes().await?;
             assert_eq!(
@@ -2927,7 +2957,7 @@ async fn shared_chat_keeps_pi_and_codex_tool_semantics_and_request_sessions(
                 "{app}: missing successful synthetic reply"
             );
             let reply: Value = serde_json::from_slice(&body)?;
-            assert!(if app == "pi" {
+            assert!(if app != "codex" {
                 reply["choices"][0]["message"]["tool_calls"].is_array()
             } else {
                 reply["output"].is_array()

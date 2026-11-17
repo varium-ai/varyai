@@ -5167,6 +5167,7 @@
     "sessionHint": "接入已設定。請在工具中開啟新對話，並選擇 Vary 提供的模型。",
     "verifyHint": "在工具裡傳送一則訊息，再到「資料統計」確認請求是否經過 Vary。設定完成不代表上游模型已驗證可用。",
     "states": {
+      "modelControlPending": "模型設定尚未確認 · 可透過 Vary AI 重新啟動重試",
       "codexProxyBlocked": "本機閘道經代理存取失敗 · 診斷結果",
       "checking": "偵測中…",
       "provider_missing": "缺少供應商定義 · 等待修復",
@@ -5184,7 +5185,7 @@
       "inactive": "連接待恢復",
       "orphaned": "連接還原記錄缺失",
       "bridgePending": "等待 {{app}} 連線 · 模型同步或清理尚未完成",
-      "bridgeModelRejected": "{{app}} 模型寫入失敗 · 客戶端拒絕了設定",
+      "bridgeModelRejected": "{{app}} 模型設定未完成 · 點擊重新接入重試",
       "bridgeSelectionPending": "{{app}} 已連線 · 首選模型等待聊天視窗就緒",
       "auditConnected": "官方對話稽核已接入",
       "auditWaiting": "等待可檢查的官方對話",

@@ -165,6 +165,9 @@ jobs:
       - name: Desktop model default tests
         run: pnpm test:model-default
 
+      - name: Pi session identity helper tests
+        run: pnpm test:pi-session
+
       - name: WorkBuddy credential helper tests
         run: pnpm test:workbuddy-checkin-auth
       - name: Doubao Work check-in helper tests

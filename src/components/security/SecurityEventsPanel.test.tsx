@@ -212,6 +212,22 @@ beforeEach(() => {
   });
 });
 describe("unified security event list", () => {
+  it.each(["synthetic-pi-session", "pi_synthetic-pi-session"])(
+    "labels Pi sessions consistently in the list and details without changing identity: %s",
+    (sessionId) => {
+      state.items = [{ ...tool, appType: "pi", sessionId }];
+      render(<Harness />);
+      const row = screen.getByTestId("security-event-tool_risk:7");
+      const label = "pi_synthetic-pi-session";
+      expect(within(row).getByText(label)).toHaveAttribute("title", label);
+      fireEvent.click(row);
+      expect(
+        within(screen.getByRole("dialog")).getByText(label),
+      ).toBeInTheDocument();
+      expect(state.items[0].sessionId).toBe(sessionId);
+    },
+  );
+
   it("uses composite keys to select same-id sources, retains DLP grouping, and never claims tools were blocked", () => {
     render(<Harness />);
     expect(screen.getByTestId("security-event-dlp:7")).toHaveTextContent("7");

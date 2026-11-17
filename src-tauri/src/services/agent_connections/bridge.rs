@@ -19,6 +19,8 @@ pub(super) struct Outbox {
     configuration_changed: bool,
     #[serde(default)]
     model_write_failed: bool,
+    #[serde(default)]
+    replace_pending: bool,
 }
 impl Manager {
     pub(crate) fn bridge_for(
@@ -169,6 +171,10 @@ impl TraeBridge<'_> {
             && old
                 .as_ref()
                 .is_some_and(|o| o.enabled && o.delivered && !o.configuration_changed);
+        let replace_pending = enabled
+            && old
+                .as_ref()
+                .is_none_or(|outbox| !outbox.enabled || outbox.replace_pending);
         self.bridge_save(&Outbox {
             enabled,
             token: old.as_ref().map(|o| o.token.clone()).unwrap_or_else(|| {
@@ -183,6 +189,7 @@ impl TraeBridge<'_> {
             selection_pending: enabled && selected.is_some(),
             configuration_changed: false,
             model_write_failed: false,
+            replace_pending,
             model: selected.clone(),
         })?;
         self.manager
@@ -194,6 +201,7 @@ impl TraeBridge<'_> {
         outbox.delivered = false;
         outbox.configuration_changed = false;
         outbox.model_write_failed = false;
+        outbox.replace_pending = true;
         outbox.selection_pending = outbox.model.is_some();
         self.bridge_save(&outbox)
     }
@@ -203,12 +211,20 @@ impl TraeBridge<'_> {
         origin: &str,
         suspend: bool,
     ) -> Result<Option<Receipt>, String> {
+        let replace = self
+            .bridge_load()?
+            .is_some_and(|outbox| outbox.replace_pending);
         self.bridge_sync_with(
             menu,
             origin,
             suspend,
             |provider| {
-                self.client().apply(provider).map_err(|error| {
+                let applied = if replace {
+                    self.client().reapply(provider)
+                } else {
+                    self.client().apply(provider)
+                };
+                applied.map_err(|error| {
                     if matches!(
                         error,
                         crate::error::AppError::Localized {
@@ -271,7 +287,8 @@ impl TraeBridge<'_> {
             outbox.selection_pending = true;
         }
         let provider = Provider::with_id(ID.into(), "VaryAI".into(), config, None);
-        let unchanged = outbox.delivered
+        let unchanged = !outbox.replace_pending
+            && outbox.delivered
             && outbox
                 .provider
                 .as_ref()
@@ -325,6 +342,7 @@ impl TraeBridge<'_> {
             return Err(error);
         }
         outbox.model_write_failed = false;
+        outbox.replace_pending = false;
         // Catalog delivery remains usable when a native chat window cannot yet save its default.
         outbox.delivered = true;
         self.bridge_save(&outbox)?;
@@ -350,6 +368,36 @@ impl TraeBridge<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn both_trae_editions_persist_explicit_replacement_without_forcing_model_selection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::trae_bridge::shared::Edition;
+        let directory = tempfile::tempdir()?;
+        let owner = Manager {
+            root: directory.path().into(),
+        };
+        for edition in [Edition::China, Edition::International] {
+            let manager = owner.bridge_for(edition);
+            manager.bridge_select_model(true, Some("synthetic-model".into()))?;
+            let read = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+                Ok(serde_json::from_slice(&std::fs::read(
+                    manager.bridge_path(),
+                )?)?)
+            };
+            assert_eq!(read()?["replace_pending"], true);
+            let mut delivered = read()?;
+            delivered["replace_pending"] = false.into();
+            delivered["delivered"] = true.into();
+            std::fs::write(manager.bridge_path(), serde_json::to_vec(&delivered)?)?;
+            manager.bridge_select_model(true, Some("synthetic-second".into()))?;
+            assert_eq!(read()?["replace_pending"], false);
+            manager.bridge_retry()?;
+            assert_eq!(read()?["replace_pending"], true);
+            assert_eq!(read()?["delivered"], false);
+        }
+        Ok(())
+    }
+
     #[test]
     fn pending_delivery_does_not_require_restart_after_a_manual_reopen() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;

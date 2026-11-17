@@ -143,6 +143,11 @@ impl Client {
         self.request(&json!({"op":"apply","id":provider.id,"name":provider.name,"config":provider.settings_config}))?;
         Ok(())
     }
+    pub(crate) fn reapply(self, provider: &Provider) -> Result<(), AppError> {
+        super::super::agent_clients::validate(&provider.settings_config)?;
+        self.request(&json!({"op":"replace","id":provider.id,"name":provider.name,"config":provider.settings_config}))?;
+        Ok(())
+    }
     pub(crate) fn remove(self, id: &str) -> Result<(), AppError> {
         // A stopped client keeps the durable outbox until cleanup is acknowledged.
         self.request(&json!({"op":"remove","id":id}))?;

@@ -3,7 +3,7 @@ use super::*;
 
 pub(crate) const CONSENT: &str = "agentConnections.modelControlConsent";
 const UNAVAILABLE: &str = "agentConnections.modelControlUnavailable";
-const ADAPTER_REVISION: u32 = 2;
+const ADAPTER_REVISION: u32 = 3;
 
 pub(crate) fn supports(app: &str) -> bool {
     matches!(app, "workbuddy" | "workbuddy-ai" | "qoder")
@@ -193,7 +193,7 @@ mod tests {
         let manager = Manager {
             root: dir.path().into(),
         };
-        for (app, expected) in [("workbuddy", 2), ("workbuddy-ai", 2), ("qoder", 1)] {
+        for (app, expected) in [("workbuddy", 3), ("workbuddy-ai", 3), ("qoder", 1)] {
             let control = manager.control_dir(app)?;
             atomic_write_private(&control.join("consent.json"), br#"{"version":1}"#)
                 .map_err(|_| FAILED)?;

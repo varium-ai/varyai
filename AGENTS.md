@@ -15,6 +15,15 @@ Vary AI is a Tauri application using Rust, React, and TypeScript. The historical
 - Implement logic changes for both macOS and Windows in the same change, including any required platform-specific implementations, so behavior stays consistent across both platforms.
 - Write commit messages in English.
 
+## Mandatory Agent feature coverage
+
+- Every new or changed Agent-facing feature must cover every supported Agent, including desktop/CLI variants, domestic/international editions and each supported platform. The authoritative inventory includes `src/config/appConfig.tsx` and backend connection registries; do not audit only the Agents already registered in the feature being changed.
+- Before implementation, maintain an explicit per-Agent coverage matrix covering entry points, protocol/native adapters, runtime behavior, UI state and verification. Prefer shared implementation, but implement and verify required native adapters separately. Shared routing or protocol compatibility alone does not establish feature coverage.
+- For tool-call security, cover actual structured native calls through collection, identity/schema validation, risk evaluation, persistence, session correlation when supplied, and notification delivery. Ordinary chat text, a recognized tool name, a classifier unit test or successful provider routing alone does not establish end-to-end coverage.
+- Add regressions for every applicable Agent path, including enabled/disabled policy, malformed or unsupported input, request/response preservation and platform-specific behavior. Record native self-test results separately from synthetic tests; never report untested Agents as accepted.
+- Missing, partial and unverified implementations must remain explicit in the coverage matrix and delivery report. Do not mark a feature complete, claim all-Agent support or silently exclude an Agent until all applicable entries are implemented and verified. A narrower scope requires the user's explicit acceptance; technical difficulty is not an exclusion.
+- New Agents must be assessed against existing cross-Agent features in the same change. Update [Agent feature coverage](docs/qa/agent-feature-coverage.md), tests and applicable documentation with the implementation.
+
 ## Modules
 
 | Path                                | Responsibility                                                       |

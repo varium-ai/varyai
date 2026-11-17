@@ -5166,6 +5166,7 @@
     "sessionHint": "接続設定が完了しました。新しいセッションを開始して Vary のモデルを選択してください。",
     "verifyHint": "ツールからメッセージを送信し、統計で Vary を経由したリクエストを確認してください。設定の完了だけでは上流モデルの動作確認にはなりません。",
     "states": {
+      "modelControlPending": "モデル設定は未確認です · Vary AI から再起動して再試行できます",
       "codexProxyBlocked": "プロキシ経由のローカル確認に失敗 · 診断結果",
       "checking": "確認中…",
       "provider_missing": "プロバイダー定義がありません · 修復待ち",
@@ -5183,7 +5184,7 @@
       "inactive": "接続の再開が必要です",
       "orphaned": "接続の復元記録がありません",
       "bridgePending": "{{app}} への接続待ち · モデル同期または削除が未完了",
-      "bridgeModelRejected": "{{app}} のモデル書き込みに失敗 · クライアントが設定を拒否しました",
+      "bridgeModelRejected": "{{app}} のモデル設定が未完了です · 再接続して再試行してください",
       "bridgeSelectionPending": "{{app}} に接続済み · チャット画面の準備後に優先モデルを同期",
       "auditConnected": "公式セッションの監査が有効",
       "auditWaiting": "検査可能な公式セッション待ち",

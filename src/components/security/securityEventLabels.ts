@@ -3,6 +3,15 @@ import type { SecurityEvent } from "@/types/securityEvents";
 import { RISK_CATEGORIES, EVENT_REASON_CODES } from "@/types/toolRisk";
 import { getBuiltinRuleName } from "@/lib/securityRuleLocalization";
 
+export function securityEventSessionId(
+  event: Pick<SecurityEvent, "appType" | "sessionId">,
+): string | null {
+  if (!event.sessionId) return null;
+  return event.appType === "pi" && !event.sessionId.startsWith("pi_")
+    ? `pi_${event.sessionId}`
+    : event.sessionId;
+}
+
 export function securityEventRiskLabel(
   t: TFunction,
   level: string | null,
