@@ -268,11 +268,10 @@ pub(super) fn recover_codex(valid: impl Fn() -> bool) -> Result<(), String> {
 pub(super) fn supported(app: &str) -> bool {
     // Only apps with verified Windows process identity can restart here.
     // Other desktop agents keep macOS support via bundle identifiers.
-    match app {
-        "claude-desktop" | "codex" | "workbuddy" | "workbuddy-ai" | "qoder" | "trae"
-        | "trae-intl" => true,
-        _ => false,
-    }
+    matches!(
+        app,
+        "claude-desktop" | "codex" | "workbuddy" | "workbuddy-ai" | "qoder" | "trae" | "trae-intl"
+    )
 }
 #[cfg(target_os = "windows")]
 pub(super) fn running_executable(app: &str) -> Result<Option<std::path::PathBuf>, String> {
