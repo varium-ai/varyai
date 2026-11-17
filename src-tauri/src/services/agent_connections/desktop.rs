@@ -116,6 +116,7 @@ pub(crate) fn supports_restart(app: &str) -> bool {
     )
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn launch_arguments(app: &str) -> &'static [&'static str] {
     if app == "doubaowork" {
         &[
