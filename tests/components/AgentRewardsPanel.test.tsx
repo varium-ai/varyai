@@ -409,3 +409,40 @@ it("shows only account-scoped confirmed Qoder dates and does not backfill from c
     ).toBe(true),
   );
 });
+
+it.each(["native", "browser"] as const)(
+  "updates the current Qoder dot immediately after a %s claim without refreshing",
+  async (source) => {
+    const status: AgentRewardStatus = {
+      ...initial,
+      source,
+      rewardDay: "2026-11-17",
+      confirmedDates: ["2026-11-16"],
+    };
+    vi.mocked(agentRewardsApi.status).mockResolvedValue(status);
+    vi.mocked(agentRewardsApi.claim).mockResolvedValue({
+      ...status,
+      outcome: "claimed",
+      confirmedDates: ["2026-11-16", "2026-11-17"],
+    });
+    mount();
+    await screen.findByText("Synthetic account");
+    expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+      "data-state",
+      "unknown",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "agentRewards.claim" }));
+    await waitFor(() =>
+      expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+        "data-state",
+        "complete",
+      ),
+    );
+    expect(screen.getAllByRole("listitem")[5]).toHaveAttribute(
+      "data-state",
+      "complete",
+    );
+    expect(agentRewardsApi.status).toHaveBeenCalledOnce();
+    expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
+  },
+);

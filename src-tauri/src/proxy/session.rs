@@ -198,6 +198,98 @@ pub(crate) fn extract_client_session_id(
             }
         }
     }
+    if matches!(client_format, "opencode" | "hermes") {
+        let names: &[&str] = if client_format == "opencode" {
+            &[
+                "x-opencode-session-id",
+                "x-opencode-session",
+                "x-session-affinity",
+                "x-session-id",
+            ]
+        } else {
+            &[
+                "x-hermes-session-id",
+                "session_id",
+                "x-vary-hermes-session-id",
+            ]
+        };
+        for &name in names {
+            let mut values = headers.get_all(name).iter();
+            let Some(value) = values.next() else {
+                continue;
+            };
+            if values.next().is_some() {
+                return None;
+            }
+            let id = crate::proxy::tool_observation::types::normalized_session_id(Some(
+                value.to_str().ok()?,
+            ))?;
+            return Some(SessionIdResult {
+                session_id: id,
+                source: SessionIdSource::Header,
+                client_provided: true,
+            });
+        }
+    }
+    if client_format == "deepseek-harness" {
+        for name in [
+            "x-vary-harness-session-id",
+            "x-deepseek-harness-session-id",
+            "x-session-id",
+            "x-session-affinity",
+            "session_id",
+            "session-id",
+        ] {
+            let values = headers.get_all(name);
+            if values.iter().count() != 1 {
+                continue;
+            }
+            if let Some(id) = values
+                .iter()
+                .next()
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    crate::proxy::tool_observation::types::normalized_session_id(Some(value))
+                })
+            {
+                return Some(SessionIdResult {
+                    session_id: id,
+                    source: SessionIdSource::Header,
+                    client_provided: true,
+                });
+            }
+        }
+    }
+    if client_format == "t3code" {
+        for name in ["thread-id", "session-id", "session_id", "x-session-id"] {
+            let values = headers.get_all(name);
+            if values.iter().count() != 1 {
+                continue;
+            }
+            if let Some(id) = values
+                .iter()
+                .next()
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    crate::proxy::tool_observation::types::normalized_session_id(Some(value))
+                })
+            {
+                return Some(SessionIdResult {
+                    session_id: format!("t3code_{id}"),
+                    source: SessionIdSource::Header,
+                    client_provided: true,
+                });
+            }
+        }
+        let session = extract_from_metadata(body)?;
+        let id = crate::proxy::tool_observation::types::normalized_session_id(Some(
+            &session.session_id,
+        ))?;
+        return Some(SessionIdResult {
+            session_id: format!("t3code_{id}"),
+            ..session
+        });
+    }
     if client_format == "zcode" {
         if let Some(id) = headers
             .get("x-session-id")
@@ -917,6 +1009,257 @@ mod tests {
     }
 
     // ========== Session ID 提取测试 ==========
+
+    #[test]
+    fn trae_audit_prefixes_are_edition_scoped_and_idempotent() {
+        use crate::app_config::AppType;
+        for (app, expected, ids) in [
+            (
+                AppType::Trae,
+                "trae_cn_synthetic-session",
+                [
+                    "synthetic-session",
+                    "trae_synthetic-session",
+                    "trae_cn_synthetic-session",
+                ],
+            ),
+            (
+                AppType::TraeIntl,
+                "trae_synthetic-session",
+                [
+                    "synthetic-session",
+                    "trae-intl_synthetic-session",
+                    "trae_synthetic-session",
+                ],
+            ),
+        ] {
+            for id in ids {
+                let body = json!({"metadata":{"session_id":id}});
+                assert_eq!(
+                    crate::proxy::security::audit_session_id(&app, &HeaderMap::new(), &body)
+                        .as_deref(),
+                    Some(expected)
+                );
+            }
+            for invalid in ["", "has space", "x".repeat(257).as_str()] {
+                assert!(crate::proxy::security::audit_session_id(
+                    &app,
+                    &HeaderMap::new(),
+                    &json!({"metadata":{"session_id":invalid}})
+                )
+                .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn hermes_native_conversation_header_is_scoped_and_does_not_invent_sessions() {
+        use crate::app_config::AppType;
+        let body = json!({"metadata":{"session_id":"metadata-fallback"}});
+        for name in [
+            "x-hermes-session-id",
+            "session_id",
+            "x-vary-hermes-session-id",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, "synthetic-hermes-conversation".parse().unwrap());
+            let original = headers.clone();
+            let session = extract_client_session_id(&headers, &body, "hermes").unwrap();
+            assert_eq!(session.session_id, "synthetic-hermes-conversation");
+            assert_eq!(session.source, SessionIdSource::Header);
+            assert_eq!(
+                crate::proxy::security::audit_session_id(&AppType::Hermes, &headers, &body)
+                    .as_deref(),
+                Some("hermes_synthetic-hermes-conversation")
+            );
+            assert_eq!(headers, original);
+            headers.append(name, "synthetic-other-conversation".parse().unwrap());
+            assert!(extract_client_session_id(&headers, &body, "hermes").is_none());
+            for invalid in ["", "has space", "x".repeat(257).as_str()] {
+                headers.insert(name, invalid.parse().unwrap());
+                assert!(extract_client_session_id(&headers, &body, "hermes").is_none());
+            }
+        }
+        for name in ["x-vary-hermes-session-id", "x-hermes-session-id"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, "synthetic-hermes-conversation".parse().unwrap());
+            for app in AppType::all().filter(|app| *app != AppType::Hermes) {
+                assert!(
+                    crate::proxy::security::audit_session_id(&app, &headers, &json!({})).is_none(),
+                    "{app:?}"
+                );
+            }
+        }
+        assert_eq!(
+            crate::proxy::security::audit_session_id(&AppType::Hermes, &HeaderMap::new(), &body)
+                .as_deref(),
+            Some("hermes_metadata-fallback")
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("x-client-request-id", "synthetic-request".parse().unwrap());
+        headers.insert(
+            "x-hermes-session-token",
+            "synthetic-not-an-identity".parse().unwrap(),
+        );
+        assert!(extract_client_session_id(&headers, &json!({"prompt_cache_key":"synthetic-cache","previous_response_id":"synthetic-response"}), "hermes").is_none());
+    }
+
+    #[test]
+    fn opencode_native_headers_supply_bounded_prefixed_audit_identity() {
+        use crate::app_config::AppType;
+        let body = json!({"metadata":{"session_id":"metadata-fallback"}});
+        for name in [
+            "x-opencode-session-id",
+            "x-opencode-session",
+            "x-session-affinity",
+            "x-session-id",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, "ses_synthetic-session".parse().unwrap());
+            let original = headers.clone();
+            let id = extract_client_session_id(&headers, &body, "opencode").unwrap();
+            assert_eq!(id.session_id, "ses_synthetic-session");
+            assert_eq!(id.source, SessionIdSource::Header);
+            assert_eq!(
+                crate::proxy::security::audit_session_id(&AppType::OpenCode, &headers, &body)
+                    .as_deref(),
+                Some("opencode_ses_synthetic-session")
+            );
+            assert_eq!(headers, original);
+            headers.append(name, "ses_another-session".parse().unwrap());
+            assert!(extract_client_session_id(&headers, &body, "opencode").is_none());
+            for invalid in ["", "has space", "x".repeat(257).as_str()] {
+                headers.insert(name, invalid.parse().unwrap());
+                assert!(extract_client_session_id(&headers, &body, "opencode").is_none());
+            }
+        }
+        for name in ["x-opencode-session-id", "x-opencode-session"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, "ses_synthetic-session".parse().unwrap());
+            for app in AppType::all().filter(|app| *app != AppType::OpenCode) {
+                assert!(
+                    crate::proxy::security::audit_session_id(&app, &headers, &json!({})).is_none(),
+                    "{app:?}"
+                );
+            }
+        }
+        assert_eq!(
+            crate::proxy::security::audit_session_id(&AppType::OpenCode, &HeaderMap::new(), &body)
+                .as_deref(),
+            Some("opencode_metadata-fallback")
+        );
+        let mut headers = HeaderMap::new();
+        for name in [
+            "x-opencode-request",
+            "x-opencode-parent-session-id",
+            "x-parent-session-id",
+            "x-client-request-id",
+        ] {
+            headers.insert(name, "synthetic-non-session".parse().unwrap());
+        }
+        assert!(extract_client_session_id(&headers, &json!({"prompt_cache_key":"synthetic-cache", "previous_response_id":"synthetic-response"}), "opencode").is_none());
+        headers.insert(
+            "x-opencode-session-id",
+            "ses_native-session".parse().unwrap(),
+        );
+        headers.insert("x-session-id", "ses_affinity-fallback".parse().unwrap());
+        assert_eq!(
+            extract_client_session_id(&headers, &body, "opencode")
+                .unwrap()
+                .session_id,
+            "ses_native-session"
+        );
+    }
+
+    #[test]
+    fn harness_native_session_headers_are_validated_without_using_request_or_cache_ids() {
+        for name in [
+            "x-vary-harness-session-id",
+            "x-deepseek-harness-session-id",
+            "x-session-id",
+            "x-session-affinity",
+            "session_id",
+            "session-id",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, "synthetic-harness-session".parse().unwrap());
+            let original = headers.clone();
+            let result =
+                extract_client_session_id(&headers, &json!({}), "deepseek-harness").unwrap();
+            assert_eq!(result.session_id, "synthetic-harness-session");
+            assert_eq!(result.source, SessionIdSource::Header);
+            assert_eq!(
+                crate::proxy::security::audit_session_id(
+                    &crate::app_config::AppType::DeepSeekHarness,
+                    &headers,
+                    &json!({})
+                )
+                .as_deref(),
+                Some("deepseek-harness_synthetic-harness-session")
+            );
+            assert_eq!(headers, original);
+            assert_eq!(
+                extract_client_session_id(&headers, &json!({}), "hermes")
+                    .map(|result| result.session_id),
+                (name == "session_id").then(|| "synthetic-harness-session".to_owned())
+            );
+            for invalid in ["", "has space", "x".repeat(257).as_str()] {
+                headers.insert(name, invalid.parse().unwrap());
+                assert!(
+                    extract_client_session_id(&headers, &json!({}), "deepseek-harness").is_none()
+                );
+            }
+            headers.insert(name, "one".parse().unwrap());
+            headers.append(name, "two".parse().unwrap());
+            assert!(extract_client_session_id(&headers, &json!({}), "deepseek-harness").is_none());
+        }
+        let headers = HeaderMap::from_iter([
+            (
+                http::header::HeaderName::from_static("x-request-id"),
+                "synthetic-request".parse().unwrap(),
+            ),
+            (
+                http::header::HeaderName::from_static("x-client-request-id"),
+                "synthetic-client-request".parse().unwrap(),
+            ),
+        ]);
+        assert!(extract_client_session_id(
+            &headers,
+            &json!({"prompt_cache_key":"synthetic-cache","request_id":"synthetic-request"}),
+            "deepseek-harness"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn t3code_retains_native_codex_thread_identity_without_claiming_request_ids() {
+        for name in ["thread-id", "session-id", "session_id", "x-session-id"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, "synthetic-t3-thread".parse().unwrap());
+            let original = headers.clone();
+            let id = crate::proxy::security::audit_session_id(
+                &crate::app_config::AppType::T3Code,
+                &headers,
+                &json!({}),
+            );
+            assert_eq!(id.as_deref(), Some("t3code_synthetic-t3-thread"));
+            assert_eq!(headers, original);
+            headers.append(name, "synthetic-second-thread".parse().unwrap());
+            assert!(extract_client_session_id(&headers, &json!({}), "t3code").is_none());
+        }
+        let body = json!({"metadata":{"session_id":"synthetic-t3-session"}});
+        assert_eq!(
+            extract_client_session_id(&HeaderMap::new(), &body, "t3code")
+                .unwrap()
+                .session_id,
+            "t3code_synthetic-t3-session"
+        );
+        let headers = HeaderMap::from_iter([(
+            http::header::HeaderName::from_static("x-client-request-id"),
+            "synthetic-request".parse().unwrap(),
+        )]);
+        assert!(extract_client_session_id(&headers, &json!({"prompt_cache_key":"synthetic-cache","previous_response_id":"synthetic-response"}), "t3code").is_none());
+    }
 
     #[test]
     fn zcode_native_header_is_stable_and_missing_identity_stays_unknown() {

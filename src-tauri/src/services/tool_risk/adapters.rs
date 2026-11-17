@@ -15,6 +15,16 @@ pub const WORKBUDDY_AI_TOOLS_SCHEMA: &str = "builtin:workbuddy-ai:tools:v1";
 pub const QODER_TOOLS_SCHEMA: &str = "builtin:qoder:tools:v1";
 pub const KIMI_TOOLS_SCHEMA: &str = "builtin:kimi:tools:v1";
 pub const QWEN_TOOLS_SCHEMA: &str = "builtin:qwen:tools:v1";
+pub const ZCODE_TOOLS_SCHEMA: &str = "builtin:zcode:tools:v1";
+pub const HARNESS_TOOLS_SCHEMA: &str = "builtin:deepseek-harness:tools:v1";
+pub const T3_TOOLS_SCHEMA: &str = "builtin:t3code:tools:v1";
+pub const OPENCODE_TOOLS_SCHEMA: &str = "builtin:opencode:tools:v1";
+pub const OPENCLAW_TOOLS_SCHEMA: &str = "builtin:openclaw:tools:v1";
+pub const HERMES_TOOLS_SCHEMA: &str = "builtin:hermes:tools:v1";
+pub const GROKBUILD_TOOLS_SCHEMA: &str = "builtin:grokbuild:tools:v1";
+pub const TRAE_TOOLS_SCHEMA: &str = "builtin:trae:tools:v1";
+pub const TRAE_INTL_TOOLS_SCHEMA: &str = "builtin:trae-intl:tools:v1";
+pub const DOUBAO_TOOLS_SCHEMA: &str = "builtin:doubaowork:tools:v1";
 pub const OPENAI_TOOLS_SCHEMA: &str = "builtin:openai:tools:v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +152,16 @@ fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
         "qoder" => QODER_TOOLS_SCHEMA,
         "kimi" => KIMI_TOOLS_SCHEMA,
         "qwen" => QWEN_TOOLS_SCHEMA,
+        "zcode" => ZCODE_TOOLS_SCHEMA,
+        "deepseek-harness" => HARNESS_TOOLS_SCHEMA,
+        "t3code" => T3_TOOLS_SCHEMA,
+        "opencode" => OPENCODE_TOOLS_SCHEMA,
+        "openclaw" => OPENCLAW_TOOLS_SCHEMA,
+        "hermes" => HERMES_TOOLS_SCHEMA,
+        "grokbuild" => GROKBUILD_TOOLS_SCHEMA,
+        "trae" => TRAE_TOOLS_SCHEMA,
+        "trae-intl" => TRAE_INTL_TOOLS_SCHEMA,
+        "doubaowork" => DOUBAO_TOOLS_SCHEMA,
         _ => return None,
     };
     if obs.tool.definition_ref.as_deref() != Some(schema) {
@@ -149,6 +169,18 @@ fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
     }
     match (client, obs.tool.name.as_str()) {
         ("pi", "bash") => Some(Adapter::Shell("command")),
+        ("zcode", "Bash")
+        | ("deepseek-harness", "bash")
+        | ("opencode", "bash" | "shell")
+        | ("openclaw", "exec")
+        | ("hermes", "terminal")
+        | ("grokbuild", "run_terminal_command" | "run_terminal_cmd" | "Shell") => {
+            Some(Adapter::Shell("command"))
+        }
+        ("t3code", "exec_command") => Some(Adapter::Shell("cmd")),
+        ("t3code", "shell_command") => Some(Adapter::Shell("command")),
+        ("trae" | "trae-intl", "RunCommand") => Some(Adapter::Shell("command")),
+        ("doubaowork", "Bash") => Some(Adapter::Shell("command")),
         ("kimi", "Shell") | ("qwen", "run_shell_command") => Some(Adapter::Shell("command")),
         ("workbuddy" | "workbuddy-ai" | "qoder", "Bash") => Some(Adapter::Shell("command")),
         ("pi", "read") => Some(Adapter::Read("path")),

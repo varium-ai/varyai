@@ -15,11 +15,11 @@ it("keeps every feature coverage matrix aligned with the full Agent inventory", 
   ]);
   const matrices = ledger
     .split(/^## /m)
-    .filter((section) => section.includes("| Agent ID |"));
+    .filter((section) => /\|\s*Agent ID\s*\|/.test(section));
   expect(matrices.length).toBeGreaterThan(0);
   for (const matrix of matrices) {
     const rows = Array.from(
-      matrix.matchAll(/^\| `([^`]+)` \|/gm),
+      matrix.matchAll(/^\|\s*`([^`]+)`\s*\|/gm),
       ([, id]) => id,
     );
     expect(rows.sort(), matrix.split("\n")[0]).toEqual([...inventory].sort());

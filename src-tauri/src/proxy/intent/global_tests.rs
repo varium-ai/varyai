@@ -2802,6 +2802,9 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
     let upstream = tokio::spawn(async move {
         axum::serve(listener, Router::new().route("/v1/chat/completions", post(|headers: http::HeaderMap, Json(body): Json<Value>| async move {
             assert!(!headers.contains_key("x-vary-pi-session-id"));
+            assert!(!headers.contains_key("x-vary-harness-session-id"));
+            assert!(!headers.contains_key("x-opencode-session-id"));
+            assert!(!headers.contains_key("x-vary-hermes-session-id"));
             let name = body["tools"][0]["function"]["name"].as_str().unwrap_or_default();
             let field = if name == "exec_command" { "cmd" } else { "command" };
             let arguments = json!({field:body["messages"][0]["content"]}).to_string();
@@ -2831,7 +2834,21 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
     session.targets[0].upstream = Some(provider);
     runtime.set_menu(Arc::new(published.clone()))?;
     runtime.set_global(published, 0)?;
-    for app in ["pi", "workbuddy", "workbuddy-ai", "qoder", "kimi", "qwen"] {
+    for app in [
+        "pi",
+        "workbuddy",
+        "workbuddy-ai",
+        "qoder",
+        "kimi",
+        "qwen",
+        "zcode",
+        "deepseek-harness",
+        "t3code",
+        "opencode",
+        "openclaw",
+        "hermes",
+        "grokbuild",
+    ] {
         runtime
             .connections
             .install(&crate::services::agent_connections::Receipt {
@@ -2866,6 +2883,62 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
             "qwen_synthetic-client-session",
         ),
         ("qoder", "Bash", "command", "qoder_synthetic-client-session"),
+        ("zcode", "Bash", "command", "zcode_synthetic-client-session"),
+        (
+            "deepseek-harness",
+            "bash",
+            "command",
+            "deepseek-harness_synthetic-client-session",
+        ),
+        (
+            "t3code",
+            "exec_command",
+            "cmd",
+            "t3code_synthetic-client-session",
+        ),
+        (
+            "t3code",
+            "shell_command",
+            "command",
+            "t3code_synthetic-client-session",
+        ),
+        (
+            "opencode",
+            "shell",
+            "command",
+            "opencode_synthetic-client-session",
+        ),
+        (
+            "opencode",
+            "bash",
+            "command",
+            "opencode_synthetic-client-session",
+        ),
+        ("openclaw", "exec", "command", "synthetic-client-session"),
+        (
+            "hermes",
+            "terminal",
+            "command",
+            "hermes_synthetic-client-session",
+        ),
+        (
+            "grokbuild",
+            "run_terminal_command",
+            "command",
+            "grokbuild_synthetic-client-session",
+        ),
+        (
+            "grokbuild",
+            "run_terminal_cmd",
+            "command",
+            "grokbuild_synthetic-client-session",
+        ),
+        (
+            "grokbuild",
+            "Shell",
+            "command",
+            "grokbuild_synthetic-client-session",
+        ),
         (
             "workbuddy",
             "Bash",
@@ -2911,7 +2984,8 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
         ] {
             let parameters =
                 json!({"type":"object","properties":{field:{"type":"string"}},"required":[field]});
-            let (endpoint, token, mut request) = if app != "codex" {
+            let (endpoint, token, mut request) = if !matches!(app, "codex" | "t3code" | "grokbuild")
+            {
                 (
                     format!("/connections/{app}/v1/chat/completions"),
                     format!("synthetic-{app}"),
@@ -2922,8 +2996,16 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
                 )
             } else {
                 (
-                    "/intent/v1/responses".into(),
-                    "synthetic-local-token".into(),
+                    if app == "codex" {
+                        "/intent/v1/responses".into()
+                    } else {
+                        format!("/connections/{app}/v1/responses")
+                    },
+                    if app == "codex" {
+                        "synthetic-local-token".into()
+                    } else {
+                        format!("synthetic-{app}")
+                    },
                     json!({
                         "model":group().alias(),"metadata":{"session_id":client_session},"input":[{"role":"user","content":command}],
                         "tools":[{"type":"function","name":name,"parameters":parameters}]
@@ -2939,13 +3021,25 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
             let mut call = client
                 .post(format!("http://127.0.0.1:{}{endpoint}", info.port))
                 .bearer_auth(token);
-            if app == "pi" {
+            if matches!(
+                app,
+                "pi" | "deepseek-harness" | "t3code" | "opencode" | "hermes"
+            ) {
                 request
                     .as_object_mut()
                     .ok_or("invalid synthetic request")?
                     .remove("metadata");
                 if let Some(id) = client_session {
-                    call = call.header("x-vary-pi-session-id", id);
+                    call = call.header(
+                        match app {
+                            "pi" => "x-vary-pi-session-id",
+                            "t3code" => "thread-id",
+                            "opencode" => "x-opencode-session-id",
+                            "hermes" => "x-vary-hermes-session-id",
+                            _ => "x-vary-harness-session-id",
+                        },
+                        id,
+                    );
                 }
             }
             let response = call.json(&request).send().await?;
@@ -2957,7 +3051,7 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
                 "{app}: missing successful synthetic reply"
             );
             let reply: Value = serde_json::from_slice(&body)?;
-            assert!(if app != "codex" {
+            assert!(if !matches!(app, "codex" | "t3code" | "grokbuild") {
                 reply["choices"][0]["message"]["tool_calls"].is_array()
             } else {
                 reply["output"].is_array()

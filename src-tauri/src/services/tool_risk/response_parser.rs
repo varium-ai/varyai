@@ -102,6 +102,10 @@ impl ResponseProcessor {
             state.release_reservation();
             return result;
         }
+        if let Some(observation) = &piece.native {
+            state.release_reservation();
+            return vec![observation.clone()];
+        }
         if state.metadata.transport == Transport::Json {
             let Ok(body) = serde_json::from_slice(&piece.bytes) else {
                 log_fault(state, "invalid_json", piece.sequence, 0);

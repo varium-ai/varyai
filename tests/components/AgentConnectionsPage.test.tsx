@@ -2410,8 +2410,8 @@ describe("Agent connections", () => {
       "agentConnections.states.recovery",
     );
     expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
     expect(
       within(row).getByRole("button", { name: "agentConnections.reapply" }),
     ).toBeEnabled();
@@ -2463,15 +2463,15 @@ describe("Agent connections", () => {
       within(row).getByRole("button", { name: "agentConnections.reapply" }),
     ).toBeEnabled();
     expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
     expect(within(row).getByRole("status")).toHaveTextContent(
       "agentConnections.states.recovery",
     );
   });
 
   it.each([false, true])(
-    "keeps normal TRAE bridge waiting free of repair actions (compact: %s)",
+    "keeps TRAE bridge waiting free of reapply while honoring required restarts (compact: %s)",
     async (compact) => {
       const client = new QueryClient({
         defaultOptions: { queries: { retry: false } },
@@ -2513,10 +2513,10 @@ describe("Agent connections", () => {
           }),
         ).not.toBeInTheDocument();
         expect(
-          within(row).queryByRole("button", {
+          within(row).getByRole("button", {
             name: "agentConnections.restart",
           }),
-        ).not.toBeInTheDocument();
+        ).toBeEnabled();
       }
       expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
       expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
@@ -2575,8 +2575,8 @@ describe("Agent connections", () => {
       within(row).getByRole("button", { name: "agentConnections.reapply" }),
     ).toBeEnabled();
     expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
   });
 
   it.each(["trae", "claude-desktop", "workbuddy", "codex"] as const)(
@@ -3650,7 +3650,7 @@ describe("Agent connections", () => {
   });
 
   it.each([false, true])(
-    "offers the explicit Doubao audit launcher and explains a running client (compact: %s)",
+    "offers the explicit Doubao audit launcher for opening or restarting (compact: %s)",
     async (compact) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
         doubaowork: true,
@@ -3665,9 +3665,6 @@ describe("Agent connections", () => {
           restartRequired: false,
         },
       ]);
-      vi.mocked(proxyApi.launchDoubaoWorkForAudit).mockRejectedValueOnce(
-        "homeAudit.doubaoQuitFirst",
-      );
       mount(compact);
       const row = await screen.findByRole("article", {
         name: "apps.doubaowork",
@@ -3687,9 +3684,9 @@ describe("Agent connections", () => {
       await waitFor(() =>
         expect(proxyApi.launchDoubaoWorkForAudit).toHaveBeenCalledOnce(),
       );
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "homeAudit.doubaoQuitFirst",
-      );
+      expect(
+        screen.queryByText("homeAudit.doubaoQuitFirst"),
+      ).not.toBeInTheDocument();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
     },
   );
@@ -4047,7 +4044,7 @@ describe("Agent connections", () => {
       const row = await screen.findByRole("article", { name: "apps.codex" });
       await waitFor(() =>
         expect(within(row).getByRole("status")).toHaveTextContent(
-          "agentConnections.states.configured",
+          "agentConnections.states.restartRequired",
         ),
       );
       expect(
@@ -5487,6 +5484,35 @@ it.each([
         name: "agentConnections.restart",
       }),
     ).toHaveLength(canRefresh ? 1 : 0);
+    expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+  },
+);
+
+it.each(APP_IDS)(
+  "honors the backend restart requirement for %s even during recovery",
+  async (app) => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      [app]: true,
+    } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app,
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        restartRequired: true,
+        desktopState: "unknown",
+        model: "vary-auto/shared",
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: `apps.${app}` });
+    expect(
+      await within(row).findByRole("button", {
+        name: "agentConnections.restart",
+      }),
+    ).toBeEnabled();
     expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
   },
 );

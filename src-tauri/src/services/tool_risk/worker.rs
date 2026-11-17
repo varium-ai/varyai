@@ -82,7 +82,9 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
         client_category: obs.tool.client.as_deref().and_then(|client| match client {
             "claude" | "claude_code" => Some("claude".into()),
             "claude-desktop" | "codex" | "gemini" | "openai" | "grokbuild" | "pi" | "workbuddy"
-            | "workbuddy-ai" | "qoder" | "kimi" | "qwen" => Some(client.into()),
+            | "workbuddy-ai" | "qoder" | "kimi" | "qwen" | "zcode" | "deepseek-harness"
+            | "t3code" | "opencode" | "openclaw" | "hermes" | "trae" | "trae-intl"
+            | "doubaowork" => Some(client.into()),
             _ => None,
         }),
         operation_category: decision
@@ -816,6 +818,31 @@ mod tests {
             ("qoder", "Bash", "builtin:qoder:tools:v1"),
             ("kimi", "Shell", "builtin:kimi:tools:v1"),
             ("qwen", "run_shell_command", "builtin:qwen:tools:v1"),
+            ("zcode", "Bash", "builtin:zcode:tools:v1"),
+            (
+                "deepseek-harness",
+                "bash",
+                "builtin:deepseek-harness:tools:v1",
+            ),
+            ("t3code", "shell_command", "builtin:t3code:tools:v1"),
+            ("opencode", "shell", "builtin:opencode:tools:v1"),
+            ("opencode", "bash", "builtin:opencode:tools:v1"),
+            ("openclaw", "exec", "builtin:openclaw:tools:v1"),
+            ("hermes", "terminal", "builtin:hermes:tools:v1"),
+            (
+                "grokbuild",
+                "run_terminal_command",
+                "builtin:grokbuild:tools:v1",
+            ),
+            (
+                "grokbuild",
+                "run_terminal_cmd",
+                "builtin:grokbuild:tools:v1",
+            ),
+            ("grokbuild", "Shell", "builtin:grokbuild:tools:v1"),
+            ("trae", "RunCommand", "builtin:trae:tools:v1"),
+            ("trae-intl", "RunCommand", "builtin:trae-intl:tools:v1"),
+            ("doubaowork", "Bash", "builtin:doubaowork:tools:v1"),
         ] {
             let mut observation = obs(
                 tool,

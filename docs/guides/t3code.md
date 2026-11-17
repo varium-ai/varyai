@@ -18,6 +18,13 @@ instance, and restores only owned fields when disconnected. Older `providers`
 schemas require migration in T3 Code first. This version adds the Codex harness;
 it does not add a second Claude harness instance.
 
+VaryAI offers **Restart** when a running desktop instance predates its managed
+configuration. The action quits and reopens the verified T3 Code application,
+or opens it if already stopped. macOS uses its bundle identity; Windows uses
+the standard per-user or Program Files installation paths, including Alpha
+and Beta editions. Restarting does not migrate existing threads to another
+provider or model.
+
 This integration does not implement VaryAI's legacy per-provider configuration,
 MCP/Skills synchronization or profile bundles. Installation detection and
 version inspection do not launch or install any application.

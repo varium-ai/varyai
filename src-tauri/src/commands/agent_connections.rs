@@ -500,11 +500,15 @@ async fn restart_confirmed_agent(
 
 #[tauri::command]
 pub(crate) async fn restart_agent_connection(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     app: String,
     confirmed: bool,
 ) -> Result<(), String> {
     validate_restart_request(&app, confirmed)?;
+    if app == "doubaowork" {
+        return super::proxy::launch_doubao_work_for_audit(app_handle, state).await;
+    }
     let _guard = state.proxy_service.lock_switch_for_app(&app).await;
     if let Some(edition) = Edition::parse(&app) {
         let manager = state.proxy_service.agent_connections.clone();
@@ -513,12 +517,6 @@ pub(crate) async fn restart_agent_connection(
         })
         .await
         .map_err(|_| FAILED)?;
-    }
-    if app == "doubaowork" {
-        let manager = state.proxy_service.agent_connections.clone();
-        return tokio::task::spawn_blocking(move || manager.restart_doubaowork_desktop())
-            .await
-            .map_err(|_| FAILED)?;
     }
     if matches!(app.as_str(), "codex" | "workbuddy" | "workbuddy-ai") {
         let manager = state.proxy_service.agent_connections.clone();

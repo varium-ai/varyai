@@ -567,3 +567,76 @@ test("Qoder confirms the campaign date, not the observation date, only for daily
     undefined,
   );
 });
+
+test("Qoder records confirmed daily windows ending in the last minute before 10:00", async () => {
+  for (const endOffset of [0, 1, 1000, 60000]) {
+    for (const claim of [false, true]) {
+      const daily = {
+        ...campaign,
+        claimStatus: claim ? "CLAIMABLE" : "CLAIMED",
+        endAt: campaign.endAt - endOffset,
+      };
+      const requests = [];
+      const result = await qoderCampaigns(
+        async (route, method) => {
+          requests.push({ route, method });
+          return method === "POST"
+            ? { status: "CLAIMED", benefit: { amount: 123 } }
+            : { campaigns: [daily] };
+        },
+        claim,
+        now,
+      );
+      assert.equal(result.outcome, claim ? "claimed" : "already_checked");
+      assert.equal(result.rewardDay, "2026-11-05");
+      assert.equal(result.until, daily.endAt);
+      assert.equal(result.credit, claim ? 123 : 100);
+      assert.deepEqual(
+        requests.map(({ method }) => method),
+        claim ? ["GET", "POST"] : ["GET"],
+      );
+    }
+  }
+});
+
+test("Qoder does not date unconfirmed, shifted, shortened or mixed campaign windows", async () => {
+  const daily = { ...campaign, endAt: campaign.endAt - 60000 };
+  for (const value of [
+    { ...daily, claimStatus: "CLAIMABLE" },
+    { ...daily, claimStatus: "CLAIMED", startAt: daily.startAt + 1 },
+    { ...daily, claimStatus: "CLAIMED", endAt: daily.endAt - 1 },
+    { ...daily, claimStatus: "CLAIMED", endAt: campaign.endAt + 1 },
+    { ...daily, claimStatus: "CLAIMED", startAt: daily.startAt - 86400000 },
+  ]) {
+    const result = await qoderCampaigns(
+      async () => ({ campaigns: [value] }),
+      false,
+      now,
+    );
+    assert.equal(result.rewardDay, undefined);
+  }
+  const mixed = await qoderCampaigns(
+    async () => ({
+      campaigns: [
+        { ...daily, claimStatus: "CLAIMED" },
+        {
+          ...daily,
+          campaignId: "synthetic-longer",
+          claimStatus: "CLAIMED",
+          startAt: daily.startAt - 86400000,
+        },
+      ],
+    }),
+    false,
+    now,
+  );
+  assert.equal(mixed.rewardDay, undefined);
+  const failed = await qoderCampaigns(
+    async (_, method) =>
+      method === "POST" ? { status: "FAILED" } : { campaigns: [daily] },
+    true,
+    now,
+  );
+  assert.equal(failed.outcome, "failed");
+  assert.equal(failed.rewardDay, undefined);
+});

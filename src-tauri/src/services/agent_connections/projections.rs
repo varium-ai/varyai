@@ -212,6 +212,7 @@ fn edit(
     token: &str,
     selected: &str,
 ) -> Result<FileEdit, String> {
+    let harness_profile = path.clone();
     let format = match app {
         "gemini" => Format::Env,
         "grokbuild" | "kimi" => Format::Toml,
@@ -381,6 +382,7 @@ fn edit(
                         row["extra_headers"] = json!({});
                     }
                     row["extra_headers"]["User-Agent"] = json!("hermes-agent");
+                    row["session_affinity_header"] = json!("x-vary-hermes-session-id");
                     row["models"] = json!(catalog
                         .iter()
                         .filter(|model| !split
@@ -424,6 +426,7 @@ fn edit(
                     crate::services::deepseek_harness::project(
                         value, catalog, base, token, selected,
                     )?;
+                    crate::services::deepseek_harness::session::configure(value, &harness_profile)?;
                     return Ok(());
                 }
                 let source = if app == "kimi" {
@@ -804,6 +807,12 @@ mod tests {
             "anthropic_messages"
         );
         assert_eq!(hermes.installed["model"]["provider"], "varyai-anthropic");
+        for id in ["varyai", "varyai-anthropic"] {
+            assert_eq!(
+                hermes.installed["providers"][id]["session_affinity_header"],
+                "x-vary-hermes-session-id"
+            );
+        }
         assert!(hermes.installed.get("custom_providers").is_none());
         let kimi = edit(
             "kimi",
@@ -1030,6 +1039,26 @@ mod tests {
         let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
         assert!(live.starts_with(original));
         let doc = crate::services::deepseek_harness::parse(&live)?;
+        let helper = crate::services::deepseek_harness::session::path(&path);
+        assert_eq!(
+            doc["sessionHeader"],
+            crate::services::deepseek_harness::session::entry(&path)?
+        );
+        assert_eq!(
+            std::fs::read_to_string(&helper).map_err(|_| FAILED)?,
+            crate::services::deepseek_harness::session::SOURCE
+        );
+        std::fs::remove_file(&helper).map_err(|_| FAILED)?;
+        projection.ensure_harness_session_helper()?;
+        assert!(helper.is_file());
+        std::fs::write(&helper, "synthetic externally edited module").map_err(|_| FAILED)?;
+        assert!(projection.ensure_harness_session_helper().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&helper).map_err(|_| FAILED)?,
+            "synthetic externally edited module"
+        );
+        // Clean the conflict fixture before the independent projection round trips below.
+        std::fs::remove_file(&helper).map_err(|_| FAILED)?;
         assert!(
             live.contains("id: agent-default-model"),
             "the chosen starting model reaches Harness"
@@ -1393,7 +1422,7 @@ mod tests {
             let original = match app {
                 "gemini" => "# keep\nTHEME=light\n",
                 "grokbuild" | "kimi" => "# keep\ntheme='light'\n",
-                "hermes" => "# keep\ntheme: light\n",
+                "hermes" => "# keep\ntheme: light\nproviders:\n  native:\n    base_url: https://synthetic.invalid/v1\n    session_affinity_header: x-native-conversation\n  varyai:\n    session_affinity_header: x-previous-affinity\n    extra_headers: {X-Synthetic: keep}\n",
                 _ => "{\"theme\":\"light\"}",
             };
             std::fs::write(&path, original).map_err(|_| FAILED)?;
@@ -1413,6 +1442,20 @@ mod tests {
             assert!(projection.intact()?, "{app}");
             let installed = &projection.installed;
             match app {
+                "hermes" => {
+                    assert_eq!(
+                        installed["providers"]["varyai"]["session_affinity_header"],
+                        "x-vary-hermes-session-id"
+                    );
+                    assert_eq!(
+                        installed["providers"]["native"]["session_affinity_header"],
+                        "x-native-conversation"
+                    );
+                    assert_eq!(
+                        installed["providers"]["varyai"]["extra_headers"]["X-Synthetic"],
+                        "keep"
+                    );
+                }
                 "grokbuild" => assert_eq!(
                     installed["model"][&catalog[0].name]["reasoning_efforts"],
                     json!(["none", "low", "high"])

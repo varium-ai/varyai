@@ -1692,6 +1692,28 @@ impl ProxyService {
     }
 
     pub(crate) async fn refresh_trae_takeover(&self) {
+        // Native pre-execution observation is independent of text DLP and model routing.
+        // Automatic native configuration never touches real clients during unit tests.
+        if !cfg!(test) {
+            use super::trae_bridge::shared::Edition;
+            let origin =
+                if self.is_running().await && super::tool_risk::runtime::collection_enabled() {
+                    self.build_proxy_urls().await.ok().map(|(origin, _)| origin)
+                } else {
+                    None
+                };
+            for edition in [Edition::China, Edition::International] {
+                let origin = origin.clone().filter(|_| {
+                    self.db
+                        .get_bool_flag(edition.consent_key())
+                        .unwrap_or(false)
+                });
+                let _ = tokio::task::spawn_blocking(move || {
+                    super::trae_bridge::tool_risk::sync(edition, origin.as_deref())
+                })
+                .await;
+            }
+        }
         // Reconnect existing desktops outside catalog switch locks. Route edits
         // must not wait for helper injection or rewrite client launch settings.
         if self.is_running().await {
@@ -6706,7 +6728,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":18,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":19,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {

@@ -7,6 +7,7 @@
 
 pub mod channel;
 pub mod mount;
+pub(crate) mod native;
 pub mod parsers;
 pub mod stream;
 pub mod types;

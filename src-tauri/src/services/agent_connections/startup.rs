@@ -35,6 +35,18 @@ pub(super) fn changed(before: &Receipt, after: &Receipt) -> bool {
     false
 }
 
+pub(super) fn resumed_applied_at(
+    before: &Receipt,
+    after: &Receipt,
+    reopened: Option<bool>,
+) -> Option<i64> {
+    if reopened == Some(false) && !changed(before, after) {
+        before.applied_at_ms
+    } else {
+        after.applied_at_ms
+    }
+}
+
 pub(super) fn restoration_changed(receipt: &Receipt) -> Result<bool, String> {
     let mut restored = receipt.clone();
     for file in &mut restored.files {
@@ -187,6 +199,36 @@ mod tests {
             assert!(!changed(&before, &after), "{app}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn resuming_identical_configuration_keeps_its_age_but_reopened_clients_need_loading() {
+        for app in APPS.iter().filter(|app| **app != "codex") {
+            let mut before = receipt(app, config());
+            before.suspended = true;
+            let mut after = before.clone();
+            after.suspended = false;
+            after.applied_at_ms = Some(9000);
+            assert_eq!(
+                resumed_applied_at(&before, &after, Some(false)),
+                Some(1000),
+                "{app}"
+            );
+            for reopened in [Some(true), None] {
+                assert_eq!(
+                    resumed_applied_at(&before, &after, reopened),
+                    Some(9000),
+                    "{app}"
+                );
+            }
+            after.files[0].installed["providers"]["varyai"]["apiKey"] =
+                json!("synthetic-replacement");
+            assert_eq!(
+                resumed_applied_at(&before, &after, Some(false)),
+                Some(9000),
+                "{app}"
+            );
+        }
     }
     #[test]
     fn catalog_presentation_and_order_do_not_require_reopening() -> Result<(), String> {

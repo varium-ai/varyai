@@ -658,11 +658,10 @@ export function AgentConnectionsPage({
         state?.reloadState === "waiting_for_idle");
     const canRestart =
       !!state &&
-      (desktopRestart || codexReloadRestart || !!modelControl?.pending) &&
-      // A pending TRAE bridge can require a running client to reload launch settings.
-      // Configuration drift must be repaired before restarting other clients.
-      (!state.recoveryPending ||
-        (isTrae(app) && state.recoveryReason === "bridge_pending"));
+      (state.restartRequired ||
+        desktopRestart ||
+        codexReloadRestart ||
+        !!modelControl?.pending);
     const native = nativeQuery.data;
     const nativeAvailable = native?.available && !nativeQuery.isError;
     const nativeModel =

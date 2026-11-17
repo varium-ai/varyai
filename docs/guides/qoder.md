@@ -2,6 +2,14 @@
 
 VaryAI maintains selectable official and API-key provider configurations for the supported installed Qoder CN client. Saving a spare configuration does not itself establish that takeover has been enabled or that the client has reloaded it.
 
+The reward calendar marks only account-scoped confirmed daily campaigns. A daily
+window starts at 10:00 UTC+8 and may end in the last minute before the next
+10:00 boundary. After a successful claim or status refresh, its date is retained
+locally and the corresponding dot updates immediately. Other campaign lengths
+and unknown history do not establish a checked date. Native and browser accounts
+use the same date recognition; protected native credentials still require an
+explicit read through Manage accounts.
+
 For shared connections, the native model menu uses the current model display name
 and configured supplier name. Routing groups retain their group display name.
 Refreshing the catalog updates those labels while preserving established request

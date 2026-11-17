@@ -584,7 +584,26 @@ impl FileEdit {
                 .as_deref()
                 .is_some_and(|text| jsonc::parse(text).is_err())
     }
+    fn ensure_harness_session_helper(&self) -> Result<(), String> {
+        use super::deepseek_harness::session;
+        if !matches!(self.format, Format::Cordis) || self.installed.get("sessionHeader").is_none() {
+            return Ok(());
+        }
+        if self.installed["sessionHeader"] != session::entry(&self.path)? {
+            return Err(CONFLICT.into());
+        }
+        let path = session::path(&self.path);
+        let original = read(&path)?;
+        if original
+            .as_deref()
+            .is_some_and(|source| source != session::SOURCE)
+        {
+            return Err(CONFLICT.into());
+        }
+        replace_checked(&path, original.as_deref(), Some(session::SOURCE))
+    }
     fn write(&self) -> Result<(), String> {
+        self.ensure_harness_session_helper()?;
         self.write_document()?;
         if matches!(self.format, Format::HarnessCredentials) {
             harness_credentials::secure(&self.path)?;
@@ -1063,6 +1082,11 @@ impl Manager {
         if app == "pi" && !old.suspended {
             crate::pi_config::session::ensure_installed();
         }
+        if app == "deepseek-harness" && !old.suspended {
+            for file in &old.files {
+                file.ensure_harness_session_helper()?;
+            }
+        }
         let model = selected
             .or_else(|| menu.stand_in_direct(&old.model))
             .or_else(|| {
@@ -1092,6 +1116,21 @@ impl Manager {
                 Some(&old),
             )?;
             desktop_config::restore_settings(&self.root, &mut next)?;
+            // Restoring an unchanged projection after a gateway restart is not a new edit.
+            // A client opened while the native configuration was restored must still reload.
+            let reopened = if !desktop::supports_restart(app)
+                || !startup::restoration_changed(&old).unwrap_or(true)
+            {
+                Some(false)
+            } else {
+                read(&self.desktop_freshness_path(app)?)
+                    .ok()
+                    .flatten()
+                    .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+                    .filter(|freshness| freshness.app == app && freshness.applied_at_ms > 0)
+                    .and_then(|freshness| desktop::launched_since(app, freshness.applied_at_ms))
+            };
+            next.applied_at_ms = startup::resumed_applied_at(&old, &next, reopened);
             atomic_write_private(
                 &self.path(app)?,
                 &serde_json::to_vec(&next).map_err(|_| FAILED)?,
@@ -1470,10 +1509,6 @@ impl Manager {
             .filter(|freshness| freshness.app == "doubaowork" && freshness.applied_at_ms > 0)
             .map(|freshness| freshness.applied_at_ms);
         Ok(desktop::state("doubaowork", applied))
-    }
-
-    pub fn restart_doubaowork_desktop(&self) -> Result<(), String> {
-        desktop::restart_manual("doubaowork")
     }
 }
 #[cfg(test)]

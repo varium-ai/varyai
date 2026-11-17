@@ -34,6 +34,25 @@ fn normalize(path: &str) -> String {
 
 fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
     let mut images = Vec::new();
+    if app == "t3code" {
+        for root in [
+            (!local.is_empty()).then(|| format!(r"{local}\Programs")),
+            (!programs.is_empty()).then(|| programs.to_owned()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for (folder, executable) in [
+                ("T3 Code", "T3 Code.exe"),
+                ("T3 Code (Alpha)", "T3 Code (Alpha).exe"),
+                ("T3 Code (Beta)", "T3 Code (Beta).exe"),
+                ("t3code", "T3 Code.exe"),
+            ] {
+                images.push(format!(r"{root}\{folder}\{executable}"));
+            }
+        }
+        return images;
+    }
     if !programs.is_empty() {
         let relative: &[&str] = match app {
             "workbuddy" => &[r"WorkBuddy\WorkBuddy.exe"],
@@ -62,6 +81,11 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
 
 fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
     let image = normalize(image);
+    if app == "t3code" {
+        return installed_images(app, local, programs)
+            .iter()
+            .any(|path| normalize(path) == image);
+    }
     let programs = normalize(programs);
     if app == "workbuddy" {
         return !programs.is_empty() && image == format!("{programs}\\workbuddy\\workbuddy.exe");
@@ -305,7 +329,14 @@ pub(super) fn supported(app: &str) -> bool {
     // Other desktop agents keep macOS support via bundle identifiers.
     matches!(
         app,
-        "claude-desktop" | "codex" | "workbuddy" | "workbuddy-ai" | "qoder" | "trae" | "trae-intl"
+        "claude-desktop"
+            | "codex"
+            | "workbuddy"
+            | "workbuddy-ai"
+            | "qoder"
+            | "trae"
+            | "trae-intl"
+            | "t3code"
     )
 }
 #[cfg(target_os = "windows")]
@@ -328,6 +359,23 @@ pub(super) fn state(app: &str, applied_ms: Option<i64>) -> State {
         .map_or(State::Unknown, |processes| {
             freshness(&processes, applied_ms)
         })
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn launched_since(app: &str, since_ms: i64) -> Option<bool> {
+    if !supported(app) {
+        return None;
+    }
+    let processes = native::Native { app }.processes().ok()?;
+    super::launched_since_times(
+        processes.iter().map(|process| {
+            process
+                .created
+                .checked_sub(116_444_736_000_000_000)
+                .map(|ticks| (ticks / 10_000) as i64)
+        }),
+        since_ms,
+    )
 }
 #[cfg(target_os = "windows")]
 pub(super) fn restart_manual(app: &str) -> Result<(), String> {
@@ -425,6 +473,7 @@ mod tests {
             "trae",
             "trae-intl",
             "claude-desktop",
+            "t3code",
         ] {
             let images = installed_images(app, local, programs);
             assert!(!images.is_empty(), "{app}");
@@ -437,6 +486,20 @@ mod tests {
             assert!(installed_images(app, "", "").is_empty());
         }
         assert!(installed_images("unknown", local, programs).is_empty());
+    }
+
+    #[test]
+    fn t3_windows_identity_rejects_foreign_paths_and_codex_processes() {
+        let local = r"C:\Users\synthetic\AppData\Local";
+        let programs = r"C:\Program Files";
+        for image in [
+            r"C:\Downloads\T3 Code.exe",
+            r"C:\Program Files\Other\T3 Code.exe",
+            r"C:\Program Files\T3 Code\codex.exe",
+            r"C:\Program Files\T3 Code (Beta)\T3 Code.exe",
+        ] {
+            assert!(!matches_image("t3code", image, local, programs));
+        }
     }
 
     #[test]

@@ -187,6 +187,49 @@ impl Manager {
 mod tests {
     use super::*;
     #[test]
+    fn unchanged_gateway_resume_keeps_workbuddy_default_readback() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().into(),
+        };
+        for app in ["workbuddy", "workbuddy-ai"] {
+            let control = manager.control_dir(app)?;
+            atomic_write_private(&control.join("consent.json"), br#"{"version":1}"#)
+                .map_err(|_| FAILED)?;
+            let before = Receipt {
+                app: app.into(),
+                token: "synthetic-credential".into(),
+                model: "synthetic-model".into(),
+                model_map: BTreeMap::new(),
+                visible_models: None,
+                files: vec![],
+                suspended: true,
+                applied_at_ms: Some(1000),
+            };
+            manager.sync_model_control(&before, false)?;
+            let plan: Value =
+                serde_json::from_str(&read(&control.join("plan.json"))?.ok_or(FAILED)?)
+                    .map_err(|_| FAILED)?;
+            atomic_write_private(
+                &control.join("status.json"),
+                &serde_json::to_vec(&json!({"revision":plan["revision"],"ready":true}))
+                    .map_err(|_| FAILED)?,
+            )
+            .map_err(|_| FAILED)?;
+            let mut resumed = before.clone();
+            resumed.suspended = false;
+            resumed.applied_at_ms = Some(9000);
+            resumed.applied_at_ms = startup::resumed_applied_at(&before, &resumed, Some(false));
+            manager.sync_model_control(&resumed, false)?;
+            let status = manager.model_control_status(app)?;
+            assert!(status.ready && !status.pending, "{app}");
+            resumed.model = "synthetic-other-model".into();
+            manager.sync_model_control(&resumed, false)?;
+            assert!(manager.model_control_status(app)?.pending, "{app}");
+        }
+        Ok(())
+    }
+    #[test]
     fn existing_workbuddy_conversation_adapter_does_not_change_qoder_revision() -> Result<(), String>
     {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;

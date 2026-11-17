@@ -14,8 +14,10 @@ use super::channel::{
 use super::parsers::{PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES};
 use crate::services::tool_risk::adapters::{
     CLAUDE_DESKTOP_TOOLS_SCHEMA, CLAUDE_TOOLS_SCHEMA, CODEX_TOOLS_SCHEMA, GEMINI_TOOLS_SCHEMA,
-    KIMI_TOOLS_SCHEMA, OPENAI_TOOLS_SCHEMA, PI_TOOLS_SCHEMA, QODER_TOOLS_SCHEMA, QWEN_TOOLS_SCHEMA,
-    WORKBUDDY_AI_TOOLS_SCHEMA, WORKBUDDY_TOOLS_SCHEMA,
+    GROKBUILD_TOOLS_SCHEMA, HARNESS_TOOLS_SCHEMA, HERMES_TOOLS_SCHEMA, KIMI_TOOLS_SCHEMA,
+    OPENAI_TOOLS_SCHEMA, OPENCLAW_TOOLS_SCHEMA, OPENCODE_TOOLS_SCHEMA, PI_TOOLS_SCHEMA,
+    QODER_TOOLS_SCHEMA, QWEN_TOOLS_SCHEMA, T3_TOOLS_SCHEMA, WORKBUDDY_AI_TOOLS_SCHEMA,
+    WORKBUDDY_TOOLS_SCHEMA, ZCODE_TOOLS_SCHEMA,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -99,6 +101,13 @@ pub(crate) fn collect_tool_schemas_from_tools(
         "qoder" => QODER_TOOLS_SCHEMA,
         "kimi" => KIMI_TOOLS_SCHEMA,
         "qwen" => QWEN_TOOLS_SCHEMA,
+        "zcode" => ZCODE_TOOLS_SCHEMA,
+        "deepseek-harness" => HARNESS_TOOLS_SCHEMA,
+        "t3code" => T3_TOOLS_SCHEMA,
+        "opencode" => OPENCODE_TOOLS_SCHEMA,
+        "openclaw" => OPENCLAW_TOOLS_SCHEMA,
+        "hermes" => HERMES_TOOLS_SCHEMA,
+        "grokbuild" => GROKBUILD_TOOLS_SCHEMA,
         _ => return Arc::new(Vec::new()),
     };
     if tools.len() > MAX_CATALOG_TOOLS {
@@ -157,6 +166,14 @@ pub(crate) fn collect_tool_schemas_from_tools(
         }
         let field = match (client, name) {
             ("pi", "bash") => "command",
+            ("zcode", "Bash")
+            | ("deepseek-harness", "bash")
+            | ("opencode", "bash" | "shell")
+            | ("openclaw", "exec")
+            | ("hermes", "terminal")
+            | ("grokbuild", "run_terminal_command" | "run_terminal_cmd" | "Shell") => "command",
+            ("t3code", "exec_command") => "cmd",
+            ("t3code", "shell_command") => "command",
             ("kimi", "Shell") | ("qwen", "run_shell_command") => "command",
             ("workbuddy" | "workbuddy-ai" | "qoder", "Bash") => "command",
             ("pi", "read" | "write" | "edit") => "path",
@@ -392,6 +409,17 @@ mod upstream_stream_tests {
             ("qoder", "Bash", "command"),
             ("kimi", "Shell", "command"),
             ("qwen", "run_shell_command", "command"),
+            ("zcode", "Bash", "command"),
+            ("deepseek-harness", "bash", "command"),
+            ("t3code", "exec_command", "cmd"),
+            ("t3code", "shell_command", "command"),
+            ("opencode", "shell", "command"),
+            ("opencode", "bash", "command"),
+            ("openclaw", "exec", "command"),
+            ("hermes", "terminal", "command"),
+            ("grokbuild", "run_terminal_command", "command"),
+            ("grokbuild", "run_terminal_cmd", "command"),
+            ("grokbuild", "Shell", "command"),
         ] {
             for transport in [Transport::Json, Transport::Sse] {
                 let (_, mut rx) = test_channel().await;
@@ -571,6 +599,28 @@ mod workbuddy_tests {
             ("qoder", "Bash", QODER_TOOLS_SCHEMA),
             ("kimi", "Shell", "builtin:kimi:tools:v1"),
             ("qwen", "run_shell_command", "builtin:qwen:tools:v1"),
+            ("zcode", "Bash", "builtin:zcode:tools:v1"),
+            (
+                "deepseek-harness",
+                "bash",
+                "builtin:deepseek-harness:tools:v1",
+            ),
+            ("t3code", "shell_command", "builtin:t3code:tools:v1"),
+            ("opencode", "shell", "builtin:opencode:tools:v1"),
+            ("opencode", "bash", "builtin:opencode:tools:v1"),
+            ("openclaw", "exec", "builtin:openclaw:tools:v1"),
+            ("hermes", "terminal", "builtin:hermes:tools:v1"),
+            (
+                "grokbuild",
+                "run_terminal_command",
+                "builtin:grokbuild:tools:v1",
+            ),
+            (
+                "grokbuild",
+                "run_terminal_cmd",
+                "builtin:grokbuild:tools:v1",
+            ),
+            ("grokbuild", "Shell", "builtin:grokbuild:tools:v1"),
         ] {
             let input = json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]});
             for tool in [
@@ -585,7 +635,7 @@ mod workbuddy_tests {
                 );
             }
             for tool in [
-                json!({"name":"bash","input_schema":input}),
+                json!({"name":if name == "bash" { "Bash" } else { "synthetic_unknown_tool" },"input_schema":input}),
                 json!({"name":name,"namespace":"synthetic-extension","input_schema":input}),
                 json!({"name":name,"input_schema":{"type":"object","properties":{"command":{"type":"number"}},"required":["command"]}}),
                 json!({"name":name,"input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}),

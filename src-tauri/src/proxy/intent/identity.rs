@@ -6,6 +6,7 @@ use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
 const SESSION_HEADERS: &[&str] = &[
+    "x-vary-harness-session-id",
     "x-opencode-session",
     "x-session-affinity",
     "x-session-id",

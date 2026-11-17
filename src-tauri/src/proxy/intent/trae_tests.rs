@@ -270,6 +270,40 @@ fn trae_rewritten_ids_require_complete_observed_payloads_and_keep_known_owners(
 }
 
 #[test]
+fn both_trae_editions_normalize_rewritten_calls_with_complete_observed_payloads() {
+    for consumer in ["agent:trae", "agent:trae-intl"] {
+        let mut bindings = Bindings::default();
+        let mut observer = Observer::default();
+        observer.trae = true;
+        observer.observe_at(&json!({"choices":[{"message":{"tool_calls":[{"id":"synthetic-original","function":{"name":"read_fixture","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}), &mut bindings, 0, Instant::now());
+        let body = json!({"input":[{"type":"function_call","call_id":"synthetic-rewritten","name":"read_fixture","arguments":"{}"},{"type":"function_call_output","call_id":"synthetic-rewritten","output":"synthetic result"}]});
+        let original = body.clone();
+        assert_eq!(
+            bindings.resolve(&bindings.continuation_projection(consumer, &body), None),
+            Ok(Some(0)),
+            "{consumer}"
+        );
+        assert_eq!(body, original);
+        let mut unknown = body.clone();
+        unknown["input"][0]["arguments"] = json!("{\"changed\":true}");
+        assert!(bindings
+            .resolve(&bindings.continuation_projection(consumer, &unknown), None)
+            .is_err());
+        assert!(bindings
+            .resolve(
+                &bindings.continuation_projection("agent:claude", &body),
+                None
+            )
+            .is_err());
+        remember(&mut bindings.calls, "call", "synthetic-rewritten", 1);
+        assert_eq!(
+            bindings.resolve(&bindings.continuation_projection(consumer, &body), None),
+            Ok(Some(1))
+        );
+    }
+}
+
+#[test]
 fn trae_rewritten_payload_collisions_remain_isolated() -> Result<(), Box<dyn std::error::Error>> {
     let conversations = scopes::Conversations::default();
     let identity = Arc::default();
@@ -393,7 +427,9 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
     let runtime = Arc::new(Runtime::default());
     runtime.prepare_continuations(path.clone()).await;
     runtime.set_global(catalog(address)?, 0)?;
-    runtime.connections.install(&receipt("trae"))?;
+    for app in ["trae", "trae-intl"] {
+        runtime.connections.install(&receipt(app))?;
+    }
     let server = ProxyServer::new(
         ProxyConfig {
             listen_port: 0,
@@ -407,13 +443,18 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
     let client = reqwest::Client::builder().no_proxy().build()?;
     let alias = super::global_tests::group().alias();
     let payload = |stream| json!({"model":alias,"stream":stream,"messages":[{"role":"user","content":"synthetic request"}],"tools":[{"type":"function","function":{"name":"read_fixture","parameters":{"type":"object","properties":{}}}}],"temperature":0.25,"vendor_extension":{"retain":true}});
-    for stream in [false, true] {
+    for (app, stream) in [
+        ("trae", false),
+        ("trae", true),
+        ("trae-intl", false),
+        ("trae-intl", true),
+    ] {
         let response = client
             .post(format!(
-                "http://127.0.0.1:{}/connections/trae/v1/chat/completions",
+                "http://127.0.0.1:{}/connections/{app}/v1/chat/completions",
                 info.port
             ))
-            .bearer_auth("synthetic-trae")
+            .bearer_auth(format!("synthetic-{app}"))
             .header("sec-fetch-site", "cross-site")
             .json(&payload(stream))
             .send()
@@ -441,7 +482,7 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
     session.group.default_member_id = "b".into();
     session.group.fallback_member_ids = vec!["a".into()];
     runtime.set_global(published, 0)?;
-    for app in ["trae", "claude"] {
+    for app in ["trae", "trae-intl", "claude"] {
         runtime.connections.install(&receipt(app))?;
     }
     let server = ProxyServer::new(
@@ -455,7 +496,12 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
     .with_intent_runtime(runtime.clone());
     let info = server.start().await?;
     let root = format!("http://127.0.0.1:{}/connections", info.port);
-    for stream in [false, true] {
+    for (app, stream) in [
+        ("trae", false),
+        ("trae", true),
+        ("trae-intl", false),
+        ("trae-intl", true),
+    ] {
         // TRAE replaces the upstream ID before replaying the assistant/tool pair.
         let call = if stream {
             "synthetic-trae-stream-rewritten"
@@ -483,8 +529,8 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
                     ]);
             }
             let response = client
-                .post(format!("{root}/trae/v1/chat/completions"))
-                .bearer_auth("synthetic-trae")
+                .post(format!("{root}/{app}/v1/chat/completions"))
+                .bearer_auth(format!("synthetic-{app}"))
                 .header("sec-fetch-site", "cross-site")
                 .json(&body)
                 .send()
@@ -506,7 +552,7 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
                 assert_eq!(sent[field], body[field]);
             }
         }
-        for (app, unknown) in [("trae", true), ("claude", false)] {
+        for (app, unknown) in [(app, true), ("claude", false)] {
             let mut rejected = body.clone();
             if unknown {
                 rejected["messages"].as_array_mut().ok_or("missing messages")?.push(json!({"role":"tool","tool_call_id":"synthetic-unknown","content":"synthetic"}));

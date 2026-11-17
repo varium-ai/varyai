@@ -333,19 +333,20 @@ impl Runtime for Native<'_> {
         if cfg!(test) || std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
             return Err(FAILED.into());
         }
-        let exe = match self.app {
-            "workbuddy" | "workbuddy-ai" => "WorkBuddy.exe",
-            "codex" => "ChatGPT.exe",
-            "qoder" => "Qoder CN.exe",
-            "trae" => "Trae CN.exe",
-            "trae-intl" => "Trae.exe",
-            _ => "claude.exe",
+        let names: &[&str] = match self.app {
+            "workbuddy" | "workbuddy-ai" => &["WorkBuddy.exe"],
+            "codex" => &["ChatGPT.exe"],
+            "qoder" => &["Qoder CN.exe"],
+            "trae" => &["Trae CN.exe"],
+            "trae-intl" => &["Trae.exe"],
+            "t3code" => &["T3 Code.exe", "T3 Code (Alpha).exe", "T3 Code (Beta).exe"],
+            _ => &["claude.exe"],
         };
         let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
         let programs = std::env::var("ProgramFiles").unwrap_or_default();
         let mut processes = Vec::new();
         for (pid, parent, name) in snapshot()? {
-            if !name.eq_ignore_ascii_case(exe) {
+            if !names.iter().any(|exe| name.eq_ignore_ascii_case(exe)) {
                 continue;
             }
             let mut caller_session = 0;
@@ -492,7 +493,11 @@ impl Runtime for Native<'_> {
         if super::super::super::model_control::launch(self.app, &image)? {
             return Ok(());
         }
-        shell(&image.to_string_lossy(), None)
+        let arguments = super::super::launch_arguments(self.app).join(" ");
+        shell(
+            &image.to_string_lossy(),
+            (!arguments.is_empty()).then_some(arguments.as_str()),
+        )
     }
     fn wait_back(&self) -> Result<(), String> {
         let start = Instant::now();
@@ -569,7 +574,11 @@ pub(super) fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), 
         return Err(CHANGED.into());
     }
     if !super::super::super::model_control::launch(app, &image)? {
-        shell(&image.to_string_lossy(), None)?;
+        let arguments = super::super::launch_arguments(app).join(" ");
+        shell(
+            &image.to_string_lossy(),
+            (!arguments.is_empty()).then_some(arguments.as_str()),
+        )?;
     }
     runtime.wait_back()
 }
