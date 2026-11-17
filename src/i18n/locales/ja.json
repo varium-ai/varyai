@@ -5290,6 +5290,10 @@
     "groupEnabled": "有効",
     "groupDisabled": "無効",
     "refresh": "更新",
+    "refreshHint": "保存済みのモデル一覧からルーティンググループを再読み込みします。",
+    "syncModels": "モデルを同期",
+    "syncModelsHint": "有効な接続先のモデル一覧を更新します。時間切れの場合はキャッシュを維持します。",
+    "syncModelsResult": "接続先：更新 {{updated}} 件、キャッシュ使用 {{cached}} 件、利用不可 {{unavailable}} 件。",
     "groupStatsUnavailable": "グループの累計統計はまだ利用できません。",
     "noGroups": "ルーティンググループはありません。新規作成またはインポートして開始してください。",
 
@@ -5637,6 +5641,7 @@
     "importedAccountHint": "このインポート済みアカウントまたはカスタム接続は、既存の認証と接続設定を保持します。共有名と有効状態はここで変更できます。"
   },
   "agentUpdates": {
+    "waitingForExit": "更新待ち · アプリを終了して再試行",
     "update": "{{version}} に更新",
     "updating": "更新中…",
     "all": "すべて更新",

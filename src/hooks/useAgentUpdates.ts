@@ -40,7 +40,7 @@ export type AgentUpdateResult = {
   app: AppId;
   from?: string | null;
   to?: string | null;
-  outcome: "changed" | "failed" | "unverified" | "preflightFailed";
+  outcome: "changed" | "failed" | "unverified" | "preflightFailed" | "deferred";
   failureReason?: string;
 };
 const cliKey = (tool: string) => ["agent-cli-version", tool];
@@ -56,6 +56,7 @@ type LifecycleState = {
     ambiguous: AppId[];
   } | null;
   results: AgentUpdateResult[];
+  deferred: AppId[];
   barShown: boolean;
   installTarget: {
     app: AppId;
@@ -81,6 +82,7 @@ function createLifecycleStore() {
     progress: { index: 0, total: 0 },
     pending: null,
     results: [],
+    deferred: [],
     barShown: false,
     installTarget: null,
     installing: null,
@@ -125,6 +127,7 @@ export function useAgentUpdates(installed: AppId[]) {
     progress,
     pending,
     results,
+    deferred,
     barShown,
     installTarget,
     installing,
@@ -196,6 +199,12 @@ export function useAgentUpdates(installed: AppId[]) {
     release([]);
   }
   function record(completed: AgentUpdateResult[]) {
+    const waiting = new Set(store.snapshot().deferred);
+    for (const result of completed) {
+      if (result.outcome === "deferred") waiting.add(result.app);
+      else waiting.delete(result.app);
+    }
+    store.set("deferred", [...waiting]);
     setResults([...store.snapshot().results, ...completed]);
     setProgress({
       ...store.snapshot().progress,
@@ -280,7 +289,14 @@ export function useAgentUpdates(installed: AppId[]) {
               app,
               from,
               to,
-              outcome: failed ? "failed" : verified ? "changed" : "unverified",
+              outcome:
+                failureReason === "running"
+                  ? "deferred"
+                  : failed
+                    ? "failed"
+                    : verified
+                      ? "changed"
+                      : "unverified",
               failureReason,
             },
           ]);
@@ -300,6 +316,10 @@ export function useAgentUpdates(installed: AppId[]) {
     if (!selected.length) return;
     // Reserve synchronously so duplicate clicks cannot race preflight or execution.
     const previous = store.snapshot();
+    store.set(
+      "deferred",
+      previous.deferred.filter((app) => !selected.includes(app)),
+    );
     store.set("reserved", [...previous.reserved, ...selected]);
     setBusy(true);
     setBarShown(true);
@@ -425,6 +445,7 @@ export function useAgentUpdates(installed: AppId[]) {
     progress,
     pending,
     results,
+    deferred,
     showBar: barShown || updatable.length >= 2,
     start,
     installTarget,

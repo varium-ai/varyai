@@ -80,6 +80,286 @@ fn menu(url: &str) -> Result<Menu, Box<dyn std::error::Error>> {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn desktop_startup_probe_ignores_stale_conversation_without_releasing_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    for named in [false, true] {
+        let root = tempfile::tempdir()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/v1/messages", post(move |Json(body): Json<Value>| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(body.clone()).await;
+                    Json(json!({"id":"synthetic-probe","type":"message","role":"assistant","model":body["model"],"content":[{"type":"text","text":"synthetic answer"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}))
+                }
+            }))).await
+        });
+        let url = format!("http://{address}/v1/messages");
+        let published = menu(&url)?;
+        let receipt = Receipt {
+            app: "claude-desktop".into(),
+            token: "synthetic-local-key".into(),
+            model: "vary-provider/chat".into(),
+            model_map: connection(&published).model_map,
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        };
+        let runtime = Arc::new(Runtime::default());
+        runtime
+            .prepare_continuations(root.path().join("continuations.json"))
+            .await;
+        runtime.set_global(published, 0)?;
+        runtime.connections.install(&receipt)?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime.clone());
+        let info = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let request = |max_tokens| {
+            let mut request = client.post(format!("http://127.0.0.1:{}/connections/claude-desktop/v1/messages", info.port)).bearer_auth(&receipt.token)
+                .json(&json!({"model":"vary-provider/chat","max_tokens":max_tokens,"messages":[{"role":"user","content":"."}]}));
+            if named {
+                request = request.header("x-session-id", "synthetic-existing-conversation");
+            }
+            request
+        };
+        let seeded = request(16).send().await?;
+        assert_eq!(seeded.status(), StatusCode::OK);
+        let _ = seeded.json::<Value>().await?;
+        assert_eq!(
+            rx.recv().await.ok_or("missing seed")?["model"],
+            "synthetic-chat"
+        );
+        runtime.flush_continuations().await;
+        let mut replacement = menu(&url)?;
+        let changed = Arc::make_mut(
+            replacement
+                .groups
+                .get_mut("vary-provider/chat")
+                .ok_or("fixture")?,
+        );
+        changed.targets[0].model = "synthetic-new-destination".into();
+        changed.group.members[0].model_id = "synthetic-new-destination".into();
+        runtime.set_global(replacement, 0)?;
+        let probe = request(1).send().await?;
+        let status = probe.status();
+        let reply = probe.json::<Value>().await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "named={named}, code={}",
+            reply["error"]["code"]
+        );
+        assert_eq!(reply["content"][0]["text"], "synthetic answer");
+        assert_eq!(
+            rx.recv().await.ok_or("missing fresh probe")?["model"],
+            "synthetic-new-destination"
+        );
+        let continuation = request(16).send().await?;
+        assert_eq!(continuation.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            continuation.json::<Value>().await?["error"]["code"],
+            "routing_unknown_continuation"
+        );
+        assert!(rx.try_recv().is_err());
+        server.stop().await?;
+        task.abort();
+    }
+    Ok(())
+}
+
+#[test]
+fn desktop_probe_never_accepts_explicit_continuation_fields() {
+    let body =
+        json!({"model":"synthetic","max_tokens":1,"messages":[{"role":"user","content":"."}]});
+    assert!(desktop::probe(&body));
+    for field in ["previous_response_id", "conversation"] {
+        let mut continuation = body.clone();
+        continuation[field] = json!("synthetic-existing-state");
+        assert!(!desktop::probe(&continuation), "{field}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn desktop_startup_probe_retries_required_thinking_on_native_and_translated_upstreams(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::protocol_bridge::Protocol;
+    struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    for (protocol, stream_error, policy_enabled) in [
+        (Protocol::Anthropic, false),
+        (Protocol::Chat, false),
+        (Protocol::Chat, true),
+        (Protocol::Responses, false),
+        (Protocol::Gemini, false),
+    ]
+    .into_iter()
+    .flat_map(|(protocol, stream_error)| {
+        [false, true].map(move |enabled| (protocol, stream_error, enabled))
+    }) {
+        let mut policy = crate::proxy::security::SecurityRuntimeConfig {
+            enabled: policy_enabled,
+            ..Default::default()
+        };
+        policy.builtin_action_overrides.insert(
+            "chinese_phone_number".into(),
+            crate::proxy::security::types::AuditAction::RedactRestore,
+        );
+        crate::proxy::security::runtime::set_security_runtime_for_test(policy);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let fixture = Router::new().route("/*path", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let enabled = match protocol {
+                    Protocol::Anthropic => body["thinking"]["type"] == "enabled",
+                    Protocol::Chat => body["reasoning_effort"] == "low",
+                    Protocol::Responses => body["reasoning"]["effort"] == "low",
+                    Protocol::Gemini => body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 1024,
+                };
+                let _ = tx.send((headers, body)).await;
+                if !enabled {
+                    let nested = json!({"error":{"message":"thinking.type must be \"enabled\"","type":"invalid_request_error"}});
+                    let error = json!({"error":{"type":"upstream_error","message":nested.to_string()}});
+                    return if stream_error {
+                        ([("content-type", "text/event-stream")], format!("data: {error}\n\n")).into_response()
+                    } else {
+                        (StatusCode::BAD_REQUEST, Json(error)).into_response()
+                    };
+                }
+                let reply = match protocol {
+                    Protocol::Anthropic => json!({"id":"msg_fixture","type":"message","role":"assistant","model":"synthetic-chat","content":[{"type":"text","text":"synthetic answer"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}),
+                    Protocol::Chat => json!({"id":"chat_fixture","object":"chat.completion","model":"synthetic-chat","choices":[{"index":0,"message":{"role":"assistant","content":"synthetic answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}),
+                    Protocol::Responses => json!({"id":"resp_fixture","object":"response","status":"completed","model":"synthetic-chat","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic answer"}]}],"usage":{"input_tokens":1,"output_tokens":1}}),
+                    Protocol::Gemini => json!({"responseId":"gemini_fixture","modelVersion":"synthetic-chat","candidates":[{"content":{"role":"model","parts":[{"text":"synthetic answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}),
+                };
+                Json(reply).into_response()
+            }
+        }));
+        let task = tokio::spawn(async move { axum::serve(listener, fixture).await });
+        let mut published = menu(&format!("http://{address}/v1/messages"))?;
+        let session = Arc::make_mut(
+            published
+                .groups
+                .get_mut("vary-provider/chat")
+                .ok_or("fixture")?,
+        );
+        let target = &mut session.targets[0];
+        let provider = target.upstream.as_mut().ok_or("fixture")?;
+        provider.meta.as_mut().ok_or("fixture")?.api_format = Some(protocol.format().into());
+        provider.settings_config = json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}"),"ANTHROPIC_API_KEY":"synthetic-upstream-key"}});
+        let receipt = Receipt {
+            app: "claude-desktop".into(),
+            token: "synthetic-local-key".into(),
+            model: "vary-provider/chat".into(),
+            model_map: connection(&published).model_map,
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        };
+        let runtime = Arc::new(Runtime::default());
+        runtime.set_global(published, 0)?;
+        runtime.connections.install(&receipt)?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime.clone());
+        let info = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let response = client.post(format!("http://127.0.0.1:{}/connections/claude-desktop/v1/messages", info.port))
+            .bearer_auth(&receipt.token).header("origin", "null").header("sec-fetch-site", "none")
+            .json(&json!({"model":crate::claude_desktop_config::shared_plain_model_name("vary-provider/chat"),"max_tokens":1,"messages":[{"role":"user","content":"."}]})).send().await?;
+        let status = response.status();
+        let reply = response.json::<Value>().await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{protocol:?}, stream error={stream_error}, code={}",
+            reply["error"]["code"]
+        );
+        assert_eq!(reply["content"][0]["text"], "synthetic answer");
+        let first = rx.recv().await.ok_or("missing initial probe")?;
+        let second = rx.recv().await.ok_or("missing compatibility retry")?;
+        assert_eq!(first.1["model"], second.1["model"]);
+        assert!(!second
+            .0
+            .values()
+            .any(|value| value == receipt.token.as_str()));
+        assert!(rx.try_recv().is_err());
+        if protocol == Protocol::Anthropic {
+            assert_eq!(second.1["thinking"]["budget_tokens"], 1024);
+            assert_eq!(second.1["max_tokens"], 1040);
+            let response = client.post(format!("http://127.0.0.1:{}/connections/claude-desktop/v1/messages", info.port))
+                .bearer_auth(&receipt.token)
+                .json(&json!({"model":"vary-provider/chat","max_tokens":2,"messages":[{"role":"user","content":"."}]})).send().await?;
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            let (_, ordinary) = rx.recv().await.ok_or("missing ordinary Desktop request")?;
+            assert_eq!(ordinary["max_tokens"], 2);
+            assert!(ordinary.get("thinking").is_none());
+            assert!(rx.try_recv().is_err());
+            for app in crate::services::agent_connections::APPS
+                .iter()
+                .copied()
+                .chain(["trae", "trae-intl", "doubaowork"])
+                .filter(|app| *app != "claude-desktop")
+            {
+                let mut other = receipt.clone();
+                other.app = app.into();
+                runtime.connections.install(&other)?;
+                let response = client.post(format!("http://127.0.0.1:{}/connections/{app}/v1/messages", info.port))
+                    .bearer_auth(&other.token)
+                    .json(&json!({"model":"vary-provider/chat","max_tokens":1,"messages":[{"role":"user","content":"."}]})).send().await?;
+                if matches!(app, "codex" | "doubaowork") {
+                    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{app}");
+                } else {
+                    assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{app}");
+                    let (_, body) = rx.recv().await.ok_or("missing non-Desktop request")?;
+                    assert_eq!(body["max_tokens"], 1, "{app}");
+                    assert!(body.get("thinking").is_none(), "{app}");
+                }
+                assert!(rx.try_recv().is_err(), "{app}");
+            }
+        }
+        server.stop().await?;
+        task.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn desktop_titles_follow_lead_model_instead_of_first_sonnet_alias(
 ) -> Result<(), Box<dyn std::error::Error>> {
     struct Restore(crate::proxy::security::SecurityRuntimeConfig);

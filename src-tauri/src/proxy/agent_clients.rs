@@ -782,8 +782,22 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn native_agents_redact_before_forwarding_preserve_parameters_and_record_independent_usage(
     ) {
+        struct Restore(super::super::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                super::super::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*super::super::security::get_security_runtime()).clone());
+        let mut policy = super::super::security::SecurityRuntimeConfig::default();
+        policy.builtin_action_overrides.insert(
+            "rsa_ssh_private_key".into(),
+            super::super::security::types::AuditAction::Redact,
+        );
+        super::super::security::runtime::set_security_runtime_for_test(policy);
         let _ = rustls::crypto::ring::default_provider().install_default();
         for app in ["kimi", "qwen", "zcode", "trae"] {
             let calls = Arc::new(AtomicUsize::new(0));

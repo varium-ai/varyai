@@ -2,6 +2,7 @@ import {
   Search,
   Info,
   CircleAlert,
+  CloudDownload,
   ChevronDown,
   Settings,
   Pencil,
@@ -236,10 +237,13 @@ export function IntentRoutingPanel({
   const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
   const reorderRequest = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncingModels, setSyncingModels] = useState(false);
   const reloadRequest = useRef<object | null>(null);
+  const syncRequest = useRef<object | null>(null);
   useEffect(
     () => () => {
       reloadRequest.current = null;
+      syncRequest.current = null;
     },
     [],
   );
@@ -635,6 +639,13 @@ export function IntentRoutingPanel({
       refreshRoutingStatus();
     });
   }
+  async function reloadQueries() {
+    await Promise.all([
+      groups.refetch({ throwOnError: true }),
+      providers.refetch({ throwOnError: true }),
+      client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
+    ]);
+  }
   async function reload() {
     if (reloadRequest.current) return;
     const request = {};
@@ -642,23 +653,54 @@ export function IntentRoutingPanel({
     setRefreshing(true);
     setError(null);
     try {
-      await intentRoutingApi.refreshCatalogs();
+      await reloadQueries();
     } catch (cause) {
       if (reloadRequest.current === request) report(cause);
     } finally {
       if (reloadRequest.current === request) {
+        reloadRequest.current = null;
+        setRefreshing(false);
+      }
+    }
+  }
+  async function syncModels() {
+    if (syncRequest.current) return;
+    const request = {};
+    syncRequest.current = request;
+    setSyncingModels(true);
+    setError(null);
+    try {
+      const statuses = await intentRoutingApi.refreshCatalogs();
+      if (syncRequest.current !== request) return;
+      const message = t("routingPage.syncModelsResult", {
+        updated: statuses.filter((status) => status.status === "updated")
+          .length,
+        cached: statuses.filter((status) => status.status === "cached").length,
+        unavailable: statuses.filter(
+          (status) => status.status === "unavailable",
+        ).length,
+      });
+      if (statuses.some((status) => status.status !== "updated")) {
+        toast.message(message);
+      } else {
+        toast.success(message);
+      }
+    } catch (cause) {
+      if (syncRequest.current === request) report(cause);
+    } finally {
+      if (syncRequest.current === request) {
         try {
-          await Promise.all([
-            groups.refetch(),
-            providers.refetch(),
-            client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
-          ]);
+          await reloadQueries();
+          void Promise.all([
+            client.invalidateQueries({ queryKey: ["gateway-catalog"] }),
+            client.invalidateQueries({ queryKey: ["agent-model-catalog"] }),
+          ]).catch(report);
         } catch (cause) {
-          if (reloadRequest.current === request) report(cause);
+          if (syncRequest.current === request) report(cause);
         } finally {
-          if (reloadRequest.current === request) {
-            reloadRequest.current = null;
-            setRefreshing(false);
+          if (syncRequest.current === request) {
+            syncRequest.current = null;
+            setSyncingModels(false);
           }
         }
       }
@@ -1650,13 +1692,31 @@ export function IntentRoutingPanel({
             variant="ghost"
             size="sm"
             aria-label={t("routingPage.refresh")}
-            title={t("routingPage.refresh")}
+            title={t("routingPage.refreshHint")}
             aria-busy={refreshing}
             disabled={pending || refreshing || groups.isPending || !!deleting}
             onClick={() => void reload()}
           >
             <RoutingRefreshIcon refreshing={refreshing} />
             <span>{t("routingPage.refresh")}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t("routingPage.syncModels")}
+            title={t("routingPage.syncModelsHint")}
+            aria-busy={syncingModels}
+            disabled={
+              pending || syncingModels || groups.isPending || !!deleting
+            }
+            onClick={() => void syncModels()}
+          >
+            {syncingModels ? (
+              <RoutingRefreshIcon refreshing />
+            ) : (
+              <CloudDownload size={16} aria-hidden="true" />
+            )}
+            <span>{t("routingPage.syncModels")}</span>
           </Button>
           <Button
             variant="ghost"

@@ -250,6 +250,22 @@ fn verify_digests(sha512: &[u8], sha256: &[u8], release: &Release) -> bool {
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(any(target_os = "macos", test))]
+fn wait_for_update_exit(
+    mut still_running: impl FnMut() -> bool,
+    timeout: std::time::Duration,
+    mut wait: impl FnMut(std::time::Duration),
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    while still_running() {
+        if start.elapsed() >= timeout {
+            return Err("running".into());
+        }
+        wait(std::time::Duration::from_millis(100));
+    }
+    Ok(())
+}
+
 pub(super) async fn update_desktop_agent(app: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -271,6 +287,41 @@ pub(super) async fn update_desktop_agent(app: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_exit_wait_observes_process_exit_and_retains_unknown_live_processes() {
+        let mut checks = 0;
+        let mut waits = 0;
+        assert_eq!(
+            wait_for_update_exit(
+                || {
+                    checks += 1;
+                    checks < 3
+                },
+                std::time::Duration::from_secs(1),
+                |_| waits += 1
+            ),
+            Ok(())
+        );
+        assert_eq!(checks, 3);
+        assert_eq!(waits, 2);
+        assert_eq!(
+            wait_for_update_exit(
+                || true,
+                std::time::Duration::ZERO,
+                |_| panic!("expired wait must not sleep")
+            ),
+            Err("running".into())
+        );
+        assert_eq!(
+            wait_for_update_exit(
+                || false,
+                std::time::Duration::ZERO,
+                |_| panic!("exited process must not sleep")
+            ),
+            Ok(())
+        );
+    }
 
     #[test]
     fn deepseek_desktop_feed_preserves_prerelease_and_architecture() {

@@ -8,6 +8,16 @@ attribution.
 
 ## Pinned source revisions
 
+- `0746140772bedf3e31548dea5cab76197f1c98ff`: Claude Desktop startup
+  thinking-required compatibility, reviewed in `internal/gateway/desktop.go`,
+  `thinking_needed.go` and `desktop_probe_test.go`. VaryAI adapts the explicit
+  upstream refusal recognition, minimal reasoning budget and reply-limit repair
+  into one authenticated startup-probe retry on its existing native and converted
+  transports. It retains its own credentials, bounded error inspection, response
+  preservation and security attempt ownership. This change does not adopt
+  Magpie's general capability cache or change ordinary conversation requests.
+
+
 - `e97271f02741ec12111e7641c0e669062a6e9b04`: Codex catalog file reuse and
   malformed-list recovery, reviewed in `internal/agent/codex.go`
   (`codexIn`, `writeOwnList`, `catalogParses`). Magpie keeps one
@@ -386,3 +396,16 @@ The Agent configuration freshness comparison also references Magpie's
 startup comparison tolerance, and keeping configuration freshness separate from
 connection ownership. The implementation extends this principle to VaryAI's
 native adapters and their bridge/inspection contracts.
+
+
+## Routing refresh boundaries and budgets
+
+Magpie revision `cd89ccdb4003847e26716be99f70f98dec1ca6a3`, reviewed in
+`internal/gui/groups.go`, `internal/gui/api.go`, `internal/provider/models.go`
+and `internal/gui/assets/plugins/routing/client.js`, informs the separation
+between cached group reload and explicit model-list synchronization, together
+with eight-second upstream and thirty-second overall network budgets. VaryAI's
+independent Rust implementation uses bounded unordered scheduling, restores
+stable output order, and reloads identity-scoped cache entries after timeout.
+Its React controls retain independent progress and editing state. No upstream
+source implementation was copied.

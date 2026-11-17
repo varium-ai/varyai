@@ -212,6 +212,27 @@ impl Conversations {
         {
             return Err("routing_ambiguous_continuation");
         }
+        // Older snapshots included discovery metadata. Accept that exact old
+        // fingerprint only when the current full configuration still matches;
+        // never guess which account or endpoint an unknown fingerprint meant.
+        let legacy_targets = std::cell::OnceCell::new();
+        let destination_index = |destination: &str| {
+            targets
+                .iter()
+                .position(|target| target == destination)
+                .or_else(|| {
+                    legacy_targets
+                        .get_or_init(|| {
+                            session
+                                .targets
+                                .iter()
+                                .map(Target::legacy_continuation_destination)
+                                .collect::<Vec<_>>()
+                        })
+                        .iter()
+                        .position(|target| target.as_deref() == Some(destination))
+                })
+        };
         // Keep the scope independent of target ordering, but validate the complete
         // destination set before restoring any individual binding below.
         let scope = continuation::hash(
@@ -246,7 +267,15 @@ impl Conversations {
             {
                 continue;
             }
-            let mut saved = snapshot.targets.clone();
+            let mut saved = snapshot
+                .targets
+                .iter()
+                .map(|target| {
+                    destination_index(target)
+                        .map(|index| targets[index].clone())
+                        .unwrap_or_else(|| target.clone())
+                })
+                .collect::<Vec<_>>();
             saved.sort();
             if saved.is_empty() && matches!(policy, HistoryPolicy::ResponsesReplay) {
                 // A stale affinity snapshot cannot veto a new Codex request.
@@ -271,7 +300,7 @@ impl Conversations {
                 for (key, target) in map {
                     let index = match target {
                         None => usize::MAX,
-                        Some(target) => match targets.iter().position(|value| value == &target) {
+                        Some(target) => match destination_index(&target) {
                             Some(index) => index,
                             None if matches!(policy, HistoryPolicy::ResponsesReplay) => continue,
                             None => return Err("routing_unknown_continuation"),

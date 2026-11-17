@@ -2,7 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { createInstance } from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import { describe, expect, it, vi } from "vitest";
-import { AgentUpdatesBar } from "@/components/agents/AgentUpdates";
+import {
+  AgentUpdatesBar,
+  AgentVersionTag,
+} from "@/components/agents/AgentUpdates";
+import type { AppId } from "@/lib/api";
 import type {
   AgentUpdateResult,
   useAgentUpdates,
@@ -16,6 +20,7 @@ const locales = { en, zh, ja, "zh-TW": zhTW };
 async function show(
   results: AgentUpdateResult[],
   language: keyof typeof locales = "zh",
+  rowApp?: AppId,
 ) {
   const i18n = createInstance();
   await i18n.use(initReactI18next).init({
@@ -33,6 +38,9 @@ async function show(
     progress: { index: results.length, total: results.length },
     pending: null,
     results,
+    deferred: results
+      .filter((result) => result.outcome === "deferred")
+      .map((result) => result.app),
     showBar: true,
     start: vi.fn(async () => {}),
     installTarget: null,
@@ -47,6 +55,9 @@ async function show(
   } satisfies ReturnType<typeof useAgentUpdates>;
   render(
     <I18nextProvider i18n={i18n}>
+      {rowApp && (
+        <AgentVersionTag app={rowApp} updates={updates} disabled={false} />
+      )}
       <AgentUpdatesBar
         updates={updates}
         name={(app) =>
@@ -66,6 +77,35 @@ const pi: AgentUpdateResult = {
 };
 
 describe("Agent update result wording", () => {
+  it.each(["en", "zh", "ja", "zh-TW"] as const)(
+    "keeps an exit-deferred update neutral on its own row in %s",
+    async (language) => {
+      const status = await show(
+        [
+          {
+            app: "claude-desktop",
+            outcome: "deferred",
+            failureReason: "running",
+          },
+        ],
+        language,
+        "claude-desktop",
+      );
+      expect(status.textContent).toBe(
+        locales[language].agentUpdates.waitingForExit,
+      );
+      expect(status).not.toHaveClass("failed");
+      expect(document.querySelector(".mp-agent-updates")).toBeNull();
+    },
+  );
+  it("does not count a deferred update as a success or failure in a mixed batch", async () => {
+    const status = await show([
+      pi,
+      { app: "claude-desktop", outcome: "deferred", failureReason: "running" },
+    ]);
+    expect(status.textContent).toBe("Pi 已更新：1.4.0 → 1.5.0");
+    expect(status).not.toHaveClass("failed");
+  });
   it.each(["en", "zh", "ja", "zh-TW"] as const)(
     "explains update failures in %s without exposing command output",
     async (language) => {
