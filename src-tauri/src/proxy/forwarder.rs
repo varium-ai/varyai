@@ -2466,6 +2466,12 @@ impl RequestForwarder {
                 );
             }
 
+            // Prepared restoration bypasses the IR bridge, so retain the same
+            // model-specific tool schema compatibility before final validation.
+            if codex_responses_to_chat {
+                super::protocol_bridge::grok::normalize_tool_schemas(&mut request_body);
+            }
+
             if codex_responses_to_chat
                 && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(
                     &base_url,
@@ -4765,7 +4771,7 @@ pub(crate) mod final_send_binding_test_support {
 }
 
 // Memory-only credential identity; never log or persist this value.
-fn dlp_auth_principal(headers: &http::HeaderMap) -> Option<String> {
+pub(super) fn dlp_auth_principal(headers: &http::HeaderMap) -> Option<String> {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     let mut found = false;

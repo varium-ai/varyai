@@ -1,0 +1,11 @@
+# Confirmed Agent restart
+
+The user repeatedly received `agentConnections.restartChanged` without a restart from both clients. The explicit action incorrectly depended on connection and freshness state: WorkBuddy could reject a verified current process, and Codex could reject the request when its reload state changed between rendering the button and confirmation.
+
+All confirmed desktop Agent actions now use the native whole-application lifecycle directly on macOS and Windows. They require neither a connection receipt nor stale configuration. TRAE bridge and Doubao actions use the same manual lifecycle. WorkBuddy edition selection uses the requested application identity, independently of the managed configuration directory. The separate automatic Codex route-reload worker retains its existing configuration and activity guards. Its obsolete UI request queue is removed. The confirmation dialog describes a whole-application restart instead of an internal service reload.
+
+Process identity is still checked before quitting, the original process must exit, and reopening must yield a verified replacement. Normal quit refusal, missing applications and unknown process identities remain real lifecycle errors. These checks do not require modifying routing or saved provider configuration.
+
+Two new lifecycle regressions failed before the change with `agentConnections.restartChanged`; they cover a verified current desktop on macOS and Windows. The final manual helper runs without any freshness timestamp. Five renderer guidance cases also failed before the confirmation description was updated.
+
+Verification passed against the existing working tree on macOS arm64: 4,247 renderer tests, 7,635 library tests and 165 integration tests passed, with 21 library tests ignored. TypeScript, renderer build, formatting, cargo check, Clippy, helper suites, storage recovery tests and production dependency audit passed. The user paused further implementation and requested committing this snapshot and integrating main. Logs: `/tmp/varyai-manual-restart-tests.log`, `/tmp/varyai-manual-restart-checks.log`, `/tmp/varyai-manual-restart-frontend.log`. No installed client is quit, relaunched or replaced for these checks. Native Windows and installed-client acceptance remain outstanding. No commit or push is requested.

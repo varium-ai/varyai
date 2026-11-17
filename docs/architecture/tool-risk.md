@@ -16,6 +16,8 @@ Parsing a tool name and JSON arguments is separate from understanding the tool's
 
 Observation is a bounded side channel. It must not pause or rewrite ordinary streaming output, authorize commands, or interrupt forwarding when its own queue/worker fails. Keep raw tool inputs, secrets, untrusted names and model explanations out of ordinary diagnostics. UI records use the sanitized summary and explicit coverage/execution limitations.
 
+Schema collection scans at most 1,024 total catalog entries, including expanded Gemini function declarations. Extension tools count toward this work budget but do not establish built-in semantics. Large supported catalogs retain recognized built-ins without copying tool descriptions or whole schemas. Duplicate aliases (including trimmed Codex aliases), custom namespaces, unsupported argument schemas and per-schema byte/depth overflow still refuse built-in attribution. Catalog overflow disables attribution for that response without interrupting forwarding.
+
 The implementation is under [protocol observation](../../src-tauri/src/proxy/tool_observation) and [tool-risk services](../../src-tauri/src/services/tool_risk). Read their regression tests before extending an adapter or transfer rule.
 
 The current worker uses static rules. No local-model reviewer is connected to the runtime. Persisted rule fields reserved by older configurations remain readable for compatibility.

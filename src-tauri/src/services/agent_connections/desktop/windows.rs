@@ -210,10 +210,10 @@ fn restart_verified_processes(
     processes: Vec<Process>,
     applied_ms: Option<i64>,
     valid: impl Fn() -> bool,
-    allow_current: bool,
+    manual: bool,
 ) -> Result<(), String> {
     let state = freshness(&processes, applied_ms);
-    if state != State::RestartRequired && !(allow_current && state == State::Current) {
+    if !manual && state != State::RestartRequired {
         return Err(CHANGED.into());
     }
     let main = main_process(&processes)?;
@@ -268,13 +268,10 @@ pub(super) fn recover_codex(valid: impl Fn() -> bool) -> Result<(), String> {
 pub(super) fn supported(app: &str) -> bool {
     // Only apps with verified Windows process identity can restart here.
     // Other desktop agents keep macOS support via bundle identifiers.
-    match app {
-        "claude-desktop" | "codex" | "workbuddy-ai" | "qoder" | "trae" | "trae-intl" => true,
-        "workbuddy" => crate::workbuddy_config::get_workbuddy_dir()
-            .file_name()
-            .is_some_and(|name| name == ".workbuddy"),
-        _ => false,
-    }
+    matches!(
+        app,
+        "claude-desktop" | "codex" | "workbuddy" | "workbuddy-ai" | "qoder" | "trae" | "trae-intl"
+    )
 }
 #[cfg(target_os = "windows")]
 pub(super) fn running_executable(app: &str) -> Result<Option<std::path::PathBuf>, String> {
@@ -297,6 +294,19 @@ pub(super) fn state(app: &str, applied_ms: Option<i64>) -> State {
             freshness(&processes, applied_ms)
         })
 }
+#[cfg(target_os = "windows")]
+pub(super) fn restart_manual(app: &str) -> Result<(), String> {
+    if !supported(app) {
+        return Err("agentConnections.restartUnsupported".into());
+    }
+    restart_manual_with(&native::Native { app })
+}
+
+fn restart_manual_with(runtime: &impl Runtime) -> Result<(), String> {
+    let processes = runtime.processes()?;
+    restart_verified_processes(runtime, processes, None, || true, true)
+}
+
 #[cfg(target_os = "windows")]
 pub(super) fn restart(
     app: &str,
@@ -343,6 +353,15 @@ mod tests {
             Ok(())
         );
         assert!(runtime.events.borrow().contains(&"launch"));
+    }
+
+    #[test]
+    fn confirmed_restart_accepts_a_current_verified_windows_desktop() {
+        let processes = vec![process()];
+        let runtime = Fake::new(vec![processes.clone(), processes, vec![]], Closed::Exited);
+        assert_eq!(restart_manual_with(&runtime), Ok(()));
+        assert!(runtime.events.borrow().contains(&"launch"));
+        assert!(runtime.events.borrow().contains(&"wait_back"));
     }
 
     #[test]

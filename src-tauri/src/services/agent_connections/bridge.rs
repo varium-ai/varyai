@@ -148,39 +148,7 @@ impl TraeBridge<'_> {
     }
 
     pub(crate) fn restart_bridge_desktop(&self) -> Result<(), String> {
-        let outbox = self.bridge_load()?.ok_or(CONFLICT)?;
-        if !outbox.enabled {
-            return Err(CONFLICT.into());
-        }
-        let path = self.bridge_path();
-        let applied_ms = self.client().applied_at_ms();
-        let expected = std::fs::metadata(&path)
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .and_then(|time| {
-                time.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|duration| duration.as_millis() as i64)
-            });
-        let expected_token = outbox.token.clone();
-        super::desktop::restart(self.edition.app(), applied_ms, || {
-            self.bridge_load().is_ok_and(|current| {
-                current.is_some_and(|current| {
-                    current.enabled
-                        && current.token == expected_token
-                        && self.client().applied_at_ms() == applied_ms
-                        && std::fs::metadata(&path)
-                            .ok()
-                            .and_then(|meta| meta.modified().ok())
-                            .and_then(|time| {
-                                time.duration_since(std::time::UNIX_EPOCH)
-                                    .ok()
-                                    .map(|duration| duration.as_millis() as i64)
-                            })
-                            == expected
-                })
-            })
-        })
+        super::desktop::restart_manual(self.edition.app())
     }
     pub(crate) fn bridge_select(&self, enabled: bool) -> Result<(), String> {
         self.bridge_select_model(enabled, None)

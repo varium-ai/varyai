@@ -2090,19 +2090,28 @@ impl DlpHttpRequest {
         if sent_credentials.is_none() {
             return Err(DlpForwardError::RedactionFailed);
         }
-        attempt.native_error_safety = Some(
-            super::upstream_error::NativeErrorSafety::prepare(
-                super::upstream_error::ErrorSafetyContext {
-                    runtime: &self.runtime,
-                    request: self.source_body.as_value(),
-                    provider,
-                    credentials,
-                    sent_credentials,
-                    budget: self.authority.budget(),
-                },
-            )
-            .map_err(DlpForwardError::from_token_error)?,
+        let safety = super::upstream_error::NativeErrorSafety::prepare(
+            super::upstream_error::ErrorSafetyContext {
+                runtime: &self.runtime,
+                request: self.source_body.as_value(),
+                provider,
+                credentials,
+                sent_credentials,
+                budget: self.authority.budget(),
+            },
         );
+        match safety {
+            Ok(safety) => attempt.native_error_safety = Some(safety),
+            Err(_) if self.is_native_chat() => {
+                // Error details are optional. Native Chat already replaces an error
+                // frame with a fixed local error when this context is unavailable.
+                // Keep request redaction and successful-response restoration mandatory.
+                attempt.native_error_safety = None;
+                #[cfg(test)]
+                super::upstream_error::error_detail_test_support::unavailable();
+            }
+            Err(error) => return Err(DlpForwardError::from_token_error(error)),
+        }
         Ok(())
     }
 

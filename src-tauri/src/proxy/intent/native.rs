@@ -656,17 +656,52 @@ pub(crate) async fn handle(
             );
         }
         let mut inspected = original.clone();
-        match super::super::security::inspect_with_context(
+        use super::super::security::http_restoration::{admit_http_request, RestorationAdmission};
+        let endpoint = if legacy {
+            super::native_gateway::Endpoint::Compact
+        } else {
+            super::native_gateway::Endpoint::Responses
+        };
+        match admit_http_request(
+            &state.restoration_gateway,
             &crate::app_config::AppType::Codex,
-            &crate::app_config::AppType::Codex,
-            "",
-            None,
+            true,
+            legacy,
+            false,
             &mut inspected,
             &parts.headers,
         ) {
-            Ok(Some(blocked)) => return blocked,
+            Ok(RestorationAdmission::Intercepted(blocked)) => return blocked,
+            Ok(RestorationAdmission::Admitted(request)) => {
+                let response = match super::native_gateway::forward_restored(
+                    endpoint,
+                    parts.headers,
+                    &request,
+                    parts.uri.query(),
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(super::super::error::ProxyError::DlpForward(error)) => {
+                        return error.into_codex_response()
+                    }
+                    Err(_) => {
+                        return super::error(
+                            StatusCode::BAD_GATEWAY,
+                            "routing_upstream_connection_failed",
+                        )
+                    }
+                };
+                if response.status().is_success() {
+                    state.intent_runtime.native.observed();
+                }
+                return response;
+            }
+            Err(super::super::error::ProxyError::DlpForward(error)) => {
+                return error.into_codex_response()
+            }
             Err(_) => return super::error(StatusCode::BAD_REQUEST, "routing_inspection_failed"),
-            Ok(None) => {}
+            Ok(RestorationAdmission::Passthrough) => {}
         }
         let bytes = if inspected == original {
             bytes
@@ -678,17 +713,8 @@ pub(crate) async fn handle(
                 }
             }
         };
-        let response = super::native_gateway::forward(
-            if legacy {
-                super::native_gateway::Endpoint::Compact
-            } else {
-                super::native_gateway::Endpoint::Responses
-            },
-            parts.headers,
-            bytes,
-            parts.uri.query(),
-        )
-        .await;
+        let response =
+            super::native_gateway::forward(endpoint, parts.headers, bytes, parts.uri.query()).await;
         if response.status().is_success() {
             state.intent_runtime.native.observed();
         }
