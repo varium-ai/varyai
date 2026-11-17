@@ -43,6 +43,7 @@ pnpm typecheck
 pnpm build:renderer
 pnpm test:unit
 pnpm test:dev
+node --test scripts/tests/ci-policy.node.mjs
 pnpm test:macos-dmg
 pnpm test:trae-bridge
 pnpm test:model-default
@@ -66,6 +67,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ### Commit and CI acceptance
+
+PRs retain path-filtered frontend, three-platform backend and applicable WSL2 checks. A main push skips duplicate heavy checks only when GitHub identifies its exact commit as a merged PR and that PR's latest CI run succeeded. Direct pushes, unsuccessful or pending PR CI, and API lookup failures retain the checks. Manual runs always run the full suite. Repository merge protection must continue to require PR CI; this optimization does not validate changes combined after the checked PR run.
+
+CI disables development/test debug information to reduce compilation and cache size while retaining assertions and test coverage. Cargo cache keys include the OS, architecture, compiler, manifests, profile and revision, with compatible-prefix restoration so successful builds can save refreshed caches. PR caches remain scoped to their PR; a manual run on main can seed the default-branch cache. The first run with a new compiler or cache profile still requires compilation.
 
 Before committing, run the applicable checks above on the final changes and compare them with `.github/workflows/ci.yml`. Include the helper tests and production dependency audit, rather than reporting only renderer and Rust unit tests. Record the checked revision or working-tree changes, OS, toolchain, commands, outcomes and unavailable checks. Fix relevant failures before committing; disclose any required check that cannot run. Changes made after verification require rerunning the affected checks.
 
