@@ -14,6 +14,7 @@ import { UsageDashboard } from "@/components/usage/UsageDashboard";
 
 const useProviderStatsMock = vi.hoisted(() => vi.fn());
 const useModelStatsMock = vi.hoisted(() => vi.fn());
+const useUsageModelLabelsMock = vi.hoisted(() => vi.fn());
 const usageHeroMock = vi.hoisted(() => vi.fn());
 
 vi.mock("react-i18next", () => ({
@@ -45,6 +46,8 @@ vi.mock("@/lib/query/usage", async () => {
     ...actual,
     useProviderStats: (...args: unknown[]) => useProviderStatsMock(...args),
     useModelStats: (...args: unknown[]) => useModelStatsMock(...args),
+    useUsageModelLabels: (...args: unknown[]) =>
+      useUsageModelLabelsMock(...args),
   };
 });
 
@@ -134,6 +137,8 @@ describe("UsageDashboard", () => {
     void i18n.changeLanguage("en");
     useProviderStatsMock.mockReset();
     useModelStatsMock.mockReset();
+    useUsageModelLabelsMock.mockReset();
+    useUsageModelLabelsMock.mockReturnValue({ data: [] });
     usageHeroMock.mockReset();
     useProviderStatsMock.mockReturnValue({ data: [] });
     useModelStatsMock.mockReturnValue({ data: [] });
@@ -254,6 +259,192 @@ describe("UsageDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "All Sources" }));
     expect(usageHeroMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ providerName: undefined }),
+    );
+  });
+
+  it("hides unresolved bare and qualified routing IDs but retains readable models", () => {
+    const bare = `model-${"1".repeat(64)}`;
+    const qualified = `vary-provider/model-${"2".repeat(64)}`;
+    useModelStatsMock.mockReturnValue({
+      data: [
+        { model: bare },
+        { model: qualified },
+        { model: "readable-model" },
+      ],
+    });
+    renderDashboard();
+    expect(
+      screen.getByRole("button", { name: "readable-model" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/Unknown historical model/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(bare)).not.toBeInTheDocument();
+    expect(screen.queryByText(qualified)).not.toBeInTheDocument();
+  });
+
+  it("omits malformed session model names without hiding full Codex model names", () => {
+    useModelStatsMock.mockReturnValue({
+      data: [
+        { model: "-codex" },
+        { model: "unknown" },
+        { model: "gpt-synthetic-codex" },
+        { model: "codex-auto-review" },
+      ],
+    });
+    renderDashboard();
+    expect(
+      screen.queryByRole("button", { name: "-codex" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "unknown" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "gpt-synthetic-codex" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "codex-auto-review" }),
+    ).toBeVisible();
+  });
+
+  it("resolves qualified session IDs with supplier names and selects the shared identity", () => {
+    const id = `model-${"9".repeat(64)}`;
+    useModelStatsMock.mockReturnValue({
+      data: [{ model: `vary-provider/${id}`, aliases: [id] }],
+    });
+    useUsageModelLabelsMock.mockReturnValue({
+      data: [
+        {
+          id,
+          model: "synthetic-model",
+          displayName: "Synthetic Model",
+          providerName: "Synthetic supplier",
+        },
+      ],
+    });
+    renderDashboard();
+    expect(screen.queryByText(`vary-provider/${id}`)).not.toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", {
+        name: "Synthetic Model · Synthetic supplier",
+      }),
+    ).toHaveLength(1);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Synthetic Model · Synthetic supplier",
+      }),
+    );
+    expect(usageHeroMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: id }),
+    );
+    expect(useUsageModelLabelsMock).toHaveBeenLastCalledWith(
+      expect.arrayContaining([id, `vary-provider/${id}`]),
+      expect.anything(),
+    );
+  });
+
+  it("labels internal routing aliases with billing models while retaining raw filter IDs", () => {
+    const routingId = `model-${"a".repeat(64)}`;
+    useModelStatsMock.mockReturnValue({
+      data: [
+        { model: "synthetic-model", aliases: [routingId, "response-model"] },
+      ],
+    });
+    const view = renderDashboard();
+
+    expect(screen.queryByText(routingId)).not.toBeInTheDocument();
+    const option = screen.getByRole("button", {
+      name: "synthetic-model (routing ID)",
+    });
+    expect(option).toHaveAttribute("title", "synthetic-model (routing ID)");
+    fireEvent.click(option);
+    expect(usageHeroMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: routingId }),
+    );
+    expect(screen.getByTestId(`select-v:${routingId}`)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId(`select-v:${routingId}`)).getByRole("button", {
+        description: en.usage.modelFilterScope,
+      }),
+    ).toHaveAttribute("title", "synthetic-model (routing ID)");
+
+    // An unresolved selection must not remain as an invisible active filter.
+    useModelStatsMock.mockReturnValue({ data: [] });
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <UsageDashboard />
+      </QueryClientProvider>,
+    );
+    expect(
+      screen.queryByTestId(`select-v:${routingId}`),
+    ).not.toBeInTheDocument();
+    expect(usageHeroMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: undefined }),
+    );
+    expect(
+      screen.queryByText(/Unknown historical model/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(routingId)).not.toBeInTheDocument();
+  });
+
+  it("collects all billing models for a routing ID instead of guessing one target", () => {
+    const routingId = `model-${"b".repeat(64)}`;
+    useModelStatsMock.mockReturnValue({
+      data: [
+        { model: "model-beta", aliases: [routingId] },
+        { model: "model-alpha", aliases: [routingId] },
+        { model: "model-beta", aliases: [routingId] },
+      ],
+    });
+    renderDashboard();
+    expect(
+      screen.getAllByText("model-alpha, model-beta (routing ID)"),
+    ).toHaveLength(1);
+    expect(screen.queryByText(routingId)).not.toBeInTheDocument();
+  });
+
+  it("distinguishes routing IDs that share the same readable model label", () => {
+    const firstId = `model-${"e".repeat(64)}`;
+    const secondId = `model-${"f".repeat(64)}`;
+    useModelStatsMock.mockReturnValue({
+      data: [{ model: "shared-model", aliases: [firstId, secondId] }],
+    });
+    renderDashboard();
+    expect(
+      screen.getByText("shared-model (routing ID) · eeeeeeeeeeee"),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "shared-model (routing ID) · ffffffffffff",
+      }),
+    );
+    expect(usageHeroMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: secondId }),
+    );
+  });
+
+  it("labels historical routing IDs using known aliases or a short fallback", () => {
+    const knownId = `model-${"c".repeat(64)}`;
+    const unknownId = `model-${"d".repeat(64)}`;
+    useModelStatsMock.mockReturnValue({
+      data: [
+        { model: knownId, aliases: [knownId, "synthetic-response"] },
+        { model: unknownId, aliases: [unknownId] },
+        { model: "model-custom", aliases: ["model-abcdef", "all"] },
+      ],
+    });
+    renderDashboard();
+    expect(screen.getByText("synthetic-response (routing ID)")).toBeVisible();
+    expect(
+      screen.queryByText("Unknown historical model · dddddddddddd"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(knownId)).not.toBeInTheDocument();
+    expect(screen.queryByText(unknownId)).not.toBeInTheDocument();
+    expect(screen.getByText("model-custom")).toBeVisible();
+    expect(screen.getByText("model-abcdef")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "all" }));
+    expect(usageHeroMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: "all" }),
     );
   });
 

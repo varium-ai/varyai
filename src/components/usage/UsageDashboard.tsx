@@ -2,13 +2,14 @@ import { APP_ICON_NAME } from "@/config/appConfig";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageHero } from "./UsageHero";
+import { getUsageModelOptions, isReadableUsageModelName } from "./modelOptions";
 import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
 import {
   KNOWN_APP_TYPES,
-  normalizeUsageModelId,
+  getUsageRoutingModelId,
   type AppTypeFilter,
   type UsageRangeSelection,
 } from "@/types/usage";
@@ -33,7 +34,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useQueryClient } from "@tanstack/react-query";
-import { usageKeys, useModelStats, useProviderStats } from "@/lib/query/usage";
+import {
+  usageKeys,
+  useModelStats,
+  useProviderStats,
+  useUsageModelLabels,
+} from "@/lib/query/usage";
 import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import {
   Accordion,
@@ -247,9 +253,21 @@ export function UsageDashboard({
     { appType },
     optionsRefetch,
   );
-  const { data: modelOptionsData } = useModelStats(
-    range,
-    { appType, providerName },
+  const { data: modelOptionsData, isLoading: modelOptionsLoading } =
+    useModelStats(range, { appType, providerName }, optionsRefetch);
+
+  const {
+    data: modelLabels,
+    isPending: modelLabelsPending,
+    isFetching: modelLabelsFetching,
+  } = useUsageModelLabels(
+    [
+      ...(modelOptionsData ?? []).flatMap((stat) => [
+        stat.model,
+        ...(stat.aliases ?? []),
+      ]),
+      ...(model ? [model] : []),
+    ],
     optionsRefetch,
   );
 
@@ -282,15 +300,85 @@ export function UsageDashboard({
   );
 
   const modelOptions = useMemo(() => {
-    const names = new Set<string>();
-    for (const stat of modelOptionsData ?? []) {
-      names.add(normalizeUsageModelId(stat.model));
-      for (const alias of stat.aliases ?? [])
-        names.add(normalizeUsageModelId(alias));
+    const options = getUsageModelOptions(
+      modelOptionsData ?? [],
+      model,
+      modelLabels,
+    ).map((option) => ({
+      value: option.value,
+      routingId: option.routingId?.slice(6, 18),
+      hidden: option.resolvedLabel
+        ? !isReadableUsageModelName(option.resolvedLabel.model)
+        : option.routingModels
+          ? option.routingModels.length === 0
+          : !isReadableUsageModelName(option.value),
+      label: option.resolvedLabel
+        ? t("usage.providerModelOption", {
+            model: option.resolvedLabel.displayName,
+            provider: option.resolvedLabel.providerName,
+          })
+        : option.routingModels
+          ? option.routingModels.length > 0
+            ? t("usage.routingModelOption", {
+                models: option.routingModels.join(", "),
+              })
+            : t("usage.unknownRoutingModelOption", {
+                id: option.routingId?.slice(6, 18),
+              })
+          : option.value,
+    }));
+    const labelCounts = new Map<string, number>();
+    for (const option of options) {
+      labelCounts.set(option.label, (labelCounts.get(option.label) ?? 0) + 1);
     }
-    if (model) names.add(model);
-    return Array.from(names);
-  }, [modelOptionsData, model]);
+    return options.map((option) => ({
+      value: option.value,
+      hidden: option.hidden,
+      label:
+        option.routingId && (labelCounts.get(option.label) ?? 0) > 1
+          ? t("usage.routingModelOptionDisambiguated", {
+              label: option.label,
+              id: option.routingId,
+            })
+          : option.label,
+    }));
+  }, [modelOptionsData, model, modelLabels, t]);
+  const visibleModelOptions = useMemo(
+    () => modelOptions.filter((option) => !option.hidden),
+    [modelOptions],
+  );
+  useEffect(() => {
+    if (
+      !model ||
+      modelOptionsLoading ||
+      modelLabelsPending ||
+      modelLabelsFetching
+    )
+      return;
+    const normalized = getUsageRoutingModelId(model) ?? model;
+    if (modelOptions.find((option) => option.value === normalized)?.hidden) {
+      setModel(undefined);
+    } else if (normalized !== model) {
+      setModel(normalized);
+    }
+  }, [
+    model,
+    modelOptions,
+    modelOptionsLoading,
+    modelLabelsPending,
+    modelLabelsFetching,
+  ]);
+
+  const modelNames = useMemo(
+    () =>
+      Object.fromEntries(
+        modelOptions.map((option) => [option.value, option.label]),
+      ),
+    [modelOptions],
+  );
+  const selectedModelLabel = modelOptions.find(
+    (option) => option.value === model,
+  )?.label;
 
   return (
     <motion.div
@@ -377,21 +465,21 @@ export function UsageDashboard({
           >
             <SelectTrigger
               className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
-              title={model ?? t("usage.filterByModel")}
+              title={selectedModelLabel ?? t("usage.filterByModel")}
               aria-describedby="usage-model-filter-scope"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="max-w-[280px]">
               <SelectItem value="all">{t("usage.allModels")}</SelectItem>
-              {modelOptions.map((name) => (
+              {visibleModelOptions.map((option) => (
                 <SelectItem
-                  key={name}
-                  value={encodeOptionValue(name)}
-                  title={name}
+                  key={option.value}
+                  value={encodeOptionValue(option.value)}
+                  title={option.label}
                   className="[&>span]:min-w-0 [&>span]:truncate"
                 >
-                  {name}
+                  {option.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -479,6 +567,7 @@ export function UsageDashboard({
           >
             <TabsContent value="logs" className="mt-0">
               <RequestLogTable
+                modelNames={modelNames}
                 range={range}
                 rangeLabel={rangeLabel}
                 appType={appType}
@@ -501,6 +590,7 @@ export function UsageDashboard({
 
             <TabsContent value="models" className="mt-0">
               <ModelStatsTable
+                modelNames={modelNames}
                 range={range}
                 appType={appType}
                 providerName={providerName}

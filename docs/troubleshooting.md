@@ -2,6 +2,45 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Usage model filters show routing identifiers
+
+Direct models in the unified routing menu use stable internal identifiers of the
+form `model-<SHA-256>` or `vary-provider/model-<SHA-256>`. These identify a
+provider/model pair. Imported Codex and OpenCode sessions may retain only these
+opaque IDs instead of an upstream model name.
+
+Usage pickers, model statistics and request-log model fields now resolve the IDs
+against the local provider registry and retained catalog names. Known entries
+show the model's display name and supplier. Name lookup is independent of the
+selected date range and usage source, includes disabled providers, and does not
+perform model discovery or contact upstream services. Custom namespaces and
+non-generated `model-*` names remain exact.
+
+Catalog preparation retains a bounded, credential-free name history in the
+extension preference `usage_model_labels_v1`. This allows future session imports
+to retain readable names after a provider/model is removed or the app restarts.
+Names use immutable execution identities, so reusing a deleted public provider
+ID cannot relabel the previous provider's history. Current names take precedence
+after renaming a provider. Catalog persistence and name lookup are auxiliary;
+failures must not prevent routing publication or usage display.
+
+When no catalog name is available, readable aliases associated with the billing
+statistics supply a fallback. Multiple associated models are listed together.
+If no readable name remains, the entry is hidden from the model picker. This
+also applies to empty/`unknown` placeholders and the incomplete `-codex` session
+value; complete names such as `gpt-synthetic-codex` remain available. An already
+selected entry that becomes unresolved is cleared after name lookup finishes,
+so it cannot remain as an invisible filter. Usage totals and original records
+are retained. Model-statistic and request-log rows still describe unavailable
+names explicitly, rather than dropping their usage or inventing an identity.
+Old records that never preserved a name cannot be reconstructed without
+additional evidence.
+
+The two generated namespace forms share one analytics filter, including archived
+rollups and request/response/billing-ID matches. Stored IDs, request payloads,
+costs, and billing grouping remain unchanged. The implementation is shared by
+macOS and Windows and requires no database schema migration.
+
 ## Provider or routing-group edits wait for a busy Agent
 
 Earlier saves and deletions waited for global catalog preparation, every connected
@@ -1154,6 +1193,24 @@ Check a downloaded artifact in PowerShell, substituting its actual filename:
 ```powershell
 Get-FileHash -Algorithm SHA256 -LiteralPath "$env:USERPROFILE\Downloads\Vary AI-Windows-setup.exe"
 ```
+
+## macOS file dialogs appear in English
+
+The Finder-style Open and Save panels use the language macOS selects for the
+application. Vary AI's renderer language setting does not translate native
+labels such as Open, Cancel, or the sidebar. A bundle that omits supported
+localizations can fall back to English even when macOS and the renderer use
+Chinese.
+
+Current packaged and development bundles declare English, Simplified Chinese,
+Traditional Chinese, and Japanese. For a development build, rebuild and restart
+the native process to regenerate the bundle; a renderer refresh is insufficient.
+For an installed build, verify that the package contains the corrected metadata
+and fully restart the app after updating. If the panel is still English, check
+Vary AI's per-app language preference under macOS System Settings > General >
+Language & Region as well as the system's preferred language order. Retest the
+actual installed app's file dialog; a metadata test does not establish visual
+acceptance of an older or already running build.
 
 ## macOS notifications
 

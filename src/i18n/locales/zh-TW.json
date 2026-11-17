@@ -2134,6 +2134,10 @@
   },
   "usage": {
     "modelFilterScope": "可依請求、回應或計費模型篩選；費用仍依計費模型彙總。",
+    "routingModelOption": "{{models}}（路由識別碼）",
+    "routingModelOptionDisambiguated": "{{label}} · {{id}}",
+    "unknownRoutingModelOption": "未知歷史模型 · {{id}}",
+    "providerModelOption": "{{model}} · {{provider}}",
     "requestResponseModel": "請求 → 回應",
     "title": "使用統計",
     "subtitle": "查看 AI 模型的使用情況和成本統計",

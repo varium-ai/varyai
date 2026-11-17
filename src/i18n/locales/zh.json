@@ -2207,6 +2207,10 @@
   },
   "usage": {
     "modelFilterScope": "可按请求、响应或计费模型筛选；费用仍按计费模型汇总。",
+    "routingModelOption": "{{models}}（路由标识）",
+    "routingModelOptionDisambiguated": "{{label}} · {{id}}",
+    "unknownRoutingModelOption": "未知历史模型 · {{id}}",
+    "providerModelOption": "{{model}} · {{provider}}",
     "requestResponseModel": "请求 → 响应",
     "title": "使用统计",
     "subtitle": "查看 AI 模型的使用情况和成本统计",

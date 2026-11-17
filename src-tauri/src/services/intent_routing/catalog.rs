@@ -320,6 +320,14 @@ pub(crate) async fn prepare_providers(
         }
     }
     super::model_context::prepare(&mut providers, refresh).await;
+    let labels = crate::services::usage_model_labels::labels_for_providers(&providers);
+    let label_db = db.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || label_db.remember_usage_model_labels(&labels)).await,
+        Ok(Ok(()))
+    ) {
+        log::warn!("Usage model label history could not be updated");
+    }
     Ok((providers, statuses))
 }
 

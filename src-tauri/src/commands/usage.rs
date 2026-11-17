@@ -99,6 +99,18 @@ pub fn get_model_stats(
     )
 }
 
+/// Read sanitized local model names without discovering providers or changing usage.
+#[tauri::command]
+pub(crate) async fn get_usage_model_labels(
+    state: State<'_, AppState>,
+    model_ids: Vec<String>,
+) -> Result<Vec<crate::services::usage_model_labels::UsageModelLabel>, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || db.get_usage_model_labels(&model_ids))
+        .await
+        .map_err(|_| "usage.modelLabelsUnavailable".to_owned())?
+}
+
 /// 获取请求日志列表
 #[tauri::command]
 pub fn get_request_logs(

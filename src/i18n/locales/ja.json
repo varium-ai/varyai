@@ -2133,6 +2133,10 @@
   },
   "usage": {
     "modelFilterScope": "リクエスト・応答・課金モデルで絞り込みます。費用は課金モデル別に集計します。",
+    "routingModelOption": "{{models}}（ルーティング ID）",
+    "routingModelOptionDisambiguated": "{{label}} · {{id}}",
+    "unknownRoutingModelOption": "不明な過去のモデル · {{id}}",
+    "providerModelOption": "{{model}} · {{provider}}",
     "requestResponseModel": "リクエスト → 応答",
     "title": "利用統計",
     "subtitle": "AI モデルの利用状況とコスト統計を表示",

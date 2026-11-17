@@ -1,5 +1,12 @@
+/** Only generated direct-model IDs share the VaryAI provider namespace. */
+export function getUsageRoutingModelId(model: string): string | undefined {
+  return /^(?:vary-provider\/)?(model-[0-9a-f]{64})$/.exec(model)?.[1];
+}
+
 /** Analytics-only aliases. Keep wire IDs, billing records and custom namespaces intact. */
 export function normalizeUsageModelId(model: string): string {
+  const routingId = getUsageRoutingModelId(model);
+  if (routingId) return routingId;
   const lower = model.toLowerCase();
   const bare = lower.replace(
     /^(?:deepseek-ai\/(?=deepseek-)|zai-org\/(?=glm-))/,
@@ -120,6 +127,13 @@ export interface ProviderStats {
   totalCost: string;
   successRate: number;
   avgLatencyMs: number;
+}
+
+export interface UsageModelLabel {
+  id: string;
+  model: string;
+  displayName: string;
+  providerName: string;
 }
 
 export interface ModelStats {

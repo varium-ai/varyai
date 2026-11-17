@@ -66,6 +66,18 @@ A fresh VaryAI data root still reads existing native client configuration from i
 
 Public provider DAOs use the shared connection; routing-registry, security/tool-risk and gateway-key DAOs use the extension connection. Routing resolution reads shared provider snapshots before locking the extension connection and runs on the control plane, not during forwarding. Successful routing/source mutations and full imports/restores invalidate the in-process routing snapshot generation; the runtime must publish a refreshed snapshot before using changed resources. Gateway admission reads run on blocking workers; gateway usage persistence runs through an asynchronous queue. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
 
+Opaque direct-model usage names are projected from the local routing registry.
+Control-plane catalog preparation stores only canonical IDs, model IDs, display
+names and provider names in `intent_routing_preferences.usage_model_labels_v1`.
+This optional extension metadata retains at most 4,096 entries and 2 MiB, with
+recently observed catalogs retained preferentially. It contains no provider
+settings, endpoints, credentials or request content. Lookup runs on a blocking
+worker, reads local/retained names independently of usage filters, and never
+performs discovery. A corrupt optional history does not hide valid current
+registry names; write failures remain auxiliary to routing publication. Removed
+models retain their historical names until bounded eviction. The preference is
+included in existing extension backup/restore and needs no schema migration.
+
 Native-agent usage accounting uses a bounded queue and a dedicated background thread. Its consumer survives the Tokio runtime that first submitted work, so shutting down an individual runtime does not discard the shared queue. Forwarding only attempts a nonblocking enqueue; queue or persistence failures remain auxiliary and do not change the response.
 
 VaryAI does not initialize an absent client or grant connection/certificate authorization. Missing Claude/Codex/Gemini/Grok configuration returns setup guidance before listener startup; the other adapters enforce their supported models and prerequisites. See [routing prerequisites](../guides/provider-routing.md#routing-prerequisites-on-a-new-installation).
