@@ -2,6 +2,25 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Installed Windows Agents are missing
+
+Use **Tools / Agent → Rescan installations** after installing or removing an
+Agent. Windows desktop discovery reads the current user's AppX registrations
+for Codex and Claude Desktop, known desktop executable locations, and installer
+entries in both user and machine registry views. Registered custom locations,
+including installations on another drive, are checked through `InstallLocation`,
+`DisplayIcon` or the uninstaller's directory. A stale installer entry without
+the expected application executable does not count as an installation.
+
+Desktop discovery does not require a CLI, execute an Agent or treat leftover
+configuration as proof of installation. CLI detection still uses its existing
+installer directories and effective Windows PATH. Domestic and international
+editions are checked separately. An installed desktop with unreadable version
+metadata remains installed; an unknown version does not enable automatic desktop
+updates on Windows. Portable copies outside known or registered locations remain
+unverified. Detection does not establish that native connection, restart or
+update operations support that installation layout.
+
 ## Usage model filters show routing identifiers
 
 Direct models in the unified routing menu use stable internal identifiers of the

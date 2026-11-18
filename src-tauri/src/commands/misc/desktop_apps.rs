@@ -1,6 +1,9 @@
 //! Shared desktop presence and version discovery. Never launch an application.
 use super::*;
 
+#[cfg(any(windows, test))]
+pub(super) mod windows;
+
 fn ids(app: &str) -> &'static [&'static str] {
     match app {
         "workbuddy" => &["com.tencent.workbuddy.mac"],
@@ -427,29 +430,4 @@ mod tests {
         assert!(find_in("workbuddy", std::slice::from_ref(&missing)).is_none());
         assert!(!missing.exists());
     }
-}
-
-#[cfg(target_os = "windows")]
-pub(super) fn windows_executable(app: &str) -> Option<PathBuf> {
-    if app != "t3code" {
-        return None;
-    }
-    let roots = [
-        std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("Programs")),
-        std::env::var_os("ProgramFiles").map(PathBuf::from),
-    ];
-    for root in roots.into_iter().flatten() {
-        for (folder, executable) in [
-            ("T3 Code", "T3 Code.exe"),
-            ("T3 Code (Alpha)", "T3 Code (Alpha).exe"),
-            ("T3 Code (Beta)", "T3 Code (Beta).exe"),
-            ("t3code", "T3 Code.exe"),
-        ] {
-            let path = root.join(folder).join(executable);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
 }
