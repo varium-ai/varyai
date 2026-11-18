@@ -102,8 +102,8 @@ mod tests {
     #[tokio::test]
     async fn stop_waits_for_socket_cleanup_beyond_the_old_deadline(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
+        let listener = Arc::new(tokio::net::TcpListener::bind("127.0.0.1:0").await?);
+        let listener_owner = Arc::downgrade(&listener);
         let (tx, rx) = oneshot::channel();
         let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_cleaned = cleaned.clone();
@@ -122,7 +122,9 @@ mod tests {
         .await;
 
         assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
-        let _rebound = tokio::net::TcpListener::bind(address).await?;
+        // A released ephemeral port may already belong to another parallel test.
+        // Observe the original listener's lifetime instead of rebinding its address.
+        assert!(listener_owner.upgrade().is_none());
         Ok(())
     }
 }
