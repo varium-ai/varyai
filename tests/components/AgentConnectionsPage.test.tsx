@@ -10,7 +10,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
@@ -2080,7 +2082,10 @@ describe("Agent connections", () => {
     expect(within(row).getByRole("status")).not.toHaveTextContent(
       "agentConnections.states.restarting",
     );
-    expect(notify).toHaveBeenCalledWith("agentConnections.restartFailed");
+    expect(within(row).getByRole("status")).toHaveTextContent(
+      "agentConnections.restartFailed",
+    );
+    expect(notify).not.toHaveBeenCalled();
     expect(
       screen.queryByText(/synthetic private detail/),
     ).not.toBeInTheDocument();
@@ -2172,6 +2177,150 @@ describe("Agent connections", () => {
     },
   );
 
+  const restartableDesktopApps = [
+    "claude-desktop",
+    "workbuddy",
+    "workbuddy-ai",
+    "codex",
+    "qoder",
+    "trae",
+    "trae-intl",
+    "kimi",
+    "zcode",
+    "deepseek-harness",
+  ] as const;
+  it.each(
+    restartableDesktopApps.flatMap((app) =>
+      ["Macintosh", "Windows NT 10.0"].flatMap((userAgent) =>
+        [false, true].map((compact) => ({ app, userAgent, compact })),
+      ),
+    ),
+  )(
+    "shows status-line restart guidance for $app on $userAgent (compact=$compact)",
+    async ({ app, userAgent, compact }) => {
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(userAgent);
+      const platform = vi
+        .spyOn(navigator, "platform", "get")
+        .mockReturnValue("");
+      try {
+        vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+          {
+            app,
+            enabled: !compact,
+            configured: !compact,
+            recoveryPending: false,
+            model: compact ? null : "vary-auto/shared",
+            restartRequired: true,
+            desktopState: "restart_required",
+          },
+        ]);
+        vi.mocked(agentConnectionsApi.restart).mockRejectedValueOnce(
+          "agentConnections.restartBlocked",
+        );
+        mount(compact);
+        const row = await screen.findByRole("article", { name: `apps.${app}` });
+        fireEvent.click(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        );
+        const dialog = await screen.findByRole("dialog");
+        fireEvent.click(
+          within(dialog).getByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        const guidance = await screen.findByText(
+          "agentConnections.restartBlocked",
+        );
+        const status = guidance.closest('[role="status"]');
+        expect(status).toHaveClass("mp-agent-status");
+        expect(guidance).toHaveClass("agent-feedback");
+        expect(guidance).not.toHaveClass("err");
+        expect(status).not.toHaveClass("text-destructive");
+        expect(status?.closest("footer")).toBeNull();
+        expect(status?.closest("article")).toBe(row);
+        expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
+        expect(toast.info).not.toHaveBeenCalled();
+        expect(toast.error).not.toHaveBeenCalled();
+        expect(agentConnectionsApi.restart).toHaveBeenCalledWith(app, true);
+        expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+        expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+        expect(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        ).toBeEnabled();
+        if (!compact) expect(within(row).getByRole("switch")).toBeChecked();
+      } finally {
+        ua.mockRestore();
+        platform.mockRestore();
+      }
+    },
+  );
+
+  it.each(
+    restartableDesktopApps.flatMap((app) =>
+      [
+        "agentConnections.restartUnsupported",
+        "agentConnections.restartQuitFailed",
+        "agentConnections.restartOpenFailed",
+        "agentConnections.restartFailed",
+        "private native error",
+        null,
+      ].map((cause) => ({ app, cause })),
+    ),
+  )(
+    "guides manual restart for $app ($cause) in its status line without private details",
+    async ({ app, cause }) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: true,
+          desktopState: "restart_required",
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.restart).mockRejectedValueOnce(cause);
+      mount();
+      const row = await screen.findByRole("article", {
+        name: `apps.${app}`,
+      });
+      fireEvent.click(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "agentConnections.restart",
+        }),
+      );
+      const key =
+        typeof cause === "string" &&
+        [
+          "agentConnections.restartUnsupported",
+          "agentConnections.restartQuitFailed",
+          "agentConnections.restartOpenFailed",
+        ].includes(cause)
+          ? cause
+          : "agentConnections.restartFailed";
+      const guidance = await screen.findByText(key);
+      const status = guidance.closest('[role="status"]');
+      expect(status).toHaveClass("mp-agent-status");
+      expect(guidance).toHaveClass("agent-feedback");
+      expect(guidance).not.toHaveClass("err");
+      expect(status).toHaveTextContent(key);
+      expect(status).not.toHaveClass("text-destructive");
+      expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
+      expect(toast.info).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(
+        screen.queryByText("private native error"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("reports restart failures on the row and prevents duplicate calls during a confirmed retry", async () => {
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([
       {
@@ -2204,9 +2353,10 @@ describe("Agent connections", () => {
     });
     fireEvent.click(confirm);
     expect(
-      await within(row).findByText("agentConnections.restartBlocked"),
+      await screen.findByText("agentConnections.restartBlocked"),
     ).toBeVisible();
-    expect(toast.error).toHaveBeenCalledWith("agentConnections.restartBlocked");
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(agentConnectionsApi.restart).toHaveBeenCalledTimes(1);
     fireEvent.click(
@@ -2255,7 +2405,7 @@ describe("Agent connections", () => {
       within(dialog).getByRole("button", { name: "agentConnections.restart" }),
     );
     expect(
-      await within(row).findByText("agentConnections.restartFailed"),
+      await screen.findByText("agentConnections.restartFailed"),
     ).toBeVisible();
     expect(
       screen.queryByText("agentConnections.restartChanged"),
@@ -2384,7 +2534,7 @@ describe("Agent connections", () => {
         ).toBeDisabled();
         await act(async () => fail("agentConnections.restartBlocked"));
         await waitFor(() =>
-          expect(toast.error).toHaveBeenCalledWith(
+          expect(within(row).getByRole("status")).toHaveTextContent(
             "agentConnections.restartBlocked",
           ),
         );

@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Download, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -21,6 +23,36 @@ export function LogConfigPanel() {
     level: "info",
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+  const exportBusy = useRef(false);
+
+  const exportLogs = async () => {
+    if (exportBusy.current) return;
+    exportBusy.current = true;
+    setIsExporting(true);
+    try {
+      const result = await settingsApi.exportApplicationLog();
+      if (result) {
+        toast.success(t("settings.advanced.logConfig.exportSuccess"));
+      }
+    } catch (error) {
+      const reasons: Record<string, string> = {
+        "diagnostics.logMissing": "exportMissing",
+        "diagnostics.logEmpty": "exportEmpty",
+        "diagnostics.sameSource": "exportSameSource",
+        "diagnostics.privacyUnavailable": "exportPrivacy",
+        "diagnostics.backendUpdateRequired": "exportBackendUpdate",
+      };
+      const key =
+        typeof error === "string" && Object.hasOwn(reasons, error)
+          ? reasons[error]
+          : undefined;
+      toast.error(t(`settings.advanced.logConfig.${key ?? "exportFailed"}`));
+    } finally {
+      exportBusy.current = false;
+      setIsExporting(false);
+    }
+  };
 
   useEffect(() => {
     settingsApi
@@ -42,10 +74,25 @@ export function LogConfigPanel() {
     }
   };
 
-  if (isLoading) return null;
-
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+          {t("settings.advanced.logConfig.exportDescription")}
+        </p>
+        <Button variant="outline" disabled={isExporting} onClick={exportLogs}>
+          {isExporting ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="mr-2 h-4 w-4" />
+          )}
+          {t(
+            isExporting
+              ? "settings.advanced.logConfig.exporting"
+              : "settings.advanced.logConfig.export",
+          )}
+        </Button>
+      </div>
       <div className="flex items-center justify-between">
         <div className="space-y-0.5">
           <Label>{t("settings.advanced.logConfig.enabled")}</Label>
@@ -55,6 +102,7 @@ export function LogConfigPanel() {
         </div>
         <Switch
           checked={config.enabled}
+          disabled={isLoading}
           onCheckedChange={(checked) => handleChange({ enabled: checked })}
         />
       </div>
@@ -68,7 +116,7 @@ export function LogConfigPanel() {
         </div>
         <Select
           value={config.level}
-          disabled={!config.enabled}
+          disabled={isLoading || !config.enabled}
           onValueChange={(value) =>
             handleChange({ level: value as LogConfig["level"] })
           }
@@ -86,7 +134,7 @@ export function LogConfigPanel() {
         </Select>
       </div>
 
-      {/* 日志级别说明 */}
+      {/* Diagnostic log levels. */}
       <div className="rounded-lg bg-muted/50 p-4 text-xs space-y-1.5">
         <p className="font-medium text-muted-foreground mb-2">
           {t("settings.advanced.logConfig.levelHint")}

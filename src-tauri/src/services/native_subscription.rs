@@ -1825,59 +1825,14 @@ pub(crate) async fn quota(
             if let Some(quota) = claude_cli_usage(&account).await {
                 return Ok(quota);
             }
-            let dir = account.claude_dir();
-            let value = tokio::task::spawn_blocking(move || {
-                #[cfg(target_os = "macos")]
-                {
-                    let service = format!(
-                        "Claude Code-credentials-{}",
-                        &format!("{:x}", Sha256::digest(dir.to_string_lossy().as_bytes()))[..8]
-                    );
-                    if let Ok(output) = std::process::Command::new("security")
-                        .args(["find-generic-password", "-s", &service, "-w"])
-                        .stderr(std::process::Stdio::null())
-                        .output()
-                    {
-                        if output.status.success() {
-                            if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
-                                return Some(value);
-                            }
-                        }
-                    }
-                }
-                std::fs::read(dir.join(".credentials.json"))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            })
-            .await
-            .map_err(|_| FAILED)?
-            .ok_or(FAILED)?;
-            observe_plan(&account, super::subscription_plan::claude_plan(&value)).await;
-            let token = value
-                .pointer("/claudeAiOauth/accessToken")
-                .and_then(Value::as_str)
-                .ok_or(FAILED)?;
-            let response = crate::proxy::http_client::get()
-                .get("https://api.anthropic.com/api/oauth/usage")
-                .bearer_auth(token)
-                .header("anthropic-beta", "oauth-2025-04-20")
-                .timeout(Duration::from_secs(20))
-                .send()
-                .await
-                .map_err(|_| FAILED)?;
-            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                // A direct usage read cannot prove that the CLI's refresh grant
-                // was revoked. Let the CLI renew its own isolated credentials.
-                if !claude_usage_rejection_is_terminal(&value) {
-                    return Err(FAILED.into());
-                }
-                return Err(EXPIRED.into());
-            }
-            if !response.status().is_success() {
-                return Err(FAILED.into());
-            }
-            let body = response.json::<Value>().await.map_err(|_| FAILED)?;
-            return Ok(super::subscription::parse_claude_quota(&body));
+            let credentials = claude_usage_credentials(&account).await?;
+            observe_plan(
+                &account,
+                super::subscription_plan::claude_plan(&credentials),
+            )
+            .await;
+            let usage = claude_oauth_usage(&credentials).await?;
+            return Ok(super::subscription::parse_claude_quota(&usage));
         }
         // Sign in with ChatGPT does not expose a separate allowance endpoint.
         Ok(parse_google_quota(provider, &Value::Null))
@@ -1894,6 +1849,108 @@ pub(crate) async fn quota(
         }
         other => other,
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct ClaudeRoutingQuota {
+    pub tiers: Vec<super::subscription::QuotaTier>,
+    pub short_only: bool,
+}
+
+/// A complete usage reading for the bound Claude account. The CLI's display
+/// can omit reset times, so scheduling uses the structured usage endpoint.
+pub(crate) async fn claude_routing_quota(account_id: &str) -> Result<ClaudeRoutingQuota, String> {
+    let account = resolve(SubscriptionProvider::Claude, account_id).await?;
+    let credentials = claude_usage_credentials(&account).await?;
+    let usage = claude_oauth_usage(&credentials).await?;
+    routing_claude_windows(&usage).ok_or_else(|| FAILED.into())
+}
+
+fn routing_claude_windows(usage: &Value) -> Option<ClaudeRoutingQuota> {
+    let object = usage.as_object()?;
+    // A malformed or unsupported weekly row still establishes that a short
+    // window alone is not a complete view of this account's allowance.
+    let short_only = !object
+        .iter()
+        .any(|(key, value)| key.starts_with("seven_day") && !value.is_null())
+        && object.get("limits").is_none_or(|limits| {
+            limits.is_null()
+                || limits.as_array().is_some_and(|rows| {
+                    rows.iter().all(|row| {
+                        row["group"].as_str().is_some_and(|group| group != "weekly")
+                            && row["kind"] != "weekly_scoped"
+                    })
+                })
+        });
+    Some(ClaudeRoutingQuota {
+        tiers: super::subscription::parse_claude_quota(usage).tiers,
+        short_only,
+    })
+}
+
+async fn claude_usage_credentials(account: &Account) -> Result<Value, String> {
+    let dir = account.claude_dir();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let service = format!(
+                "Claude Code-credentials-{}",
+                &format!("{:x}", Sha256::digest(dir.to_string_lossy().as_bytes()))[..8]
+            );
+            if let Ok(output) = std::process::Command::new("security")
+                .args(["find-generic-password", "-s", &service, "-w"])
+                .stderr(std::process::Stdio::null())
+                .output()
+            {
+                if output.status.success() {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+        std::fs::read(dir.join(".credentials.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    })
+    .await
+    .map_err(|_| FAILED)?
+    .ok_or_else(|| FAILED.into())
+}
+
+async fn claude_oauth_usage(credentials: &Value) -> Result<Value, String> {
+    let token = credentials
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(Value::as_str)
+        .ok_or(FAILED)?;
+    let mut response = crate::proxy::http_client::get_without_redirects()
+        .map_err(|_| FAILED)?
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|_| FAILED)?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        // An expired access token can still have a valid CLI refresh grant.
+        return Err(if claude_usage_rejection_is_terminal(credentials) {
+            EXPIRED.into()
+        } else {
+            FAILED.into()
+        });
+    }
+    if !response.status().is_success() {
+        return Err(FAILED.into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| FAILED)? {
+        if bytes.len() + chunk.len() > 64 * 1024 {
+            return Err(FAILED.into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| FAILED.into())
 }
 
 #[derive(Default)]
@@ -2130,6 +2187,23 @@ pub(crate) async fn gemini_wire_model(account: &Account, project: &str, model: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_routing_read_only_uses_short_only_if_the_full_response_has_no_week() {
+        let short = json!({"five_hour":{"utilization":20,"resets_at":"2099-01-01T00:00:00Z"}});
+        assert!(routing_claude_windows(&short).is_some_and(|quota| quota.short_only));
+        for (key, value) in [
+            ("seven_day", json!({"resets_at":{}})),
+            ("seven_day_opus", json!({"utilization":0})),
+            ("limits", json!([{"kind":"weekly_scoped","group":"weekly"}])),
+            ("limits", json!({})),
+        ] {
+            let mut usage = short.clone();
+            usage[key] = value;
+            assert!(routing_claude_windows(&usage).is_some_and(|quota| !quota.short_only));
+        }
+        assert!(routing_claude_windows(&Value::Null).is_none());
+    }
+
     #[test]
     fn chatgpt_api_summary_recovers_previously_unrecognized_token_plans(
     ) -> Result<(), Box<dyn std::error::Error>> {

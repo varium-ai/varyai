@@ -328,6 +328,7 @@ fn earlier_key(headers: &HeaderMap) -> bool {
 async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
     let _security = Security((*crate::proxy::security::get_security_runtime()).clone());
     crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let root = tempfile::tempdir()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (tx, mut received) = tokio::sync::mpsc::channel(4);
@@ -392,6 +393,8 @@ async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
         ..Default::default()
     });
     if use_expiry {
+        use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+        use crate::services::intent_routing::catalog::freeze_execution;
         use crate::services::intent_routing::{QuotaOrder, RoutingStrategy};
         route.group.routing = RoutingStrategy::Ordered;
         route.group.quota_order = Some(QuotaOrder::EarliestExpiry);
@@ -442,6 +445,72 @@ async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
             }
         })
         .await?;
+
+        let now = chrono::Utc::now().timestamp();
+        for (id, official) in [("exhausted-codex", true), ("exhausted-claude", false)] {
+            let mut member = route.group.members[0].clone();
+            member.id = id.into();
+            member.provider_id = id.into();
+            route.group.fallback_member_ids.push(member.id.clone());
+            route.group.members.push(member);
+
+            let mut target = route.targets[0].clone();
+            target.provider_id = id.into();
+            target.official = official;
+            target.scheduling = Arc::new(scheduling::Scheduling::new(official));
+            target.scheduling.claim_budget_refresh(now);
+            if official {
+                let manager = Arc::new(CodexOAuthManager::new(root.path().to_owned()));
+                manager
+                    .add_test_account_with_user_identity(
+                        "fixture-codex",
+                        "synthetic-usage-token",
+                        "fixture-user",
+                    )
+                    .await?;
+                let mut account = crate::provider::Provider::with_id(
+                    id.into(),
+                    "Synthetic Codex".into(),
+                    json!({}),
+                    None,
+                );
+                account.category = Some("official".into());
+                crate::services::codex_provider::bind(&mut account, "fixture-codex");
+                target.credentials = Some(Arc::new(
+                    freeze_execution(&account, manager)
+                        .await
+                        .ok_or("missing fixture Codex identity")?,
+                ));
+                target.scheduling.observe_event(
+                    &json!({"type":"codex.rate_limits","rate_limits":{
+                        "primary":{"window_minutes":300,"used_percent":100,"reset_at":now+1800},
+                        "secondary":{"window_minutes":10080,"used_percent":10,"reset_at":now+7200}
+                    }}),
+                    now,
+                );
+            } else {
+                let mut bound = provider.clone();
+                bound.id = id.into();
+                bound.settings_config["routingSubscription"] =
+                    json!({"provider":"claude","accountId":"synthetic-quota-account"});
+                target.upstream = Some(bound);
+                target.scheduling.observe_claude_quota(
+                    crate::services::native_subscription::ClaudeRoutingQuota {
+                        tiers: vec![crate::services::subscription::QuotaTier {
+                            name: "five_hour".into(),
+                            utilization: 100.0,
+                            resets_at: chrono::DateTime::from_timestamp(now + 1800, 0)
+                                .map(|time| time.to_rfc3339()),
+                            used_value_usd: None,
+                            max_value_usd: None,
+                        }],
+                        short_only: false,
+                    },
+                    now,
+                );
+            }
+            route.targets.push(target);
+        }
     }
     route.targets[0].upstream = Some(provider);
     let alias = route.group.alias();
@@ -454,7 +523,6 @@ async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
             order: 0,
         },
     );
-    let root = tempfile::tempdir()?;
     let (mut proxy, mut runtime, mut port) = server(menu, root.path()).await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     let mut cases = cases(protocol, &alias);
@@ -505,6 +573,20 @@ async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
                 text.contains(&call),
                 "the native tool call must reach the client"
             );
+            if use_expiry && phase == 0 {
+                let traces = runtime.traces.snapshot();
+                let row = traces.first().ok_or("missing route trace")?;
+                assert_eq!(
+                    row.candidates.len(),
+                    2,
+                    "full subscription was planned for {}",
+                    case.app
+                );
+                assert!(row
+                    .candidates
+                    .iter()
+                    .all(|seat| !seat.provider_id.starts_with("exhausted-")));
+            }
             let history = match protocol {
                 Protocol::Responses => "input",
                 Protocol::Gemini => "contents",
@@ -581,5 +663,130 @@ async fn expiring_subscription_template_preserves_native_wire_and_continuations(
     ] {
         exercise(protocol, true).await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn responses_model_switch_named_item_recovery_all_connection_entries() -> TestResult {
+    use crate::proxy::security::{self, runtime::CompiledCustomRule, AuditAction, RiskLevel};
+    let _security = Security((*security::get_security_runtime()).clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let captured = seen.clone();
+    let upstream = tokio::spawn(async move {
+        let _ = axum::serve(listener, Router::new().fallback(post(move |Json(body): Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                if let Ok(mut seen) = captured.lock() { seen.push(body.clone()); }
+                if body["input"].as_array().into_iter().flatten().any(|item| item["id"] == "rs_missing") {
+                    return (StatusCode::NOT_FOUND, Json(json!({"error":{"message":"Item with id 'rs_missing' not found. Items are not persisted when `store` is set to false."}}))).into_response();
+                }
+                let call = format!("call_{}", body["metadata"]["fixture"].as_str().unwrap_or("synthetic"));
+                response(Protocol::Responses, &call, body["stream"] == true)
+            }
+        }))).await;
+    });
+    let base = format!("http://{address}");
+    let mut menu = global_tests::menu(&format!("{base}/v1/responses"));
+    let alias = menu.groups.keys().next().ok_or("missing alias")?.clone();
+    let route = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing route")?);
+    route.group.levels.clear();
+    route.group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
+    let mut provider = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({
+            "base_url":format!("{base}/v1"), "auth":{"OPENAI_API_KEY":"synthetic-upstream"},
+            "config":format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='{base}/v1'\nwire_api='responses'\n")
+        }),
+        None,
+    );
+    provider.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_responses".into()),
+        ..Default::default()
+    });
+    route.targets[0].upstream = Some(provider);
+    let root = tempfile::tempdir()?;
+    let (proxy, _runtime, port) = server(menu, root.path()).await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for restore in [false, true] {
+        security::runtime::set_security_runtime_for_test(security::SecurityRuntimeConfig {
+            enabled: restore,
+            custom_rules: vec![CompiledCustomRule {
+                id: "synthetic-replay".into(),
+                name: "Synthetic replay rule".into(),
+                rule_type: "regex".into(),
+                pattern: "synthetic-replay-secret".into(),
+                regex: regex::Regex::new("synthetic-replay-secret").ok(),
+                risk_level: RiskLevel::High,
+                action: AuditAction::RedactRestore,
+                enabled: true,
+            }],
+            ..Default::default()
+        });
+        for mut case in cases(Protocol::Responses, &alias) {
+            case.session.push_str(&format!("-restore-{restore}"));
+            case.body["metadata"]["fixture"] = json!(case.session);
+            case.body["input"][0]["content"] = json!(case.session);
+            let call = format!("call_{}", case.session);
+            // Populate an actual completed native call before replaying its result.
+            let reply = case
+                .request(&client, port, Protocol::Responses)
+                .json(&case.body)
+                .send()
+                .await?;
+            assert_eq!(
+                reply.status(),
+                StatusCode::OK,
+                "first turn: {} restore={restore}",
+                case.app
+            );
+            let _ = reply.bytes().await?;
+            let input = json!([
+                case.body["input"][0],
+                {"type":"function_call","id":format!("item-{call}"),"call_id":call,"name":"synthetic_tool","arguments":"{\"value\":1}","status":"completed"},
+                {"type":"function_call_output","call_id":call,"output":"Synthetic result"},
+                {"type":"reasoning","id":"rs_missing","summary":[],"encrypted_content":null},
+                {"role":"user","content":"Synthetic continue synthetic-replay-secret"}
+            ]);
+            case.body["store"] = json!(false);
+            case.body["input"] = input;
+            let before = seen.lock().map_err(|_| "synthetic lock poisoned")?.len();
+            let reply = case
+                .request(&client, port, Protocol::Responses)
+                .json(&case.body)
+                .send()
+                .await?;
+            assert_eq!(
+                reply.status(),
+                StatusCode::OK,
+                "replay: {} restore={restore} stream={} named={}",
+                case.app,
+                case.stream,
+                case.named
+            );
+            let _ = reply.bytes().await?;
+            let seen = seen.lock().map_err(|_| "synthetic lock poisoned")?;
+            assert_eq!(seen.len() - before, 2, "{} restore={restore}", case.app);
+            let first = &seen[before];
+            let last = &seen[before + 1];
+            let mut expected = first.clone();
+            expected["input"]
+                .as_array_mut()
+                .ok_or("synthetic input missing")?
+                .remove(3);
+            assert_eq!(last, &expected, "only the named reasoning item may change");
+            if restore {
+                assert!(!last["input"][3]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("synthetic-replay-secret"));
+            }
+        }
+    }
+    proxy.stop().await?;
+    upstream.abort();
     Ok(())
 }

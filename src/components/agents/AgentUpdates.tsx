@@ -1,4 +1,4 @@
-import { Download, Loader2 } from "lucide-react";
+import { RefreshCw, Download, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { useAgentUpdates } from "@/hooks/useAgentUpdates";
@@ -163,7 +163,9 @@ export function AgentUpdatesBar({
             )
             .join(" · "),
         });
-  const failed = results.some((r) => r.outcome !== "changed");
+  const failed = results.some(
+    (r) => r.outcome === "failed" || r.outcome === "preflightFailed",
+  );
   const updateBusy =
     updates.busy && !updates.installTarget && !updates.installing;
   const message = updateBusy
@@ -197,6 +199,17 @@ export function AgentUpdatesBar({
           <span className="mp-agent-updates-say" title={message}>
             {message}
           </span>
+          {!updateBusy && counts.unverified > 0 && (
+            <button
+              type="button"
+              className="mp-agent-update"
+              disabled={disabled || updates.busy}
+              onClick={() => void updates.recheck()}
+            >
+              <RefreshCw size={11} />
+              <span>{t("agentUpdates.recheck")}</span>
+            </button>
+          )}
           {(updates.updatable.length >= 2 || updateBusy) && (
             <button
               type="button"

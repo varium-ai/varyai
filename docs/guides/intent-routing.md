@@ -99,17 +99,30 @@ members or a matching pattern before saving.
   The intent classifier helps identify simple tasks. Unclear results use the
   primary order. Other members can still serve as backups. If catalog prices
   do not identify a cheaper model, the draft has no automatic task split.
-- **Most capable first.** Confirm the proposed order in the editor. The list is
-  a starting suggestion. The group follows the user-approved order.
+  Automatic suggestions skip the Codex automatic approval review model.
+  Use a model that serves Chat Completions for the intent classifier.
+- **Most capable first.** The draft starts with up to three suggested members.
+  Changing the selection keeps the recommended order. Moving a model or
+  choosing a default manually preserves that order for the rest of the edit.
+  Select **Apply recommended order** to resume automatic ranking.
+  Recognizable model names put flagship variants before
+  standard variants and lightweight variants last. Within the same family
+  and tier, higher versions come first. Across families, the recommendation
+  uses catalog information. Models outside the template catalog go last.
+  The action makes no model requests. Adjust the list before saving. The
+  first member becomes the default and the rest become fallbacks in order.
 - **Fastest first.** Choose models whose outputs you can use. Recent time to
   first content and output speed drive new selections. Without measurements,
   the model order provides the starting point.
-- **Expiring allowance first.** Available Sub2API subscription allowance with
-  a provider-confirmed expiry ranks by earliest expiry. This uses the
-  subscription allowance response with a known positive remaining amount.
-  Standard relay endpoints are queried with the selected API key on the same origin. A group
-  uses its model order on a cold start or when no valid expiry is known.
-- **Custom.** Configure the members, order and optional rules directly.
+- **Expiring allowance first.** Try ready Sub2API accounts with a confirmed
+  positive allowance in earliest expiry order. Next try ready Codex and Claude
+  accounts in descending order of weekly allowance percentage left per hour
+  until reset. When there is no weekly allowance, a confirmed 5-hour-only
+  account uses the same calculation for its short window. A full 5-hour
+  window makes the account unavailable for new selections.
+- **Custom.** Use the regular group editor to select models and set a default
+  member or rules in Advanced settings. The model order list appears while
+  reviewing a template draft.
 
 The editor and tray no longer expose a scheduling selector. Existing group
 settings and legacy imports remain readable and retain their saved behavior.
@@ -169,14 +182,24 @@ Automatic groups use the existing Smart scheduler. Saved groups without a schedu
 
 All strategies retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first except in Manual mode. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
 
-Expiry sorting is optional group configuration. It applies before rule
-preferences and only when the gateway can select a new destination. Ready
-members with a fresh observation, positive usable subscription allowance and
-future expiry rank first. Ties preserve the configured order. Cooldown and
-continuation ownership still apply. The lookup runs asynchronously and caches
-observations by relay origin and API key. Credential expiration, wallet
-balances, quota reset times and unsupported or malformed responses have no
-expiry preference. [Sub2API usage implementation](https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/handler/gateway_handler.go)
+Expiry sorting is optional group configuration. It applies when the gateway
+can select a new destination. A fresh, positive Sub2API subscription allowance
+with a confirmed expiry ranks by date. Codex and Claude accounts with known
+remaining allowance then rank by percentage left divided by hours until reset,
+with a one-hour floor. The tightest applicable weekly window wins when Claude
+reports both account-wide and model-specific allowances. A 5-hour window
+ranks by pace only when the account's usage response confirms there is no
+weekly allowance. An exhausted applicable window is excluded for a new
+selection, even if an editable rule prefers it. Exact continuations retain
+their existing ownership. Unknown or stale data falls back to the configured
+model order. Ties retain that order.
+
+Reads are asynchronous and bounded. Codex uses observations for the frozen
+account and refreshes through its existing ChatGPT usage endpoint. Claude
+uses the bound account's structured usage response so a CLI percentage
+without a reset time cannot become a pace score. Sub2API observations are
+scoped by relay origin and API key. Wallet balances and credential expiry
+carry no priority. [Sub2API usage implementation](https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/handler/gateway_handler.go)
 
 Other quota and credit data comes from the official fixed `/backend-api/wham/usage` endpoint, response headers and supported rate-limit events. Samples expire after five minutes or their reset. Recent token counts and exact-account/model speed averages are in-memory, bounded by published sessions, and reset on restart. Speed samples use a twenty-minute half-life and expire after an hour. Preparation and telemetry failures never interrupt forwarding; no database access or usage-history scan is added to selection. Direct entries and groups share telemetry. Compatible refreshes preserve bindings and telemetry across strategy, weight, cost and manual-pick changes; destination/account changes do not inherit them.
 
@@ -208,6 +231,8 @@ This operation makes no network calls. It does not classify arbitrary user messa
 ## Network classification trial
 
 Configure a Chat Completions API-key classifier in the group editor, enter synthetic task text, review the displayed provider/model and check outbound consent before running. The call may incur charges. Saving never sends text. Editing group fields or test text revokes consent and invalidates late results.
+
+The trial uses the draft's **Classification budget (ms)** under **Advanced classifier settings**. New drafts start at 2,000 ms. If the trial times out, raise the deadline up to 5,000 ms or select a faster classifier. The group uses the same deadline during live classification after saving.
 
 Only test text and enabled rule descriptions are sent with the classifier's own credentials. The trial never reads conversation history, activates routing, switches accounts, changes client files or forwards tasks. Official/OAuth task members may appear in the proposed plan: this is not transport readiness validation. The offline validator remains unchanged.
 

@@ -271,6 +271,26 @@ pub async fn set_proxy_takeover_for_app(
     app_type: String,
     enabled: bool,
 ) -> Result<(), String> {
+    use crate::services::diagnostics::operation::{record, Action};
+    let diagnostic_app = app_type.clone();
+    record(
+        &diagnostic_app,
+        if enabled {
+            Action::Connect
+        } else {
+            Action::Disconnect
+        },
+        set_proxy_takeover_for_app_inner(app, state, app_type, enabled),
+    )
+    .await
+}
+
+async fn set_proxy_takeover_for_app_inner(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    enabled: bool,
+) -> Result<(), String> {
     if app_type == "trae-intl" {
         return Box::pin(super::agent_connections::set_agent_connection(
             app, state, app_type, enabled, None,

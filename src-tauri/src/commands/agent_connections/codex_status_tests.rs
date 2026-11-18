@@ -248,6 +248,8 @@ fn current_background_server_clears_window_age_without_claiming_inference_succes
 async fn confirmed_agent_restart_propagates_native_result_without_connection_gates() {
     for error in [
         "agentConnections.restartBlocked",
+        "agentConnections.restartQuitFailed",
+        "agentConnections.restartOpenFailed",
         "agentConnections.restartFailed",
         "agentConnections.restartChanged",
     ] {

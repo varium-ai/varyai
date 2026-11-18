@@ -355,6 +355,9 @@
   color: var(--mp-muted);
   font-size: 11.5px;
 }
+.rt-group-form .rt-edit-routing > fieldset > .rt-diagnostics {
+  margin-block-start: 0;
+}
 .rt-group-form .rt-execution-settings {
   margin: 0;
   padding: 8px 0;

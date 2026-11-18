@@ -47,7 +47,11 @@ vi.mock("@/lib/api/intentRouting", () => ({
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string, values?: { budgetMs?: number }) =>
+      values?.budgetMs === undefined ||
+      !key.startsWith("intentRouting.trialOutcome.timeout")
+        ? key
+        : `${key} ${values.budgetMs}`,
   }),
 }));
 
@@ -939,6 +943,13 @@ describe("IntentRoutingPanel", () => {
         expect(
           screen.getByRole("button", { name: "common.save" }),
         ).toBeEnabled();
+        if (key !== "templateCapability") {
+          expect(
+            screen.queryByRole("button", {
+              name: "routingPage.applyRecommendedModelOrder",
+            }),
+          ).not.toBeInTheDocument();
+        }
         expect(intentRoutingApi.save).not.toHaveBeenCalled();
       };
       await open();
@@ -1006,6 +1017,87 @@ describe("IntentRoutingPanel", () => {
       );
     },
   );
+  it("keeps fifty selected models ranked until the user changes the order manually", async () => {
+    const models = Array.from({ length: 51 }, (_, index) => ({
+      id: `model-${index + 1}`,
+      name: `Model ${index + 1}`,
+      maker: true,
+      outputPrice: 20,
+      released: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    }));
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "provider",
+        name: "Fixture provider",
+        taskEligible: true,
+        classifierEligible: false,
+        models,
+      },
+    ]);
+    mount();
+    const create = await screen.findByRole("button", {
+      name: "intentRouting.create",
+    });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    fireEvent.click(
+      screen.getByRole("button", { name: "routingPage.templateCapability" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.selectAll" }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Model 51" }));
+    const order = within(
+      screen.getByRole("list", { name: "routingPage.modelOrder" }),
+    );
+    const rows = () => order.getAllByRole("listitem");
+    const reselect = () => {
+      const model = screen.getByRole("checkbox", { name: "Model 48" });
+      fireEvent.click(model);
+      fireEvent.click(model);
+    };
+    expect(order.getAllByRole("listitem")).toHaveLength(50);
+    expect(rows()[3]).toHaveTextContent("Model 47");
+    reselect();
+    expect(rows()[2]).toHaveTextContent("Model 48");
+
+    fireEvent.click(
+      within(rows()[1]).getByRole("button", { name: /^intentRouting.moveUp/ }),
+    );
+    reselect();
+    expect(rows()[0]).toHaveTextContent("Model 49");
+    expect(rows().at(-1)).toHaveTextContent("Model 48");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "routingPage.applyRecommendedModelOrder",
+      }),
+    );
+    reselect();
+    expect(rows()[0]).toHaveTextContent("Model 50");
+    expect(rows()[2]).toHaveTextContent("Model 48");
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(saved.members.map((member) => member.modelId)).toEqual(
+      models
+        .slice(0, 50)
+        .reverse()
+        .map((model) => model.id),
+    );
+    expect(saved.defaultMemberId).toBe(saved.members[0].id);
+    expect(saved.fallbackMemberIds).toEqual(
+      saved.members.slice(1).map((member) => member.id),
+    );
+  });
+
   it("retains manual classifier entry for legacy catalogs without model listings", async () => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
       {
@@ -1690,6 +1782,9 @@ describe("IntentRoutingPanel", () => {
     );
     chooseCustom();
     expect(document.querySelectorAll(".rt-model-chips")).not.toHaveLength(0);
+    expect(
+      screen.queryByRole("list", { name: "routingPage.modelOrder" }),
+    ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("intentRouting.name"), {
       target: { value: "New shared group" },
     });
@@ -3385,6 +3480,61 @@ describe("IntentRoutingPanel", () => {
         screen.queryByText("intentRouting.trialOutcome.matched"),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it("shows the classifier deadline and updates the timeout guidance at the limit", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [
+        {
+          ...group,
+          classifierTarget: { providerId: "provider", modelId: "small-model" },
+        },
+      ],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    vi.mocked(intentRoutingApi.trial).mockResolvedValue({
+      plan: {
+        groupId: group.id,
+        revision: group.revision,
+        candidates: group.members,
+        reason: "default_target",
+        live: false,
+      },
+      intentId: null,
+      outcome: "timeout",
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+    fireEvent.click(screen.getByText("intentRouting.trialTitle"));
+    fireEvent.change(screen.getByLabelText("intentRouting.trialText"), {
+      target: { value: "Synthetic task" },
+    });
+    const consent = screen.getByRole("checkbox", {
+      name: "intentRouting.trialConsent",
+    });
+    const run = screen.getByRole("button", { name: "intentRouting.runTrial" });
+    fireEvent.click(consent);
+    fireEvent.click(run);
+    const timeout = "intentRouting.trialOutcome.timeout 2000";
+    expect(await screen.findByText(timeout)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("routingPage.classifierAdvanced"));
+    fireEvent.change(screen.getByLabelText("intentRouting.budget"), {
+      target: { value: "5000" },
+    });
+    expect(consent).not.toBeChecked();
+    expect(screen.queryByText(timeout)).not.toBeInTheDocument();
+    fireEvent.click(consent);
+    fireEvent.click(run);
+    expect(intentRoutingApi.trial).toHaveBeenLastCalledWith(
+      expect.objectContaining({ classificationBudgetMs: 5000 }),
+      "Synthetic task",
+      true,
+    );
+    expect(
+      await screen.findByText("intentRouting.trialOutcome.timeoutAtLimit 5000"),
+    ).toBeInTheDocument();
   });
 
   it("loads global resources without automatically publishing legacy groups", async () => {

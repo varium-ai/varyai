@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   useQueries,
   useQuery,
@@ -211,6 +211,59 @@ export function useAgentUpdates(installed: AppId[]) {
       index: store.snapshot().results.length,
     });
   }
+  async function observeUpdatedVersion(
+    app: AppId,
+    from: string | null | undefined,
+    failed = false,
+  ) {
+    const tool = cliTools[app];
+    let to: string | null | undefined;
+    if (tool) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const fresh = (await settingsApi.getToolVersions([tool])).find(
+            (v) => v.name === tool,
+          );
+          client.setQueryData(cliKey(tool), fresh ?? null);
+          to = fresh?.version;
+        } catch {
+          // Never retain a stale version as evidence that the upgrade succeeded.
+          client.setQueryData(cliKey(tool), null);
+        }
+        if (
+          (to && from && compareVersions(to, from) > 0) ||
+          failed ||
+          attempt === 2
+        )
+          break;
+        // A just-updated CLI can temporarily fail its first startup probe.
+        // Retry only observation, never the update command itself.
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    } else {
+      let fresh: AgentVersion | undefined;
+      try {
+        fresh = (await settingsApi.getAgentVersions())[app];
+        if (fresh?.supported && fresh.installed && fresh.source === "desktop") {
+          to = fresh.version;
+        }
+      } catch {
+        // A failed post-update probe must clear the selected app's stale snapshot.
+      }
+      client.setQueryData<Record<string, AgentVersion>>(
+        desktopKey,
+        (current) => {
+          const next = { ...current };
+          if (fresh) next[app] = fresh;
+          else delete next[app];
+          return next;
+        },
+      );
+    }
+
+    return to;
+  }
+
   async function execute(selected: AppId[]) {
     try {
       setActive([...store.snapshot().active, ...selected]);
@@ -241,48 +294,7 @@ export function useAgentUpdates(installed: AppId[]) {
               failureReason = "homebrewTrust";
             }
           }
-          let to: string | null | undefined;
-          if (tool) {
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                const fresh = (await settingsApi.getToolVersions([tool])).find(
-                  (v) => v.name === tool,
-                );
-                client.setQueryData(cliKey(tool), fresh ?? null);
-                to = fresh?.version;
-              } catch {
-                // Never retain a stale version as evidence that the upgrade succeeded.
-                client.setQueryData(cliKey(tool), null);
-              }
-              if (to || failed || attempt === 2) break;
-              // A just-updated CLI can temporarily fail its first startup probe.
-              // Retry only observation, never the update command itself.
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
-          } else {
-            let fresh: AgentVersion | undefined;
-            try {
-              fresh = (await settingsApi.getAgentVersions())[app];
-              if (
-                fresh?.supported &&
-                fresh.installed &&
-                fresh.source === "desktop"
-              ) {
-                to = fresh.version;
-              }
-            } catch {
-              // A failed post-update probe must clear the selected app's stale snapshot.
-            }
-            client.setQueryData<Record<string, AgentVersion>>(
-              desktopKey,
-              (current) => {
-                const next = { ...current };
-                if (fresh) next[app] = fresh;
-                else delete next[app];
-                return next;
-              },
-            );
-          }
+          const to = await observeUpdatedVersion(app, from, failed);
           const verified = !!to && !!from && compareVersions(to, from) > 0;
           record([
             {
@@ -307,6 +319,64 @@ export function useAgentUpdates(installed: AppId[]) {
       void client.invalidateQueries({ queryKey: ["agent-installations"] });
     }
   }
+  async function recheck() {
+    if (locked.current || store.snapshot().busy) return;
+    const pending = store
+      .snapshot()
+      .results.filter((result) => result.outcome === "unverified");
+    if (!pending.length) return;
+    const selected = pending.map((result) => result.app);
+    store.set("reserved", [...store.snapshot().reserved, ...selected]);
+    setBusy(true);
+    try {
+      const observed = await Promise.all(
+        pending.map(async (result) => {
+          const to = await observeUpdatedVersion(result.app, result.from);
+          return {
+            ...result,
+            to,
+            outcome:
+              to && result.from && compareVersions(to, result.from) > 0
+                ? ("changed" as const)
+                : ("unverified" as const),
+          };
+        }),
+      );
+      store.set(
+        "results",
+        store
+          .snapshot()
+          .results.map(
+            (result) =>
+              observed.find((next) => next.app === result.app) ?? result,
+          ),
+      );
+    } finally {
+      release(selected);
+    }
+  }
+
+  useEffect(() => {
+    if (store.snapshot().busy) return;
+    let changed = false;
+    const next = store.snapshot().results.map((result) => {
+      if (result.outcome !== "unverified" || !result.from) return result;
+      const info = desktop.data?.[result.app];
+      const query = queries[apps.indexOf(result.app)];
+      const to = cliTools[result.app]
+        ? !query?.isError && cli.get(result.app)?.version
+        : !desktop.isError &&
+          info?.supported &&
+          info.installed &&
+          info.source === "desktop" &&
+          info.version;
+      if (!to || compareVersions(to, result.from) <= 0) return result;
+      changed = true;
+      return { ...result, to, outcome: "changed" as const };
+    });
+    if (changed) store.set("results", next);
+  });
+
   async function start(requested: AppId[]) {
     if (locked.current) return;
     const selected = [...new Set(requested)].filter(
@@ -448,6 +518,7 @@ export function useAgentUpdates(installed: AppId[]) {
     deferred,
     showBar: barShown || updatable.length >= 2,
     start,
+    recheck,
     installTarget,
     installing,
     installResult,

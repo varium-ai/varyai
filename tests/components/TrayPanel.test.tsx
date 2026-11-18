@@ -2,6 +2,18 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { createInstance } from "i18next";
+import { I18nextProvider } from "react-i18next";
+import { APP_IDS } from "@/config/appConfig";
+import { securityApi } from "@/lib/api/security";
+import type {
+  SecurityEvent,
+  SecurityEventResult,
+} from "@/types/securityEvents";
+import en from "@/i18n/locales/en.json";
+import zh from "@/i18n/locales/zh.json";
+import ja from "@/i18n/locales/ja.json";
+import zhTW from "@/i18n/locales/zh-TW.json";
 import { TrayPanel } from "@/components/tray/TrayPanel";
 import { trayPanelApi } from "@/lib/trayPanel";
 import { routingTraceApi } from "@/lib/api/routingTrace";
@@ -95,6 +107,7 @@ afterAll(() => {
 });
 beforeEach(() => {
   localStorage.clear();
+  vi.mocked(securityApi.getSettings).mockResolvedValue({ enabled: true });
   updateState.isChecking = false;
   updateState.hasUpdate = false;
   vi.mocked(intentRoutingApi.list).mockResolvedValue({
@@ -454,4 +467,194 @@ it("preserves generated-group protection and disables changes while saving", asy
   expect(toggle).toBeDisabled();
   finish({ ...group, enabled: false });
   await waitFor(() => expect(toggle).toBeEnabled());
+});
+
+const eventCases = [
+  ["redact", "redacted", "security.resultRedacted", "MEDIUM"],
+  ["redact_restore", "redacted", "security.resultRedactRestore", "CRITICAL"],
+  ["block", "blocked", "security.resultBlocked", "HIGH"],
+  ["audit", "warning", "security.resultAlert", "LOW"],
+  ["allow", "allowed", "security.actionAllow", null],
+  ["unsupported-action", "unknown", "securityEvents.unknown", null],
+  ["risky", "warning", "securityEvents.resultWarning", "MEDIUM"],
+  ["unchecked", "unchecked", "toolRisk.verdict.unchecked", null],
+  ["uncertain", "uncertain", "toolRisk.verdict.uncertain", "MEDIUM"],
+  ["low_risk", "low_risk", "toolRisk.verdict.low_risk", "LOW"],
+  ["unsupported-verdict", "unknown", "securityEvents.unknown", null],
+  [null, "unknown", "securityEvents.notRecorded", null],
+] as const;
+function syntheticEvent(index: number, appType: string | null): SecurityEvent {
+  const [action, result, , riskLevel] = eventCases[index];
+  const common = {
+    key: `synthetic:${index}`,
+    timestamp: 1000 + index,
+    lastSeenAt: 1000 + index,
+    triggerCount: 1,
+    appType,
+    sessionId: "synthetic-session",
+    riskLevel,
+    result,
+  };
+  return index < 6
+    ? {
+        ...common,
+        eventType: "dlp",
+        record: {
+          id: index,
+          timestamp: common.timestamp,
+          appType: appType ?? "",
+          providerId: "synthetic-provider",
+          ruleId: "synthetic-rule",
+          ruleName: "Synthetic rule",
+          ruleCategory: "custom",
+          riskLevel: riskLevel ?? "unsupported-level",
+          actionTaken: action ?? "unsupported-action",
+          matchedSnippetMasked: "***",
+        },
+      }
+    : {
+        ...common,
+        eventType: "tool_risk",
+        record: {
+          id: index,
+          timestamp: common.timestamp,
+          source: "proxy",
+          stage: "model_response",
+          detectionScope: "in_scope",
+          integrityStatus: "complete",
+          verdict: action,
+          policyVersion: 1,
+          ruleIds: [],
+          suppressedCount: 0,
+        },
+      };
+}
+async function mountLocalizedEvents(
+  language: string,
+  tree: typeof zh | typeof en | typeof ja | typeof zhTW,
+  items: SecurityEvent[],
+) {
+  const instance = createInstance();
+  await instance.init({
+    lng: language,
+    fallbackLng: false,
+    resources: { [language]: { translation: tree } },
+  });
+  vi.mocked(securityEventsApi.getEvents).mockResolvedValue({
+    items,
+    total: items.length,
+    page: 1,
+    pageSize: 8,
+  });
+  localStorage.setItem("vary:tray-tab", "security");
+  const view = render(
+    <I18nextProvider i18n={instance}>
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <TrayPanel />
+      </QueryClientProvider>
+    </I18nextProvider>,
+  );
+  await waitFor(() =>
+    expect(view.container.querySelectorAll(".tray-events b")).toHaveLength(
+      items.length,
+    ),
+  );
+  return { ...view, instance };
+}
+it.each(
+  APP_IDS.flatMap((app) =>
+    [true, false].map((enabled) => [app, enabled] as const),
+  ),
+)(
+  "localizes %s event history with protection enabled=%s without changing records",
+  async (app, enabled) => {
+    vi.mocked(securityApi.getSettings).mockResolvedValue({ enabled });
+    const items = [syntheticEvent(0, app), syntheticEvent(6, app)];
+    const original = structuredClone(items);
+    const { container } = await mountLocalizedEvents("zh", zh, items);
+    expect(container.querySelector(".tray-events")).toHaveTextContent(
+      "已隐藏后发送",
+    );
+    expect(container.querySelector(".tray-events")).toHaveTextContent(
+      "风险预警",
+    );
+    expect(container.querySelector(".tray-events")).toHaveTextContent(
+      `${app} · 中`,
+    );
+    expect(
+      screen.getByText(
+        enabled ? zh.trayPanel.securityStopped : zh.trayPanel.securityOff,
+      ),
+    ).toBeVisible();
+    expect(securityEventsApi.getEvents).toHaveBeenCalledWith(
+      { view: "security_events" },
+      1,
+      8,
+    );
+    expect(items).toEqual(original);
+  },
+);
+it.each(
+  (
+    [
+      ["en", en],
+      ["zh", zh],
+      ["ja", ja],
+      ["zh-TW", zhTW],
+    ] as const
+  ).flatMap(([language, tree]) =>
+    [0, 6].map((offset) => ({ language, tree, offset })),
+  ),
+)(
+  "renders actual $language translations for event batch $offset",
+  async ({ language, tree, offset }) => {
+    const items = eventCases
+      .slice(offset, offset + 6)
+      .map((_, index) => syntheticEvent(index + offset, "codex"));
+    const { container, instance } = await mountLocalizedEvents(
+      language,
+      tree,
+      items,
+    );
+    const rows = container.querySelectorAll(".tray-events > div");
+    rows.forEach((row, index) => {
+      const [, result, key, level] = eventCases[index + offset];
+      expect(instance.exists(key), key).toBe(true);
+      expect(row.querySelector("b")).toHaveTextContent(instance.t(key));
+      const riskKey =
+        level === "CRITICAL"
+          ? "security.riskCritical"
+          : level === "HIGH"
+            ? "security.levelHighShort"
+            : level === "MEDIUM"
+              ? "security.levelMediumShort"
+              : level === "LOW"
+                ? "security.levelLowShort"
+                : "securityEvents.unknown";
+      expect(row.querySelector("small")).toHaveTextContent(
+        `codex · ${instance.t(riskKey)}`,
+      );
+      expect(row.querySelector(".tray-dot")).toHaveAttribute(
+        "data-result",
+        result,
+      );
+    });
+    expect(container.querySelector(".tray-events")?.textContent).not.toMatch(
+      /securityEvents\.|security\.|toolRisk\./,
+    );
+  },
+);
+it("shows unknown historical risk and missing Agent identity safely", async () => {
+  const event = syntheticEvent(5, null);
+  event.riskLevel = "unsupported-level" as SecurityEvent["riskLevel"];
+  event.result = "unsupported-result" as SecurityEventResult;
+  const { container } = await mountLocalizedEvents("zh", zh, [event]);
+  expect(container.querySelector(".tray-events b")).toHaveTextContent("未知");
+  expect(container.querySelector(".tray-events small")).toHaveTextContent(
+    "— · 未知",
+  );
 });

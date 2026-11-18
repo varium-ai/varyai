@@ -7,6 +7,7 @@ pub(crate) mod codex_provider;
 pub(crate) mod codex_proxy_diagnostic;
 pub mod coding_plan;
 pub mod config;
+pub(crate) mod diagnostics;
 pub(crate) mod doubao_checkin;
 pub mod env_checker;
 pub mod env_manager;

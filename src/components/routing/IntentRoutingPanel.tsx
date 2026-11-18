@@ -11,10 +11,12 @@ import {
 } from "lucide-react";
 import {
   blankRoutingGroup,
+  recommendRoutingMemberOrder,
   routingTemplates,
   routingLevels,
   validRoutingPattern,
   validRoutingRule,
+  type RoutingTemplate,
 } from "@/lib/routingGroupTransfer";
 import { useRoutingDialogHeight } from "@/components/routing/useRoutingDialogHeight";
 import { RoutingRefreshIcon } from "./RoutingRefreshIcon";
@@ -65,11 +67,14 @@ import {
   type ClassificationTrial,
   type RoutingCatalog,
   type RoutingGroup,
+  type RoutingMember,
   type RoutingPlanPreview,
 } from "@/lib/api/intentRouting";
 
 import "./routing.css";
 import "./routing-group-form.css";
+
+const MAX_CLASSIFICATION_BUDGET_MS = 5000;
 
 const knownErrors = new Set([
   "invalid",
@@ -82,6 +87,17 @@ const knownErrors = new Set([
 
 const sinkable = (routing: RoutingGroup["routing"]) =>
   !["round_robin", "weighted", "manual"].includes(routing ?? "ordered");
+
+type EditorRequest = { group: RoutingGroup; template?: RoutingTemplate["key"] };
+
+function withDraftMemberOrder(group: RoutingGroup, members: RoutingMember[]) {
+  return {
+    ...group,
+    members,
+    defaultMemberId: members[0]?.id ?? "",
+    fallbackMemberIds: members.slice(1).map(({ id }) => id),
+  };
+}
 
 function orderGroups(groups: RoutingGroup[], order: string[]) {
   const positions = new Map(order.map((id, index) => [id, index]));
@@ -148,6 +164,8 @@ export function IntentRoutingPanel({
   const [pickingClassifier, setPickingClassifier] = useState(false);
   const [patternInput, setPatternInput] = useState("");
   const [draft, setDraft] = useState<RoutingGroup | null>(null);
+  const [draftTemplate, setDraftTemplate] = useState<RoutingTemplate["key"]>();
+  const draftOrderEdited = useRef(false);
   const patternsChanged =
     !!draft &&
     (JSON.stringify(draft.match) !==
@@ -178,7 +196,7 @@ export function IntentRoutingPanel({
       ? (matches.data ?? [])
       : (groups.data?.matchedMembers?.[draft.id] ?? [])
     : [];
-  const [nextDraft, setNextDraft] = useState<RoutingGroup | null>(null);
+  const [nextDraft, setNextDraft] = useState<EditorRequest | null>(null);
   const editorId = useId();
   const editorRef = useRoutingDialogHeight();
   const initialDraft = useRef<RoutingGroup | null>(null);
@@ -376,11 +394,13 @@ export function IntentRoutingPanel({
     setTrialConsent(false);
     setDraft(value);
   }
-  function openEditor(value: RoutingGroup) {
-    initialDraft.current = structuredClone(value);
+  function openEditor({ group, template }: EditorRequest) {
+    initialDraft.current = structuredClone(group);
+    draftOrderEdited.current = false;
+    setDraftTemplate(template);
     setPickingClassifier(false);
     setPatternInput("");
-    edit(structuredClone(value));
+    edit(structuredClone(group));
   }
   function newRoutingGroup() {
     return selectRoutingMembers(
@@ -389,11 +409,15 @@ export function IntentRoutingPanel({
       true,
     );
   }
-  function requestEditor(value: RoutingGroup) {
+  function requestEditor(
+    group: RoutingGroup,
+    template?: RoutingTemplate["key"],
+  ) {
+    const request = { group, template };
     if (draftDirty) {
-      setNextDraft(value);
+      setNextDraft(request);
     } else {
-      openEditor(value);
+      openEditor(request);
     }
   }
   function useTemplate(template: ReturnType<typeof routingTemplates>[number]) {
@@ -409,11 +433,14 @@ export function IntentRoutingPanel({
       draftName = `${name.slice(0, 80 - suffix.length)}${suffix}`;
     }
     setChoosingTemplate(false);
-    requestEditor({
-      ...template.group,
-      id: crypto.randomUUID(),
-      name: draftName,
-    });
+    requestEditor(
+      {
+        ...template.group,
+        id: crypto.randomUUID(),
+        name: draftName,
+      },
+      template.key,
+    );
   }
 
   function templateNeed(template: ReturnType<typeof routingTemplates>[number]) {
@@ -840,13 +867,19 @@ export function IntentRoutingPanel({
     const priority = [...draftPriority];
     const next = index + offset;
     [priority[index], priority[next]] = [priority[next], priority[index]];
-    const [defaultMemberId, ...fallbackMemberIds] = priority;
-    edit({
-      ...draft,
-      defaultMemberId,
-      fallbackMemberIds,
-      members: priority.flatMap((id) => draftMembersById.get(id) ?? []),
-    });
+    draftOrderEdited.current = true;
+    edit(
+      withDraftMemberOrder(
+        draft,
+        priority.flatMap((id) => draftMembersById.get(id) ?? []),
+      ),
+    );
+  }
+  function recommendDraftOrder(group: RoutingGroup, members = group.members) {
+    return withDraftMemberOrder(
+      group,
+      recommendRoutingMemberOrder(members, providers.data ?? []),
+    );
   }
 
   const classifierModels =
@@ -940,68 +973,99 @@ export function IntentRoutingPanel({
               providers={providers.data ?? []}
               members={draft.members}
               disabled={pending}
-              onSelect={(choices, selected) =>
-                edit(selectRoutingMembers(draft, choices, selected))
-              }
+              onSelect={(choices, selected) => {
+                const next = selectRoutingMembers(draft, choices, selected);
+                edit(
+                  draftTemplate === "templateCapability" &&
+                    !draftOrderEdited.current
+                    ? recommendDraftOrder(next)
+                    : next,
+                );
+              }}
             />
           </div>
-          {(draft.routing === "ordered" || draft.routing === "fastest") &&
-            draftPriority.length > 1 && (
-              <div className="space-y-1">
-                <h4 className="text-sm font-medium">
-                  {t("routingPage.modelOrder")}
-                </h4>
-                <ol
-                  className="max-h-36 overflow-y-auto text-xs"
-                  aria-label={t("routingPage.modelOrder")}
+          {draftTemplate && draftPriority.length > 1 && (
+            <div className="rt-setting-row">
+              <h4 className="text-sm font-medium">
+                {t("routingPage.modelOrder")}
+              </h4>
+              {draftTemplate === "templateCapability" && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="justify-self-start"
+                  disabled={pending || !providers.data?.length}
+                  onClick={() => {
+                    draftOrderEdited.current = false;
+                    const recommended = recommendDraftOrder(
+                      draft,
+                      draftPriority.flatMap(
+                        (id) => draftMembersById.get(id) ?? [],
+                      ),
+                    );
+                    if (
+                      recommended.members.some(
+                        ({ id }, index) => id !== draftPriority[index],
+                      )
+                    )
+                      edit(recommended);
+                  }}
                 >
-                  {draftPriority.map((id, index) => {
-                    const member = draftMembersById.get(id)!;
-                    const provider = providers.data?.find(
-                      ({ id }) => id === member.providerId,
-                    );
-                    const model = provider?.models?.find(
-                      ({ id }) => id === member.modelId,
-                    );
-                    const name = `${model?.name || member.modelId} · ${provider?.name ?? member.providerId}`;
-                    return (
-                      <li className="flex items-center gap-1" key={id}>
-                        <span className="min-w-0 flex-1 truncate">
-                          <AccountLabel title>{name}</AccountLabel>
-                        </span>
-                        {([-1, 1] as const).map((offset) => {
-                          const label = t(
-                            offset < 0
-                              ? "intentRouting.moveUp"
-                              : "intentRouting.moveDown",
-                          );
-                          const Icon = offset < 0 ? ChevronUp : ChevronDown;
-                          return (
-                            <Button
-                              key={offset}
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="size-7"
-                              aria-label={`${label} ${model?.name || member.modelId}`}
-                              title={label}
-                              disabled={
-                                pending ||
-                                index + offset < 0 ||
-                                index + offset >= draftPriority.length
-                              }
-                              onClick={() => moveDraftMember(index, offset)}
-                            >
-                              <Icon size={13} aria-hidden />
-                            </Button>
-                          );
-                        })}
-                      </li>
-                    );
-                  })}
-                </ol>
-              </div>
-            )}
+                  {t("routingPage.applyRecommendedModelOrder")}
+                </Button>
+              )}
+              <ol
+                className="max-h-36 overflow-y-auto text-xs"
+                aria-label={t("routingPage.modelOrder")}
+              >
+                {draftPriority.map((id, index) => {
+                  const member = draftMembersById.get(id)!;
+                  const provider = providers.data?.find(
+                    ({ id }) => id === member.providerId,
+                  );
+                  const model = provider?.models?.find(
+                    ({ id }) => id === member.modelId,
+                  );
+                  const name = `${model?.name || member.modelId} · ${provider?.name ?? member.providerId}`;
+                  return (
+                    <li className="flex items-center gap-1" key={id}>
+                      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                        <AccountLabel title>{name}</AccountLabel>
+                      </span>
+                      {([-1, 1] as const).map((offset) => {
+                        const label = t(
+                          offset < 0
+                            ? "intentRouting.moveUp"
+                            : "intentRouting.moveDown",
+                        );
+                        const Icon = offset < 0 ? ChevronUp : ChevronDown;
+                        return (
+                          <Button
+                            key={offset}
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-7 shrink-0"
+                            aria-label={`${label} ${model?.name || member.modelId}`}
+                            title={label}
+                            disabled={
+                              pending ||
+                              index + offset < 0 ||
+                              index + offset >= draftPriority.length
+                            }
+                            onClick={() => moveDraftMember(index, offset)}
+                          >
+                            <Icon size={13} aria-hidden />
+                          </Button>
+                        );
+                      })}
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
           {draft.quotaOrder && (
             <p className="rt-field-hint">
               {t("routingPage.templateExpiryHint")}
@@ -1426,7 +1490,7 @@ export function IntentRoutingPanel({
                               type="number"
                               required
                               min={500}
-                              max={5000}
+                              max={MAX_CLASSIFICATION_BUDGET_MS}
                               step={1}
                               value={draft.classificationBudgetMs}
                               onChange={(e) =>
@@ -1503,7 +1567,12 @@ export function IntentRoutingPanel({
                       <div role="status" className="space-y-2 text-sm">
                         <p>
                           {t(
-                            `intentRouting.trialOutcome.${trialResult.outcome}`,
+                            trialResult.outcome === "timeout" &&
+                              draft.classificationBudgetMs >=
+                                MAX_CLASSIFICATION_BUDGET_MS
+                              ? "intentRouting.trialOutcome.timeoutAtLimit"
+                              : `intentRouting.trialOutcome.${trialResult.outcome}`,
+                            { budgetMs: draft.classificationBudgetMs },
                           )}
                         </p>
                         {trialResult.intentId && (
@@ -1674,9 +1743,10 @@ export function IntentRoutingPanel({
                     <Select
                       disabled={pending}
                       value={draft.defaultMemberId}
-                      onValueChange={(value) =>
-                        edit({ ...draft, defaultMemberId: value })
-                      }
+                      onValueChange={(value) => {
+                        draftOrderEdited.current = true;
+                        edit({ ...draft, defaultMemberId: value });
+                      }}
                     >
                       <SelectTrigger
                         aria-label={t("intentRouting.defaultTarget")}

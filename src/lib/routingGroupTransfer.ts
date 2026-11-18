@@ -2,8 +2,11 @@ import { z } from "zod";
 import type {
   IntentRule,
   RoutingGroup,
+  RoutingMember,
   RoutingProviderOption,
 } from "./api/intentRouting";
+import { routingMemberKey } from "./routingMemberSelection";
+import { compareVersions } from "./version";
 
 const strategy = z.enum([
   "smart",
@@ -812,9 +815,7 @@ export interface RoutingTemplate {
 
 // The reference implementation's template ranking and rules, not preset model names. MIT attribution:
 // third_party/routing-reference/LICENSE, internal/provider/grouptemplate.go.
-export function routingTemplates(
-  providers: RoutingProviderOption[],
-): RoutingTemplate[] {
+function templateCandidates(providers: RoutingProviderOption[]) {
   const nonChat =
     /embed|rerank|image|imagen|dall-e|tts|whisper|audio|realtime|transcribe|moderation|ocr|veo|sora|speech|research|guard|computer-use/;
   const smallWords = new Set([
@@ -832,7 +833,7 @@ export function routingTemplates(
     "highspeed",
   ]);
   const seen = new Set<string>();
-  const available = providers
+  return providers
     .filter((provider) => provider.taskEligible)
     .flatMap((provider) =>
       (provider.models ?? []).map((model) => {
@@ -858,22 +859,129 @@ export function routingTemplates(
       }),
     )
     .filter(({ provider, model }) => {
-      const key = JSON.stringify([provider.id, model.id]);
+      const key = routingMemberKey({
+        providerId: provider.id,
+        modelId: model.id,
+      });
+      const modelId = model.id.trim().toLowerCase();
       if (
-        !model.id.trim() ||
-        nonChat.test(model.id.toLowerCase()) ||
+        !modelId ||
+        nonChat.test(modelId) ||
+        /(?:^|\/)codex-auto-review$/.test(modelId) ||
         seen.has(key)
       )
         return false;
       seen.add(key);
       return true;
     });
-  const strongest = available.sort(
-    (a, b) =>
-      Number(b.maker) - Number(a.maker) ||
-      Number(a.small) - Number(b.small) ||
-      Number((b.out ?? 0) >= 10) - Number((a.out ?? 0) >= 10) ||
-      (b.model.released ?? "").localeCompare(a.model.released ?? ""),
+}
+
+type TemplateCandidate = ReturnType<typeof templateCandidates>[number];
+
+function compareTemplateCandidates(a: TemplateCandidate, b: TemplateCandidate) {
+  return (
+    Number(b.maker) - Number(a.maker) ||
+    Number(a.small) - Number(b.small) ||
+    Number((b.out ?? 0) >= 10) - Number((a.out ?? 0) >= 10) ||
+    (b.model.released ?? "").localeCompare(a.model.released ?? "")
+  );
+}
+
+function rankCapabilityCandidates<T extends TemplateCandidate>(
+  candidates: T[],
+) {
+  const ranked = candidates
+    .map((candidate) => {
+      const name = (
+        candidate.model.id.toLowerCase().split("/").at(-1) ?? ""
+      ).split(":")[0];
+      const words = name.split(/[-_.]+/);
+      const flagship =
+        words.some((word) => /^(flagship|opus|pro|ultra|max)$/.test(word)) ||
+        (name.startsWith("gpt-") && words.includes("astra")) ||
+        (name.startsWith("gemini-") && words.includes("argon"));
+      const tier = flagship ? 2 : candidate.small ? 0 : 1;
+      const version =
+        /^([a-z]+(?:-[a-z]+)*?)-?v?(\d{1,2})(?:[.-](\d{1,2}))?(?:[.-](\d{1,2}))?(?=$|[-_])/.exec(
+          name,
+        );
+      return {
+        candidate,
+        tier,
+        family: version ? `${tier}:${version[1]}` : "",
+        version: version
+          ? `${version[2]}.${version[3] ?? 0}.${version[4] ?? 0}`
+          : "",
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.tier - a.tier || compareTemplateCandidates(a.candidate, b.candidate),
+    );
+
+  // Keep the catalog's positions across families. Newer versions take the
+  // earlier positions within their own family and tier.
+  const families = new Map<string, typeof ranked>();
+  for (const entry of ranked) {
+    if (!entry.family) continue;
+    const family = families.get(entry.family) ?? [];
+    family.push(entry);
+    families.set(entry.family, family);
+  }
+  for (const family of families.values()) {
+    family.sort((a, b) => compareVersions(b.version, a.version)).reverse();
+  }
+  return ranked.map(
+    (entry) => (families.get(entry.family)?.pop() ?? entry).candidate,
+  );
+}
+
+export function recommendRoutingMemberOrder(
+  members: RoutingMember[],
+  providers: RoutingProviderOption[],
+): RoutingMember[] {
+  const candidates = new Map(
+    templateCandidates(providers).map((candidate) => [
+      routingMemberKey({
+        providerId: candidate.provider.id,
+        modelId: candidate.model.id,
+      }),
+      candidate,
+    ]),
+  );
+  const unmatched: RoutingMember[] = [];
+  const selected = members.flatMap((member) => {
+    const candidate = candidates.get(routingMemberKey(member));
+    if (candidate) return [{ ...candidate, member }];
+    unmatched.push(member);
+    return [];
+  });
+  return [
+    ...rankCapabilityCandidates(selected).map(({ member }) => member),
+    ...unmatched,
+  ];
+}
+
+function pickTemplateMembers(ranked: TemplateCandidate[]) {
+  const providerChoices = new Map<string, TemplateCandidate>();
+  for (const candidate of ranked) {
+    if (!providerChoices.has(candidate.provider.id)) {
+      providerChoices.set(candidate.provider.id, candidate);
+    }
+  }
+  return [
+    ...providerChoices.values(),
+    ...ranked.filter(
+      (candidate) => providerChoices.get(candidate.provider.id) !== candidate,
+    ),
+  ].slice(0, 3);
+}
+
+export function routingTemplates(
+  providers: RoutingProviderOption[],
+): RoutingTemplate[] {
+  const strongest = templateCandidates(providers).sort(
+    compareTemplateCandidates,
   );
   const best = strongest[0];
   const bestPrice = best?.out;
@@ -890,18 +998,7 @@ export function routingTemplates(
         candidate.provider.id !== best.provider.id &&
         candidate.model.id === best.model.id,
     );
-  const providerChoices = new Map<string, (typeof strongest)[number]>();
-  for (const candidate of strongest) {
-    if (!providerChoices.has(candidate.provider.id)) {
-      providerChoices.set(candidate.provider.id, candidate);
-    }
-  }
-  const recommended = [
-    ...providerChoices.values(),
-    ...strongest.filter(
-      (candidate) => providerChoices.get(candidate.provider.id) !== candidate,
-    ),
-  ].slice(0, 3);
+  const recommended = pickTemplateMembers(strongest);
   return (
     [
       "templateSmart",
@@ -927,7 +1024,9 @@ export function routingTemplates(
             [best, fallback, economy].filter((candidate) => candidate != null),
           ),
         ]
-      : recommended;
+      : key === "templateCapability"
+        ? pickTemplateMembers(rankCapabilityCandidates(strongest))
+        : recommended;
     group.members = selected.map(({ provider, model }) => ({
       id: crypto.randomUUID(),
       providerId: provider.id,

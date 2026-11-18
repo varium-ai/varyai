@@ -1,5 +1,5 @@
 //! Windows lifecycle selection and orchestration are tested without native processes.
-use super::{State, CHANGED, RUNNING};
+use super::{phase_error, State, CHANGED, OPEN_FAILED, QUIT_FAILED, RUNNING};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Process {
@@ -301,7 +301,9 @@ fn restart_verified_processes(
         processes = latest;
     }
     let main = main_process(&processes)?;
-    runtime.close(&processes)?;
+    runtime
+        .close(&processes)
+        .map_err(|error| phase_error(error, QUIT_FAILED))?;
     let closed = match runtime.wait_closed(&processes) {
         Ok(closed) => closed,
         Err(error) if manual && error == CHANGED => {
@@ -337,8 +339,12 @@ fn restart_verified_processes(
         }
         return Err(CHANGED.into());
     }
-    runtime.launch(main)?;
-    runtime.wait_back()
+    runtime
+        .launch(main)
+        .map_err(|error| phase_error(error, OPEN_FAILED))?;
+    runtime
+        .wait_back()
+        .map_err(|error| phase_error(error, OPEN_FAILED))
 }
 
 fn complete_tree<T>(
@@ -629,13 +635,30 @@ mod tests {
     }
 
     #[test]
+    fn windows_restart_reports_the_failed_phase() {
+        for (phase, expected) in [
+            ("close", "agentConnections.restartQuitFailed"),
+            ("launch", "agentConnections.restartOpenFailed"),
+            ("wait_back", "agentConnections.restartOpenFailed"),
+        ] {
+            let processes = vec![process()];
+            let mut runtime = Fake::new(vec![processes.clone(), vec![]], Closed::Exited);
+            runtime.fail = Some(phase);
+            assert_eq!(
+                restart_verified_processes(&runtime, processes, Some(0), || true, true),
+                Err(expected.into())
+            );
+        }
+    }
+
+    #[test]
     fn windows_restart_requires_a_replacement_after_a_successful_launch() {
         let processes = vec![process()];
         let mut runtime = Fake::new(vec![processes.clone(), vec![]], Closed::Exited);
         runtime.fail = Some("wait_back");
         assert_eq!(
             restart_verified_processes(&runtime, processes, Some(0), || true, true),
-            Err(RUNNING.into())
+            Err(OPEN_FAILED.into())
         );
         assert_eq!(
             *runtime.events.borrow(),
@@ -929,7 +952,12 @@ mod tests {
             runtime.fail = Some(fail);
             assert_eq!(
                 restart_with(&runtime, Some(2000), || true),
-                Err(RUNNING.into())
+                Err(if fail == "close" {
+                    QUIT_FAILED
+                } else {
+                    RUNNING
+                }
+                .into())
             );
             assert!(!runtime.events.borrow().contains(&"launch"));
         }

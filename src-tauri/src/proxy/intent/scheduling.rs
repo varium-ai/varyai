@@ -1,7 +1,8 @@
 //! Reference-compatible pool strategies and bounded, account/model-scoped telemetry.
 //! Adapted from the reference implementation routes/strategies.go, fastest.go and round.go (MIT;
 //! attribution in third_party/routing-reference/LICENSE). Strategies only order approved routes.
-use crate::services::intent_routing::RoutingStrategy;
+use super::subscription_budget::{self, Budget};
+use crate::services::{intent_routing::RoutingStrategy, native_subscription::ClaudeRoutingQuota};
 use http::HeaderMap;
 use serde_json::Value;
 use std::{
@@ -18,6 +19,34 @@ static SINK_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[cfg(test)]
 mod quota_policy_tests {
     use super::*;
+    #[test]
+    fn codex_short_only_requires_a_fresh_complete_account_read() {
+        let state = Scheduling::new(true);
+        let now = 1000;
+        state.observe_event(&serde_json::json!({
+            "type":"codex.rate_limits",
+            "rate_limits":{"primary":{"used_percent":50,"window_minutes":300,"reset_at":now + 7200}}
+        }), now);
+        assert_eq!(state.snapshot_at(now).codex_budget(now), Budget::Unknown);
+        state.observe_codex_usage(&serde_json::json!({"rate_limit":{
+            "primary_window":{"used_percent":50,"limit_window_seconds":18000,"reset_at":now + 7200},
+            "secondary_window":null
+        }}), now);
+        assert_eq!(state.snapshot_at(now).codex_budget(now), Budget::Pace(25.0));
+        assert_eq!(
+            state.snapshot_at(now + 301).codex_budget(now + 301),
+            Budget::Unknown
+        );
+        state.observe_codex_usage(&serde_json::json!({"rate_limit":{
+            "primary_window":{"used_percent":50,"limit_window_seconds":18000,"reset_at":now + 7200},
+            "secondary_window":{"limit_window_seconds":604800}
+        }}), now + 1);
+        assert_eq!(
+            state.snapshot_at(now + 1).codex_budget(now + 1),
+            Budget::Unknown
+        );
+    }
+
     #[test]
     fn weekly_reset_never_follows_only_a_five_hour_limit_and_confirmed_resets_clear_health() {
         let state = Scheduling::new(true);
@@ -57,6 +86,9 @@ pub(crate) struct Window {
 #[derive(Clone, Default)]
 pub(crate) struct Health {
     windows: Vec<Window>,
+    codex_window_layout: Option<(i64, bool)>,
+    claude_quota: Option<(i64, ClaudeRoutingQuota)>,
+    budget_refresh_at: i64,
     rest_until: i64,
     account: bool,
     plan: Option<String>,
@@ -72,6 +104,40 @@ pub(crate) struct Health {
     sunk: u64,
     sunk_at: i64,
 }
+fn fresh(sampled: i64, now: i64) -> bool {
+    (0..=300).contains(&now.saturating_sub(sampled))
+}
+
+impl Health {
+    pub(super) fn cooling(&self, now: i64) -> bool {
+        self.rest_until > now
+    }
+
+    pub(super) fn codex_budget(&self, now: i64) -> Budget {
+        let windows = self.windows.iter().filter(|w| fresh(w.sampled, now));
+        let short_only = self.codex_window_layout.is_some_and(|(at, only_short)| {
+            only_short && fresh(at, now) && !windows.clone().any(|w| w.seconds >= 86400)
+        });
+        subscription_budget::evaluate(
+            windows.filter_map(|w| {
+                subscription_budget::codex_window(w.seconds)
+                    .map(|week| (week, w.used, Some(w.reset)))
+            }),
+            short_only,
+            now,
+        )
+    }
+
+    pub(super) fn claude_budget(&self, model: &str, now: i64) -> Budget {
+        self.claude_quota
+            .as_ref()
+            .filter(|(at, _)| fresh(*at, now))
+            .map_or(Budget::Unknown, |(_, quota)| {
+                subscription_budget::claude_budget(&quota.tiers, quota.short_only, model, now)
+            })
+    }
+}
+
 #[derive(Default)]
 struct Average {
     value: f64,
@@ -111,6 +177,21 @@ fn decay(value: f64, age: i64, half_life: f64) -> f64 {
     value * (-age.max(0) as f64 / half_life).exp2()
 }
 impl Scheduling {
+    pub(super) fn claim_budget_refresh(&self, now: i64) -> bool {
+        let Ok(mut state) = self.account.try_lock() else {
+            return false;
+        };
+        if state.budget_refresh_at > now {
+            return false;
+        }
+        state.budget_refresh_at = now.saturating_add(60);
+        true
+    }
+    pub(super) fn observe_claude_quota(&self, quota: ClaudeRoutingQuota, now: i64) {
+        if let Ok(mut state) = self.account.lock() {
+            state.claude_quota = Some((now, quota));
+        }
+    }
     pub(super) fn weekly_exhausted(&self, now: i64) -> bool {
         self.account.lock().is_ok_and(|state| {
             state.windows.iter().any(|w| {
@@ -124,6 +205,8 @@ impl Scheduling {
     pub(super) fn reset_confirmed(&self) {
         if let Ok(mut state) = self.account.lock() {
             state.windows.clear();
+            state.codex_window_layout = None;
+            state.budget_refresh_at = 0;
         }
         self.succeeded();
     }
@@ -195,6 +278,16 @@ impl Scheduling {
             }
             state.windows.sort_by_key(|w| std::cmp::Reverse(w.seconds));
             state.windows.truncate(2);
+            if other.codex_window_layout.map(|(at, _)| at)
+                > state.codex_window_layout.map(|(at, _)| at)
+            {
+                state.codex_window_layout = other.codex_window_layout;
+            }
+            if other.claude_quota.as_ref().map(|(at, _)| at)
+                > state.claude_quota.as_ref().map(|(at, _)| at)
+            {
+                state.claude_quota = other.claude_quota;
+            }
             if other.credits_at > state.credits_at {
                 state.credits = other.credits;
                 state.credits_at = other.credits_at;
@@ -419,7 +512,6 @@ impl Scheduling {
             }
         }
     }
-    #[cfg(not(test))]
     pub(crate) async fn prime(&self, client: &reqwest::Client, headers: &HeaderMap) {
         let mut request = client
             .get("https://chatgpt.com/backend-api/wham/usage")
@@ -444,15 +536,29 @@ impl Scheduling {
         }
         if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
             let now = chrono::Utc::now().timestamp();
-            self.observe_plan(value.get("plan_type"), now);
-            self.observe_windows(
-                &value["rate_limit"],
-                ["primary_window", "secondary_window"],
-                "limit_window_seconds",
-                1,
-                now,
-            );
-            self.observe_credits(value.get("credits"), now);
+            self.observe_codex_usage(&value, now);
+        }
+    }
+
+    fn observe_codex_usage(&self, value: &Value, now: i64) {
+        let rate = &value["rate_limit"];
+        self.observe_plan(value.get("plan_type"), now);
+        self.observe_windows(
+            rate,
+            ["primary_window", "secondary_window"],
+            "limit_window_seconds",
+            1,
+            now,
+        );
+        self.observe_credits(value.get("credits"), now);
+        if let Ok(mut state) = self.account.lock() {
+            let only_short = rate.get("secondary_window").is_some_and(Value::is_null)
+                && rate["primary_window"]["limit_window_seconds"]
+                    .as_i64()
+                    .and_then(subscription_budget::codex_window)
+                    == Some(false);
+            state.codex_window_layout = Some((now, only_short));
+            state.budget_refresh_at = state.budget_refresh_at.max(now.saturating_add(60));
         }
     }
 }

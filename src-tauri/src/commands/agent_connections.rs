@@ -485,6 +485,21 @@ pub(crate) async fn authorize_agent_model_control(
     app: String,
     confirmed: bool,
 ) -> Result<(), String> {
+    use crate::services::diagnostics::operation::{record, Action};
+    let diagnostic_app = app.clone();
+    record(
+        &diagnostic_app,
+        Action::AuthorizeModelControl,
+        authorize_agent_model_control_inner(state, app, confirmed),
+    )
+    .await
+}
+
+async fn authorize_agent_model_control_inner(
+    state: State<'_, AppState>,
+    app: String,
+    confirmed: bool,
+) -> Result<(), String> {
     let _guard = state.proxy_service.lock_switch_for_app(&app).await;
     let manager = state.proxy_service.agent_connections.clone();
     tokio::task::spawn_blocking(move || manager.authorize_model_control(&app, confirmed))
@@ -500,6 +515,22 @@ async fn restart_confirmed_agent(
 
 #[tauri::command]
 pub(crate) async fn restart_agent_connection(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    app: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    use crate::services::diagnostics::operation::{record, Action};
+    let diagnostic_app = app.clone();
+    record(
+        &diagnostic_app,
+        Action::Restart,
+        restart_agent_connection_inner(app_handle, state, app, confirmed),
+    )
+    .await
+}
+
+async fn restart_agent_connection_inner(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     app: String,
@@ -540,6 +571,20 @@ pub(crate) async fn restart_agent_connection(
 }
 #[tauri::command]
 pub(crate) async fn reapply_agent_connection(
+    state: State<'_, AppState>,
+    app: String,
+) -> Result<(), String> {
+    use crate::services::diagnostics::operation::{record, Action};
+    let diagnostic_app = app.clone();
+    record(
+        &diagnostic_app,
+        Action::Reapply,
+        reapply_agent_connection_inner(state, app),
+    )
+    .await
+}
+
+async fn reapply_agent_connection_inner(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<(), String> {
@@ -675,6 +720,27 @@ pub(crate) async fn set_agent_model_visibility(
 }
 #[tauri::command]
 pub(crate) async fn set_agent_connection(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    app: String,
+    enabled: bool,
+    model: Option<String>,
+) -> Result<(), String> {
+    use crate::services::diagnostics::operation::{record, Action};
+    let diagnostic_app = app.clone();
+    record(
+        &diagnostic_app,
+        if enabled {
+            Action::Connect
+        } else {
+            Action::Disconnect
+        },
+        set_agent_connection_inner(app_handle, state, app, enabled, model),
+    )
+    .await
+}
+
+async fn set_agent_connection_inner(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     app: String,
