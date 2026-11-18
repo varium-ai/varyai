@@ -685,7 +685,21 @@ mod tests {
         super::super::security::runtime::set_security_runtime_for_test(Default::default());
     }
     #[tokio::test]
+    #[serial_test::serial]
     async fn qwen_responses_accepts_native_v1_suffix_with_root_and_prefixed_base_urls() {
+        struct Restore(super::super::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                super::super::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _policy = Restore((*super::super::security::get_security_runtime()).clone());
+        let mut policy = super::super::security::SecurityRuntimeConfig::default();
+        policy.builtin_action_overrides.insert(
+            "rsa_ssh_private_key".into(),
+            super::super::security::AuditAction::Redact,
+        );
+        super::super::security::runtime::set_security_runtime_for_test(policy);
         let _ = rustls::crypto::ring::default_provider().install_default();
         let upstream = Router::new().fallback(post(|request: Request| async move {
             assert!(matches!(request.uri().path(), "/v1/responses" | "/api/v1/responses"));

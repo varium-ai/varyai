@@ -856,10 +856,20 @@
         "cacheInjectionDescription": "Automatically inject standard 5-minute cache breakpoints at key positions to reduce duplicate token billing"
       },
       "logConfig": {
+        "export": "Export varyai.log",
+        "exporting": "Exporting…",
+        "exportDescription": "Export the complete current varyai.log with sensitive content redacted.",
+        "exportSuccess": "varyai.log exported.",
+        "exportMissing": "No varyai.log is available yet. Enable logging and reproduce the issue first.",
+        "exportEmpty": "varyai.log is empty. Reproduce the issue and try again.",
+        "exportSameSource": "Choose a different location from the active varyai.log.",
+        "exportPrivacy": "Privacy processing is unavailable. Restart Vary AI and try again.",
+        "exportBackendUpdate": "Restart the updated Vary AI application to use single-file log export.",
+        "exportFailed": "Could not export varyai.log. Please try again.",
         "title": "Application Diagnostic Logs",
         "description": "Control the output level for application diagnostic logs",
         "enabled": "Enable Diagnostic Logs",
-        "enabledDescription": "Controls cc-switch.log; request usage records and crash.log are unaffected",
+        "enabledDescription": "Controls varyai.log and rotated application logs; request usage records and crash.log are unaffected",
         "level": "Log Level",
         "levelDescription": "Set the minimum log level to output",
         "levels": {
@@ -5304,9 +5314,11 @@
     "restartConfirmHintWindows": "Save your work first. Vary will ask the application to close, then reopen it to load the changed settings. On Windows, remaining application processes may be ended after the close request.",
     "codexRestartConfirmHint": "Save your work first. Vary will immediately quit and reopen Codex, interrupting running tasks. Unsent drafts may be lost. If the app refuses to quit, resolve it and retry.",
     "codexRestartConfirmHintWindows": "Save your work first. Vary will immediately quit and reopen Codex, interrupting running tasks. Unsent drafts may be lost. On Windows, remaining application processes may be ended after a close request.",
-    "restartFailed": "Could not restart this application. Save your work, fully quit the app, then open it again from your system application list.",
-    "restartBlocked": "The application did not exit. Save your work and fully quit it, then click Restart again.",
-    "restartUnsupported": "Automatic restart is not supported for this tool on this platform.",
+    "restartFailed": "Vary could not restart {{app}} automatically. Save your work, then fully quit and reopen it.",
+    "restartQuitFailed": "Vary could not ask {{app}} to quit. Quit it yourself, then open it again.",
+    "restartOpenFailed": "{{app}} quit, but did not open again. Open it yourself.",
+    "restartBlocked": "{{app}} is still open; it may be asking something in its window. Answer it there, or quit it, then open it again.",
+    "restartUnsupported": "Automatic restart is unavailable for {{app}} on this platform. Save your work, then fully quit and reopen it.",
     "restartConfirmationRequired": "Confirm before restarting this application.",
     "officialModels": "Official models",
     "nativeCatalogHint": "Shared models provided by Vary. Choose the chat model inside the client after it loads this catalog.",
@@ -5724,6 +5736,7 @@
     "importedAccountHint": "This imported account or custom connection keeps its existing authentication and transport settings. Its shared name and enabled state can be changed here."
   },
   "agentUpdates": {
+    "recheck": "Recheck version",
     "waitingForExit": "Waiting to update · quit the app, then retry",
     "update": "Update to {{version}}",
     "updating": "Updating…",
@@ -5756,7 +5769,7 @@
       "unsupported": "Automatic updates are unavailable for this platform or release channel. Use the original installation method.",
       "notInstalled": "The installation was not found. Rescan before retrying."
     },
-    "unverified": "{{app}}: the update result could not be verified. Check the installed version.",
+    "unverified": "The {{app}} update command finished, but its new version has not been confirmed. Recheck its version.",
     "preflightFailed": "{{app}}: installation check failed; no update was started.",
     "confirmTitle": "Confirm installation update",
     "confirmHint": "{{names}} has multiple installations or an uncertain update target. The updater may affect only one installation. Continue using the detected update method?",

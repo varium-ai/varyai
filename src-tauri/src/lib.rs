@@ -545,6 +545,11 @@ pub fn run() {
                 // 用户配置存在数据库中，数据库尚未打开时使用保守的 Info 级别。
                 log::set_max_level(log::LevelFilter::Info);
                 log::info!("=== Vary AI v{} started ===", env!("CARGO_PKG_VERSION"));
+                log::info!(
+                    "[Diagnostics] Runtime version={} os={} arch={} debug_build={}",
+                    env!("CARGO_PKG_VERSION"), std::env::consts::OS,
+                    std::env::consts::ARCH, cfg!(debug_assertions)
+                );
             }
 
             // 首次读取覆盖路径时 logger 尚未可用；此处重放一次，
@@ -1611,6 +1616,7 @@ pub fn run() {
             commands::set_copilot_optimizer_config,
             commands::get_log_config,
             commands::set_log_config,
+            commands::export_application_log,
             commands::restart_app,
             commands::install_update_and_restart,
             commands::cancel_update_download,

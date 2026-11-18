@@ -14,6 +14,8 @@ mod identity;
 pub(super) mod length;
 pub(crate) mod native;
 mod native_gateway;
+#[cfg(test)]
+mod native_replay_tests;
 mod official_bridge;
 #[cfg(test)]
 mod parity_tests;
@@ -2642,10 +2644,18 @@ async fn execute(
                 url.query_pairs_mut().append_pair("alt", "sse");
             }
             let mut payload = payload;
+            if target.official && output == Protocol::Responses {
+                if let Some(normalized) = super::responses_replay::normalize_official_wire(&payload)
+                {
+                    payload = normalized;
+                    headers.remove(header::CONTENT_LENGTH);
+                }
+            }
             let mut probe_recovery = super::connections::desktop::probe_recovery::Recovery::new(
                 desktop_purpose == Some(super::connections::desktop::Purpose::Probe),
                 output,
             );
+            let mut named_recovery = super::responses_replay::Recovery::default();
             loop {
                 let mut request = session
                     .client
@@ -2686,6 +2696,30 @@ async fn execute(
                     trace.step(trace::Kind::Retry, Some(candidate), Some(probe_status));
                     continue;
                 }
+                let response = if output == Protocol::Responses
+                    && url.path().ends_with("/responses")
+                {
+                    let (response, id) =
+                        match wait_for_attempt(attempt_deadline, named_recovery.inspect(response))
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected")
+                            }
+                        };
+                    if let Some(next) =
+                        id.and_then(|id| super::responses_replay::remove_wire(&payload, &id))
+                    {
+                        payload = next;
+                        headers.remove(header::CONTENT_LENGTH);
+                        trace.step(trace::Kind::Retry, Some(candidate), Some(probe_status));
+                        continue;
+                    }
+                    response
+                } else {
+                    response
+                };
                 if !responses_replay || response.status().is_success() {
                     break response;
                 }

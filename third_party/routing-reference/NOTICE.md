@@ -8,6 +8,16 @@ attribution.
 
 ## Pinned source revisions
 
+- `f9492fd8ed2c6fd3c65f1dab00062771b551d7b5`: Codex reasoning replay after
+  model switching, reviewed in `internal/gateway/codex_backend.go`
+  (`codexInputAs`, `withoutUnreadable`, `withoutItem`, native HTTP 400/404
+  recovery), `codex_backend_test.go`, `azure_reasoning_test.go` and
+  `bare_reasoning_test.go`. VaryAI adapts initial official reasoning filtering
+  and bounded recovery for an exact missing reasoning item. It retains its
+  own security admission, final history validation, token authority, payload
+  budgets and streaming transport. Tool records, messages and checkpoints
+  are not deleted by this named-item recovery.
+
 - `0746140772bedf3e31548dea5cab76197f1c98ff`: Claude Desktop startup
   thinking-required compatibility, reviewed in `internal/gateway/desktop.go`,
   `thinking_needed.go` and `desktop_probe_test.go`. VaryAI adapts the explicit

@@ -157,6 +157,23 @@ and complete model limits; they do not establish complete Magpie feature parity
 or a successful inference request. See the
 [verification record](qa/2026-11-09-opencode-jsonc.md).
 
+## Codex reports a missing reasoning item after switching models
+
+`Item with id 'rs_…' not found` with `store=false` means the destination cannot
+resolve a reasoning item carried from earlier turns. A model change inside the
+same conversation can carry a translated ID or another model's native state.
+The conversation's visible messages are separate from that internal state.
+
+Official Codex forwarding removes nonportable, unsealed reasoning before sending.
+Native and managed Responses paths can also remove the exact reasoning item
+named by an HTTP 400/404 rejection and retry, up to three times. Messages, tool
+calls/results and compaction checkpoints are retained. Valid native seals and
+explicit stored history are preserved during initial filtering. Security-bound
+history cannot be weakened to permit a retry. The proxy does not enable server
+storage to work around the failure.
+
+See the [replay diagnosis and verification record](qa/2026-11-17-codex-reasoning-replay.md).
+
 ## Codex native routing reports HTTP 401
 
 Native Codex forwarding follows Magpie revision
@@ -1432,7 +1449,24 @@ deleted manual groups have no retained definition and cannot be reconstructed.
 
 ## Desktop restart does not reopen the client
 
-A confirmed desktop restart requests normal termination and waits for the original process identity to exit before reopening the verified installation. On macOS, missing launch metadata does not prove exit; the restart checks the original PID against the kernel and launches a new instance only after exit. On both macOS and Windows, an accepted launch request alone does not count as success: the replacement instance must be observed. A client that refuses to quit or fails to reopen produces a restart error instead of a success message. Retry feedback stays visible while a retry is pending.
+A confirmed restart requests normal termination and verifies that the original
+process exited before reopening the selected installation. Save your work first.
+A neutral capsule below the Agent name distinguishes an app that could not be
+asked to quit, an app that remains open (check its window for a confirmation),
+and an app that exited but could not be reopened. Follow the prompt to quit or
+open the app manually. The normal status returns after eight seconds. Hover over
+a truncated message to read it in full. Process identity and configuration
+conflict checks still apply.
+
+## An Agent update result needs verification
+
+An update command finishing does not establish that the expected version is
+available. Vary checks the installed version up to three times, including when
+it still reports the old version. A result awaiting verification is a neutral
+message, not an update-failure alert. Use **Recheck version** to read the version
+again without running the installer. A later confirmed newer version clears the
+unverified result. If the version remains missing or unchanged, check the
+client's installation and the CLI selected by your terminal before updating again.
 
 
 ## Routing groups take a long time to refresh
@@ -1466,3 +1500,44 @@ counts without endpoints, credentials, account identities or request content.
 These timings distinguish discovery from subsequent local list reads and
 background Agent publication. Native Agent configuration and protocol adapters
 retain their existing platform support and consent requirements.
+
+
+## Export the application log
+
+Open **Settings > Advanced > Application Diagnostic Logs > Export varyai.log**
+and choose a save location. VaryAI saves a sanitized `.log` file locally; it does
+not upload it. Only the current `varyai.log` is read, normally from
+`~/.varyai/logs/varyai.log`. Agent-native logs, configurations, databases, crash
+files and rotated logs are not scanned or included.
+
+The export reads from byte zero to the file size captured when opened, retaining
+line order, newline endings, long lines and the final line. There is no tail,
+line-count or byte-count clipping. New records written after the snapshot are
+outside that export. Rotation can remove older records before export; logs that
+were never recorded cannot be recovered. Enable logging and reproduce the issue
+before exporting when possible. Existing logs can still be exported when logging
+is disabled or the settings query fails.
+
+Recognized credentials, personal identifiers, URLs, local paths, custom audit-rule
+matches and raw request/tool/configuration blocks are redacted. Custom privacy
+rules apply even when forwarding protection is disabled. Export fails closed when
+privacy processing is unavailable or the snapshot cannot be read completely.
+A failed export preserves an existing destination. The exporter rejects the live
+source, hardlink aliases and symlink destinations. Missing and empty logs receive
+specific notices. Only a completed save produces a success notice.
+
+New `[Diagnostics]` events include application version, OS, architecture and build
+mode; connection/disconnection, configuration reapplication, confirmed desktop
+restart and model-control authorization record start, outcome, duration and a
+fixed failure category. Process-local operation IDs correlate each start/result
+pair. These events exclude model selections, private native errors, credentials
+and request bodies. Logging obeys the configured level and enable switch. A
+successful connection command means the operation returned successfully, not that
+the native application has been manually verified. Existing status/recovery UI
+remains the source for that distinction. Export events record cancellation,
+failure, source-byte count and redacted-line count without destination paths.
+
+The single-file command requires the rebuilt application backend. A frontend
+connected to the old ZIP backend asks for an update/restart instead of invoking
+the old broad exporter. See the [coverage ledger](qa/agent-feature-coverage.md#application-log-export-and-operation-diagnostics)
+for synthetic checks and native/platform verification limits.

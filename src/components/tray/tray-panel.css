@@ -63,6 +63,7 @@ body:has(.tray-panel),
   --mp-control: #52647b;
   --mp-accent: #4788e8;
   --mp-green: #18835d;
+  --mp-amber: #a66b16;
   --mp-red: #c14747;
   --mp-pill: rgb(71 136 232 / 10%);
   --mp-pill-hover: rgb(71 136 232 / 16%);
@@ -97,6 +98,7 @@ body:has(.tray-panel),
   --mp-control: #c3cfde;
   --mp-accent: #8ab4ff;
   --mp-green: #7ed6a8;
+  --mp-amber: #efc16e;
   --mp-red: #f39d98;
   --mp-pill: rgb(138 180 255 / 16%);
   --mp-pill-hover: rgb(138 180 255 / 22%);
@@ -1062,6 +1064,23 @@ body:has(.tray-panel),
 }
 .tray-dot.bad {
   background: var(--mp-red);
+}
+.tray-events .tray-dot {
+  background: var(--mp-muted);
+}
+.tray-events .tray-dot[data-result="blocked"] {
+  background: var(--mp-red);
+}
+.tray-events .tray-dot:is([data-result="warning"], [data-result="uncertain"]) {
+  background: var(--mp-amber);
+}
+.tray-events
+  .tray-dot:is(
+    [data-result="redacted"],
+    [data-result="allowed"],
+    [data-result="low_risk"]
+  ) {
+  background: var(--mp-green);
 }
 .tray-dot[data-state="cancelled"] {
   background: var(--mp-muted);

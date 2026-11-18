@@ -23,6 +23,11 @@ export interface ConfigTransferResult {
   backupId?: string;
 }
 
+export interface ApplicationLogExportReport {
+  sourceBytes: number;
+  redactedLines: number;
+}
+
 export interface WebDavTestResult {
   success: boolean;
   message?: string;
@@ -329,6 +334,21 @@ export const settingsApi = {
 
   async getLogConfig(): Promise<LogConfig> {
     return await invoke("get_log_config");
+  },
+
+  async exportApplicationLog(): Promise<ApplicationLogExportReport | null> {
+    try {
+      return await invoke("export_application_log");
+    } catch (error) {
+      if (
+        typeof error === "string" &&
+        error.includes("export_application_log") &&
+        /not found|unknown command/i.test(error)
+      ) {
+        throw "diagnostics.backendUpdateRequired";
+      }
+      throw error;
+    }
   },
 
   async setLogConfig(config: LogConfig): Promise<boolean> {

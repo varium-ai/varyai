@@ -393,25 +393,41 @@ pub(crate) async fn forward(
         }
     };
     let url = target_url(endpoint, &source_headers, query);
-    let request = client
-        .post(url)
-        .headers(outbound_headers(&source_headers))
-        .body(body);
-    let upstream = match super::super::http_client::send_with_header_timeout(
-        request,
-        super::super::http_client::UPSTREAM_HEADER_WAIT,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(_) => {
-            return super::error(
-                StatusCode::BAD_GATEWAY,
-                "routing_upstream_connection_failed",
-            )
+    let mut body = super::super::responses_replay::normalize_official_wire(&body)
+        .map(Bytes::from)
+        .unwrap_or(body);
+    let mut recovery = super::super::responses_replay::Recovery::default();
+    loop {
+        let request = client
+            .post(&url)
+            .headers(outbound_headers(&source_headers))
+            .body(body.clone());
+        let upstream = match super::super::http_client::send_with_header_timeout(
+            request,
+            super::super::http_client::UPSTREAM_HEADER_WAIT,
+        )
+        .await
+        {
+            Ok(response) => super::super::hyper_client::ProxyResponse::Reqwest(response),
+            Err(_) => {
+                return super::error(
+                    StatusCode::BAD_GATEWAY,
+                    "routing_upstream_connection_failed",
+                )
+            }
+        };
+        if !matches!(endpoint, Endpoint::Responses) {
+            return relay(upstream);
         }
-    };
-    relay(super::super::hyper_client::ProxyResponse::Reqwest(upstream))
+        let (upstream, id) = recovery.inspect(upstream).await;
+        if let Some(next) =
+            id.and_then(|id| super::super::responses_replay::remove_wire(&body, &id))
+        {
+            body = next.into();
+            continue;
+        }
+        return relay(upstream);
+    }
 }
 
 fn target_url(endpoint: Endpoint, source_headers: &HeaderMap, query: Option<&str>) -> String {
@@ -454,6 +470,7 @@ pub(crate) async fn forward_restored(
     let (mut body, _source_owner) = request
         .clone_source_body()
         .map_err(ProxyError::DlpForward)?;
+    super::super::responses_replay::normalize_official(&mut body);
     let (mut attempt, _input_owner) = request.prepare_owned_attempt_with_operation_for_proxy(
         None,
         PROVIDER,
@@ -466,7 +483,7 @@ pub(crate) async fn forward_restored(
     let credentials = request
         .capture_error_credentials(&headers)
         .ok_or(ProxyError::DlpForward(DlpForwardError::RedactionFailed))?;
-    let encoded = match attempt
+    let mut encoded = match attempt
         .encode_outbound_body(&body)
         .map_err(ProxyError::DlpForward)?
     {
@@ -476,32 +493,57 @@ pub(crate) async fn forward_restored(
                 .map_err(|_| ProxyError::DlpForward(DlpForwardError::RedactionFailed))?,
         ),
     };
-    let outgoing = client
-        .post(&url)
-        .headers(headers)
-        .body(encoded)
-        .build()
-        .map_err(|_| ProxyError::DlpForward(DlpForwardError::RedactionFailed))?;
-    attempt
-        .validate_final_send_binding(
-            PROVIDER,
-            "openai_responses",
-            outgoing.url().as_str(),
-            super::super::forwarder::dlp_auth_principal(outgoing.headers()).as_deref(),
-        )
-        .map_err(ProxyError::DlpForward)?;
-    attempt
-        .validate_final_send_history(&body)
-        .map_err(ProxyError::DlpForward)?;
-    attempt.record_permitted_attempt(PROVIDER, None);
+    let mut recovery = super::super::responses_replay::Recovery::default();
     let timeout = super::super::http_client::UPSTREAM_HEADER_WAIT;
-    let upstream = super::super::http_client::send_with_header_timeout(
-        reqwest::RequestBuilder::from_parts(client, outgoing),
-        timeout,
-    )
-    .await
-    .map_err(|_| ProxyError::DlpForward(DlpForwardError::Unavailable))?;
-    let upstream = ProxyResponse::Reqwest(upstream);
+    let upstream = loop {
+        let outgoing = client
+            .post(&url)
+            .headers(headers.clone())
+            .body(encoded.clone())
+            .build()
+            .map_err(|_| ProxyError::DlpForward(DlpForwardError::RedactionFailed))?;
+        attempt
+            .validate_final_send_binding(
+                PROVIDER,
+                "openai_responses",
+                outgoing.url().as_str(),
+                super::super::forwarder::dlp_auth_principal(outgoing.headers()).as_deref(),
+            )
+            .map_err(ProxyError::DlpForward)?;
+        attempt
+            .validate_final_send_history(&body)
+            .map_err(ProxyError::DlpForward)?;
+        attempt.record_permitted_attempt(PROVIDER, None);
+        let upstream = super::super::http_client::send_with_header_timeout(
+            reqwest::RequestBuilder::from_parts(client.clone(), outgoing),
+            timeout,
+        )
+        .await
+        .map_err(|_| ProxyError::DlpForward(DlpForwardError::Unavailable))?;
+        let upstream = ProxyResponse::Reqwest(upstream);
+        if !matches!(endpoint, Endpoint::Responses) {
+            break upstream;
+        }
+        let (upstream, id) = recovery.inspect(upstream).await;
+        let changed = id.is_some_and(|id| {
+            super::super::responses_replay::remove_checked(&mut body, &id, |body| {
+                attempt.validate_final_send_history(body).is_ok()
+            })
+        });
+        if !changed {
+            break upstream;
+        }
+        encoded = match attempt
+            .encode_outbound_body(&body)
+            .map_err(ProxyError::DlpForward)?
+        {
+            Some(encoded) => encoded,
+            None => Bytes::from(
+                serde_json::to_vec(&body)
+                    .map_err(|_| ProxyError::DlpForward(DlpForwardError::RedactionFailed))?,
+            ),
+        };
+    };
     if upstream.status().is_redirection() {
         return Err(ProxyError::DlpForward(DlpForwardError::UpstreamStatus(
             upstream.status(),

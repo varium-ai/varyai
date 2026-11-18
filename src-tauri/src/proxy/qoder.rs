@@ -337,18 +337,32 @@ pub(crate) async fn send(
         http::HeaderValue::from_str(host).map_err(|_| invalid())?,
     );
     let proxy = super::http_client::get_current_proxy_url();
-    let response = super::hyper_client::send_request(
-        uri,
-        "Qoder model endpoint",
-        parts.method,
-        parts.headers,
-        parts.extensions,
-        bytes,
-        Duration::from_secs(600),
-        proxy.as_deref(),
-    )
-    .await
-    .map_err(|_| ProxyError::ForwardFailed("Qoder upstream connection failed".into()))?;
+    let responses = parts.method == http::Method::POST && uri.path().ends_with("/responses");
+    let mut bytes = bytes::Bytes::from(bytes);
+    let mut recovery = super::responses_replay::Recovery::default();
+    let response = loop {
+        let response = super::hyper_client::send_request(
+            uri.clone(),
+            "Qoder model endpoint",
+            parts.method.clone(),
+            parts.headers.clone(),
+            parts.extensions.clone(),
+            bytes.clone(),
+            Duration::from_secs(600),
+            proxy.as_deref(),
+        )
+        .await
+        .map_err(|_| ProxyError::ForwardFailed("Qoder upstream connection failed".into()))?;
+        if !responses {
+            break response;
+        }
+        let (response, id) = recovery.inspect(response).await;
+        if let Some(next) = id.and_then(|id| super::responses_replay::remove_wire(&bytes, &id)) {
+            bytes = next.into();
+            continue;
+        }
+        break response;
+    };
     relay_response(response, job, start, gateway_model).await
 }
 
