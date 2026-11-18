@@ -23,8 +23,16 @@ pub(super) fn changed(before: &Receipt, after: &Receipt) -> bool {
         };
         let mut old = old.installed.clone();
         let mut new = new.installed.clone();
-        normalize(&mut old, &[]);
-        normalize(&mut new, &[]);
+        let root = if matches!(before.app.as_str(), "workbuddy" | "workbuddy-ai")
+            && old.is_array()
+            && new.is_array()
+        {
+            vec!["models".into()]
+        } else {
+            Vec::new()
+        };
+        normalize(&mut old, &root);
+        normalize(&mut new, &root);
         if fields
             .iter()
             .any(|field| at(&old, field) != at(&new, field))

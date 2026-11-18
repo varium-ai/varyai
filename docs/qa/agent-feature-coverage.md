@@ -264,6 +264,113 @@ The owned Cordis extension entry is journaled separately from foreign plugins, p
 
 Managed T3 Code uses the native Codex Responses driver. Session correlation now recognizes its `thread-id`, `session-id`, `session_id` and `x-session-id` headers, with supported metadata as a fallback, and retains the `t3code_` audit prefix. Extraction validates bounded identities and rejects repeated header values; request IDs, response IDs and cache keys are never substituted. Shared-routing regressions now supply the native thread header instead of synthetic metadata. Existing missing IDs are not backfilled. Implementation is shared across platforms; native acceptance requires a new event after installing the updated VaryAI build.
 
+## WorkBuddy native catalog additions (2026-11-18)
+
+Both WorkBuddy editions previously compared the complete model array with the
+connection receipt. Adding unrelated native models could therefore report a lost
+connection even though every managed model remained unchanged. Receipt loading
+now accepts additive native rows and row reordering while preserving these rows
+in the disconnect/suspend restoration baseline. Existing row changes, removals,
+duplicate IDs, newly added managed rows and unrelated object-field changes still
+require recovery. Status reads do not write client configuration or advance its
+application timestamp.
+
+The inventory below was checked against `src/config/appConfig.tsx` and the
+backend connection registries. Entry points are existing connection status,
+reload, suspension and disconnect. The new adapter is limited to both WorkBuddy
+editions and handles array/object catalogs using shared macOS/Windows code;
+existing platform support is preserved. There are no changes to tool security,
+forwarding protocols, model parameters, credentials, session correlation or
+notifications. Other Agent adapters and their UI states are unchanged.
+
+| Agent              | Variant                         | Adapter, runtime and UI impact                                                 | Verification / native acceptance                                                       |
+| ------------------ | ------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `claude`           | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `claude-desktop`   | Desktop                         | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `codex`            | CLI/desktop; existing WSL paths | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `gemini`           | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `grokbuild`        | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `opencode`         | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `openclaw`         | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `hermes`           | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `pi`               | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `workbuddy`        | China desktop                   | Adopt native catalog additions; preserve connection, timestamp and restoration | Array/object status, reload, conflict and disconnect; array suspend; native unverified |
+| `workbuddy-ai`     | International desktop           | Adopt native catalog additions; preserve connection, timestamp and restoration | Array/object status, reload, conflict and disconnect; array suspend; native unverified |
+| `qoder`            | China desktop                   | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `doubaowork`       | Desktop; separate native audit  | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `trae`             | China native bridge             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `trae-intl`        | International native bridge     | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `kimi`             | CLI/desktop                     | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `qwen`             | CLI                             | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `zcode`            | Desktop                         | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `deepseek-harness` | Native harness                  | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+| `t3code`           | Desktop; managed Codex          | Existing adapter, runtime and UI behavior retained                             | Existing suite coverage; native not rechecked                                          |
+
+The new regression first failed against the old implementation. Earlier focused
+validation over `2adbcd63` passed 149 connection tests with one ignored test.
+Final verification uses the working tree over `81763452`, after fast-forwarding
+`origin/main` and aligning `package.json`, the Rust package/lock entry and Tauri
+configuration to version `0.4.0`. Host: macOS 26.6.2 arm64, Node 22.22.0,
+pnpm 10.12.3, Rust/Cargo 1.98.1. Passed: `pnpm typecheck`,
+`pnpm format:check`, `pnpm build:renderer`, `pnpm test:unit` (322 files,
+4,376 tests), `pnpm audit --prod`, all documented helper suites (`test:dev`,
+`test:macos-dmg`, `test:trae-bridge`, `test:model-default`, `test:pi-session`,
+`test:workbuddy-checkin-auth`, `test:doubao-checkin`, `test:agent-rewards`,
+`test:qoder-codec`, CI policy and shared-v23 recovery), Rust formatting,
+`cargo check` and `cargo clippy -- -D warnings` with the application manifest.
+`cargo test --lib --manifest-path src-tauri/Cargo.toml` passed 7,740 tests
+with 21 ignored. `cargo test --no-fail-fast --manifest-path src-tauri/Cargo.toml`
+passed 7,905 tests across 16 groups with 21 ignored and no failures.
+The test build reported the existing unused-method and macOS unwind-table linker
+warnings. Version consistency checks, formatting of the changed JSON manifests
+and `git diff --check` also passed. This section was formatted
+separately; inherited document-wide table formatting was preserved.
+
+Native rebuilt-app acceptance remains unverified. Initial cross-platform CI
+results for PR #68 are recorded in the shutdown-fixture section below. Local
+checks do not establish native integration, installer or release acceptance.
+
+## Qoder TLS shutdown regression fixture (2026-11-18)
+
+[PR #68 CI run 44226715687](https://github.com/varium-ai/varyai/actions/runs/44226715687)
+checked `51e83af94462a3cd403473556ebf16c6e5e264bd`. Frontend, macOS, Linux and
+Windows-to-WSL2 jobs passed. The ordinary Windows job failed only
+`proxy::qoder_tls::tests::stop_waits_for_socket_cleanup_beyond_the_old_deadline`
+with Winsock 10048 / `AddrInUse`; its WorkBuddy catalog regression passed.
+
+The shutdown fixture released an OS-assigned ephemeral port and then tried to
+bind that address again, leaving a race with other parallel socket fixtures.
+It now holds the original listener in an `Arc` and observes its lifetime through
+a `Weak` reference. Shutdown must still wait for the 3,100 ms delayed task,
+complete the original cleanup marker and release the original listener.
+The resource assertions no longer depend on the address remaining unclaimed.
+This only changes the test fixture; production shutdown, native adapters,
+forwarding and UI behavior for all Agents in the inventory above are unchanged.
+
+The updated fixture passed locally. A negative control temporarily restored the
+historical three-second `timeout(task)` implementation and failed the retained
+`cleaned` assertion as expected; the correct production implementation was then
+restored byte-for-byte. The first negative-control build was interrupted by
+missing shared-target artifacts, so the completed negative control and subsequent
+backend checks use an independent `CARGO_TARGET_DIR`, dev/test debug information
+set to zero (as in CI), and incremental compilation disabled. Host: macOS 26.6.2
+arm64, Rust/Cargo 1.98.1, Node 22.22.0, pnpm 10.12.3.
+
+Frontend typecheck, renderer build, formatting, production dependency audit and
+all documented helper checks passed. The first full frontend run encountered two
+10-second subprocess timeouts in the unchanged mocked notarization fixture;
+its 21 tests passed independently, and the final full rerun passed all 4,376 tests
+across 322 files. No notarization test or timeout was changed.
+
+Backend formatting, compile and Clippy checks passed. `cargo test --lib` passed
+7,740 tests with 21 ignored; `cargo test --no-fail-fast` passed 7,905 tests across
+16 groups with 21 ignored. All Cargo commands used `--manifest-path
+src-tauri/Cargo.toml`. The final production prefix of `qoder_tls.rs` matches
+`51e83af9` exactly, and diff whitespace checks passed. Native Agent self-tests
+remain unverified. Follow-up cross-platform acceptance must be checked on the
+new head of [PR #68](https://github.com/varium-ai/varyai/pull/68), rather than
+inferred from these local results.
+
 ## Restart freshness after a gateway restart
 
 The suspended shared-connection resume path previously assigned a new application timestamp even when restoring the identical projection. This made a gateway restart look like a new configuration change and invalidated WorkBuddy and WorkBuddy AI persisted default-model confirmations. The resume path now retains the previous timestamp when startup-relevant configuration is unchanged and no client loaded the temporarily restored native configuration. Native macOS launch times and Windows process creation times detect clients opened during suspension; actual configuration changes and reopened clients still require loading the current projection. This changes automatic freshness reporting, not the unconditional explicit restart action. Previously invalidated confirmation markers require one client restart to establish current readback. Added regressions cover both WorkBuddy editions, all shared Agent configuration comparisons, mixed process ages and unknown launch times; test execution and native acceptance remain pending.

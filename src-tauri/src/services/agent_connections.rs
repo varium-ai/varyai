@@ -25,6 +25,9 @@ mod source_label_tests;
 mod startup;
 pub(crate) mod t3code;
 mod visibility;
+mod workbuddy_catalog;
+#[cfg(test)]
+mod workbuddy_catalog_tests;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
 use document::Format;
 pub(crate) use picker::{picker_models, PickerModel};
@@ -857,6 +860,10 @@ impl Manager {
             }
         }
         desktop_config::adopt(&mut receipt);
+        let mut adopted = receipt.clone();
+        if workbuddy_catalog::adopt(&mut adopted).is_ok() {
+            receipt = adopted;
+        }
         let mut adopted = receipt.clone();
         if selection::adopt(&mut adopted).is_ok() {
             receipt = adopted;
