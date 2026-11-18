@@ -4,6 +4,41 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Windows installation discovery (2026-11-18)
+
+Assessment started before implementation against `APP_IDS`, `AppType` and the
+backend connection registry. Entry points are `get_agent_installations`,
+`get_agent_versions`, Tools / Agent and Rescan installations. Discovery must
+remain read-only and must never start a client. Protocol, native configuration,
+security policy and forwarding behavior are unaffected. macOS bundle discovery
+and Linux CLI discovery must retain their existing behavior.
+
+| Agent ID | Entry point and native discovery adapter | Runtime / UI assessment | Verification |
+| --- | --- | --- | --- |
+| `claude` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence independently of version execution | Existing CLI regressions; native unverified |
+| `claude-desktop` | Shared presence/version; Windows desktop adapter | Missing Windows discovery; must show installed desktop | Synthetic adapter and native read-only discovery passed; client execution untested |
+| `codex` | Shared presence/version; CLI and Windows desktop adapters | Desktop-only installs must not depend on a CLI | Synthetic adapter and native read-only discovery passed; client execution untested |
+| `gemini` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
+| `grokbuild` | Shared presence; `grok` CLI alias | Retain alias and native installer paths | Existing CLI regressions; native unverified |
+| `opencode` | Shared presence; CLI and installer paths | Currently detected on this Windows host | Existing CLI presence evidence; native execution untested |
+| `openclaw` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
+| `hermes` | Shared presence; Windows CLI/Python candidates | Retain CLI presence | Existing CLI regressions; native unverified |
+| `pi` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
+| `workbuddy` | Shared presence/version; China desktop and CLI | Missing Windows desktop discovery; keep editions separate | Synthetic adapter and native read-only discovery passed; client execution untested |
+| `workbuddy-ai` | Shared presence/version; international desktop | Missing Windows desktop discovery; keep editions separate | Synthetic adapter passed on Windows; native unverified |
+| `qoder` | Shared presence/version; China desktop | Missing Windows desktop discovery; reject international product | Synthetic adapter passed on Windows; native unverified |
+| `doubaowork` | Shared presence/version; desktop | Missing Windows desktop discovery | Synthetic adapter passed on Windows; native unverified |
+| `trae` | Shared presence/version; China desktop | Installed on D:; fixed default roots miss custom installation | Synthetic adapter passed; native read-only discovery passed |
+| `trae-intl` | Shared presence/version; international desktop | Fixed default roots miss custom installation; keep editions separate | Synthetic adapter passed on Windows; native unverified |
+| `kimi` | Shared presence/version; desktop and CLI | Missing Windows desktop discovery; retain CLI fallback | Synthetic adapter passed on Windows; native unverified |
+| `qwen` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
+| `zcode` | Shared presence/version; desktop | Missing Windows desktop discovery | Synthetic adapter passed on Windows; native unverified |
+| `deepseek-harness` | Shared presence/version; desktop | Missing Windows desktop discovery | Synthetic adapter passed on Windows; native unverified |
+| `t3code` | Shared presence/version; stable/alpha/beta desktop | Fixed default roots miss custom installation | Synthetic adapter passed on Windows; native unverified |
+
+Implementation, comparison sources and check results are recorded in
+[the Windows discovery report](2026-11-18-windows-agent-detection.md).
+
 ## Qoder reward-date refresh (2026-11-17)
 
 Pre-implementation assessment: Qoder's persisted claim expires at 09:59 UTC+8,

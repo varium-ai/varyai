@@ -122,47 +122,65 @@ async fn latest_version(
         .map(|release| release.version)
 }
 
+#[cfg(any(windows, test))]
+fn apply_windows_desktop(
+    app: &str,
+    info: &mut AgentVersion,
+    snapshot: &desktop_apps::windows::Snapshot,
+) {
+    info.supported |= desktop_apps::windows::supported(app);
+    if let Some(desktop) = desktop_apps::windows::detect(app, snapshot) {
+        info.installed = true;
+        info.source = Some("desktop");
+        info.version = desktop.version;
+    }
+}
+
 pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, String> {
-    futures::future::try_join_all(AGENTS.iter().map(|&app| async move {
-        let (mut info, channel_matches) = tokio::task::spawn_blocking(move || {
-            let bundle = desktop_apps::find(app);
-            let roots = bundle
-                .as_ref()
-                .and_then(|bundle| bundle.parent().map(Path::to_path_buf))
-                .into_iter()
-                .collect::<Vec<_>>();
-            let info = detect_in(
-                app,
-                &roots,
-                &build_tool_search_paths(app),
-                cfg!(target_os = "macos"),
-            );
-            #[cfg(target_os = "windows")]
-            let info = {
-                let mut info = info;
-                if crate::services::trae_bridge::shared::Edition::parse(app).is_some()
-                    || app == "t3code"
-                {
-                    info.supported = true;
-                    info.installed = is_agent_installed(app);
-                    info.source = info.installed.then_some("desktop");
-                }
-                info
-            };
-            let channel_matches =
-                bundle.is_none_or(|bundle| desktop_apps::update_channel_matches(app, &bundle));
-            (info, channel_matches)
-        })
-        .await
-        .map_err(|_| "Agent version check failed".to_owned())?;
-        let client = crate::proxy::http_client::get();
-        if channel_matches {
-            info.latest_version = drop_latest_behind_local(
-                latest_version(&client, app, &info).await,
-                info.version.as_deref(),
-            );
+    #[cfg(target_os = "windows")]
+    let snapshot = std::sync::Arc::new(
+        tokio::task::spawn_blocking(desktop_apps::windows::snapshot)
+            .await
+            .map_err(|_| "Agent version check failed".to_owned())?,
+    );
+    futures::future::try_join_all(AGENTS.iter().map(|&app| {
+        #[cfg(target_os = "windows")]
+        let snapshot = std::sync::Arc::clone(&snapshot);
+        async move {
+            let (mut info, channel_matches) = tokio::task::spawn_blocking(move || {
+                let bundle = desktop_apps::find(app);
+                let roots = bundle
+                    .as_ref()
+                    .and_then(|bundle| bundle.parent().map(Path::to_path_buf))
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let info = detect_in(
+                    app,
+                    &roots,
+                    &build_tool_search_paths(app),
+                    cfg!(target_os = "macos"),
+                );
+                #[cfg(target_os = "windows")]
+                let info = {
+                    let mut info = info;
+                    apply_windows_desktop(app, &mut info, &snapshot);
+                    info
+                };
+                let channel_matches =
+                    bundle.is_none_or(|bundle| desktop_apps::update_channel_matches(app, &bundle));
+                (info, channel_matches)
+            })
+            .await
+            .map_err(|_| "Agent version check failed".to_owned())?;
+            let client = crate::proxy::http_client::get();
+            if channel_matches {
+                info.latest_version = drop_latest_behind_local(
+                    latest_version(&client, app, &info).await,
+                    info.version.as_deref(),
+                );
+            }
+            Ok((app.to_owned(), info))
         }
-        Ok((app.to_owned(), info))
     }))
     .await
     .map(|versions| versions.into_iter().collect())
@@ -171,6 +189,39 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_desktop_versions_and_presence_share_the_same_installation_evidence() {
+        for app in AGENTS {
+            let mut info = detect_in(app, &[], &[], false);
+            apply_windows_desktop(app, &mut info, &desktop_apps::windows::Snapshot::default());
+            assert!(info.supported, "{app}");
+            assert!(!info.installed, "{app}");
+        }
+        let snapshot = desktop_apps::windows::Snapshot {
+            packages: vec!["OpenAI.Codex_26.1002.7124.0_x64__2p2nqsd0c76g0".into()],
+            ..Default::default()
+        };
+        let mut info = detect_in("codex", &[], &[], false);
+        apply_windows_desktop("codex", &mut info, &snapshot);
+        assert!(info.supported && info.installed);
+        assert_eq!(info.source, Some("desktop"));
+        assert_eq!(info.version.as_deref(), Some("26.1002.7124.0"));
+        assert!(info.latest_version.is_none());
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("WorkBuddy")).unwrap();
+        std::fs::write(root.path().join("WorkBuddy/WorkBuddy.exe"), "fixture").unwrap();
+        let snapshot = desktop_apps::windows::Snapshot {
+            roots: vec![root.path().into()],
+            ..Default::default()
+        };
+        info.version = Some("1.2.3".into());
+        info.source = Some("cli");
+        apply_windows_desktop("workbuddy", &mut info, &snapshot);
+        assert!(info.installed);
+        assert_eq!(info.source, Some("desktop"));
+        assert!(info.version.is_none());
+    }
 
     #[test]
     #[cfg(target_os = "macos")]

@@ -3871,14 +3871,10 @@ pub(crate) fn find_agent_desktop_bundle(app: &str) -> Option<PathBuf> {
 
 pub(crate) fn is_agent_installed(app: &str) -> bool {
     #[cfg(target_os = "windows")]
-    if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(app) {
-        return crate::services::trae_bridge::shared::Client(edition)
-            .installed_executable()
-            .is_ok();
-    }
-    #[cfg(target_os = "windows")]
-    if app == "t3code" {
-        return desktop_apps::windows_executable(app).is_some();
+    if desktop_apps::windows::supported(app)
+        && desktop_apps::windows::detect(app, &desktop_apps::windows::snapshot()).is_some()
+    {
+        return true;
     }
     let tool = match app {
         "grokbuild" => "grok",
@@ -3892,8 +3888,22 @@ pub(crate) fn is_agent_installed(app: &str) -> bool {
 #[tauri::command]
 pub async fn get_agent_installations() -> Result<HashMap<String, bool>, String> {
     tokio::task::spawn_blocking(|| {
+        #[cfg(target_os = "windows")]
+        let snapshot = desktop_apps::windows::snapshot();
         AppType::all()
-            .map(|app| (app.as_str().to_string(), is_agent_installed(app.as_str())))
+            .map(|app| {
+                let id = app.as_str();
+                #[cfg(target_os = "windows")]
+                let installed = desktop_apps::windows::detect(id, &snapshot).is_some()
+                    || agent_installed_in(
+                        id,
+                        &[],
+                        &build_tool_search_paths(if id == "grokbuild" { "grok" } else { id }),
+                    );
+                #[cfg(not(target_os = "windows"))]
+                let installed = is_agent_installed(id);
+                (id.to_string(), installed)
+            })
             .collect()
     })
     .await
