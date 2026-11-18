@@ -313,8 +313,18 @@ pub const KNOWN_CLIENTS: &[&str] = &[
     "qoder",
     "kimi",
     "qwen",
+    "zcode",
+    "deepseek-harness",
+    "t3code",
+    "opencode",
+    "openclaw",
+    "hermes",
+    "grokbuild",
+    "trae",
+    "trae-intl",
+    "doubaowork",
 ];
-pub const KNOWN_SOURCES: &[&str] = &["model_response", "client_hook", "mcp_rpc"];
+pub const KNOWN_SOURCES: &[&str] = &["model_response", "client_hook", "mcp_rpc", "client_report"];
 pub const OPERATION_FIELDS: &[&str] = &[
     "/target_path",
     "/command",
@@ -609,6 +619,16 @@ mod tests {
             ("qoder", "Bash"),
             ("kimi", "Shell"),
             ("qwen", "run_shell_command"),
+            ("zcode", "Bash"),
+            ("deepseek-harness", "bash"),
+            ("t3code", "shell_command"),
+            ("opencode", "shell"),
+            ("openclaw", "exec"),
+            ("hermes", "terminal"),
+            ("grokbuild", "run_terminal_command"),
+            ("trae", "RunCommand"),
+            ("trae-intl", "RunCommand"),
+            ("doubaowork", "Bash"),
         ] {
             let mut rule = custom_rule();
             rule.selector.clients = Some(vec![client.into()]);

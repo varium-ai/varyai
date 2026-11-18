@@ -26,6 +26,22 @@ impl Edition {
             Self::International => "trae_intl_local_connection_consent",
         }
     }
+    pub(crate) fn session_id(self, id: &str) -> Option<String> {
+        use crate::proxy::tool_observation::types::normalized_session_id;
+        let id = normalized_session_id(Some(id))?;
+        let (prefix, previous) = match self {
+            Self::China => ("trae_cn_", "trae_"),
+            Self::International => ("trae_", "trae-intl_"),
+        };
+        if id.starts_with(prefix) {
+            return Some(id);
+        }
+        let raw = id.strip_prefix(previous).unwrap_or(&id);
+        if raw.is_empty() {
+            return None;
+        }
+        normalized_session_id(Some(&format!("{prefix}{raw}")))
+    }
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Client(pub Edition);

@@ -110,6 +110,7 @@ pub struct RawPiece {
     pub state: Arc<ResponseState>,
     pub sequence: u64,
     pub bytes: Bytes,
+    pub(crate) native: Option<super::types::ToolObservation>,
     _bytes: OwnedSemaphorePermit,
 }
 #[derive(Clone)]
@@ -202,10 +203,18 @@ impl ResponseTap {
         }
     }
     fn enqueue(&mut self, bytes: &Bytes) {
+        self.enqueue_piece(bytes, None, bytes.len());
+    }
+    fn enqueue_piece(
+        &mut self,
+        bytes: &Bytes,
+        native: Option<super::types::ToolObservation>,
+        size: usize,
+    ) {
         if self.state.faulted.load(Ordering::Acquire) {
             return;
         }
-        if bytes.len() > MAX_PIECE_BYTES {
+        if size > MAX_PIECE_BYTES {
             self.sender
                 .counters
                 .dropped_budget
@@ -217,7 +226,7 @@ impl ResponseTap {
             .sender
             .bytes
             .clone()
-            .try_acquire_many_owned(bytes.len() as u32)
+            .try_acquire_many_owned(size as u32)
         {
             Ok(p) => p,
             Err(_) => {
@@ -234,6 +243,7 @@ impl ResponseTap {
             state: self.state.clone(),
             sequence,
             bytes: bytes.clone(),
+            native,
             _bytes: permit,
         };
         match self.sender.tx.try_send(piece) {
@@ -307,6 +317,35 @@ pub fn start_response(metadata: ResponseMetadata) -> Option<ResponseTap> {
         .start(metadata, collection_generation())?;
     tap.policy_bound = true;
     Some(tap)
+}
+pub(crate) fn observe_native(observation: super::types::ToolObservation) {
+    if observation.validate().is_err() {
+        return;
+    }
+    let client = match observation.tool.client.as_deref() {
+        Some("trae") => "trae",
+        Some("trae-intl") => "trae-intl",
+        Some("doubaowork") => "doubaowork",
+        _ => return,
+    };
+    let size = observation
+        .input
+        .value
+        .as_ref()
+        .and_then(|value| super::types::bounded_input_size(value).ok())
+        .unwrap_or(0)
+        .saturating_add(8192);
+    let metadata = ResponseMetadata {
+        session_id: observation.correlation.session_id.clone(),
+        protocol: "native_hook",
+        client,
+        transport: Transport::Json,
+        quality: OutputQuality::Native,
+        definitions: Arc::new(Vec::new()),
+    };
+    if let Some(mut tap) = start_response(metadata) {
+        tap.enqueue_piece(&Bytes::new(), Some(observation), size);
+    }
 }
 #[cfg(test)]
 pub async fn test_channel() -> (

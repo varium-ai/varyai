@@ -434,6 +434,11 @@ pub(crate) fn audit_session_id(
         && !id.chars().any(char::is_whitespace)
         && !id.chars().any(char::is_control)
     {
+        if let Some(edition) =
+            crate::services::trae_bridge::shared::Edition::parse(app_type.as_str())
+        {
+            return edition.session_id(id);
+        }
         let id = if matches!(
             app_type,
             AppType::WorkBuddy
@@ -442,6 +447,8 @@ pub(crate) fn audit_session_id(
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::OpenCode
+                | AppType::Hermes
         ) {
             format!("{}_{id}", app_type.as_str())
         } else {

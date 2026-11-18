@@ -2449,8 +2449,8 @@ describe("Agent connections", () => {
       "agentConnections.states.recovery",
     );
     expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
     expect(
       within(row).getByRole("button", { name: "agentConnections.reapply" }),
     ).toBeEnabled();
@@ -2502,15 +2502,15 @@ describe("Agent connections", () => {
       within(row).getByRole("button", { name: "agentConnections.reapply" }),
     ).toBeEnabled();
     expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
     expect(within(row).getByRole("status")).toHaveTextContent(
       "agentConnections.states.recovery",
     );
   });
 
   it.each([false, true])(
-    "keeps normal TRAE bridge waiting free of repair actions (compact: %s)",
+    "keeps TRAE bridge waiting free of reapply while honoring required restarts (compact: %s)",
     async (compact) => {
       const client = new QueryClient({
         defaultOptions: { queries: { retry: false } },
@@ -2552,10 +2552,10 @@ describe("Agent connections", () => {
           }),
         ).not.toBeInTheDocument();
         expect(
-          within(row).queryByRole("button", {
+          within(row).getByRole("button", {
             name: "agentConnections.restart",
           }),
-        ).not.toBeInTheDocument();
+        ).toBeEnabled();
       }
       expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
       expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
@@ -2614,8 +2614,8 @@ describe("Agent connections", () => {
       within(row).getByRole("button", { name: "agentConnections.reapply" }),
     ).toBeEnabled();
     expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    ).toBeEnabled();
   });
 
   it.each(["trae", "claude-desktop", "workbuddy", "codex"] as const)(
@@ -3669,6 +3669,64 @@ describe("Agent connections", () => {
     expect(agentConnectionsApi.set).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "shows one audit action for Doubao with stale restart flags (compact: %s)",
+    async (compact) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        doubaowork: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "doubaowork",
+          enabled: true,
+          configured: false,
+          model: null,
+          recoveryPending: false,
+          restartRequired: true,
+          desktopState: "restart_required",
+        },
+      ]);
+      mount(compact);
+      const row = await screen.findByRole("article", {
+        name: "apps.doubaowork",
+      });
+      if (compact) {
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: "agentConnections.details apps.doubaowork",
+          }),
+        );
+      }
+      expect(
+        within(row).queryByRole("button", {
+          name: "agentConnections.restart",
+        }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(row).queryByRole("button", {
+          name: "homeAudit.doubaoLaunch",
+        }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(row).getAllByRole("button", {
+          name: "homeAudit.doubaoRestart",
+        }),
+      ).toHaveLength(1);
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.auditWaiting",
+      );
+      fireEvent.click(
+        within(row).getByRole("button", {
+          name: "homeAudit.doubaoRestart",
+        }),
+      );
+      await waitFor(() =>
+        expect(proxyApi.launchDoubaoWorkForAudit).toHaveBeenCalledOnce(),
+      );
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+    },
+  );
+
   it("labels Doubao's official models without offering an unsupported shared selector", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
       doubaowork: true,
@@ -3689,7 +3747,7 @@ describe("Agent connections", () => {
   });
 
   it.each([false, true])(
-    "offers the explicit Doubao audit launcher and explains a running client (compact: %s)",
+    "offers the explicit Doubao audit launcher for opening or restarting (compact: %s)",
     async (compact) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
         doubaowork: true,
@@ -3704,9 +3762,6 @@ describe("Agent connections", () => {
           restartRequired: false,
         },
       ]);
-      vi.mocked(proxyApi.launchDoubaoWorkForAudit).mockRejectedValueOnce(
-        "homeAudit.doubaoQuitFirst",
-      );
       mount(compact);
       const row = await screen.findByRole("article", {
         name: "apps.doubaowork",
@@ -3726,9 +3781,9 @@ describe("Agent connections", () => {
       await waitFor(() =>
         expect(proxyApi.launchDoubaoWorkForAudit).toHaveBeenCalledOnce(),
       );
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "homeAudit.doubaoQuitFirst",
-      );
+      expect(
+        screen.queryByText("homeAudit.doubaoQuitFirst"),
+      ).not.toBeInTheDocument();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
     },
   );
@@ -3798,7 +3853,8 @@ describe("Agent connections", () => {
           configured: true,
           model: null,
           recoveryPending: false,
-          restartRequired: false,
+          restartRequired: true,
+          desktopState: "restart_required",
         },
       ]);
       mount(compact);
@@ -3814,6 +3870,12 @@ describe("Agent connections", () => {
       }
       expect(
         within(row).queryByRole("button", { name: "homeAudit.doubaoLaunch" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(row).queryByRole("button", { name: "homeAudit.doubaoRestart" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(row).queryByRole("button", { name: "agentConnections.restart" }),
       ).not.toBeInTheDocument();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
       expect(proxyApi.launchDoubaoWorkForAudit).not.toHaveBeenCalled();
@@ -4086,7 +4148,7 @@ describe("Agent connections", () => {
       const row = await screen.findByRole("article", { name: "apps.codex" });
       await waitFor(() =>
         expect(within(row).getByRole("status")).toHaveTextContent(
-          "agentConnections.states.configured",
+          "agentConnections.states.restartRequired",
         ),
       );
       expect(
@@ -5526,6 +5588,38 @@ it.each([
         name: "agentConnections.restart",
       }),
     ).toHaveLength(canRefresh ? 1 : 0);
+    expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+  },
+);
+
+it.each(APP_IDS)(
+  "exposes the correct restart or audit-launch action for %s during recovery",
+  async (app) => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      [app]: true,
+    } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app,
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        restartRequired: true,
+        desktopState: "unknown",
+        model: "vary-auto/shared",
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: `apps.${app}` });
+    expect(
+      await within(row).findByRole("button", {
+        name:
+          app === "doubaowork"
+            ? "homeAudit.doubaoLaunch"
+            : "agentConnections.restart",
+      }),
+    ).toBeEnabled();
     expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
   },
 );

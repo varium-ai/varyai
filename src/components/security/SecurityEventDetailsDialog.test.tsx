@@ -236,6 +236,12 @@ it.each(["__proto__", "constructor", "toString"])(
 
 it.each([
   [
+    "client_report",
+    "reported",
+    "securityEvents.sourceClientReport",
+    "securityEvents.stageReported",
+  ],
+  [
     "model_response",
     "proposed",
     "securityEvents.sourceModelResponse",

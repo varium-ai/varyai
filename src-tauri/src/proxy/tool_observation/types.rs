@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub enum ObservationSource {
     ModelResponse,
     ClientHook,
+    ClientReport,
     McpRpc,
 }
 
@@ -18,6 +19,7 @@ impl ObservationSource {
         match self {
             Self::ModelResponse => "model_response",
             Self::ClientHook => "client_hook",
+            Self::ClientReport => "client_report",
             Self::McpRpc => "mcp_rpc",
         }
     }
@@ -29,6 +31,7 @@ pub enum ObservationStage {
     Proposed,
     PreExecution,
     RpcSubmitted,
+    Reported,
 }
 
 impl ObservationStage {
@@ -37,6 +40,7 @@ impl ObservationStage {
             Self::Proposed => "proposed",
             Self::PreExecution => "pre_execution",
             Self::RpcSubmitted => "rpc_submitted",
+            Self::Reported => "reported",
         }
     }
 }
@@ -264,6 +268,7 @@ impl ToolObservation {
                     ObservationStage::PreExecution
                 )
                 | (ObservationSource::McpRpc, ObservationStage::RpcSubmitted)
+                | (ObservationSource::ClientReport, ObservationStage::Reported)
         );
         if !stage_ok {
             return Err(ContractError::SourceStageMismatch);

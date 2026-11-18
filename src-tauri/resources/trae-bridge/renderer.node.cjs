@@ -860,11 +860,12 @@ test("shared catalog refreshes expose final labels throughout replacement", asyn
   const id = "shared_catalog_connection";
   await bridge.apply(id, "VaryAI", config);
   await bridge.replace(id, "VaryAI", config);
-  f.service.addCustomModel = async (fields) =>
-    fields.ak === "synthetic-rejected" ? { code: 429 } : add(fields);
+  const update = f.service.updateCustomModel;
+  f.service.updateCustomModel = async (fields) =>
+    fields.ak === "synthetic-rejected" ? { code: 429 } : update(fields);
   await assert.rejects(
     bridge.replace(id, "VaryAI", { ...config, apiKey: "synthetic-rejected" }),
-    /model_add_failed:429/,
+    /model_update_failed:429/,
   );
   assert.ok(snapshots.length > 2);
   for (const snapshot of snapshots)
@@ -1336,4 +1337,177 @@ test("replacement refuses destructive changes when native recovery credentials a
     /model_recovery_unavailable/,
   );
   assert.deepEqual(f.models, before);
+});
+
+test("explicit shared reconnect overwrites a large compatible catalog without recreating models", async () => {
+  const f = fixture();
+  let refreshes = 0;
+  const b = createBridge(
+    f.service,
+    async () => ({}),
+    () => {
+      refreshes++;
+    },
+  );
+  const id = "shared_catalog_connection";
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic-old",
+    models: Array.from({ length: 58 }, (_, i) => ({ model: `synthetic-${i}` })),
+  };
+  await b.apply(id, "VaryAI", config);
+  const ids = f.models.map((m) => m.custom_model_id);
+  let updates = 0;
+  f.service.addCustomModel = async () => {
+    throw Error("unexpected model recreation");
+  };
+  const update = f.service.updateCustomModel;
+  f.service.updateCustomModel = async (fields) => {
+    assert.equal(fields.action, "update");
+    updates++;
+    return update(fields);
+  };
+  refreshes = 0;
+  await b.replace(id, "VaryAI", {
+    ...config,
+    baseUrl: "http://127.0.0.1:2/connections/trae/v1",
+    apiKey: "synthetic-new",
+  });
+  assert.equal(updates, 58);
+  assert.ok(refreshes <= 3);
+  assert.deepEqual(
+    f.models.map((m) => m.custom_model_id),
+    ids,
+  );
+  assert.ok(
+    f.models.every(
+      (m) =>
+        m.ak === "synthetic-new" &&
+        m.base_url ===
+          "http://127.0.0.1:2/connections/trae/v1/chat/completions",
+    ),
+  );
+});
+
+test("failed compatible reconnect restores original fields and ownership", async () => {
+  const f = fixture();
+  const b = createBridge(f.service, async () => ({}));
+  const id = "shared_catalog_connection";
+  const config = {
+    protocol: "openai",
+    baseUrl: "https://synthetic.invalid/v1",
+    apiKey: "synthetic-old",
+    models: [{ model: "first" }, { model: "second" }],
+  };
+  await b.apply(id, "VaryAI", config);
+  const fields = () =>
+    f.models.map((m) => ({
+      id: m.custom_model_id,
+      name: m.model_name,
+      key: m.ak,
+      base: m.base_url,
+      label: m.display_name,
+    }));
+  const before = fields();
+  const update = f.service.updateCustomModel;
+  const second = f.models[1].custom_model_id;
+  f.service.updateCustomModel = async (row) =>
+    row.id === second && row.ak === "synthetic-new"
+      ? { code: 429 }
+      : update(row);
+  await assert.rejects(
+    b.replace(id, "VaryAI", { ...config, apiKey: "synthetic-new" }),
+    /model_update_failed:429/,
+  );
+  assert.deepEqual(fields(), before);
+  assert.equal(await b.matches(id, config), true);
+});
+
+test("native whole-catalog writes preserve every model without overlapping creates", async () => {
+  const f = fixture();
+  let active = 0,
+    peak = 0,
+    refreshes = 0;
+  let nextId = 0;
+  f.service.addCustomModel = async (fields) => {
+    active++;
+    peak = Math.max(peak, active);
+    try {
+      // A native writer can save a full snapshot after asynchronous work.
+      const snapshot = [...f.models];
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      snapshot.push({ ...fields, custom_model_id: `snapshot-${++nextId}` });
+      f.models.splice(0, f.models.length, ...snapshot);
+      return { code: 0 };
+    } finally {
+      active--;
+    }
+  };
+  const b = createBridge(
+    f.service,
+    async () => ({}),
+    () => {
+      refreshes++;
+    },
+  );
+  await b.apply("shared_catalog_connection", "VaryAI", {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic",
+    models: Array.from({ length: 10 }, (_, i) => ({ model: `model-${i}` })),
+  });
+  assert.equal(peak, 1);
+  assert.equal(refreshes, 3);
+  assert.equal(f.models.length, 10);
+});
+
+test("failed creation stops subsequent writes and rolls back only new rows", async () => {
+  const f = fixture();
+  f.models.push({
+    custom_model_id: "native",
+    model_name: "native",
+    display_name: "Native",
+  });
+  let active = 0,
+    completed = 0;
+  const add = f.service.addCustomModel,
+    update = f.service.updateCustomModel;
+  f.service.addCustomModel = async (fields) => {
+    active++;
+    try {
+      if (fields.model_name === "fail") return { code: 429 };
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      completed++;
+      return await add(fields);
+    } finally {
+      active--;
+    }
+  };
+  f.service.updateCustomModel = async (fields) => {
+    assert.equal(active, 0, "rollback raced an outstanding native create");
+    assert.notEqual(fields.id, "native");
+    return update(fields);
+  };
+  const b = createBridge(f.service, async () => ({}));
+  await assert.rejects(
+    b.apply("shared_catalog_connection", "VaryAI", {
+      protocol: "openai",
+      baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+      apiKey: "synthetic",
+      models: [
+        { model: "first" },
+        { model: "second" },
+        { model: "third" },
+        { model: "fail" },
+        { model: "not-started" },
+      ],
+    }),
+    /model_add_failed:429/,
+  );
+  assert.equal(completed, 3);
+  assert.deepEqual(
+    f.models.map((m) => m.custom_model_id),
+    ["native"],
+  );
 });

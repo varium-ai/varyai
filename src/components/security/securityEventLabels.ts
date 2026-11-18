@@ -7,8 +7,22 @@ export function securityEventSessionId(
   event: Pick<SecurityEvent, "appType" | "sessionId">,
 ): string | null {
   if (!event.sessionId) return null;
-  return event.appType === "pi" && !event.sessionId.startsWith("pi_")
-    ? `pi_${event.sessionId}`
+  if (event.appType === "trae" || event.appType === "trae-intl") {
+    const prefix = event.appType === "trae" ? "trae_cn_" : "trae_";
+    if (event.sessionId.startsWith(prefix)) return event.sessionId;
+    const previous = event.appType === "trae" ? "trae_" : "trae-intl_";
+    const id = event.sessionId.startsWith(previous)
+      ? event.sessionId.slice(previous.length)
+      : event.sessionId;
+    return `${prefix}${id}`;
+  }
+  const prefix = `${event.appType}_`;
+  return (event.appType === "pi" ||
+    event.appType === "t3code" ||
+    event.appType === "opencode" ||
+    event.appType === "hermes") &&
+    !event.sessionId.startsWith(prefix)
+    ? `${prefix}${event.sessionId}`
     : event.sessionId;
 }
 

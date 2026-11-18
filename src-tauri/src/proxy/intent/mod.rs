@@ -709,7 +709,7 @@ fn remember(map: &mut HashMap<String, usize>, kind: &str, key: &str, target: usi
 }
 impl Bindings {
     fn continuation_projection(&self, consumer: &str, body: &Value) -> Value {
-        if consumer == "agent:trae" {
+        if matches!(consumer, "agent:trae" | "agent:trae-intl") {
             trae::projection(body, |id| {
                 self.calls.contains_key(&continuation::hash("call", id))
             })
@@ -1452,7 +1452,7 @@ pub(crate) async fn handle_global(
         && parts
             .extensions
             .get::<super::connections::Agent>()
-            .is_some_and(|agent| agent.0 == "trae");
+            .is_some_and(|agent| matches!(agent.0, "trae" | "trae-intl"));
     let pending = execute(
         state,
         session,
@@ -2972,7 +2972,7 @@ async fn execute(
             }
         }
         let mut observer = Observer::default();
-        observer.trae = agent == "trae" && protocol == Protocol::Chat;
+        observer.trae = matches!(agent, "trae" | "trae-intl") && protocol == Protocol::Chat;
         observer.scheduling = Some(target.scheduling.clone());
         observer.started = streaming.then_some(attempt_started);
         observer.first_content = observed_first_content;

@@ -472,7 +472,7 @@ impl Manager {
 }
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-async fn rpc(
+pub(crate) async fn rpc(
     socket: &mut Socket,
     next: &mut u64,
     session: Option<&str>,

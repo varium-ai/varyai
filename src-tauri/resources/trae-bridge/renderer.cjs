@@ -281,9 +281,20 @@ function createBridge(
     const desiredLabels = config.models.map((model) =>
       displayName(model, name, labels),
     );
-    const added = [];
+    const plans = [],
+      created = [];
     const addedIds = new Set(),
       wanted = new Set();
+    const createdCandidates = (plan, rows) =>
+      rows.filter(
+        (m) =>
+          m.id &&
+          !existing.some((old) => old.id === m.id) &&
+          m.displayName === plan.initialName &&
+          m.baseUrl === baseUrl &&
+          m.provider === plan.fields.provider &&
+          modelNameMatches(m.name, plan.model.model),
+      );
     try {
       for (const [index, model] of config.models.entries()) {
         const legacyName = await ownedName(id, model.model);
@@ -332,32 +343,42 @@ function createBridge(
           custom_model_type: "chat_model",
         };
         if (!fields.provider) throw Error("invalid_protocol");
-        if (!match) {
-          // Shared rows can recover ownership by their unique local endpoint and wire identity.
-          // Publish their final label immediately so refreshes never expose a temporary hash.
-          const initialName =
-            id === "shared_catalog_connection" ? display_name : legacyName;
-          const result = await service.addCustomModel({
-            ...fields,
-            display_name: initialName,
-          });
-          if (result.code !== 0) throw modelFailure("add", result.code);
-          if (initialName === legacyName) added.push(legacyName);
-          await refreshModels();
-          const candidates = (await list()).filter(
-            (m) =>
-              m.id &&
-              !existing.some((old) => old.id === m.id) &&
-              m.displayName === initialName &&
-              (initialName === legacyName ||
-                (m.baseUrl === baseUrl &&
-                  m.provider === fields.provider &&
-                  modelNameMatches(m.name, model.model))),
-          );
-          match = candidates.length === 1 ? candidates[0] : undefined;
-          if (!match) throw Error("model_apply_failed");
-          addedIds.add(match.id);
+        if (
+          match &&
+          (match.provider !== fields.provider ||
+            !modelNameMatches(match.name, model.model))
+        )
+          throw Error("model_identity_changed");
+        plans.push({
+          model,
+          fields,
+          match,
+          initialName:
+            id === "shared_catalog_connection" ? display_name : legacyName,
+        });
+      }
+      const missing = plans.filter((plan) => !plan.match);
+      // Native creates may rewrite a whole catalog snapshot; overlapping writes lose rows.
+      // Publish once after creation, without the previous per-model refresh overhead.
+      for (const plan of missing) {
+        const result = await service.addCustomModel({
+          ...plan.fields,
+          display_name: plan.initialName,
+        });
+        if (result.code !== 0) throw modelFailure("add", result.code);
+        created.push(plan);
+      }
+      if (created.length) {
+        await refreshModels();
+        const rows = await list();
+        for (const plan of created) {
+          const candidates = createdCandidates(plan, rows);
+          if (candidates.length !== 1) throw Error("model_apply_failed");
+          plan.match = candidates[0];
+          addedIds.add(plan.match.id);
         }
+      }
+      for (const { model, fields, match } of plans) {
         owned = owned.filter(
           (row) => row.model !== model.model && row.id !== match.id,
         );
@@ -421,10 +442,13 @@ function createBridge(
       return all.filter((m) => wanted.has(m.id));
     } catch (error) {
       // Roll back newly created entries only. Never remove pre-existing native models.
+      await refreshModels();
       const all = await list();
-      for (const m of all.filter(
-        (m) => addedIds.has(m.id) || added.includes(m.displayName),
-      ))
+      for (const plan of created) {
+        const candidates = createdCandidates(plan, all);
+        if (candidates.length === 1) addedIds.add(candidates[0].id);
+      }
+      for (const m of all.filter((m) => addedIds.has(m.id)))
         await service.updateCustomModel({ action: "delete", id: m.id });
       try {
         saveOwned(
@@ -500,7 +524,18 @@ function createBridge(
       });
       if (!ownership.has(owner)) ownership.set(owner, []);
     }
+    const desired = new Set(config?.models.map((model) => model.model) || []);
+    const overwrite =
+      config !== null &&
+      snapshots.length > 0 &&
+      snapshots.every(
+        (model) =>
+          model.owner === id &&
+          (!desired.has(model.fields.model_name) ||
+            model.fields.provider === providerType(config.protocol)),
+      );
     try {
+      if (overwrite) return await apply(id, name, config);
       for (const model of snapshots) {
         const deleted = await service.updateCustomModel({
           action: "delete",
@@ -516,7 +551,21 @@ function createBridge(
       await refreshModels();
       const remaining = await list();
       for (const model of snapshots) {
-        if (remaining.some((row) => row.id === model.id)) continue;
+        if (remaining.some((row) => row.id === model.id)) {
+          if (overwrite) {
+            try {
+              const result = await service.updateCustomModel({
+                action: "update",
+                id: model.id,
+                ...editFields(model.fields),
+              });
+              if (result.code !== 0) throw modelFailure("restore", result.code);
+            } catch {
+              restored = false;
+            }
+          }
+          continue;
+        }
         try {
           const shared = model.owner === "shared_catalog_connection";
           const marker = shared
@@ -556,6 +605,7 @@ function createBridge(
           restored = false;
         }
       }
+      for (const [owner, rows] of ownership) saveOwned(owner, rows);
       await refreshModels();
       if (!restored) throw Error("model_restore_failed");
       throw error;

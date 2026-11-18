@@ -341,6 +341,7 @@ impl ProxyServer {
             .route("/health", get(handlers::health_check))
             .route("/gateway/*path", any(super::gateway::handle))
             .route("/private/trae/audit", post(super::trae::audit))
+            .route("/private/tool-risk/:app", post(super::trae::tool_risk))
             .route("/pi/*path", any(super::pi::handle))
             .route(
                 "/workbuddy/v1/chat/completions",

@@ -8,6 +8,30 @@ use axum::{
 };
 use serde_json::{json, Value};
 
+pub(crate) async fn tool_risk(
+    axum::extract::Path(app): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(value): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let edition = trae_bridge::shared::Edition::parse(&app).ok_or(StatusCode::NOT_FOUND)?;
+    let token = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !trae_bridge::tool_risk::authorized(edition, token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if crate::services::tool_risk::runtime::collection_enabled() {
+        if let Some(observation) =
+            super::tool_observation::native::trae_observation(edition.app(), &value)
+        {
+            super::tool_observation::channel::observe_native(observation);
+        }
+    }
+    Ok(Json(json!({})))
+}
+
 pub(crate) async fn audit(
     State(state): State<ProxyState>,
     headers: HeaderMap,
@@ -22,7 +46,7 @@ pub(crate) async fn audit(
     let session = value["sessionId"]
         .as_str()
         .filter(|s| !s.is_empty() && s.len() < 200 && !s.chars().any(char::is_whitespace))
-        .map(|s| format!("trae_{s}"));
+        .and_then(|s| trae_bridge::shared::Edition::China.session_id(s));
     if let Some(usage) = value.get("usage") {
         let number = |key: &str| {
             usage[key]

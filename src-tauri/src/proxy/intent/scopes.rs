@@ -104,7 +104,7 @@ fn references_with(body: &Value, contains: impl Fn(&str, &str) -> bool) -> bool 
     })
 }
 fn references(snapshot: &continuation::Snapshot, body: &Value, consumer: &str) -> bool {
-    let projection = (consumer == "agent:trae").then(|| {
+    let projection = matches!(consumer, "agent:trae" | "agent:trae-intl").then(|| {
         trae::projection(body, |id| {
             snapshot.calls.contains_key(&continuation::hash("call", id))
         })

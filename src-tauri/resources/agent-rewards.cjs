@@ -72,10 +72,13 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
   );
   // Only an official daily window identifies a reward date; observation time does not.
   const dailyStart = nextDay(now, 10) - 86400000;
+  // The campaign can end at 09:59 UTC+8 rather than exactly at 10:00.
+  const dailyEnd = dailyStart + 86400000;
   const rewardDate = chosen.every(
     (c) =>
       stamp(c.startAt) === dailyStart &&
-      stamp(c.endAt) === dailyStart + 86400000,
+      stamp(c.endAt) >= dailyEnd - 60000 &&
+      stamp(c.endAt) <= dailyEnd,
   )
     ? {
         rewardDay: new Date(dailyStart + 8 * 3600000)

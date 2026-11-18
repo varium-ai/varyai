@@ -31,6 +31,46 @@ fn started_before_change(launched_ms: i64, applied_ms: i64) -> bool {
     launched_ms < applied_ms.saturating_sub(1000)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn launched_since_times(times: impl Iterator<Item = Option<i64>>, since_ms: i64) -> Option<bool> {
+    let mut unknown = false;
+    for time in times {
+        match time {
+            Some(time) if !started_before_change(time, since_ms) => return Some(true),
+            None => unknown = true,
+            _ => {}
+        }
+    }
+    if unknown {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+pub(super) fn launched_since(app: &str, since_ms: i64) -> Option<bool> {
+    if !supports_restart(app) {
+        return Some(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let instances = macos::Native { app }.instances().ok()?;
+        launched_since_times(
+            instances.iter().map(|instance| instance.launched_ms),
+            since_ms,
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::launched_since(app, since_ms)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = since_ms;
+        None
+    }
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     if instances.is_empty() {
@@ -72,7 +112,20 @@ pub(crate) fn supports_restart(app: &str) -> bool {
             | "kimi"
             | "zcode"
             | "deepseek-harness"
+            | "t3code"
     )
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) fn launch_arguments(app: &str) -> &'static [&'static str] {
+    if app == "doubaowork" {
+        &[
+            "--remote-debugging-port=0",
+            "--remote-debugging-address=127.0.0.1",
+        ]
+    } else {
+        &[]
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -89,6 +142,7 @@ fn bundle_ids(app: &str) -> &'static [&'static str] {
         "kimi" => &["com.kimi.code.desktop"],
         "zcode" => &["dev.zcode.app"],
         "deepseek-harness" => &["com.deepseek.dsh"],
+        "t3code" => &["com.t3tools.t3code"],
         _ => &[],
     }
 }
@@ -598,13 +652,14 @@ mod macos {
             if launch_model_control(self.app, bundle)? {
                 return Ok(());
             }
-            let status = std::process::Command::new("/usr/bin/open")
-                // Request a fresh launch after the verified old process exits;
-                // LaunchServices may still retain its terminated application.
-                .arg("-n")
-                .arg(bundle)
-                .status()
-                .map_err(|_| FAILED)?;
+            // Request a fresh launch after the verified old process exits.
+            let mut command = std::process::Command::new("/usr/bin/open");
+            command.arg("-n").arg(bundle);
+            let arguments = launch_arguments(self.app);
+            if !arguments.is_empty() {
+                command.arg("--args").args(arguments);
+            }
+            let status = command.status().map_err(|_| FAILED)?;
             status.success().then_some(()).ok_or_else(|| FAILED.into())
         }
         fn wait_back(&self, bundle: &std::path::Path, previous: &[Instance]) -> Result<(), String> {
@@ -626,6 +681,24 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_doubao_restart_adds_its_loopback_audit_launch_arguments() {
+        for app in crate::app_config::AppType::all() {
+            let arguments = launch_arguments(app.as_str());
+            if app.as_str() == "doubaowork" {
+                assert_eq!(
+                    arguments,
+                    [
+                        "--remote-debugging-port=0",
+                        "--remote-debugging-address=127.0.0.1"
+                    ]
+                );
+            } else {
+                assert!(arguments.is_empty(), "{app:?}");
+            }
+        }
+    }
 
     #[test]
     fn confirmed_chatgpt_restart_reopens_a_current_app_without_reloading_a_cli() {
@@ -904,6 +977,7 @@ mod tests {
         assert!(supports_restart("kimi"));
         assert!(supports_restart("zcode"));
         assert!(supports_restart("deepseek-harness"));
+        assert!(supports_restart("t3code"));
         assert_eq!(bundle_ids("workbuddy"), &["com.tencent.workbuddy.mac"]);
         assert_eq!(bundle_ids("workbuddy-ai"), &["com.workbuddy.workbuddy-ai"]);
         assert_eq!(
@@ -917,6 +991,7 @@ mod tests {
         assert_eq!(bundle_ids("kimi"), &["com.kimi.code.desktop"]);
         assert_eq!(bundle_ids("zcode"), &["dev.zcode.app"]);
         assert_eq!(bundle_ids("deepseek-harness"), &["com.deepseek.dsh"]);
+        assert_eq!(bundle_ids("t3code"), &["com.t3tools.t3code"]);
         for app in ["claude", "gemini", "opencode", "pi", "unknown"] {
             assert!(!supports_restart(app), "{app}");
             assert!(bundle_ids(app).is_empty(), "{app}");
@@ -1137,6 +1212,27 @@ mod tests {
         assert_eq!(
             assess(&[instance(Some(500)), instance(Some(3000))], Some(2000)),
             State::RestartRequired
+        );
+    }
+
+    #[test]
+    fn resume_checks_every_instance_for_launches_during_the_restored_configuration() {
+        assert_eq!(launched_since_times([].into_iter(), 5000), Some(false));
+        assert_eq!(
+            launched_since_times([Some(1000), Some(2000)].into_iter(), 5000),
+            Some(false)
+        );
+        assert_eq!(
+            launched_since_times([Some(1000), Some(6000)].into_iter(), 5000),
+            Some(true)
+        );
+        assert_eq!(
+            launched_since_times([Some(1000), None].into_iter(), 5000),
+            None
+        );
+        assert_eq!(
+            launched_since_times([None, Some(6000)].into_iter(), 5000),
+            Some(true)
         );
     }
 

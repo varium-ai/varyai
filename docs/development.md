@@ -102,6 +102,17 @@ Use `pnpm exec vitest run <test-files>` to select frontend tests during developm
 
 Claude Desktop, WorkBuddy, WorkBuddy AI and Qoder CN process inspection and confirmed restart support macOS and verified Windows installations. Keep native helpers behind their platform guards; pure freshness, selection and lifecycle orchestration compile under `cfg(test)` so synthetic fixtures run on every CI platform. Desktop integrations on Linux report `unsupported`. macOS requests a normal quit; Windows asks windows to close before ending verified remaining processes when necessary. Restart confirmation text shows only the current operating system's guidance. Tests must use fake runtimes and never inspect, quit, signal or launch installed applications. Codex has a separate idle-aware app-server worker for automatic route changes. Explicitly confirmed manual restarts immediately enter the native whole-application lifecycle, even during active tasks, and await its actual result; confirmation text must explain the interruption. The manual action remains available while an automatic refresh is waiting for idle. Confirmed manual restarts do not depend on configuration freshness: restart a running app, or open its verified installed copy when stopped. Process identity checks remain mandatory; automatic refresh retains its configuration guards. The automatic worker's gateway activity guard covers the response body lifetime and a ten-second quiet period without modifying frames or trailers. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
 
+Desktop restart launch arguments compile on macOS, Windows and test builds, like
+their callers. Normal Linux builds exclude this native helper; portable tests
+still verify launch arguments across the full Agent inventory.
+
+TRAE native-hook synchronization keeps an explicit `Option<Value>` type for the
+desired configuration. Linux excludes the desktop-only `Some` branch, so relying
+on that branch for type inference breaks the normal Linux build. Keep the Linux
+Clippy check alongside macOS and Windows checks when changing platform guards.
+The profile-bundle bridge fixture reads the bundled helper revision instead of
+hardcoding it, so helper upgrades continue to exercise a connected current client.
+
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
 
 Codex default-model restart checks must use the same platform guard as the app-server freshness module (`macos`, `windows`, or `test`). Normal Linux builds have no model-application timestamp and must not request a desktop restart. Keep the normal Linux Clippy build in CI: unit-test builds enable the freshness module and cannot detect an unguarded reference.

@@ -1,4 +1,7 @@
 //! Doubao Work's native Chromium connection, independent of other clients.
+mod report_transport;
+mod tool_reports;
+mod tool_risk;
 use base64::Engine;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -37,6 +40,9 @@ impl Manager {
         let (tx, mut stop) = watch::channel(false);
         let active = self.connected.clone();
         let task = tokio::spawn(async move {
+            let legacy = Arc::new(AtomicBool::new(false));
+            let mut tools = tokio::spawn(tool_risk::run(stop.clone(), legacy.clone()));
+            let mut reports = tokio::spawn(report_transport::run(stop.clone(), legacy));
             loop {
                 if *stop.borrow() {
                     break;
@@ -51,6 +57,18 @@ impl Manager {
                 }
             }
             active.store(false, Ordering::Release);
+            if tokio::time::timeout(Duration::from_secs(3), &mut tools)
+                .await
+                .is_err()
+            {
+                tools.abort();
+            }
+            if tokio::time::timeout(Duration::from_secs(3), &mut reports)
+                .await
+                .is_err()
+            {
+                reports.abort();
+            }
         });
         *worker = Some((tx, task));
     }
@@ -74,7 +92,11 @@ fn port_file() -> Option<std::path::PathBuf> {
     {
         Some(dirs::home_dir()?.join("Library/Application Support/DoubaoWork/DevToolsActivePort"))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Some(dirs::data_dir()?.join("DoubaoWork/DevToolsActivePort"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         None
     }
@@ -121,36 +143,15 @@ pub(crate) async fn discover() -> Option<String> {
     Some(endpoint)
 }
 
-/// Explicit user action only. Never stop a running client or alter its signed bundle/settings.
+/// Explicit user action: open or restart the verified client in audit mode.
 pub(crate) fn launch() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let paths = [
-            std::path::PathBuf::from("/Applications/DoubaoWork.app"),
-            crate::config::get_home_dir().join("Applications/DoubaoWork.app"),
-        ];
-        let bundle = paths
-            .iter()
-            .find(|p| p.is_dir())
-            .ok_or("homeAudit.doubaoNotInstalled")?;
-        let output = std::process::Command::new("/usr/bin/pgrep")
-            .args(["-f", "DoubaoWork.app/Contents/MacOS/DoubaoWork"])
-            .output()
-            .map_err(|_| "homeAudit.doubaoLaunchFailed")?;
-        if output.status.success() {
-            return Err("homeAudit.doubaoQuitFirst".into());
+        if crate::commands::find_agent_desktop_bundle("doubaowork").is_none() {
+            return Err("homeAudit.doubaoNotInstalled".into());
         }
-        std::process::Command::new(bundle.join("Contents/MacOS/DoubaoWork"))
-            .args([
-                "--remote-debugging-port=0",
-                "--remote-debugging-address=127.0.0.1",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|_| "homeAudit.doubaoLaunchFailed")?;
-        Ok(())
+        crate::services::agent_connections::desktop::restart_manual("doubaowork")
+            .map_err(|_| "homeAudit.doubaoLaunchFailed".into())
     }
     #[cfg(not(target_os = "macos"))]
     {

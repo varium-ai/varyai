@@ -442,6 +442,7 @@ pub(super) fn windows_executable(app: &str) -> Option<PathBuf> {
         for (folder, executable) in [
             ("T3 Code", "T3 Code.exe"),
             ("T3 Code (Alpha)", "T3 Code (Alpha).exe"),
+            ("T3 Code (Beta)", "T3 Code (Beta).exe"),
             ("t3code", "T3 Code.exe"),
         ] {
             let path = root.join(folder).join(executable);

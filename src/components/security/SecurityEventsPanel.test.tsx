@@ -212,13 +212,34 @@ beforeEach(() => {
   });
 });
 describe("unified security event list", () => {
-  it.each(["synthetic-pi-session", "pi_synthetic-pi-session"])(
-    "labels Pi sessions consistently in the list and details without changing identity: %s",
-    (sessionId) => {
-      state.items = [{ ...tool, appType: "pi", sessionId }];
+  it.each([
+    ["pi", "synthetic-session"],
+    ["pi", "pi_synthetic-session"],
+    ["t3code", "synthetic-session"],
+    ["t3code", "t3code_synthetic-session"],
+    ["opencode", "synthetic-session"],
+    ["opencode", "opencode_synthetic-session"],
+    ["hermes", "synthetic-session"],
+    ["hermes", "hermes_synthetic-session"],
+    ["trae", "synthetic-session"],
+    ["trae", "trae_synthetic-session"],
+    ["trae", "trae_cn_synthetic-session"],
+    ["trae-intl", "trae-intl_synthetic-session"],
+    ["trae-intl", "trae_synthetic-session"],
+    ["trae-intl", "synthetic-session"],
+  ])(
+    "labels %s sessions consistently in the list and details without changing identity: %s",
+    (appType, sessionId) => {
+      state.items = [{ ...tool, appType, sessionId }];
       render(<Harness />);
       const row = screen.getByTestId("security-event-tool_risk:7");
-      const label = "pi_synthetic-pi-session";
+      const prefix =
+        appType === "trae"
+          ? "trae_cn"
+          : appType === "trae-intl"
+            ? "trae"
+            : appType;
+      const label = `${prefix}_synthetic-session`;
       expect(within(row).getByText(label)).toHaveAttribute("title", label);
       fireEvent.click(row);
       expect(

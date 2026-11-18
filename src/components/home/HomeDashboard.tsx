@@ -487,6 +487,8 @@ export function HomeDashboard({
                       {t("homeAudit.traeNoticeScope")}
                     </p>
                     <p>{t("homeAudit.traeNoticeConnection")}</p>
+                    <p>{t("agentConnections.traeHooksPurpose")}</p>
+                    <p>{t("agentConnections.traeHooksSetup")}</p>
                   </div>
                 </aside>
               )}
