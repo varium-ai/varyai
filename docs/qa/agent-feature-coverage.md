@@ -326,9 +326,50 @@ warnings. Version consistency checks, formatting of the changed JSON manifests
 and `git diff --check` also passed. This section was formatted
 separately; inherited document-wide table formatting was preserved.
 
-Native rebuilt-app and Windows/Linux execution remain unverified. Remote CI has
-not run for this change; the user will create the PR after the branch is pushed.
-Local checks do not establish native integration, installer or release acceptance.
+Native rebuilt-app acceptance remains unverified. Initial cross-platform CI
+results for PR #68 are recorded in the shutdown-fixture section below. Local
+checks do not establish native integration, installer or release acceptance.
+
+## Qoder TLS shutdown regression fixture (2026-11-18)
+
+[PR #68 CI run 44226715687](https://github.com/varium-ai/varyai/actions/runs/44226715687)
+checked `51e83af94462a3cd403473556ebf16c6e5e264bd`. Frontend, macOS, Linux and
+Windows-to-WSL2 jobs passed. The ordinary Windows job failed only
+`proxy::qoder_tls::tests::stop_waits_for_socket_cleanup_beyond_the_old_deadline`
+with Winsock 10048 / `AddrInUse`; its WorkBuddy catalog regression passed.
+
+The shutdown fixture released an OS-assigned ephemeral port and then tried to
+bind that address again, leaving a race with other parallel socket fixtures.
+It now holds the original listener in an `Arc` and observes its lifetime through
+a `Weak` reference. Shutdown must still wait for the 3,100 ms delayed task,
+complete the original cleanup marker and release the original listener.
+The resource assertions no longer depend on the address remaining unclaimed.
+This only changes the test fixture; production shutdown, native adapters,
+forwarding and UI behavior for all Agents in the inventory above are unchanged.
+
+The updated fixture passed locally. A negative control temporarily restored the
+historical three-second `timeout(task)` implementation and failed the retained
+`cleaned` assertion as expected; the correct production implementation was then
+restored byte-for-byte. The first negative-control build was interrupted by
+missing shared-target artifacts, so the completed negative control and subsequent
+backend checks use an independent `CARGO_TARGET_DIR`, dev/test debug information
+set to zero (as in CI), and incremental compilation disabled. Host: macOS 26.6.2
+arm64, Rust/Cargo 1.98.1, Node 22.22.0, pnpm 10.12.3.
+
+Frontend typecheck, renderer build, formatting, production dependency audit and
+all documented helper checks passed. The first full frontend run encountered two
+10-second subprocess timeouts in the unchanged mocked notarization fixture;
+its 21 tests passed independently, and the final full rerun passed all 4,376 tests
+across 322 files. No notarization test or timeout was changed.
+
+Backend formatting, compile and Clippy checks passed. `cargo test --lib` passed
+7,740 tests with 21 ignored; `cargo test --no-fail-fast` passed 7,905 tests across
+16 groups with 21 ignored. All Cargo commands used `--manifest-path
+src-tauri/Cargo.toml`. The final production prefix of `qoder_tls.rs` matches
+`51e83af9` exactly, and diff whitespace checks passed. Native Agent self-tests
+remain unverified. Follow-up cross-platform acceptance must be checked on the
+new head of [PR #68](https://github.com/varium-ai/varyai/pull/68), rather than
+inferred from these local results.
 
 ## Restart freshness after a gateway restart
 
