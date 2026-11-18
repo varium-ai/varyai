@@ -1961,6 +1961,33 @@ async fn execute(
             }
         }
     }
+    if !count_tokens
+        && pinned.is_none()
+        && candidates.len() > 1
+        && session.group.quota_order.is_some()
+    {
+        let now = chrono::Utc::now().timestamp();
+        candidates.sort_by_cached_key(|index| {
+            let target = &session.targets[*index];
+            let resting = target.scheduling.rest_until() > now;
+            let expiry = if target.official
+                || !target.upstream.as_ref().is_some_and(|provider| {
+                    crate::services::subscription_provider::binding(provider).is_none()
+                })
+                || resting
+                || target.scheduling.exhausted(now)
+            {
+                None
+            } else {
+                crate::services::routing_provider_quota::observe_expiry(
+                    &target.url,
+                    &target.headers,
+                    now,
+                )
+            };
+            (resting, expiry.unwrap_or(i64::MAX))
+        });
+    }
     if pinned.is_none() && session.group.sink {
         scheduling::sink_last(
             session.group.routing,

@@ -120,7 +120,12 @@ it.each([false, true])(
     ).not.toBeInTheDocument();
   },
 );
-it.each(["templateSmart", "templateThrifty", "templateSteady"])(
+it.each([
+  "templateSmart",
+  "templateCapability",
+  "templateSpeed",
+  "templateExpiry",
+])(
   "opens %s without models and validates the draft only when saving",
   async (template) => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
@@ -130,10 +135,10 @@ it.each(["templateSmart", "templateThrifty", "templateSteady"])(
     });
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([]);
     mount();
-    const title = await screen.findByText(`routingPage.${template}`);
-    const add = within(title.parentElement!).getByRole("button", {
-      name: "routingPage.addTemplate",
-    });
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    const add = screen.getByRole("button", { name: `routingPage.${template}` });
     expect(add).toBeEnabled();
     expect(add).toHaveAccessibleDescription(
       "routingPage.templateNeed_provider",
@@ -159,9 +164,11 @@ it.each(["loading", "failed"])(
         new Error("Synthetic catalog failure"),
       );
     mount();
-    const title = await screen.findByText("routingPage.templateSmart");
-    const add = within(title.parentElement!).getByRole("button", {
-      name: "routingPage.addTemplate",
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    const add = screen.getByRole("button", {
+      name: "routingPage.templateSmart",
     });
     expect(add).toBeEnabled();
     fireEvent.click(add);
@@ -181,13 +188,16 @@ it("opens the smart template with one model and explains the shared task target"
     },
   ]);
   mount();
+  const create = screen.getByRole("button", { name: "intentRouting.create" });
+  await waitFor(() => expect(create).toBeEnabled());
+  fireEvent.click(create);
   const title = await screen.findByText("routingPage.templateSmart");
   const card = title.parentElement!;
   expect(
     within(card).getByText("routingPage.templateSmartSameModelHint"),
   ).toBeVisible();
   const add = within(card).getByRole("button", {
-    name: "routingPage.addTemplate",
+    name: "routingPage.templateSmart",
   });
   expect(add).toBeEnabled();
   fireEvent.click(add);

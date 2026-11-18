@@ -4,6 +4,57 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Routing group creation templates
+
+Pre-implementation assessment against `APP_IDS`, `AppType`, the shared Agent
+registry and the separate native integrations. Creation, editing and tray state
+are shared on macOS and Windows. The template builds a normal global group.
+The native catalogs, wire protocols and continuation adapters feed the same
+candidate planner where a global group is selectable. Routing must preserve
+request parameters, replies, exact continuation ownership and per-Agent visibility.
+The allowance observation is tied to the upstream credential and applies only
+when a new destination can be selected.
+
+| Agent ID           | Entry point and adapter                                      | Runtime and UI                                                               | Verification                                      |
+| ------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------- |
+| `claude`           | Claude Code / Messages                                       | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `claude-desktop`   | Claude Desktop / Messages                                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `codex`            | Codex CLI and Desktop / Responses                            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `gemini`           | Gemini CLI / Gemini                                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `grokbuild`        | Grok Build CLI / shared gateway                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `opencode`         | OpenCode / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `openclaw`         | OpenClaw / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `hermes`           | Hermes / shared catalog and gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `pi`               | Pi custom provider / shared gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `workbuddy`        | WorkBuddy China desktop / native bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `workbuddy-ai`     | WorkBuddy international desktop / native bridge              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `qoder`            | Qoder China desktop / native TLS and gateway                 | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `doubaowork`       | Doubao Work / separate native audit connection               | Audit connection only. No global model group projection in the native client | Native audit path outside group execution         |
+| `trae`             | TRAE China / native Chat bridge                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `trae-intl`        | TRAE International / native Chat bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `kimi`             | Kimi Code CLI and desktop / shared gateway                   | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `qwen`             | Qwen Code CLI / shared gateway                               | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `zcode`            | ZCode desktop / native adapter and shared gateway            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `deepseek-harness` | DeepSeek Harness desktop / native adapter and shared gateway | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `t3code`           | T3 Code desktop / managed Codex Responses                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+
+The synthetic gateway matrix exercises Messages, Chat, Responses and Gemini
+requests, including native continuations, exact provider and model selection,
+request field preservation, revoked connections and malformed input. The
+renderer covers the four templates, the Custom draft, model order, cancel/save,
+expiry import/export and legacy groups. Validation uses fixture upstreams and
+does not imply acceptance on any installed Agent or actual relay account.
+
+Local validation used `baf1c29e` plus the routing template working-tree changes
+on macOS 26.6.2 arm64, Node 20.20.2, pnpm 10.12.3 and Rust 1.98.1.
+`pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check` and
+`pnpm test:unit` passed (4,376 tests). The helper checks listed in Development
+and `pnpm audit --prod` passed. `cargo fmt --check`, `cargo check`,
+`cargo clippy -- -D warnings` and `cargo test --lib` passed against
+`src-tauri/Cargo.toml` (7,749 passed and 21 ignored in the library suite).
+The full `cargo test --manifest-path src-tauri/Cargo.toml` also passed, with
+165 integration tests in addition to the library suite.
+
 ## Windows installation discovery (2026-11-18)
 
 Assessment started before implementation against `APP_IDS`, `AppType` and the

@@ -4,7 +4,7 @@
 
 The routing page header provides a primary **Create group** action and the account visibility toggle. Global routing groups appear below the live overview, without a duplicate creation action in the group toolbar.
 
-Catalog refresh updates available models without inserting per-provider refresh results into the group list. An empty group list uses the template cards for guidance. Each template has one **Add** action. It opens the group dialog with its suggested configuration when the catalog supports it. Missing models or classifier support, and a loading or failed catalog, do not disable opening the editor. Requirement messages remain visible as guidance. Users can fill in the models and other missing configuration in the draft; Save still validates the configuration, and Cancel creates nothing.
+Catalog refresh updates available models without inserting per-provider refresh results into the group list. **Create group** opens the template chooser from an empty or populated list. Each template opens the group editor with the available suggestions. Missing models or classifier support, and a loading or failed catalog, do not disable opening the editor. Requirement messages remain visible as guidance. Users can fill in the models and other missing configuration in the draft; Save still validates the configuration, and Cancel creates nothing.
 
 Open **Plans / Routing** from the sidebar. Manage independent global connections in **Models / Providers**, then connect clients from **Tools / Agents**. Groups retain stable resource IDs and exact model IDs; no Agent owns a newly added API provider. Existing Agent-owned configurations remain reference-only compatibility sources. The shared native-client catalog and authenticated external gateway access are separate consumers of these resources. See [Shared catalog](../architecture/shared-catalog.md) and [Routing observations](../architecture/routing-observations.md) for the current control plane; [reference parity](../design/reference-parity.md) records remaining differences rather than claiming complete parity.
 
@@ -50,7 +50,7 @@ The executable global catalog exists independently of Codex activation and per-a
 
 ## Compact list
 
-The group table shows **Group name**, **Models**, **Requests** and **Actions**. The Models column counts all explicit and pattern-matched model members, including separate members on the same upstream and members currently disabled or unavailable. Requests retains its unavailable placeholder until group totals are supported. Actions contains the publication switch and Edit/Delete icons. Open Edit to change scheduling strategy. The import button, per-row strategy selector, More menu and Removed groups entry are absent. Group IDs and public aliases are hidden in list rows; aliases remain searchable and retain their stored values for API access. Enabled row actions show a pointer cursor. Hovering or keyboard-focusing Edit uses the theme accent with a faint accent background. The toolbar status filter remains available. Provider stacks use the same artwork renderer as the provider list, including uploaded images, registered image assets and built-in icons. Providers without artwork use a neutral icon.
+The group table shows **Group name**, **Models**, **Requests** and **Actions**. The Models column counts all explicit and pattern-matched model members, including separate members on the same upstream and members currently disabled or unavailable. Requests retains its unavailable placeholder until group totals are supported. Actions contains the publication switch and Edit/Delete icons. Open Edit to change the models, order or rules. The import button, per-row strategy selector, More menu and Removed groups entry are absent. Group IDs and public aliases are hidden in list rows; aliases remain searchable and retain their stored values for API access. Enabled row actions show a pointer cursor. Hovering or keyboard-focusing Edit uses the theme accent with a faint accent background. The toolbar status filter remains available. Provider stacks use the same artwork renderer as the provider list, including uploaded images, registered image assets and built-in icons. Providers without artwork use a neutral icon.
 
 Conversation identity and concurrent forwarding follow Magpie revision
 `4869d0c9665e1a815fee3a1a4d67a575e0baab93` (`gateway.go`'s `affinityID`,
@@ -67,7 +67,7 @@ Concurrent requests, including requests within one named session, can forward
 while earlier responses remain open. Known ownership collisions, authenticated
 consumer boundaries, native checkpoints, and security inspection remain enforced.
 
-Routing groups use a table with a full group name that wraps when needed, a compact member summary and publication/edit/delete controls in Actions. Separators appear only between rows; a single result has no bottom divider. The table fits the available workspace width without a fixed minimum. The model and request columns are 80 px each, the action column is 108 px, and the name column shrinks with the workspace while long names wrap and member summaries truncate. All four columns remain visible at the application's 900 px minimum window width. The Actions header and cells stay fixed to the right edge. Action controls always stay on one line. The action column stays compact, leaving more space for the group name. Continuous narrow inset shadows, following Ant Design's fixed-column treatment, appear only where more table content can be scrolled into view. The drag grip stays inside its icon button. While dragging, an inert row preview preserves the measured column widths, full row height and fixed-action alignment. The live table keeps its layout; Escape, pointer cancellation and resizing remove the preview and restore the row. Vertical edge scrolling uses the workspace rather than the horizontal table viewport. Rows use a neutral global-resource icon rather than assigning ownership to an agent. Filter locally by group name, exact model ID text or provider name; filtering never changes saved groups. Editing and confirmed deletion remain available per row. Saving strategy changes in the editor creates a user-owned group override. Member information checks supported task transport and locally available official/OAuth identity, rather than the older API-key-only offline validator. It does not prove inference permissions or remote availability.
+Routing groups use a table with a full group name that wraps when needed, a compact member summary and publication/edit/delete controls in Actions. Separators appear only between rows; a single result has no bottom divider. The table fits the available workspace width without a fixed minimum. The model and request columns are 80 px each, the action column is 108 px, and the name column shrinks with the workspace while long names wrap and member summaries truncate. All four columns remain visible at the application's 900 px minimum window width. The Actions header and cells stay fixed to the right edge. Action controls always stay on one line. The action column stays compact, leaving more space for the group name. Continuous narrow inset shadows, following Ant Design's fixed-column treatment, appear only where more table content can be scrolled into view. The drag grip stays inside its icon button. While dragging, an inert row preview preserves the measured column widths, full row height and fixed-action alignment. The live table keeps its layout; Escape, pointer cancellation and resizing remove the preview and restore the row. Vertical edge scrolling uses the workspace rather than the horizontal table viewport. Rows use a neutral global-resource icon rather than assigning ownership to an agent. Filter locally by group name, exact model ID text or provider name; filtering never changes saved groups. Editing and confirmed deletion remain available per row. Saving edits to an automatic group creates a user-owned group override. Member information checks supported task transport and locally available official/OAuth identity, rather than the older API-key-only offline validator. It does not prove inference permissions or remote availability.
 
 Group readiness is based on whether at least one participating member is locally
 available, including members resolved from model patterns. Switched-off members
@@ -83,13 +83,38 @@ checks, not live probes of credentials, quotas or remote service health. This
 presentation does not change forwarding or fallback behavior and is shared by
 macOS and Windows.
 
-Click the group name, member summary, blank row space or **Edit** to open the same modal dialog used by **Create group**. The compact list remains in place behind the dialog. Publication toggles, drag handles and delete icons keep their own actions. The dialog is capped at 880 px wide with a scrollable body and persistent Save/Cancel actions. Group deletion is available only through the list's trash icon and its confirmation dialog; the editor footer has no group deletion action. Focus starts in the group name and returns to the row's Edit button or the creation trigger after closing.
+Click the group name, member summary, blank row space or **Edit** to open its editor. **Create group** opens the template chooser first. The compact list remains in place behind the dialog. Publication toggles, drag handles and delete icons keep their own actions. The dialog is capped at 880 px wide with a scrollable body and persistent Save/Cancel actions. Group deletion is available only through the list's trash icon and its confirmation dialog; the editor footer has no group deletion action. Focus starts in the group name and returns to the row's Edit button or the creation trigger after closing.
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
 
-The three template cards remain visible above the list for both empty and populated catalogs, including while batch management is active. Choose **Add** on a card to open its suggested models and rules in the editor, then review and save. Templates are independent of Manage and do not save or publish a group when opened.
+Choose one of four templates or **Custom** in **Create group**. All five
+choices open an editable draft. Review the model order, adjust the models and
+rules, then save a normal group. Cancel discards the draft. Templates can be
+opened while the model catalog is unavailable, and an empty draft requires
+members or a matching pattern before saving.
 
-The smart template can reuse one task model when no cheaper model is available. Hard tasks, easy tasks and compaction then reference one member, without duplicate members or self fallback. Its card explains that this does not reduce model costs. The classifier still requires a compatible provider. The cheaper-model requirement for the thrift template and the separate-provider requirement for the resilience template remain unchanged.
+- **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
+  the suggested primary, fallback and cheaper model. Image requests with
+  explicit capability differences and high reasoning use the strong model.
+  The intent classifier helps identify simple tasks. Unclear results use the
+  primary order. Other members can still serve as backups. If catalog prices
+  do not identify a cheaper model, the draft has no automatic task split.
+- **Most capable first.** Confirm the proposed order in the editor. The list is
+  a starting suggestion. The group follows the user-approved order.
+- **Fastest first.** Choose models whose outputs you can use. Recent time to
+  first content and output speed drive new selections. Without measurements,
+  the model order provides the starting point.
+- **Expiring allowance first.** Available Sub2API subscription allowance with
+  a provider-confirmed expiry ranks by earliest expiry. This uses the
+  subscription allowance response with a known positive remaining amount.
+  Standard relay endpoints are queried with the selected API key on the same origin. A group
+  uses its model order on a cold start or when no valid expiry is known.
+- **Custom.** Configure the members, order and optional rules directly.
+
+The editor and tray no longer expose a scheduling selector. Existing group
+settings and legacy imports remain readable and retain their saved behavior.
+The request graph shows candidates without strategy labels. Sharing an expiry
+group uses the VaryAI format so the expiry preference survives import.
 
 Row operations track pending state by group ID. Publishing, changing a manual target or deleting a group disables only that group's conflicting controls. Other rows, templates and the toolbar remain available during background synchronization. Saving closes the editor after persistence and keeps only the saved row busy until synchronization finishes. Completion or failure of one operation never releases another operation's controls. Membership and ordering writes are serialized against the latest catalog so concurrent removals and reordering retain all current group IDs. Sorting temporarily disables drag handles while other row actions remain available.
 
@@ -130,7 +155,7 @@ The experimental four-policy UI has been withdrawn. Previously saved experimenta
 configuration; it no longer changes planning. The retired `expiring` value is
 read as **In order**. Original rules, members and execution settings remain intact.
 
-New automatic groups default to **Smart**. Existing saved groups without a strategy retain **In order** for compatibility. The compact list and editor expose the nine routing choices:
+Automatic groups use the existing Smart scheduler. Saved groups without a scheduler value use their configured model order. The following execution modes also remain supported for older groups and compatible imports:
 
 - **Smart:** defer quota windows at 90% and 98% utilization. Among accounts with room, prefer the largest window's earliest hourly reset, then smaller windows. Spent accounts with usable credits precede those without. Unknown/stale quota stays stable behind known healthy accounts.
 - **In order:** try the configured default and approved fallbacks in order.
@@ -140,11 +165,20 @@ New automatic groups default to **Smart**. Existing saved groups without a strat
 - **Free first:** explicitly free models first, then paid/unknown models, each in configured order. Use the model catalog's boolean `free`/`is_free`/`isFree` metadata, a complete explicit zero-price table (`pricing`/`price` with input, output, cache-read and cache-write prices), or a nullable member override. A member override takes precedence; incomplete prices stay unknown. Never infer free usage from names or subscription tiers.
 - **Speed first:** compare streamed first-content latency plus the estimated time to write 200 tokens. Output rate excludes hidden reasoning; buffered bursts and non-streaming replies do not manufacture a speed. Ten-percent bands retain configured order. Every fifth selection with both measured and unmeasured awake routes puts an unmeasured route first, rotating probes. These are ordinary user requests, not extra inference calls.
 - **By weight:** smooth weighted rotation with member weights from 1 to 1000 (default 1). Cooling-down members sit out. Charge the route that actually answered, including affinity, rule preference and failover.
-- **Manual:** select a member directly in the compact row or editor. Pause intent classification and rule selection and disable cross-member fallback, even for 429/5xx responses. Only the chosen member must be executable; unavailable inactive members or a paused classifier do not block the group. Menu reasoning/image capabilities describe the chosen member. Keep existing continuations on their original account rather than moving opaque state to a new member. Stored rules remain available when switching back.
+- **Manual:** select a member directly in the compact row or editor. Pause intent classification and rule selection and disable cross-member fallback, even for 429/5xx responses. Only the chosen member must be executable; unavailable inactive members or a paused classifier do not block the group. Menu reasoning/image capabilities describe the chosen member. Keep existing continuations on their original account rather than moving opaque state to a new member. Previously stored rules remain in the group.
 
 All strategies retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first except in Manual mode. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
 
-Quota and credit data comes from the official fixed `/backend-api/wham/usage` endpoint, response headers and supported rate-limit events. Samples expire after five minutes or their reset. Recent token counts and exact-account/model speed averages are in-memory, bounded by published sessions, and reset on restart. Speed samples use a twenty-minute half-life and expire after an hour. Preparation and telemetry failures never interrupt forwarding; no database access or usage-history scan is added to selection. Direct entries and groups share telemetry. Compatible refreshes preserve bindings and telemetry across strategy, weight, cost and manual-pick changes; destination/account changes do not inherit them.
+Expiry sorting is optional group configuration. It applies before rule
+preferences and only when the gateway can select a new destination. Ready
+members with a fresh observation, positive usable subscription allowance and
+future expiry rank first. Ties preserve the configured order. Cooldown and
+continuation ownership still apply. The lookup runs asynchronously and caches
+observations by relay origin and API key. Credential expiration, wallet
+balances, quota reset times and unsupported or malformed responses have no
+expiry preference. [Sub2API usage implementation](https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/handler/gateway_handler.go)
+
+Other quota and credit data comes from the official fixed `/backend-api/wham/usage` endpoint, response headers and supported rate-limit events. Samples expire after five minutes or their reset. Recent token counts and exact-account/model speed averages are in-memory, bounded by published sessions, and reset on restart. Speed samples use a twenty-minute half-life and expire after an hour. Preparation and telemetry failures never interrupt forwarding; no database access or usage-history scan is added to selection. Direct entries and groups share telemetry. Compatible refreshes preserve bindings and telemetry across strategy, weight, cost and manual-pick changes; destination/account changes do not inherit them.
 
 This aligns the nine strategy algorithms for the supported Codex transport with the reference implementation revision `508911e431f752052d1c8374f89de7ec75f291ac` (`internal/routes/strategies.go`, `fastest.go`, `round.go`, and `internal/gateway/speed.go`). It does not add the reference implementation's other-client allowance adapters, reset-card redemption, nested groups or per-turn affinity modes.
 

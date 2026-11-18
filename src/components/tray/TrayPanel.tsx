@@ -7,13 +7,6 @@ import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { RoutingStage } from "@/components/routing/RoutingStage";
 import { GlobalSecurityToggle } from "@/components/security/GlobalSecurityToggle";
 import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -406,48 +399,6 @@ function TrayRouting() {
                 {group.members.length} {t("trayPanel.models")}
               </small>
             </button>
-            <Select
-              value={group.routing ?? "smart"}
-              disabled={!!pending}
-              onValueChange={(routing: NonNullable<RoutingGroup["routing"]>) =>
-                void save(group, {
-                  routing,
-                })
-              }
-            >
-              <SelectTrigger
-                className="tray-strategy-trigger"
-                aria-label={`${t("intentRouting.routingStrategy")} ${group.name}`}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                className="tray-strategy-menu"
-                align="end"
-                sideOffset={4}
-                collisionPadding={8}
-              >
-                {[
-                  "smart",
-                  "ordered",
-                  "round_robin",
-                  "least_used",
-                  "pace",
-                  "free_first",
-                  "fastest",
-                  "weighted",
-                  "manual",
-                ].map((strategy) => (
-                  <SelectItem
-                    className="tray-strategy-option"
-                    key={strategy}
-                    value={strategy}
-                  >
-                    {t(`routingPage.strategy.${strategy}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <Switch
               aria-label={group.name}
               checked={group.enabled}

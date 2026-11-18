@@ -169,10 +169,8 @@ export function RoutingPage({
                 )
               : shown?.candidates.length === 1
                 ? t("routingPage.singleSeat")
-                : shown?.strategy
-                  ? t(`routingPage.strategyHelp.${shown.strategy}`, {
-                      defaultValue: t(`routingPage.strategy.${shown.strategy}`),
-                    })
+                : shown
+                  ? t("routingPage.candidateSeats")
                   : t("routingPage.emptyStage")}
           </p>
         </div>

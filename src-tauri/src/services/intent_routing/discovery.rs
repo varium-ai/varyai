@@ -215,6 +215,7 @@ fn discover(providers: impl IntoIterator<Item = Provider>, minimum: usize) -> Ve
                 retired_policy: None,
                 auto_generated: true,
                 routing: RoutingStrategy::Smart,
+                quota_order: None,
                 model_alias: Some(alias),
                 manual_member_id: None,
                 context_window: None,

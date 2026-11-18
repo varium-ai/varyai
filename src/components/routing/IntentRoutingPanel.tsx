@@ -4,6 +4,7 @@ import {
   CircleAlert,
   CloudDownload,
   ChevronDown,
+  ChevronUp,
   Settings,
   Pencil,
   Trash2,
@@ -79,17 +80,6 @@ const knownErrors = new Set([
   "invalidOutput",
 ]);
 
-const routingOptions = [
-  ["smart", "routingSmart"],
-  ["ordered", "routingOrdered"],
-  ["round_robin", "routingRoundRobin"],
-  ["least_used", "routingLeastUsed"],
-  ["pace", "routingPace"],
-  ["free_first", "routingFreeFirst"],
-  ["fastest", "routingFastest"],
-  ["weighted", "routingWeighted"],
-  ["manual", "routingManual"],
-] as const;
 const sinkable = (routing: RoutingGroup["routing"]) =>
   !["round_robin", "weighted", "manual"].includes(routing ?? "ordered");
 
@@ -145,6 +135,7 @@ export function IntentRoutingPanel({
     () => routingTemplates(providers.data ?? []),
     [providers.data],
   );
+  const [choosingTemplate, setChoosingTemplate] = useState(false);
   const [filter, setFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const groupDrag = useRoutingRowDrag("data-routing-group", (from, to) => {
@@ -192,7 +183,7 @@ export function IntentRoutingPanel({
   const editorRef = useRoutingDialogHeight();
   const initialDraft = useRef<RoutingGroup | null>(null);
   const nameInput = useRef<HTMLInputElement>(null);
-  const createButton = useRef<HTMLButtonElement>(null);
+  const creationTrigger = useRef<HTMLElement | null>(null);
   const editButtons = useRef(new Map<string, HTMLButtonElement>());
   const [deleting, setDeleting] = useState<RoutingGroup | null>(null);
   const tableScroll = useRef<HTMLDivElement>(null);
@@ -265,11 +256,9 @@ export function IntentRoutingPanel({
     if (
       createRequest > handledCreate.current &&
       groups.data &&
-      providers.data &&
       !pending &&
       !deleting &&
-      !groups.isError &&
-      !providers.isError
+      !groups.isError
     ) {
       handledCreate.current = createRequest;
       if (
@@ -277,10 +266,10 @@ export function IntentRoutingPanel({
       ) {
         setError("intentRouting.limit");
       } else {
-        requestEditor(newRoutingGroup());
+        setChoosingTemplate(true);
       }
     }
-  }, [createRequest, groups.data, providers.data, pending, deleting]);
+  }, [createRequest, groups.data, groups.isError, pending, deleting]);
   useWorkspaceEditing(draftDirty, pending, onEditingChange);
   const [error, setError] = useState<string | null>(null);
   const [classification, setClassification] = useState('{"intentId":null}');
@@ -419,6 +408,7 @@ export function IntentRoutingPanel({
       const suffix = ` ${++number}`;
       draftName = `${name.slice(0, 80 - suffix.length)}${suffix}`;
     }
+    setChoosingTemplate(false);
     requestEditor({
       ...template.group,
       id: crypto.randomUUID(),
@@ -427,9 +417,7 @@ export function IntentRoutingPanel({
   }
 
   function templateNeed(template: ReturnType<typeof routingTemplates>[number]) {
-    return template.need
-      ? t(`routingPage.templateNeed_${template.need}`, { name: template.of })
-      : "";
+    return template.need ? t(`routingPage.templateNeed_${template.need}`) : "";
   }
   async function removeSelected() {
     if (
@@ -835,6 +823,32 @@ export function IntentRoutingPanel({
       (draft.classifierTarget.providerId &&
         draft.classifierTarget.modelId.trim()));
 
+  const draftMembersById = new Map(
+    draft?.members.map((member) => [member.id, member]),
+  );
+  const draftPriority = draft
+    ? [
+        ...new Set([
+          draft.defaultMemberId,
+          ...draft.fallbackMemberIds,
+          ...draftMembersById.keys(),
+        ]),
+      ].filter((id) => draftMembersById.has(id))
+    : [];
+  function moveDraftMember(index: number, offset: number) {
+    if (!draft || pending) return;
+    const priority = [...draftPriority];
+    const next = index + offset;
+    [priority[index], priority[next]] = [priority[next], priority[index]];
+    const [defaultMemberId, ...fallbackMemberIds] = priority;
+    edit({
+      ...draft,
+      defaultMemberId,
+      fallbackMemberIds,
+      members: priority.flatMap((id) => draftMembersById.get(id) ?? []),
+    });
+  }
+
   const classifierModels =
     providers.data
       ?.filter((provider) => provider.classifierEligible)
@@ -915,39 +929,6 @@ export function IntentRoutingPanel({
               onChange={(e) => edit({ ...draft, name: e.target.value })}
             />
           </label>
-          <div className="rt-setting-row" data-routing-field="routing">
-            <span>{t("intentRouting.routingStrategy")}</span>
-            <div className="rt-field-content">
-              <RoutingSegments
-                label={t("intentRouting.routingStrategy")}
-                value={draft.routing ?? "ordered"}
-                options={routingOptions.map(([value, key]) => ({
-                  value,
-                  label: t(`intentRouting.${key}`),
-                }))}
-                disabled={pending}
-                onChange={(routing) =>
-                  edit({
-                    ...draft,
-                    routing,
-                    ...(routing === "manual"
-                      ? {
-                          manualMemberId:
-                            draft.manualMemberId ?? draft.defaultMemberId,
-                        }
-                      : {}),
-                  })
-                }
-              />
-              <p className="rt-field-hint">
-                {t(`intentRouting.routingHint_${draft.routing ?? "ordered"}`)}
-              </p>
-              {draft.routing === "manual" &&
-                manualSelect(draft, (manualMemberId) =>
-                  edit({ ...draft, manualMemberId }),
-                )}
-            </div>
-          </div>
           <div
             className="rt-edit-members"
             data-routing-list
@@ -964,6 +945,72 @@ export function IntentRoutingPanel({
               }
             />
           </div>
+          {(draft.routing === "ordered" || draft.routing === "fastest") &&
+            draftPriority.length > 1 && (
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium">
+                  {t("routingPage.modelOrder")}
+                </h4>
+                <ol
+                  className="max-h-36 overflow-y-auto text-xs"
+                  aria-label={t("routingPage.modelOrder")}
+                >
+                  {draftPriority.map((id, index) => {
+                    const member = draftMembersById.get(id)!;
+                    const provider = providers.data?.find(
+                      ({ id }) => id === member.providerId,
+                    );
+                    const model = provider?.models?.find(
+                      ({ id }) => id === member.modelId,
+                    );
+                    const name = `${model?.name || member.modelId} · ${provider?.name ?? member.providerId}`;
+                    return (
+                      <li className="flex items-center gap-1" key={id}>
+                        <span className="min-w-0 flex-1 truncate">
+                          <AccountLabel title>{name}</AccountLabel>
+                        </span>
+                        {([-1, 1] as const).map((offset) => {
+                          const label = t(
+                            offset < 0
+                              ? "intentRouting.moveUp"
+                              : "intentRouting.moveDown",
+                          );
+                          const Icon = offset < 0 ? ChevronUp : ChevronDown;
+                          return (
+                            <Button
+                              key={offset}
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              aria-label={`${label} ${model?.name || member.modelId}`}
+                              title={label}
+                              disabled={
+                                pending ||
+                                index + offset < 0 ||
+                                index + offset >= draftPriority.length
+                              }
+                              onClick={() => moveDraftMember(index, offset)}
+                            >
+                              <Icon size={13} aria-hidden />
+                            </Button>
+                          );
+                        })}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            )}
+          {draft.quotaOrder && (
+            <p className="rt-field-hint">
+              {t("routingPage.templateExpiryHint")}
+            </p>
+          )}
+          {draft.routing === "manual" &&
+            manualSelect(draft, (manualMemberId) =>
+              edit({ ...draft, manualMemberId }),
+            )}
           <details key={draft.id} className="rt-form-advanced">
             <summary>
               <ChevronDown
@@ -1744,68 +1791,23 @@ export function IntentRoutingPanel({
           </Button>
           {showCreateButton && (
             <Button
-              ref={createButton}
               variant="outline"
               size="sm"
               disabled={
                 groups.isPending ||
                 groups.isError ||
-                providers.isPending ||
-                providers.isError ||
                 pending ||
                 !!deleting ||
                 (groups.data?.groups.filter((g) => !g.autoGenerated).length ??
                   0) >= 32
               }
-              onClick={() => requestEditor(newRoutingGroup())}
+              onClick={() => setChoosingTemplate(true)}
             >
               {t("intentRouting.create")}
             </Button>
           )}
         </div>
       </div>
-      {groups.data && (
-        <section
-          className="rt-template-cards"
-          aria-label={t("routingPage.templates")}
-        >
-          <p className="rt-template-intro">{t("routingPage.templateHint")}</p>
-          {templates.map((template) => (
-            <div key={template.key}>
-              <b>{t(`routingPage.${template.key}`)}</b>
-              <p>
-                {t(
-                  template.key === "templateSmart" &&
-                    !template.need &&
-                    template.group.members.length === 1
-                    ? "routingPage.templateSmartSameModelHint"
-                    : `routingPage.${template.key}Hint`,
-                )}
-              </p>
-              <span>
-                <AccountLabel title>
-                  {template.need
-                    ? templateNeed(template)
-                    : template.group.members
-                        .map((member) => member.modelId)
-                        .join(" → ")}
-                </AccountLabel>
-              </span>
-              <div className="rt-template-actions">
-                <button
-                  type="button"
-                  className="text primary"
-                  title={template.need ? templateNeed(template) : undefined}
-                  disabled={pending || !!deleting}
-                  onClick={() => useTemplate(template)}
-                >
-                  {t("routingPage.addTemplate")}
-                </button>
-              </div>
-            </div>
-          ))}
-        </section>
-      )}
       {selectedGroups && !!groups.data?.groups.length && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-3 text-xs">
           <label className="flex items-center gap-2">
@@ -2231,6 +2233,82 @@ export function IntentRoutingPanel({
       />
 
       <AppDialog
+        open={choosingTemplate}
+        onOpenChange={setChoosingTemplate}
+        onOpenAutoFocus={() => {
+          creationTrigger.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          if (draft || nextDraft) event.preventDefault();
+        }}
+        title={t("routingPage.templates")}
+        description={t("routingPage.templateHint")}
+        size="lg"
+        className="vary-routing"
+      >
+        <section
+          className="rt-template-cards"
+          aria-label={t("routingPage.templates")}
+        >
+          {templates.map((template) => (
+            <div key={template.key}>
+              <b>{t(`routingPage.${template.key}`)}</b>
+              <p>
+                {t(
+                  template.key === "templateSmart" &&
+                    !template.need &&
+                    !template.group.rules.length
+                    ? "routingPage.templateSmartSameModelHint"
+                    : `routingPage.${template.key}Hint`,
+                )}
+              </p>
+              <span>
+                <AccountLabel title>
+                  {template.need
+                    ? templateNeed(template)
+                    : template.group.members
+                        .map((member) => member.modelId)
+                        .join(" → ")}
+                </AccountLabel>
+              </span>
+              <div className="rt-template-actions">
+                <button
+                  type="button"
+                  className="text primary"
+                  aria-label={t(`routingPage.${template.key}`)}
+                  title={template.need ? templateNeed(template) : undefined}
+                  disabled={pending || !!deleting}
+                  onClick={() => useTemplate(template)}
+                >
+                  {t("routingPage.addTemplate")}
+                </button>
+              </div>
+            </div>
+          ))}
+          <div>
+            <b>{t("routingPage.templateCustom")}</b>
+            <p>{t("routingPage.templateCustomHint")}</p>
+            <div className="rt-template-actions">
+              <button
+                type="button"
+                className="text primary"
+                aria-label={t("routingPage.templateCustom")}
+                onClick={() => {
+                  setChoosingTemplate(false);
+                  requestEditor(newRoutingGroup());
+                }}
+              >
+                {t("routingPage.addTemplate")}
+              </button>
+            </div>
+          </div>
+        </section>
+      </AppDialog>
+
+      <AppDialog
         open={!!draft}
         onOpenChange={(open) => {
           if (!open) edit(null);
@@ -2238,9 +2316,12 @@ export function IntentRoutingPanel({
         title={initialDraft.current?.name || t("intentRouting.create")}
         initialFocusRef={nameInput}
         onCloseAutoFocus={(event) => {
-          const trigger = initialDraft.current
-            ? editButtons.current.get(initialDraft.current.id)
-            : null;
+          const trigger =
+            (initialDraft.current &&
+              editButtons.current.get(initialDraft.current.id)) ||
+            (initialDraft.current?.revision === 0
+              ? creationTrigger.current
+              : null);
           if (trigger?.isConnected) {
             event.preventDefault();
             if (

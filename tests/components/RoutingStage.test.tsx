@@ -112,7 +112,7 @@ it("keeps the gateway active while an older concurrent request is streaming", ()
   expect(document.querySelector(".rt-hub")).toHaveClass("working");
 });
 
-it("renders individual safe key seats, the requested alias, actual listener and strategy", () => {
+it("renders individual safe key seats, the requested alias and the actual listener", () => {
   show();
   const src = document.querySelector(".rt-src")!;
   expect(src).toHaveTextContent("apps.codex");
@@ -120,13 +120,10 @@ it("renders individual safe key seats, the requested alias, actual listener and 
   expect(document.querySelector(".rt-hub")).toHaveTextContent(
     "127.0.0.1:15722",
   );
-  expect(document.querySelector(".rt-hub i")).toHaveTextContent(
-    "routingPage.strategy.pace",
-  );
+  expect(document.querySelector(".rt-hub i")).toBeNull();
   expect(src.querySelector("small")).not.toHaveClass("sr-only");
   expect(document.querySelector(".rt-hub b")).not.toHaveClass("sr-only");
   expect(document.querySelector(".rt-hub small")).not.toHaveClass("sr-only");
-  expect(document.querySelector(".rt-hub i")).not.toHaveClass("sr-only");
   const seats = document.querySelectorAll(".rt-accts li");
   expect(seats).toHaveLength(3);
   expect(seats[0]).toHaveTextContent("routingPage.apiKey");

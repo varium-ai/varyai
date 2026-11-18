@@ -1,6 +1,9 @@
 //! Read-only allowance observations for relay API keys.
 
+mod expiry;
 mod probe_cache;
+
+pub(crate) use expiry::observe as observe_expiry;
 
 use crate::services::subscription::QuotaTier;
 use serde::Serialize;
@@ -20,6 +23,8 @@ pub(crate) enum Status {
 pub(crate) struct Allowance {
     pub status: Status,
     pub balance: Option<f64>,
+    #[serde(skip)]
+    expiry: Option<i64>,
     pub tiers: Vec<QuotaTier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
@@ -29,6 +34,7 @@ impl Allowance {
         Self {
             status,
             balance: None,
+            expiry: None,
             tiers: vec![],
             retry_after_ms: None,
         }
@@ -87,9 +93,17 @@ fn parse_sub2api(body: &Value) -> Option<Allowance> {
     if balance.is_none() && tiers.is_empty() {
         return None;
     }
+    let expiry = (matches!(body["mode"].as_str(), Some("unrestricted" | "subscription"))
+        && body["isValid"] == true
+        && balance.is_some_and(|value| value > 0.0))
+    .then(|| body.pointer("/subscription/expires_at")?.as_str())
+    .flatten()
+    .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+    .map(|time| time.timestamp());
     Some(Allowance {
         status: Status::Ready,
         balance,
+        expiry,
         tiers,
         retry_after_ms: None,
     })
@@ -104,6 +118,7 @@ fn parse_new_api(body: &Value) -> Option<Allowance> {
     Some(Allowance {
         status: Status::Ready,
         balance: Some(balance),
+        expiry: None,
         tiers: vec![],
         retry_after_ms: None,
     })
@@ -195,6 +210,27 @@ async fn read(origin: &reqwest::Url, key: &str, endpoint: Endpoint) -> Result<Al
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_confirmed_positive_subscription_allowance_supplies_expiry() {
+        let sub = json!({"mode":"unrestricted","isValid":true,"remaining":5,
+            "subscription":{"expires_at":"2099-01-01T00:00:00Z"}});
+        assert_eq!(
+            parse_sub2api(&sub).and_then(|quota| quota.expiry),
+            Some(4070908800)
+        );
+        for value in [
+            json!({"mode":"unrestricted","isValid":true,"remaining":5,"expires_at":"2099-01-01T00:00:00Z"}),
+            json!({"mode":"unrestricted","isValid":true,"remaining":0,"subscription":{"expires_at":"2099-01-01T00:00:00Z"}}),
+            json!({"mode":"unrestricted","isValid":false,"remaining":5,"subscription":{"expires_at":"2099-01-01T00:00:00Z"}}),
+            json!({"mode":"quota_limited","isValid":true,"remaining":5,"subscription":{"expires_at":"2099-01-01T00:00:00Z"}}),
+            json!({"mode":"unrestricted","isValid":true,"remaining":5,"subscription":{"expires_at":"bad"}}),
+        ] {
+            assert!(parse_sub2api(&value)
+                .and_then(|quota| quota.expiry)
+                .is_none());
+        }
+    }
 
     #[test]
     fn sub2api_wallet_and_limited_windows_are_distinct() -> Result<(), Box<dyn std::error::Error>> {

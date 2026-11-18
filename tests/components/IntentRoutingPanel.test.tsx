@@ -97,6 +97,11 @@ async function openManagement() {
   fireEvent.click(manage);
 }
 
+const chooseCustom = () =>
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.templateCustom" }),
+  );
+
 describe("IntentRoutingPanel", () => {
   it("unlocks an acknowledged group toggle while catalog queries are still pending", async () => {
     const client = new QueryClient({
@@ -222,7 +227,7 @@ describe("IntentRoutingPanel", () => {
     await act(async () => finishRefresh());
   });
 
-  it("keeps template cards visible while Manage only changes batch selection", async () => {
+  it("keeps template creation separate from batch selection", async () => {
     mount();
     await screen.findByText("Fixture group");
     const table = screen.getByRole("table", { name: "intentRouting.title" });
@@ -243,10 +248,9 @@ describe("IntentRoutingPanel", () => {
     expect(
       screen.queryByRole("switch", { name: "intentRouting.autoCreate" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("routingPage.templateSmart")).toBeInTheDocument();
     expect(
-      screen.getByRole("region", { name: "routingPage.templates" }),
-    ).toBeVisible();
+      screen.queryByText("routingPage.templateSmart"),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("checkbox", { name: "Fixture group" }),
     ).toBeInTheDocument();
@@ -388,23 +392,24 @@ describe("IntentRoutingPanel", () => {
     expect(within(row).getAllByRole("cell")[1]).toHaveTextContent(/^4$/);
   });
 
-  it("places routing directly below the name and keeps state-specific rate-limit help", async () => {
+  it("puts models under the name without a strategy selector and keeps rate-limit help", async () => {
     mount();
     await screen.findByText("Fixture group");
     fireEvent.click(
       screen.getByRole("button", { name: "intentRouting.create" }),
     );
+    chooseCustom();
     const form = screen.getByRole("form");
-    const routing = within(form).getByRole("radiogroup", {
-      name: "intentRouting.routingStrategy",
-    });
-    expect(within(routing).getAllByRole("radio")).toHaveLength(9);
+    expect(
+      within(form).queryByRole("radiogroup", {
+        name: "intentRouting.routingStrategy",
+      }),
+    ).not.toBeInTheDocument();
     const fields = [...form.querySelectorAll("[data-routing-field]")].map(
       (node) => node.getAttribute("data-routing-field"),
     );
-    expect(fields.slice(0, 5)).toEqual([
+    expect(fields.slice(0, 4)).toEqual([
       "name",
-      "routing",
       "members",
       "patterns",
       "model-lists",
@@ -439,14 +444,6 @@ describe("IntentRoutingPanel", () => {
     expect(
       within(form).getByText("intentRouting.sinkHelp"),
     ).toBeInTheDocument();
-    fireEvent.click(
-      within(routing).getByRole("radio", {
-        name: "intentRouting.routingRoundRobin",
-      }),
-    );
-    expect(
-      within(form).queryByRole("radiogroup", { name: "intentRouting.sink" }),
-    ).toBeNull();
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
   });
 
@@ -496,20 +493,12 @@ describe("IntentRoutingPanel", () => {
 
   it("clears an inapplicable sink setting only when the edited group is saved", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [{ ...group, sink: true }],
+      groups: [{ ...group, routing: "weighted", sink: true }],
       autoCreate: false,
       omittedGroups: 0,
     });
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
-    const routing = screen.getByRole("radiogroup", {
-      name: "intentRouting.routingStrategy",
-    });
-    fireEvent.click(
-      within(routing).getByRole("radio", {
-        name: "intentRouting.routingWeighted",
-      }),
-    );
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
@@ -660,7 +649,9 @@ describe("IntentRoutingPanel", () => {
       expect(
         screen.queryByRole("button", { name: "intentRouting.skipProviders" }),
       ).not.toBeInTheDocument();
-      expect(screen.getByText("routingPage.templateSmart")).toBeInTheDocument();
+      expect(
+        screen.queryByText("routingPage.templateSmart"),
+      ).not.toBeInTheDocument();
       expect(
         screen.getByRole("checkbox", { name: "Fixture group" }),
       ).toBeInTheDocument();
@@ -822,23 +813,31 @@ describe("IntentRoutingPanel", () => {
       omittedGroups: 0,
     });
     mount();
-    expect(
-      await screen.findByText("routingPage.templateSmart"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getAllByText("routingPage.templateNeed_provider"),
-    ).toHaveLength(3);
-    const actions = screen.getAllByRole("button", {
-      name: "routingPage.addTemplate",
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    const chooser = screen.getByRole("dialog", {
+      name: "routingPage.templates",
     });
-    expect(actions).toHaveLength(3);
+    expect(
+      within(chooser).getAllByText("routingPage.templateNeed_provider"),
+    ).toHaveLength(4);
+    const actions = within(chooser).getAllByRole("button", {
+      name: /^routingPage.template(Smart|Capability|Speed|Expiry|Custom)$/,
+    });
+    expect(actions).toHaveLength(5);
     for (const action of actions) expect(action).toBeEnabled();
     expect(
       screen.queryByText("routingPage.templateFallback"),
     ).not.toBeInTheDocument();
   });
-  it.each(["templateSmart", "templateThrifty", "templateSteady"] as const)(
-    "opens %s from its always-visible card with fields ready for review",
+  it.each([
+    "templateSmart",
+    "templateCapability",
+    "templateSpeed",
+    "templateExpiry",
+  ] as const)(
+    "opens %s from the creation chooser and saves the reviewed draft",
     async (key) => {
       vi.mocked(intentRoutingApi.list).mockResolvedValue({
         groups: [],
@@ -899,14 +898,19 @@ describe("IntentRoutingPanel", () => {
       mount();
       const user = userEvent.setup();
       const open = async () => {
-        const card = (await screen.findByText(`routingPage.${key}`)).closest(
-          "div",
-        )!;
-        expect(
-          screen.getAllByRole("button", { name: "routingPage.addTemplate" }),
-        ).toHaveLength(3);
         await user.click(
-          within(card).getByRole("button", { name: "routingPage.addTemplate" }),
+          await screen.findByRole("button", { name: "intentRouting.create" }),
+        );
+        const chooser = screen.getByRole("dialog", {
+          name: "routingPage.templates",
+        });
+        expect(
+          within(chooser).getByRole("button", {
+            name: "routingPage.templateCustom",
+          }),
+        ).toBeEnabled();
+        await user.click(
+          within(chooser).getByRole("button", { name: `routingPage.${key}` }),
         );
         expect(
           screen.queryByRole("dialog", { name: "intentRouting.discardTitle" }),
@@ -928,8 +932,10 @@ describe("IntentRoutingPanel", () => {
           ).size,
         );
         expect(
-          screen.getByRole("radio", { name: "intentRouting.routingOrdered" }),
-        ).toHaveAttribute("aria-checked", "true");
+          screen.queryByRole("radiogroup", {
+            name: "intentRouting.routingStrategy",
+          }),
+        ).not.toBeInTheDocument();
         expect(
           screen.getByRole("button", { name: "common.save" }),
         ).toBeEnabled();
@@ -940,6 +946,16 @@ describe("IntentRoutingPanel", () => {
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(intentRoutingApi.save).not.toHaveBeenCalled();
       await open();
+      if (key === "templateCapability") {
+        const order = screen.getByRole("list", {
+          name: "routingPage.modelOrder",
+        });
+        const [, next] = within(order).getAllByRole("listitem");
+        await user.click(
+          within(next).getByRole("button", { name: /^intentRouting.moveUp/ }),
+        );
+        expect(within(order).getAllByRole("listitem")[0]).toBe(next);
+      }
       fireEvent.change(screen.getByLabelText("intentRouting.name"), {
         target: { value: "Reviewed template" },
       });
@@ -948,17 +964,28 @@ describe("IntentRoutingPanel", () => {
       const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
       expect(saved).toMatchObject({
         name: "Reviewed template",
-        routing: "ordered",
+        routing: expected.routing,
         classifierTarget: expected.classifierTarget,
         intentRecognitionEnabled: expected.intentRecognitionEnabled,
       });
+      expect(saved.quotaOrder).toBe(expected.quotaOrder);
+      expect(saved).not.toHaveProperty("policy");
+      const expectedOrder =
+        key === "templateCapability"
+          ? [
+              expected.members[1],
+              expected.members[0],
+              ...expected.members.slice(2),
+            ]
+          : expected.members;
       expect(
         saved.members.map(({ providerId, modelId }) => [providerId, modelId]),
       ).toEqual(
-        expected.members.map(({ providerId, modelId }) => [
-          providerId,
-          modelId,
-        ]),
+        expectedOrder.map(({ providerId, modelId }) => [providerId, modelId]),
+      );
+      expect(saved.defaultMemberId).toBe(saved.members[0].id);
+      expect(saved.fallbackMemberIds).toEqual(
+        saved.members.slice(1).map(({ id }) => id),
       );
       expect(
         saved.rules.map((rule) => ({
@@ -1400,8 +1427,8 @@ describe("IntentRoutingPanel", () => {
           screen.queryByText("intentRouting.autoCreate"),
         ).not.toBeInTheDocument();
         expect(
-          screen.getByText("routingPage.templateSmart"),
-        ).toBeInTheDocument();
+          screen.getByRole("button", { name: "intentRouting.create" }),
+        ).toBeEnabled();
         return;
       }
       expect(manage).toBeEnabled();
@@ -1661,6 +1688,7 @@ describe("IntentRoutingPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "intentRouting.create" }),
     );
+    chooseCustom();
     expect(document.querySelectorAll(".rt-model-chips")).not.toHaveLength(0);
     fireEvent.change(screen.getByLabelText("intentRouting.name"), {
       target: { value: "New shared group" },
@@ -1743,6 +1771,7 @@ describe("IntentRoutingPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "intentRouting.create" }),
     );
+    chooseCustom();
     const primary = within(
       screen.getByRole("group", { name: "Fixture provider" }),
     );
@@ -1934,7 +1963,9 @@ describe("IntentRoutingPanel", () => {
     expect(
       screen.queryByText("intentRouting.autoCreate"),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("routingPage.templateHint")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "intentRouting.create" }),
+    ).toBeEnabled();
     expect(
       screen.queryByLabelText("intentRouting.fullWindow"),
     ).not.toBeInTheDocument();
@@ -2065,6 +2096,7 @@ describe("IntentRoutingPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "intentRouting.create" }),
     );
+    chooseCustom();
     const dialog = screen.getByRole("dialog", { name: "intentRouting.create" });
     const editor = screen.getByRole("form", { name: "intentRouting.create" });
     expect(dialog).toContainElement(editor);
@@ -2101,6 +2133,9 @@ describe("IntentRoutingPanel", () => {
         name: "intentRouting.create",
       });
       await user.click(trigger);
+      await user.click(
+        screen.getByRole("button", { name: "routingPage.templateCustom" }),
+      );
       const dialog = screen.getByRole("dialog", {
         name: "intentRouting.create",
       });
@@ -2121,6 +2156,9 @@ describe("IntentRoutingPanel", () => {
       expect(trigger).toHaveFocus();
       expect(intentRoutingApi.save).not.toHaveBeenCalled();
       await user.click(trigger);
+      await user.click(
+        screen.getByRole("button", { name: "routingPage.templateCustom" }),
+      );
       expect(screen.getByLabelText("intentRouting.name")).toHaveValue("");
     },
   );
@@ -2143,9 +2181,15 @@ describe("IntentRoutingPanel", () => {
         <IntentRoutingPanel createRequest={1} showCreateButton={false} />
       </QueryClientProvider>,
     );
+    const chooser = await screen.findByRole("dialog", {
+      name: "routingPage.templates",
+    });
     expect(
-      await screen.findByRole("dialog", { name: "intentRouting.create" }),
-    ).toContainElement(screen.getByLabelText("intentRouting.name"));
+      within(chooser).getByRole("button", {
+        name: "routingPage.templateCustom",
+      }),
+    ).toBeEnabled();
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 
@@ -2241,6 +2285,7 @@ describe("IntentRoutingPanel", () => {
         hidden: true,
       }),
     );
+    chooseCustom();
     dialog = screen.getByRole("dialog", { name: "intentRouting.discardTitle" });
     fireEvent.click(
       within(dialog).getByRole("button", {
@@ -2381,11 +2426,13 @@ describe("IntentRoutingPanel", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("offers all nine strategies and saves a manual member from the editor", async () => {
+  it("keeps the selected member editable when editing a legacy manual group", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
         {
           ...group,
+          routing: "manual",
+          manualMemberId: "member",
           members: [
             ...group.members,
             { id: "second", providerId: "provider", modelId: "other-model" },
@@ -2400,15 +2447,14 @@ describe("IntentRoutingPanel", () => {
     await user.click(
       await screen.findByRole("button", { name: "common.edit" }),
     );
-    const strategies = screen.getByRole("radiogroup", {
-      name: "intentRouting.routingStrategy",
-    });
-    expect(within(strategies).getAllByRole("radio")).toHaveLength(9);
-    await user.click(
-      within(strategies).getByRole("radio", {
-        name: "intentRouting.routingManual",
+    expect(
+      screen.queryByRole("radiogroup", {
+        name: "intentRouting.routingStrategy",
       }),
-    );
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "intentRouting.manualMember" }),
+    ).toBeEnabled();
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
@@ -2422,10 +2468,14 @@ describe("IntentRoutingPanel", () => {
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
   });
 
-  it("preserves saved member weights and free status when changing strategy", async () => {
+  it("preserves legacy routing, member weights and free status on edit", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
-        { ...group, members: [{ ...group.members[0], weight: 3, free: true }] },
+        {
+          ...group,
+          routing: "free_first",
+          members: [{ ...group.members[0], weight: 3, free: true }],
+        },
       ],
       autoCreate: false,
       omittedGroups: 0,
@@ -2434,12 +2484,6 @@ describe("IntentRoutingPanel", () => {
     const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", { name: "common.edit" }),
-    );
-    await user.click(
-      screen.getByRole("radio", { name: "intentRouting.routingWeighted" }),
-    );
-    await user.click(
-      screen.getByRole("radio", { name: "intentRouting.routingFreeFirst" }),
     );
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
@@ -2642,13 +2686,15 @@ describe("IntentRoutingPanel", () => {
   );
 
   it("pauses classifier controls in manual mode and retains the stored rules", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [{ ...group, routing: "manual" }],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
     mount();
     const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", { name: "common.edit" }),
-    );
-    await user.click(
-      screen.getByRole("radio", { name: "intentRouting.routingManual" }),
     );
     expect(screen.getByLabelText("intentRouting.description")).toBeDisabled();
     expect(
@@ -2658,13 +2704,6 @@ describe("IntentRoutingPanel", () => {
       "Diagnose bugs",
     );
     expect(screen.getByText("intentRouting.manualPaused")).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("radio", { name: "intentRouting.routingSmart" }),
-    );
-    expect(screen.getByLabelText("intentRouting.description")).toBeEnabled();
-    expect(screen.getByLabelText("intentRouting.description")).toHaveValue(
-      "Diagnose bugs",
-    );
   });
 
   it.each(["cancel", "escape"])(
@@ -2866,7 +2905,7 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
-  it("hides aliases while keeping alias search and strategy saves intact", async () => {
+  it("hides aliases while preserving alias search and an existing group configuration", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
         {
@@ -2889,16 +2928,15 @@ describe("IntentRoutingPanel", () => {
     expect(screen.getByText("Fixture group")).toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "common.edit" }));
-    await user.click(
-      screen.getByRole("radio", { name: "intentRouting.routingRoundRobin" }),
-    );
+    await user.type(screen.getByLabelText("intentRouting.name"), " updated");
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "fixture",
           modelAlias: "auto/fixture-model",
-          routing: "round_robin",
+          routing: "smart",
+          name: "Fixture group updated",
           members: group.members,
         }),
       ),
@@ -3015,6 +3053,7 @@ describe("IntentRoutingPanel", () => {
       fireEvent.click(reload);
       expect(intentRoutingApi.refreshCatalogs).not.toHaveBeenCalled();
       fireEvent.click(create);
+      chooseCustom();
       const name = screen.getByLabelText("intentRouting.name");
       expect(name).toBeEnabled();
       fireEvent.change(name, { target: { value: "Draft during refresh" } });
@@ -3467,6 +3506,7 @@ describe("IntentRoutingPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "intentRouting.create" }),
     );
+    chooseCustom();
     fireEvent.change(screen.getByLabelText("intentRouting.name"), {
       target: { value: "New group" },
     });

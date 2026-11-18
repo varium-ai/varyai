@@ -10,7 +10,7 @@ const providers: RoutingProviderOption[] = [
     classifierEligible: true,
     models: [
       { id: "embed-large", name: "Not chat", outputPrice: 99, maker: true },
-      { id: "large-pro", name: "Too expensive", outputPrice: 101, maker: true },
+      { id: "large-pro", name: "Another model", outputPrice: 101, maker: true },
       {
         id: "large-old",
         name: "Old",
@@ -34,6 +34,7 @@ const providers: RoutingProviderOption[] = [
         maker: true,
         released: "2026-02-01",
         reasoning: false,
+        images: false,
       },
       {
         id: "tiny-nano",
@@ -42,6 +43,7 @@ const providers: RoutingProviderOption[] = [
         maker: true,
         released: "2026-03-01",
         reasoning: false,
+        images: false,
       },
     ],
   },
@@ -70,66 +72,67 @@ const providers: RoutingProviderOption[] = [
   },
 ];
 
-it("ports the reference implementation's ranked smart, thrifty and steady templates instead of generic presets", () => {
-  const [smart, thrifty, steady] = routingTemplates(providers);
-  expect([smart.key, thrifty.key, steady.key]).toEqual([
+it("creates four ordinary group drafts with distinct defaults", () => {
+  const [smart, capability, speed, expiry] = routingTemplates(providers);
+  expect([smart.key, capability.key, speed.key, expiry.key]).toEqual([
     "templateSmart",
-    "templateThrifty",
-    "templateSteady",
+    "templateCapability",
+    "templateSpeed",
+    "templateExpiry",
   ]);
   expect(smart.group.routing).toBe("ordered");
-  expect(smart.group.members.map((m) => m.modelId)).toEqual([
-    "large",
-    "small-mini",
+  expect(smart.group.members[0].modelId).toBe("large");
+  expect(smart.group.rules.map((rule) => rule.conditions)).toEqual([
+    { images: true },
+    { effort: "high" },
+    undefined,
+    undefined,
   ]);
-  expect(
-    smart.group.rules.map((rule) => [rule.conditions, rule.targetMemberId]),
-  ).toEqual([
-    [{ compact: true }, smart.group.members[1].id],
-    [{ images: true }, smart.group.members[0].id],
-    [undefined, smart.group.members[0].id],
-    [undefined, smart.group.members[1].id],
-  ]);
-  expect(smart.group.rules[2].description).toContain("a hard task:");
+  expect(smart.group.rules[2].description).toContain("hard task");
   expect(smart.group.intentRecognitionEnabled).toBe(true);
   expect(smart.group.classifierTarget).toEqual({
-    providerId: "b",
-    modelId: "other-mini",
+    providerId: "a",
+    modelId: "tiny-nano",
   });
-  expect(thrifty.group.members.map((m) => [m.providerId, m.modelId])).toEqual([
-    ["a", "small-mini"],
-    ["b", "other-mini"],
-    ["a", "large"],
-  ]);
-  expect(thrifty.group.rules[0]).toMatchObject({
-    conditions: { effort: "high" },
-    targetMemberId: thrifty.group.members[2].id,
+  for (const template of [capability, speed, expiry]) {
+    expect(template.group.members[0].modelId).toBe("large");
+    expect(template.group.fallbackMemberIds).toEqual(
+      template.group.members.slice(1).map((member) => member.id),
+    );
+    expect(template.group.rules).toEqual([]);
+    expect(template.group.intentRecognitionEnabled).toBe(false);
+    expect(template.group.classifierTarget).toBeNull();
+  }
+  expect(capability.group.routing).toBe("ordered");
+  expect(speed.group.routing).toBe("fastest");
+  expect(expiry.group).toMatchObject({
+    routing: "ordered",
+    quotaOrder: "earliest_expiry",
   });
-  expect(steady.group.members.map((m) => [m.providerId, m.modelId])).toEqual([
-    ["a", "large"],
-    ["b", "large"],
-  ]);
-  expect(steady.group.rules).toEqual([]);
+  for (const { group } of [smart, capability, speed, expiry]) {
+    expect(group).toMatchObject({
+      client: "global",
+      revision: 0,
+      affinity: "turn",
+    });
+    expect(group).not.toHaveProperty("policy");
+  }
 });
 
-it("keeps unavailable templates with an actionable reason instead of inventing models", () => {
+it("keeps all template drafts editable with no catalog and deduplicates repeated models", () => {
   expect(routingTemplates([]).map((template) => template.need)).toEqual([
     "provider",
     "provider",
     "provider",
+    "provider",
   ]);
-  const one = routingTemplates([
-    { ...providers[0], models: [providers[0].models![3]] },
-  ]);
-  expect(one.map((template) => template.need)).toEqual([
-    undefined,
-    "cheap",
-    "providers",
-  ]);
-  expect(one[0].group.members).toHaveLength(1);
-  expect(
-    one.slice(1).every((template) => template.group.members.length === 0),
-  ).toBe(true);
+  const model = providers[0].models![3];
+  const only = { ...providers[0], models: [model, { ...model }] };
+  for (const { group } of routingTemplates([only])) {
+    expect(group.members).toHaveLength(1);
+    expect(group.fallbackMemberIds).toEqual([]);
+    expect(group.classifierTarget).toBeNull();
+  }
   expect(
     routingTemplates(
       providers.map((p) => ({ ...p, taskEligible: false })),
@@ -137,7 +140,7 @@ it("keeps unavailable templates with an actionable reason instead of inventing m
   ).toBe(true);
 });
 
-it("uses whole model words, numeric sizes and the newest model without fabricated catalog prices", () => {
+it("keeps unknown prices from qualifying a model as cheaper", () => {
   const templates = routingTemplates([
     {
       ...providers[0],
@@ -150,19 +153,16 @@ it("uses whole model words, numeric sizes and the newest model without fabricate
   ]);
   expect(templates[0].group.members.map((m) => m.modelId)).toEqual([
     "gemini-pro",
-    "model-72b",
   ]);
-  expect(templates[0].group.classifierTarget).toEqual({
-    providerId: "a",
-    modelId: "model-72b",
-  });
+  expect(templates[0].group.classifierTarget).toBeNull();
 });
 
 it("never silently enables an ineligible classifier", () => {
-  const [smart, thrifty] = routingTemplates(
+  const [smart, capability] = routingTemplates(
     providers.map((provider) => ({ ...provider, classifierEligible: false })),
   );
   expect(smart.need).toBe("classifier");
-  expect(smart.group.members).toEqual([]);
-  expect(thrifty.need).toBeUndefined();
+  expect(smart.group.members.length).toBeGreaterThan(1);
+  expect(smart.group.intentRecognitionEnabled).toBe(false);
+  expect(capability.need).toBeUndefined();
 });

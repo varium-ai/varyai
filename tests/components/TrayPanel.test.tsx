@@ -407,43 +407,24 @@ it("keeps errors and cancellations distinct from successful requests", async () 
   expect(failed).toHaveAttribute("aria-pressed", "false");
 });
 
-it("changes routing strategy through the application selector without losing group settings", async () => {
+it("shows groups in the tray without a strategy control and preserves their saved settings", async () => {
   mockGroups([group]);
   mount();
   const user = userEvent.setup();
   await user.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  const strategy = await screen.findByRole("combobox", {
-    name: `intentRouting.routingStrategy ${group.name}`,
-  });
-  expect(strategy.tagName).toBe("BUTTON");
-  await user.click(strategy);
-  expect(screen.getAllByRole("option")).toHaveLength(9);
-  await user.click(
-    screen.getByRole("option", { name: "routingPage.strategy.ordered" }),
-  );
+  const toggle = await screen.findByRole("switch", { name: group.name });
+  expect(
+    screen.queryByRole("combobox", {
+      name: `intentRouting.routingStrategy ${group.name}`,
+    }),
+  ).not.toBeInTheDocument();
+  await user.click(toggle);
   await waitFor(() =>
     expect(intentRoutingApi.save).toHaveBeenCalledWith({
       ...group,
-      routing: "ordered",
+      enabled: false,
     }),
   );
-});
-
-it("dismisses the strategy menu with Escape before hiding the panel", async () => {
-  mockGroups([group]);
-  mount();
-  const user = userEvent.setup();
-  await user.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  const strategy = await screen.findByRole("combobox", {
-    name: `intentRouting.routingStrategy ${group.name}`,
-  });
-  await user.click(strategy);
-  await user.keyboard("{Escape}");
-  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-  expect(trayPanelApi.hide).not.toHaveBeenCalled();
-  expect(strategy).toHaveFocus();
-  await user.keyboard("{Escape}");
-  expect(trayPanelApi.hide).toHaveBeenCalledOnce();
 });
 
 it("preserves generated-group protection and disables changes while saving", async () => {
@@ -471,11 +452,6 @@ it("preserves generated-group protection and disables changes while saving", asy
     enabled: false,
   });
   expect(toggle).toBeDisabled();
-  expect(
-    screen.getByRole("combobox", {
-      name: `intentRouting.routingStrategy ${group.name}`,
-    }),
-  ).toBeDisabled();
   finish({ ...group, enabled: false });
   await waitFor(() => expect(toggle).toBeEnabled());
 });

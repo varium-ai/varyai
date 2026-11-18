@@ -51,7 +51,7 @@ const providers = [
 ];
 function fixtureGroup() {
   return routingTemplates(providers).find(
-    (template) => template.key === "templateSteady",
+    (template) => template.key === "templateCapability",
   )!.group;
 }
 
@@ -462,57 +462,38 @@ it("imports reference timeouts, patience, affinity and disabled members without 
   expect(copy.off).not.toEqual(group.off);
 });
 
-it("reuses the strongest model for smart tasks while preserving other template requirements", () => {
-  const templates = routingTemplates(providers);
-  expect(templates).toHaveLength(3);
-  expect(templates[0].need).toBeUndefined();
-  expect(templates[0].group.members).toHaveLength(1);
-  expect(templates[1].need).toBe("cheap");
-  expect(templates[2].group.members.map((member) => member.providerId)).toEqual(
-    ["alpha", "beta"],
-  );
-});
-
-it("uses one member for both smart task rules without duplicate members or self fallback", () => {
-  const single = [
+it("round trips expiry instructions without exporting machine-local conditions", () => {
+  const group = routingTemplates(providers).find(
+    (template) => template.key === "templateExpiry",
+  )!.group;
+  group.name = "Synthetic expiry";
+  group.rules = [
     {
-      ...providers[0],
-      models: [
-        {
-          id: "synthetic-strong",
-          name: "Strong",
-          outputPrice: 12,
-          images: true,
-        },
-      ],
+      id: "folder-rule",
+      name: "Folder rule",
+      description: "",
+      enabled: true,
+      targetMemberId: group.defaultMemberId,
+      conditions: { folders: ["/synthetic/private"] },
     },
   ];
-  const template = routingTemplates(single)[0];
-  expect(template.need).toBeUndefined();
-  const { group } = template;
-  expect(group.members).toHaveLength(1);
-  expect(group.defaultMemberId).toBe(group.members[0].id);
-  expect(group.fallbackMemberIds).toEqual([]);
-  expect(group.intentRecognitionEnabled).toBe(true);
-  expect(group.classifierTarget).toEqual({
-    providerId: single[0].id,
-    modelId: "synthetic-strong",
+  const shared = shareRoutingGroup(group);
+  expect(shared).not.toContain("/synthetic/private");
+  const imported = importSharedRoutingGroup(shared, providers).group;
+  expect(imported).toMatchObject({
+    routing: "ordered",
+    quotaOrder: "earliest_expiry",
   });
-  expect(group.rules.map((rule) => rule.name)).toEqual([
-    "Compaction",
-    "Hard task",
-    "Easy task",
-  ]);
-  expect(
-    group.rules.every((rule) => rule.targetMemberId === group.members[0].id),
-  ).toBe(true);
-  group.name = "Synthetic single-model template";
-  expect(
-    importRoutingGroup(JSON.stringify(group), single).members,
-  ).toHaveLength(1);
-  expect(
-    routingTemplates([{ ...single[0], classifierEligible: false }])[0].need,
-  ).toBe("classifier");
+  expect(imported.rules).toEqual([]);
+  expect(imported.defaultMemberId).not.toBe(group.defaultMemberId);
+  for (const invalid of [
+    { ...group, routing: "fastest" },
+    { ...group, quotaOrder: "reset" },
+  ]) {
+    expect(() =>
+      importRoutingGroup(JSON.stringify(invalid), providers),
+    ).toThrow();
+  }
 });
 
 it("still uses a separate cheaper model for smart tasks when available", () => {
