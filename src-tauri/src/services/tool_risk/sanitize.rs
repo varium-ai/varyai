@@ -53,6 +53,34 @@ pub fn summarize_command(command: &str) -> String {
     summarize_command_with_policy(command, &policy)
 }
 
+/// Preserve diagnostic context without applying the tool-summary length limit.
+/// Export workers still fail closed when a privacy matcher is unavailable.
+pub(crate) fn sanitize_diagnostic_text(
+    text: &str,
+    policy: &crate::proxy::security::SecurityRuntimeConfig,
+) -> Option<String> {
+    let patterns = PATTERNS.as_ref()?;
+    if custom_summary_sensitive(text, policy) {
+        return Some(REDACTED.into());
+    }
+    let mut output = redact(text, patterns);
+    if output == text {
+        return Some(output);
+    }
+    for _ in 0..4 {
+        let next = redact(&output, patterns);
+        if next == output {
+            return Some(if custom_summary_sensitive(&output, policy) {
+                REDACTED.into()
+            } else {
+                output
+            });
+        }
+        output = next;
+    }
+    None
+}
+
 pub(crate) fn summarize_command_with_policy(
     command: &str,
     policy: &crate::proxy::security::SecurityRuntimeConfig,
@@ -92,6 +120,9 @@ fn custom_summary_sensitive(
     text: &str,
     policy: &crate::proxy::security::SecurityRuntimeConfig,
 ) -> bool {
+    if policy.audit_custom_rules.is_empty() && policy.custom_rules.is_empty() {
+        return false;
+    }
     // This is conservative matcher text only, never a shell rewrite.
     let matching: String = text
         .chars()

@@ -782,10 +782,20 @@
         "cacheInjectionDescription": "自動在請求關鍵位置注入標準 5 分鐘 Cache 斷點，減少重複 token 計費"
       },
       "logConfig": {
+        "export": "匯出 varyai.log",
+        "exporting": "正在匯出…",
+        "exportDescription": "匯出目前完整的 varyai.log，敏感內容會去識別化。",
+        "exportSuccess": "varyai.log 已匯出。",
+        "exportMissing": "尚未找到 varyai.log，請開啟日誌並重現問題後再匯出。",
+        "exportEmpty": "varyai.log 為空，請重現問題後重試。",
+        "exportSameSource": "請選擇其他儲存位置，不能覆蓋使用中的 varyai.log。",
+        "exportPrivacy": "敏感資訊處理暫時無法使用，請重新啟動 Vary AI 後重試。",
+        "exportBackendUpdate": "請重新啟動更新後的 Vary AI，使用單一檔案日誌匯出。",
+        "exportFailed": "匯出 varyai.log 失敗，請重試。",
         "title": "應用程式診斷日誌",
         "description": "控制應用程式診斷日誌的輸出層級",
         "enabled": "啟用應用程式診斷日誌",
-        "enabledDescription": "控制 cc-switch.log；不影響請求用量記錄和 crash.log",
+        "enabledDescription": "控制 varyai.log 與應用程式輪替日誌；不影響請求用量記錄和 crash.log",
         "level": "日誌層級",
         "levelDescription": "設定輸出的最低日誌層級",
         "levels": {
@@ -5229,9 +5239,11 @@
     "restartConfirmHintWindows": "請先儲存工作。Vary 會要求應用程式結束，再重新開啟以載入變更後的設定。Windows 上要求關閉後仍未結束的應用程式程序可能被終止。",
     "codexRestartConfirmHint": "請先儲存工作。Vary 會立即結束並重新開啟 Codex，執行中的工作將被中斷，未傳送的草稿可能遺失。應用程式拒絕結束時會提示失敗，請自行處理後重試。",
     "codexRestartConfirmHintWindows": "請先儲存工作。Vary 會立即結束並重新開啟 Codex，執行中的工作將被中斷，未傳送的草稿可能遺失。Windows 上要求關閉後仍未結束的應用程式處理程序可能被終止。",
-    "restartFailed": "重新啟動失敗。請儲存工作，完全結束該應用程式，再從系統應用程式列表重新開啟。",
-    "restartBlocked": "應用程式尚未結束。請儲存工作並完全結束該應用程式，再點擊「重新啟動」。",
-    "restartUnsupported": "此工具在目前平台不支援自動重新啟動。",
+    "restartFailed": "暫時無法自動重新啟動 {{app}}。請儲存工作，手動完全結束後重新開啟。",
+    "restartQuitFailed": "Vary 無法讓 {{app}} 結束。請自行結束，然後重新開啟。",
+    "restartOpenFailed": "{{app}} 已結束，但沒有重新開啟。請自行開啟。",
+    "restartBlocked": "{{app}} 仍然開著，可能在視窗裡等你回應。請在那裡回應，或結束它，然後重新開啟。",
+    "restartUnsupported": "目前平台不支援自動重新啟動 {{app}}。請儲存工作，手動完全結束後重新開啟。",
     "restartConfirmationRequired": "請先確認重新啟動此應用程式。",
     "officialModels": "官方模型",
     "nativeCatalogHint": "Vary 提供的共享模型目錄。用戶端載入目錄後，請在用戶端內選擇聊天模型。",
@@ -5647,6 +5659,7 @@
     "importedAccountHint": "此匯入帳號或自訂連線保留原有驗證及連線設定。你可以在這裡修改共用名稱和啟用狀態。"
   },
   "agentUpdates": {
+    "recheck": "重新偵測版本",
     "waitingForExit": "待更新 · 結束應用程式後重試",
     "update": "更新至 {{version}}",
     "updating": "更新中…",
@@ -5679,7 +5692,7 @@
       "unsupported": "目前平台或發行通道不支援自動更新，請使用原安裝方式。",
       "notInstalled": "找不到安裝位置，請重新偵測後重試。"
     },
-    "unverified": "{{app}} 更新結果待確認。請檢查已安裝版本。",
+    "unverified": "{{app}} 更新命令已結束，暫時尚未確認新版本。請重新偵測版本。",
     "preflightFailed": "{{app}}：安裝檢查失敗，未開始更新。",
     "confirmTitle": "確認更新安裝",
     "confirmHint": "{{names}} 存在多處安裝，或無法確定更新目標。更新程式可能只影響其中一處，是否繼續使用偵測到的更新方式？",

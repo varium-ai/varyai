@@ -6,6 +6,10 @@ import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { RoutingStage } from "@/components/routing/RoutingStage";
 import { GlobalSecurityToggle } from "@/components/security/GlobalSecurityToggle";
+import {
+  securityEventResultLabel,
+  securityEventRiskLabel,
+} from "@/components/security/securityEventLabels";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -512,12 +516,15 @@ function TraySecurity() {
           events.data.items.map((event) => (
             <div key={event.key}>
               <span
-                className={`tray-dot ${event.result === "blocked" ? "bad" : ""}`}
+                className="tray-dot"
+                data-result={event.result}
+                aria-hidden="true"
               />
               <span>
-                <b>{t(`securityEvents.result.${event.result}`)}</b>
+                <b>{securityEventResultLabel(t, event)}</b>
                 <small>
-                  {event.appType ?? "—"} · {event.riskLevel ?? "—"}
+                  {event.appType ?? "—"} ·{" "}
+                  {securityEventRiskLabel(t, event.riskLevel, true)}
                 </small>
               </span>
               <time>

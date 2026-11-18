@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { useAgentFeedback } from "@/lib/agentFeedback";
 import {
   closestCenter,
   DndContext,
@@ -262,8 +263,10 @@ export function AgentConnectionsPage({
   >({});
   const operationLocks = useRef(new Set<AppId>());
   const busy = Object.keys(operations).length > 0;
+  const restartFeedback = useAgentFeedback();
   const [errors, setErrors] = useState<Partial<Record<AppId, string>>>({});
   function setError(app: AppId, error: string | null) {
+    if (error === null) restartFeedback.clear(app);
     setErrors((current) => ({ ...current, [app]: error ?? undefined }));
   }
   function errorMessage(app: AppId | null) {
@@ -492,17 +495,18 @@ export function AgentConnectionsPage({
     mutationKey: ["agent-restart"],
     mutationFn: (app: AppId) => agentConnectionsApi.restart(app, true),
     retry: false,
-    onError: (cause, app) => {
+    onError: (cause: unknown, app) => {
       const allowed = [
         "agentConnections.restartBlocked",
         "agentConnections.restartUnsupported",
+        "agentConnections.restartQuitFailed",
+        "agentConnections.restartOpenFailed",
       ];
       const message =
         typeof cause === "string" && allowed.includes(cause)
           ? cause
           : "agentConnections.restartFailed";
-      setError(app, message);
-      toast.error(t(message));
+      restartFeedback.show(app, t(message, { app: name(app) }));
     },
     onSettled: (_data, _error, app) => {
       refreshConnectionViews();
@@ -744,6 +748,7 @@ export function AgentConnectionsPage({
                               : "recovery"
                           : "gatewayStopped"
                       : "off";
+    const restartNotice = restartFeedback.messages[app];
     const bypassed = status === "recovery";
     const reapplyButton = state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(
@@ -1009,24 +1014,34 @@ export function AgentConnectionsPage({
               )}
           </div>
           <p
-            className={`mp-agent-status ${bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operation ? "wait" : ""}`}
+            className={`mp-agent-status ${restartNotice ? "" : bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operation ? "wait" : ""}`}
             role="status"
-            title={t(
-              `agentConnections.states.${operation && operation !== "visibility" ? operation : status}`,
-              { app: name(app) },
-            )}
-          >
-            {bypassed ? (
-              <X size={13} strokeWidth={3} aria-hidden="true" />
-            ) : (
-              <span className="mp-agent-dot" aria-hidden="true" />
-            )}
-            <span className="mp-agent-status-text">
-              {t(
+            aria-atomic="true"
+            title={
+              restartNotice ??
+              t(
                 `agentConnections.states.${operation && operation !== "visibility" ? operation : status}`,
                 { app: name(app) },
-              )}
-            </span>
+              )
+            }
+          >
+            {restartNotice ? (
+              <span className="agent-feedback">{restartNotice}</span>
+            ) : (
+              <>
+                {bypassed ? (
+                  <X size={13} strokeWidth={3} aria-hidden="true" />
+                ) : (
+                  <span className="mp-agent-dot" aria-hidden="true" />
+                )}
+                <span className="mp-agent-status-text">
+                  {t(
+                    `agentConnections.states.${operation && operation !== "visibility" ? operation : status}`,
+                    { app: name(app) },
+                  )}
+                </span>
+              </>
+            )}
             {bypassed && reapplyButton}
           </p>
           {app === "deepseek-harness" &&

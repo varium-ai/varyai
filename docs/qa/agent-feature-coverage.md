@@ -71,6 +71,269 @@ change does not add native credential support. Verification is recorded in
 | `zcode`            | Shared reward panel; separate plan adapter          | Unaffected                                                                                                | Existing regressions; no native retest                                                                                    |
 | `deepseek-harness` | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
 | `t3code`           | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
+## Agent status-line restart feedback and update verification recovery
+
+Updated before implementation on 2026-11-18 after the user identified the exact
+Agent status line in a screenshot. Place restart feedback below its Agent name,
+replacing that row's current status for eight seconds. Use a neutral capsule
+and retain the phase-specific wording. Remove the footer host. Keep feedback
+independent per Agent and preserve it during navigation within the same query
+session. Distinguish a refused quit, a still-running app, and failure to reopen
+after exit. Preserve identity and configuration conflict
+checks and native process handling. Present update results awaiting verification
+without failure colouring, retry stale version observations, and allow read-only
+rechecking without rerunning an installer. Main/tray entry points and all four
+runtime languages are included. Native acceptance is separate from synthetic tests.
+
+| Agent ID | Entry point and adapter | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| `claude` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `claude-desktop` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `codex` | macOS/Windows native restart phase mapping; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `gemini` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `grokbuild` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `opencode` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `openclaw` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `hermes` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `pi` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `workbuddy` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `workbuddy-ai` | macOS/Windows native restart phase mapping; desktop version observation only (no update feed) | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `qoder` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `doubaowork` | Dedicated audit launcher on macOS/Windows; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | The launcher retains its own guidance. The row has no generic restart button. | Launcher and active connection UI covered by synthetic tests; native unverified for this change |
+| `trae` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `trae-intl` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `kimi` | macOS/Windows native restart phase mapping; CLI version-only, macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `qwen` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `zcode` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `deepseek-harness` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| `t3code` | Existing adapter; no desktop restart; desktop version observation only (no update feed) | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+
+See [status-line feedback verification](2026-11-18-agent-status-line-feedback.md) for the latest placement checks; [feedback and update verification](2026-11-18-agent-feedback-and-updates.md) records the unchanged native and update paths.
+
+## Desktop restart guidance presentation
+
+Historical presentation, superseded by the footer capsules above at the user's request.
+
+Planned before implementation on 2026-11-18. Only the presentation of the
+restart results (`restartBlocked`, `restartFailed`, `restartUnsupported`) changes: show the Agent
+name, suggest checking its window for a confirmation, and explain how to quit
+and reopen it. Use a neutral information icon, polite status and information
+toast in the main and compact/tray views. Failures of other operations remain error alerts.
+All four runtime languages are updated. Native process handling, configuration,
+protocol adapters, requests and responses are unchanged on every platform.
+
+| Agent ID | Entry point and adapter | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| `claude` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `claude-desktop` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `codex` | Existing Codex desktop/CLI and app-server adapters | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained; CLI/app-server behavior retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `gemini` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `grokbuild` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `opencode` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `openclaw` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `hermes` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `pi` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `workbuddy` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `workbuddy-ai` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `qoder` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `doubaowork` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `trae` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `trae-intl` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `kimi` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `qwen` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| `zcode` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `deepseek-harness` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `t3code` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+
+See [restart guidance verification](2026-11-18-restart-guidance.md) for results
+and native acceptance limits.
+
+## Application log export and operation diagnostics
+
+On 2026-11-18 the user explicitly narrowed diagnostic export to the current
+`varyai.log` only. This replaces the earlier all-Agent ZIP plan. Settings exports
+a complete sanitized snapshot of this one file; native Agent logs, configurations,
+crash files, rotations and databases are outside the accepted scope.
+
+Before implementation, the following matrix records shared operation
+diagnostics and verification scope. Each row uses Settings for export and the
+existing connection controls for operation logs. New fixed operation events record
+start, success/failure, cancellation, elapsed time and an allowlisted reason;
+model values, native error text, credentials and request content are excluded.
+No protocol conversion or native configuration behavior is changed. Shared Rust
+logic applies on macOS, Windows and Linux where the existing adapter is supported.
+
+| Agent ID | Entry point and adapter | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| `claude` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `claude-desktop` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `codex` | Codex CLI/desktop connection adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `gemini` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `grokbuild` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `opencode` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `openclaw` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `hermes` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `pi` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `workbuddy` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `workbuddy-ai` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `qoder` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `doubaowork` | Separate Doubao takeover adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `trae` | Separate TRAE edition bridge; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `trae-intl` | Separate TRAE edition bridge; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `kimi` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `qwen` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `zcode` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `deepseek-harness` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `t3code` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+
+Application export uses the actual device log directory, a blocking worker and a
+private same-directory temporary destination. Publishing happens only after a
+complete sanitized snapshot is written. Missing logs, unsafe destinations and
+unavailable privacy processing produce fixed errors. The command name changes to
+`export_application_log` so a hot-reloaded UI cannot accidentally invoke the old
+all-Agent ZIP handler. Native save-dialog acceptance and Windows/Linux execution
+remain unverified until separately tested.
+
+Synthetic lifecycle tests cover all 20 frontend/backend Agent IDs, connection on/off
+actions, malformed Agent IDs, fixed error categories and preservation of returned
+success/error values. They verify the shared event boundary rather than actual
+native client execution. Export fixtures use temporary files only. See the
+[application log verification report](2026-11-18-application-log-export.md) for
+checked source scope, host checks and remaining acceptance gaps.
+
+## Responses history after model switching
+
+Assessment started on 2026-11-17 before implementation against frontend `APP_IDS`,
+backend `AppType`, shared `agent_connections::APPS`, and separate TRAE/Doubao
+integrations. Same-conversation model changes must preserve visible messages and
+tool pairs while preventing nonportable reasoning IDs from breaking Responses
+replay. Official Codex normalization and named reasoning-item refusal recovery
+are shared across macOS, Windows and Linux. Native applications, accounts,
+configuration and UI controls are not changed. Security admission, final history
+validation, restoration, account binding and response semantics remain mandatory.
+The matrix distinguishes applicable Responses transports from protocols without
+Responses item references; no native acceptance is implied by shared routing.
+
+| Agent ID | Entry point and adapter | Runtime and UI state | Verification |
+| --- | --- | --- | --- |
+| `claude` | Messages CLI | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `claude-desktop` | Messages desktop | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `codex` | Native and managed Responses; CLI and desktop | Official filtering and named-item recovery; existing picker | Native/managed HTTP and reversible restoration passed (macOS); CLI/desktop self-tests unverified |
+| `gemini` | Gemini CLI | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `grokbuild` | Provider-selected CLI protocol | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
+| `opencode` | Provider-selected Responses/Chat/Messages | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
+| `openclaw` | Provider-selected Responses/Chat/Messages | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
+| `hermes` | Chat CLI | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `pi` | Provider-selected protocol; CLI | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
+| `workbuddy` | Chat/native; China desktop | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `workbuddy-ai` | Chat/native; international desktop | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `qoder` | Native custom Responses and shared connection; desktop | Shared named-item recovery; saved-key authentication unchanged; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified |
+| `doubaowork` | Separate native desktop integration | No Responses routing adapter; native protocol/UI unchanged | Not applicable to named Responses replay; native unverified |
+| `trae` | Native Chat/Responses; China edition | Native/shared Responses recovery; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified |
+| `trae-intl` | Native Chat; international edition | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
+| `kimi` | Native provider Responses and shared connection; CLI/desktop | Shared named-item recovery; native projection/UI unchanged | Shared/native-adapter HTTP passed (macOS); native unverified |
+| `qwen` | Native provider Responses/Chat and shared connection; CLI | Shared named-item recovery; native `/v1` suffix and UI preserved | Shared/native-adapter HTTP passed (macOS); native unverified |
+| `zcode` | Native provider Responses and shared connection; desktop | Shared named-item recovery; native projection/UI unchanged | Shared/native-adapter HTTP passed (macOS); native unverified |
+| `deepseek-harness` | Native/shared provider-selected Responses/Chat/Messages | Native/shared Responses recovery; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified |
+| `t3code` | Responses through managed Codex; desktop | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
+
+The independent native HTTP send adapter is also covered: `kimi`, `qwen`,
+`zcode`, `deepseek-harness`, TRAE China and Qoder custom Responses routes use the
+same bounded recovery. Native Chat/Messages/Gemini requests do not acquire
+Responses deletion behavior. Existing limitations on reversible restoration in
+transparent native adapters are unchanged; native on/off checks use their
+supported inspection/redaction policy rather than claiming restoration support.
+Codex native and shared managed Responses separately test reversible restoration.
+
+Synthetic regression verification passed on macOS for the final owned proxy
+source recorded in `/tmp/varyai-responses-replay-fix-20261117/owned-source-final.json`.
+All supported native wire protocols retain their existing UI and policy behavior;
+the full shared inventory additionally exercises named/unnamed and JSON/SSE
+Responses contracts. Native self-tests and Windows/Linux/remote CI remain
+unverified. The exact commands, final check results, initial failures and
+concurrent-checkout limitations are recorded in the
+[replay verification report](2026-11-17-codex-reasoning-replay.md). This does not
+claim all-Agent native acceptance.
+
+## Tray security event localization
+
+Assessment started on 2026-11-17 before implementation against frontend
+`APP_IDS`, backend `AppType`, shared `agent_connections::APPS` and the separate
+TRAE/Doubao Work integrations. The entry point is the tray Security tab's
+existing event query. Reuse the security center's result and risk labels;
+show warning/uncertain events in amber, blocked events in red, known successful
+outcomes in green, and unknown/unchecked outcomes in neutral gray. The shared
+renderer and CSS apply to macOS, Windows and Linux. Native/protocol adapters,
+forwarding, collection, persistence, session correlation and notifications are
+unchanged; this display fix does not establish native tool-call acceptance.
+
+Each Agent below receives synthetic event-display checks with protection enabled
+and disabled. Four real language bundles cover DLP actions (including reversible
+redaction), tool verdicts, exact risk levels, and unsupported historical values.
+Queries and returned event records must remain unchanged. Native client self-tests
+and Windows/Linux runtime acceptance remain unverified.
+
+| Agent ID | Entry point | Protocol/native adapters and runtime | UI state | Verification |
+| --- | --- | --- | --- | --- |
+| `claude` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `claude-desktop` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `codex` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `gemini` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `grokbuild` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `opencode` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `openclaw` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `hermes` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `pi` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `workbuddy` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `workbuddy-ai` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `qoder` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `doubaowork` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `trae` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `trae-intl` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `kimi` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `qwen` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `zcode` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `deepseek-harness` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `t3code` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+
+Verification on 2026-11-17 uses the working-tree changes to `TrayPanel.tsx`,
+`tray-panel.css`, `tests/components/TrayPanel.test.tsx` and this ledger over
+revision `eb24a0e3b947ba89bd9aa668148e23b0e9bbe59c`. Host: macOS 15.3.1 arm64;
+Node 24.11.0, pnpm 10.12.3, Rust/Cargo 1.98.1. Rust checks use
+`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0` and
+`CARGO_INCREMENTAL=0`; no application was launched or installed.
+
+- Test-first regression: the unchanged renderer failed all 49 new display
+  cases; the fix passed the focused tray, coverage-ledger and locale suites.
+- Passed: `pnpm typecheck`, `pnpm format:check`, `pnpm build:renderer`,
+  `pnpm test:unit` (322 files, 4,388 tests), `pnpm audit --prod`,
+  `cargo fmt --check --manifest-path src-tauri/Cargo.toml`,
+  `cargo check --manifest-path src-tauri/Cargo.toml`,
+  `cargo test --lib --manifest-path src-tauri/Cargo.toml` (7,712 passed,
+  21 ignored), and
+  `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`.
+- Passed helper checks: `pnpm test:dev`,
+  `node --test scripts/tests/ci-policy.node.mjs`, `pnpm test:macos-dmg`,
+  `pnpm test:trae-bridge`, `pnpm test:model-default`, `pnpm test:pi-session`,
+  `pnpm test:workbuddy-checkin-auth`, `pnpm test:doubao-checkin`,
+  `pnpm test:agent-rewards`, `pnpm test:qoder-codec`, and
+  `python3 -B scripts/tests/recover-shared-v23.test.py`.
+- Initial `cargo test --manifest-path src-tauri/Cargo.toml` failed one existing
+  test: `commands::tool_risk::tests::event_query_omitted_and_null_verdict_preserve_all_event_pagination`.
+  At `commands/tool_risk.rs:462`, repeated reads returned different sanitized
+  command summaries (`public summary` versus `<redacted>`). Its standalone
+  exact-filter rerun passed. The assertion and Rust implementation were unchanged.
+- Full rerun passed: `cargo test --no-fail-fast --manifest-path src-tauri/Cargo.toml`
+  (7,712 library tests, all integration and doc tests; 21 library tests ignored).
+  The initial intermittent failure remains recorded rather than counted as a pass.
+- Verification boundary: after the Rust test executable was built, concurrent
+  work added `proxy/intent/native_replay_tests.rs` and its module registration.
+  Those unrelated changes are preserved and are not covered by the Rust results
+  above. The coverage-ledger inventory check passed again after the documentation
+  update; the complete concurrently changing working tree is not accepted here.
+- Unverified: native client self-tests, native tray visual acceptance,
+  Windows/Linux runtime execution and remote CI. This renderer fix does not
+  establish all-Agent native security acceptance.
 
 ## Statistics maintenance panel removal
 

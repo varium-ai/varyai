@@ -7,6 +7,7 @@ import {
   AgentVersionTag,
 } from "@/components/agents/AgentUpdates";
 import type { AppId } from "@/lib/api";
+import { APP_IDS } from "@/config/appConfig";
 import type {
   AgentUpdateResult,
   useAgentUpdates,
@@ -43,6 +44,7 @@ async function show(
       .map((result) => result.app),
     showBar: true,
     start: vi.fn(async () => {}),
+    recheck: vi.fn(async () => {}),
     installTarget: null,
     installing: null,
     installResult: null,
@@ -98,6 +100,17 @@ describe("Agent update result wording", () => {
       expect(document.querySelector(".mp-agent-updates")).toBeNull();
     },
   );
+  it.each(APP_IDS)(
+    "keeps %s update verification neutral with a read-only recovery action",
+    async (app) => {
+      const status = await show([{ app, outcome: "unverified" }]);
+      expect(status).not.toHaveClass("failed");
+      expect(
+        screen.getByRole("button", { name: zh.agentUpdates.recheck }),
+      ).toBeEnabled();
+      expect(status).not.toHaveTextContent(/{{|agentUpdates\./);
+    },
+  );
   it("does not count a deferred update as a success or failure in a mixed batch", async () => {
     const status = await show([
       pi,
@@ -140,10 +153,11 @@ describe("Agent update result wording", () => {
     "reports a single %s outcome without a zero-success batch summary",
     async (outcome) => {
       const status = await show([{ app: "pi", outcome }]);
-      expect(status.textContent).toBe(
+      expect(status.querySelector(".mp-agent-updates-say")).toHaveTextContent(
         zh.agentUpdates[outcome].replace("{{app}}", "Pi"),
       );
-      expect(status).toHaveClass("failed");
+      if (outcome === "unverified") expect(status).not.toHaveClass("failed");
+      else expect(status).toHaveClass("failed");
       expect(status).not.toHaveTextContent("已更新");
     },
   );

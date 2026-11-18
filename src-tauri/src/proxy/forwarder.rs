@@ -2534,6 +2534,9 @@ impl RequestForwarder {
                     }
                 }
             }
+            if codex_official_auth_passthrough || provider.is_codex_oauth() {
+                super::responses_replay::normalize_official(&mut filtered_body);
+            }
             Ok((filtered_body, history_mapping))
         };
 
@@ -2642,7 +2645,10 @@ impl RequestForwarder {
             }
         }
         let auth_principal = dlp_auth_principal(&principal_headers);
-        let (filtered_body, mut dlp_attempt) = if let Some(ref dlp_req) = self.dlp_request {
+        if codex_official_auth_passthrough || provider.is_codex_oauth() {
+            super::responses_replay::normalize_official(&mut mapped_body);
+        }
+        let (mut filtered_body, mut dlp_attempt) = if let Some(ref dlp_req) = self.dlp_request {
             let operation = super::providers::CodexAdapter::resolve_dlp_operation_descriptor(
                 &base_url,
                 endpoint,
@@ -3269,6 +3275,9 @@ impl RequestForwarder {
         );
         let mut body_bytes = body_bytes;
         let mut injected = injected;
+        let responses_wire = protocol == "openai_responses"
+            && url::Url::parse(&url).is_ok_and(|url| url.path().ends_with("/responses"));
+        let mut replay_recovery = super::responses_replay::Recovery::default();
         let response = loop {
             let response = if let Some(injected) = injected.take() {
                 if let Some(attempt) = dlp_attempt.as_ref() {
@@ -3404,6 +3413,33 @@ impl RequestForwarder {
                 body_bytes = retry.into();
                 ordered_headers.remove(http::header::CONTENT_LENGTH);
                 continue;
+            }
+            if responses_wire {
+                let (response, id) = replay_recovery.inspect(response).await;
+                let changed = id.is_some_and(|id| {
+                    super::responses_replay::remove_checked(&mut filtered_body, &id, |body| {
+                        dlp_attempt
+                            .as_ref()
+                            .is_none_or(|attempt| attempt.validate_final_send_history(body).is_ok())
+                    })
+                });
+                if changed {
+                    body_bytes = match dlp_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.encode_outbound_body(&filtered_body))
+                        .transpose()
+                        .map_err(ProxyError::DlpForward)?
+                        .flatten()
+                    {
+                        Some(bytes) => bytes,
+                        None => Bytes::from(serde_json::to_vec(&filtered_body).map_err(|_| {
+                            ProxyError::Internal("Failed to encode Responses replay".into())
+                        })?),
+                    };
+                    ordered_headers.remove(http::header::CONTENT_LENGTH);
+                    continue;
+                }
+                break response;
             }
             break response;
         };

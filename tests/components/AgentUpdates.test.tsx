@@ -1,5 +1,6 @@
 import {
   act,
+  configure,
   fireEvent,
   render,
   screen,
@@ -93,6 +94,8 @@ vi.mock("@/lib/api/settings", () => ({
     openExternal: vi.fn(),
   },
 }));
+configure({ asyncUtilTimeout: 4000 });
+
 const versions = (name: string, version = "1.0.0") => [
   {
     name,
@@ -657,7 +660,9 @@ describe("Agent versions and updates", () => {
       await waitFor(() => expect(finishes.has("claude")).toBe(true));
       expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(2);
       await act(async () => finishes.get("codex")!());
-      expect(within(codex).getByRole("switch")).toBeEnabled();
+      await waitFor(() =>
+        expect(within(codex).getByRole("switch")).toBeEnabled(),
+      );
       expect(
         within(claude).getByRole("switch", { hidden: true }),
       ).toBeDisabled();
@@ -1151,6 +1156,78 @@ describe("Agent versions and updates", () => {
       ).not.toBeInTheDocument();
     },
   );
+  it("retries an old Codex version until the new version is observed", async () => {
+    let checks = 0;
+    let updating = false;
+    vi.mocked(settingsApi.getToolVersions).mockImplementation(async (tools) => {
+      if (tools?.[0] !== "codex") return versions(tools![0]);
+      return versions("codex", updating && ++checks >= 2 ? "1.1.0" : "1.0.0");
+    });
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      async () => {
+        updating = true;
+      },
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    expect(
+      await screen.findByText(/agentUpdates.changed/, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(checks).toBe(2);
+    expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+  });
+
+  it("keeps unverified updates neutral and rechecks without installing again", async () => {
+    let updated = false;
+    vi.mocked(settingsApi.getToolVersions).mockImplementation(async (tools) =>
+      versions(tools![0], updated ? "1.1.0" : "1.0.0"),
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    expect(
+      await screen.findByText(/agentUpdates.unverified/, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".mp-agent-updates.failed")).toBeNull();
+    updated = true;
+    fireEvent.click(
+      screen.getByRole("button", { name: "agentUpdates.recheck" }),
+    );
+    expect(await screen.findByText(/agentUpdates.changed/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/agentUpdates.unverified/),
+    ).not.toBeInTheDocument();
+    expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles an unverified Codex result after a later version refresh", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mount(client);
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    await screen.findByText(/agentUpdates.unverified/);
+    act(() => {
+      client.setQueryData(
+        ["agent-cli-version", "codex"],
+        versions("codex", "1.1.0")[0],
+      );
+    });
+    expect(await screen.findByText(/agentUpdates.changed/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/agentUpdates.unverified/),
+    ).not.toBeInTheDocument();
+    expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+  });
+
   it.each(["unchanged", "unreadable"])(
     "does not report an %s version as a successful upgrade",
     async (state) => {

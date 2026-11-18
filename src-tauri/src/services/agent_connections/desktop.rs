@@ -209,6 +209,20 @@ const CHANGED: &str = "agentConnections.restartChanged";
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 const RUNNING: &str = "agentConnections.restartBlocked";
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+const QUIT_FAILED: &str = "agentConnections.restartQuitFailed";
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+const OPEN_FAILED: &str = "agentConnections.restartOpenFailed";
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn phase_error(error: String, phase: &str) -> String {
+    if matches!(error.as_str(), FAILED | RUNNING) {
+        phase.into()
+    } else {
+        error
+    }
+}
+
 #[cfg(any(target_os = "macos", test))]
 trait Runtime {
     fn instances(&self) -> Result<Vec<Instance>, String>;
@@ -317,7 +331,9 @@ fn restart_verified_with(
     }
     let target = instances.first().ok_or(CHANGED)?.bundle.clone();
     for instance in &instances {
-        runtime.quit(instance)?;
+        runtime
+            .quit(instance)
+            .map_err(|error| phase_error(error, QUIT_FAILED))?;
     }
     runtime.wait_for_exit(&instances)?;
     if !valid() {
@@ -330,8 +346,12 @@ fn restart_verified_with(
         }
         return Err(CHANGED.into());
     }
-    runtime.open(&target)?;
-    runtime.wait_back(&target, &instances)
+    runtime
+        .open(&target)
+        .map_err(|error| phase_error(error, OPEN_FAILED))?;
+    runtime
+        .wait_back(&target, &instances)
+        .map_err(|error| phase_error(error, OPEN_FAILED))
 }
 
 /// Explicit user action: configuration freshness is not restart authority.
@@ -908,7 +928,7 @@ mod tests {
         runtime.wait_back_error = Some(FAILED);
         assert_eq!(
             restart_with(&runtime, Some(2000), || true),
-            Err(FAILED.into())
+            Err(OPEN_FAILED.into())
         );
         assert!(runtime.events.borrow().contains(&"wait_back"));
     }
@@ -920,7 +940,7 @@ mod tests {
         runtime.launch_error = Some(FAILED);
         assert_eq!(
             restart_with(&runtime, Some(2000), || true),
-            Err(FAILED.into())
+            Err(OPEN_FAILED.into())
         );
         assert!(!runtime.events.borrow().contains(&"wait_back"));
     }
@@ -1166,6 +1186,29 @@ mod tests {
     }
 
     #[test]
+    fn restart_outcomes_identify_quit_and_reopen_phases() {
+        let old = vec![instance(Some(500))];
+        let mut refused = FakeRuntime::new(vec![old.clone(), old.clone()]);
+        refused.quit_error = Some(FAILED);
+        assert_eq!(
+            restart_with(&refused, Some(2000), || true),
+            Err("agentConnections.restartQuitFailed".into())
+        );
+        for wait_back in [false, true] {
+            let mut runtime = FakeRuntime::new(vec![old.clone(), old.clone(), vec![]]);
+            if wait_back {
+                runtime.wait_back_error = Some(FAILED);
+            } else {
+                runtime.launch_error = Some(FAILED);
+            }
+            assert_eq!(
+                restart_with(&runtime, Some(2000), || true),
+                Err("agentConnections.restartOpenFailed".into())
+            );
+        }
+    }
+
+    #[test]
     fn refused_normal_quit_and_exit_timeout_never_reopen() {
         let old = vec![instance(Some(500))];
         for refuse_quit in [true, false] {
@@ -1177,7 +1220,7 @@ mod tests {
             }
             assert_eq!(
                 restart_with(&runtime, Some(2000), || true),
-                Err(RUNNING.into())
+                Err(if refuse_quit { QUIT_FAILED } else { RUNNING }.into())
             );
             assert!(!runtime.events.borrow().contains(&"open"));
             assert_eq!(runtime.events.borrow().contains(&"wait"), !refuse_quit);

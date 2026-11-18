@@ -856,10 +856,20 @@
         "cacheInjectionDescription": "自动在请求关键位置注入标准 5 分钟 Cache 断点，减少重复 token 计费"
       },
       "logConfig": {
+        "export": "导出 varyai.log",
+        "exporting": "正在导出…",
+        "exportDescription": "导出当前完整的 varyai.log，敏感内容会脱敏。",
+        "exportSuccess": "varyai.log 已导出。",
+        "exportMissing": "尚未找到 varyai.log，请开启日志并复现问题后再导出。",
+        "exportEmpty": "varyai.log 为空，请复现问题后重试。",
+        "exportSameSource": "请选择其他保存位置，不能覆盖正在使用的 varyai.log。",
+        "exportPrivacy": "脱敏处理暂不可用，请重启 Vary AI 后重试。",
+        "exportBackendUpdate": "请重启更新后的 Vary AI，使用单文件日志导出。",
+        "exportFailed": "导出 varyai.log 失败，请重试。",
         "title": "应用诊断日志",
         "description": "控制应用诊断日志的输出级别",
         "enabled": "启用应用诊断日志",
-        "enabledDescription": "控制 cc-switch.log；不影响请求用量记录和 crash.log",
+        "enabledDescription": "控制 varyai.log 及应用轮转日志；不影响请求用量记录和 crash.log",
         "level": "日志级别",
         "levelDescription": "设置输出的最低日志级别",
         "levels": {
@@ -5302,9 +5312,11 @@
     "restartConfirmHintWindows": "请先保存工作。Vary 会请求应用退出，再重新打开以加载变更后的配置。Windows 上请求关闭后仍未退出的应用进程可能被结束。",
     "codexRestartConfirmHint": "请先保存工作。Vary 会立即退出并重新打开 Codex，运行中的任务将被中断，未发送的草稿可能丢失。应用拒绝退出时会提示失败，请自行处理后重试。",
     "codexRestartConfirmHintWindows": "请先保存工作。Vary 会立即退出并重新打开 Codex，运行中的任务将被中断，未发送的草稿可能丢失。Windows 上请求关闭后仍未退出的应用进程可能被结束。",
-    "restartFailed": "重启失败。请保存工作，完全退出该应用，再从系统应用列表重新打开。",
-    "restartBlocked": "应用尚未退出。请保存工作并完全退出该应用，再点击“重启”。",
-    "restartUnsupported": "此工具在当前平台不支持自动重启。",
+    "restartFailed": "暂时无法自动重启 {{app}}。请保存工作，手动完全退出后重新打开。",
+    "restartQuitFailed": "Vary 无法让 {{app}} 退出。请自行退出，然后重新打开。",
+    "restartOpenFailed": "{{app}} 已退出，但没有重新打开。请自行打开。",
+    "restartBlocked": "{{app}} 仍然开着，可能在窗口里等你回答。请在那里回答，或退出它，然后重新打开。",
+    "restartUnsupported": "当前平台不支持自动重启 {{app}}。请保存工作，手动完全退出后重新打开。",
     "restartConfirmationRequired": "请先确认重启此应用。",
     "officialModels": "官方模型",
     "nativeCatalogHint": "Vary 提供的共享模型目录。客户端加载目录后，请在客户端内选择聊天模型。",
@@ -5720,6 +5732,7 @@
     "importedAccountHint": "此导入账号或自定义连接保留原有认证及连接设置。你可以在这里修改共享名称和启用状态。"
   },
   "agentUpdates": {
+    "recheck": "重新检测版本",
     "waitingForExit": "待更新 · 退出应用后重试",
     "update": "更新到 {{version}}",
     "updating": "更新中…",
@@ -5752,7 +5765,7 @@
       "unsupported": "当前平台或发布通道不支持自动更新，请使用原安装方式。",
       "notInstalled": "未找到安装位置，请重新检测后重试。"
     },
-    "unverified": "{{app}} 更新结果待确认。请检查已安装版本。",
+    "unverified": "{{app}} 更新命令已结束，暂未确认新版本。请重新检测版本。",
     "preflightFailed": "{{app}}：安装检查失败，未开始更新。",
     "confirmTitle": "确认更新安装",
     "confirmHint": "{{names}} 存在多处安装，或无法确定更新目标。更新程序可能只影响其中一处，是否继续使用检测到的更新方式？",
