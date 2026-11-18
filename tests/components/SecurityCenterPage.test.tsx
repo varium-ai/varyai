@@ -506,10 +506,10 @@ describe("SecurityCenterPage", () => {
     for (const input of [session, search]) {
       expect(input).toHaveClass(
         "h-8",
-        "rounded-full",
-        "focus:border-border-active",
+        "rounded-md",
+        "focus:border-primary",
         "focus:ring-2",
-        "focus:ring-blue-500/20",
+        "focus:ring-ring/25",
       );
       expect(input).not.toHaveClass("focus:ring-0", "focus-visible:ring-0");
     }

@@ -59,35 +59,35 @@ export const usageTrendLegendItems = [
     dataKey: "cost",
     labelKey: "usage.cost",
     fallbackLabel: "成本",
-    color: "#f43f5e",
+    color: "var(--chart-cost)",
     dashed: true,
   },
   {
     dataKey: "cacheCreationTokens",
     labelKey: "usage.cacheCreationTokens",
     fallbackLabel: "缓存创建",
-    color: "#f97316",
+    color: "var(--chart-cache-create)",
     dashed: false,
   },
   {
     dataKey: "cacheReadTokens",
     labelKey: "usage.cacheReadTokens",
     fallbackLabel: "缓存命中",
-    color: "#a855f7",
+    color: "var(--chart-cache-hit)",
     dashed: false,
   },
   {
     dataKey: "inputTokens",
     labelKey: "usage.inputTokens",
     fallbackLabel: "输入 Tokens",
-    color: "#3b82f6",
+    color: "var(--chart-input)",
     dashed: false,
   },
   {
     dataKey: "outputTokens",
     labelKey: "usage.outputTokens",
     fallbackLabel: "输出 Tokens",
-    color: "#22c55e",
+    color: "var(--chart-output)",
     dashed: false,
   },
 ] as const;
@@ -326,12 +326,28 @@ export function UsageTrendChart({
           >
             <defs>
               <linearGradient id="colorInput" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                <stop
+                  offset="5%"
+                  stopColor="var(--chart-input)"
+                  stopOpacity={0.2}
+                />
+                <stop
+                  offset="95%"
+                  stopColor="var(--chart-input)"
+                  stopOpacity={0}
+                />
               </linearGradient>
               <linearGradient id="colorOutput" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#22c55e" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                <stop
+                  offset="5%"
+                  stopColor="var(--chart-output)"
+                  stopOpacity={0.2}
+                />
+                <stop
+                  offset="95%"
+                  stopColor="var(--chart-output)"
+                  stopOpacity={0}
+                />
               </linearGradient>
               <linearGradient
                 id="colorCacheCreation"
@@ -340,12 +356,28 @@ export function UsageTrendChart({
                 x2="0"
                 y2="1"
               >
-                <stop offset="5%" stopColor="#f97316" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
+                <stop
+                  offset="5%"
+                  stopColor="var(--chart-cache-create)"
+                  stopOpacity={0.2}
+                />
+                <stop
+                  offset="95%"
+                  stopColor="var(--chart-cache-create)"
+                  stopOpacity={0}
+                />
               </linearGradient>
               <linearGradient id="colorCacheRead" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#a855f7" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+                <stop
+                  offset="5%"
+                  stopColor="var(--chart-cache-hit)"
+                  stopOpacity={0.2}
+                />
+                <stop
+                  offset="95%"
+                  stopColor="var(--chart-cache-hit)"
+                  stopOpacity={0}
+                />
               </linearGradient>
             </defs>
             <CartesianGrid
@@ -392,7 +424,7 @@ export function UsageTrendChart({
               type="monotone"
               dataKey="inputTokens"
               name={t("usage.inputTokens", "输入 Tokens")}
-              stroke="#3b82f6"
+              stroke="var(--chart-input)"
               fillOpacity={1}
               fill="url(#colorInput)"
               strokeWidth={2}
@@ -402,7 +434,7 @@ export function UsageTrendChart({
               type="monotone"
               dataKey="outputTokens"
               name={t("usage.outputTokens", "输出 Tokens")}
-              stroke="#22c55e"
+              stroke="var(--chart-output)"
               fillOpacity={1}
               fill="url(#colorOutput)"
               strokeWidth={2}
@@ -412,7 +444,7 @@ export function UsageTrendChart({
               type="monotone"
               dataKey="cacheCreationTokens"
               name={t("usage.cacheCreationTokens", "缓存创建")}
-              stroke="#f97316"
+              stroke="var(--chart-cache-create)"
               fillOpacity={1}
               fill="url(#colorCacheCreation)"
               strokeWidth={2}
@@ -422,7 +454,7 @@ export function UsageTrendChart({
               type="monotone"
               dataKey="cacheReadTokens"
               name={t("usage.cacheReadTokens", "缓存命中")}
-              stroke="#a855f7"
+              stroke="var(--chart-cache-hit)"
               fillOpacity={1}
               fill="url(#colorCacheRead)"
               strokeWidth={2}
@@ -432,7 +464,7 @@ export function UsageTrendChart({
               type="monotone"
               dataKey="cost"
               name={t("usage.cost", "成本")}
-              stroke="#f43f5e"
+              stroke="var(--chart-cost)"
               fill="none"
               strokeWidth={2}
               strokeDasharray="4 4"

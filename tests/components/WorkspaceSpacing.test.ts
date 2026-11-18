@@ -31,3 +31,17 @@ describe("workspace titlebar spacing", () => {
     );
   });
 });
+
+it("keeps Agent status text from pushing its action to the far edge", () => {
+  const directory = postcss.parse(
+    readFileSync("src/components/agents/agent-directory.css", "utf8"),
+  );
+  const declarations = new Map<string, string>();
+  directory.walkRules(".agent-list-row .mp-agent-status-text", (rule) => {
+    rule.walkDecls((declaration) => {
+      declarations.set(declaration.prop, declaration.value);
+    });
+  });
+  expect(declarations.get("flex")).toBe("0 1 auto");
+  expect(declarations.get("white-space")).toBe("normal");
+});

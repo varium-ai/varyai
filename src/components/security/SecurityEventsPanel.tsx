@@ -545,7 +545,7 @@ export function SecurityEventsPanel({
                   changeFilter({ sessionId: event.target.value })
                 }
                 placeholder={t("security.sessionFilterPlaceholder")}
-                className="h-8 w-[220px] flex-none rounded-full bg-card text-xs focus:border-border-active"
+                className="h-8 w-[220px] flex-none text-xs"
               />
               <Input
                 aria-label={t("securityEvents.keywordHint")}
@@ -555,7 +555,7 @@ export function SecurityEventsPanel({
                   changeFilter({ keyword: event.target.value })
                 }
                 placeholder={t("security.searchPlaceholder")}
-                className="h-8 w-[220px] flex-none rounded-full bg-card text-xs focus:border-border-active"
+                className="h-8 w-[220px] flex-none text-xs"
               />
             </>
           )}

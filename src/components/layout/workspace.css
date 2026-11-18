@@ -1,56 +1,39 @@
 /* List controls adapted from the reference implementation, styled to the supplied Vary UI reference.
    MIT attribution: third_party/routing-reference/LICENSE. */
 :root {
-  --mp-bg: #f3f6fa;
-  --mp-workspace-bg: rgb(243 246 250 / 94%);
-  --mp-sidebar: rgb(255 255 255 / 40%);
-  --mp-card: #fff;
+  --mp-bg: hsl(var(--background));
+  --mp-workspace-bg: var(--mp-bg);
+  --mp-sidebar: var(--mp-card);
+  --mp-card: hsl(var(--card));
   --mp-list-bg: rgb(255 255 255 / 65%);
   --mp-list-line: rgb(215 225 236 / 65%);
   --mp-list-divider: rgb(215 225 236 / 70%);
-  --mp-card-2: #f8fafd;
-  --mp-pill: #eef3ff;
-  --mp-pill-hover: #e5edfc;
-  --mp-hover: #fff;
-  --mp-line: #dbe3eb;
-  --mp-line-2: #e7edf3;
-  --mp-fg: #273443;
-  --mp-fg-2: #637184;
-  --mp-muted: #637184;
-  --mp-faint: #a6b2c2;
-  --mp-control: #6b7b90;
-  --mp-accent: #3278ff;
-  --mp-green: #1fa56b;
-  --mp-red: #d64545;
-  --mp-amber: #b36a03;
+  --mp-card-2: hsl(var(--muted));
+  --mp-pill: hsl(var(--accent));
+  --mp-pill-hover: hsl(var(--accent));
+  --mp-hover: var(--hover-surface);
+  --mp-line: hsl(var(--border));
+  --mp-line-2: hsl(var(--border));
+  --mp-fg: hsl(var(--foreground));
+  --mp-fg-2: hsl(var(--secondary-foreground));
+  --mp-muted: hsl(var(--muted-foreground));
+  --mp-faint: var(--disabled-foreground);
+  --mp-control: hsl(var(--secondary-foreground));
+  --mp-accent: hsl(var(--primary));
+  --mp-green: var(--success);
+  --mp-red: hsl(var(--destructive));
+  --mp-amber: var(--warning);
   --mp-font:
     "Inter", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   --mp-edge: 0 1px 2px rgb(39 52 67 / 8%);
 }
 .dark {
-  --mp-bg: #151e2b;
   --mp-workspace-bg: var(--mp-bg);
   --mp-sidebar: rgb(255 255 255 / 2%);
-  --mp-card: #1c2838;
   --mp-list-bg: var(--mp-card);
   --mp-list-line: var(--mp-line);
   --mp-list-divider: var(--mp-line-2);
-  --mp-card-2: #192434;
-  --mp-pill: #25364e;
-  --mp-pill-hover: #2e435e;
-  --mp-hover: #25364e;
-  --mp-line: #344458;
-  --mp-line-2: #2b3a4e;
-  --mp-fg: #e7eef8;
-  --mp-fg-2: #b7c7dc;
-  --mp-muted: #99acc5;
-  --mp-faint: #72849d;
-  --mp-control: #a8bad2;
-  --mp-accent: #78a8ff;
-  --mp-green: #6fd99b;
-  --mp-red: #f28b82;
-  --mp-amber: #f2b544;
   --mp-edge: inset 0 0.5px 0 rgb(255 255 255 / 8%), 0 1px 2px rgb(0 0 0 / 30%);
 }
 .vary-workspace,
@@ -58,17 +41,13 @@
 .vary-routing,
 .vary-providers,
 .mp-dialog[role="dialog"] {
-  --primary: 219 100% 60%;
-  --ring: 219 100% 60%;
-  --border: 210 29% 89%;
-  --muted-foreground: 214 14% 45%;
   color: var(--mp-fg);
   font: 400 13px/1.4 var(--mp-font);
   -webkit-font-smoothing: antialiased;
 }
 .mp-dialog[role="dialog"] {
   border: 1px solid var(--mp-line);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--mp-card);
 }
 .mp-dialog h2 {
@@ -90,13 +69,6 @@
   box-shadow: none;
   font-size: 12px;
 }
-.mp-dialog .mp-primary {
-  background: var(--mp-accent);
-  color: #fff;
-}
-.mp-dialog .mp-primary:hover {
-  filter: brightness(1.08);
-}
 .mp-row-menu {
   min-width: 172px;
   padding: 4px;
@@ -114,23 +86,6 @@
 .mp-row-menu [role="menuitem"]:focus {
   background: var(--mp-pill);
   color: var(--mp-fg);
-}
-.dark .mp-dialog .mp-primary {
-  color: #151e2b;
-}
-.dark
-  :is(
-    .vary-workspace,
-    .vary-agents,
-    .vary-routing,
-    .vary-providers,
-    .mp-dialog
-  ),
-.dark.vary-workspace {
-  --primary: 219 100% 74%;
-  --ring: 219 100% 74%;
-  --border: 213 26% 27%;
-  --muted-foreground: 215 28% 69%;
 }
 .vary-workspace {
   --workspace-sidebar-width: 184px;
@@ -179,8 +134,8 @@
   position: absolute;
   top: 0;
   z-index: 0;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--mp-accent) 8%, transparent);
+  border-radius: var(--radius);
+  background: var(--mp-pill);
   pointer-events: none;
   transition:
     transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -210,7 +165,7 @@
 .workspace-sidebar nav {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   padding-top: 12px;
 }
 .workspace-nav-item {
@@ -221,15 +176,18 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 28px;
+  min-height: 36px;
   padding: 4px 10px;
-  border-radius: 7px;
-  color: var(--mp-fg);
-  font-size: 14px;
+  border-radius: var(--radius);
+  color: var(--mp-fg-2);
+  font-size: 13px;
   font-weight: 400;
   line-height: 20px;
   text-align: left;
   white-space: nowrap;
+  transition:
+    background-color var(--interaction-duration) var(--interaction-easing),
+    color var(--interaction-duration) var(--interaction-easing);
 }
 .workspace-nav-item > span {
   min-width: 0;
@@ -242,8 +200,8 @@
   flex: none;
   color: inherit;
 }
-.workspace-nav-item:hover {
-  background: var(--mp-pill);
+.workspace-nav-item:hover:not(:disabled):not([aria-current="page"]) {
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .workspace-nav-item[aria-current="page"] {
@@ -310,20 +268,6 @@ html:has(.vary-workspace) .tray-profile-menu {
 .vary-agents:not(.tray-agents) {
   padding-top: 0;
 }
-.mp-agent-page-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  margin: 0 -24px;
-  padding: var(--workspace-page-top, 36px) 24px 12px;
-  background: var(--mp-bg);
-}
-.mp-agent-page-header .mp-page-heading {
-  min-height: 24px;
-  margin: 0;
-  font-size: 18px;
-  line-height: 24px;
-}
 .mp-lead {
   margin: 0 0 12px;
   color: var(--mp-fg-2);
@@ -333,7 +277,7 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-list {
   overflow: hidden;
   border: 1px solid var(--mp-list-line);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--mp-list-bg);
 }
 .vary-agents > .mp-list {
@@ -480,7 +424,7 @@ html:has(.vary-workspace) .tray-profile-menu {
     min-width: 120px;
   }
 }
-.mp-agent-row + .mp-agent-row {
+.tray-agents .mp-agent-row + .mp-agent-row {
   border-top: 0;
 }
 .mp-agent-icon {
@@ -619,7 +563,7 @@ html:has(.vary-workspace) .tray-profile-menu {
   padding: 0 8px 0 6px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--mp-amber) 10%, transparent);
+  background: var(--warning-surface);
   color: var(--mp-amber);
   font-size: 11.5px;
   font-weight: 500;
@@ -698,7 +642,7 @@ html:has(.vary-workspace) .tray-profile-menu {
   flex: none;
 }
 .mp-agent-reconnect {
-  background: color-mix(in srgb, var(--mp-red) 10%, transparent);
+  background: var(--danger-surface);
   color: var(--mp-red);
 }
 .mp-agent-reconnect:hover {
@@ -716,7 +660,7 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-agent-note {
   padding: 1px 6px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--mp-amber) 10%, transparent);
+  background: var(--warning-surface);
   color: var(--mp-amber);
   font-size: 11px;
 }
@@ -750,16 +694,19 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-switch[role="switch"] {
   position: relative;
   flex: none;
-  width: 36px;
+  width: 34px;
   height: 20px;
   padding: 0;
   border: 0;
   border-radius: 10px;
-  background: var(--mp-line);
+  background: var(--border-strong);
   box-shadow: none;
 }
 .mp-switch[role="switch"][data-state="checked"] {
   background: var(--mp-accent);
+}
+.mp-switch[role="switch"][data-state="checked"]:hover:not(:disabled) {
+  background: var(--primary-hover);
 }
 .mp-switch[role="switch"] > span {
   position: absolute;
@@ -771,7 +718,7 @@ html:has(.vary-workspace) .tray-profile-menu {
   box-shadow: 0 1px 2px rgb(39 52 67 / 15%);
 }
 .mp-switch[role="switch"][data-state="checked"] > span {
-  transform: translateX(16px);
+  transform: translateX(14px);
   background: #fff;
 }
 .mp-switch[role="switch"][data-state="unchecked"] > span {
@@ -930,12 +877,6 @@ html:has(.vary-workspace) .tray-profile-menu {
   .vary-agents,
   .vary-routing,
   .vary-providers {
-    padding-right: 12px;
-    padding-left: 12px;
-  }
-  .mp-agent-page-header {
-    margin-right: -12px;
-    margin-left: -12px;
     padding-right: 12px;
     padding-left: 12px;
   }

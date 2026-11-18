@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
 import { render, screen, within } from "@testing-library/react";
+import postcss from "postcss";
 import { expect, it } from "vitest";
 import { createInstance } from "i18next";
 import { I18nextProvider } from "react-i18next";
 import zh from "@/i18n/locales/zh.json";
+import { APP_IDS } from "@/config/appConfig";
 import { RoutingStage } from "@/components/routing/RoutingStage";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 
@@ -86,6 +89,92 @@ function show(overrides: Partial<Parameters<typeof RoutingStage>[0]> = {}) {
     />,
   );
 }
+
+it("expands a separate outline only when motion is enabled", () => {
+  const stylesheet = postcss.parse(
+    readFileSync("src/components/routing/routing.css", "utf8"),
+  );
+  const outline = ".vary-routing .rt-stage .rt-accts li.on.replying::after";
+  let motionRule = false;
+  stylesheet.walkAtRules("media", (media) => {
+    if (media.params !== "(prefers-reduced-motion: no-preference)") return;
+    media.walkRules(outline, (rule) => {
+      rule.walkDecls("animation", ({ value }) => {
+        motionRule = value.startsWith("vary-rt-seat-ripple ");
+      });
+    });
+  });
+  const insets: string[] = [];
+  stylesheet.walkAtRules("keyframes", (animation) => {
+    if (animation.params !== "vary-rt-seat-ripple") return;
+    animation.walkDecls("inset", ({ value }) => {
+      insets.push(value);
+    });
+  });
+  expect(motionRule).toBe(true);
+  expect(insets).toEqual(["-1px", "calc(-1 * var(--rt-seat-ripple-gutter))"]);
+});
+
+it.each(
+  APP_IDS.flatMap((agent) =>
+    (["responsive", "compact"] as const).map((layout) => ({ agent, layout })),
+  ),
+)(
+  "highlights only the replying provider for $agent in $layout",
+  ({ agent, layout }) => {
+    const request = { ...row, agent };
+    const view = show({
+      row: { ...request, steps: [] },
+      layout,
+      animate: true,
+    });
+    const update = (changes: Partial<RoutingTrace>, replay = false) =>
+      view.rerender(
+        <RoutingStage
+          row={{ ...request, ...changes }}
+          layout={layout}
+          accountName={(candidate) => candidate.providerName}
+          animate
+          speed={1}
+          replay={replay}
+        />,
+      );
+    const seats = () => view.container.querySelectorAll(".rt-accts li");
+    const highlighted = () =>
+      view.container.querySelectorAll(".rt-accts .replying");
+    expect(highlighted()).toHaveLength(0);
+    update({ firstTokenMs: null });
+    expect(highlighted()).toHaveLength(1);
+    expect(seats()[1]).toHaveClass("replying");
+    expect(view.container.querySelector(".rt-accts .dot")).toBeNull();
+    update({}, true);
+    expect(highlighted()).toHaveLength(0);
+    update({ firstTokenMs: 0, state: "completed" });
+    expect(highlighted()).toHaveLength(0);
+    expect(seats()[1]).toHaveTextContent("routingPage.seatAnswered");
+  },
+);
+
+it("keeps a shared seat highlighted when its other request is complete", () => {
+  show({
+    row,
+    sources: [row, { ...row, id: "completed-peer", state: "completed" }],
+    animate: true,
+  });
+  expect(document.querySelectorAll(".rt-accts .replying")).toHaveLength(1);
+});
+
+it("does not highlight an abandoned target after it recorded content", () => {
+  show({
+    row: {
+      ...row,
+      firstTokenMs: 24,
+      steps: [...row.steps, { kind: "failed", candidate: 1, atMs: 30 }],
+    },
+    animate: true,
+  });
+  expect(document.querySelector(".rt-accts .replying")).toBeNull();
+});
 it.each([
   ["routing", true, false, true],
   ["streaming", true, false, true],

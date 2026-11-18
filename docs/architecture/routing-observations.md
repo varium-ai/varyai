@@ -35,7 +35,16 @@ navigation, and reduced-motion settings suppress control and stage movement.
   retain independent packet players, including a response already returning when
   a newer request arrives. Up to four recorded Agents share the stage; identical
   candidate seats share one branch, matched by provider, account, model and effort.
-  The overview follows the newest live trace automatically. Its footer retains
+  Workspace Agent names wrap rather than truncate. Candidate cards omit the
+  leading status dot. While a card shows the responding state, a thin outline
+  expands outward and fades without waiting for first content. Reduced motion
+  keeps only the static border highlight. Quota indicators are unchanged.
+  The workspace creates one source card per recorded Agent ID and gives active
+  sources priority. Each Agent's latest completion can linger for 12 seconds,
+  measured from finish time. The stage keeps the latest recorded request as
+  the overview when traffic is idle. Different models or sessions can share a
+  source card while their active requests keep separate animations. The header
+  shows a live overview when multiple routes are displayed. Its footer retains
   request, fallback and Agent error counts as read-only summaries. Decision
   details, replay, request history, purpose/metric filters, session grouping and
   the accounts-and-keys panel are absent from this workspace. Legacy request-list
@@ -79,9 +88,10 @@ navigation, and reduced-motion settings suppress control and stage movement.
   through Vary to its original Agent. The workspace and compact tray keep only
   small circular packets: no birds, count badges, halo discs, aggregation or
   per-request offsets. Concurrent requests waiting at the same destination
-  overlap at the same wire tip, as Magpie's `holdAll` does. Workspace positions
-  use Magpie's `min(6, length / 4)` clearance at each end and cosine easing;
-  compact tray positions use its wire tips and quadratic easing. The compact
+  overlap at the same wire tip, as Magpie's `holdAll` does. Parked packets stay
+  still at the provider edge with their inner half clipped. Returns start at
+  that same point. Other workspace endpoints keep `min(6, length / 4)` clearance
+  and cosine easing; the tray uses wire tips and quadratic easing. The compact
   tray also retains its 3.5px dots, 420/460ms outgoing legs and green/red replies.
   Failed attempts return in red, stopping at
   the hub if another candidate follows; a final failure returns to the Agent.
@@ -89,9 +99,10 @@ navigation, and reduced-motion settings suppress control and stage movement.
   upstream error. The workspace and tray omit the synthetic HTTP 499 status code
   from candidate labels. Recorded traces retain the original status and neutral
   cancellation events for diagnostics.
-  Finished players are removed once the return ends and never
-  restart on polling. Newly completed long requests use their finish time for
-  admission; initial history does not introduce unrelated completed branches.
+  Finished players are removed once the return ends and stay finished on
+  subsequent polls. Newly completed long requests use their finish time for
+  admission. Recent workspace source cards can appear with stationary paths
+  on first load, including the candidates from those recorded requests.
   Completed requests have stationary paths. Listener and strategy details remain
   on the gateway's tooltip, and branch status appears on hover or keyboard focus.
   Client and provider lists have bounded scrolling, and paths are recalculated

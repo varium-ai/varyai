@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { AccountLabel } from "@/components/AccountLabel";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -144,7 +145,7 @@ export function RoutingAccounts({
             )}
           </b>
           {account.kind === "account" && recorded?.plan && (
-            <span>{recorded.plan}</span>
+            <span>{subscriptionPlanLabel(recorded.plan)}</span>
           )}
           {account.kind === "key" && <span>{t("routingPage.apiKey")}</span>}
         </div>

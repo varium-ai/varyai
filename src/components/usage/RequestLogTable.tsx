@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -198,7 +199,11 @@ export function RequestLogTable({
         </div>
       )}
       {isLoading ? (
-        <div className="h-[400px] animate-pulse rounded bg-gray-100" />
+        <div
+          role="status"
+          aria-label={t("common.loading")}
+          className="h-[400px] rounded-md bg-muted motion-safe:animate-pulse"
+        />
       ) : (
         <>
           <div
@@ -251,7 +256,7 @@ export function RequestLogTable({
                   logs.map((log) => {
                     const unpriced = isUnpricedUsage(log);
                     return (
-                      <TableRow key={log.requestId}>
+                      <TableRow key={log.requestId} className="h-14">
                         <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
                           {new Date(log.createdAt * 1000).toLocaleString(
                             locale,
@@ -266,12 +271,11 @@ export function RequestLogTable({
                         <TableCell className="text-center">
                           <UsageSourceLabel source={log} />
                         </TableCell>
-                        <TableCell className="text-center font-mono text-xs min-w-[200px] max-w-[360px]">
+                        <TableCell className="text-center font-mono text-xs min-w-[160px] max-w-[260px]">
                           <div
-                            className="whitespace-normal break-all"
                             title={`${t("usage.requestModel")}: ${modelName(log.requestModel || log.model)} → ${t("usage.responseModel")}: ${modelName(log.model)}`}
                           >
-                            <span>
+                            <span className="block truncate">
                               {modelName(log.pricingModel || log.model)}
                             </span>
                             {((log.requestModel &&
@@ -280,7 +284,7 @@ export function RequestLogTable({
                               log.model !==
                                 (log.pricingModel || log.model)) && (
                               <div
-                                className="text-[10px] text-muted-foreground"
+                                className="truncate text-[10px] text-muted-foreground"
                                 aria-label={t("usage.requestResponseModel")}
                               >
                                 {log.requestModel &&
@@ -366,15 +370,16 @@ export function RequestLogTable({
                           )}
                         </TableCell>
                         <TableCell className="text-center">
-                          <span
-                            className={
+                          <Badge
+                            className="tabular-nums"
+                            variant={
                               log.statusCode >= 200 && log.statusCode < 300
-                                ? "text-green-600"
-                                : "text-red-600"
+                                ? "success"
+                                : "destructive"
                             }
                           >
                             {log.statusCode}
-                          </span>
+                          </Badge>
                         </TableCell>
                         <TableCell className="text-center text-xs text-muted-foreground">
                           {log.dataSource || "proxy"}

@@ -146,7 +146,7 @@ function packetPlayer(
 
   function hide() {
     packet.setAttribute("visibility", "hidden");
-    packet.classList.remove("held", "back", "err", "cancelled");
+    packet.classList.remove("held", "docked", "back", "err", "cancelled");
   }
   function reportFinished() {
     if (!reported && id) {
@@ -200,14 +200,23 @@ function packetPlayer(
         legs[index].reverse ? lengths[index] - distance : distance,
       );
     }
-    // Magpie's workspace pose clears each card by a dot; its tray uses the wire tips.
     const edge = compact ? 0 : Math.min(6, total / 4);
-    const distance =
-      edge + Math.max(0, Math.min(progress, 1)) * (total - 2 * edge);
+    const first = legs[0];
+    const last = legs[legs.length - 1];
+    const startsDocked = first.wire > 0 && first.reverse;
+    const endsDocked = last.wire > 0 && !last.reverse;
+    const start = startsDocked ? 0 : edge;
+    const end = endsDocked ? total : total - edge;
+    const fraction = Math.max(0, Math.min(progress, 1));
+    const distance = start + fraction * (end - start);
     try {
       const point = pointAt(distance);
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
       packet.setAttribute("transform", `translate(${point.x} ${point.y})`);
+      packet.classList.toggle(
+        "docked",
+        (startsDocked && fraction === 0) || (endsDocked && fraction === 1),
+      );
       packet.setAttribute("visibility", "visible");
     } catch {
       return false;

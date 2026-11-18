@@ -956,10 +956,8 @@ body:has(.tray-panel),
   grid-row: 1;
   grid-column: 3;
   justify-self: start;
-  width: 100%;
-  max-width: 148px;
-  padding: 0;
-  margin: 0;
+  width: calc(100% + 2 * var(--rt-seat-ripple-gutter));
+  max-width: calc(148px + 2 * var(--rt-seat-ripple-gutter));
 }
 .tray-panel .tray-routing .rt-node {
   gap: 5px;

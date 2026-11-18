@@ -79,16 +79,23 @@ function mount(compact = false) {
     </QueryClientProvider>,
   );
 }
+async function openInstallations(compact = false) {
+  if (compact) {
+    const summary = await screen.findByText("agentConnections.moreTools");
+    fireEvent.click(summary);
+    return summary.closest("details");
+  }
+  fireEvent.mouseDown(
+    screen.getByRole("tab", {
+      name: /^agentConnections.directory.notInstalled/,
+    }),
+    { button: 0 },
+  );
+  return screen.getByRole("tabpanel");
+}
 async function row(app: string) {
-  await waitFor(() =>
-    expect(proxyApi.getAgentInstallations).toHaveBeenCalled(),
-  );
-  await waitFor(() =>
-    expect(screen.queryByText("common.loading")).not.toBeInTheDocument(),
-  );
-  const summary = await screen.findByText("agentConnections.moreTools");
-  if (!summary.closest("details")?.open) fireEvent.click(summary);
-  return screen.getByRole("group", { name: `apps.${app}` });
+  await openInstallations();
+  return screen.findByRole("group", { name: `apps.${app}` });
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -125,7 +132,7 @@ describe("Agent installation shortcuts", () => {
   it.each([
     ["workbuddy", "https://www.workbuddy.cn/"],
     ["workbuddy-ai", "https://www.workbuddy.ai/"],
-  ])("opens %s’s own website from More tools", async (app, website) => {
+  ])("opens %s’s own website from Not installed", async (app, website) => {
     mount();
     const desktop = await row(app);
     fireEvent.click(
@@ -138,7 +145,7 @@ describe("Agent installation shortcuts", () => {
     );
   });
   it.each([false, true])(
-    "keeps a missing tool's reload failure visible in More tools (compact: %s)",
+    "keeps a missing tool's reload failure visible (compact: %s)",
     async (compact) => {
       vi.mocked(agentConnectionsApi.list).mockResolvedValue([
         {
@@ -151,16 +158,17 @@ describe("Agent installation shortcuts", () => {
           reloadState: "failed",
         },
       ]);
-      const { container } = mount(compact);
-      const summary = await screen.findByText("agentConnections.moreTools");
-      fireEvent.click(summary);
+      mount(compact);
+      const panel = await openInstallations(compact);
       const failed = await screen.findByRole("group", { name: "apps.codex" });
       expect(await within(failed).findByRole("status")).toHaveTextContent(
         "agentConnections.states.reloadFailed",
       );
       expect(within(failed).queryByRole("switch")).not.toBeInTheDocument();
-      expect(summary.closest("details")).toContainElement(failed);
-      expect(container.querySelector(".mp-list")).not.toContainElement(failed);
+      expect(panel).toContainElement(failed);
+      expect(
+        screen.queryByRole("article", { name: "apps.codex" }),
+      ).not.toBeInTheDocument();
       expect(
         within(failed).queryByRole("button", {
           name: "agentConnections.sorting.handle",
@@ -229,17 +237,15 @@ describe("Agent installation shortcuts", () => {
           },
         });
       }
-      const { container } = mount(compact);
-      const disclosure = (
-        await screen.findByText("agentConnections.moreTools")
-      ).closest("details");
-      expect(disclosure).not.toHaveAttribute("open");
-      fireEvent.click(screen.getByText("agentConnections.moreTools"));
+      mount(compact);
+      const panel = await openInstallations(compact);
       const missing = await screen.findByRole("group", {
         name: `apps.${app}`,
       });
-      expect(disclosure).toContainElement(missing);
-      expect(container.querySelector(".mp-list")).not.toContainElement(missing);
+      expect(panel).toContainElement(missing);
+      expect(
+        screen.queryByRole("article", { name: `apps.${app}` }),
+      ).not.toBeInTheDocument();
       expect(
         within(missing).getByRole("button", { name: "agentInstall.install" }),
       ).toBeEnabled();
@@ -309,6 +315,12 @@ describe("Agent installation shortcuts", () => {
     expect(
       screen.getByRole("button", { name: "agentInstall.installing" }),
     ).toBeDisabled();
+    fireEvent.mouseDown(
+      screen.getByRole("tab", {
+        name: /^agentConnections.directory.installed/,
+      }),
+      { button: 0 },
+    );
     expect(screen.getByRole("switch", { name: "apps.claude" })).toBeEnabled();
     finish();
     expect(
@@ -411,7 +423,8 @@ describe("Agent installation shortcuts", () => {
     );
     mount();
     expect(await screen.findByRole("alert")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("agentConnections.moreTools"));
+    const panel = await openInstallations();
+    expect(panel).not.toContainElement(screen.queryByRole("group"));
     expect(
       screen.queryByRole("button", { name: "agentInstall.install" }),
     ).not.toBeInTheDocument();

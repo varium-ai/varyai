@@ -373,12 +373,17 @@ pub fn responses_request_to_anthropic(
 
     // Reuse the Codex tool context so function, namespace, custom, tool_search, and
     // dynamically loaded tools all receive stable flat names upstream.
-    let anth_tools: Vec<Value> = tool_context
-        .chat_tools()
+    let (tools, allowed_mode) = tool_context.select_tools(&body["tool_choice"])?;
+    let anth_tools: Vec<Value> = tools
         .iter()
         .filter_map(chat_tool_to_anthropic_tool)
         .collect();
     let has_tools = !anth_tools.is_empty();
+    if !has_tools && allowed_mode == Some("required") {
+        return Err(ProxyError::InvalidRequest(
+            "Required allowed-tools choice has no callable tools".into(),
+        ));
+    }
     if has_tools {
         result["tools"] = json!(anth_tools);
     }
@@ -388,7 +393,8 @@ pub fn responses_request_to_anthropic(
     // tools"), and that 400 is non-retryable — so a request whose only tools were
     // unsupported hosted tools (for example web_search) must drop tool_choice too.
     if has_tools {
-        if let Some(tc) = body.get("tool_choice") {
+        let allowed_mode = allowed_mode.map(|mode| json!(mode));
+        if let Some(tc) = allowed_mode.as_ref().or_else(|| body.get("tool_choice")) {
             let mapped = map_tool_choice_to_anthropic(tc, &tool_context);
             let forced = matches!(
                 mapped.get("type").and_then(|value| value.as_str()),
@@ -487,7 +493,7 @@ fn map_tool_choice_to_anthropic(tool_choice: &Value, tool_context: &CodexToolCon
             Some("tool_search") => {
                 json!({ "type": "tool", "name": TOOL_SEARCH_PROXY_NAME })
             }
-            // Other object shapes (allowed_tools / hosted-tool selectors, etc.) are
+            // Other object shapes (hosted-tool selectors, etc.) are
             // not recognized by Anthropic; downgrade to auto to avoid passing OpenAI's
             // raw structure through and causing a 400.
             _ => json!({ "type": "auto" }),
@@ -2945,7 +2951,7 @@ mod tests {
             "max_output_tokens": 100,
             "input": [{ "role": "user", "content": "hi" }],
             "tools": [{ "type": "function", "name": "x", "parameters": {"type": "object"} }],
-            "tool_choice": { "type": "allowed_tools", "tools": [] }
+            "tool_choice": { "type": "synthetic_unknown_selector", "tools": [] }
         });
         let result = responses_request_to_anthropic(input, 4096).unwrap();
         assert_eq!(result["tool_choice"], json!({ "type": "auto" }));

@@ -83,7 +83,9 @@ readers. Unsupported endpoints and failed reads retain their existing behavior.
 
 Provider rows and account editors share subscription-plan labels. Codex native
 sign-ins, managed accounts and ChatGPT API read the same plan claim, including
-Prolite, Promax, Go, Team and education/workspace tiers. New bounded plan
+Go, Plus, Team and education/workspace tiers. The provider UI displays
+`prolite` as **ChatGPT Pro 100**, `pro` as **ChatGPT Pro 200** and `promax`
+as **ChatGPT Pro 500**. New bounded plan
 identifiers retain their upstream names rather than falling through a Plus/Pro
 allowlist. Existing ChatGPT API accounts recover the label from their stored
 ID token without another login. Google prefers the upstream paid-tier name;

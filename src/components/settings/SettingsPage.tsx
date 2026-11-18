@@ -311,7 +311,7 @@ export function SettingsPage({
                   <TabsTrigger
                     key={tab.value}
                     value={tab.value}
-                    className="min-w-0 rounded-xl border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-700 shadow-none transition-all data-[state=active]:border-blue-600 data-[state=active]:bg-white data-[state=active]:text-blue-600 data-[state=active]:shadow-sm data-[state=inactive]:opacity-100 data-[state=inactive]:hover:border-slate-300 data-[state=inactive]:hover:bg-slate-50 dark:border-border dark:bg-card dark:text-slate-300 dark:data-[state=active]:border-blue-400 dark:data-[state=active]:bg-card dark:data-[state=active]:text-blue-300 dark:data-[state=inactive]:hover:bg-muted"
+                    className="min-w-0 px-4 data-[state=inactive]:hover:bg-muted"
                   >
                     {tab.label}
                   </TabsTrigger>

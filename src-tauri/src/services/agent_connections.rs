@@ -1076,6 +1076,22 @@ impl Manager {
     pub fn refresh(&self, app: &str, menu: &Menu, origin: &str) -> Result<Option<Receipt>, String> {
         self.update(app, menu, origin, None)
     }
+    pub fn refresh_for_reapply(
+        &self,
+        app: &str,
+        menu: &Menu,
+        origin: &str,
+        selected: &str,
+    ) -> Result<Option<Receipt>, String> {
+        let old = self.load(app)?.ok_or(CONFLICT)?;
+        if old.suspended
+            || old.token.len() != 64
+            || !old.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Ok(None);
+        }
+        self.update_existing(old, menu, origin, Some(selected), false)
+    }
     pub fn update(
         &self,
         app: &str,
@@ -1086,6 +1102,17 @@ impl Manager {
         let Some(old) = self.load(app)? else {
             return Ok(None);
         };
+        self.update_existing(old, menu, origin, selected, true)
+    }
+    fn update_existing(
+        &self,
+        old: Receipt,
+        menu: &Menu,
+        origin: &str,
+        selected: Option<&str>,
+        reclaim_changed_fields: bool,
+    ) -> Result<Option<Receipt>, String> {
+        let app = old.app.as_str();
         if app == "pi" && !old.suspended {
             crate::pi_config::session::ensure_installed();
         }
@@ -1159,6 +1186,9 @@ impl Manager {
         }) {
             if selected.is_none() {
                 return Err(CONFLICT.into());
+            }
+            if !reclaim_changed_fields {
+                return Ok(None);
             }
             // An explicit connection replaces changed routing fields. Validate
             // the new projection before archiving and releasing the old one.
@@ -2510,6 +2540,10 @@ mod tests {
                     .map_err(|error| format!("{app} initial build: {error}"))?,
             )?;
             let old = manager.load(app)?.ok_or("receipt")?;
+            let reapplied = manager
+                .refresh_for_reapply(app, &menu, "http://127.0.0.1:1", selected)?
+                .ok_or("missing stable receipt")?;
+            assert!(reapplied.token == old.token, "{app} cached credential");
             let mut changed = false;
             for file in &old.files {
                 let before = read(&file.path)?.ok_or("installed file")?;
@@ -2520,6 +2554,12 @@ mod tests {
                 }
             }
             assert!(changed, "{app} fixture must change a route");
+            assert!(
+                manager
+                    .refresh_for_reapply(app, &menu, "http://127.0.0.1:3", selected)?
+                    .is_none(),
+                "{app} changed endpoint requires a fresh connection"
+            );
             assert!(
                 manager.refresh(app, &menu, "http://127.0.0.1:3").is_err(),
                 "{app} passive refresh"

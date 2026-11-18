@@ -294,16 +294,8 @@ describe("SettingsPage Component", () => {
     renderSettingsPage();
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
     expect(screen.queryByTestId("tabs-list-indicator")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("tab", { name: "settings.tabGeneral" }),
-    ).toHaveClass(
-      "bg-white",
-      "border-slate-200",
-      "data-[state=active]:bg-white",
-      "data-[state=active]:text-blue-600",
-      "data-[state=active]:border-blue-600",
-      "data-[state=active]:shadow-sm",
-    );
+    const general = screen.getByRole("tab", { name: "settings.tabGeneral" });
+    expect(general).toHaveAttribute("data-state", "active");
     expect(
       screen.queryByRole("tab", { name: "homeAudit.label" }),
     ).not.toBeInTheDocument();

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from "react";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Copy, ExternalLink } from "lucide-react";
@@ -360,7 +361,9 @@ function SubscriptionFields({
                       <span>{account.login}</span>
                     </label>
                     {account.plan && (
-                      <span className="cx-plan">{account.plan}</span>
+                      <span className="cx-plan">
+                        {subscriptionPlanLabel(account.plan)}
+                      </span>
                     )}
                     {source.accountId === account.id && (
                       <span className="cx-using">{t("provider.inUse")}</span>

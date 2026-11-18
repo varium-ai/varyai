@@ -11,6 +11,8 @@ pub(crate) mod reply;
 pub(crate) mod stream;
 
 #[cfg(test)]
+mod allowed_tools_tests;
+#[cfg(test)]
 mod integration_tests;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -140,6 +142,7 @@ pub(crate) struct Format {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeOptions {
+    pub responses_tool_allowlist: Option<Value>,
     pub metadata: Option<Value>,
     pub client_metadata: Option<Value>,
     pub include: Option<Value>,

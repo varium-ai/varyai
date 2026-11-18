@@ -1253,10 +1253,23 @@ fn error(status: StatusCode, code: &'static str) -> Response {
         "routing_model_unavailable" => {
             "This conversation's saved model is unavailable in VaryAI. Select a model from the current list in this conversation, then retry."
         }
+        "routing_request_conversion_failed" => {
+            "VaryAI could not convert the request for the selected API format. Try a route that supports the client's API format."
+        }
+        "routing_conversion_misconfigured" => {
+            "VaryAI cannot convert requests for this route. Check the selected provider and its API format in VaryAI."
+        }
+        "routing_response_conversion_failed" => {
+            "VaryAI received an upstream reply it could not convert. Check that the route's API format matches the upstream endpoint."
+        }
         _ => code,
     };
+    let error_type = match code {
+        "routing_conversion_misconfigured" | "routing_response_conversion_failed" => "server_error",
+        _ => "invalid_request_error",
+    };
     let mut response = Response::new(Body::from(
-        json!({"error":{"type":"invalid_request_error","code":code,"message":message}}).to_string(),
+        json!({"error":{"type":error_type,"code":code,"message":message}}).to_string(),
     ));
     *response.status_mut() = status;
     response.headers_mut().insert(
@@ -2285,7 +2298,9 @@ async fn execute(
                 matches!(agent, "workbuddy" | "workbuddy-ai"),
             ) {
                 Ok(payload) => payload,
-                Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported"),
+                Err(_) => {
+                    return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed")
+                }
             }
         } else {
             payload
@@ -2434,7 +2449,7 @@ async fn execute(
             || (protocol != output && !official_conversion)
         {
             let Some(upstream) = resolved_subscription.as_ref().or(target.upstream.as_ref()) else {
-                return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
+                return fail(StatusCode::BAD_GATEWAY, "routing_conversion_misconfigured");
             };
             let mut bridge_body = match super::pi::json::parse(&payload) {
                 Ok(body) => body,
@@ -2561,12 +2576,17 @@ async fn execute(
                     }
                     continue;
                 }
-                Err(
-                    super::ProxyError::InvalidRequest(_)
-                    | super::ProxyError::TransformError(_)
-                    | super::ProxyError::ConfigError(_),
-                ) => {
-                    return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
+                Err(super::ProxyError::InvalidRequest(_)) => {
+                    return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
+                }
+                Err(super::ProxyError::TransformError(_)) => {
+                    return fail(
+                        StatusCode::BAD_GATEWAY,
+                        "routing_response_conversion_failed",
+                    );
+                }
+                Err(super::ProxyError::ConfigError(_)) => {
+                    return fail(StatusCode::BAD_GATEWAY, "routing_conversion_misconfigured");
                 }
                 Err(super::ProxyError::UpstreamError { status, body }) => {
                     // Classify only into fixed codes. Never log or return the body.

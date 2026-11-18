@@ -999,8 +999,7 @@ export function ProviderEditorDialog({
             <footer className="pv-editor-foot">
               <Button
                 type="button"
-                variant="ghost"
-                className="pv-cancel"
+                variant="outline"
                 disabled={disabled}
                 onClick={onClose}
               >
@@ -1008,7 +1007,7 @@ export function ProviderEditorDialog({
               </Button>
               <Button
                 type="submit"
-                className="mp-primary"
+                aria-busy={busy || undefined}
                 disabled={disabled || !canSave || !!nameError}
               >
                 {t(

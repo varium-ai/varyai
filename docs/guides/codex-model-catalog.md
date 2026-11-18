@@ -205,6 +205,12 @@ manager's settings. The existing reapply action remains available for recovery.
 
 ## Codex refresh hints
 
+After **Disconnect and restore**, the Agents list shows Codex as not connected.
+The confirmation dialog explains when an existing instance loads the restored
+settings. If disconnect changes the route, the desktop worker waits for idle
+and reloads the app-server. If the worker reports a failure, the row asks you
+to quit and reopen Codex.
+
 A refresh hint describes configuration freshness, not whether inference works.
 Following Magpie's semantic startup snapshot, VaryAI records route/account identity
 and the model menu separately. Reapplying identical settings, changing the

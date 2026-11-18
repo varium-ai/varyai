@@ -250,6 +250,6 @@ it("shows safe recorded names and plans rather than account ordinals", () => {
   );
   const name = document.querySelector(".rt-account-name")!;
   expect(name).toHaveTextContent("Synthetic member");
-  expect(name).toHaveTextContent("ChatGPT Pro");
+  expect(name).toHaveTextContent("ChatGPT Pro 200");
   expect(name).not.toHaveTextContent("routingPage.accountLabel");
 });

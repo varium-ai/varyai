@@ -3162,26 +3162,28 @@ impl ProxyService {
             .map_err(|_| FAILED)?;
         }
         let _guard = self.lock_switch_for_app(app).await;
-        self.intent_runtime.connections.revoke(app);
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
-        let app = app.to_owned();
-        tokio::task::spawn_blocking(move || {
-            if app == "claude-desktop" {
-                manager.model_visibility(&app)?;
+        let app_id = app.to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            let origin = format!("http://127.0.0.1:{}", info.port);
+            if let Some(receipt) =
+                manager.refresh_for_reapply(&app_id, &menu, &origin, &selected)?
+            {
+                return runtime.connections.install(&receipt);
             }
-            manager.release_for_reapply(&app)?;
-            let receipt = manager.build(
-                &app,
-                &menu,
-                &format!("http://127.0.0.1:{}", info.port),
-                &selected,
-            )?;
+            runtime.connections.revoke(&app_id);
+            if app_id == "claude-desktop" {
+                manager.model_visibility(&app_id)?;
+            }
+            manager.release_for_reapply(&app_id)?;
+            let receipt = manager.build(&app_id, &menu, &origin, &selected)?;
             manager.install(receipt.clone())?;
             runtime.connections.install(&receipt)
         })
         .await
-        .map_err(|_| FAILED)?
+        .unwrap_or_else(|_| Err(FAILED.into()));
+        result.inspect_err(|_| self.intent_runtime.connections.revoke(app))
     }
 
     pub(crate) async fn connect_codex_menu(
@@ -7231,6 +7233,18 @@ mod tests {
             1
         );
         service.reapply_agent_connection("claude-desktop").await?;
+        let active_port = service.get_status().await?.port;
+        let catalog_url =
+            format!("http://127.0.0.1:{active_port}/connections/claude-desktop/v1/models");
+        assert_eq!(
+            client
+                .get(&catalog_url)
+                .bearer_auth(&receipt.token)
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::OK
+        );
         assert_eq!(
             manager
                 .load("claude-desktop")?
@@ -7285,7 +7299,9 @@ mod tests {
         service.reapply_agent_connection("claude-desktop").await?;
         manager.disconnect("claude-desktop")?;
         assert_eq!(manager.model_visibility("claude-desktop")?, hidden);
+        let retired = receipt.token;
         let receipt = manager.build("claude-desktop", &menu, &origin, &catalog[0].id)?;
+        assert!(retired != receipt.token);
         assert_eq!(receipt.visible_models, Some(vec![]));
         manager.install(receipt)?;
         let receipt = manager

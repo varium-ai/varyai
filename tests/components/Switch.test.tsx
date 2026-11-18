@@ -42,11 +42,14 @@ describe("switch visual language", () => {
 
     const switchElement = screen.getByRole("switch");
     expect(switchElement).toHaveClass("data-[state=checked]:bg-primary");
-    expect(switchElement).toHaveClass("data-[state=unchecked]:bg-gray-200");
+    expect(switchElement).toHaveClass(
+      "w-[34px]",
+      "data-[state=unchecked]:bg-[var(--border-strong)]",
+    );
     expect(switchElement.firstElementChild).toHaveClass(
-      "h-5",
-      "w-5",
-      "bg-white",
+      "h-4",
+      "w-4",
+      "bg-primary-foreground",
     );
   });
 

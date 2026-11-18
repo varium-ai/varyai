@@ -73,10 +73,13 @@ export function RoutingStage({
   replay,
   speed,
   requestedModel,
+  modelLabel,
   address,
   currentAccounts = [],
   upstreams = [],
   concurrent = [],
+  sources,
+  multipleRoutes = false,
   liveObservations = false,
   layout: stageLayout = "responsive",
   now = Date.now(),
@@ -87,10 +90,13 @@ export function RoutingStage({
   replay: boolean;
   speed: number;
   requestedModel?: string;
+  modelLabel?: (row: RoutingTrace) => string;
   address?: string;
   currentAccounts?: RoutingAccount[];
   upstreams?: RoutingUpstream[];
   concurrent?: RoutingTrace[];
+  sources?: RoutingTrace[];
+  multipleRoutes?: boolean;
   liveObservations?: boolean;
   layout?: "responsive" | "compact";
   now?: number;
@@ -103,11 +109,21 @@ export function RoutingStage({
     concurrent,
     animate && !replay,
   );
-  const traces = row
-    ? [...flights.filter((trace) => trace.id !== row.id), row]
+  const sourceIds = sources && new Set(sources.map((source) => source.agent));
+  const visibleFlights = sourceIds
+    ? flights.filter((trace) => sourceIds.has(trace.agent))
     : flights;
+  const traces = [
+    ...new Map(
+      [...visibleFlights, ...(sources ?? (row ? [row] : []))].map((trace) => [
+        trace.id,
+        trace,
+      ]),
+    ).values(),
+  ];
   const gatewayWorking = animate && !replay && traces.some(live);
   const agents = [...new Set(traces.map((trace) => trace.agent))];
+  if (sources) agents.sort();
   const sourceAgents: (string | undefined)[] = agents.length
     ? agents
     : [undefined];
@@ -206,7 +222,7 @@ export function RoutingStage({
         const compact = stageLayout === "compact";
         const x1 = a.right - box.left + (compact ? (source ? 3 : 2) : 0),
           y1 = a.top + a.height / 2 - box.top;
-        const x2 = b.left - box.left - (compact ? (source ? 2 : 3) : 0),
+        const x2 = b.left - box.left - (compact && source ? 2 : 0),
           y2 = b.top + b.height / 2 - box.top;
         const middle = (x1 + x2) / 2;
         return `M${x1},${y1} C${middle},${y1} ${middle},${y2} ${x2},${y2}`;
@@ -254,7 +270,7 @@ export function RoutingStage({
   const hubDescription = [
     "Vary AI",
     address || t("routingPage.listenerUnknown"),
-    row && row.candidates.length > 1
+    row && !multipleRoutes && row.candidates.length > 1
       ? t(`routingPage.strategy.${row.strategy}`)
       : "",
   ]
@@ -314,7 +330,7 @@ export function RoutingStage({
         ]}
         flights={
           animate && !replay
-            ? flights.map((trace) => ({
+            ? visibleFlights.map((trace) => ({
                 row: trace,
                 color: hues[trace.agent] ?? "var(--rt-accent)",
                 paths: [
@@ -343,7 +359,15 @@ export function RoutingStage({
               : t(`apps.${agent}`)
             : source || t("routingPage.agent");
           const selectedSource = source === row?.agent;
-          const sourceTrace = traces.find((trace) => trace.agent === source);
+          const sourceTrace =
+            sources?.find((trace) => trace.agent === source) ??
+            traces.find((trace) => trace.agent === source);
+          const sourceModel =
+            sourceTrace && modelLabel
+              ? modelLabel(sourceTrace)
+              : selectedSource
+                ? requestedModel
+                : sourceTrace?.model;
           return (
             <div
               key={source ?? "idle"}
@@ -353,7 +377,11 @@ export function RoutingStage({
                   "--rt-agent": hues[source ?? ""] ?? "var(--rt-accent)",
                 } as CSSProperties
               }
-              title={selectedSource ? requestedModel : sourceTrace?.model}
+              title={
+                modelLabel
+                  ? [name, sourceModel].filter(Boolean).join(" · ")
+                  : sourceModel
+              }
             >
               <span className="rt-agent-icon">
                 {agent ? (
@@ -370,12 +398,16 @@ export function RoutingStage({
                 )}
               </span>
               <b>{name}</b>
-              {row && selectedSource && requestedModel && (
+              {sourceModel && (modelLabel || (row && selectedSource)) && (
                 <small
                   className={stageLayout === "compact" ? "sr-only" : undefined}
-                  title={row?.model !== requestedModel ? row?.model : undefined}
+                  title={
+                    sourceTrace?.model !== sourceModel
+                      ? sourceTrace?.model
+                      : undefined
+                  }
                 >
-                  {requestedModel}
+                  {sourceModel}
                 </small>
               )}
             </div>
@@ -393,7 +425,7 @@ export function RoutingStage({
         <small className={stageLayout === "compact" ? "sr-only" : undefined}>
           {address || t("routingPage.listenerUnknown")}
         </small>
-        {row && row.candidates.length > 1 && (
+        {row && !multipleRoutes && row.candidates.length > 1 && (
           <i className={stageLayout === "compact" ? "sr-only" : undefined}>
             {t(`routingPage.strategy.${row.strategy}`)}
           </i>
@@ -528,6 +560,7 @@ export function RoutingStage({
             quota && !resting && !baseStatus.includes(remaining(quota.resetsAt))
               ? `${baseStatus} · ${remaining(quota.resetsAt)}`
               : baseStatus;
+          const replying = answering && !resting && !passed && !failed;
           return (
             <li
               key={candidateKey(candidate)}
@@ -536,11 +569,10 @@ export function RoutingStage({
                   "--rt-agent": hues[trace.agent] ?? "var(--rt-accent)",
                 } as CSSProperties
               }
-              className={`${answering || answered ? "on" : ""} ${answering ? "now" : ""} ${failed || resting ? "rest" : ""} ${passed ? "left" : ""} ${used != null && used >= 90 ? "low" : ""}`}
+              className={`${answering || answered ? "on" : ""} ${answering ? "now" : ""} ${replying && animate && !replay ? "replying" : ""} ${failed || resting ? "rest" : ""} ${passed ? "left" : ""} ${used != null && used >= 90 ? "low" : ""}`}
               title={`${accountText(displayName)} · ${candidate.model}${candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""} · ${status}`}
               tabIndex={0}
             >
-              <span className="dot" />
               <b>
                 <span className="rt-seat-icon">
                   <UpstreamIcon

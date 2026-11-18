@@ -580,7 +580,6 @@ describe("Agent versions and updates", () => {
         ),
       );
       if (!compact) {
-        fireEvent.click(screen.getByText("agentConnections.moreTools"));
         const rescan = screen.getByRole("button", {
           name: "agentConnections.rescan",
         });
@@ -878,7 +877,10 @@ describe("Agent versions and updates", () => {
         { only: false, ids: ["synthetic/shared"] },
       ),
     );
-    fireEvent.keyDown(screen.getByRole("searchbox"), { key: "Escape" });
+    fireEvent.keyDown(
+      within(screen.getByRole("dialog")).getByRole("searchbox"),
+      { key: "Escape" },
+    );
     const codex = screen.getByRole("article", { name: "apps.codex" });
     const reapply = within(codex).getByRole("button", {
       name: "agentConnections.reapply",

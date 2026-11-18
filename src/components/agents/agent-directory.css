@@ -1,0 +1,230 @@
+.agent-directory-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: var(--workspace-page-top, 36px) 0 20px;
+}
+
+.agent-directory-header .mp-page-heading {
+  margin: 0;
+}
+
+.agent-directory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.agent-directory-toolbar .agent-directory-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--mp-line);
+  border-radius: 10px;
+  background: var(--mp-card-2);
+}
+
+.agent-directory-tabs [role="tab"] {
+  gap: 7px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 7px;
+  color: var(--mp-fg-2);
+  font-size: 12px;
+  font-weight: 400;
+  transition:
+    background-color var(--interaction-duration) var(--interaction-easing),
+    color var(--interaction-duration) var(--interaction-easing);
+}
+
+.agent-directory-tabs [role="tab"][aria-selected="false"]:hover {
+  background-color: var(--mp-hover);
+  color: var(--mp-fg);
+}
+
+.agent-directory-tabs [role="tab"][aria-selected="true"] {
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  box-shadow: var(--mp-edge);
+  font-weight: 600;
+}
+
+.agent-directory-tabs [role="tab"] > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--mp-muted);
+}
+
+.agent-directory-count {
+  min-width: 2ch;
+  color: var(--mp-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-directory-search {
+  position: relative;
+  flex: 1 1 208px;
+  max-width: 264px;
+  margin-left: auto;
+}
+
+.agent-directory-search > svg {
+  position: absolute;
+  inset: 12px auto auto 12px;
+  color: var(--mp-muted);
+  pointer-events: none;
+}
+
+.agent-directory-search > input {
+  padding-left: 36px;
+}
+
+.agent-directory-rows,
+.vary-agents [role="tabpanel"] > .mp-agent-empty {
+  border: 1px solid var(--mp-line);
+  border-radius: var(--radius);
+  background: var(--mp-card);
+}
+
+.agent-directory-rows > .mp-agent-install-row {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.mp-agent-row.agent-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 12px 16px 12px 38px;
+  border-radius: var(--radius);
+}
+
+.agent-list-row .mp-agent-icon {
+  width: 32px;
+  height: 32px;
+  background: transparent;
+}
+
+.agent-list-row .mp-agent-icon img {
+  max-width: 24px;
+  max-height: 24px;
+}
+
+.agent-list-row .mp-agent-who {
+  flex: 1 1 min(170px, 70%);
+  min-width: 0;
+  padding-right: 0;
+}
+
+.agent-list-row .mp-agent-name h2 {
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.agent-list-row .mp-agent-status-text {
+  flex: 0 1 auto;
+  white-space: normal;
+}
+
+.agent-list-row .agent-list-ready {
+  color: var(--success);
+}
+
+.agent-list-row .agent-list-ready > .mp-agent-dot {
+  background: var(--success);
+}
+
+.agent-list-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 12px;
+  flex: 1 1 190px;
+  max-width: min(100%, 294px);
+  margin-left: auto;
+  color: var(--mp-muted);
+  font-size: 11px;
+}
+
+.agent-list-controls > .mp-switch {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.agent-list-row .mp-agent-start {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  order: initial;
+}
+
+.agent-list-row .mp-agent-checkin-trigger {
+  width: auto;
+  max-width: 100%;
+}
+
+.agent-list-row .mp-agent-checkin {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-left: 0;
+}
+
+.agent-list-row .mp-agent-drag-handle {
+  inset: 50% auto auto 6px;
+  width: 26px;
+  height: 26px;
+  transform: translateY(-50%);
+}
+
+.agent-list-row.mp-sortable-row[data-sortable] + .agent-list-row::before {
+  content: none;
+}
+
+.agent-directory-rows > .agent-list-row.dragging {
+  border-style: dashed;
+}
+
+.agent-directory-rows > .agent-list-row.dragging > * {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-list-row.mp-agent-placeholder .mp-agent-placeholder-control {
+  width: 100%;
+  margin: auto 0 6px;
+}
+
+.agent-directory-rows > .agent-list-row,
+.agent-directory-rows > .mp-agent-install-row,
+.agent-directory-rows > .mp-agent-empty,
+.agent-directory-rows .agent-list-row.mp-agent-placeholder {
+  border: 0;
+  background: transparent;
+}
+
+.agent-directory-rows > .agent-list-row + .agent-list-row,
+.agent-directory-rows > .mp-agent-install-row + .mp-agent-install-row {
+  border-top: 1px solid var(--mp-line);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.agent-directory-rows .mp-agent-install-actions {
+  flex-basis: auto;
+}
+
+.agent-directory-rows .mp-agent-install-row > p {
+  flex-basis: 100%;
+}
