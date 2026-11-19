@@ -1106,9 +1106,7 @@ export function routingTemplates(
       });
     };
     const strongIds = strongBackups.map((member) => member.id);
-    if (best.model.images === true && economy.model.images === false)
-      addRule("Images", primary.id, strongIds, { images: true });
-    addRule("High reasoning", primary.id, strongIds, { effort: "high" });
+    addRule("Compaction", primary.id, strongIds, { compact: true });
     addRule(
       "Hard task",
       primary.id,

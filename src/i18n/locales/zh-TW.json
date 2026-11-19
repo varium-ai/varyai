@@ -5579,7 +5579,8 @@
     "templateSmartEasyRule": "簡單問題規則",
     "templateSmartRules": "範本規則",
     "templateHintLabel": "範本說明",
-    "templateSmartCompactRule": "壓縮上下文規則"
+    "templateSmartCompactRule": "壓縮上下文規則",
+    "templateRuleDefault": "範本規則"
   },
   "providerEditor": {
     "getApiKey": "取得金鑰",

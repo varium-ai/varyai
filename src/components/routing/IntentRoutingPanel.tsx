@@ -22,6 +22,7 @@ import { useRoutingDialogHeight } from "@/components/routing/useRoutingDialogHei
 import { RoutingRefreshIcon } from "./RoutingRefreshIcon";
 import { RoutingMemberPicker } from "@/components/routing/RoutingMemberPicker";
 import { RoutingTemplateMemberPicker } from "@/components/routing/RoutingTemplateMemberPicker";
+import { RoutingTemplateRuleTargets } from "@/components/routing/RoutingTemplateRuleTargets";
 import {
   catalogRoutingMembers,
   routingMemberAvailable,
@@ -999,6 +1000,20 @@ export function IntentRoutingPanel({
               />
             )}
           </div>
+          {draftTemplate === "templateSmart" && (
+            <div className="rt-setting-row rt-template-rules-field">
+              <h4 className="text-sm font-medium">
+                {t("routingPage.templateSmartRules")}
+              </h4>
+              <RoutingTemplateRuleTargets
+                providers={providers.data ?? []}
+                members={draft.members}
+                rules={draft.rules}
+                disabled={pending}
+                onChange={(rules) => edit({ ...draft, rules })}
+              />
+            </div>
+          )}
           {draftTemplate && draftPriority.length > 1 && (
             <div className="rt-setting-row">
               <h4 className="text-sm font-medium">
@@ -1108,47 +1123,6 @@ export function IntentRoutingPanel({
                 </summary>
               )}
               <div className="rt-advanced-fields">
-                {draftTemplate === "templateSmart" && (
-                  <div className="rt-template-smart-summary">
-                    <div className="rt-template-smart-context">
-                      <span>{t("intentRouting.contextPolicy")}</span>
-                      <strong>
-                        {t(
-                          draft.contextWindow === -1
-                            ? "intentRouting.contextSmallest"
-                            : "intentRouting.contextLargest",
-                        )}
-                      </strong>
-                    </div>
-                    <div className="rt-template-smart-rules">
-                      <span>{t("routingPage.templateSmartRules")}</span>
-                      <div className="rt-template-smart-rule">
-                        <strong>
-                          {t("routingPage.templateSmartCompactRule")}
-                        </strong>
-                        <span>{t("intentRouting.compactionHelp")}</span>
-                      </div>
-                      {draft.rules
-                        .filter(
-                          (rule) =>
-                            rule.name === "Hard task" ||
-                            rule.name === "Easy task",
-                        )
-                        .map((rule) => (
-                          <div className="rt-template-smart-rule" key={rule.id}>
-                            <strong>
-                              {t(
-                                rule.name === "Hard task"
-                                  ? "routingPage.templateSmartHardRule"
-                                  : "routingPage.templateSmartEasyRule",
-                              )}
-                            </strong>
-                            <span>{rule.description}</span>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                )}
                 <div className="rt-edit-patterns" data-routing-field="patterns">
                   <span>{t("intentRouting.matchPatterns")}</span>
                   <div className="rt-patterns">
@@ -1334,20 +1308,24 @@ export function IntentRoutingPanel({
                   </div>
                 )}
                 <div className="rt-edit-routing">
-                  <RoutingExecutionSettings
-                    key={draft.id}
-                    group={draft}
-                    disabled={pending}
-                    memberWindows={draft.members.flatMap((member) => {
-                      const capacity = providers.data
-                        ?.find((provider) => provider.id === member.providerId)
-                        ?.models?.find(
-                          (model) => model.id === member.modelId,
-                        )?.contextWindow;
-                      return capacity ? [capacity] : [];
-                    })}
-                    onChange={edit}
-                  />
+                  {!draftTemplate && (
+                    <RoutingExecutionSettings
+                      key={draft.id}
+                      group={draft}
+                      disabled={pending}
+                      memberWindows={draft.members.flatMap((member) => {
+                        const capacity = providers.data
+                          ?.find(
+                            (provider) => provider.id === member.providerId,
+                          )
+                          ?.models?.find(
+                            (model) => model.id === member.modelId,
+                          )?.contextWindow;
+                        return capacity ? [capacity] : [];
+                      })}
+                      onChange={edit}
+                    />
+                  )}
                   <fieldset
                     disabled={draft.routing === "manual"}
                     className="min-w-0 space-y-5 disabled:opacity-60"
@@ -1724,122 +1702,126 @@ export function IntentRoutingPanel({
                     )}
                   </details>
                 </div>
-                <div className="rt-edit-levels">
-                  {" "}
-                  <div className="rt-reference-setting">
-                    <span id={`routing-levels-${draft.id}`}>
-                      {t("intentRouting.levels")}
-                    </span>
-                    <div
-                      className="rt-reference-seg"
-                      role="radiogroup"
-                      aria-labelledby={`routing-levels-${draft.id}`}
-                    >
-                      {[false, true].map((own) => (
-                        <button
-                          key={String(own)}
-                          type="button"
-                          role="radio"
-                          aria-checked={!!draft.levels?.length === own}
-                          onClick={() =>
-                            edit({
-                              ...draft,
-                              levels: own ? ["low", "medium", "high"] : [],
-                            })
-                          }
-                        >
-                          {t(
-                            own
-                              ? "intentRouting.levelsNamed"
-                              : "intentRouting.levelsShared",
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                    {!!draft.levels?.length && (
-                      <div className="rt-reference-chips">
-                        {routingLevels.map((level) => (
+                {!draftTemplate && (
+                  <div className="rt-edit-levels">
+                    {" "}
+                    <div className="rt-reference-setting">
+                      <span id={`routing-levels-${draft.id}`}>
+                        {t("intentRouting.levels")}
+                      </span>
+                      <div
+                        className="rt-reference-seg"
+                        role="radiogroup"
+                        aria-labelledby={`routing-levels-${draft.id}`}
+                      >
+                        {[false, true].map((own) => (
                           <button
-                            key={level}
+                            key={String(own)}
                             type="button"
-                            aria-pressed={draft.levels?.includes(level)}
-                            disabled={
-                              draft.levels?.length === 1 &&
-                              draft.levels.includes(level)
-                            }
+                            role="radio"
+                            aria-checked={!!draft.levels?.length === own}
                             onClick={() =>
                               edit({
                                 ...draft,
-                                levels: routingLevels.filter((value) =>
-                                  value === level
-                                    ? !draft.levels?.includes(value)
-                                    : draft.levels?.includes(value),
-                                ),
+                                levels: own ? ["low", "medium", "high"] : [],
                               })
                             }
                           >
-                            {level}
+                            {t(
+                              own
+                                ? "intentRouting.levelsNamed"
+                                : "intentRouting.levelsShared",
+                            )}
                           </button>
                         ))}
                       </div>
-                    )}
-                    <p>{t("intentRouting.levelsHelp")}</p>
-                  </div>
-                </div>
-                <details className="rt-edit-settings">
-                  <summary className="cursor-pointer text-sm text-muted-foreground">
-                    {t("modelPicker.groupSettings")}
-                  </summary>
-                  <div className="mt-3 space-y-4">
-                    <div className="flex items-start justify-between gap-5">
-                      <div className="space-y-1">
-                        <label
-                          htmlFor={`routing-publication-${draft.id}`}
-                          className="text-sm font-medium"
-                        >
-                          {t("intentRouting.publishGateway")}
-                        </label>
-                        <p
-                          id={`routing-publication-help-${draft.id}`}
-                          className="text-xs text-muted-foreground"
-                        >
-                          {t("intentRouting.publishGatewayHelp")}
-                        </p>
-                      </div>
-                      <Switch
-                        className="mp-switch"
-                        id={`routing-publication-${draft.id}`}
-                        aria-describedby={`routing-publication-help-${draft.id}`}
-                        checked={draft.enabled}
-                        disabled={pending}
-                        onCheckedChange={(enabled) =>
-                          edit({ ...draft, enabled })
-                        }
-                      />
+                      {!!draft.levels?.length && (
+                        <div className="rt-reference-chips">
+                          {routingLevels.map((level) => (
+                            <button
+                              key={level}
+                              type="button"
+                              aria-pressed={draft.levels?.includes(level)}
+                              disabled={
+                                draft.levels?.length === 1 &&
+                                draft.levels.includes(level)
+                              }
+                              onClick={() =>
+                                edit({
+                                  ...draft,
+                                  levels: routingLevels.filter((value) =>
+                                    value === level
+                                      ? !draft.levels?.includes(value)
+                                      : draft.levels?.includes(value),
+                                  ),
+                                })
+                              }
+                            >
+                              {level}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <p>{t("intentRouting.levelsHelp")}</p>
                     </div>
-                    <label className="block space-y-1 text-sm">
-                      {t("intentRouting.defaultTarget")}
-                      <Select
-                        disabled={pending}
-                        value={draft.defaultMemberId}
-                        onValueChange={(value) => {
-                          draftOrderEdited.current = true;
-                          edit({ ...draft, defaultMemberId: value });
-                        }}
-                      >
-                        <SelectTrigger
-                          aria-label={t("intentRouting.defaultTarget")}
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>{memberOptions}</SelectContent>
-                      </Select>
-                    </label>
-                    <p className="text-xs text-muted-foreground">
-                      {t("intentRouting.fallbackHelp")}
-                    </p>
                   </div>
-                </details>
+                )}
+                {!draftTemplate && (
+                  <details className="rt-edit-settings">
+                    <summary className="cursor-pointer text-sm text-muted-foreground">
+                      {t("modelPicker.groupSettings")}
+                    </summary>
+                    <div className="mt-3 space-y-4">
+                      <div className="flex items-start justify-between gap-5">
+                        <div className="space-y-1">
+                          <label
+                            htmlFor={`routing-publication-${draft.id}`}
+                            className="text-sm font-medium"
+                          >
+                            {t("intentRouting.publishGateway")}
+                          </label>
+                          <p
+                            id={`routing-publication-help-${draft.id}`}
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t("intentRouting.publishGatewayHelp")}
+                          </p>
+                        </div>
+                        <Switch
+                          className="mp-switch"
+                          id={`routing-publication-${draft.id}`}
+                          aria-describedby={`routing-publication-help-${draft.id}`}
+                          checked={draft.enabled}
+                          disabled={pending}
+                          onCheckedChange={(enabled) =>
+                            edit({ ...draft, enabled })
+                          }
+                        />
+                      </div>
+                      <label className="block space-y-1 text-sm">
+                        {t("intentRouting.defaultTarget")}
+                        <Select
+                          disabled={pending}
+                          value={draft.defaultMemberId}
+                          onValueChange={(value) => {
+                            draftOrderEdited.current = true;
+                            edit({ ...draft, defaultMemberId: value });
+                          }}
+                        >
+                          <SelectTrigger
+                            aria-label={t("intentRouting.defaultTarget")}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>{memberOptions}</SelectContent>
+                        </Select>
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        {t("intentRouting.fallbackHelp")}
+                      </p>
+                    </div>
+                  </details>
+                )}
               </div>
             </details>
           )}

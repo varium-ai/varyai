@@ -928,8 +928,14 @@ describe("IntentRoutingPanel", () => {
             within(dialog).queryByText("intentRouting.advancedSettings"),
           ).not.toBeInTheDocument();
           expect(
-            within(dialog).getByText("intentRouting.rules"),
+            within(dialog).getByText("routingPage.templateSmartRules"),
           ).toBeInTheDocument();
+          expect(
+            dialog.querySelectorAll(".rt-template-rule-model"),
+          ).toHaveLength(3);
+          expect(
+            within(dialog).queryByText("intentRouting.contextPolicy"),
+          ).not.toBeInTheDocument();
         } else {
           expect(
             within(dialog).queryByText("intentRouting.advancedSettings"),

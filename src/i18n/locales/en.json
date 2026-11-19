@@ -5656,7 +5656,8 @@
     "templateSmartEasyRule": "Simple task rule",
     "templateSmartRules": "Template rules",
     "templateHintLabel": "How this template works",
-    "templateSmartCompactRule": "Compaction rule"
+    "templateSmartCompactRule": "Compaction rule",
+    "templateRuleDefault": "Template rule"
   },
   "providerEditor": {
     "getApiKey": "Get key",

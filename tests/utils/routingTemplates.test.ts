@@ -86,12 +86,11 @@ it("creates four ordinary group drafts with distinct defaults", () => {
   expect(smart.group.routing).toBe("ordered");
   expect(smart.group.members[0].modelId).toBe("large");
   expect(smart.group.rules.map((rule) => rule.conditions)).toEqual([
-    { images: true },
-    { effort: "high" },
+    { compact: true },
     undefined,
     undefined,
   ]);
-  expect(smart.group.rules[2].description).toContain("hard task");
+  expect(smart.group.rules[1].description).toContain("hard task");
   expect(smart.group.intentRecognitionEnabled).toBe(true);
   expect(smart.group.classifierTarget).toEqual({
     providerId: "a",

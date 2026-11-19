@@ -5652,7 +5652,8 @@
     "templateSmartEasyRule": "简单问题规则",
     "templateSmartRules": "模板规则",
     "templateHintLabel": "模板说明",
-    "templateSmartCompactRule": "压缩上下文规则"
+    "templateSmartCompactRule": "压缩上下文规则",
+    "templateRuleDefault": "模板规则"
   },
   "providerEditor": {
     "getApiKey": "获取密钥",

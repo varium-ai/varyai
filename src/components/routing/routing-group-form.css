@@ -588,11 +588,88 @@
 .rt-group-form .rt-template-smart-settings .rt-edit-patterns,
 .rt-group-form .rt-template-smart-settings [data-routing-field="model-lists"],
 .rt-group-form .rt-template-smart-settings [data-routing-field="rate-limits"],
-.rt-group-form .rt-template-smart-settings .rt-execution-picks,
+.rt-group-form
+  .rt-template-smart-settings
+  .rt-execution-picks
+  > .rt-setting-row,
+.rt-group-form
+  .rt-template-smart-settings
+  .rt-execution-picks
+  > .rt-execution-legacy,
 .rt-group-form .rt-template-smart-settings .rt-edit-rules,
 .rt-group-form .rt-template-smart-settings .rt-diagnostics,
-.rt-group-form .rt-template-smart-settings .rt-classifier-advanced {
+.rt-group-form .rt-template-smart-settings .rt-edit-levels,
+.rt-group-form .rt-template-smart-settings .rt-edit-settings,
+.rt-group-form .rt-template-smart-settings .rt-classifier-advanced,
+.rt-group-form
+  .rt-template-smart-settings
+  .rt-edit-routing
+  > fieldset
+  > .rt-diagnostics {
   display: none;
+}
+.rt-group-form .rt-template-smart-settings .rt-template-smart-summary {
+  display: none;
+}
+.rt-group-form .rt-template-rules-field {
+  margin-top: 2px;
+}
+.rt-group-form .rt-template-rule-targets {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+.rt-group-form .rt-template-rule-target {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(180px, 280px);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.rt-group-form .rt-template-rule-number {
+  color: var(--mp-muted);
+  font-size: 11px;
+  text-align: center;
+}
+.rt-group-form .rt-template-rule-description {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.rt-group-form .rt-template-rule-description strong,
+.rt-group-form .rt-template-rule-description span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rt-group-form .rt-template-rule-description strong {
+  color: var(--mp-fg);
+  font-size: 12px;
+}
+.rt-group-form .rt-template-rule-description span {
+  color: var(--mp-fg-2);
+  font-size: 11px;
+}
+.rt-group-form .rt-template-rule-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 6px;
+  height: 27px;
+  padding: 3px 8px;
+  border: 1px solid var(--mp-line);
+  border-radius: 7px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  font-size: 11.5px;
+  text-align: left;
+}
+.rt-group-form .rt-template-rule-model > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .rt-group-form .rt-member-picker {
   display: grid;

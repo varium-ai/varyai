@@ -5578,7 +5578,8 @@
     "templateSmartEasyRule": "簡単な課題ルール",
     "templateSmartRules": "テンプレートのルール",
     "templateHintLabel": "テンプレートの説明",
-    "templateSmartCompactRule": "圧縮コンテキストのルール"
+    "templateSmartCompactRule": "圧縮コンテキストのルール",
+    "templateRuleDefault": "テンプレートルール"
   },
   "providerEditor": {
     "getApiKey": "キーを取得",
