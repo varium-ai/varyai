@@ -938,14 +938,8 @@ describe("IntentRoutingPanel", () => {
         expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
           `routingPage.${key}`,
         );
-        expect(
-          dialog.querySelectorAll(".rt-model-chip input:checked"),
-        ).toHaveLength(
-          new Set(
-            expected.members.map((member) =>
-              JSON.stringify([member.providerId, member.modelId]),
-            ),
-          ).size,
+        expect(dialog.querySelectorAll(".rt-template-member")).toHaveLength(
+          Math.min(expected.members.length, 3),
         );
         expect(
           screen.queryByRole("radiogroup", {
@@ -1029,7 +1023,7 @@ describe("IntentRoutingPanel", () => {
       );
     },
   );
-  it("keeps fifty selected models ranked until the user changes the order manually", async () => {
+  it("keeps the template picker compact while preserving ranked members", async () => {
     const models = Array.from({ length: 51 }, (_, index) => ({
       id: `model-${index + 1}`,
       name: `Model ${index + 1}`,
@@ -1060,50 +1054,37 @@ describe("IntentRoutingPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "routingPage.templateCapability" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "providerEditor.selectAll" }),
-    );
-    fireEvent.click(screen.getByRole("checkbox", { name: "Model 51" }));
+    expect(
+      screen.getAllByRole("button", { name: /Fixture provider/ }),
+    ).toHaveLength(3);
     const order = within(
       screen.getByRole("list", { name: "routingPage.modelOrder" }),
     );
     const rows = () => order.getAllByRole("listitem");
-    const reselect = () => {
-      const model = screen.getByRole("checkbox", { name: "Model 48" });
-      fireEvent.click(model);
-      fireEvent.click(model);
-    };
-    expect(order.getAllByRole("listitem")).toHaveLength(50);
-    expect(rows()[3]).toHaveTextContent("Model 47");
-    reselect();
-    expect(rows()[2]).toHaveTextContent("Model 48");
+    expect(order.getAllByRole("listitem")).toHaveLength(3);
 
     fireEvent.click(
       within(rows()[1]).getByRole("button", { name: /^intentRouting.moveUp/ }),
     );
-    reselect();
-    expect(rows()[0]).toHaveTextContent("Model 49");
-    expect(rows().at(-1)).toHaveTextContent("Model 48");
+    expect(rows()[0]).toHaveTextContent("Model 50");
 
     fireEvent.click(
       screen.getByRole("button", {
         name: "routingPage.applyRecommendedModelOrder",
       }),
     );
-    reselect();
-    expect(rows()[0]).toHaveTextContent("Model 50");
-    expect(rows()[2]).toHaveTextContent("Model 48");
+    expect(rows()[0]).toHaveTextContent("Model 51");
+    expect(rows()[2]).toHaveTextContent("Model 49");
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
-    expect(saved.members.map((member) => member.modelId)).toEqual(
-      models
-        .slice(0, 50)
-        .reverse()
-        .map((model) => model.id),
-    );
+    expect(saved.members.map((member) => member.modelId)).toEqual([
+      "model-51",
+      "model-50",
+      "model-49",
+    ]);
     expect(saved.defaultMemberId).toBe(saved.members[0].id);
     expect(saved.fallbackMemberIds).toEqual(
       saved.members.slice(1).map((member) => member.id),

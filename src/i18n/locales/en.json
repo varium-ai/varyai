@@ -5048,7 +5048,8 @@
     "patienceOffHelp": "When every model has failed, return the last error to the Agent immediately.",
     "patienceWaitHelp": "Before any reply reaches the Agent, retry temporary failures within a further {{seconds}} seconds, respecting the provider’s retry delay.",
     "contextSmallestHelp": "Offer the smallest known model window so the Agent compacts before any member runs out of room.",
-    "contextCustomHelp": "Offer {{tokens}} tokens to the Agent. Longer conversations can still use a member with enough room."
+    "contextCustomHelp": "Offer {{tokens}} tokens to the Agent. Longer conversations can still use a member with enough room.",
+    "templateMemberAdd": "Add a provider or model"
   },
   "workspaceNav": {
     "label": "Workspace navigation",
@@ -5392,7 +5393,6 @@
     "syncModelsResult": "Upstreams: {{updated}} updated, {{cached}} using cache, {{unavailable}} unavailable.",
     "groupStatsUnavailable": "Group totals are not available yet.",
     "noGroups": "No routing groups yet. Create a group or import one to get started.",
-
     "apiKey": "API key",
     "oneKey": "One key",
     "accountQuotaLeft": "Allowance remaining",

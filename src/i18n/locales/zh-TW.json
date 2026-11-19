@@ -4975,7 +4975,8 @@
     "patienceOffHelp": "所有模型均失敗後，立即將最後一個錯誤傳回 Agent。",
     "patienceWaitHelp": "在任何回覆到達 Agent 前，對暫時性故障繼續重試最多 {{seconds}} 秒，並遵守供應商要求的等待時間。",
     "contextSmallestHelp": "向 Agent 提供已知成員中最小的上下文視窗，讓它在任何成員空間不足前壓縮對話。",
-    "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的視窗；更長的對話仍可交給空間足夠的成員。"
+    "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的視窗；更長的對話仍可交給空間足夠的成員。",
+    "templateMemberAdd": "新增供應商或模型"
   },
   "workspaceNav": {
     "label": "工作區導覽",
@@ -5315,7 +5316,6 @@
     "syncModelsResult": "上游：已更新 {{updated}} 個，沿用快取 {{cached}} 個，暫時無法使用 {{unavailable}} 個。",
     "groupStatsUnavailable": "尚未提供路由群組累計統計。",
     "noGroups": "尚無路由群組。新增或匯入路由群組即可開始使用。",
-
     "apiKey": "API 金鑰",
     "oneKey": "單一金鑰",
     "accountQuotaLeft": "剩餘額度",

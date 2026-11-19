@@ -4974,7 +4974,8 @@
     "patienceOffHelp": "すべてのモデルが失敗した場合、最後のエラーを直ちに Agent に返します。",
     "patienceWaitHelp": "返信が Agent に届く前に、提供元の待機時間を守りながら一時的な障害を最大 {{seconds}} 秒間再試行します。",
     "contextSmallestHelp": "既知の最小モデルのウィンドウを Agent に提示し、どのモデルも容量不足になる前に会話を圧縮させます。",
-    "contextCustomHelp": "Agent に {{tokens}} トークンのウィンドウを提示します。より長い会話も、十分な容量のあるモデルを利用できます。"
+    "contextCustomHelp": "Agent に {{tokens}} トークンのウィンドウを提示します。より長い会話も、十分な容量のあるモデルを利用できます。",
+    "templateMemberAdd": "プロバイダーまたはモデルを追加"
   },
   "workspaceNav": {
     "label": "ワークスペースのナビゲーション",
@@ -5314,7 +5315,6 @@
     "syncModelsResult": "接続先：更新 {{updated}} 件、キャッシュ使用 {{cached}} 件、利用不可 {{unavailable}} 件。",
     "groupStatsUnavailable": "グループの累計統計はまだ利用できません。",
     "noGroups": "ルーティンググループはありません。新規作成またはインポートして開始してください。",
-
     "apiKey": "API キー",
     "oneKey": "単一キー",
     "accountQuotaLeft": "残りの利用枠",

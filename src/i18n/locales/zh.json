@@ -5048,7 +5048,8 @@
     "patienceOffHelp": "所有模型均失败后，立即将最后一个错误返回给 Agent。",
     "patienceWaitHelp": "在任何回复到达 Agent 前，对临时故障继续重试最多 {{seconds}} 秒，并遵守供应商要求的等待时间。",
     "contextSmallestHelp": "向 Agent 提供已知成员中最小的上下文窗口，让它在任何成员空间不足前压缩对话。",
-    "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的窗口；更长的对话仍可交给空间足够的成员。"
+    "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的窗口；更长的对话仍可交给空间足够的成员。",
+    "templateMemberAdd": "添加供应商或模型"
   },
   "workspaceNav": {
     "label": "工作区导航",
@@ -5388,7 +5389,6 @@
     "syncModelsResult": "上游：已更新 {{updated}} 个，沿用缓存 {{cached}} 个，暂不可用 {{unavailable}} 个。",
     "groupStatsUnavailable": "暂未提供路由组累计统计。",
     "noGroups": "暂无路由组。新建或导入路由组即可开始使用。",
-
     "apiKey": "API 密钥",
     "oneKey": "单个密钥",
     "accountQuotaLeft": "剩余额度",

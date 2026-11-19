@@ -524,6 +524,68 @@
   min-width: 0;
   gap: 12px;
 }
+.rt-group-form .rt-template-member-picker {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+.rt-group-form .rt-template-member,
+.rt-group-form .rt-template-member-add {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  width: min(100%, 520px);
+  min-height: 32px;
+  gap: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--mp-line);
+  border-radius: 8px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  font: 400 12px/1.4 var(--mp-font);
+  text-align: left;
+  cursor: pointer;
+}
+.rt-group-form .rt-template-member:hover:not(:disabled),
+.rt-group-form .rt-template-member-add:hover:not(:disabled) {
+  border-color: var(--mp-muted);
+  background: var(--mp-pill-hover);
+}
+.rt-group-form .rt-template-member-index {
+  flex: none;
+  width: 15px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  text-align: center;
+}
+.rt-group-form .rt-template-member-name {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+.rt-group-form .rt-template-member-name > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rt-group-form .rt-template-member-name small {
+  overflow: hidden;
+  color: var(--mp-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rt-group-form .rt-template-member > svg:last-child {
+  flex: none;
+  color: var(--mp-muted);
+}
+.rt-group-form .rt-template-member-add {
+  width: fit-content;
+  border-style: dashed;
+  color: var(--mp-muted);
+}
 .rt-group-form .rt-member-picker-actions {
   display: flex;
   flex-wrap: wrap;

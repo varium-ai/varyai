@@ -21,6 +21,7 @@ import {
 import { useRoutingDialogHeight } from "@/components/routing/useRoutingDialogHeight";
 import { RoutingRefreshIcon } from "./RoutingRefreshIcon";
 import { RoutingMemberPicker } from "@/components/routing/RoutingMemberPicker";
+import { RoutingTemplateMemberPicker } from "@/components/routing/RoutingTemplateMemberPicker";
 import {
   catalogRoutingMembers,
   routingMemberAvailable,
@@ -968,21 +969,35 @@ export function IntentRoutingPanel({
             data-routing-field="members"
           >
             <h4 className="font-medium">{t("intentRouting.members")}</h4>
-            <RoutingMemberPicker
-              key={draft.id}
-              providers={providers.data ?? []}
-              members={draft.members}
-              disabled={pending}
-              onSelect={(choices, selected) => {
-                const next = selectRoutingMembers(draft, choices, selected);
-                edit(
-                  draftTemplate === "templateCapability" &&
-                    !draftOrderEdited.current
-                    ? recommendDraftOrder(next)
-                    : next,
-                );
-              }}
-            />
+            {draftTemplate ? (
+              <RoutingTemplateMemberPicker
+                providers={providers.data ?? []}
+                members={draft.members}
+                disabled={pending}
+                onChange={(members) => {
+                  const next = withDraftMemberOrder(draft, members);
+                  if (draftTemplate === "templateCapability")
+                    draftOrderEdited.current = true;
+                  edit(next);
+                }}
+              />
+            ) : (
+              <RoutingMemberPicker
+                key={draft.id}
+                providers={providers.data ?? []}
+                members={draft.members}
+                disabled={pending}
+                onSelect={(choices, selected) => {
+                  const next = selectRoutingMembers(draft, choices, selected);
+                  edit(
+                    draftTemplate === "templateCapability" &&
+                      !draftOrderEdited.current
+                      ? recommendDraftOrder(next)
+                      : next,
+                  );
+                }}
+              />
+            )}
           </div>
           {draftTemplate && draftPriority.length > 1 && (
             <div className="rt-setting-row">
