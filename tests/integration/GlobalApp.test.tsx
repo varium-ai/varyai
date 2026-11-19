@@ -31,10 +31,12 @@ vi.mock("@/components/agents/AgentConnectionsPage", () => ({
 vi.mock("@/components/providers/RoutingUpstreamsPanel", () => ({
   RoutingUpstreamsPanel: ({
     onEditingChange,
+    startAdding,
   }: {
     onEditingChange?: (state: { dirty: boolean; busy: boolean }) => void;
+    startAdding?: boolean;
   }) => (
-    <div data-testid="global-providers">
+    <div data-testid="global-providers" data-start-adding={startAdding}>
       <button onClick={() => onEditingChange?.({ dirty: true, busy: false })}>
         Edit fixture draft
       </button>
@@ -42,7 +44,11 @@ vi.mock("@/components/providers/RoutingUpstreamsPanel", () => ({
   ),
 }));
 vi.mock("@/components/routing/RoutingPage", () => ({
-  RoutingPage: () => <div data-testid="global-routes" />,
+  RoutingPage: ({ onAddProvider }: { onAddProvider?: () => void }) => (
+    <div data-testid="global-routes">
+      <button onClick={onAddProvider}>Add provider from routing</button>
+    </div>
+  ),
 }));
 vi.mock("@/components/settings/SettingsPage", () => ({
   SettingsPage: () => <div data-testid="preferences" />,
@@ -199,6 +205,23 @@ describe("Global application shell", () => {
       await screen.findByRole("button", { name: "providerFlow.discard" }),
     );
     expect(await screen.findByTestId("global-routes")).toBeInTheDocument();
+  });
+  it("opens provider setup directly from the routing workspace", async () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "workspaceNav.routing" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add provider from routing" }),
+    );
+    expect(await screen.findByTestId("global-providers")).toHaveAttribute(
+      "data-start-adding",
+      "true",
+    );
   });
   it("opens the Agent page and navigates global resources without an Agent switcher", async () => {
     render(

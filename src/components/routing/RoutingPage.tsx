@@ -26,8 +26,10 @@ function rerouted(row: Row) {
 }
 export function RoutingPage({
   onEditingChange,
+  onAddProvider,
 }: {
   onEditingChange?: (state: EditingState) => void;
+  onAddProvider?: () => void;
 }) {
   const { t } = useTranslation();
   const [masked, setMasked] = useState(false);
@@ -220,6 +222,7 @@ export function RoutingPage({
           showCreateButton={false}
           maskAccounts={masked}
           onEditingChange={onEditingChange}
+          onAddProvider={onAddProvider}
         />
       </div>
     </AccountMask>

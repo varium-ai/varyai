@@ -4976,7 +4976,7 @@
     "patienceWaitHelp": "在任何回覆到達 Agent 前，對暫時性故障繼續重試最多 {{seconds}} 秒，並遵守供應商要求的等待時間。",
     "contextSmallestHelp": "向 Agent 提供已知成員中最小的上下文視窗，讓它在任何成員空間不足前壓縮對話。",
     "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的視窗；更長的對話仍可交給空間足夠的成員。",
-    "templateMemberAdd": "新增供應商或模型"
+    "templateMemberAdd": "新增模型"
   },
   "workspaceNav": {
     "label": "工作區導覽",
@@ -5543,6 +5543,10 @@
     "applyRecommendedModelOrder": "依建議順序排列",
     "templateCustom": "自訂",
     "templateCustomHint": "自行選擇模型、順序及規則。",
+    "cannotCreateGroup": "無法建立路由群組",
+    "noAvailableModels": "目前沒有可用於路由的模型。請先新增供應商並加入模型，至少有 2 個可用模型後才能建立路由群組。",
+    "oneAvailableModel": "目前只有 1 個可用於路由的模型。請新增供應商或為現有供應商加入模型，至少有 2 個可用模型後才能建立路由群組。",
+    "addProvider": "新增供應商",
     "addTemplate": "新增",
     "editTemplate": "先編輯",
     "templateNeed_provider": "請先新增供應商。",

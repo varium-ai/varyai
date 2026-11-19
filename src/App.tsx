@@ -44,6 +44,10 @@ export default function App() {
     setAddingProvider(false);
     setView(next);
   }
+  function addProvider() {
+    setAddingProvider(true);
+    setView("providers");
+  }
   const navigation = useRef(navigate);
   navigation.current = navigate;
   useEffect(() => {
@@ -118,10 +122,7 @@ export default function App() {
           {view === "agents" && (
             <AgentConnectionsPage
               onEditingChange={setEditor}
-              onAddProvider={() => {
-                setAddingProvider(true);
-                setView("providers");
-              }}
+              onAddProvider={addProvider}
             />
           )}
           {view === "providers" && (
@@ -130,7 +131,12 @@ export default function App() {
               onEditingChange={setEditor}
             />
           )}
-          {view === "routing" && <RoutingPage onEditingChange={setEditor} />}
+          {view === "routing" && (
+            <RoutingPage
+              onEditingChange={setEditor}
+              onAddProvider={addProvider}
+            />
+          )}
           {view === "stats" && (
             <StatisticsPage onOpenSecurity={() => setView("security")} />
           )}

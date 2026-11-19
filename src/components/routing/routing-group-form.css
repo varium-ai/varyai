@@ -585,32 +585,6 @@
   font-size: 11px;
   line-height: 1.45;
 }
-.rt-group-form .rt-template-smart-settings .rt-edit-patterns,
-.rt-group-form .rt-template-smart-settings [data-routing-field="model-lists"],
-.rt-group-form .rt-template-smart-settings [data-routing-field="rate-limits"],
-.rt-group-form
-  .rt-template-smart-settings
-  .rt-execution-picks
-  > .rt-setting-row,
-.rt-group-form
-  .rt-template-smart-settings
-  .rt-execution-picks
-  > .rt-execution-legacy,
-.rt-group-form .rt-template-smart-settings .rt-edit-rules,
-.rt-group-form .rt-template-smart-settings .rt-diagnostics,
-.rt-group-form .rt-template-smart-settings .rt-edit-levels,
-.rt-group-form .rt-template-smart-settings .rt-edit-settings,
-.rt-group-form .rt-template-smart-settings .rt-classifier-advanced,
-.rt-group-form
-  .rt-template-smart-settings
-  .rt-edit-routing
-  > fieldset
-  > .rt-diagnostics {
-  display: none;
-}
-.rt-group-form .rt-template-smart-settings .rt-template-smart-summary {
-  display: none;
-}
 .rt-group-form .rt-template-rules-field {
   margin-top: 2px;
 }
@@ -681,12 +655,42 @@
   min-width: 0;
   gap: 6px;
 }
+.rt-group-form .rt-template-member-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rt-group-form .rt-template-member-row,
+.rt-group-form .rt-template-member-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+.rt-group-form .rt-template-member-row {
+  padding-block: 3px;
+}
+.rt-group-form .rt-template-member-grip {
+  color: var(--mp-muted);
+  cursor: grab;
+  touch-action: none;
+}
+.rt-group-form .rt-template-member-list.rt-sorting .rt-template-member-grip {
+  cursor: grabbing;
+}
+.rt-group-form .rt-template-member-grip:disabled {
+  cursor: default;
+}
+.rt-group-form .rt-template-member-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .rt-group-form .rt-template-member,
 .rt-group-form .rt-template-member-add {
   display: flex;
   align-items: center;
   min-width: 0;
-  width: min(100%, 520px);
   min-height: 32px;
   gap: 8px;
   padding: 5px 9px;
@@ -697,6 +701,10 @@
   font: 400 12px/1.4 var(--mp-font);
   text-align: left;
   cursor: pointer;
+}
+.rt-group-form .rt-template-member {
+  flex: 1;
+  max-width: 520px;
 }
 .rt-group-form .rt-template-member:hover:not(:disabled),
 .rt-group-form .rt-template-member-add:hover:not(:disabled) {

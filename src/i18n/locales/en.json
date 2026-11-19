@@ -5049,7 +5049,7 @@
     "patienceWaitHelp": "Before any reply reaches the Agent, retry temporary failures within a further {{seconds}} seconds, respecting the provider’s retry delay.",
     "contextSmallestHelp": "Offer the smallest known model window so the Agent compacts before any member runs out of room.",
     "contextCustomHelp": "Offer {{tokens}} tokens to the Agent. Longer conversations can still use a member with enough room.",
-    "templateMemberAdd": "Add a provider or model"
+    "templateMemberAdd": "Add model"
   },
   "workspaceNav": {
     "label": "Workspace navigation",
@@ -5620,6 +5620,10 @@
     "applyRecommendedModelOrder": "Apply recommended order",
     "templateCustom": "Custom",
     "templateCustomHint": "Choose your own models, order and rules.",
+    "cannotCreateGroup": "Cannot create routing group",
+    "noAvailableModels": "No models are available for routing. Add a provider with models. You need at least two available models to create a routing group.",
+    "oneAvailableModel": "Only one model is available for routing. Add a provider or another model to an existing provider. You need at least two available models to create a routing group.",
+    "addProvider": "Add provider",
     "addTemplate": "Add",
     "editTemplate": "Edit first",
     "templateNeed_provider": "Add a provider first.",

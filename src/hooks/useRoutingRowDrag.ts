@@ -159,7 +159,7 @@ export function useRoutingRowDrag(
       handle.removeEventListener("lostpointercapture", cancel);
       window.removeEventListener("blur", cancel);
       window.removeEventListener("resize", cancel);
-      document.removeEventListener("keydown", key, true);
+      window.removeEventListener("keydown", key, true);
       list?.classList.remove("rt-sorting");
       slots[from].classList.remove("rt-drag-lift");
       slots.forEach((slot, index) => {
@@ -259,7 +259,8 @@ export function useRoutingRowDrag(
     handle.addEventListener("lostpointercapture", cancel);
     window.addEventListener("blur", cancel);
     window.addEventListener("resize", cancel);
-    document.addEventListener("keydown", key, true);
+    // Cancel a drag before a modal's document-level Escape handler sees it.
+    window.addEventListener("keydown", key, true);
     stop.current = cleanup;
   }
   function consumeClick(id: string) {

@@ -83,11 +83,15 @@ function mount(
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   }),
   maskAccounts = false,
+  onAddProvider?: () => void,
 ) {
   return render(
     <QueryClientProvider client={client}>
       <div role="tabpanel" tabIndex={0}>
-        <IntentRoutingPanel maskAccounts={maskAccounts} />
+        <IntentRoutingPanel
+          maskAccounts={maskAccounts}
+          onAddProvider={onAddProvider}
+        />
       </div>
     </QueryClientProvider>,
   );
@@ -105,6 +109,21 @@ const chooseCustom = () =>
   fireEvent.click(
     screen.getByRole("button", { name: "routingPage.templateCustom" }),
   );
+
+function mockTwoTaskModels() {
+  vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+    {
+      id: "provider",
+      name: "Fixture provider",
+      taskEligible: true,
+      classifierEligible: false,
+      models: [
+        { id: "fixture-model", name: "Fixture model" },
+        { id: "another-model", name: "Another model" },
+      ],
+    },
+  ]);
+}
 
 describe("IntentRoutingPanel", () => {
   it("unlocks an acknowledged group toggle while catalog queries are still pending", async () => {
@@ -397,6 +416,7 @@ describe("IntentRoutingPanel", () => {
   });
 
   it("puts models under the name without a strategy selector and keeps rate-limit help", async () => {
+    mockTwoTaskModels();
     mount();
     await screen.findByText("Fixture group");
     fireEvent.click(
@@ -810,7 +830,7 @@ describe("IntentRoutingPanel", () => {
       ),
     );
   });
-  it("shows missing template requirements as guidance while allowing draft creation", async () => {
+  it("shows missing template requirements without disabling the chooser", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [],
       autoCreate: false,
@@ -835,6 +855,68 @@ describe("IntentRoutingPanel", () => {
       screen.queryByText("routingPage.templateFallback"),
     ).not.toBeInTheDocument();
   });
+  it.each([0, 1])(
+    "warns on choosing a template or Custom with %i available models",
+    async (count) => {
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+        {
+          id: "task",
+          name: "Synthetic task provider",
+          taskEligible: true,
+          classifierEligible: false,
+          models: count ? [{ id: "only", name: "Only task model" }] : [],
+        },
+        {
+          id: "classifier",
+          name: "Synthetic classifier provider",
+          taskEligible: false,
+          classifierEligible: true,
+          models: [{ id: "classify", name: "Classifier only" }],
+        },
+      ]);
+      const addProvider = vi.fn();
+      mount(undefined, false, addProvider);
+      const user = userEvent.setup();
+      const create = screen.getByRole("button", {
+        name: "intentRouting.create",
+      });
+      await waitFor(() => expect(create).toBeEnabled());
+      await user.click(create);
+      const title = "routingPage.cannotCreateGroup";
+      expect(
+        screen.getByRole("dialog", { name: "routingPage.templates" }),
+      ).toBeVisible();
+      expect(screen.queryByRole("dialog", { name: title })).toBeNull();
+      const template = screen.getByRole("button", {
+        name: "routingPage.templateSmart",
+      });
+      await user.click(template);
+      const warning = screen.getByRole("dialog", { name: title });
+      expect(warning).toHaveAccessibleDescription(
+        count
+          ? "routingPage.oneAvailableModel"
+          : "routingPage.noAvailableModels",
+      );
+      expect(screen.queryByRole("form")).toBeNull();
+      await user.click(
+        within(warning).getByRole("button", { name: "common.cancel" }),
+      );
+      await waitFor(() => expect(template).toHaveFocus());
+      expect(addProvider).not.toHaveBeenCalled();
+      await user.click(
+        screen.getByRole("button", { name: "routingPage.templateCustom" }),
+      );
+      await user.click(
+        within(screen.getByRole("dialog", { name: title })).getByRole(
+          "button",
+          { name: "routingPage.addProvider" },
+        ),
+      );
+      expect(addProvider).toHaveBeenCalledOnce();
+      expect(intentRoutingApi.save).not.toHaveBeenCalled();
+      expect(screen.queryByRole("form")).toBeNull();
+    },
+  );
   it.each([
     "templateSmart",
     "templateCapability",
@@ -923,9 +1005,20 @@ describe("IntentRoutingPanel", () => {
           name: `routingPage.${key}`,
         });
         expect(dialog).toContainElement(screen.getByRole("form"));
+        expect(
+          within(dialog).queryByText("routingPage.modelOrder"),
+        ).not.toBeInTheDocument();
         if (key === "templateSmart") {
           expect(
             within(dialog).queryByText("intentRouting.advancedSettings"),
+          ).not.toBeInTheDocument();
+          const classifier = within(dialog).getByRole("button", {
+            name: "routingPage.intentToldBy",
+          });
+          expect(classifier).toBeVisible();
+          expect(classifier.closest("details")).toBeNull();
+          expect(
+            within(dialog).queryByText("intentRouting.members"),
           ).not.toBeInTheDocument();
           expect(
             within(dialog).getByText("routingPage.templateSmartRules"),
@@ -945,7 +1038,7 @@ describe("IntentRoutingPanel", () => {
           `routingPage.${key}`,
         );
         expect(dialog.querySelectorAll(".rt-template-member")).toHaveLength(
-          Math.min(expected.members.length, 3),
+          key === "templateSmart" ? 0 : Math.min(expected.members.length, 3),
         );
         expect(
           screen.queryByRole("radiogroup", {
@@ -1029,6 +1122,200 @@ describe("IntentRoutingPanel", () => {
       );
     },
   );
+  it("chooses smart rule targets independently from the full task catalog", async () => {
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "task",
+        name: "Synthetic task provider",
+        taskEligible: true,
+        classifierEligible: false,
+        models: [
+          { id: "strong", name: "Strong", maker: true, outputPrice: 12 },
+          { id: "cheap", name: "Cheap", maker: true, outputPrice: 1 },
+          { id: "extra", name: "Extra", outputPrice: 12 },
+          { id: "alternate", name: "Alternate", outputPrice: 12 },
+        ],
+      },
+      {
+        id: "classifier",
+        name: "Synthetic classifier provider",
+        taskEligible: false,
+        classifierEligible: true,
+        models: [{ id: "classify", name: "Classify" }],
+      },
+    ]);
+    mount();
+    const user = userEvent.setup();
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.templateSmart" }),
+    );
+    const target = (rule: string) =>
+      screen.getByRole("button", {
+        name: `intentRouting.target routingPage.templateSmart${rule}Rule`,
+      });
+    const pick = async (rule: string, model: string) => {
+      await user.click(target(rule));
+      expect(screen.queryByRole("radio", { name: /Classify/ })).toBeNull();
+      await user.click(screen.getByRole("radio", { name: new RegExp(model) }));
+      expect(target(rule)).toHaveTextContent(model);
+    };
+    await pick("Hard", "Extra");
+    await pick("Easy", "Alternate");
+    await pick("Easy", "Extra");
+    expect(target("Compact")).toHaveTextContent("Strong");
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.intentToldBy" }),
+    );
+    await user.click(screen.getByRole("radio", { name: /Classify/ }));
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(saved.classifierTarget).toEqual({
+      providerId: "classifier",
+      modelId: "classify",
+    });
+    expect(saved.members.map(({ modelId }) => modelId)).toEqual([
+      "strong",
+      "cheap",
+      "extra",
+    ]);
+    const extra = saved.members.find(({ modelId }) => modelId === "extra")!;
+    expect(
+      saved.rules.slice(1).map(({ targetMemberId }) => targetMemberId),
+    ).toEqual([extra.id, extra.id]);
+  });
+  it("can change the smart template’s default target without a price split", async () => {
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "task",
+        name: "Synthetic task provider",
+        taskEligible: true,
+        classifierEligible: false,
+        models: [
+          { id: "first", name: "First task model", outputPrice: 12 },
+          { id: "second", name: "Second task model", outputPrice: 12 },
+        ],
+      },
+    ]);
+    mount();
+    const user = userEvent.setup();
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.templateSmart" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "intentRouting.defaultTarget" }),
+    );
+    await user.click(screen.getByRole("radio", { name: /Second task model/ }));
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(saved.members).toEqual([
+      expect.objectContaining({ id: saved.defaultMemberId, modelId: "second" }),
+    ]);
+    expect(saved.rules).toEqual([]);
+  });
+  it.each(["templateCapability", "templateSpeed", "templateExpiry"] as const)(
+    "drags a fourth model to the top of %s and saves the visible order",
+    async (key) => {
+      const providers = ["a", "b", "c"].map((id) => ({
+        id,
+        name: `Provider ${id}`,
+        taskEligible: true,
+        classifierEligible: false,
+        models: [
+          { id: `${id}-main`, name: `${id} main`, outputPrice: 20 },
+          ...(id === "a"
+            ? [{ id: "a-extra", name: "Extra model", outputPrice: 1 }]
+            : []),
+        ],
+      }));
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+      mount();
+      const user = userEvent.setup();
+      const create = screen.getByRole("button", {
+        name: "intentRouting.create",
+      });
+      await waitFor(() => expect(create).toBeEnabled());
+      await user.click(create);
+      await user.click(
+        screen.getByRole("button", { name: `routingPage.${key}` }),
+      );
+      const dialog = screen.getByRole("dialog", { name: `routingPage.${key}` });
+      const rows = () => within(dialog).getAllByRole("listitem");
+      expect(rows()).toHaveLength(3);
+      expect(within(dialog).getAllByRole("list")).toHaveLength(1);
+      await user.click(
+        within(dialog).getByRole("button", {
+          name: "intentRouting.templateMemberAdd",
+        }),
+      );
+      expect(screen.getByRole("radio", { name: /a main/ })).toBeDisabled();
+      await user.click(screen.getByRole("radio", { name: /Extra model/ }));
+      expect(rows()).toHaveLength(4);
+      expect(rows()[3]).toHaveTextContent("Extra model");
+      rows().forEach((row, index) =>
+        vi
+          .spyOn(row, "getBoundingClientRect")
+          .mockReturnValue(new DOMRect(0, index * 40, 300, 40)),
+      );
+      const handle = within(rows()[3]).getByRole("button", {
+        name: "agentConnections.dragModel Extra model",
+      });
+      expect(rows()[3].firstElementChild).toBe(handle);
+      const pointer = (target: Node, type: string, y: number) =>
+        fireEvent(
+          target,
+          Object.assign(
+            new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              button: 0,
+              clientY: y,
+            }),
+            { pointerId: 1, isPrimary: true, pointerType: "mouse" },
+          ),
+        );
+      const dragToTop = () => {
+        pointer(handle, "pointerdown", 140);
+        pointer(document, "pointermove", 20);
+      };
+      const list = within(dialog).getByRole("list", {
+        name: "routingPage.modelOrder",
+      });
+      dragToTop();
+      expect(list).toHaveClass("rt-sorting");
+      await user.keyboard("{Escape}");
+      pointer(document, "pointerup", 20);
+      expect(dialog).toHaveAttribute("data-state", "open");
+      expect(list).not.toHaveClass("rt-sorting");
+      expect(rows()[3]).toHaveTextContent("Extra model");
+      expect(intentRoutingApi.save).not.toHaveBeenCalled();
+      dragToTop();
+      pointer(document, "pointerup", 20);
+      expect(rows()[0]).toHaveTextContent("Extra model");
+      expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "common.save" }));
+      await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+      const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+      expect(saved.members.map(({ modelId }) => modelId)).toEqual([
+        "a-extra",
+        "a-main",
+        "b-main",
+        "c-main",
+      ]);
+      expect(saved.defaultMemberId).toBe(saved.members[0].id);
+      expect(saved.fallbackMemberIds).toEqual(
+        saved.members.slice(1).map(({ id }) => id),
+      );
+    },
+  );
+
   it("keeps the template picker compact while preserving ranked members", async () => {
     const models = Array.from({ length: 51 }, (_, index) => ({
       id: `model-${index + 1}`,
@@ -1069,10 +1356,13 @@ describe("IntentRoutingPanel", () => {
     const rows = () => order.getAllByRole("listitem");
     expect(order.getAllByRole("listitem")).toHaveLength(3);
 
-    fireEvent.click(
-      within(rows()[1]).getByRole("button", { name: /^intentRouting.moveUp/ }),
-    );
+    const grip = within(rows()[1]).getByRole("button", {
+      name: "agentConnections.dragModel Model 50",
+    });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: "ArrowUp", altKey: true });
     expect(rows()[0]).toHaveTextContent("Model 50");
+    expect(grip).toHaveFocus();
 
     fireEvent.click(
       screen.getByRole("button", {
@@ -2181,7 +2471,10 @@ describe("IntentRoutingPanel", () => {
         name: "Fixture provider",
         taskEligible: true,
         classifierEligible: false,
-        models: [{ id: "one", name: "One" }],
+        models: [
+          { id: "one", name: "One" },
+          { id: "two", name: "Two" },
+        ],
       },
     ]);
     mount();
@@ -2221,6 +2514,7 @@ describe("IntentRoutingPanel", () => {
     "closes a new group with %s and restores focus without saving",
     async (method) => {
       const user = userEvent.setup();
+      mockTwoTaskModels();
       mount();
       await screen.findByText("Fixture group");
       const trigger = screen.getByRole("button", {
@@ -2326,6 +2620,7 @@ describe("IntentRoutingPanel", () => {
   });
 
   it("confirms discarding changed drafts before editing another group or creating one", async () => {
+    mockTwoTaskModels();
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [group, { ...group, id: "other", name: "Other group" }],
       autoCreate: false,
@@ -3116,6 +3411,7 @@ describe("IntentRoutingPanel", () => {
         omittedGroups: 0,
       };
       vi.mocked(intentRoutingApi.list).mockResolvedValue(snapshot);
+      mockTwoTaskModels();
       let finishList!: (value: typeof snapshot) => void;
       mount();
       const reload = await screen.findByRole("button", {
@@ -3643,7 +3939,10 @@ describe("IntentRoutingPanel", () => {
         name: "Fixture provider",
         taskEligible: true,
         classifierEligible: false,
-        models: [{ id: "exact-model", name: "Exact model" }],
+        models: [
+          { id: "exact-model", name: "Exact model" },
+          { id: "second-model", name: "Second model" },
+        ],
       },
     ]);
     mount();
@@ -3660,6 +3959,7 @@ describe("IntentRoutingPanel", () => {
       target: { value: "New group" },
     });
     expect(screen.getByRole("checkbox", { name: "Exact model" })).toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Second model" }));
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(intentRoutingApi.save).toHaveBeenCalledWith(

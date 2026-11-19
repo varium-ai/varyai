@@ -4,7 +4,6 @@ import {
   CircleAlert,
   CloudDownload,
   ChevronDown,
-  ChevronUp,
   Settings,
   Pencil,
   Trash2,
@@ -113,11 +112,13 @@ function orderGroups(groups: RoutingGroup[], order: string[]) {
 
 export function IntentRoutingPanel({
   onEditingChange,
+  onAddProvider,
   createRequest = 0,
   maskAccounts = false,
   showCreateButton = true,
 }: {
   onEditingChange?: (state: EditingState) => void;
+  onAddProvider?: () => void;
   createRequest?: number;
   maskAccounts?: boolean;
   showCreateButton?: boolean;
@@ -154,6 +155,7 @@ export function IntentRoutingPanel({
     [providers.data],
   );
   const [choosingTemplate, setChoosingTemplate] = useState(false);
+  const [modelShortage, setModelShortage] = useState<0 | 1 | null>(null);
   const [filter, setFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const groupDrag = useRoutingRowDrag("data-routing-group", (from, to) => {
@@ -167,7 +169,6 @@ export function IntentRoutingPanel({
   const [patternInput, setPatternInput] = useState("");
   const [draft, setDraft] = useState<RoutingGroup | null>(null);
   const [draftTemplate, setDraftTemplate] = useState<RoutingTemplate["key"]>();
-  const draftOrderEdited = useRef(false);
   const patternsChanged =
     !!draft &&
     (JSON.stringify(draft.match) !==
@@ -398,7 +399,6 @@ export function IntentRoutingPanel({
   }
   function openEditor({ group, template }: EditorRequest) {
     initialDraft.current = structuredClone(group);
-    draftOrderEdited.current = false;
     setDraftTemplate(template);
     setPickingClassifier(false);
     setPatternInput("");
@@ -422,8 +422,20 @@ export function IntentRoutingPanel({
       openEditor(request);
     }
   }
-  function useTemplate(template: ReturnType<typeof routingTemplates>[number]) {
-    if (pending || deleting) return;
+  function useTemplate(template?: RoutingTemplate) {
+    if (pending || deleting || providers.isPending) return;
+    if (providers.data) {
+      const count = catalogRoutingMembers(providers.data).length;
+      if (count === 0 || count === 1) {
+        setModelShortage(count);
+        return;
+      }
+    }
+    setChoosingTemplate(false);
+    if (!template) {
+      requestEditor(newRoutingGroup());
+      return;
+    }
     const name = t(`routingPage.${template.key}`).slice(0, 80);
     const names = new Set(
       groups.data?.groups.map((entry) => entry.name.toLocaleLowerCase()),
@@ -434,7 +446,6 @@ export function IntentRoutingPanel({
       const suffix = ` ${++number}`;
       draftName = `${name.slice(0, 80 - suffix.length)}${suffix}`;
     }
-    setChoosingTemplate(false);
     requestEditor(
       {
         ...template.group,
@@ -852,38 +863,6 @@ export function IntentRoutingPanel({
       (draft.classifierTarget.providerId &&
         draft.classifierTarget.modelId.trim()));
 
-  const draftMembersById = new Map(
-    draft?.members.map((member) => [member.id, member]),
-  );
-  const draftPriority = draft
-    ? [
-        ...new Set([
-          draft.defaultMemberId,
-          ...draft.fallbackMemberIds,
-          ...draftMembersById.keys(),
-        ]),
-      ].filter((id) => draftMembersById.has(id))
-    : [];
-  function moveDraftMember(index: number, offset: number) {
-    if (!draft || pending) return;
-    const priority = [...draftPriority];
-    const next = index + offset;
-    [priority[index], priority[next]] = [priority[next], priority[index]];
-    draftOrderEdited.current = true;
-    edit(
-      withDraftMemberOrder(
-        draft,
-        priority.flatMap((id) => draftMembersById.get(id) ?? []),
-      ),
-    );
-  }
-  function recommendDraftOrder(group: RoutingGroup, members = group.members) {
-    return withDraftMemberOrder(
-      group,
-      recommendRoutingMemberOrder(members, providers.data ?? []),
-    );
-  }
-
   const classifierModels =
     providers.data
       ?.filter((provider) => provider.classifierEligible)
@@ -908,6 +887,87 @@ export function IntentRoutingPanel({
   const classifierName = classifierModels.find(
     (model) => model.id === selectedClassifier,
   );
+  const classifierPicker = draft &&
+    (draft.classifierTarget ||
+      draft.rules.some((rule) => !rule.pause && rule.description.trim())) && (
+      <div className="rt-classifier-pick">
+        <Popover open={pickingClassifier} onOpenChange={setPickingClassifier}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={`rt-cond${draft.classifierTarget ? " on" : ""}`}
+              disabled={pending || draft.routing === "manual"}
+              aria-label={t("routingPage.intentToldBy")}
+            >
+              <AccountLabel>
+                {classifierName
+                  ? `${classifierName.name} · ${classifierName.group}`
+                  : draft.classifierTarget
+                    ? `${draft.classifierTarget.modelId} · ${providers.data?.find((provider) => provider.id === draft.classifierTarget?.providerId)?.name ?? draft.classifierTarget.providerId}`
+                    : t("routingPage.chooseClassifier")}
+              </AccountLabel>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            className="mp-model-popover rt-form-theme"
+            align="start"
+          >
+            <SharedModelPicker
+              models={classifierModels}
+              selected={selectedClassifier ? [selectedClassifier] : []}
+              onPick={(id) => {
+                const chosen = providers.data
+                  ?.filter((provider) => provider.classifierEligible)
+                  .flatMap((provider) =>
+                    (provider.models ?? []).map((model) => ({
+                      id: JSON.stringify([provider.id, model.id]),
+                      providerId: provider.id,
+                      modelId: model.id,
+                    })),
+                  )
+                  .find((model) => model.id === id);
+                if (chosen && !pending && draft.routing !== "manual") {
+                  edit({
+                    ...draft,
+                    intentRecognitionEnabled: true,
+                    classifierTarget: {
+                      providerId: chosen.providerId,
+                      modelId: chosen.modelId,
+                    },
+                  });
+                  setPickingClassifier(false);
+                }
+              }}
+            />
+            {draft.classifierTarget && (
+              <button
+                type="button"
+                className="rt-clear-classifier"
+                onClick={() => {
+                  edit({
+                    ...draft,
+                    classifierTarget: null,
+                    intentRecognitionEnabled: false,
+                  });
+                  setPickingClassifier(false);
+                }}
+              >
+                {t("intentRouting.none")}
+              </button>
+            )}
+          </PopoverContent>
+        </Popover>
+        <span
+          className="rt-info"
+          tabIndex={0}
+          role="img"
+          aria-label={t("intentRouting.classifierNotice")}
+          title={t("intentRouting.classifierNotice")}
+        >
+          <Info size={14} />
+        </span>
+      </div>
+    );
   const editorActions = (
     <div className="rt-editor-bar flex gap-2">
       <span className="grow" />
@@ -964,136 +1024,62 @@ export function IntentRoutingPanel({
               onChange={(e) => edit({ ...draft, name: e.target.value })}
             />
           </label>
-          <div
-            className="rt-edit-members"
-            data-routing-list
-            data-routing-field="members"
-          >
-            <h4 className="font-medium">{t("intentRouting.members")}</h4>
-            {draftTemplate ? (
-              <RoutingTemplateMemberPicker
-                providers={providers.data ?? []}
-                members={draft.members}
-                disabled={pending}
-                onChange={(members) => {
-                  const next = withDraftMemberOrder(draft, members);
-                  if (draftTemplate === "templateCapability")
-                    draftOrderEdited.current = true;
-                  edit(next);
-                }}
-              />
-            ) : (
-              <RoutingMemberPicker
-                key={draft.id}
-                providers={providers.data ?? []}
-                members={draft.members}
-                disabled={pending}
-                onSelect={(choices, selected) => {
-                  const next = selectRoutingMembers(draft, choices, selected);
-                  edit(
-                    draftTemplate === "templateCapability" &&
-                      !draftOrderEdited.current
-                      ? recommendDraftOrder(next)
-                      : next,
-                  );
-                }}
-              />
-            )}
-          </div>
-          {draftTemplate === "templateSmart" && (
+          {draftTemplate === "templateSmart" ? (
             <div className="rt-setting-row rt-template-rules-field">
               <h4 className="text-sm font-medium">
                 {t("routingPage.templateSmartRules")}
               </h4>
               <RoutingTemplateRuleTargets
                 providers={providers.data ?? []}
-                members={draft.members}
-                rules={draft.rules}
+                group={draft}
                 disabled={pending}
-                onChange={(rules) => edit({ ...draft, rules })}
+                onChange={edit}
               />
             </div>
-          )}
-          {draftTemplate && draftPriority.length > 1 && (
-            <div className="rt-setting-row">
-              <h4 className="text-sm font-medium">
-                {t("routingPage.modelOrder")}
-              </h4>
-              {draftTemplate === "templateCapability" && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="justify-self-start"
-                  disabled={pending || !providers.data?.length}
-                  onClick={() => {
-                    draftOrderEdited.current = false;
-                    const recommended = recommendDraftOrder(
-                      draft,
-                      draftPriority.flatMap(
-                        (id) => draftMembersById.get(id) ?? [],
-                      ),
-                    );
-                    if (
-                      recommended.members.some(
-                        ({ id }, index) => id !== draftPriority[index],
-                      )
-                    )
-                      edit(recommended);
-                  }}
-                >
-                  {t("routingPage.applyRecommendedModelOrder")}
-                </Button>
+          ) : (
+            <div
+              className="rt-edit-members"
+              data-routing-list
+              data-routing-field="members"
+            >
+              <h4 className="font-medium">{t("intentRouting.members")}</h4>
+              {draftTemplate ? (
+                <RoutingTemplateMemberPicker
+                  providers={providers.data ?? []}
+                  members={draft.members}
+                  disabled={pending}
+                  onChange={(members) =>
+                    edit(withDraftMemberOrder(draft, members))
+                  }
+                  onRecommendOrder={
+                    draftTemplate === "templateCapability"
+                      ? () => {
+                          const recommended = recommendRoutingMemberOrder(
+                            draft.members,
+                            providers.data ?? [],
+                          );
+                          if (
+                            recommended.some(
+                              (member, index) =>
+                                member !== draft.members[index],
+                            )
+                          )
+                            edit(withDraftMemberOrder(draft, recommended));
+                        }
+                      : undefined
+                  }
+                />
+              ) : (
+                <RoutingMemberPicker
+                  key={draft.id}
+                  providers={providers.data ?? []}
+                  members={draft.members}
+                  disabled={pending}
+                  onSelect={(choices, selected) =>
+                    edit(selectRoutingMembers(draft, choices, selected))
+                  }
+                />
               )}
-              <ol
-                className="max-h-36 overflow-y-auto text-xs"
-                aria-label={t("routingPage.modelOrder")}
-              >
-                {draftPriority.map((id, index) => {
-                  const member = draftMembersById.get(id)!;
-                  const provider = providers.data?.find(
-                    ({ id }) => id === member.providerId,
-                  );
-                  const model = provider?.models?.find(
-                    ({ id }) => id === member.modelId,
-                  );
-                  const name = `${model?.name || member.modelId} · ${provider?.name ?? member.providerId}`;
-                  return (
-                    <li className="flex items-center gap-1" key={id}>
-                      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                        <AccountLabel title>{name}</AccountLabel>
-                      </span>
-                      {([-1, 1] as const).map((offset) => {
-                        const label = t(
-                          offset < 0
-                            ? "intentRouting.moveUp"
-                            : "intentRouting.moveDown",
-                        );
-                        const Icon = offset < 0 ? ChevronUp : ChevronDown;
-                        return (
-                          <Button
-                            key={offset}
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 shrink-0"
-                            aria-label={`${label} ${model?.name || member.modelId}`}
-                            title={label}
-                            disabled={
-                              pending ||
-                              index + offset < 0 ||
-                              index + offset >= draftPriority.length
-                            }
-                            onClick={() => moveDraftMember(index, offset)}
-                          >
-                            <Icon size={13} aria-hidden />
-                          </Button>
-                        );
-                      })}
-                    </li>
-                  );
-                })}
-              </ol>
             </div>
           )}
           {draft.quotaOrder && (
@@ -1106,22 +1092,22 @@ export function IntentRoutingPanel({
             manualSelect(draft, (manualMemberId) =>
               edit({ ...draft, manualMemberId }),
             )}
-          {(!draftTemplate || draftTemplate === "templateSmart") && (
-            <details
-              key={draft.id}
-              open={draftTemplate === "templateSmart"}
-              className={`rt-form-advanced${draftTemplate === "templateSmart" ? " rt-template-smart-settings" : ""}`}
-            >
-              {draftTemplate !== "templateSmart" && (
-                <summary>
-                  <ChevronDown
-                    className="rt-advanced-chevron"
-                    size={13}
-                    aria-hidden
-                  />
-                  <span>{t("intentRouting.advancedSettings")}</span>
-                </summary>
-              )}
+          {draftTemplate === "templateSmart" && classifierPicker && (
+            <div className="rt-edit-classifier">
+              <h4>{t("routingPage.intentToldBy")}</h4>
+              {classifierPicker}
+            </div>
+          )}
+          {!draftTemplate && (
+            <details key={draft.id} className="rt-form-advanced">
+              <summary>
+                <ChevronDown
+                  className="rt-advanced-chevron"
+                  size={13}
+                  aria-hidden
+                />
+                <span>{t("intentRouting.advancedSettings")}</span>
+              </summary>
               <div className="rt-advanced-fields">
                 <div className="rt-edit-patterns" data-routing-field="patterns">
                   <span>{t("intentRouting.matchPatterns")}</span>
@@ -1308,24 +1294,20 @@ export function IntentRoutingPanel({
                   </div>
                 )}
                 <div className="rt-edit-routing">
-                  {!draftTemplate && (
-                    <RoutingExecutionSettings
-                      key={draft.id}
-                      group={draft}
-                      disabled={pending}
-                      memberWindows={draft.members.flatMap((member) => {
-                        const capacity = providers.data
-                          ?.find(
-                            (provider) => provider.id === member.providerId,
-                          )
-                          ?.models?.find(
-                            (model) => model.id === member.modelId,
-                          )?.contextWindow;
-                        return capacity ? [capacity] : [];
-                      })}
-                      onChange={edit}
-                    />
-                  )}
+                  <RoutingExecutionSettings
+                    key={draft.id}
+                    group={draft}
+                    disabled={pending}
+                    memberWindows={draft.members.flatMap((member) => {
+                      const capacity = providers.data
+                        ?.find((provider) => provider.id === member.providerId)
+                        ?.models?.find(
+                          (model) => model.id === member.modelId,
+                        )?.contextWindow;
+                      return capacity ? [capacity] : [];
+                    })}
+                    onChange={edit}
+                  />
                   <fieldset
                     disabled={draft.routing === "manual"}
                     className="min-w-0 space-y-5 disabled:opacity-60"
@@ -1346,103 +1328,10 @@ export function IntentRoutingPanel({
                         onChange={(rules) => edit({ ...draft, rules })}
                       />
                     </div>
-                    {(draft.classifierTarget ||
-                      draft.rules.some(
-                        (rule) => !rule.pause && rule.description.trim(),
-                      )) && (
+                    {classifierPicker && (
                       <div className="rt-edit-classifier">
                         <h4>{t("routingPage.intentToldBy")}</h4>
-                        <div className="rt-classifier-pick">
-                          <Popover
-                            open={pickingClassifier}
-                            onOpenChange={setPickingClassifier}
-                          >
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className={`rt-cond${draft.classifierTarget ? " on" : ""}`}
-                                disabled={pending || draft.routing === "manual"}
-                                aria-label={t("routingPage.intentToldBy")}
-                              >
-                                <AccountLabel>
-                                  {classifierName
-                                    ? `${classifierName.name} · ${classifierName.group}`
-                                    : draft.classifierTarget
-                                      ? `${draft.classifierTarget.modelId} · ${providers.data?.find((provider) => provider.id === draft.classifierTarget?.providerId)?.name ?? draft.classifierTarget.providerId}`
-                                      : t("routingPage.chooseClassifier")}
-                                </AccountLabel>
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              className="mp-model-popover rt-form-theme"
-                              align="start"
-                            >
-                              <SharedModelPicker
-                                models={classifierModels}
-                                selected={
-                                  selectedClassifier ? [selectedClassifier] : []
-                                }
-                                onPick={(id) => {
-                                  const chosen = providers.data
-                                    ?.filter(
-                                      (provider) => provider.classifierEligible,
-                                    )
-                                    .flatMap((provider) =>
-                                      (provider.models ?? []).map((model) => ({
-                                        id: JSON.stringify([
-                                          provider.id,
-                                          model.id,
-                                        ]),
-                                        providerId: provider.id,
-                                        modelId: model.id,
-                                      })),
-                                    )
-                                    .find((model) => model.id === id);
-                                  if (
-                                    chosen &&
-                                    !pending &&
-                                    draft.routing !== "manual"
-                                  ) {
-                                    edit({
-                                      ...draft,
-                                      intentRecognitionEnabled: true,
-                                      classifierTarget: {
-                                        providerId: chosen.providerId,
-                                        modelId: chosen.modelId,
-                                      },
-                                    });
-                                    setPickingClassifier(false);
-                                  }
-                                }}
-                              />
-                              {draft.classifierTarget && (
-                                <button
-                                  type="button"
-                                  className="rt-clear-classifier"
-                                  onClick={() => {
-                                    edit({
-                                      ...draft,
-                                      classifierTarget: null,
-                                      intentRecognitionEnabled: false,
-                                    });
-                                    setPickingClassifier(false);
-                                  }}
-                                >
-                                  {t("intentRouting.none")}
-                                </button>
-                              )}
-                            </PopoverContent>
-                          </Popover>
-                          <span
-                            className="rt-info"
-                            tabIndex={0}
-                            role="img"
-                            aria-label={t("intentRouting.classifierNotice")}
-                            title={t("intentRouting.classifierNotice")}
-                          >
-                            <Info size={14} />
-                          </span>
-                        </div>
+                        {classifierPicker}
                         <details className="rt-classifier-advanced">
                           <summary>
                             {t("routingPage.classifierAdvanced")}
@@ -1766,62 +1655,59 @@ export function IntentRoutingPanel({
                     </div>
                   </div>
                 )}
-                {!draftTemplate && (
-                  <details className="rt-edit-settings">
-                    <summary className="cursor-pointer text-sm text-muted-foreground">
-                      {t("modelPicker.groupSettings")}
-                    </summary>
-                    <div className="mt-3 space-y-4">
-                      <div className="flex items-start justify-between gap-5">
-                        <div className="space-y-1">
-                          <label
-                            htmlFor={`routing-publication-${draft.id}`}
-                            className="text-sm font-medium"
-                          >
-                            {t("intentRouting.publishGateway")}
-                          </label>
-                          <p
-                            id={`routing-publication-help-${draft.id}`}
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t("intentRouting.publishGatewayHelp")}
-                          </p>
-                        </div>
-                        <Switch
-                          className="mp-switch"
-                          id={`routing-publication-${draft.id}`}
-                          aria-describedby={`routing-publication-help-${draft.id}`}
-                          checked={draft.enabled}
-                          disabled={pending}
-                          onCheckedChange={(enabled) =>
-                            edit({ ...draft, enabled })
-                          }
-                        />
-                      </div>
-                      <label className="block space-y-1 text-sm">
-                        {t("intentRouting.defaultTarget")}
-                        <Select
-                          disabled={pending}
-                          value={draft.defaultMemberId}
-                          onValueChange={(value) => {
-                            draftOrderEdited.current = true;
-                            edit({ ...draft, defaultMemberId: value });
-                          }}
+                <details className="rt-edit-settings">
+                  <summary className="cursor-pointer text-sm text-muted-foreground">
+                    {t("modelPicker.groupSettings")}
+                  </summary>
+                  <div className="mt-3 space-y-4">
+                    <div className="flex items-start justify-between gap-5">
+                      <div className="space-y-1">
+                        <label
+                          htmlFor={`routing-publication-${draft.id}`}
+                          className="text-sm font-medium"
                         >
-                          <SelectTrigger
-                            aria-label={t("intentRouting.defaultTarget")}
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>{memberOptions}</SelectContent>
-                        </Select>
-                      </label>
-                      <p className="text-xs text-muted-foreground">
-                        {t("intentRouting.fallbackHelp")}
-                      </p>
+                          {t("intentRouting.publishGateway")}
+                        </label>
+                        <p
+                          id={`routing-publication-help-${draft.id}`}
+                          className="text-xs text-muted-foreground"
+                        >
+                          {t("intentRouting.publishGatewayHelp")}
+                        </p>
+                      </div>
+                      <Switch
+                        className="mp-switch"
+                        id={`routing-publication-${draft.id}`}
+                        aria-describedby={`routing-publication-help-${draft.id}`}
+                        checked={draft.enabled}
+                        disabled={pending}
+                        onCheckedChange={(enabled) =>
+                          edit({ ...draft, enabled })
+                        }
+                      />
                     </div>
-                  </details>
-                )}
+                    <label className="block space-y-1 text-sm">
+                      {t("intentRouting.defaultTarget")}
+                      <Select
+                        disabled={pending}
+                        value={draft.defaultMemberId}
+                        onValueChange={(value) => {
+                          edit({ ...draft, defaultMemberId: value });
+                        }}
+                      >
+                        <SelectTrigger
+                          aria-label={t("intentRouting.defaultTarget")}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>{memberOptions}</SelectContent>
+                      </Select>
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      {t("intentRouting.fallbackHelp")}
+                    </p>
+                  </div>
+                </details>
               </div>
             </details>
           )}
@@ -2412,7 +2298,7 @@ export function IntentRoutingPanel({
                   className="text primary"
                   aria-label={t(`routingPage.${template.key}`)}
                   title={template.need ? templateNeed(template) : undefined}
-                  disabled={pending || !!deleting}
+                  disabled={pending || !!deleting || providers.isPending}
                   onClick={() => useTemplate(template)}
                 >
                   {t("routingPage.addTemplate")}
@@ -2428,10 +2314,8 @@ export function IntentRoutingPanel({
                 type="button"
                 className="text primary"
                 aria-label={t("routingPage.templateCustom")}
-                onClick={() => {
-                  setChoosingTemplate(false);
-                  requestEditor(newRoutingGroup());
-                }}
+                disabled={pending || !!deleting || providers.isPending}
+                onClick={() => useTemplate()}
               >
                 {t("routingPage.addTemplate")}
               </button>
@@ -2472,6 +2356,37 @@ export function IntentRoutingPanel({
         {editor}
       </AppDialog>
 
+      <AppDialog
+        open={modelShortage !== null}
+        onOpenChange={(open) => {
+          if (!open) setModelShortage(null);
+        }}
+        zIndex="alert"
+        title={t("routingPage.cannotCreateGroup")}
+        description={t(
+          modelShortage === 1
+            ? "routingPage.oneAvailableModel"
+            : "routingPage.noAvailableModels",
+        )}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setModelShortage(null)}>
+              {t("common.cancel")}
+            </Button>
+            {onAddProvider && (
+              <Button
+                onClick={() => {
+                  setModelShortage(null);
+                  setChoosingTemplate(false);
+                  onAddProvider();
+                }}
+              >
+                {t("routingPage.addProvider")}
+              </Button>
+            )}
+          </>
+        }
+      />
       <ConfirmDialog
         isOpen={confirmBulk}
         title={t("routingPage.removeSelected", {

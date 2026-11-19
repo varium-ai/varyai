@@ -10,135 +10,168 @@ import {
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import type {
   IntentRule,
+  RoutingGroup,
   RoutingMember,
   RoutingProviderOption,
 } from "@/lib/api/intentRouting";
+import { routingMemberKey } from "@/lib/routingMemberSelection";
 
-const templateRules = ["Compaction", "Hard task", "Easy task"] as const;
-const keyOf = (providerId: string, modelId: string) =>
-  JSON.stringify([providerId, modelId]);
+const templateRules = [
+  ["Compaction", "routingPage.templateSmartCompactRule"],
+  ["Hard task", "routingPage.templateSmartHardRule"],
+  ["Easy task", "routingPage.templateSmartEasyRule"],
+] as const;
+const defaultTarget = [[undefined, "intentRouting.defaultTarget"]] as const;
 
 export function RoutingTemplateRuleTargets({
   providers,
-  members,
-  rules,
+  group,
   disabled,
   onChange,
 }: {
   providers: RoutingProviderOption[];
-  members: RoutingMember[];
-  rules: IntentRule[];
+  group: RoutingGroup;
   disabled: boolean;
-  onChange: (rules: IntentRule[]) => void;
+  onChange: (group: RoutingGroup) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<string | null>(null);
-  const models = useMemo<ModelChoice[]>(
-    () =>
-      providers.flatMap((provider) =>
-        (provider.models ?? []).map((model) => ({
-          id: keyOf(provider.id, model.id),
-          reference: model.id,
-          modelId: model.id,
-          name: model.name || model.id,
-          group: provider.name,
-          icon: provider.icon,
-        })),
-      ),
-    [providers],
-  );
+  const { members, rules } = group;
+  const catalog = useMemo(() => {
+    const choices = new Map<
+      string,
+      ModelChoice & { providerId: string; modelId: string }
+    >();
+    for (const provider of providers) {
+      if (!provider.taskEligible) continue;
+      for (const model of provider.models ?? []) {
+        if (!model.id.trim()) continue;
+        const seat = { providerId: provider.id, modelId: model.id };
+        const id = routingMemberKey(seat);
+        if (!choices.has(id))
+          choices.set(id, {
+            ...seat,
+            id,
+            reference: model.id,
+            name: model.name || model.id,
+            group: provider.name,
+            icon: provider.icon,
+          });
+      }
+    }
+    return choices;
+  }, [providers]);
+  const models = Array.from(catalog.values());
   const memberLabel = (member: RoutingMember) => {
     const provider = providers.find(({ id }) => id === member.providerId);
     const model = provider?.models?.find(({ id }) => id === member.modelId);
     return `${model?.name || member.modelId} · ${provider?.name || member.providerId}`;
   };
-  const selectedId = (memberId: string) => {
-    const member = members.find(({ id }) => id === memberId);
-    return member ? keyOf(member.providerId, member.modelId) : "";
-  };
-  const choose = (rule: IntentRule, id: string) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(id);
-    } catch {
-      return;
-    }
-    if (!Array.isArray(parsed) || parsed.length !== 2) return;
-    const [providerId, modelId] = parsed;
-    const member = members.find(
-      (entry) => entry.providerId === providerId && entry.modelId === modelId,
+  const choose = (rule: IntentRule | undefined, id: string) => {
+    const choice = catalog.get(id);
+    if (!choice || disabled) return;
+    const existing = members.find((member) => routingMemberKey(member) === id);
+    const target = existing ?? {
+      id: crypto.randomUUID(),
+      providerId: choice.providerId,
+      modelId: choice.modelId,
+    };
+    const nextRules = rules.map((entry) =>
+      entry.id === rule?.id
+        ? {
+            ...entry,
+            targetMemberId: target.id,
+            fallbackMemberIds: (entry.fallbackMemberIds ?? []).filter(
+              (fallback) => fallback !== target.id,
+            ),
+          }
+        : entry,
     );
-    if (!member) return;
-    onChange(
-      rules.map((entry) =>
-        entry.id === rule.id
-          ? {
-              ...entry,
-              targetMemberId: member.id,
-              fallbackMemberIds: (entry.fallbackMemberIds ?? []).filter(
-                (id) => id !== member.id,
-              ),
-            }
-          : entry,
+    const defaultMemberId = rule ? group.defaultMemberId : target.id;
+    const fallbackMemberIds = group.fallbackMemberIds.filter(
+      (fallback) => fallback !== defaultMemberId,
+    );
+    // The saved group needs a member for each selected target, not for abandoned picks.
+    const referenced = new Set([
+      defaultMemberId,
+      ...fallbackMemberIds,
+      ...nextRules.flatMap((entry) => [
+        entry.targetMemberId,
+        ...(entry.fallbackMemberIds ?? []),
+      ]),
+    ]);
+    onChange({
+      ...group,
+      members: (existing ? members : [...members, target]).filter(({ id }) =>
+        referenced.has(id),
       ),
-    );
+      defaultMemberId,
+      fallbackMemberIds,
+      rules: nextRules,
+    });
     setOpen(null);
   };
   return (
     <div className="rt-template-rule-targets">
-      {templateRules.map((name, index) => {
-        const rule = rules.find((entry) => entry.name === name);
-        if (!rule) return null;
-        const target = members.find(({ id }) => id === rule.targetMemberId);
-        if (!target) return null;
-        const label =
-          name === "Compaction"
-            ? t("routingPage.templateSmartCompactRule")
-            : name === "Hard task"
-              ? t("routingPage.templateSmartHardRule")
-              : t("routingPage.templateSmartEasyRule");
-        return (
-          <div className="rt-template-rule-target" key={rule.id}>
-            <span className="rt-template-rule-number">{index + 1}</span>
-            <span className="rt-template-rule-description">
-              <strong>{label}</strong>
-              <span>
-                {rule.description || t("routingPage.templateRuleDefault")}
+      {(rules.length ? templateRules : defaultTarget).map(
+        ([name, labelKey], index) => {
+          const rule = rules.find((entry) => entry.name === name);
+          if (name && !rule) return null;
+          const rowId = rule?.id ?? "default";
+          const targetId = rule?.targetMemberId ?? group.defaultMemberId;
+          const target = members.find(({ id }) => id === targetId);
+          const label = t(labelKey);
+          return (
+            <div className="rt-template-rule-target" key={rowId}>
+              <span className="rt-template-rule-number">{index + 1}</span>
+              <span className="rt-template-rule-description">
+                <strong>{label}</strong>
+                {rule && (
+                  <span>
+                    {rule.description || t("routingPage.templateRuleDefault")}
+                  </span>
+                )}
               </span>
-            </span>
-            <Popover
-              open={open === rule.id}
-              onOpenChange={(next) => setOpen(next ? rule.id : null)}
-            >
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="rt-template-rule-model"
-                  disabled={disabled}
-                  aria-label={`${t("intentRouting.target")} ${label}`}
-                >
-                  <AccountLabel title>{memberLabel(target)}</AccountLabel>
-                  <ChevronDown size={12} aria-hidden />
-                </button>
-              </PopoverTrigger>
-              <ModelPickerPopoverContent
-                data-variant="agent"
-                onDismiss={() => setOpen(null)}
-                aria-label={label}
+              <Popover
+                open={open === rowId}
+                onOpenChange={(next) => setOpen(next ? rowId : null)}
               >
-                <SharedModelPicker
-                  variant="agent"
-                  models={models}
-                  selected={[selectedId(target.id)]}
-                  disabled={disabled}
-                  onPick={(id) => choose(rule, id)}
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="rt-template-rule-model"
+                    disabled={disabled}
+                    aria-label={
+                      rule ? `${t("intentRouting.target")} ${label}` : label
+                    }
+                  >
+                    <AccountLabel title>
+                      {target
+                        ? memberLabel(target)
+                        : t("agentConnections.pickModel")}
+                    </AccountLabel>
+                    <ChevronDown size={12} aria-hidden />
+                  </button>
+                </PopoverTrigger>
+                <ModelPickerPopoverContent
+                  data-variant="agent"
                   onDismiss={() => setOpen(null)}
-                />
-              </ModelPickerPopoverContent>
-            </Popover>
-          </div>
-        );
-      })}
+                  aria-label={label}
+                >
+                  <SharedModelPicker
+                    variant="agent"
+                    models={models}
+                    selected={target ? [routingMemberKey(target)] : []}
+                    disabled={disabled}
+                    onPick={(id) => choose(rule, id)}
+                    onDismiss={() => setOpen(null)}
+                  />
+                </ModelPickerPopoverContent>
+              </Popover>
+            </div>
+          );
+        },
+      )}
     </div>
   );
 }

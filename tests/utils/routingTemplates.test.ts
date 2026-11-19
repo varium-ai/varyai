@@ -13,7 +13,12 @@ const providers: RoutingProviderOption[] = [
     classifierEligible: true,
     models: [
       { id: "embed-large", name: "Not chat", outputPrice: 99, maker: true },
-      { id: "large-pro", name: "Another model", outputPrice: 101, maker: true },
+      {
+        id: "gpt-5.4-pro",
+        name: "Another model",
+        outputPrice: 101,
+        maker: true,
+      },
       {
         id: "large-old",
         name: "Old",
@@ -96,7 +101,7 @@ it("creates four ordinary group drafts with distinct defaults", () => {
     providerId: "a",
     modelId: "tiny-nano",
   });
-  expect(capability.group.members[0].modelId).toBe("large-pro");
+  expect(capability.group.members[0].modelId).toBe("gpt-5.4-pro");
   expect(speed.group.members[0].modelId).toBe("large");
   expect(expiry.group.members[0].modelId).toBe("large");
   for (const template of [capability, speed, expiry]) {
@@ -267,8 +272,8 @@ it("ranks model tiers first and newer versions within the same family and tier",
   );
   expect(sorted.slice(0, 3)).toEqual([
     "gemini-4-argon",
+    "zai-org/GLM-5.3",
     "gpt-6.2-astra",
-    "gpt-6.2-sol",
   ]);
   expect(sorted.indexOf("gpt-6.2-sol")).toBeLessThan(
     sorted.indexOf("gpt-6.1-sol"),
@@ -289,8 +294,8 @@ it("compares version segments numerically and uses catalog order across families
     { id: "gpt-6.10-sol" },
     { id: "claude-opus-4-6", maker: true },
     { id: "claude-opus-4-8" },
-    { id: "qwen-15-pro", maker: true },
-    { id: "gpt-7-flash", maker: true },
+    { id: "qwen4-max", maker: true },
+    { id: "gpt-7-mini", maker: true },
   ];
   const catalog = [
     {
@@ -307,13 +312,114 @@ it("compares version segments numerically and uses catalog order across families
     recommendRoutingMemberOrder(members, catalog).map(({ modelId }) => modelId),
   ).toEqual([
     "claude-opus-4-8",
-    "qwen-15-pro",
+    "qwen4-max",
     "claude-opus-4-6",
     "gpt-6.10-sol",
     "gpt-6.9-sol",
-    "gpt-7-flash",
+    "gpt-7-mini",
   ]);
 });
+
+it.each([
+  [
+    "OpenAI",
+    ["openai/gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra", "gpt-6-luna"],
+  ],
+  [
+    "Anthropic",
+    [
+      "global.anthropic.claude-fable-5-2",
+      "anthropic.claude-opus-5-5",
+      "anthropic.claude-opus-4-6-v1:0",
+      "claude-sonnet-4-6",
+      "claude-3-5-sonnet-20241022",
+      "claude-haiku-4-5@20251001",
+    ],
+  ],
+  [
+    "Gemini",
+    [
+      "gemini-4-carbon",
+      "gemini-4-neon",
+      "gemini-4-hydrogen",
+      "gemini-3.5-flash-lite",
+    ],
+  ],
+  ["DeepSeek", ["deepseek-v4-pro-0813", "deepseek-flash"]],
+  ["Qwen", ["Qwen/qwen4-max", "qwen3.7-plus", "qwen3.8-flash"]],
+  ["GLM", ["zai-org/GLM-5.3", "glm-5-turbo", "glm-5.3-flashx"]],
+  ["Kimi", ["kimi-k3.1-pro-highspeed", "kimi-k3", "kimi-k2.7-code-highspeed"]],
+  [
+    "Grok",
+    ["grok-4.7-fast", "grok-4.6", "grok-4.3", "grok-4.20-0309-reasoning"],
+  ],
+  ["MiniMax", ["MiniMax-M2.7-highspeed", "MiniMax-M2.5"]],
+  ["Mistral", ["mistral-large-4", "mistral-medium-2508", "mistral-small-2603"]],
+  [
+    "ByteDance Seed",
+    [
+      "doubao-seed-2-1-pro-260628",
+      "dola-seed-2-1-turbo-260628",
+      "doubao-seed-2-0-lite",
+      "seed-2-0-mini",
+    ],
+  ],
+  [
+    "Xiaomi MiMo",
+    [
+      "xiaomi/mimo-v2.6-pro",
+      "mimo-v2.5-pro-ultraspeed",
+      "mimo-v2.5",
+      "mimo-v2-flash",
+    ],
+  ],
+] as const)("uses documented %s model families and editions", (_, ordered) => {
+  const models = [...ordered]
+    .reverse()
+    .map((id) => ({ id, name: `Unrelated display label for ${id}` }));
+  const members = models.map(({ id }) => ({
+    id,
+    modelId: id,
+    providerId: "a",
+  }));
+  const catalog = [{ ...providers[0], models }];
+  expect(
+    recommendRoutingMemberOrder(members, catalog).map(({ modelId }) => modelId),
+  ).toEqual(ordered);
+  expect(
+    routingTemplates(catalog)
+      .find(({ key }) => key === "templateCapability")
+      ?.group.members.map(({ modelId }) => modelId),
+  ).toEqual(ordered.slice(0, 3));
+});
+
+it.each([
+  ["unfamiliar IDs", ["example-fast", "example-pro", "example-8b"]],
+  [
+    "Kimi equivalent serving variants",
+    ["kimi-k3.1-pro-highspeed", "kimi-k3.1-pro"],
+  ],
+  ["MiniMax distinct frontier lines", ["MiniMax-M3.1-Flash", "MiniMax-M3"]],
+  [
+    "Xiaomi equivalent serving variants",
+    ["mimo-v2.5-pro-ultraspeed", "mimo-v2.5-pro"],
+  ],
+  [
+    "unknown editions within a known vendor",
+    ["gpt-6.2-nova-pro", "example-pro"],
+  ],
+] as const)(
+  "preserves metadata ties for %s without treating suffixes as universal",
+  (_, ids) => {
+    for (const order of [ids, [...ids].reverse()]) {
+      const members = order.map((id) => ({ id, modelId: id, providerId: "a" }));
+      const catalog = [
+        { ...providers[0], models: order.map((id) => ({ id, name: id })) },
+      ];
+      expect(recommendRoutingMemberOrder(members, catalog)).toEqual(members);
+    }
+  },
+);
 
 it("skips Codex automatic review models in template suggestions", () => {
   const reviewModels = ["codex-auto-review", "relay/CODEX-AUTO-REVIEW"];

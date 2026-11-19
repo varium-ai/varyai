@@ -4975,7 +4975,7 @@
     "patienceWaitHelp": "返信が Agent に届く前に、提供元の待機時間を守りながら一時的な障害を最大 {{seconds}} 秒間再試行します。",
     "contextSmallestHelp": "既知の最小モデルのウィンドウを Agent に提示し、どのモデルも容量不足になる前に会話を圧縮させます。",
     "contextCustomHelp": "Agent に {{tokens}} トークンのウィンドウを提示します。より長い会話も、十分な容量のあるモデルを利用できます。",
-    "templateMemberAdd": "プロバイダーまたはモデルを追加"
+    "templateMemberAdd": "モデルを追加"
   },
   "workspaceNav": {
     "label": "ワークスペースのナビゲーション",
@@ -5542,6 +5542,10 @@
     "applyRecommendedModelOrder": "推奨順に並べ替え",
     "templateCustom": "カスタム",
     "templateCustomHint": "モデル、順番、ルールを自分で指定します。",
+    "cannotCreateGroup": "ルーティンググループを作成できません",
+    "noAvailableModels": "ルーティングに使えるモデルがありません。プロバイダーとモデルを追加してください。グループを作成するには、利用可能なモデルが2つ以上必要です。",
+    "oneAvailableModel": "ルーティングに使えるモデルが1つしかありません。プロバイダーを追加するか、既存のプロバイダーにモデルを追加してください。グループを作成するには、利用可能なモデルが2つ以上必要です。",
+    "addProvider": "プロバイダーを追加",
     "addTemplate": "追加",
     "editTemplate": "先に編集",
     "templateNeed_provider": "先にプロバイダーを追加してください。",

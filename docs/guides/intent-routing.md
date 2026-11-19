@@ -4,7 +4,7 @@
 
 The routing page header provides a primary **Create group** action and the account visibility toggle. Global routing groups appear below the live overview, without a duplicate creation action in the group toolbar.
 
-Catalog refresh updates available models without inserting per-provider refresh results into the group list. **Create group** opens the template chooser from an empty or populated list. Each template opens the group editor with the available suggestions. Missing models or classifier support, and a loading or failed catalog, do not disable opening the editor. Requirement messages remain visible as guidance. Users can fill in the models and other missing configuration in the draft; Save still validates the configuration, and Cancel creates nothing.
+Catalog refresh updates available models without inserting per-provider refresh results into the group list. **Create group** opens the template chooser from an empty or populated list. After the catalog loads, selecting a template or **Custom** with fewer than two available task models opens a warning instead of a draft. **Cancel** returns to the chooser, and **Add provider** in the routing workspace opens provider setup. Models from the same provider can count separately; classifier-only models do not count. Template-specific requirements remain visible as guidance, and saving still validates the draft.
 
 Open **Plans / Routing** from the sidebar. Manage independent global connections in **Models / Providers**, then connect clients from **Tools / Agents**. Groups retain stable resource IDs and exact model IDs; no Agent owns a newly added API provider. Existing Agent-owned configurations remain reference-only compatibility sources. The shared native-client catalog and authenticated external gateway access are separate consumers of these resources. See [Shared catalog](../architecture/shared-catalog.md) and [Routing observations](../architecture/routing-observations.md) for the current control plane; [reference parity](../design/reference-parity.md) records remaining differences rather than claiming complete parity.
 
@@ -87,15 +87,21 @@ Click the group name, member summary, blank row space or **Edit** to open its ed
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
 
-Choose one of four templates or **Custom** in **Create group**. In a template
-draft, edit the name, models and model order before saving a normal group.
-The three operational templates hide **Advanced settings** in their drafts,
-which save with the template's preset settings. The task-classification
-template keeps its rules, intent classifier and classification trial visible
-because those controls are the template itself. Use **Custom** or reopen a
-saved group to edit the remaining advanced settings. Cancel discards the
-draft. Templates can be opened while the model catalog is unavailable, but
-require at least one model before saving.
+Choose one of four templates or **Custom** in **Create group**. Template drafts
+hide **Advanced settings** and save with the template's preset settings. The
+task-classification draft has no separate member or model-order controls: choose
+a task model directly for each rule, or choose the default model when there is
+no automatic task split. Choose the classifier separately in **Intent told by**.
+The other three templates prefill up to three model members. The member list
+itself shows the starting order. Drag the grip at the left of a row to move it,
+or focus the grip and press Alt+↑/↓. The move buttons are also available. Escape
+cancels an active drag without closing the editor. **Add model** appends another
+eligible model, including another model from the same provider, without
+rearranging existing members. The three-model
+limit applies only to the initial suggestions. Use **Custom** or reopen a saved
+group to edit advanced settings or run a classification trial. Cancel discards
+the draft. The chooser waits for the initial model catalog load before opening
+an editor.
 
 - **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
   the suggested primary, fallback and cheaper model. Image requests with
@@ -106,16 +112,16 @@ require at least one model before saving.
   Automatic suggestions skip the Codex automatic approval review model.
   Use a model that serves Chat Completions when customizing the intent
   classifier in a saved group.
-- **Most capable first.** The draft starts with up to three suggested members.
-  Changing the selection keeps the recommended order. Moving a model manually
-  preserves that order for the rest of the edit.
-  Select **Apply recommended order** to resume automatic ranking.
-  Recognizable model names put flagship variants before
-  standard variants and lightweight variants last. Within the same family
-  and tier, higher versions come first. Across families, the recommendation
-  uses catalog information. Models outside the template catalog go last.
-  The action makes no model requests. Adjust the list before saving. The
-  first member becomes the default and the rest become fallbacks in order.
+- **Most capable first.** The initial list follows the template's recommendation.
+  Replacing a model keeps its position. Select **Apply recommended order** to
+  rank the current members again.
+  [Vendor naming rules](routing-model-naming.md) distinguish flagship,
+  standard, and efficiency lines. Within a family and tier, known editions
+  and numeric versions set the order. Across families, catalog metadata
+  sets the order rather than a benchmark score. Unknown names remain neutral,
+  and models outside the template catalog go last. The action makes no model
+  requests. Adjust the list before saving. The first member becomes the
+  default and the rest become fallbacks in order.
 - **Fastest first.** Choose models whose outputs you can use. Recent time to
   first content and output speed drive new selections. Without measurements,
   the model order provides the starting point.
@@ -126,8 +132,7 @@ require at least one model before saving.
   account uses the same calculation for its short window. A full 5-hour
   window makes the account unavailable for new selections.
 - **Custom.** Use the regular group editor to select models and set a default
-  member or rules in Advanced settings. The model order list appears while
-  reviewing a template draft.
+  member or rules in Advanced settings.
 
 The editor and tray no longer expose a scheduling selector. Existing group
 settings and legacy imports remain readable and retain their saved behavior.

@@ -5,6 +5,7 @@ import type {
   RoutingMember,
   RoutingProviderOption,
 } from "./api/intentRouting";
+import { routingCapabilityNaming } from "./routingCapabilityNaming";
 import { routingMemberKey } from "./routingMemberSelection";
 import { compareVersions } from "./version";
 
@@ -901,35 +902,26 @@ function rankCapabilityCandidates<T extends TemplateCandidate>(
 ) {
   const ranked = candidates
     .map((candidate) => {
-      const name = (
-        candidate.model.id.toLowerCase().split("/").at(-1) ?? ""
-      ).split(":")[0];
-      const words = name.split(/[-_.]+/);
-      const flagship =
-        words.some((word) => /^(flagship|opus|pro|ultra|max)$/.test(word)) ||
-        (name.startsWith("gpt-") && words.includes("astra")) ||
-        (name.startsWith("gemini-") && words.includes("argon"));
-      const tier = flagship ? 2 : candidate.small ? 0 : 1;
-      const version =
-        /^([a-z]+(?:-[a-z]+)*?)-?v?(\d{1,2})(?:[.-](\d{1,2}))?(?:[.-](\d{1,2}))?(?=$|[-_])/.exec(
-          name,
-        );
+      const { family, ...naming } = routingCapabilityNaming(candidate.model.id);
       return {
         candidate,
-        tier,
-        family: version ? `${tier}:${version[1]}` : "",
-        version: version
-          ? `${version[2]}.${version[3] ?? 0}.${version[4] ?? 0}`
-          : "",
+        ...naming,
+        family: family && `${naming.tier}:${family}`,
       };
     })
-    .sort(
-      (a, b) =>
-        b.tier - a.tier || compareTemplateCandidates(a.candidate, b.candidate),
-    );
+    .sort((a, b) => {
+      const left = a.candidate;
+      const right = b.candidate;
+      return (
+        b.tier - a.tier ||
+        Number(right.maker) - Number(left.maker) ||
+        Number((right.out ?? 0) >= 10) - Number((left.out ?? 0) >= 10) ||
+        (right.model.released ?? "").localeCompare(left.model.released ?? "")
+      );
+    });
 
-  // Keep the catalog's positions across families. Newer versions take the
-  // earlier positions within their own family and tier.
+  // Keep the catalog's positions across families. Within each family and tier,
+  // apply documented edition preferences and numeric versions.
   const families = new Map<string, typeof ranked>();
   for (const entry of ranked) {
     if (!entry.family) continue;
@@ -938,10 +930,17 @@ function rankCapabilityCandidates<T extends TemplateCandidate>(
     families.set(entry.family, family);
   }
   for (const family of families.values()) {
-    family.sort((a, b) => compareVersions(b.version, a.version)).reverse();
+    family
+      .sort(
+        (a, b) =>
+          b.preference - a.preference || compareVersions(b.version, a.version),
+      )
+      .reverse();
   }
   return ranked.map(
-    (entry) => (families.get(entry.family)?.pop() ?? entry).candidate,
+    (entry) =>
+      (entry.family ? (families.get(entry.family)?.pop() ?? entry) : entry)
+        .candidate,
   );
 }
 
