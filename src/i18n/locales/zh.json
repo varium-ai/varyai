@@ -5619,6 +5619,7 @@
     "addTemplate": "添加",
     "editTemplate": "先编辑",
     "templateNeed_provider": "请先添加供应商。",
+    "templateNeed_providers": "请至少添加两个供应商的模型。",
     "templateNeed_classifier": "在高级设置中选择支持意图分类的模型，即可启用任务分流。",
     "ruleActions": "规则 {{n}} 的操作",
     "moveRule": "移动规则 {{n}}",

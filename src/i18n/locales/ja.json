@@ -5545,6 +5545,7 @@
     "addTemplate": "追加",
     "editTemplate": "先に編集",
     "templateNeed_provider": "先にプロバイダーを追加してください。",
+    "templateNeed_providers": "少なくとも2つのプロバイダーのモデルを追加してください。",
     "templateNeed_classifier": "詳細設定で意図分類に対応するモデルを選ぶと、タスクの振り分けを有効にできます。",
     "ruleActions": "ルール {{n}} の操作",
     "moveRule": "ルール {{n}} を移動",

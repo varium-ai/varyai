@@ -89,10 +89,13 @@ Use **Manage** beside **Refresh** only for list selection and bulk removal. It d
 
 Choose one of four templates or **Custom** in **Create group**. In a template
 draft, edit the name, models and model order before saving a normal group.
-**Advanced settings** are hidden in template drafts, which save with the
-template's preset settings. Use **Custom** or reopen a saved group to edit
-advanced settings. Cancel discards the draft. Templates can be opened while
-the model catalog is unavailable, but require at least one model before saving.
+The three operational templates hide **Advanced settings** in their drafts,
+which save with the template's preset settings. The task-classification
+template keeps its rules, intent classifier and classification trial visible
+because those controls are the template itself. Use **Custom** or reopen a
+saved group to edit the remaining advanced settings. Cancel discards the
+draft. Templates can be opened while the model catalog is unavailable, but
+require at least one model before saving.
 
 - **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
   the suggested primary, fallback and cheaper model. Image requests with

@@ -923,9 +923,18 @@ describe("IntentRoutingPanel", () => {
           name: `routingPage.${key}`,
         });
         expect(dialog).toContainElement(screen.getByRole("form"));
-        expect(
-          within(dialog).queryByText("intentRouting.advancedSettings"),
-        ).not.toBeInTheDocument();
+        if (key === "templateSmart") {
+          expect(
+            within(dialog).queryByText("intentRouting.advancedSettings"),
+          ).not.toBeInTheDocument();
+          expect(
+            within(dialog).getByText("intentRouting.rules"),
+          ).toBeInTheDocument();
+        } else {
+          expect(
+            within(dialog).queryByText("intentRouting.advancedSettings"),
+          ).not.toBeInTheDocument();
+        }
         expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
           `routingPage.${key}`,
         );

@@ -809,7 +809,7 @@ export interface RoutingTemplate {
     | "templateCapability"
     | "templateSpeed"
     | "templateExpiry";
-  need?: "provider" | "classifier";
+  need?: "provider" | "providers" | "classifier";
   group: RoutingGroup;
 }
 
@@ -883,6 +883,15 @@ function compareTemplateCandidates(a: TemplateCandidate, b: TemplateCandidate) {
     Number(b.maker) - Number(a.maker) ||
     Number(a.small) - Number(b.small) ||
     Number((b.out ?? 0) >= 10) - Number((a.out ?? 0) >= 10) ||
+    (b.model.released ?? "").localeCompare(a.model.released ?? "")
+  );
+}
+
+function compareSpeedCandidates(a: TemplateCandidate, b: TemplateCandidate) {
+  return (
+    Number(b.maker) - Number(a.maker) ||
+    Number((b.out ?? 0) >= 10) - Number((a.out ?? 0) >= 10) ||
+    Number(a.small) - Number(b.small) ||
     (b.model.released ?? "").localeCompare(a.model.released ?? "")
   );
 }
@@ -977,6 +986,17 @@ function pickTemplateMembers(ranked: TemplateCandidate[]) {
   ].slice(0, 3);
 }
 
+function pickSpeedTemplateMembers(ranked: TemplateCandidate[]) {
+  const seen = new Set<string>();
+  return ranked
+    .filter((candidate) => {
+      if (seen.has(candidate.provider.id)) return false;
+      seen.add(candidate.provider.id);
+      return true;
+    })
+    .slice(0, 3);
+}
+
 export function routingTemplates(
   providers: RoutingProviderOption[],
 ): RoutingTemplate[] {
@@ -999,6 +1019,14 @@ export function routingTemplates(
         candidate.model.id === best.model.id,
     );
   const recommended = pickTemplateMembers(strongest);
+  // Magpie's Fast template uses the strongest eligible model from each
+  // provider and omits models priced above its $100/M output ceiling. Keep
+  // that ceiling local to the speed template; capability recommendations
+  // still expose every catalog model for explicit user selection.
+  const speedEligible = strongest
+    .filter((candidate) => candidate.out == null || candidate.out <= 100)
+    .sort(compareSpeedCandidates);
+  const speedRecommended = pickSpeedTemplateMembers(speedEligible);
   return (
     [
       "templateSmart",
@@ -1017,6 +1045,9 @@ export function routingTemplates(
     };
     const result: RoutingTemplate = { key, group };
     if (!best) return { ...result, need: "provider" };
+    if (key === "templateSpeed" && speedRecommended.length < 2) {
+      return { ...result, need: "providers" };
+    }
     const split = key === "templateSmart";
     const selected = split
       ? [
@@ -1026,7 +1057,9 @@ export function routingTemplates(
         ]
       : key === "templateCapability"
         ? pickTemplateMembers(rankCapabilityCandidates(strongest))
-        : recommended;
+        : key === "templateSpeed"
+          ? speedRecommended
+          : recommended;
     group.members = selected.map(({ provider, model }) => ({
       id: crypto.randomUUID(),
       providerId: provider.id,

@@ -1075,16 +1075,22 @@ export function IntentRoutingPanel({
             manualSelect(draft, (manualMemberId) =>
               edit({ ...draft, manualMemberId }),
             )}
-          {!draftTemplate && (
-            <details key={draft.id} className="rt-form-advanced">
-              <summary>
-                <ChevronDown
-                  className="rt-advanced-chevron"
-                  size={13}
-                  aria-hidden
-                />
-                <span>{t("intentRouting.advancedSettings")}</span>
-              </summary>
+          {(!draftTemplate || draftTemplate === "templateSmart") && (
+            <details
+              key={draft.id}
+              open={draftTemplate === "templateSmart"}
+              className={`rt-form-advanced${draftTemplate === "templateSmart" ? " rt-template-smart-settings" : ""}`}
+            >
+              {draftTemplate !== "templateSmart" && (
+                <summary>
+                  <ChevronDown
+                    className="rt-advanced-chevron"
+                    size={13}
+                    aria-hidden
+                  />
+                  <span>{t("intentRouting.advancedSettings")}</span>
+                </summary>
+              )}
               <div className="rt-advanced-fields">
                 <div className="rt-edit-patterns" data-routing-field="patterns">
                   <span>{t("intentRouting.matchPatterns")}</span>

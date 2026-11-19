@@ -124,6 +124,49 @@ it("creates four ordinary group drafts with distinct defaults", () => {
   }
 });
 
+it("keeps the speed template's strongest candidates within Magpie's price ceiling", () => {
+  const speed = routingTemplates([
+    {
+      ...providers[0],
+      models: [
+        {
+          id: "flagship-pro",
+          name: "Overpriced flagship",
+          outputPrice: 101,
+          maker: true,
+          released: "2026-04-01",
+        },
+        {
+          id: "fast-strong",
+          name: "Fast strong",
+          outputPrice: 20,
+          maker: true,
+          released: "2026-03-01",
+        },
+      ],
+    },
+    {
+      ...providers[1],
+      models: [
+        {
+          id: "other-strong",
+          name: "Other strong",
+          outputPrice: 20,
+          maker: true,
+          released: "2026-02-01",
+        },
+      ],
+    },
+  ]).find((template) => template.key === "templateSpeed")!;
+  expect(speed.group.members.map(({ modelId }) => modelId)).toEqual(
+    expect.arrayContaining(["fast-strong", "other-strong"]),
+  );
+  expect(speed.group.members).toHaveLength(2);
+  expect(
+    speed.group.members.some(({ modelId }) => modelId === "flagship-pro"),
+  ).toBe(false);
+});
+
 it("keeps all template drafts editable with no catalog and deduplicates repeated models", () => {
   expect(routingTemplates([]).map((template) => template.need)).toEqual([
     "provider",
@@ -133,8 +176,14 @@ it("keeps all template drafts editable with no catalog and deduplicates repeated
   ]);
   const model = providers[0].models![3];
   const only = { ...providers[0], models: [model, { ...model }] };
-  for (const { group } of routingTemplates([only])) {
-    expect(group.members).toHaveLength(1);
+  for (const template of routingTemplates([only])) {
+    const { group } = template;
+    if (template.key === "templateSpeed") {
+      expect(template.need).toBe("providers");
+      expect(group.members).toHaveLength(0);
+    } else {
+      expect(group.members).toHaveLength(1);
+    }
     expect(group.fallbackMemberIds).toEqual([]);
     expect(group.classifierTarget).toBeNull();
   }

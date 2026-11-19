@@ -5546,6 +5546,7 @@
     "addTemplate": "新增",
     "editTemplate": "先編輯",
     "templateNeed_provider": "請先新增供應商。",
+    "templateNeed_providers": "請至少新增兩個供應商的模型。",
     "templateNeed_classifier": "在進階設定中選擇支援意圖分類的模型，即可啟用任務分流。",
     "ruleActions": "規則 {{n}} 的操作",
     "moveRule": "移動規則 {{n}}",

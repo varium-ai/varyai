@@ -55,11 +55,13 @@ The capability draft reapplies the recommendation after member selection
 until the user moves a member manually. The same editor behavior applies
 to each entry below on macOS and Windows, before the ordinary group is saved.
 
-The shared editor hides Advanced settings while creating from any of the four
-templates, for every entry below on macOS and Windows. Custom and saved group
-editors keep those settings. No Agent entry point, protocol adapter, or runtime
-behavior changes. Renderer checks cover the template and regular editors;
-installed Agent tests do not exercise this Vary AI editor change.
+The shared editor hides Advanced settings while creating from the capability,
+speed and expiry templates, for every entry below on macOS and Windows. The
+task-classification template keeps its rules, classifier and trial visible;
+Custom and saved group editors keep the remaining settings. No Agent entry
+point, protocol adapter, or runtime behavior changes. Renderer checks cover
+the template and regular editors; installed Agent tests do not exercise this
+Vary AI editor change.
 
 | Agent ID           | Entry point and adapter                                      | Runtime and UI                                                               | Verification                                      |
 | ------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------- |
