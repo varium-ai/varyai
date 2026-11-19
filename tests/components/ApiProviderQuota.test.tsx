@@ -179,3 +179,41 @@ it.each([
   mount(true, value);
   expect(routingUpstreamsApi.quota).not.toHaveBeenCalled();
 });
+
+it("shows each DeepSeek currency, including an exhausted wallet, in the tray", async () => {
+  vi.mocked(routingUpstreamsApi.quota).mockResolvedValue({
+    status: "ready",
+    balance: null,
+    tiers: [],
+    balances: [
+      { unit: "CNY", amount: 8.5 },
+      { unit: "USD", amount: 0 },
+    ],
+  });
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApiProviderQuota
+        record={{
+          ...record,
+          presetId: "deepseek",
+          source: {
+            ...record.source,
+            kind: "api",
+            baseUrl: "https://api.deepseek.com/v1",
+          } as RoutingUpstream["source"],
+        }}
+        card={{ remaining: true, toggle: vi.fn() }}
+      />
+    </QueryClientProvider>,
+  );
+  for (const [unit, value] of [
+    ["CNY", 8.5],
+    ["USD", 0],
+  ] as const) {
+    const amount = new Intl.NumberFormat(i18n.language, {
+      style: "currency",
+      currency: unit,
+    }).format(value);
+    expect(await screen.findByText(`Balance ${amount}`)).toBeVisible();
+  }
+});

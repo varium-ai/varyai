@@ -6,6 +6,20 @@ use crate::services::usage_stats::*;
 use crate::store::AppState;
 use tauri::State;
 
+/// Read the visible tray period on a blocking worker, not the webview thread.
+#[tauri::command]
+pub async fn get_tray_usage(
+    state: State<'_, AppState>,
+    period: TrayPeriod,
+) -> Result<Vec<TrayUsageRow>, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || db.tray_usage(period, chrono::Local::now().timestamp()))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or_else(|| "trayPanel.failed".to_owned())
+}
+
 /// 获取使用量汇总
 #[tauri::command]
 pub fn get_usage_summary(

@@ -515,6 +515,25 @@ export function RoutingUpstreamsPanel({
     setBusy(true);
     try {
       const { apiKey: _storedKey, ...source } = draft.source;
+      let catalog = source.catalog;
+      if (
+        !draft.revision &&
+        draft.presetId &&
+        !copyFrom &&
+        !catalog.length &&
+        !parsed.length
+      ) {
+        try {
+          catalog = (await fetchDraftModels()).map(modelRow);
+        } catch (cause) {
+          report("fetchModels", cause);
+          return;
+        }
+        if (!catalog.length) {
+          report("fetchModels", "emptyCatalog");
+          return;
+        }
+      }
       const value = {
         ...draft,
         id:
@@ -533,7 +552,7 @@ export function RoutingUpstreamsPanel({
             : stagedModels?.some((row) => !isImageGenerationModel(row))
               ? "picked"
               : source.mode,
-          catalog: source.catalog,
+          catalog,
           ...(apiKey ? { apiKey } : {}),
         },
       };

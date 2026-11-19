@@ -191,32 +191,27 @@ export function SubscriptionAccountQuota({
               : tiers.length
                 ? null
                 : "quotaEmpty";
-  if (card)
-    return (
+  if (card) {
+    if (!tiers.length || provider === "chatgpt_api") return null;
+    const content = (
       <ProviderQuotaCard
         name={login}
         card={card}
         items={quotaGroups.flatMap((group) => group.tiers)}
         fetching={query.isFetching}
         loading={!query.data && query.isFetching}
-        disabled={disabled || !ready || provider === "chatgpt_api"}
+        disabled={disabled}
         sample={
           query.data?.observedAt
             ? { scope: `${provider}:${id}`, at: query.data.observedAt }
             : undefined
         }
         refresh={() => void query.refetch({ cancelRefetch: false })}
-        status={
-          provider === "chatgpt_api"
-            ? ready
-              ? "subscriptionProvider.quotaUnavailable"
-              : "codexProvider.quotaLoginRequired"
-            : status
-              ? `codexProvider.${status}`
-              : null
-        }
+        status={status ? `codexProvider.${status}` : null}
       />
     );
+    return card.renderGroup ? card.renderGroup(content) : content;
+  }
   if (compact) {
     return (
       <SubscriptionQuotaSummary

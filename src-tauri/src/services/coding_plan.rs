@@ -256,6 +256,13 @@ fn classify_zhipu_window(item: &serde_json::Value) -> Option<ZhipuWindow> {
 /// 老套餐（2026-02-12 前订阅）只回 1 条
 /// `TOKENS_LIMIT`，自然降级为仅展示 `five_hour`；新套餐回 2 条。
 fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
+    parse_zhipu_tiers(data, false)
+}
+
+pub(super) fn parse_zhipu_tiers(
+    data: &serde_json::Value,
+    require_percentage: bool,
+) -> Vec<QuotaTier> {
     type Entry = (Option<i64>, f64, Option<String>);
     let mut five_hour: Option<Entry> = None;
     let mut weekly: Option<Entry> = None;
@@ -273,10 +280,11 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
             {
                 continue;
             }
-            let percentage = limit_item
-                .get("percentage")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+            let percentage = match limit_item.get("percentage").and_then(|v| v.as_f64()) {
+                Some(percent) => percent,
+                None if require_percentage => continue,
+                None => 0.0,
+            };
             let reset_ms = limit_item.get("nextResetTime").and_then(|v| v.as_i64());
             let reset_iso = reset_ms.and_then(millis_to_iso8601);
             let entry = (reset_ms, percentage, reset_iso);
@@ -732,7 +740,7 @@ fn parse_minimax_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
 /// `status=="rate-limited"` 时上游已把 percent 钉在 100，无需特判；
 /// percent 为 0 时上游的 `resetsAt` 是「now+窗口时长」的占位值（滚动窗按
 /// 最后记账时间整窗清零，此时窗口早已过期），丢弃不展示倒计时。
-fn parse_opencode_go_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
+pub(super) fn parse_opencode_go_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
     const WINDOWS: [(&str, &str); 3] = [
         ("rolling", TIER_FIVE_HOUR),
         ("weekly", TIER_WEEKLY_LIMIT),

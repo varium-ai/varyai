@@ -3,12 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import type { WorkspaceView } from "@/components/layout/WorkspaceNavigation";
 
-export type PanelTab = "agents" | "quota" | "routing" | "security";
+export type PanelTab = "agents" | "quota" | "usage" | "security";
 export function isTrayPanel(search: string): boolean {
   return new URLSearchParams(search).get("panel") === "tray";
 }
 export function panelTab(value: string | null): PanelTab {
-  return value === "quota" || value === "routing" || value === "security"
+  if (value === "routing") return "usage";
+  return value === "quota" || value === "usage" || value === "security"
     ? value
     : "agents";
 }

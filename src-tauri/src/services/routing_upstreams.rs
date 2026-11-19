@@ -9,6 +9,7 @@ pub(crate) const INVALID: &str = "routingUpstreams.invalid";
 pub(crate) const UNAVAILABLE: &str = "routingUpstreams.sourceUnavailable";
 pub(crate) const MAX_UPSTREAMS: usize = 256;
 pub(crate) const MAX_CONFIG_BYTES: usize = 512 * 1024;
+pub(crate) const DEFAULT_CODEX_NAME: &str = "ChatGPT / Codex";
 pub(crate) const MODEL_POLICY: &str = "routingModelPolicy";
 pub(crate) const KEY_LABEL: &str = "routingKeyLabel";
 const KEY_MODELS: &str = "routingKeyModels";
@@ -220,7 +221,7 @@ pub(crate) fn valid_identity(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-fn valid_name(value: &str) -> bool {
+pub(crate) fn valid_name(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().count() <= 120 && !value.chars().any(char::is_control)
 }
 

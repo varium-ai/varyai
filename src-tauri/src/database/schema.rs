@@ -2199,6 +2199,10 @@ impl Database {
             // effort 档 low/medium/high/xhigh 由查价剥后缀回落到本行；max 不在剥离列表
             //（会与 *-max 真 id 撞名），不另加后缀行。
             ("gpt-6-astra", "GPT-6 Astra", "10", "50", "1", "12.5"),
+            // GPT-6.2 standard rates; tier and long-context adjustments belong
+            // to the runtime catalog, while the SQLite ledger stores base rates.
+            ("gpt-6.2-astra", "GPT-6.2 Astra", "8", "40", "0.4", "10"),
+            ("gpt-6.2-sol", "GPT-6.2 Sol", "2", "10", "0.1", "2.5"),
             // GPT-5.6 系列（Sol / Terra / Luna，2026-06 发布）
             // 5.6 家族起 cache write 收 1.25× 输入价（此前 GPT 模型写缓存免费，勿回填旧系列）
             // 2026-09-06 审计：Sol 改促销价 4/20/0.40/5（OpenAI 价页原文"至少持续到 2026-11-21"），

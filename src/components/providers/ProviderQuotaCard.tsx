@@ -1,10 +1,11 @@
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { QuotaTier } from "@/types/subscription";
 import { QuotaSparkline } from "./QuotaSparkline";
 
 export interface QuotaCardOptions {
+  renderGroup?: (content: ReactElement) => ReactElement;
   remaining: boolean;
   toggle: () => void;
 }

@@ -4,38 +4,26 @@ import { useTranslation } from "react-i18next";
 import { ArrowUp, ExternalLink, RefreshCw, Settings } from "lucide-react";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
-import { RoutingStage } from "@/components/routing/RoutingStage";
 import { GlobalSecurityToggle } from "@/components/security/GlobalSecurityToggle";
 import {
   securityEventResultLabel,
   securityEventRiskLabel,
 } from "@/components/security/securityEventLabels";
-import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
-import { intentRoutingApi, type RoutingGroup } from "@/lib/api/intentRouting";
 import { proxyApi } from "@/lib/api/proxy";
-import { routingTraceApi } from "@/lib/api/routingTrace";
-import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { securityApi } from "@/lib/api/security";
 import { securityEventsApi } from "@/lib/api/securityEvents";
-import { routingModelLabel } from "@/lib/routingModelLabel";
+import { trayUsageKey } from "@/lib/api/trayUsage";
 import { panelTab, trayPanelApi, type PanelTab } from "@/lib/trayPanel";
 import { APP_IDS } from "@/config/appConfig";
 import appIcon from "@/assets/icons/app-icon.png";
-import "@/components/routing/routing.css";
 import "./tray-panel.css";
 import { TrayQuotaPanel } from "./TrayQuotaPanel";
+import { TrayUsagePanel } from "./TrayUsagePanel";
 
-const tabs = ["agents", "quota", "routing", "security"] as const;
+const tabs = ["agents", "quota", "usage", "security"] as const;
 const quotaRoots = [
   "routing-upstreams",
   "provider-list-codex-accounts",
@@ -60,6 +48,7 @@ export function TrayPanel() {
       predicate: (query) => quotaRoots.includes(String(query.queryKey[0])),
     }) > 0;
   const frame = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLElement>(null);
   const connections = useQuery({
     queryKey: ["agent-connections"],
     queryFn: agentConnectionsApi.list,
@@ -67,6 +56,10 @@ export function TrayPanel() {
     refetchInterval: active ? 5000 : false,
   });
   function refresh() {
+    if (tab === "usage") {
+      void client.invalidateQueries({ queryKey: trayUsageKey });
+      return;
+    }
     const roots =
       tab === "agents"
         ? [
@@ -79,9 +72,7 @@ export function TrayPanel() {
           ]
         : tab === "quota"
           ? quotaRoots
-          : tab === "routing"
-            ? ["routing-trace", "intent-routing-groups", "proxyStatus"]
-            : ["security", "securityEvents", "proxyStatus"];
+          : ["security", "securityEvents", "proxyStatus"];
     void Promise.all(
       roots.map((root) => client.invalidateQueries({ queryKey: [root] })),
     );
@@ -95,6 +86,9 @@ export function TrayPanel() {
   useEffect(() => {
     frame.current?.focus({ preventScroll: true });
   }, []);
+  useEffect(() => {
+    if (body.current) body.current.scrollTop = 0;
+  }, [tab]);
   useEffect(() => {
     const blur = () => setActive(false);
     const focus = () => setActive(true);
@@ -122,7 +116,7 @@ export function TrayPanel() {
   }, []);
   function open(view: PanelTab | "settings" | "providers") {
     void trayPanelApi
-      .open(view === "quota" ? "providers" : view)
+      .open(view === "quota" ? "providers" : view === "usage" ? "stats" : view)
       .catch(() => setError(true));
   }
   const selectedApps = APP_IDS.filter((app) =>
@@ -131,7 +125,7 @@ export function TrayPanel() {
     ),
   );
   return (
-    <div className="tray-panel" ref={frame} tabIndex={-1}>
+    <div className="tray-panel" data-tab={tab} ref={frame} tabIndex={-1}>
       <header className="tray-header">
         <div className="tray-brand">
           <img src={appIcon} alt="" />
@@ -231,6 +225,7 @@ export function TrayPanel() {
         </p>
       )}
       <main
+        ref={body}
         className="tray-body"
         id="tray-content"
         role="tabpanel"
@@ -243,27 +238,29 @@ export function TrayPanel() {
               onAddProvider={() => open("providers")}
             />
           )}
-          {tab === "routing" && active && <TrayRouting />}
+          {tab === "usage" && (
+            <TrayUsagePanel active={active} onOpen={() => open("usage")} />
+          )}
           {tab === "quota" && active && <TrayQuotaPanel />}
           {tab === "security" && active && <TraySecurity />}
         </div>
       </main>
       <footer className="tray-footer">
-        <ProfileSwitcher
-          compact
-          side="top"
-          activeApp={selectedApps[0] ?? "claude"}
-          selectedApps={selectedApps}
-        />
+        {tab !== "usage" && (
+          <ProfileSwitcher
+            compact
+            side="top"
+            activeApp={selectedApps[0] ?? "claude"}
+            selectedApps={selectedApps}
+          />
+        )}
         <div className="tray-footer-actions">
-          {tab !== "agents" && (
+          {(tab === "quota" || tab === "security") && (
             <button onClick={() => open(tab)}>
               {t(
-                tab === "routing"
-                  ? "trayPanel.manageRouting"
-                  : tab === "quota"
-                    ? "trayPanel.manageQuota"
-                    : "trayPanel.manageSecurity",
+                tab === "quota"
+                  ? "trayPanel.manageQuota"
+                  : "trayPanel.manageSecurity",
               )}
             </button>
           )}
@@ -275,196 +272,6 @@ export function TrayPanel() {
         </div>
       </footer>
     </div>
-  );
-}
-
-function TrayRouting() {
-  const { t } = useTranslation();
-  const client = useQueryClient();
-  const traces = useQuery({
-    queryKey: ["routing-trace"],
-    queryFn: routingTraceApi.snapshot,
-    refetchInterval: 1000,
-  });
-  const catalog = useQuery({
-    queryKey: ["agent-model-catalog"],
-    queryFn: agentConnectionsApi.models,
-  });
-  const groups = useQuery({
-    queryKey: ["intent-routing-groups"],
-    queryFn: intentRoutingApi.list,
-  });
-  const gateway = useQuery({
-    queryKey: ["proxyStatus"],
-    queryFn: proxyApi.getProxyStatus,
-  });
-  const [selected, setSelected] = useState<string>();
-  const [pending, setPending] = useState<string>();
-  const [failed, setFailed] = useState(false);
-  const rows = traces.data?.requests.slice(0, 8) ?? [];
-  const row = rows.find((r) => r.id === selected) ?? rows[0];
-  const upstreams = useQuery({
-    queryKey: ["routing-upstreams"],
-    queryFn: routingUpstreamsApi.list,
-    enabled: rows.some((row) => row.candidates.length > 0),
-    staleTime: 30000,
-  });
-  async function save(group: RoutingGroup, patch: Partial<RoutingGroup>) {
-    setPending(group.id);
-    setFailed(false);
-    try {
-      await intentRoutingApi.save({ ...group, ...patch });
-    } catch {
-      setFailed(true);
-    } finally {
-      void client.invalidateQueries({ queryKey: ["intent-routing-groups"] });
-      setPending(undefined);
-    }
-  }
-  return (
-    <section className="tray-routing vary-routing">
-      <p className="tray-caption">
-        {t(
-          traces.isError
-            ? "trayPanel.failed"
-            : traces.data?.running
-              ? "trayPanel.gatewayRunning"
-              : "routingPage.gatewayStopped",
-        )}
-      </p>
-      {row && (
-        <div className="tray-card">
-          <RoutingStage
-            layout="compact"
-            upstreams={upstreams.data}
-            row={row}
-            requestedModel={
-              routingModelLabel(row, catalog.data ?? []) ??
-              t("routingPage.modelUnavailable")
-            }
-            accountName={(c) => c.providerName}
-            animate={!!traces.data?.running && !selected}
-            replay={false}
-            speed={1}
-            currentAccounts={traces.data?.accounts}
-            concurrent={selected ? [] : (traces.data?.requests ?? [])}
-            liveObservations
-            address={
-              gateway.data
-                ? `${gateway.data.address}:${gateway.data.port}`
-                : undefined
-            }
-          />
-        </div>
-      )}
-      <div className="tray-card tray-requests">
-        {!rows.length && (
-          <p className="tray-empty">{t("routingPage.noRequests")}</p>
-        )}
-        {rows.map((r) => (
-          <button
-            key={r.id}
-            className={row?.id === r.id ? "selected" : ""}
-            aria-pressed={row?.id === r.id}
-            title={t(`routingPage.state.${r.state}`)}
-            onClick={() => setSelected(r.id)}
-          >
-            <span
-              className={`tray-dot ${r.state === "failed" || (r.state !== "cancelled" && (r.status ?? 0) >= 400) ? "bad" : ""}`}
-              data-state={r.state}
-              aria-hidden="true"
-            />
-            <span>
-              <b>{r.agent}</b>
-              <small>
-                {routingModelLabel(r, catalog.data ?? []) ??
-                  t("routingPage.modelUnavailable")}
-              </small>
-            </span>
-            <time>
-              {new Date(r.startedAt).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </time>
-            <span>{r.status === 499 ? "—" : (r.status ?? "—")}</span>
-          </button>
-        ))}
-      </div>
-      <p className="tray-section-title">{t("intentRouting.title")}</p>
-      {failed && (
-        <p role="alert" className="tray-error">
-          {t("trayPanel.failed")}
-        </p>
-      )}
-      <ul className="tray-groups" aria-label={t("intentRouting.title")}>
-        {groups.data?.groups.map((group) => (
-          <li key={group.id}>
-            <button
-              className="tray-group-name"
-              title={group.name}
-              onClick={() => void trayPanelApi.open("routing")}
-            >
-              <b>{group.name}</b>
-              <small>
-                {group.members.length} {t("trayPanel.models")}
-              </small>
-            </button>
-            <Select
-              value={group.routing ?? "smart"}
-              disabled={!!pending}
-              onValueChange={(routing: NonNullable<RoutingGroup["routing"]>) =>
-                void save(group, {
-                  routing,
-                })
-              }
-            >
-              <SelectTrigger
-                className="tray-strategy-trigger"
-                aria-label={`${t("intentRouting.routingStrategy")} ${group.name}`}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                className="tray-strategy-menu"
-                align="end"
-                sideOffset={4}
-                collisionPadding={8}
-              >
-                {[
-                  "smart",
-                  "ordered",
-                  "round_robin",
-                  "least_used",
-                  "pace",
-                  "free_first",
-                  "fastest",
-                  "weighted",
-                  "manual",
-                ].map((strategy) => (
-                  <SelectItem
-                    className="tray-strategy-option"
-                    key={strategy}
-                    value={strategy}
-                  >
-                    {t(`routingPage.strategy.${strategy}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Switch
-              aria-label={group.name}
-              checked={group.enabled}
-              disabled={!!pending || !!group.autoGenerated}
-              onCheckedChange={(enabled) => void save(group, { enabled })}
-            />
-          </li>
-        ))}
-        {groups.isError && (
-          <li className="tray-empty">{t("trayPanel.failed")}</li>
-        )}
-      </ul>
-    </section>
   );
 }
 

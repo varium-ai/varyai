@@ -14,6 +14,12 @@ import {
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { providerImportApi } from "@/lib/api/providerImport";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+
+vi.mock("@/lib/api/model-fetch", async (load) => ({
+  ...(await load<typeof import("@/lib/api/model-fetch")>()),
+  fetchModelsForConfig: vi.fn(),
+}));
 
 vi.mock("@/lib/api/providerImport", () => ({
   providerImportApi: { preview: vi.fn(), import: vi.fn() },
@@ -29,6 +35,9 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
   },
 }));
 beforeEach(() => {
+  vi.mocked(fetchModelsForConfig).mockResolvedValue([
+    { id: "fixture-chat", ownedBy: null, context_window: 128000 },
+  ]);
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
   vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => ({
     ...value,
@@ -171,7 +180,48 @@ it("returns to the list after saving a new provider", async () => {
   expect(
     screen.getByRole("button", { name: "modelProviders.add" }),
   ).toHaveFocus();
+  expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      source: expect.objectContaining({
+        catalog: [
+          {
+            model: "fixture-chat",
+            contextWindow: 128000,
+            contextSource: "vendor",
+          },
+        ],
+      }),
+    }),
+  );
 });
+
+it.each(["empty", "failed"])(
+  "keeps the preset editable after %s discovery and retries before saving",
+  async (result) => {
+    if (result === "empty")
+      vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([]);
+    else
+      vi.mocked(fetchModelsForConfig).mockRejectedValueOnce(
+        new Error("synthetic failure"),
+      );
+    vi.mocked(routingUpstreamsApi.save).mockClear();
+    mount(true);
+    fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
+    const editor = screen.getByRole("dialog", { name: "DeepSeek" });
+    const key = within(editor).getByLabelText("modelProviders.apiKey");
+    fireEvent.change(key, { target: { value: "synthetic-key" } });
+    const add = within(editor).getByRole("button", { name: "common.add" });
+    fireEvent.click(add);
+    await waitFor(() => expect(fetchModelsForConfig).toHaveBeenCalled());
+    await waitFor(() => expect(add).toBeEnabled());
+    expect(key).toHaveValue("synthetic-key");
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    fireEvent.click(add);
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledOnce(),
+    );
+  },
+);
 it("imports from the add page and restores focus to its import card", async () => {
   vi.mocked(providerImportApi.preview).mockResolvedValue([
     {

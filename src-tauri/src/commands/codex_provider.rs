@@ -2,7 +2,7 @@
 use crate::{
     services::{
         codex_provider::{self, Settings},
-        routing_upstreams::RoutingUpstream,
+        routing_upstreams::{RoutingUpstream, DEFAULT_CODEX_NAME},
     },
     store::AppState,
 };
@@ -81,7 +81,7 @@ fn new_codex_draft() -> RoutingUpstream {
         transport: None,
         schema_version: 1,
         id: uuid::Uuid::new_v4().to_string(),
-        name: "ChatGPT / Codex".into(),
+        name: DEFAULT_CODEX_NAME.into(),
         revision: 0,
         source: crate::services::routing_upstreams::UpstreamSource::Codex,
         has_api_key: false,
