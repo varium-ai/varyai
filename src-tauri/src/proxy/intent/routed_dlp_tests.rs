@@ -293,7 +293,9 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
                     Some("dlp_restore_unsupported") => "restore_unsupported",
                     Some("dlp_redaction_failed") => "redaction_failed",
                     Some("dlp_context_unavailable") => "context_unavailable",
-                    Some("routing_conversion_unsupported") => "conversion_unsupported",
+                    Some("routing_request_conversion_failed") => "request_conversion_failed",
+                    Some("routing_response_conversion_failed") => "response_conversion_failed",
+                    Some("routing_conversion_misconfigured") => "conversion_misconfigured",
                     Some("routing_native_unavailable") => "native_unavailable",
                     _ => "other",
                 };

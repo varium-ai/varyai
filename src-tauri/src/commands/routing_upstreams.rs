@@ -413,6 +413,7 @@ pub(crate) async fn routing_upstream_quota(
     id: String,
     revision: u32,
     force: Option<bool>,
+    coding: Option<bool>,
 ) -> Result<crate::services::routing_provider_quota::Allowance, String> {
     let db = state.db.clone();
     let provider =
@@ -426,7 +427,13 @@ pub(crate) async fn routing_upstream_quota(
     }
     let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
     let (base, key) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
-    crate::services::routing_provider_quota::query(&base, &key, force.unwrap_or(false)).await
+    crate::services::routing_provider_quota::query(
+        &base,
+        &key,
+        force.unwrap_or(false),
+        coding.unwrap_or(false),
+    )
+    .await
 }
 
 #[tauri::command]

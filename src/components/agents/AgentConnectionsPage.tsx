@@ -31,6 +31,9 @@ import {
   ExternalLink,
   RefreshCw,
   ChevronDown,
+  PackageCheck,
+  PackagePlus,
+  Search,
   X,
 } from "lucide-react";
 import {
@@ -69,9 +72,13 @@ import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppDialog } from "@/components/ui/app-dialog";
 import type { AppId } from "@/lib/api";
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
+import { SearchEmptyState } from "@/components/ui/search-empty-state";
+import "./agent-directory.css";
 
 const supported: readonly AppId[] = APP_IDS;
 const orderStorageKey = "vary-agent-order";
@@ -135,6 +142,9 @@ export function AgentConnectionsPage({
 }) {
   const { t } = useTranslation();
   const pageId = useId();
+  const [search, setSearch] = useState("");
+  const missingTab = useRef<HTMLButtonElement>(null);
+  const [installationTab, setInstallationTab] = useState("installed");
   const name = (app: AppId) =>
     app === "claude" ? "Claude Code" : t(`apps.${app}`);
   const client = useQueryClient();
@@ -358,12 +368,17 @@ export function AgentConnectionsPage({
     }
   }
   function browseTools() {
+    if (!compact) {
+      setInstallationTab("notInstalled");
+      missingTab.current?.focus();
+      return;
+    }
     const details = moreTools.current;
     if (!details) return;
     details.open = true;
     details.querySelector("summary")?.focus();
   }
-  function refreshConnectionViews(reapply = false) {
+  function refreshConnectionViews(reapply = false, applied?: AppId) {
     // Configuration writes are complete; optional observations must not hold a row locked.
     void Promise.allSettled(
       [
@@ -375,12 +390,30 @@ export function AgentConnectionsPage({
         ...(reapply ? ["agent-model-catalog"] : []),
       ].map((key) => client.invalidateQueries({ queryKey: [key] })),
     );
+    if (applied && applied !== "doubaowork") {
+      void connections[APP_IDS.indexOf(applied)]
+        .refetch({ cancelRefetch: false })
+        .then(({ data, isSuccess }) => {
+          if (
+            isSuccess &&
+            data?.app === applied &&
+            data.enabled &&
+            data.configured &&
+            !data.recoveryPending &&
+            data.desktopState === "restart_required"
+          ) {
+            setRestarting((current) => current ?? applied);
+          }
+        });
+    }
   }
   async function reapply(app: AppId) {
     if (!beginOperation(app, "reapplying")) return;
     setError(app, null);
+    let applied = false;
     try {
       await agentConnectionsApi.reapply(app);
+      applied = true;
     } catch (cause) {
       setError(
         app,
@@ -392,7 +425,7 @@ export function AgentConnectionsPage({
           : "agentConnections.failed",
       );
     } finally {
-      refreshConnectionViews(true);
+      refreshConnectionViews(true, applied ? app : undefined);
       endOperation(app);
     }
   }
@@ -403,8 +436,10 @@ export function AgentConnectionsPage({
   ) {
     if (!beginOperation(app, enabled ? "connecting" : "disconnecting")) return;
     setError(app, null);
+    let applied = false;
     try {
       await agentConnectionsApi.set(app, enabled, enabled ? model : null);
+      applied = enabled;
       if (enabled) {
         toast.success(
           `${name(app)}: ${t(
@@ -432,7 +467,7 @@ export function AgentConnectionsPage({
       );
       return false;
     } finally {
-      refreshConnectionViews();
+      refreshConnectionViews(false, applied ? app : undefined);
       endOperation(app);
     }
   }
@@ -597,9 +632,17 @@ export function AgentConnectionsPage({
   };
   if (compact) shown.sort((a, b) => connectionRank(b) - connectionRank(a));
   const other = APP_IDS.filter((app) => !shown.includes(app));
+  const searchTerm = search.trim().toLocaleLowerCase();
+  const filtered = !compact && searchTerm !== "";
+  const matchesName = (app: AppId) =>
+    app.includes(searchTerm) ||
+    name(app).toLocaleLowerCase().includes(searchTerm);
+  const visible = filtered ? shown.filter(matchesName) : shown;
+  const available = filtered ? other.filter(matchesName) : other;
   function reorder({ active, over }: DragEndEvent) {
     if (
       compact ||
+      filtered ||
       !over ||
       active.id === over.id ||
       !shown.includes(active.id as AppId) ||
@@ -637,17 +680,21 @@ export function AgentConnectionsPage({
       state?.enabled === false &&
       state.recoveryReason === "connection_inactive";
     const reloadStatus =
-      app === "codex"
-        ? state?.reloadState === "waiting_for_idle"
-          ? "waitingForIdle"
-          : state?.reloadState === "restarting"
-            ? "reloading"
-            : state?.reloadState === "failed"
-              ? "reloadFailed"
-              : state?.reloadState === "stale_catalog"
-                ? "catalogStale"
-                : null
-        : null;
+      app !== "codex"
+        ? null
+        : state?.reloadState === "failed"
+          ? enabled
+            ? "reloadFailed"
+            : "disconnectedReloadFailed"
+          : !enabled
+            ? null
+            : state?.reloadState === "waiting_for_idle"
+              ? "waitingForIdle"
+              : state?.reloadState === "restarting"
+                ? "reloading"
+                : state?.reloadState === "stale_catalog"
+                  ? "catalogStale"
+                  : null;
     const desktopRestart = state?.desktopState === "restart_required";
     const modelControl = needsModelControl(app)
       ? modelControls[modelControlApps.findIndex((known) => known === app)]
@@ -662,10 +709,12 @@ export function AgentConnectionsPage({
     const canRestart =
       app !== "doubaowork" &&
       !!state &&
-      (state.restartRequired ||
-        desktopRestart ||
-        codexReloadRestart ||
-        !!modelControl?.pending);
+      (enabled
+        ? state.restartRequired ||
+          desktopRestart ||
+          codexReloadRestart ||
+          !!modelControl?.pending
+        : app !== "codex" && desktopRestart);
     const native = nativeQuery.data;
     const nativeAvailable = native?.available && !nativeQuery.isError;
     const nativeModel =
@@ -729,10 +778,8 @@ export function AgentConnectionsPage({
                 ? reloadStatus
                 : enabled && modelControl?.pending && !desktopRestart
                   ? "modelControlPending"
-                  : canRestart
-                    ? enabled
-                      ? "restartRequired"
-                      : "restoredRestartRequired"
+                  : enabled && canRestart
+                    ? "restartRequired"
                     : enabled
                       ? gateway.isError
                         ? "unavailable"
@@ -750,6 +797,10 @@ export function AgentConnectionsPage({
                       : "off";
     const restartNotice = restartFeedback.messages[app];
     const bypassed = status === "recovery";
+    const ready =
+      !compact &&
+      !operation &&
+      (status === "configured" || status === "auditConnected");
     const reapplyButton = state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(
         state.recoveryReason ?? "",
@@ -910,13 +961,86 @@ export function AgentConnectionsPage({
         <ChevronDown size={11} aria-hidden="true" />
       </button>
     );
+    const restartButton = app !== "doubaowork" &&
+      (operation === "restarting" || (canRestart && !connection.isError)) && (
+        <button
+          type="button"
+          className="mp-agent-fix"
+          aria-label={t("agentConnections.restart")}
+          title={
+            enabled
+              ? undefined
+              : t("agentConnections.states.restoredRestartRequired")
+          }
+          aria-busy={operation === "restarting"}
+          disabled={rowBusy(app)}
+          onClick={() => {
+            setError(app, null);
+            setRestarting(app);
+          }}
+        >
+          <RefreshCw
+            size={11}
+            aria-hidden="true"
+            className={
+              operation === "restarting"
+                ? "animate-spin motion-reduce:animate-none"
+                : ""
+            }
+          />
+          <span>{t("agentConnections.restart")}</span>
+        </button>
+      );
+    const actions = (
+      <>
+        {!compact && checkinTrigger}
+        {app === "doubaowork" && (
+          <span className="mp-agent-note">
+            {t("agentConnections.auditOnly")}
+          </span>
+        )}
+        {(updates.installing === app ||
+          (!installations.isError && installations.data?.[app] === false)) && (
+          <AgentInstallButton
+            app={app}
+            updates={updates}
+            disabled={rowBusy(app)}
+            onSelect={() => updates.requestInstall(app, websites[app])}
+          />
+        )}
+        {!bypassed && reapplyButton}
+        {app === "codex" && (
+          <CodexProxyWarning
+            key={`${gateway.data?.address}:${gateway.data?.port}`}
+            enabled={codexProxyDiagnosticEnabled}
+            busy={rowBusy(app)}
+            suspended={
+              !!setup ||
+              !!disconnecting ||
+              !!picking ||
+              !!browsing ||
+              !!restarting ||
+              !!modelControlRequest ||
+              !!updates.pending ||
+              !!updates.installTarget
+            }
+            onIssueChange={setCodexProxyIssue}
+            onDisconnect={() => setDisconnecting("codex")}
+          />
+        )}
+        {compact && enabled && restartButton}
+      </>
+    );
+    const version = !compact && (
+      <AgentVersionTag app={app} updates={updates} disabled={rowBusy(app)} />
+    );
     return (
       <SortableAgentRow
         key={app}
         app={app}
         name={name(app)}
-        sortable={!compact && shown.includes(app)}
-        className={`mp-agent-row${compact && expanded === app ? " expanded" : ""}`}
+        sortable={!compact && !filtered}
+        className={`mp-agent-row${compact ? (expanded === app ? " expanded" : "") : " agent-list-row"}`}
         aria-label={t(`apps.${app}`)}
         onClick={
           compact
@@ -943,78 +1067,12 @@ export function AgentConnectionsPage({
         <div className="mp-agent-who">
           <div className="mp-agent-name">
             <h2>{name(app)}</h2>
-            {!compact && (
-              <AgentVersionTag
-                app={app}
-                updates={updates}
-                disabled={rowBusy(app)}
-              />
-            )}
-            {!compact && checkinTrigger}
-            {app === "doubaowork" && (
-              <span className="mp-agent-note">
-                {t("agentConnections.auditOnly")}
-              </span>
-            )}
-            {(updates.installing === app ||
-              (!installations.isError &&
-                installations.data?.[app] === false)) && (
-              <AgentInstallButton
-                app={app}
-                updates={updates}
-                disabled={rowBusy(app)}
-                onSelect={() => updates.requestInstall(app, websites[app])}
-              />
-            )}
-            {!bypassed && reapplyButton}
-            {app === "codex" && (
-              <CodexProxyWarning
-                key={`${gateway.data?.address}:${gateway.data?.port}`}
-                enabled={codexProxyDiagnosticEnabled}
-                busy={rowBusy(app)}
-                suspended={
-                  !!setup ||
-                  !!disconnecting ||
-                  !!picking ||
-                  !!browsing ||
-                  !!restarting ||
-                  !!modelControlRequest ||
-                  !!updates.pending ||
-                  !!updates.installTarget
-                }
-                onIssueChange={setCodexProxyIssue}
-                onDisconnect={() => setDisconnecting("codex")}
-              />
-            )}
-            {app !== "doubaowork" &&
-              (operation === "restarting" ||
-                (canRestart && !connection.isError)) && (
-                <button
-                  type="button"
-                  className="mp-agent-fix"
-                  aria-label={t("agentConnections.restart")}
-                  aria-busy={operation === "restarting"}
-                  disabled={rowBusy(app)}
-                  onClick={() => {
-                    setError(app, null);
-                    setRestarting(app);
-                  }}
-                >
-                  <RefreshCw
-                    size={11}
-                    aria-hidden="true"
-                    className={
-                      operation === "restarting"
-                        ? "animate-spin motion-reduce:animate-none"
-                        : ""
-                    }
-                  />
-                  <span>{t("agentConnections.restart")}</span>
-                </button>
-              )}
+            {!compact && enabled && restartButton}
+            {version}
+            {actions}
           </div>
           <p
-            className={`mp-agent-status ${restartNotice ? "" : bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operation ? "wait" : ""}`}
+            className={`mp-agent-status ${restartNotice ? "" : bypassed || status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : ready ? "agent-list-ready" : enabled || operation ? "wait" : ""}`}
             role="status"
             aria-atomic="true"
             title={
@@ -1042,6 +1100,7 @@ export function AgentConnectionsPage({
                 </span>
               </>
             )}
+            {!enabled && restartButton}
             {bypassed && reapplyButton}
           </p>
           {app === "deepseek-harness" &&
@@ -1077,7 +1136,9 @@ export function AgentConnectionsPage({
           </Button>
         )}
         <div
-          className={compact ? "mp-agent-panel-controls" : "contents"}
+          className={
+            compact ? "mp-agent-panel-controls" : "agent-list-controls"
+          }
           hidden={compact && expanded !== app}
         >
           {compact && checkinTrigger}
@@ -1384,14 +1445,230 @@ export function AgentConnectionsPage({
       </SortableAgentRow>
     );
   }
+  const rescanButton = (variant: "outline" | "ghost", className?: string) => (
+    <Button
+      variant={variant}
+      size="sm"
+      className={className}
+      disabled={rescanBusy}
+      aria-busy={rescanBusy}
+      onClick={rescanInstallations}
+    >
+      <RefreshCw
+        aria-hidden="true"
+        className={`mr-2 h-3 w-3${rescanBusy ? " animate-spin" : ""}`}
+      />
+      {t("agentConnections.rescan")}
+    </Button>
+  );
+  const noMatches = (
+    <SearchEmptyState
+      title={t("agentConnections.directory.noMatches")}
+      hint={t("agentConnections.directory.noMatchesHint")}
+    />
+  );
+  const installedPanel = (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      modifiers={compact ? undefined : [restrictWorkspaceSort]}
+      onDragEnd={reorder}
+      accessibility={{
+        screenReaderInstructions: {
+          draggable: t("agentConnections.sorting.hint"),
+        },
+        announcements: {
+          onDragStart: ({ active }) =>
+            t("agentConnections.sorting.pickedUp", {
+              app: name(active.id as AppId),
+            }),
+          onDragOver: ({ active, over }) =>
+            over ? announcePosition(active.id, over.id) : undefined,
+          onDragEnd: ({ active, over }) =>
+            over
+              ? t("agentConnections.sorting.dropped", {
+                  position: announcePosition(active.id, over.id),
+                })
+              : t("agentConnections.sorting.cancelled"),
+          onDragCancel: () => t("agentConnections.sorting.cancelled"),
+        },
+      }}
+    >
+      <SortableContext items={visible} strategy={verticalListSortingStrategy}>
+        <div className={compact ? "mp-list" : "agent-directory-rows"}>
+          {(installations.isPending || states.isPending) &&
+            shown.length === 0 && (
+              <div
+                role="status"
+                aria-label={t("agentConnections.states.checking")}
+              >
+                {[0, 1, 2].map((index) => (
+                  <div
+                    key={index}
+                    className={`mp-agent-row mp-agent-placeholder${compact ? "" : " agent-list-row"}`}
+                    aria-hidden="true"
+                  >
+                    <span className="mp-agent-placeholder-icon" />
+                    <span className="mp-agent-placeholder-name" />
+                    <span className="mp-agent-placeholder-control" />
+                  </div>
+                ))}
+              </div>
+            )}
+          {visible.map((app, index) => (
+            <Fragment key={app}>
+              {compact &&
+                connectionRank(app) === 0 &&
+                (index === 0 || connectionRank(shown[index - 1]) > 0) && (
+                  <p className="tray-unconfigured">
+                    {t("trayPanel.notConfigured")}
+                  </p>
+                )}
+              {row(app)}
+            </Fragment>
+          ))}
+          {!installations.isPending &&
+            !states.isPending &&
+            !states.isError &&
+            !installations.isError &&
+            !shown.length && (
+              <div
+                className="mp-agent-empty"
+                role="region"
+                aria-labelledby={emptyTitleId}
+              >
+                <span className="mp-agent-empty-icon" aria-hidden="true">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <rect
+                      x="3"
+                      y="4"
+                      width="18"
+                      height="16"
+                      rx="3"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="m7 9 3 3-3 3m6 0h4"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+                <div className="mp-agent-empty-copy">
+                  <h2 id={emptyTitleId}>{t("agentConnections.emptyTitle")}</h2>
+                  <p>{t("agentConnections.empty")}</p>
+                </div>
+                <div className="mp-agent-empty-actions">
+                  <Button size="sm" onClick={browseTools}>
+                    {t("agentConnections.browseTools")}
+                  </Button>
+                  {compact && rescanButton("outline")}
+                </div>
+              </div>
+            )}
+        </div>
+      </SortableContext>
+      {!compact && <WorkspaceDragOverlay />}
+    </DndContext>
+  );
+  const installationList = (
+    <div
+      className={
+        compact ? "mp-agent-install-list divide-y" : "agent-directory-rows"
+      }
+    >
+      {available.map((app) => (
+        <div
+          key={app}
+          role="group"
+          aria-label={name(app)}
+          className="mp-agent-install-row"
+        >
+          <div>
+            <span className="mp-agent-install-icon">
+              <ProviderIcon
+                icon={APP_ICON_NAME[app]}
+                name={name(app)}
+                size={compact ? 22 : 32}
+              />
+            </span>
+            <span className="mp-agent-install-name" title={name(app)}>
+              {name(app)}
+            </span>
+            {app === "codex" &&
+              ["failed", "stale_catalog"].includes(
+                connections[APP_IDS.indexOf(app)].data?.reloadState ?? "",
+              ) && (
+                <span className="mp-agent-status bad" role="status">
+                  {t(
+                    `agentConnections.states.${
+                      connections[APP_IDS.indexOf(app)].data?.reloadState ===
+                      "failed"
+                        ? "reloadFailed"
+                        : "catalogStale"
+                    }`,
+                  )}
+                </span>
+              )}
+            {installations.data?.[app] === true && (
+              <AgentVersionTag
+                app={app}
+                updates={updates}
+                disabled={rowBusy(app)}
+              />
+            )}
+          </div>
+          <div className="mp-agent-install-actions">
+            {(updates.installing === app ||
+              (!installations.isError &&
+                installations.data?.[app] === false)) && (
+              <AgentInstallButton
+                app={app}
+                updates={updates}
+                disabled={rowBusy(app)}
+                onSelect={() => updates.requestInstall(app, websites[app])}
+              />
+            )}
+            {supported.includes(app) && installations.data?.[app] === true && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!installations.data?.[app] || rowBusy(app)}
+                onClick={() => connect(app)}
+              >
+                {t("agentConnections.connect")}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                void settingsApi
+                  .openExternal(websites[app])
+                  .catch(() => setError(app, "agentConnections.failed"));
+              }}
+            >
+              <ExternalLink className="mr-2 h-3 w-3" />
+              {t("agentConnections.website")}
+            </Button>
+          </div>
+          {errorMessage(app)}
+        </div>
+      ))}
+    </div>
+  );
   return (
     <section
-      className={`vary-agents${compact ? " tray-agents" : ""}`}
+      className={`vary-agents ${compact ? "tray-agents" : "flex h-full min-h-0 flex-col"}`}
       data-testid="agent-connections-page"
     >
       {!compact && (
-        <header className="mp-agent-page-header">
+        <header className="agent-directory-header">
           <h1 className="mp-page-heading">{t("agentConnections.title")}</h1>
+          {rescanButton("outline")}
         </header>
       )}
       {(states.isError || installations.isError) && (
@@ -1405,237 +1682,95 @@ export function AgentConnectionsPage({
         disabled={!!busy || pendingRestarts.length > 0}
       />
       <AgentInstallDialog updates={updates} name={name} />
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        modifiers={[restrictWorkspaceSort]}
-        onDragEnd={reorder}
-        accessibility={{
-          screenReaderInstructions: {
-            draggable: t("agentConnections.sorting.hint"),
-          },
-          announcements: {
-            onDragStart: ({ active }) =>
-              t("agentConnections.sorting.pickedUp", {
-                app: name(active.id as AppId),
-              }),
-            onDragOver: ({ active, over }) =>
-              over ? announcePosition(active.id, over.id) : undefined,
-            onDragEnd: ({ active, over }) =>
-              over
-                ? t("agentConnections.sorting.dropped", {
-                    position: announcePosition(active.id, over.id),
-                  })
-                : t("agentConnections.sorting.cancelled"),
-            onDragCancel: () => t("agentConnections.sorting.cancelled"),
-          },
-        }}
-      >
-        <SortableContext items={shown} strategy={verticalListSortingStrategy}>
-          <div className="mp-list">
-            {(installations.isPending || states.isPending) &&
-              shown.length === 0 && (
-                <div
-                  role="status"
-                  aria-label={t("agentConnections.states.checking")}
-                >
-                  {[0, 1, 2].map((index) => (
-                    <div
-                      key={index}
-                      className="mp-agent-row mp-agent-placeholder"
-                      aria-hidden="true"
-                    >
-                      <span className="mp-agent-placeholder-icon" />
-                      <span className="mp-agent-placeholder-name" />
-                      <span className="mp-agent-placeholder-control" />
-                    </div>
-                  ))}
-                </div>
-              )}
-            {shown.map((app, index) => (
-              <Fragment key={app}>
-                {compact &&
-                  connectionRank(app) === 0 &&
-                  (index === 0 || connectionRank(shown[index - 1]) > 0) && (
-                    <p className="tray-unconfigured">
-                      {t("trayPanel.notConfigured")}
-                    </p>
-                  )}
-                {row(app)}
-              </Fragment>
-            ))}
-            {!installations.isPending &&
-              !states.isPending &&
-              !states.isError &&
-              !installations.isError &&
-              !shown.length && (
-                <div
-                  className="mp-agent-empty"
-                  role="region"
-                  aria-labelledby={emptyTitleId}
-                >
-                  <span className="mp-agent-empty-icon" aria-hidden="true">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                      <rect
-                        x="3"
-                        y="4"
-                        width="18"
-                        height="16"
-                        rx="3"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                      />
-                      <path
-                        d="m7 9 3 3-3 3m6 0h4"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </span>
-                  <div className="mp-agent-empty-copy">
-                    <h2 id={emptyTitleId}>
-                      {t("agentConnections.emptyTitle")}
-                    </h2>
-                    <p>{t("agentConnections.empty")}</p>
-                  </div>
-                  <div className="mp-agent-empty-actions">
-                    <Button size="sm" onClick={browseTools}>
-                      {t("agentConnections.browseTools")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={rescanBusy}
-                      aria-busy={rescanBusy}
-                      onClick={rescanInstallations}
-                    >
-                      <RefreshCw
-                        aria-hidden="true"
-                        className={`mr-2 h-3 w-3${rescanBusy ? " animate-spin" : ""}`}
-                      />
-                      {t("agentConnections.rescan")}
-                    </Button>
-                  </div>
-                </div>
-              )}
+      {compact ? (
+        <>
+          {installedPanel}
+          <details ref={moreTools} className="mp-agent-more">
+            <summary>
+              <span className="mp-agent-more-title">
+                <span>
+                  {t("agentConnections.moreTools", { count: other.length })}
+                </span>
+                <ChevronRight className="h-3 w-3" />
+              </span>
+              <span className="mp-agent-more-hint">
+                {t("agentConnections.moreHint")}
+              </span>
+            </summary>
+            <div className="mp-agent-more-body">
+              {installationList}
+              {rescanButton("ghost", "mt-3")}
+            </div>
+          </details>
+        </>
+      ) : (
+        <Tabs
+          className="flex min-h-0 flex-1 flex-col"
+          value={installationTab}
+          onValueChange={setInstallationTab}
+        >
+          <div className="agent-directory-toolbar shrink-0">
+            <TabsList
+              className="agent-directory-tabs"
+              aria-label={t("agentConnections.directory.tabs")}
+              slidingIndicator={false}
+            >
+              <TabsTrigger value="installed">
+                <PackageCheck size={16} aria-hidden="true" />
+                {t("agentConnections.directory.installed")}
+                <span className="agent-directory-count">{shown.length}</span>
+              </TabsTrigger>
+              <TabsTrigger value="notInstalled" ref={missingTab}>
+                <PackagePlus size={16} aria-hidden="true" />
+                {t("agentConnections.directory.notInstalled")}
+                {installations.data && (
+                  <span className="agent-directory-count">{other.length}</span>
+                )}
+              </TabsTrigger>
+            </TabsList>
+            <div className="agent-directory-search">
+              <Search size={16} aria-hidden="true" />
+              <Input
+                type="search"
+                aria-label={t("agentConnections.directory.search")}
+                placeholder={t("agentConnections.directory.search")}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
           </div>
-        </SortableContext>
-        {!compact && <WorkspaceDragOverlay />}
-      </DndContext>
-      <details ref={moreTools} className="mp-agent-more">
-        <summary>
-          <span className="mp-agent-more-title">
-            <span>
-              {t("agentConnections.moreTools", { count: other.length })}
-            </span>
-            <ChevronRight className="h-3 w-3" />
-          </span>
-          <span className="mp-agent-more-hint">
-            {t("agentConnections.moreHint")}
-          </span>
-        </summary>
-        <div className="mp-agent-more-body">
-          <div className="mp-agent-install-list divide-y">
-            {other.map((app) => (
-              <div
-                key={app}
-                role="group"
-                aria-label={name(app)}
-                className="mp-agent-install-row"
-              >
-                <div>
-                  <span className="mp-agent-install-icon">
-                    <ProviderIcon
-                      icon={APP_ICON_NAME[app]}
-                      name={name(app)}
-                      size={compact ? 22 : 32}
-                    />
-                  </span>
-                  <span className="mp-agent-install-name" title={name(app)}>
-                    {name(app)}
-                  </span>
-                  {app === "codex" &&
-                    ["failed", "stale_catalog"].includes(
-                      connections[APP_IDS.indexOf(app)].data?.reloadState ?? "",
-                    ) && (
-                      <span className="mp-agent-status bad" role="status">
-                        {t(
-                          `agentConnections.states.${
-                            connections[APP_IDS.indexOf(app)].data
-                              ?.reloadState === "failed"
-                              ? "reloadFailed"
-                              : "catalogStale"
-                          }`,
-                        )}
-                      </span>
-                    )}
-                  {installations.data?.[app] === true && (
-                    <AgentVersionTag
-                      app={app}
-                      updates={updates}
-                      disabled={rowBusy(app)}
-                    />
-                  )}
-                </div>
-                <div className="mp-agent-install-actions">
-                  {(updates.installing === app ||
-                    (!installations.isError &&
-                      installations.data?.[app] === false)) && (
-                    <AgentInstallButton
-                      app={app}
-                      updates={updates}
-                      disabled={rowBusy(app)}
-                      onSelect={() =>
-                        updates.requestInstall(app, websites[app])
-                      }
-                    />
-                  )}
-                  {supported.includes(app) &&
-                    installations.data?.[app] === true && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!installations.data?.[app] || rowBusy(app)}
-                        onClick={() => connect(app)}
-                      >
-                        {t("agentConnections.connect")}
-                      </Button>
-                    )}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      void settingsApi
-                        .openExternal(websites[app])
-                        .catch(() => setError(app, "agentConnections.failed"));
-                    }}
-                  >
-                    <ExternalLink className="mr-2 h-3 w-3" />
-                    {t("agentConnections.website")}
-                  </Button>
-                </div>
-                {errorMessage(app)}
-              </div>
-            ))}
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mt-3"
-            disabled={rescanBusy}
-            aria-busy={rescanBusy}
-            onClick={rescanInstallations}
+          <TabsContent
+            value="installed"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain focus-visible:ring-inset focus-visible:ring-offset-0"
           >
-            <RefreshCw
-              aria-hidden="true"
-              className={`mr-2 h-3 w-3${rescanBusy ? " animate-spin" : ""}`}
-            />
-            {t("agentConnections.rescan")}
-          </Button>
-        </div>
-      </details>
+            {filtered && shown.length > 0 && visible.length === 0
+              ? noMatches
+              : installedPanel}
+          </TabsContent>
+          <TabsContent
+            value="notInstalled"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain focus-visible:ring-inset focus-visible:ring-offset-0"
+          >
+            {installations.isPending ? (
+              <p role="status">{t("agentConnections.states.checking")}</p>
+            ) : installations.data && other.length > 0 ? (
+              available.length > 0 ? (
+                installationList
+              ) : (
+                noMatches
+              )
+            ) : installations.data && !installations.isError ? (
+              <div className="mp-agent-empty">
+                <div className="mp-agent-empty-copy">
+                  <h2 role="status">
+                    {t("agentConnections.directory.allInstalled")}
+                  </h2>
+                </div>
+              </div>
+            ) : null}
+          </TabsContent>
+        </Tabs>
+      )}
       <AppDialog
         open={!!modelControlRequest}
         pending={authorizingModel}
@@ -1749,6 +1884,13 @@ export function AgentConnectionsPage({
         {disconnecting === "codex" && (
           <p className="text-sm text-muted-foreground">
             {t("agentConnections.codexDisconnectNote")}
+          </p>
+        )}
+        {(disconnecting === "codex" || disconnecting === "claude") && (
+          <p className="text-sm text-muted-foreground">
+            {t("agentConnections.disconnectReopenNote", {
+              app: name(disconnecting),
+            })}
           </p>
         )}
         {errorMessage(disconnecting)}

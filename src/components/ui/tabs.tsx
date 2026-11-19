@@ -91,7 +91,7 @@ const TabsList = React.forwardRef<
           ref={indicatorRef}
           aria-hidden="true"
           data-testid="tabs-list-indicator"
-          className="pointer-events-none absolute left-0 top-0 z-0 rounded-md bg-blue-500 shadow-sm transition-[transform,width] duration-300 ease-out motion-reduce:transition-none dark:bg-blue-600"
+          className="pointer-events-none absolute left-0 top-0 z-0 rounded-md bg-accent transition-[transform,width] duration-300 ease-out motion-reduce:transition-none"
           style={{ visibility: "hidden" }}
         />
       )}
@@ -108,7 +108,7 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "relative z-10 inline-flex min-w-[120px] items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-transparent data-[state=active]:text-white data-[state=active]:shadow-none data-[state=inactive]:opacity-60 data-[state=inactive]:hover:opacity-100 data-[state=inactive]:hover:bg-muted/50",
+      "relative z-10 inline-flex min-h-9 min-w-[120px] items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-[13px] font-medium text-secondary-foreground ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:text-[var(--disabled-foreground)] data-[state=active]:bg-accent data-[state=active]:text-primary data-[state=inactive]:hover:bg-card",
       className,
     )}
     {...props}

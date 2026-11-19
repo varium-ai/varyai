@@ -935,10 +935,11 @@ async fn desktop_electron_probe_keeps_authentication_and_real_upstream_failures(
             }
             let response = request.send().await?;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-            assert_eq!(
-                response.json::<Value>().await?["error"]["code"],
-                "agent_connection_unavailable"
-            );
+            let rejection = response.json::<Value>().await?;
+            assert_eq!(rejection["error"]["code"], "agent_connection_unavailable");
+            assert!(rejection["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Vary AI") && message.contains("reopen")));
             assert!(rx.try_recv().is_err());
         }
     }

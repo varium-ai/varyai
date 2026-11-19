@@ -24,13 +24,7 @@
   border-radius: 14px;
   max-height: min(560px, var(--radix-popover-content-available-height));
   background: var(--mp-model-bg);
-  font:
-    400 13px/1.4 -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font: 400 13px/1.4 var(--mp-font);
   -webkit-backdrop-filter: blur(24px);
   backdrop-filter: blur(24px);
   -webkit-font-smoothing: antialiased;

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SecurityActivitySummary } from "./SecurityActivitySummary";
 
@@ -29,8 +29,7 @@ describe("SecurityActivitySummary", () => {
       isLoading: false,
       isError: false,
     });
-    const onOpenSecurity = vi.fn();
-    render(<SecurityActivitySummary onOpenSecurity={onOpenSecurity} />);
+    render(<SecurityActivitySummary />);
     for (const value of ["17", "4", "3", "7"])
       expect(screen.getByText(value)).toBeInTheDocument();
     expect(
@@ -43,14 +42,10 @@ describe("SecurityActivitySummary", () => {
       }),
     );
     expect(summary.mock.calls[0][0].appType).toBeUndefined();
-    fireEvent.click(
-      screen.getByRole("button", { name: "securityStats.viewLogs" }),
-    );
-    expect(onOpenSecurity).toHaveBeenCalledOnce();
   });
   it("does not render errors as successful zero totals", () => {
     summary.mockReturnValue({ isError: true });
-    render(<SecurityActivitySummary onOpenSecurity={() => {}} />);
+    render(<SecurityActivitySummary />);
     expect(screen.getAllByText("—")).toHaveLength(4);
   });
 });

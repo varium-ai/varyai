@@ -2,6 +2,7 @@
 // See third_party/routing-reference/LICENSE.
 import { useEffect, useRef, type CSSProperties } from "react";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
+import { attemptCandidateIndex } from "./routingAttempts";
 
 type Position = "source" | "hub" | number;
 type Leg = { wire: number; reverse?: boolean };
@@ -146,7 +147,7 @@ function packetPlayer(
 
   function hide() {
     packet.setAttribute("visibility", "hidden");
-    packet.classList.remove("held", "back", "err", "cancelled");
+    packet.classList.remove("held", "docked", "back", "err", "cancelled");
   }
   function reportFinished() {
     if (!reported && id) {
@@ -200,14 +201,23 @@ function packetPlayer(
         legs[index].reverse ? lengths[index] - distance : distance,
       );
     }
-    // Magpie's workspace pose clears each card by a dot; its tray uses the wire tips.
     const edge = compact ? 0 : Math.min(6, total / 4);
-    const distance =
-      edge + Math.max(0, Math.min(progress, 1)) * (total - 2 * edge);
+    const first = legs[0];
+    const last = legs[legs.length - 1];
+    const startsDocked = first.wire > 0 && first.reverse;
+    const endsDocked = last.wire > 0 && !last.reverse;
+    const start = startsDocked ? 0 : edge;
+    const end = endsDocked ? total : total - edge;
+    const fraction = Math.max(0, Math.min(progress, 1));
+    const distance = start + fraction * (end - start);
     try {
       const point = pointAt(distance);
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
       packet.setAttribute("transform", `translate(${point.x} ${point.y})`);
+      packet.classList.toggle(
+        "docked",
+        (startsDocked && fraction === 0) || (endsDocked && fraction === 1),
+      );
       packet.setAttribute("visibility", "visible");
     } catch {
       return false;
@@ -380,11 +390,8 @@ function packetPlayer(
       return;
     }
     for (const step of row.steps.slice(seen)) {
-      if (
-        step.kind === "attempt" &&
-        step.candidate != null &&
-        step.candidate >= 0
-      ) {
+      const index = attemptCandidateIndex(row, step);
+      if (index != null) {
         if (typeof destination === "number") {
           queue.push({
             legs: [{ wire: destination + 1, reverse: true }],
@@ -401,14 +408,11 @@ function packetPlayer(
           queue[0].to === "hub";
         if (fromSource) queue.pop();
         queue.push({
-          legs: [
-            ...(fromSource ? [{ wire: 0 }] : []),
-            { wire: step.candidate + 1 },
-          ],
+          legs: [...(fromSource ? [{ wire: 0 }] : []), { wire: index + 1 }],
           duration: compact ? 460 : fromSource ? 1400 : 900,
-          to: step.candidate,
+          to: index,
         });
-        destination = step.candidate;
+        destination = index;
       } else if (
         ["rejected", "first_token_timeout"].includes(step.kind) &&
         typeof destination === "number"

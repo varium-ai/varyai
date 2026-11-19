@@ -17,13 +17,26 @@ export type ApiProviderQuotaObservation = UseQueryResult<AllowanceSnapshot>;
 export const apiProviderQuotaKey = (record: RoutingUpstream) =>
   ["routing-provider-quota", record.id, record.revision] as const;
 
+// The backend resolves the credential destination from the selected key's URL.
+const quotaVendorPresets = new Set([
+  "deepseek",
+  "moonshot",
+  "zai",
+  "zhipu",
+  "kimi-code",
+  "minimax",
+  "mistral",
+  "modelscope",
+]);
+
 export function apiProviderQuotaEnabled(record: RoutingUpstream) {
   return (
     record.source.kind === "api" &&
     record.revision > 0 &&
     record.hasApiKey &&
-    globalProviderPresets.find((entry) => entry.id === record.presetId)
-      ?.kind !== "vendor"
+    (quotaVendorPresets.has(record.presetId ?? "") ||
+      globalProviderPresets.find((entry) => entry.id === record.presetId)
+        ?.kind !== "vendor")
   );
 }
 
@@ -67,9 +80,16 @@ export function apiProviderQuotaOptions(
       const snapshot = client.getQueryData<AllowanceSnapshot>(queryKey);
       const previous = snapshot?.quota;
       try {
-        const quota = await (client.getQueryState(queryKey)?.isInvalidated
-          ? routingUpstreamsApi.quota(record.id, record.revision, true)
-          : routingUpstreamsApi.quota(record.id, record.revision));
+        const force = client.getQueryState(queryKey)?.isInvalidated;
+        const quota = await routingUpstreamsApi.quota(
+          record.id,
+          record.revision,
+          ...(record.region === "coding"
+            ? ([force, true] as const)
+            : force
+              ? ([true] as const)
+              : ([] as const)),
+        );
         if (quota.status === "unsupported" && previous?.status === "ready") {
           return {
             quota: previous,

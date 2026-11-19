@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -264,7 +265,9 @@ export function NativeSubscriptionAccounts({
                   <span>{account.login}</span>
                 </label>
                 {account.plan && (
-                  <span className="cx-plan">{account.plan}</span>
+                  <span className="cx-plan">
+                    {subscriptionPlanLabel(account.plan)}
+                  </span>
                 )}
                 {accountId === account.id && (
                   <span className="cx-using">{t("provider.inUse")}</span>

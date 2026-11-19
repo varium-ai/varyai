@@ -1,6 +1,9 @@
-//! Read-only allowance observations for relay API keys.
+//! Read-only allowance observations for saved API keys.
 
 mod expiry;
+mod official;
+#[cfg(test)]
+mod official_tests;
 mod probe_cache;
 
 pub(crate) use expiry::observe as observe_expiry;
@@ -19,10 +22,18 @@ pub(crate) enum Status {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct Wallet {
+    unit: String,
+    amount: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Allowance {
     pub status: Status,
     pub balance: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub balances: Vec<Wallet>,
     #[serde(skip)]
     expiry: Option<i64>,
     pub tiers: Vec<QuotaTier>,
@@ -34,6 +45,7 @@ impl Allowance {
         Self {
             status,
             balance: None,
+            balances: vec![],
             expiry: None,
             tiers: vec![],
             retry_after_ms: None,
@@ -103,6 +115,7 @@ fn parse_sub2api(body: &Value) -> Option<Allowance> {
     Some(Allowance {
         status: Status::Ready,
         balance,
+        balances: vec![],
         expiry,
         tiers,
         retry_after_ms: None,
@@ -118,6 +131,7 @@ fn parse_new_api(body: &Value) -> Option<Allowance> {
     Some(Allowance {
         status: Status::Ready,
         balance: Some(balance),
+        balances: vec![],
         expiry: None,
         tiers: vec![],
         retry_after_ms: None,
@@ -146,7 +160,18 @@ static PROBES: LazyLock<probe_cache::ProbeCache> = LazyLock::new(|| {
 });
 
 /// Only the key's own queries are probed; panel login tokens are never requested.
-pub(crate) async fn query(base: &str, key: &str, force: bool) -> Result<Allowance, String> {
+pub(crate) async fn query(
+    base: &str,
+    key: &str,
+    force: bool,
+    coding: bool,
+) -> Result<Allowance, String> {
+    if key.trim().is_empty() {
+        return Ok(Allowance::empty(Status::Unauthorized));
+    }
+    if let Some(source) = official::Source::resolve(base, coding) {
+        return source.read(key).await;
+    }
     PROBES.query(base, key, force).await
 }
 
@@ -167,28 +192,58 @@ impl Endpoint {
 }
 
 async fn read(origin: &reqwest::Url, key: &str, endpoint: Endpoint) -> Result<Allowance, String> {
-    let client =
-        crate::proxy::http_client::get_without_redirects().map_err(|_| FAILED.to_owned())?;
     let url = origin
         .join(endpoint.path())
         .map_err(|_| FAILED.to_owned())?;
-    let mut response = client
-        .get(url)
-        .bearer_auth(key)
-        .header("Accept", "application/json")
+    let body = match fetch_json(url, key, Auth::Bearer).await? {
+        Ok(body) => body,
+        Err(status) => return Ok(Allowance::empty(status)),
+    };
+    let quota = match endpoint {
+        Endpoint::Sub2api => parse_sub2api(&body),
+        Endpoint::NewApi => parse_new_api(&body),
+    };
+    Ok(quota.unwrap_or_else(|| Allowance::empty(Status::Unsupported)))
+}
+
+enum Auth {
+    Bearer,
+    Raw,
+    OpenCode,
+}
+async fn fetch_json(
+    url: reqwest::Url,
+    key: &str,
+    auth: Auth,
+) -> Result<Result<Value, Status>, String> {
+    let client =
+        crate::proxy::http_client::get_without_redirects().map_err(|_| FAILED.to_owned())?;
+    let request = client.get(url).header("Accept", "application/json");
+    let request = match auth {
+        Auth::Bearer => request.bearer_auth(key),
+        Auth::Raw => request.header("Authorization", key),
+        Auth::OpenCode => {
+            let session = format!("ses_{:.26}", uuid::Uuid::new_v4().simple().to_string());
+            request
+                .bearer_auth(key)
+                .header("x-opencode-session", &session)
+                .header("x-opencode-session-id", &session)
+        }
+    };
+    let mut response = request
         .timeout(Duration::from_secs(8))
         .send()
         .await
         .map_err(|_| FAILED.to_owned())?;
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Ok(Allowance::empty(Status::Unauthorized));
+        return Ok(Err(Status::Unauthorized));
     }
     if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(FAILED.into());
     }
     if !status.is_success() {
-        return Ok(Allowance::empty(Status::Unsupported));
+        return Ok(Err(Status::Unsupported));
     }
     let mut bytes = vec![];
     while let Some(chunk) = response.chunk().await.map_err(|_| FAILED.to_owned())? {
@@ -197,13 +252,7 @@ async fn read(origin: &reqwest::Url, key: &str, endpoint: Endpoint) -> Result<Al
         }
         bytes.extend_from_slice(&chunk);
     }
-    let reading = serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|body| match endpoint {
-            Endpoint::Sub2api => parse_sub2api(&body),
-            Endpoint::NewApi => parse_new_api(&body),
-        });
-    Ok(reading.unwrap_or_else(|| Allowance::empty(Status::Unsupported)))
+    Ok(serde_json::from_slice(&bytes).map_err(|_| Status::Unsupported))
 }
 
 #[cfg(test)]

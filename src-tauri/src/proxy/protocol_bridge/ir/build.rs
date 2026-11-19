@@ -642,7 +642,9 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    if !omitted_search || body.get("tools").is_some() {
+    if body.get("tools").is_some()
+        || (!omitted_search && r.native.responses_tool_allowlist.is_none())
+    {
         if let Some(value) = choice(r, Protocol::Chat) {
             body["tool_choice"] = value;
         }
@@ -790,7 +792,12 @@ fn responses(r: &Request) -> Result<Value, ProxyError> {
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    if let Some(v) = choice(r, Protocol::Responses) {
+    if let Some(v) = r
+        .native
+        .responses_tool_allowlist
+        .clone()
+        .or_else(|| choice(r, Protocol::Responses))
+    {
         body["tool_choice"] = v;
     }
     if let Some(v) = r.parallel {
@@ -925,7 +932,9 @@ fn anthropic(r: &Request) -> Result<Value, ProxyError> {
     if let Some(v) = choice(r, Protocol::Anthropic) {
         body["tool_choice"] = v;
     }
-    if r.parallel == Some(false) {
+    if r.parallel == Some(false)
+        && (body.get("tools").is_some() || r.native.responses_tool_allowlist.is_none())
+    {
         if body.get("tool_choice").is_none() {
             body["tool_choice"] = json!({"type":"auto"});
         }

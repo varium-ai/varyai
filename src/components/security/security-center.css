@@ -1,0 +1,119 @@
+.security-center {
+  container-type: inline-size;
+  width: 100%;
+  max-width: 1232px;
+  margin-inline: auto;
+  padding: calc(var(--workspace-page-top, 24px) + 8px) 24px 32px;
+  color: hsl(var(--foreground));
+}
+.sc-header,
+.sc-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+}
+.sc-header > :first-child,
+.sc-panel-header > :first-child {
+  flex: 1 1 290px;
+  min-width: 0;
+}
+.sc-tab-bar {
+  margin-top: 16px;
+}
+.sc-surface {
+  min-width: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+}
+.sc-metric {
+  padding: 14px 16px;
+  background: var(--mp-list-bg, hsl(var(--card)));
+}
+.sc-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.sc-view-picker {
+  display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 3px;
+  border-radius: 8px;
+  background: hsl(var(--muted));
+  padding: 3px;
+}
+.sc-filters {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(110px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.sc-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sc-filters [role="combobox"] > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-notice {
+  padding: 8px 12px;
+  border-left: 2px solid hsl(var(--border));
+  background: hsl(var(--muted));
+  border-radius: 0 6px 6px 0;
+}
+.sc-rule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  min-height: 64px;
+  padding: 10px 16px;
+}
+.sc-rule-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.sc-panel-header {
+  border-bottom: 1px solid hsl(var(--border));
+  padding: 14px 18px;
+}
+.security-center .sc-surface th {
+  height: 38px;
+  font-size: 12px;
+  font-weight: 500;
+  color: hsl(var(--secondary-foreground));
+}
+.security-center .sc-surface td {
+  font-size: 12px;
+}
+@container (max-width: 620px) {
+  .sc-rule-copy {
+    flex-basis: 100%;
+  }
+  .sc-header label {
+    font-size: 12px;
+  }
+}
+@container (max-width: 420px) {
+  .sc-tab-bar [role="tab"] {
+    height: auto;
+    white-space: normal;
+    padding-inline: 6px;
+  }
+  .sc-metric {
+    padding: 10px;
+  }
+}

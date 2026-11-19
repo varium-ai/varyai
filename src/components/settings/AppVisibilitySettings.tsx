@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { FolderOpen } from "lucide-react";
-import { ToggleRow } from "@/components/ui/toggle-row";
+import { Plus, X } from "lucide-react";
+import { SettingSwitch } from "./SettingsGroup";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -10,6 +10,7 @@ import type { AppId } from "@/lib/api";
 import { APP_ICON_NAME, DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
 
 interface AppVisibilitySettingsProps {
+  showAppChoices?: boolean;
   settings: SettingsFormState;
   onChange: (updates: Partial<SettingsFormState>) => void;
 }
@@ -54,6 +55,7 @@ const APP_CONFIG: Array<{
 export function AppVisibilitySettings({
   settings,
   onChange,
+  showAppChoices = true,
 }: AppVisibilitySettingsProps) {
   const { t } = useTranslation();
 
@@ -79,43 +81,53 @@ export function AppVisibilitySettings({
   };
 
   return (
-    <section className="space-y-2">
-      <header className="space-y-1">
-        <h3 className="text-sm font-medium">
-          {t("settings.appVisibility.title")}
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.appVisibility.description")}
-        </p>
-      </header>
-      <div className="flex flex-wrap gap-3 rounded-xl border border-border-default bg-background p-4">
-        {APP_CONFIG.map((app) => {
-          const isVisible = visibleApps[app.id] ?? true;
-          // Disable button if this is the last visible app
-          const isDisabled = isVisible && visibleCount <= 1;
-
-          return (
-            <AppButton
-              key={app.id}
-              active={isVisible}
-              disabled={isDisabled}
-              onClick={() => handleToggle(app.id)}
-              icon={app.icon}
-              name={t(app.nameKey)}
-            >
-              {t(app.nameKey)}
-            </AppButton>
-          );
-        })}
-      </div>
-      <ToggleRow
-        icon={<FolderOpen className="h-4 w-4 text-emerald-500" />}
+    <>
+      {showAppChoices && (
+        <div className="settings-detail space-y-3">
+          <div className="setting-copy">
+            <h3>{t("settings.visibleApplications")}</h3>
+            <p>{t("settings.appVisibility.description")}</p>
+          </div>
+          {[true, false].map((active) => {
+            const apps = APP_CONFIG.filter(
+              ({ id }) => visibleApps[id] === active,
+            );
+            if (!apps.length) return null;
+            return (
+              <div key={String(active)} className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">
+                  {active
+                    ? t("settings.selectedApplications", {
+                        count: visibleCount,
+                      })
+                    : t("settings.addApplication")}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {apps.map((app) => (
+                    <AppButton
+                      key={app.id}
+                      active={active}
+                      disabled={active && visibleCount <= 1}
+                      onClick={() => handleToggle(app.id)}
+                      icon={app.icon}
+                      name={t(app.nameKey)}
+                    >
+                      {t(app.nameKey)}
+                    </AppButton>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <SettingSwitch
         title={t("settings.appVisibility.showProfileSwitcher")}
         description={t("settings.appVisibility.showProfileSwitcherDescription")}
         checked={settings.showProfileSwitcher ?? true}
         onCheckedChange={(value) => onChange({ showProfileSwitcher: value })}
       />
-    </section>
+    </>
   );
 }
 
@@ -142,16 +154,19 @@ function AppButton({
       onClick={onClick}
       disabled={disabled}
       size="sm"
-      variant={active ? "default" : "ghost"}
+      variant="ghost"
+      aria-pressed={active}
       className={cn(
-        "h-12 min-w-[120px] w-auto gap-2.5 rounded-xl px-5 text-sm",
+        "h-7 gap-1.5 rounded-md px-2 text-xs font-medium",
         active
-          ? "shadow-sm"
-          : "text-muted-foreground hover:text-foreground hover:bg-muted",
+          ? "bg-accent text-secondary-foreground"
+          : "border border-border bg-card text-muted-foreground",
       )}
     >
-      <ProviderIcon icon={icon} name={name} size={18} />
+      {!active && <Plus aria-hidden="true" size={12} />}
+      <ProviderIcon icon={icon} name={name} size={14} />
       {children}
+      {active && <X aria-hidden="true" size={12} />}
     </Button>
   );
 }

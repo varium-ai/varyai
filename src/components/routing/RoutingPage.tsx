@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import type { EditingState } from "@/hooks/useWorkspaceEditing";
 import { IntentRoutingPanel } from "./IntentRoutingPanel";
 import { RoutingStage } from "./RoutingStage";
+import { liveRoutingSources, routeInProgress } from "./useRoutingFlights";
 import { routingModelLabel } from "@/lib/routingModelLabel";
 import { AccountMask } from "@/components/AccountLabel";
 import { Button } from "@/components/ui/button";
@@ -18,9 +19,6 @@ import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import "./routing.css";
 
 type Row = RoutingTrace;
-function live(row?: Row) {
-  return row?.state === "routing" || row?.state === "streaming";
-}
 function rerouted(row: Row) {
   return row.steps.filter((step) => step.kind === "attempt").length > 1;
 }
@@ -60,10 +58,11 @@ export function RoutingPage({
     listener.data?.running && listener.data.port > 0
       ? `${listener.data.address.includes(":") ? `[${listener.data.address}]` : listener.data.address}:${listener.data.port}`
       : undefined;
+  const modelLabel = (row: Row) =>
+    routingModelLabel(row, modelCatalog.data ?? []) ||
+    t("routingPage.modelUnavailable");
   function requestedModel(row: Row) {
-    const label =
-      routingModelLabel(row, modelCatalog.data ?? []) ||
-      t("routingPage.modelUnavailable");
+    const label = modelLabel(row);
     return (
       <code
         className="rt-model-label"
@@ -81,13 +80,17 @@ export function RoutingPage({
     enabled: masked || rows.some((row) => row.candidates.length > 0),
     staleTime: 30000,
   });
-  const shown = rows[0];
-  const focusedRequests = rows.filter(
-    (row) =>
-      row.agent === shown?.agent &&
-      row.model === shown.model &&
-      row.session === shown.session,
-  );
+  const sources = liveRoutingSources(rows, trace.dataUpdatedAt);
+  const shown = sources[0];
+  const sourceIds = new Set(sources.map((source) => source.agent));
+  const concurrent = rows.filter((row) => sourceIds.has(row.agent));
+  const multipleRoutes =
+    sources.length > 1 ||
+    concurrent.some(
+      (row) =>
+        routeInProgress(row) &&
+        (row.model !== shown?.model || row.session !== shown.session),
+    );
   const accounts = trace.data?.accounts ?? [];
   const accountName = (candidate: {
     providerId: string;
@@ -143,15 +146,10 @@ export function RoutingPage({
       <section className="rt" aria-label={t("routingPage.stage")}>
         <div className="rt-top">
           <div className="rt-what">
-            {shown ? (
-              <>
-                {requestedModel(shown)}
-                {shown.candidates.length > 0 && (
-                  <span className="rt-route-summary">
-                    {t("routingPage.seatsOn", { n: shown.candidates.length })}
-                  </span>
-                )}
-              </>
+            {multipleRoutes ? (
+              <b>{t("routingPage.stage")}</b>
+            ) : shown ? (
+              requestedModel(shown)
             ) : (
               <b>
                 {t(
@@ -162,19 +160,21 @@ export function RoutingPage({
               </b>
             )}
           </div>
-          <p className="rt-mode">
-            {shown && !shown.candidates.length
-              ? t(
-                  live(shown)
-                    ? "routingPage.planningCandidates"
-                    : "routingPage.noCandidatesRecorded",
-                )
-              : shown?.candidates.length === 1
-                ? t("routingPage.singleSeat")
-                : shown
-                  ? t("routingPage.candidateSeats")
-                  : t("routingPage.emptyStage")}
-          </p>
+          {!multipleRoutes && (
+            <p className="rt-mode">
+              {shown && !shown.candidates.length
+                ? t(
+                    routeInProgress(shown)
+                      ? "routingPage.planningCandidates"
+                      : "routingPage.noCandidatesRecorded",
+                  )
+                : shown?.candidates.length === 1
+                  ? t("routingPage.singleSeat")
+                  : shown
+                    ? t("routingPage.candidateSeats")
+                    : t("routingPage.emptyStage")}
+            </p>
+          )}
         </div>
         <RoutingStage
           row={shown}
@@ -183,19 +183,15 @@ export function RoutingPage({
           animate={running}
           replay={false}
           speed={1}
-          requestedModel={
-            shown
-              ? routingModelLabel(shown, modelCatalog.data ?? []) ||
-                t("routingPage.modelUnavailable")
-              : undefined
-          }
+          modelLabel={modelLabel}
           address={address}
           currentAccounts={accounts}
-          concurrent={focusedRequests}
+          concurrent={concurrent}
+          sources={sources}
           liveObservations={running}
         />
         <div className={`rt-foot${shown ? "" : " idle"}`}>
-          {shown && (
+          {shown && !multipleRoutes && (
             <p className="rt-cap" aria-live="polite">
               {t(`routingPage.state.${shown.state}`)}
             </p>

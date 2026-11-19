@@ -2,7 +2,7 @@
   --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23637184' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 .dark {
-  --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2399acc5' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2398a2b1' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /* Keep page-specific control sizes while sharing the single-select surface. */
@@ -31,6 +31,12 @@ select:not([multiple]):not([size]):where(:not(.cx-signing-proxy select)) {
   padding-inline-end: 36px;
   text-overflow: ellipsis;
   cursor: pointer;
+  transition: border-color var(--interaction-duration) var(--interaction-easing);
+}
+select:not([multiple]):not([size]):where(
+    :not(.cx-signing-proxy select)
+  ):hover:enabled {
+  border-color: var(--border-strong);
 }
 select:not([multiple]):not([size]):where(
     :not(.cx-signing-proxy select)
@@ -42,7 +48,8 @@ select:not([multiple]):not([size]):where(
     :not(.cx-signing-proxy select)
   ):disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  color: var(--disabled-foreground);
+  background-color: var(--mp-card-2);
 }
 
 @media (forced-colors: active) {

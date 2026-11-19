@@ -1,6 +1,49 @@
 use super::trace::*;
 use std::{sync::Arc, time::Instant};
 
+#[test]
+fn live_session_titles_are_exact_cached_and_excluded_from_history(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store = Arc::new(Store::with_history(dir.path().join("history"))?);
+    let now = Instant::now();
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let first = store.begin("codex", "fixture", "Fixture", "ordered", now);
+    let second = store.begin("claude", "fixture", "Fixture", "ordered", now);
+    let unrelated = store.begin("codex", "fixture", "Fixture", "ordered", now);
+    for request in [&first, &second] {
+        request.native_session("synthetic-native-session");
+    }
+    unrelated.native_session("synthetic-other-session");
+    first.speed(500.0, 20);
+    first.finish(200, State::Completed);
+    second.speed(500.0, 10);
+    let titles = |agent: &str| {
+        vec![(
+            "synthetic-native-session".into(),
+            format!("Synthetic {agent} title"),
+        )]
+    };
+    let live = store.live_requests(store.snapshot(), titles);
+    let encoded = serde_json::to_value(live)?;
+    assert!(encoded[0].get("sessionTitle").is_none());
+    assert_eq!(encoded[1]["sessionTitle"], "Synthetic claude title");
+    assert_eq!(encoded[1]["outputTokensPerSecond"], 20.0);
+    assert_eq!(encoded[2]["sessionTitle"], "Synthetic codex title");
+    assert_eq!(encoded[2]["outputTokensPerSecond"], 40.0);
+    assert!(!encoded.to_string().contains("synthetic-native-session"));
+    let cached = store.live_requests(store.snapshot(), |_| panic!("title cache missed"));
+    assert_eq!(
+        serde_json::to_value(cached)?[2]["sessionTitle"],
+        encoded[2]["sessionTitle"]
+    );
+    store.flush_history()?;
+    let history = serde_json::to_string(&store.history(Some(&day))?)?;
+    assert!(!history.contains("Synthetic codex title"));
+    assert!(!history.contains("synthetic-native-session"));
+    Ok(())
+}
+
 fn candidate() -> Candidate {
     Candidate {
         key_id: None,

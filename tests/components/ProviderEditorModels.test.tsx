@@ -278,12 +278,22 @@ it("filters model names and IDs without treating the provider name as a model ma
 });
 
 it("can select none from a vendor-served list even when there are no explicit picks", () => {
-  render(<Editor vendorMode />);
+  render(<Editor vendorMode modelCatalog={catalog.slice(0, 4)} />);
   const all = screen.getByRole("checkbox", {
     name: "providerEditor.selectAll",
   });
   expect(all).toBeEnabled();
   expect(all).toHaveClass("pv-checkbox-input");
+  expect(all).toBeChecked();
+  const first = screen.getByRole("button", { name: "chat-fixture" });
+  const second = screen.getByRole("button", { name: "chat-0" });
+  expect(first).toHaveAttribute("aria-pressed", "true");
+  expect(second).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(first);
+  expect(all).toBePartiallyChecked();
+  expect(first).toHaveAttribute("aria-pressed", "false");
+  expect(second).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(all);
   expect(all).toBeChecked();
   fireEvent.click(all);
   expect(screen.getByRole("button", { name: "chat-fixture" })).toHaveAttribute(
@@ -291,6 +301,28 @@ it("can select none from a vendor-served list even when there are no explicit pi
     "false",
   );
   expect(all).not.toBeChecked();
+});
+
+it("limits the initial vendor selection before filtering and preserves hidden picks", () => {
+  render(<Editor vendorMode />);
+  const all = screen.getByRole("checkbox", {
+    name: "providerEditor.selectAll",
+  });
+  expect(all).toBePartiallyChecked();
+  expect(screen.getByRole("button", { name: "chat-23" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  const search = screen.getByRole("searchbox");
+  fireEvent.change(search, { target: { value: "chat-fixture" } });
+  expect(all).toBeChecked();
+  fireEvent.click(all);
+  fireEvent.change(search, { target: { value: "" } });
+  expect(screen.getByRole("button", { name: "chat-0" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(all).toBePartiallyChecked();
 });
 
 it("supports mixed selection, the select-all label and Space keyboard toggles", async () => {

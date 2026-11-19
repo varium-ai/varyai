@@ -16,6 +16,7 @@ use crate::proxy::{
         canonical_json_string, canonicalize_json_string_if_parseable, canonicalize_tool_arguments,
         short_sha256_hex,
     },
+    protocol_bridge::ir::parse::ResponsesToolAllowlist,
     security::history_provenance::{
         DlpHistoryLeafField, DlpHistoryMapping, DlpHistoryProjection, DlpHistorySeparator,
         DlpHistoryTarget, DlpHistoryTrace,
@@ -103,6 +104,39 @@ pub(crate) struct CodexToolContext {
 impl CodexToolContext {
     pub(crate) fn chat_tools(&self) -> &[Value] {
         &self.chat_tools
+    }
+
+    pub(super) fn select_tools(
+        &self,
+        choice: &Value,
+    ) -> Result<(std::borrow::Cow<'_, [Value]>, Option<&'static str>), ProxyError> {
+        let Some(allowlist) = ResponsesToolAllowlist::parse(choice)? else {
+            return Ok((std::borrow::Cow::Borrowed(&self.chat_tools), None));
+        };
+        let tools: Vec<_> = self
+            .chat_tools
+            .iter()
+            .filter(|tool| {
+                tool["function"]["name"]
+                    .as_str()
+                    .and_then(|name| self.lookup_chat_name(name))
+                    .is_some_and(|spec| {
+                        let kind = match spec.kind {
+                            CodexToolKind::Function | CodexToolKind::Namespace => "function",
+                            CodexToolKind::Custom => "custom",
+                            CodexToolKind::ToolSearch => return false,
+                        };
+                        allowlist.contains(
+                            spec.namespace.as_deref().unwrap_or_default(),
+                            kind,
+                            &spec.name,
+                        )
+                    })
+            })
+            .cloned()
+            .collect();
+        let mode = allowlist.mode(!tools.is_empty())?;
+        Ok((std::borrow::Cow::Owned(tools), Some(mode)))
     }
 
     pub(crate) fn lookup_chat_name(&self, chat_name: &str) -> Option<&CodexToolSpec> {
@@ -349,9 +383,9 @@ pub(crate) fn responses_to_chat_completions_with_reasoning_and_history(
 
     apply_reasoning_options(&mut result, body, model, reasoning_config);
 
-    let tools = tool_context.chat_tools();
+    let (tools, allowed_mode) = tool_context.select_tools(&body["tool_choice"])?;
     if !tools.is_empty() {
-        let mut tools = tools.to_vec();
+        let mut tools = tools.into_owned();
         for tool in &mut tools {
             // Match Magpie only at the Chat wire boundary. The shared tool
             // context still carries strict metadata for native Anthropic.
@@ -362,7 +396,9 @@ pub(crate) fn responses_to_chat_completions_with_reasoning_and_history(
         result["tools"] = json!(tools);
     }
 
-    if let Some(tool_choice) = body.get("tool_choice") {
+    if let Some(mode) = allowed_mode {
+        result["tool_choice"] = json!(mode);
+    } else if let Some(tool_choice) = body.get("tool_choice") {
         result["tool_choice"] = responses_tool_choice_to_chat(tool_choice, &tool_context);
     }
 

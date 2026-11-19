@@ -5,6 +5,7 @@ import {
   type RoutingUpstream,
   type CodexProviderEditor,
 } from "@/lib/api/routingUpstreams";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useCodexProviderQuotas } from "@/lib/query/codexProviderQuota";
 import { ApiProviderQuota } from "./ApiProviderQuota";
 import { SubscriptionAccountQuota } from "./SubscriptionAccountQuota";
@@ -52,18 +53,7 @@ function CodexListQuota({
   }
   const queries = useCodexProviderQuotas(editor ? accounts : [], !!card);
   if (!editor) {
-    if (card)
-      return (
-        <ProviderQuotaCard
-          name={record.name}
-          items={[]}
-          card={card}
-          fetching={observation.isFetching}
-          loading={observation.isFetching}
-          status={`codexProvider.${record.reauthRequired === true ? "quotaLoginRequired" : observation.isFetching ? "quotaLoading" : observation.isError ? "quotaFailed" : "quotaUnknown"}`}
-          refresh={() => void observation.refetch({ cancelRefetch: false })}
-        />
-      );
+    if (card) return null;
     return (
       <SubscriptionQuotaSummary
         label={`${t("subscriptionProvider.allowance")} ${record.name}`}
@@ -75,110 +65,116 @@ function CodexListQuota({
     );
   }
   const Container = card ? "div" : "span";
-  return (
-    <Container className="pv-list-quotas">
-      {accounts.map((account, index) => {
-        const query = queries[index];
-        const quota = query.data?.quota;
-        const valid =
-          account.ready && quota?.credentialStatus === "valid" && quota.success;
-        const tiers = valid
-          ? quota.tiers.filter((tier) => Number.isFinite(tier.utilization))
-          : [];
-        const held =
-          valid &&
-          (quota.codex?.allowed === false ||
-            quota.codex?.limitReached === true ||
-            quota.codex?.spendControl?.reached === true);
-        const balance = valid ? quota.codex?.credits?.balance : null;
-        const status =
-          !account.ready || quota?.credentialStatus === "expired"
-            ? "quotaLoginRequired"
-            : quota?.credentialStatus === "not_found"
-              ? "quotaCredentialsMissing"
-              : quota?.credentialStatus === "parse_error"
-                ? "quotaCredentialsInvalid"
-                : !query.data
-                  ? "quotaLoading"
-                  : query.data.failed
-                    ? tiers.length
-                      ? "quotaStale"
-                      : "quotaFailed"
-                    : !tiers.length && !held && balance == null
-                      ? "quotaEmpty"
-                      : null;
-        if (card)
-          return (
-            <ProviderQuotaCard
-              key={account.id}
-              name={account.login}
-              title={[
-                record.name,
-                account.login,
-                account.plan ??
-                  record.subscriptionPlans?.filter(Boolean).join(" · "),
-              ]
+  const accountCards = accounts.map((account, index) => {
+    const query = queries[index];
+    const quota = query.data?.quota;
+    const valid =
+      account.ready && quota?.credentialStatus === "valid" && quota.success;
+    const tiers = valid
+      ? quota.tiers.filter((tier) => Number.isFinite(tier.utilization))
+      : [];
+    const held =
+      valid &&
+      (quota.codex?.allowed === false ||
+        quota.codex?.limitReached === true ||
+        quota.codex?.spendControl?.reached === true);
+    const balance = valid ? quota.codex?.credits?.balance : null;
+    const hasReading = tiers.length > 0 || held || !!balance?.trim();
+    if (card && !hasReading) return null;
+    const status =
+      !account.ready || quota?.credentialStatus === "expired"
+        ? "quotaLoginRequired"
+        : quota?.credentialStatus === "not_found"
+          ? "quotaCredentialsMissing"
+          : quota?.credentialStatus === "parse_error"
+            ? "quotaCredentialsInvalid"
+            : !query.data
+              ? "quotaLoading"
+              : query.data.failed
+                ? hasReading
+                  ? "quotaStale"
+                  : "quotaFailed"
+                : !tiers.length && !held && balance == null
+                  ? "quotaEmpty"
+                  : null;
+    if (card)
+      return (
+        <ProviderQuotaCard
+          key={account.id}
+          name={account.login}
+          title={[
+            record.name,
+            account.login,
+            subscriptionPlanLabel(account.plan) ??
+              record.subscriptionPlans
+                ?.map(subscriptionPlanLabel)
                 .filter(Boolean)
-                .join(" · ")}
-              card={card}
-              items={tiers.map((tier) => ({
-                tier,
-                label: t(
-                  `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
-                  { defaultValue: tier.name },
-                ),
-              }))}
-              status={status ? `codexProvider.${status}` : null}
-              fetching={query.isFetching}
-              loading={!query.data && query.isFetching}
-              disabled={!account.ready}
-              sample={
-                query.data?.observedAt && quota?.accountIdentity
-                  ? {
-                      scope: `codex:${quota.accountIdentity}`,
-                      at: query.data.observedAt,
-                    }
-                  : undefined
-              }
-              refresh={() => void query.refetch({ cancelRefetch: false })}
-            >
-              {held && <span>{t("codexProvider.quotaHeld")}</span>}
-              {balance != null && (
-                <span>{t("codexProvider.creditBalance", { balance })}</span>
-              )}
-              {account.ready && (
-                <CodexQuotaControls account={account.id} name={account.login} />
-              )}
-            </ProviderQuotaCard>
-          );
-        return (
-          <span className="pv-list-quota-account" key={account.id}>
-            {accounts.length > 1 && (
-              <span className="pv-quota-account-label">{account.login}</span>
-            )}
-            <SubscriptionQuotaSummary
-              label={`${t("subscriptionProvider.allowance")} ${record.name}`}
-              fetching={query.isFetching}
-              loading={!query.data && query.isFetching}
-              items={tiers.map((tier) => ({
-                tier,
-                label: t(
-                  `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
-                  { defaultValue: tier.name },
-                ),
-              }))}
-              status={status ? `codexProvider.${status}` : null}
-            >
-              {held && <span>{t("codexProvider.quotaHeld")}</span>}
-              {balance != null && (
-                <span>{t("codexProvider.creditBalance", { balance })}</span>
-              )}
-            </SubscriptionQuotaSummary>
-          </span>
-        );
-      })}
-    </Container>
+                .join(" · "),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          card={card}
+          items={tiers.map((tier) => ({
+            tier,
+            label: t(
+              `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
+              { defaultValue: tier.name },
+            ),
+          }))}
+          status={status ? `codexProvider.${status}` : null}
+          fetching={query.isFetching}
+          loading={!query.data && query.isFetching}
+          disabled={!account.ready}
+          sample={
+            query.data?.observedAt && quota?.accountIdentity
+              ? {
+                  scope: `codex:${quota.accountIdentity}`,
+                  at: query.data.observedAt,
+                }
+              : undefined
+          }
+          refresh={() => void query.refetch({ cancelRefetch: false })}
+        >
+          {held && <span>{t("codexProvider.quotaHeld")}</span>}
+          {balance != null && (
+            <span>{t("codexProvider.creditBalance", { balance })}</span>
+          )}
+          {account.ready && (
+            <CodexQuotaControls account={account.id} name={account.login} />
+          )}
+        </ProviderQuotaCard>
+      );
+    return (
+      <span className="pv-list-quota-account" key={account.id}>
+        {accounts.length > 1 && (
+          <span className="pv-quota-account-label">{account.login}</span>
+        )}
+        <SubscriptionQuotaSummary
+          label={`${t("subscriptionProvider.allowance")} ${record.name}`}
+          fetching={query.isFetching}
+          loading={!query.data && query.isFetching}
+          items={tiers.map((tier) => ({
+            tier,
+            label: t(
+              `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
+              { defaultValue: tier.name },
+            ),
+          }))}
+          status={status ? `codexProvider.${status}` : null}
+        >
+          {held && <span>{t("codexProvider.quotaHeld")}</span>}
+          {balance != null && (
+            <span>{t("codexProvider.creditBalance", { balance })}</span>
+          )}
+        </SubscriptionQuotaSummary>
+      </span>
+    );
+  });
+  if (card && !accountCards.some(Boolean)) return null;
+  const content = (
+    <Container className="pv-list-quotas">{accountCards}</Container>
   );
+  return card?.renderGroup ? card.renderGroup(content) : content;
 }
 
 export function ProviderListQuota({

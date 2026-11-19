@@ -5,18 +5,12 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { motion } from "framer-motion";
 import {
   FolderSearch,
-  AppWindow,
-  Bell,
   Loader2,
   Save,
-  Server,
-  SlidersHorizontal,
-  type LucideIcon,
   Database,
   Cloud,
   ScrollText,
@@ -46,7 +40,6 @@ import { ThemeSettings } from "@/components/settings/ThemeSettings";
 import { NotificationPermissionSettings } from "@/components/settings/NotificationPermissionSettings";
 import { WindowSettings } from "@/components/settings/WindowSettings";
 import { AppVisibilitySettings } from "@/components/settings/AppVisibilitySettings";
-import { TerminalSettings } from "@/components/settings/TerminalSettings";
 import { DirectorySettings } from "@/components/settings/DirectorySettings";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
@@ -60,7 +53,8 @@ import { ConnectivityCheckConfigPanel } from "@/components/usage/ConnectivityChe
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { useSettings } from "@/hooks/useSettings";
 import { useImportExport } from "@/hooks/useImportExport";
-import { cn } from "@/lib/utils";
+import { SettingsGroup } from "./SettingsGroup";
+import "./settings-page.css";
 import { useQuery } from "@tanstack/react-query";
 import { proxyApi } from "@/lib/api/proxy";
 import { useTranslation } from "react-i18next";
@@ -72,60 +66,6 @@ interface SettingsDialogProps {
   onOpenChange: (open: boolean) => void;
   onImportSuccess?: () => void | Promise<void>;
   initialTab?: "general" | "routing" | "advanced" | "about";
-}
-
-interface SettingsPanelProps {
-  icon: LucideIcon;
-  title: string;
-  description?: string;
-  children: ReactNode;
-  className?: string;
-  flush?: boolean;
-  hideHeader?: boolean;
-}
-
-function SettingsPanel({
-  icon: Icon,
-  title,
-  description,
-  children,
-  className = "",
-  flush = false,
-  hideHeader = false,
-}: SettingsPanelProps) {
-  return (
-    <section
-      className={cn(
-        "rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm dark:border-border dark:bg-card sm:p-6",
-        flush && "p-0",
-        className,
-      )}
-    >
-      {!hideHeader && (
-        <div
-          className={cn(
-            "mb-5 flex items-start gap-3.5",
-            flush && "px-5 pt-5 sm:px-6 sm:pt-6",
-          )}
-        >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-600 shadow-sm dark:border-blue-500/20 dark:bg-blue-950/30 dark:text-blue-300">
-            <Icon className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-base font-bold tracking-tight text-slate-900 dark:text-foreground">
-              {title}
-            </h2>
-            {description ? (
-              <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-muted-foreground">
-                {description}
-              </p>
-            ) : null}
-          </div>
-        </div>
-      )}
-      {children}
-    </section>
-  );
 }
 
 export function SettingsPage({
@@ -285,7 +225,7 @@ export function SettingsPage({
   ];
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden px-5 pt-5 sm:px-8">
+    <div className="settings-page mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden">
       {isBusy ? (
         <div className="flex flex-1 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -298,32 +238,32 @@ export function SettingsPage({
           }}
           className="flex min-h-0 flex-1 flex-col"
         >
-          <div className="space-y-5 pb-5">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <span className="shrink-0 text-sm font-medium text-slate-500 dark:text-muted-foreground">
-                {t("settings.categoryLabel")}
-              </span>
+          <header className="settings-header">
+            <h1>{t("settings.title")}</h1>
+            {activeTab === "general" && <p>{t("settings.statusNotice")}</p>}
+            <div className="mt-4 flex flex-wrap">
               <TabsList
+                aria-label={t("settings.categoryLabel")}
                 slidingIndicator={false}
-                className="-m-1 flex h-auto max-w-full flex-wrap justify-start gap-2 overflow-visible bg-transparent p-1"
+                className="inline-flex h-auto max-w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-muted p-1"
               >
                 {tabItems.map((tab) => (
                   <TabsTrigger
                     key={tab.value}
                     value={tab.value}
-                    className="min-w-0 rounded-xl border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-700 shadow-none transition-all data-[state=active]:border-blue-600 data-[state=active]:bg-white data-[state=active]:text-blue-600 data-[state=active]:shadow-sm data-[state=inactive]:opacity-100 data-[state=inactive]:hover:border-slate-300 data-[state=inactive]:hover:bg-slate-50 dark:border-border dark:bg-card dark:text-slate-300 dark:data-[state=active]:border-blue-400 dark:data-[state=active]:bg-card dark:data-[state=active]:text-blue-300 dark:data-[state=inactive]:hover:bg-muted"
+                    className="min-h-8 min-w-0 px-3 py-1 data-[state=active]:bg-card data-[state=active]:shadow-sm"
                   >
                     {tab.label}
                   </TabsTrigger>
                 ))}
               </TabsList>
             </div>
-          </div>
+          </header>
 
           <div className="flex-1 min-h-0 flex flex-col">
             <div
               ref={tabScrollContainerRef}
-              className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-8"
+              className="flex-1 overflow-y-auto overflow-x-hidden pb-8"
             >
               <TabsContent value="general" className="mt-0">
                 {settings ? (
@@ -333,74 +273,38 @@ export function SettingsPage({
                     transition={{ duration: 0.3 }}
                     className="space-y-5"
                   >
-                    <SettingsPanel
-                      icon={SlidersHorizontal}
-                      title={t("settings.general")}
-                      description={t("settings.statusNotice")}
-                      hideHeader
-                    >
-                      <div className="grid gap-6 md:grid-cols-2">
-                        <LanguageSettings
-                          value={settings.language}
-                          onChange={(lang) =>
-                            handleAutoSave({ language: lang })
-                          }
-                        />
-                        <ThemeSettings />
+                    <SettingsGroup title={t("settings.appearanceLanguage")}>
+                      <LanguageSettings
+                        value={settings.language}
+                        onChange={(language) => handleAutoSave({ language })}
+                      />
+                      <ThemeSettings />
+                    </SettingsGroup>
+                    <SettingsGroup title={t("settings.appVisibility.title")}>
+                      <AppVisibilitySettings
+                        settings={settings}
+                        onChange={handleAutoSave}
+                        showAppChoices={!globalResourcesOnly}
+                      />
+                    </SettingsGroup>
+                    <WindowSettings
+                      settings={settings}
+                      onChange={handleAutoSave}
+                    />
+                    <SettingsGroup title={t("privacy.title")}>
+                      <div className="settings-detail">
+                        <PrivacySettings />
                       </div>
-                    </SettingsPanel>
-
-                    <SettingsPanel
-                      icon={SlidersHorizontal}
-                      title={t("privacy.title")}
-                    >
-                      <PrivacySettings />
-                    </SettingsPanel>
-
+                    </SettingsGroup>
+                    <SettingsGroup title={t("settings.permissions.title")}>
+                      <div className="settings-detail">
+                        <NotificationPermissionSettings />
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          {t("settings.permissions.deliveryHint")}
+                        </p>
+                      </div>
+                    </SettingsGroup>
                     <LongConversationFallback />
-
-                    {!globalResourcesOnly && (
-                      <SettingsPanel
-                        icon={Server}
-                        title={t("settings.appVisibility.title")}
-                        description={t("settings.appVisibility.description")}
-                      >
-                        <div className="space-y-6">
-                          <AppVisibilitySettings
-                            settings={settings}
-                            onChange={handleAutoSave}
-                          />
-                        </div>
-                      </SettingsPanel>
-                    )}
-
-                    <SettingsPanel
-                      icon={Bell}
-                      title={t("settings.permissions.title")}
-                      description={t("settings.permissions.deliveryHint")}
-                    >
-                      <NotificationPermissionSettings />
-                    </SettingsPanel>
-
-                    <SettingsPanel
-                      icon={AppWindow}
-                      title={t("settings.windowBehavior")}
-                    >
-                      <div className="space-y-6">
-                        <div className="grid gap-6 border-t border-slate-200/80 pt-6 dark:border-border md:grid-cols-2">
-                          <WindowSettings
-                            settings={settings}
-                            onChange={handleAutoSave}
-                          />
-                          <TerminalSettings
-                            value={settings.preferredTerminal}
-                            onChange={(terminal) =>
-                              handleAutoSave({ preferredTerminal: terminal })
-                            }
-                          />
-                        </div>
-                      </div>
-                    </SettingsPanel>
                   </motion.div>
                 ) : null}
               </TabsContent>
@@ -425,228 +329,218 @@ export function SettingsPage({
 
               <TabsContent value="advanced" className="space-y-6 mt-0 pb-4">
                 {settings ? (
-                  <SettingsPanel
-                    icon={SlidersHorizontal}
-                    title={t("settings.tabAdvanced")}
-                    description={t("settings.advanced.configDir.description")}
-                    flush
-                    hideHeader
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className="space-y-4"
                   >
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.3 }}
-                      className="space-y-4 p-5 sm:p-6"
+                    <Accordion
+                      type="multiple"
+                      defaultValue={[]}
+                      className="w-full space-y-4"
                     >
-                      <Accordion
-                        type="multiple"
-                        defaultValue={[]}
-                        className="w-full space-y-4"
+                      <AccordionItem
+                        value="directory"
+                        className="settings-accordion overflow-hidden"
                       >
-                        <AccordionItem
-                          value="directory"
-                          className="rounded-xl glass-card overflow-hidden"
-                        >
-                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                            <div className="flex items-center gap-3">
-                              <FolderSearch className="h-5 w-5 text-primary" />
-                              <div className="text-left">
-                                <h3 className="text-base font-semibold">
-                                  {t("settings.advanced.configDir.title")}
-                                </h3>
-                                <p className="text-sm font-normal text-muted-foreground">
-                                  {t("settings.advanced.configDir.description")}
-                                </p>
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
-                            <DirectorySettings
-                              appConfigDir={appConfigDir}
-                              resolvedDirs={resolvedDirs}
-                              onAppConfigChange={updateAppConfigDir}
-                              onBrowseAppConfig={browseAppConfigDir}
-                              onResetAppConfig={resetAppConfigDir}
-                              claudeDir={settings.claudeConfigDir}
-                              codexDir={settings.codexConfigDir}
-                              geminiDir={settings.geminiConfigDir}
-                              grokDir={settings.grokConfigDir}
-                              opencodeDir={settings.opencodeConfigDir}
-                              openclawDir={settings.openclawConfigDir}
-                              hermesDir={settings.hermesConfigDir}
-                              piDir={settings.piConfigDir}
-                              workbuddyDir={settings.workbuddyConfigDir}
-                              onDirectoryChange={updateDirectory}
-                              onBrowseDirectory={browseDirectory}
-                              onResetDirectory={resetDirectory}
-                            />
-                            <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-4">
-                              <p className="mr-auto text-xs text-muted-foreground">
-                                {t("settings.advancedSaveScope")}
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <FolderSearch className="h-5 w-5 text-primary" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.configDir.title")}
+                              </h3>
+                              <p className="text-sm font-normal text-muted-foreground">
+                                {t("settings.advanced.configDir.description")}
                               </p>
-                              <Button
-                                onClick={handleSave}
-                                disabled={isSaving}
-                                className="shrink-0"
-                              >
-                                {isSaving ? (
-                                  <span className="inline-flex items-center gap-2">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    {t("settings.saving")}
-                                  </span>
-                                ) : (
-                                  <>
-                                    <Save className="mr-2 h-4 w-4" />
-                                    {t("settings.saveDirectories")}
-                                  </>
+                            </div>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
+                          <DirectorySettings
+                            appConfigDir={appConfigDir}
+                            resolvedDirs={resolvedDirs}
+                            onAppConfigChange={updateAppConfigDir}
+                            onBrowseAppConfig={browseAppConfigDir}
+                            onResetAppConfig={resetAppConfigDir}
+                            claudeDir={settings.claudeConfigDir}
+                            codexDir={settings.codexConfigDir}
+                            geminiDir={settings.geminiConfigDir}
+                            grokDir={settings.grokConfigDir}
+                            opencodeDir={settings.opencodeConfigDir}
+                            openclawDir={settings.openclawConfigDir}
+                            hermesDir={settings.hermesConfigDir}
+                            piDir={settings.piConfigDir}
+                            workbuddyDir={settings.workbuddyConfigDir}
+                            onDirectoryChange={updateDirectory}
+                            onBrowseDirectory={browseDirectory}
+                            onResetDirectory={resetDirectory}
+                          />
+                          <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-4">
+                            <p className="mr-auto text-xs text-muted-foreground">
+                              {t("settings.advancedSaveScope")}
+                            </p>
+                            <Button
+                              onClick={handleSave}
+                              disabled={isSaving}
+                              className="shrink-0"
+                            >
+                              {isSaving ? (
+                                <span className="inline-flex items-center gap-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  {t("settings.saving")}
+                                </span>
+                              ) : (
+                                <>
+                                  <Save className="mr-2 h-4 w-4" />
+                                  {t("settings.saveDirectories")}
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem
+                        value="data"
+                        className="settings-accordion overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <Database className="h-5 w-5 text-blue-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.data.title")}
+                              </h3>
+                              <p className="text-sm text-muted-foreground font-normal">
+                                {t("settings.advanced.data.description")}
+                              </p>
+                            </div>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <ImportExportSection
+                            status={importStatus}
+                            selectedFile={selectedFile}
+                            errorMessage={errorMessage}
+                            backupId={backupId}
+                            isImporting={isImporting}
+                            onSelectFile={selectImportFile}
+                            onImport={importConfig}
+                            onExport={exportConfig}
+                            onClear={clearSelection}
+                          />
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem
+                        value="backup"
+                        className="settings-accordion overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <HardDriveDownload className="h-5 w-5 text-amber-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.backup.title", {
+                                  defaultValue: "Backup & Restore",
+                                })}
+                              </h3>
+                              <p className="text-sm text-muted-foreground font-normal">
+                                {t("settings.advanced.backup.description", {
+                                  defaultValue:
+                                    "Manage automatic backups, view and restore database snapshots",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <BackupListSection
+                            backupIntervalHours={settings.backupIntervalHours}
+                            backupRetainCount={settings.backupRetainCount}
+                            onSettingsChange={(updates) =>
+                              handleAutoSave(updates)
+                            }
+                          />
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem
+                        value="cloudSync"
+                        className="settings-accordion overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <Cloud className="h-5 w-5 text-blue-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.cloudSync.title")}
+                              </h3>
+                              <p className="text-sm text-muted-foreground font-normal">
+                                {t("settings.advanced.cloudSync.description")}
+                              </p>
+                            </div>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <WebdavSyncSection
+                            config={settings?.webdavSync}
+                            s3Config={settings?.s3Sync}
+                            settings={settings}
+                            onAutoSave={handleAutoSave}
+                          />
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem
+                        value="connectivityCheck"
+                        className="settings-accordion overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <FlaskConical className="h-5 w-5 text-emerald-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.connectivityCheck.title")}
+                              </h3>
+                              <p className="text-sm text-muted-foreground font-normal">
+                                {t(
+                                  "settings.advanced.connectivityCheck.description",
                                 )}
-                              </Button>
+                              </p>
                             </div>
-                          </AccordionContent>
-                        </AccordionItem>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <ConnectivityCheckConfigPanel />
+                        </AccordionContent>
+                      </AccordionItem>
 
-                        <AccordionItem
-                          value="data"
-                          className="rounded-xl glass-card overflow-hidden"
-                        >
-                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                            <div className="flex items-center gap-3">
-                              <Database className="h-5 w-5 text-blue-500" />
-                              <div className="text-left">
-                                <h3 className="text-base font-semibold">
-                                  {t("settings.advanced.data.title")}
-                                </h3>
-                                <p className="text-sm text-muted-foreground font-normal">
-                                  {t("settings.advanced.data.description")}
-                                </p>
-                              </div>
+                      <AccordionItem
+                        value="logConfig"
+                        className="settings-accordion overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <ScrollText className="h-5 w-5 text-cyan-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.logConfig.title")}
+                              </h3>
+                              <p className="text-sm text-muted-foreground font-normal">
+                                {t("settings.advanced.logConfig.description")}
+                              </p>
                             </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                            <ImportExportSection
-                              status={importStatus}
-                              selectedFile={selectedFile}
-                              errorMessage={errorMessage}
-                              backupId={backupId}
-                              isImporting={isImporting}
-                              onSelectFile={selectImportFile}
-                              onImport={importConfig}
-                              onExport={exportConfig}
-                              onClear={clearSelection}
-                            />
-                          </AccordionContent>
-                        </AccordionItem>
-
-                        <AccordionItem
-                          value="backup"
-                          className="rounded-xl glass-card overflow-hidden"
-                        >
-                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                            <div className="flex items-center gap-3">
-                              <HardDriveDownload className="h-5 w-5 text-amber-500" />
-                              <div className="text-left">
-                                <h3 className="text-base font-semibold">
-                                  {t("settings.advanced.backup.title", {
-                                    defaultValue: "Backup & Restore",
-                                  })}
-                                </h3>
-                                <p className="text-sm text-muted-foreground font-normal">
-                                  {t("settings.advanced.backup.description", {
-                                    defaultValue:
-                                      "Manage automatic backups, view and restore database snapshots",
-                                  })}
-                                </p>
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                            <BackupListSection
-                              backupIntervalHours={settings.backupIntervalHours}
-                              backupRetainCount={settings.backupRetainCount}
-                              onSettingsChange={(updates) =>
-                                handleAutoSave(updates)
-                              }
-                            />
-                          </AccordionContent>
-                        </AccordionItem>
-
-                        <AccordionItem
-                          value="cloudSync"
-                          className="rounded-xl glass-card overflow-hidden"
-                        >
-                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                            <div className="flex items-center gap-3">
-                              <Cloud className="h-5 w-5 text-blue-500" />
-                              <div className="text-left">
-                                <h3 className="text-base font-semibold">
-                                  {t("settings.advanced.cloudSync.title")}
-                                </h3>
-                                <p className="text-sm text-muted-foreground font-normal">
-                                  {t("settings.advanced.cloudSync.description")}
-                                </p>
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                            <WebdavSyncSection
-                              config={settings?.webdavSync}
-                              s3Config={settings?.s3Sync}
-                              settings={settings}
-                              onAutoSave={handleAutoSave}
-                            />
-                          </AccordionContent>
-                        </AccordionItem>
-
-                        <AccordionItem
-                          value="connectivityCheck"
-                          className="rounded-xl glass-card overflow-hidden"
-                        >
-                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                            <div className="flex items-center gap-3">
-                              <FlaskConical className="h-5 w-5 text-emerald-500" />
-                              <div className="text-left">
-                                <h3 className="text-base font-semibold">
-                                  {t(
-                                    "settings.advanced.connectivityCheck.title",
-                                  )}
-                                </h3>
-                                <p className="text-sm text-muted-foreground font-normal">
-                                  {t(
-                                    "settings.advanced.connectivityCheck.description",
-                                  )}
-                                </p>
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                            <ConnectivityCheckConfigPanel />
-                          </AccordionContent>
-                        </AccordionItem>
-
-                        <AccordionItem
-                          value="logConfig"
-                          className="rounded-xl glass-card overflow-hidden"
-                        >
-                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                            <div className="flex items-center gap-3">
-                              <ScrollText className="h-5 w-5 text-cyan-500" />
-                              <div className="text-left">
-                                <h3 className="text-base font-semibold">
-                                  {t("settings.advanced.logConfig.title")}
-                                </h3>
-                                <p className="text-sm text-muted-foreground font-normal">
-                                  {t("settings.advanced.logConfig.description")}
-                                </p>
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                            <LogConfigPanel />
-                          </AccordionContent>
-                        </AccordionItem>
-                      </Accordion>
-                    </motion.div>
-                  </SettingsPanel>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <LogConfigPanel />
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
+                  </motion.div>
                 ) : null}
               </TabsContent>
 

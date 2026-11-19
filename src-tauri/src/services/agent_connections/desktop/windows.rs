@@ -60,6 +60,7 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
             "qoder" => &[r"Qoder CN\Qoder CN.exe"],
             "trae" => &[r"Trae CN\Trae CN.exe"],
             "trae-intl" => &[r"Trae\Trae.exe"],
+            "zcode" => &[r"ZCode\ZCode.exe"],
             _ => &[],
         };
         images.extend(relative.iter().map(|path| format!(r"{programs}\{path}")));
@@ -70,6 +71,7 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
             "trae" => Some(r"Programs\Trae CN\Trae CN.exe"),
             "trae-intl" => Some(r"Programs\Trae\Trae.exe"),
             "claude-desktop" => Some(r"AnthropicClaude\claude.exe"),
+            "zcode" => Some(r"Programs\ZCode\ZCode.exe"),
             _ => None,
         };
         if let Some(path) = relative {
@@ -81,7 +83,7 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
 
 fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
     let image = normalize(image);
-    if app == "t3code" {
+    if matches!(app, "t3code" | "zcode") {
         return installed_images(app, local, programs)
             .iter()
             .any(|path| normalize(path) == image);
@@ -382,6 +384,7 @@ pub(super) fn supported(app: &str) -> bool {
             | "trae"
             | "trae-intl"
             | "t3code"
+            | "zcode"
     )
 }
 #[cfg(target_os = "windows")]
@@ -606,6 +609,7 @@ mod tests {
             "trae-intl",
             "claude-desktop",
             "t3code",
+            "zcode",
         ] {
             let images = installed_images(app, local, programs);
             assert!(!images.is_empty(), "{app}");
@@ -618,6 +622,25 @@ mod tests {
             assert!(installed_images(app, "", "").is_empty());
         }
         assert!(installed_images("unknown", local, programs).is_empty());
+    }
+
+    #[test]
+    fn zcode_windows_identity_uses_known_install_paths() {
+        let local = r"C:\Users\synthetic\AppData\Local";
+        let programs = r"C:\Program Files";
+        for image in [
+            r"C:\Program Files\ZCode\ZCode.exe",
+            r"C:\Users\synthetic\AppData\Local\Programs\ZCode\ZCode.exe",
+        ] {
+            assert!(matches_image("zcode", image, local, programs));
+        }
+        for image in [
+            r"C:\Downloads\ZCode.exe",
+            r"C:\Program Files\ZCode\other.exe",
+            r"C:\Program Files\Other\ZCode.exe",
+        ] {
+            assert!(!matches_image("zcode", image, local, programs));
+        }
     }
 
     #[test]

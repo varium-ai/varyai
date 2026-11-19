@@ -1,8 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 
+const MAX_SOURCES = 4;
+const SOURCE_LINGER_MS = 12000;
+
 export function routeInProgress(row: RoutingTrace) {
   return row.state === "routing" || row.state === "streaming";
+}
+
+export function liveRoutingSources(rows: RoutingTrace[], now: number) {
+  const finishedAt = (row: RoutingTrace) => row.startedAt + row.durationMs;
+  const ordered = [
+    ...rows.filter(routeInProgress),
+    ...rows
+      .filter(
+        (row) =>
+          !routeInProgress(row) && finishedAt(row) > now - SOURCE_LINGER_MS,
+      )
+      .sort((first, second) => finishedAt(second) - finishedAt(first)),
+  ];
+  const sources = new Map<string, RoutingTrace>();
+  for (const request of ordered) {
+    if (!sources.has(request.agent)) sources.set(request.agent, request);
+    if (sources.size === MAX_SOURCES) break;
+  }
+  return sources.size ? [...sources.values()] : rows.slice(0, 1);
 }
 
 export function useRoutingFlights(
@@ -40,7 +62,8 @@ export function useRoutingFlights(
                   previous.observed.includes(trace.id))))
           )
             return false;
-          if (!agents.has(trace.agent) && agents.size >= 4) return false;
+          if (!agents.has(trace.agent) && agents.size >= MAX_SOURCES)
+            return false;
           agents.add(trace.agent);
           return true;
         })

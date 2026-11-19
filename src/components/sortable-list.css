@@ -18,6 +18,10 @@
   pointer-events: none;
   cursor: grab;
   touch-action: none;
+  transition:
+    opacity var(--interaction-duration) var(--interaction-easing),
+    background-color var(--interaction-duration) var(--interaction-easing),
+    color var(--interaction-duration) var(--interaction-easing);
 }
 .mp-sortable-row:hover > .mp-sortable-handle,
 .mp-sortable-row:focus-within > .mp-sortable-handle,

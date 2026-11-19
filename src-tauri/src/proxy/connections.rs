@@ -223,7 +223,14 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         })
         .unwrap_or("");
     let Some(connection) = state.intent_runtime.connections.get(app, supplied) else {
-        return error(StatusCode::UNAUTHORIZED, "agent_connection_unavailable");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {
+                "code": "agent_connection_unavailable",
+                "message": "Vary AI could not authenticate this local Agent connection. Check the connection in Vary AI under Tools > Agents, then fully quit and reopen the Agent or start a new CLI session."
+            }})),
+        )
+            .into_response();
     };
     let endpoint = format!("/{}", endpoint.trim_start_matches('/'));
     let gemini = endpoint

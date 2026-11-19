@@ -199,7 +199,10 @@ describe("UsageDashboard", () => {
   it("filters usage queries to Pi", async () => {
     renderDashboard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+    const pi = screen.getByRole("button", { name: "Pi" });
+    expect(pi).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(pi);
+    expect(pi).toHaveAttribute("aria-pressed", "true");
 
     await waitFor(() =>
       expect(useProviderStatsMock).toHaveBeenLastCalledWith(

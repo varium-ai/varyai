@@ -41,7 +41,9 @@ export function showProviderError(
       ? `modelProviders.errors.${operation === "importAccount" ? "invalidAccountFile" : "invalid"}`
       : code === "invalidModels"
         ? "modelProviders.invalidModels"
-        : undefined;
+        : code === "emptyCatalog"
+          ? "intentRouting.catalogReason.empty"
+          : undefined;
   toast.error(
     t(
       operation === "copy"

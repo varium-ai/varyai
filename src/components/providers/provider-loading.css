@@ -21,8 +21,8 @@
 }
 .vary-providers .pv-skeleton-search {
   width: 220px;
-  height: 30px;
-  border-radius: 7px;
+  height: 40px;
+  border-radius: var(--radius);
 }
 .vary-providers .pv-skeleton-manage {
   width: 34px;
@@ -68,12 +68,12 @@
   width: 76px;
 }
 .vary-providers .pv-skeleton-toggle {
-  width: 36px;
+  width: 34px;
   height: 20px;
   border-radius: 12px;
 }
 .vary-providers .pv-skeleton-action {
-  width: 28px;
+  width: 32px;
   height: 14px;
   border-inline: 7px solid var(--mp-card, #fff);
   border-radius: 2px;

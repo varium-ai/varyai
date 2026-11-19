@@ -337,6 +337,7 @@ impl Runtime for Native<'_> {
             "trae" => &["Trae CN.exe"],
             "trae-intl" => &["Trae.exe"],
             "t3code" => &["T3 Code.exe", "T3 Code (Alpha).exe", "T3 Code (Beta).exe"],
+            "zcode" => &["ZCode.exe"],
             _ => &["claude.exe"],
         };
         let local = std::env::var("LOCALAPPDATA").unwrap_or_default();

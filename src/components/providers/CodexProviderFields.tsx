@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { RefreshCw, ArrowUp, ArrowDown, GripVertical } from "lucide-react";
@@ -503,7 +504,9 @@ export function CodexProviderFields({
                       <b>{account.login}</b>
                     </label>
                     {account.plan && (
-                      <span className="cx-plan">{account.plan}</span>
+                      <span className="cx-plan">
+                        {subscriptionPlanLabel(account.plan)}
+                      </span>
                     )}
                     {needsLogin && (
                       <span className="cx-plan cx-reauth">

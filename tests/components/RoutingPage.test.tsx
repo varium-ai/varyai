@@ -9,6 +9,8 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RoutingPage } from "@/components/routing/RoutingPage";
+import { APP_IDS } from "@/config/appConfig";
+import type { RoutingTrace } from "@/lib/api/routingTrace";
 import { routingTraceApi } from "@/lib/api/routingTrace";
 import { usageApi } from "@/lib/api/usage";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -302,6 +304,30 @@ it("shows only the recorded destination for a direct request", async () => {
     "Synthetic unrelated",
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+});
+
+it("shows only the attempted model for a group with unused candidates", async () => {
+  snapshot([
+    {
+      ...route,
+      state: "completed",
+      candidates: [
+        { ...route.candidates[1], model: "unused-model" },
+        route.candidates[1],
+      ],
+      steps: [
+        { kind: "attempt", candidate: 1, atMs: 1 },
+        { kind: "completed", candidate: 1, atMs: 20 },
+      ],
+    },
+  ]);
+  show();
+  await screen.findByText("model-b", { selector: ".rt-accts .mdl" });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "unused-model",
+  );
+  expect(document.querySelector(".rt-route-summary")).toBeNull();
 });
 
 it("keeps cancellation neutral and hides HTTP 499 while retaining actual upstream errors", async () => {
@@ -602,12 +628,13 @@ it.each([
   { model: "auto/other-group" },
   { session: "another-session" },
   { agent: "gemini" },
-])("isolates the focused request from another route with %o", async (scope) => {
+])("excludes expired traffic from another route with %o", async (scope) => {
   const other = {
     ...route,
     id: "other-request",
     ...scope,
-    state: "routing",
+    state: "failed",
+    startedAt: route.startedAt - 60000,
     status: 503,
     candidates: [
       {
@@ -635,6 +662,120 @@ it.each([
   );
   expect(document.querySelector(".rt-accts")).not.toHaveTextContent("503");
 });
+function sourceRequest(agent: string, overrides: Partial<RoutingTrace> = {}) {
+  return {
+    ...(route as RoutingTrace),
+    id: `request-${agent}`,
+    agent,
+    startedAt: Date.now(),
+    state: "streaming" as const,
+    durationMs: 0,
+    steps: [{ kind: "attempt" as const, candidate: 0, atMs: 1 }],
+    ...overrides,
+  };
+}
+
+function snapshot(requests: RoutingTrace[]) {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests,
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  });
+}
+
+it.each([...APP_IDS, "external-fixture"])(
+  "renders %s as its own source while a different Agent is active",
+  async (agent) => {
+    const otherAgent = agent === "codex" ? "gemini" : "codex";
+    snapshot([
+      sourceRequest(otherAgent),
+      sourceRequest(agent, {
+        model: "other-model",
+        session: "other-session",
+        steps: [{ kind: "attempt", candidate: 1, atMs: 1 }],
+      }),
+    ]);
+    show();
+    await waitFor(() =>
+      expect(document.querySelectorAll(".rt-src")).toHaveLength(2),
+    );
+    expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+    expect(document.querySelectorAll(".rt-sky [data-flight-id]")).toHaveLength(
+      2,
+    );
+    expect(document.querySelector(".rt-what")).toHaveTextContent(
+      "routingPage.stage",
+    );
+    expect(document.querySelector(".rt-route-summary")).toBeNull();
+  },
+);
+
+it("keeps one source for an Agent's concurrent requests across models and sessions", async () => {
+  snapshot([
+    sourceRequest("codex"),
+    sourceRequest("codex", {
+      id: "second-codex-request",
+      model: "other-model",
+      session: "other-session",
+      candidates: [
+        {
+          providerId: "other",
+          providerName: "Other synthetic supplier",
+          model: "other-model",
+        },
+      ],
+    }),
+  ]);
+  show();
+  await screen.findByText("Other synthetic supplier");
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+  expect(document.querySelector(".rt-what")).toHaveTextContent(
+    "routingPage.stage",
+  );
+});
+
+it("keeps recent completions for twelve seconds and caps the stage at four Agents", async () => {
+  const now = Date.now();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const active = ["claude", "codex", "gemini"].map((agent) =>
+    sourceRequest(agent),
+  );
+  const completed = sourceRequest("deepseek-harness", {
+    startedAt: now - 20000,
+    durationMs: 20000,
+    state: "completed",
+    steps: [],
+  });
+  const older = sourceRequest("pi", {
+    startedAt: now - 10000,
+    state: "completed",
+    steps: [],
+  });
+  snapshot([...active, older, completed]);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  try {
+    show(client);
+    await waitFor(() =>
+      expect(document.querySelectorAll(".rt-src")).toHaveLength(4),
+    );
+    expect(document.querySelector(".rt-srcs")).toHaveTextContent(
+      "apps.deepseek-harness",
+    );
+    expect(document.querySelector(".rt-srcs")).not.toHaveTextContent("apps.pi");
+    clock.mockReturnValue(now + 12001);
+    await client.invalidateQueries({ queryKey: ["routing-trace"] });
+    await waitFor(() =>
+      expect(document.querySelectorAll(".rt-src")).toHaveLength(3),
+    );
+  } finally {
+    clock.mockRestore();
+  }
+});
+
 it("masks configured API supplier names even when there are no login accounts", async () => {
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
     {
@@ -705,9 +846,7 @@ it("masks duplicate supplier labels and email-shaped IDs in the stage and toolti
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );
   const seats = document.querySelector(".rt-accts")!;
-  await waitFor(() =>
-    expect(seats.innerHTML).not.toContain("Synthetic relay"),
-  );
+  await waitFor(() => expect(seats.innerHTML).not.toContain("Synthetic relay"));
   expect(seats.querySelector(".account-mask")).not.toBeNull();
   expect(seats.innerHTML).not.toContain("fixture.account@example.test");
   expect(seats.textContent).toContain("supplier-a");

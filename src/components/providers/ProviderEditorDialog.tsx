@@ -293,11 +293,11 @@ export function ProviderEditorDialog({
     if (draft.source.kind === "api" && draft.revision)
       onDraftChange({ ...draft, source: { ...draft.source, mode: "picked" } });
     choose(
-      selected.some((value) => providerModelId(value) === model)
-        ? selected.filter((value) => providerModelId(value) !== model)
-        : selected.length < 256
-          ? [...selected, available.get(model)]
-          : selected,
+      selectedIds.has(model)
+        ? effectiveSelection.filter((value) => providerModelId(value) !== model)
+        : effectiveSelection.length < 256
+          ? [...effectiveSelection, available.get(model)]
+          : effectiveSelection,
     );
   }
   const chatSelected = selected.filter((row) => !isImageGenerationModel(row));
@@ -363,17 +363,15 @@ export function ProviderEditorDialog({
       .toLocaleLowerCase()
       .includes(modelTerm),
   );
-  const selectedIds = new Set(selected.map(providerModelId));
+  const effectiveSelection =
+    draft.revision && source?.mode === "vendor"
+      ? [...selected.filter(isImageGenerationModel), ...chatModels.slice(0, 24)]
+      : selected;
+  const selectedIds = new Set(effectiveSelection.map(providerModelId));
   const visibleIds = new Set(rows.map(providerModelId));
-  const vendorServed =
-    !!draft.revision &&
-    !!source &&
-    source.mode !== "picked" &&
-    source.mode !== "usage";
   const allVisibleSelected =
     rows.length > 0 &&
-    (vendorServed ||
-      rows.every((row) => selectedIds.has(providerModelId(row))));
+    rows.every((row) => selectedIds.has(providerModelId(row)));
   const someVisibleSelected = rows.some((row) =>
     selectedIds.has(providerModelId(row)),
   );
@@ -836,15 +834,16 @@ export function ProviderEditorDialog({
                                     checked
                                       ? [
                                           ...new Map(
-                                            [...selected, ...rows].map(
-                                              (row) => [
-                                                providerModelId(row),
-                                                row,
-                                              ],
-                                            ),
+                                            [
+                                              ...effectiveSelection,
+                                              ...rows,
+                                            ].map((row) => [
+                                              providerModelId(row),
+                                              row,
+                                            ]),
                                           ).values(),
                                         ].slice(0, 256)
-                                      : selected.filter(
+                                      : effectiveSelection.filter(
                                           (row) =>
                                             !visibleIds.has(
                                               providerModelId(row),
@@ -899,28 +898,23 @@ export function ProviderEditorDialog({
                                   showAll ||
                                   !!modelTerm ||
                                   index < 120 ||
-                                  selected.some(
-                                    (p) =>
-                                      providerModelId(p) ===
-                                      providerModelId(row),
-                                  ),
+                                  selectedIds.has(providerModelId(row)),
                               )
                               .map((value) => {
                                 const model = providerModelId(value);
-                                const checked = selected.some(
-                                  (item) => providerModelId(item) === model,
-                                );
+                                const checked = selectedIds.has(model);
                                 return (
                                   <button
                                     key={model}
                                     type="button"
-                                    className={`pv-model-chip ${checked ? "selected" : draft.revision && source.mode !== "picked" && source.mode !== "usage" ? "served" : ""}`}
+                                    className={`pv-model-chip ${checked ? "selected" : ""}`}
                                     aria-pressed={checked}
                                     aria-label={model}
                                     title={model}
                                     disabled={
                                       disabled ||
-                                      (!checked && selected.length >= 256)
+                                      (!checked &&
+                                        effectiveSelection.length >= 256)
                                     }
                                     onClick={() => toggle(model)}
                                   >
@@ -999,8 +993,7 @@ export function ProviderEditorDialog({
             <footer className="pv-editor-foot">
               <Button
                 type="button"
-                variant="ghost"
-                className="pv-cancel"
+                variant="outline"
                 disabled={disabled}
                 onClick={onClose}
               >
@@ -1008,7 +1001,7 @@ export function ProviderEditorDialog({
               </Button>
               <Button
                 type="submit"
-                className="mp-primary"
+                aria-busy={busy || undefined}
                 disabled={disabled || !canSave || !!nameError}
               >
                 {t(

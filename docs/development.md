@@ -25,6 +25,17 @@ The optional `setup.sh` changes the host environment: it can install system pack
 
 A temporary test home also redirects native client paths. A nonempty `CC_SWITCH_TEST_HOME` takes priority over an inherited `DSH_HOME` for Harness configuration so tests launched inside Harness stay isolated. An empty test home represents a machine without configured clients, not just a fresh VaryAI installation. To verify an existing-client installation, prepare private client configuration copies or synthetic existing-client fixtures inside that home. Do not copy rotating OAuth sessions into parallel test clients; use a test API-key provider or a separate authorization. Changing the VaryAI application data root must leave native client paths unchanged. Do not create empty production client files as a substitute for setup, and do not grant OS trust or connection authorization as part of routine checks.
 
+## Renderer design tokens
+
+The shared desktop renderer palette and usage chart series are defined in
+[`src/design-tokens.css`](../src/design-tokens.css). The tokens match the Figma
+Unified Palette v1 exports for both themes. Shared actions and forms use the
+semantic colors directly. Older workspace surfaces read aliases that resolve
+to the same tokens. Window, sidebar and chart fill opacity are defined by
+their respective surfaces.
+
+Renderer UI text uses the shared `--mp-font` stack: PingFang SC on macOS, Microsoft YaHei on Windows, and system UI fonts elsewhere. Keep code and structured-data editors monospace.
+
 ## Native file dialog languages
 
 macOS chooses the language of native Open and Save panels using the app's

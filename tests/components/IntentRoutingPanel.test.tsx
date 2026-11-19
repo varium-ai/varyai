@@ -325,6 +325,17 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
+  it("keeps the member summary readable and opens the editor from it without a native tooltip", async () => {
+    mount();
+    const table = await screen.findByRole("table", {
+      name: "intentRouting.title",
+    });
+    const summary = await within(table).findByText(/ · fixture-model$/);
+    expect(summary.closest("[title]")).toBeNull();
+    fireEvent.click(summary);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+  });
+
   it("omits import, More and removed-group controls even when archived groups exist", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [group],
@@ -594,9 +605,7 @@ describe("IntentRoutingPanel", () => {
     expect(summary).toHaveTextContent("Codex ·");
     expect(summary).not.toHaveTextContent("fixture.account@example.test");
     expect(summary?.querySelector(".account-mask")).not.toBeNull();
-    expect(
-      summary?.querySelector("[title]")?.getAttribute("title"),
-    ).not.toContain("fixture.account@example.test");
+    expect(summary?.querySelector("[title]")).toBeNull();
     expect(document.querySelector(".mp-icon-stack")).not.toHaveTextContent(
       "FP",
     );
@@ -4004,7 +4013,7 @@ describe("IntentRoutingPanel", () => {
         name: `intentRouting.${name}`,
       });
       expect(trigger.tagName).toBe("BUTTON");
-      expect(trigger).toHaveClass("rounded-full");
+      expect(trigger).toHaveClass("rounded-md");
     }
     const classifier = screen.getByRole("combobox", {
       name: "intentRouting.classifierProvider",

@@ -2,11 +2,11 @@
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::services::routing_upstreams::{
-    resolve_provider, valid_identity, RoutingUpstream, UpstreamSource, INVALID, MAX_CONFIG_BYTES,
-    MAX_UPSTREAMS,
+    resolve_provider, valid_identity, valid_name, RoutingUpstream, UpstreamSource,
+    DEFAULT_CODEX_NAME, INVALID, MAX_CONFIG_BYTES, MAX_UPSTREAMS,
 };
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 const FAILED: &str = "routingUpstreams.failed";
 const CONFLICT: &str = "routingUpstreams.conflict";
 const LIMIT: &str = "routingUpstreams.limit";
@@ -543,6 +543,38 @@ impl Database {
     pub(crate) fn routing_providers(&self) -> Result<Vec<Provider>, String> {
         self.routing_catalog_providers(false)
     }
+
+    /// Usage records the execution identity. Read labels without loading credentials
+    /// or requiring a provider to be enabled.
+    pub(crate) fn routing_usage_names(&self) -> Result<HashMap<String, String>, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let identities = identity::read(&conn)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, json_extract(config, '$.name'), json_extract(config, '$.source.kind')
+                 FROM routing_upstreams WHERE json_valid(config)",
+            )
+            .map_err(|_| FAILED)?;
+        let mut rows = stmt.query([]).map_err(|_| FAILED)?;
+        let mut names = HashMap::new();
+        while let Some(row) = rows.next().map_err(|_| FAILED)? {
+            let id: String = row.get(0).map_err(|_| FAILED)?;
+            let Ok(name) = row.get::<_, String>(1) else {
+                continue;
+            };
+            if !valid_identity(&id) || !valid_name(&name) {
+                continue;
+            }
+            let name = match row.get::<_, String>(2).as_deref() {
+                Ok("codex") if name == DEFAULT_CODEX_NAME => "Codex".to_owned(),
+                Ok("api" | "subscription" | "codex") => name,
+                _ => continue,
+            };
+            names.insert(identities.get(&id).cloned().unwrap_or(id), name);
+        }
+        Ok(names)
+    }
+
     pub(crate) fn routing_catalog_providers(
         &self,
         include_disabled: bool,

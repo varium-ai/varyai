@@ -3,16 +3,18 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
 import { toast } from "sonner";
-import { Plus, ChevronRight, Copy, Trash2 } from "lucide-react";
+import { CircleAlert, Plus, ChevronRight, Copy, Trash2 } from "lucide-react";
 import { isImageGenerationModel } from "@/lib/providerModelKind";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
   type ProviderCopySource,
 } from "@/lib/api/routingUpstreams";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { Button } from "@/components/ui/button";
 import { CopyAgentSetupButton } from "@/components/CopyAgentSetupButton";
 import { Input } from "@/components/ui/input";
+import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderAddSheet } from "./ProviderAddSheet";
@@ -513,6 +515,25 @@ export function RoutingUpstreamsPanel({
     setBusy(true);
     try {
       const { apiKey: _storedKey, ...source } = draft.source;
+      let catalog = source.catalog;
+      if (
+        !draft.revision &&
+        draft.presetId &&
+        !copyFrom &&
+        !catalog.length &&
+        !parsed.length
+      ) {
+        try {
+          catalog = (await fetchDraftModels()).map(modelRow);
+        } catch (cause) {
+          report("fetchModels", cause);
+          return;
+        }
+        if (!catalog.length) {
+          report("fetchModels", "emptyCatalog");
+          return;
+        }
+      }
       const value = {
         ...draft,
         id:
@@ -531,7 +552,7 @@ export function RoutingUpstreamsPanel({
             : stagedModels?.some((row) => !isImageGenerationModel(row))
               ? "picked"
               : source.mode,
-          catalog: source.catalog,
+          catalog,
           ...(apiKey ? { apiKey } : {}),
         },
       };
@@ -900,7 +921,9 @@ export function RoutingUpstreamsPanel({
     }
   }
   function providerRow(record: RoutingUpstream) {
-    const plans = [...new Set(record.subscriptionPlans ?? [])];
+    const plans = [
+      ...new Set(record.subscriptionPlans?.map(subscriptionPlanLabel)),
+    ];
     const subscriptionLabel =
       record.source.kind !== "api" && record.reauthRequired === false
         ? record.source.kind === "codex"
@@ -1096,7 +1119,6 @@ export function RoutingUpstreamsPanel({
             <CopyAgentSetupButton
               labelKey="onboarding.copyForAgent"
               className="pv-import-trigger"
-              size="sm"
               onCopied={() => toast.dismiss("provider-error-copy")}
               onCopyFailed={() => report("copy")}
             />
@@ -1104,7 +1126,6 @@ export function RoutingUpstreamsPanel({
               ref={addTrigger}
               data-provider-add-trigger
               className="mp-primary pv-add-trigger"
-              size="sm"
               disabled={busy || !!draft || records.isPending || records.isError}
               onClick={openAddPage}
             >
@@ -1171,23 +1192,42 @@ export function RoutingUpstreamsPanel({
           </button>
         </div>
       )}
+      {!adding && records.isError && (
+        <div className="pv-list-error">
+          <p role="alert">
+            <CircleAlert size={16} aria-hidden="true" />
+            {t("modelProviders.errors.loadProviders")}
+          </p>
+          <Button
+            variant="outline"
+            aria-busy={records.isFetching || undefined}
+            disabled={records.isFetching}
+            onClick={() => void records.refetch()}
+          >
+            {t("common.retry")}
+          </Button>
+        </div>
+      )}
       {!adding &&
         (records.isPending ? (
           <ProviderListSkeleton />
         ) : (
           <>
-            {records.data?.length === 0 && (
-              <p className="pv-empty">{t("modelProviders.empty")}</p>
+            {!records.isError && records.data?.length === 0 && (
+              <div className="pv-empty" role="status">
+                <p>{t("modelProviders.empty")}</p>
+              </div>
             )}
             {!!on.length && (
               <SortableProviderList records={on} onReorder={reorder}>
                 {on.map(providerRow)}
               </SortableProviderList>
             )}
-            {!!terms.length && !filtered.length && (
-              <p className="pv-empty" role="status">
-                {t("modelProviders.noMatches")}
-              </p>
+            {!!terms.length && !filtered.length && !!records.data?.length && (
+              <SearchEmptyState
+                title={t("modelProviders.noMatches")}
+                hint={t("modelProviders.noMatchesHint")}
+              />
             )}
             {!!off.length && (
               <div className="pv-off-section">

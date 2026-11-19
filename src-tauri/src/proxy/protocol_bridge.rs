@@ -250,8 +250,8 @@ impl Bridge {
             if let Some(metadata) = context.observation.clone() {
                 super::tool_observation::mount::observe_non_streaming(&bytes, metadata);
             }
-            let value: Value =
-                serde_json::from_slice(&bytes).map_err(|_| invalid("Invalid upstream JSON"))?;
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| ProxyError::TransformError("Invalid upstream JSON".into()))?;
             ir::reply::parse(self.output, &value)?
         };
         if self.output == Protocol::Gemini {
@@ -365,9 +365,6 @@ impl ProviderAdapter for BridgeAdapter<'_> {
     ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, ProxyError> {
         ClaudeAdapter::new().get_auth_headers(auth)
     }
-}
-fn invalid(message: &str) -> ProxyError {
-    ProxyError::InvalidRequest(message.into())
 }
 
 #[cfg(test)]

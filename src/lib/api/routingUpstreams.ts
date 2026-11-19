@@ -96,15 +96,17 @@ export interface CodexProviderEditor {
 export interface ApiProviderAllowance {
   status: "ready" | "unsupported" | "unauthorized";
   balance: number | null;
+  balances?: Array<{ unit: string; amount: number }>;
   tiers: import("@/types/subscription").QuotaTier[];
   retryAfterMs?: number;
 }
 export const routingUpstreamsApi = {
-  quota: (id: string, revision: number, force?: boolean) =>
+  quota: (id: string, revision: number, force?: boolean, coding?: boolean) =>
     invoke<ApiProviderAllowance>("routing_upstream_quota", {
       id,
       revision,
       ...(force ? { force: true } : {}),
+      ...(coding ? { coding: true } : {}),
     }),
   keys: (id: string, revision: number) =>
     invoke<Array<{ id: string; label: string; running: number | null }>>(

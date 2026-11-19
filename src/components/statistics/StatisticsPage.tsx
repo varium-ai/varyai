@@ -1,3 +1,4 @@
+import "./statistics-page.css";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -44,24 +45,35 @@ export function StatisticsPage({ onOpenSecurity }: StatisticsPageProps) {
   );
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-7xl flex-col overflow-hidden px-6 pt-5">
-      <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2">
-        <SecurityActivitySummary
-          onOpenSecurity={onOpenSecurity ?? (() => undefined)}
-        />
-        <UsageDashboard
-          refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
-          onRefreshIntervalChange={(refreshIntervalMs) =>
-            handleAutoSave({
-              usageDashboardRefreshIntervalMs: refreshIntervalMs,
-            })
-          }
-          sessionAutoSyncEnabled={settings?.sessionAutoSyncEnabled ?? true}
-          onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) =>
-            handleAutoSave({ sessionAutoSyncEnabled })
-          }
-        />
-      </div>
+    <div className="stats-page">
+      <header className="stats-header">
+        <div>
+          <h1>{t("usage.title")}</h1>
+          <p>{t("usage.subtitle")}</p>
+        </div>
+        {onOpenSecurity && (
+          <button
+            className="stats-security-link"
+            onClick={onOpenSecurity}
+            type="button"
+          >
+            {t("securityStats.viewLogs")}
+          </button>
+        )}
+      </header>
+      <SecurityActivitySummary />
+      <UsageDashboard
+        refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
+        onRefreshIntervalChange={(refreshIntervalMs) =>
+          handleAutoSave({
+            usageDashboardRefreshIntervalMs: refreshIntervalMs,
+          })
+        }
+        sessionAutoSyncEnabled={settings?.sessionAutoSyncEnabled ?? true}
+        onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) =>
+          handleAutoSave({ sessionAutoSyncEnabled })
+        }
+      />
     </div>
   );
 }
