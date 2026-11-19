@@ -37,6 +37,7 @@ export interface RoutingTrace {
   agent: string;
   kind?: string | null;
   session?: string | null;
+  sessionTitle?: string | null;
   model: string;
   groupName: string;
   strategy: string;

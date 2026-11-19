@@ -65,20 +65,28 @@ export function AgentVersionTag({
   const waitingForExit = updates.deferred.includes(app);
   if (!cliVersion && !appVersion && !waitingForExit) return null;
   const updating = updates.active.includes(app);
+  const cliLabel =
+    app === "codex" || appVersion || desktop?.source === "cli"
+      ? `CLI ${cliVersion}`
+      : cliVersion;
+  const appHint = appVersion ? t("agentUpdates.appHint") : undefined;
+  const appTag = appVersion && (
+    <span className="mp-agent-version" title={appHint}>
+      App {appVersion}
+    </span>
+  );
+  const updateLabel = t(
+    updating ? "agentUpdates.updating" : "agentUpdates.update",
+    { version: appVersion ? desktop?.latest_version : cli?.latest_version },
+  );
   return (
     <div className="mp-agent-cli">
-      {cliVersion && (
-        <span className="mp-agent-version">
-          {app === "codex" || appVersion || desktop?.source === "cli"
-            ? `CLI ${cliVersion}`
-            : cliVersion}
-        </span>
-      )}
+      {cliVersion && <span className="mp-agent-version">{cliLabel}</span>}
       {(updates.updatable.includes(app) || updating) && (
         <button
           type="button"
           className="mp-agent-update"
-          title={appVersion ? t("agentUpdates.appHint") : undefined}
+          title={appHint}
           disabled={
             disabled ||
             updates.isBusy(app) ||
@@ -96,20 +104,10 @@ export function AgentVersionTag({
           ) : (
             <Download size={11} />
           )}
-          <span>
-            {t(updating ? "agentUpdates.updating" : "agentUpdates.update", {
-              version: appVersion
-                ? desktop?.latest_version
-                : cli?.latest_version,
-            })}
-          </span>
+          <span>{updateLabel}</span>
         </button>
       )}
-      {appVersion && (
-        <span className="mp-agent-version" title={t("agentUpdates.appHint")}>
-          App {appVersion}
-        </span>
-      )}
+      {appTag}
       {waitingForExit && (
         <span className="mp-agent-version" role="status">
           {t("agentUpdates.waitingForExit")}

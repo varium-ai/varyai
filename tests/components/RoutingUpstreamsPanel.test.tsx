@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
@@ -64,6 +65,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("provider loading", () => {
+  it("keeps a safe load failure in context and retries from the list", async () => {
+    vi.mocked(routingUpstreamsApi.list)
+      .mockRejectedValueOnce(new Error("synthetic-private-error"))
+      .mockResolvedValueOnce([]);
+    mount();
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("modelProviders.errors.loadProviders");
+    expect(error).not.toHaveTextContent("synthetic-private-error");
+    expect(screen.queryByText("modelProviders.empty")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+
+    expect(await screen.findByText("modelProviders.empty")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("does not query API allowances for an original provider or its saved copy", async () => {
     const source = {
       kind: "api" as const,
@@ -893,7 +911,7 @@ describe("global upstream editor", () => {
     expect(
       await within(row).findByText("codexProvider.remaining"),
     ).toBeVisible();
-    expect(within(row).getByText("ChatGPT Prolite")).toBeVisible();
+    expect(within(row).getByText("ChatGPT Pro 100")).toBeVisible();
     expect(within(row).queryByText("ChatGPT / Codex")).not.toBeInTheDocument();
     expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("selected");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -906,12 +924,14 @@ describe("global upstream editor", () => {
     ).toBeInTheDocument();
   });
   it.each([
-    "ChatGPT Prolite",
-    "ChatGPT Promax",
-    "ChatGPT Go",
-    "ChatGPT Team",
-    "ChatGPT Edu",
-  ])("shows the %s plan on the provider row", async (plan) => {
+    ["ChatGPT Prolite", "ChatGPT Pro 100"],
+    ["ChatGPT Pro", "ChatGPT Pro 200"],
+    ["ChatGPT Promax", "ChatGPT Pro 500"],
+    ["ChatGPT Go", "ChatGPT Go"],
+    ["ChatGPT Plus", "ChatGPT Plus"],
+    ["ChatGPT Team", "ChatGPT Team"],
+    ["ChatGPT Edu", "ChatGPT Edu"],
+  ])("shows the %s plan on the provider row", async (plan, label) => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       {
         ...primary,
@@ -925,7 +945,7 @@ describe("global upstream editor", () => {
     ] as never);
     mount();
     const row = await screen.findByRole("article", { name: "Codex fixture" });
-    expect(within(row).getByText(plan)).toBeVisible();
+    expect(within(row).getByText(label)).toBeVisible();
     expect(row.querySelector(".pv-key")).not.toHaveClass("imported");
   });
   it("shows ChatGPT for a valid sign-in with no known plan without claiming Plus", async () => {
@@ -1294,11 +1314,11 @@ describe("global upstream editor", () => {
       name: "Synthetic multiple plans",
     });
     expect(mixed.querySelector(".pv-key")).toHaveTextContent(
-      "ChatGPT Plus · ChatGPT Pro",
+      "ChatGPT Plus · ChatGPT Pro 200",
     );
     expect(mixed.querySelector(".pv-key")).toHaveAttribute(
       "title",
-      "ChatGPT Plus · ChatGPT Pro",
+      "ChatGPT Plus · ChatGPT Pro 200",
     );
   });
   it("lets a custom provider choose an icon without hiding its name field and saves the choice", async () => {
@@ -2418,9 +2438,29 @@ describe("global upstream editor", () => {
       screen.getByRole("button", { name: "common.edit Synthetic primary" }),
     ).toBeInTheDocument();
     fireEvent.change(search, { target: { value: "missing-model" } });
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "modelProviders.noMatches",
+    const status = within(screen.getByRole("status"));
+    expect(
+      status.getByRole("heading", { name: "modelProviders.noMatches" }),
+    ).toBeVisible();
+    expect(status.getByText("modelProviders.noMatchesHint")).toBeVisible();
+    const illustration = screen.getByAltText("");
+    expect(illustration).toHaveAttribute(
+      "src",
+      expect.stringContaining("agent-search-empty"),
     );
+    expect(
+      illustration.closest(".search-empty-state")?.querySelector("button"),
+    ).toBeNull();
+    await userEvent.clear(search);
+    expect(search).toHaveValue("");
+    expect(search).toHaveFocus();
+    expect(screen.queryByText("modelProviders.noMatches")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "modelProviders.turnedOff" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "common.edit Synthetic primary" }),
+    ).toBeVisible();
   });
   it("switches a provider off while retaining its revision, models and saved credential", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
@@ -2582,7 +2622,9 @@ describe("global upstream editor", () => {
         expect.any(Object),
       ),
     );
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "modelProviders.errors.loadProviders",
+    );
     expect(
       screen.queryByText(/private-config-synthetic/),
     ).not.toBeInTheDocument();

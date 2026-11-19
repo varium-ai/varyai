@@ -281,6 +281,27 @@ const renderSettingsPage = (
 };
 
 describe("SettingsPage Component", () => {
+  it("groups preferences and keeps the workspace footer switch accessible without legacy agent controls", () => {
+    renderSettingsPage({ globalResourcesOnly: true });
+    expect(
+      screen.getByRole("heading", { level: 1, name: "settings.title" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "settings.appearanceLanguage" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "apps.codex" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: "settings.appVisibility.showProfileSwitcher",
+      }),
+    );
+    expect(settingsMock.autoSaveSettings).toHaveBeenCalledWith({
+      showProfileSwitcher: false,
+    });
+  });
+
   it("exposes the installation statistics preference in general settings", () => {
     renderSettingsPage();
     expect(screen.getByText("theme-settings")).toBeInTheDocument();
@@ -294,16 +315,8 @@ describe("SettingsPage Component", () => {
     renderSettingsPage();
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
     expect(screen.queryByTestId("tabs-list-indicator")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("tab", { name: "settings.tabGeneral" }),
-    ).toHaveClass(
-      "bg-white",
-      "border-slate-200",
-      "data-[state=active]:bg-white",
-      "data-[state=active]:text-blue-600",
-      "data-[state=active]:border-blue-600",
-      "data-[state=active]:shadow-sm",
-    );
+    const general = screen.getByRole("tab", { name: "settings.tabGeneral" });
+    expect(general).toHaveAttribute("data-state", "active");
     expect(
       screen.queryByRole("tab", { name: "homeAudit.label" }),
     ).not.toBeInTheDocument();

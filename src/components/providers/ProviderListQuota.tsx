@@ -5,6 +5,7 @@ import {
   type RoutingUpstream,
   type CodexProviderEditor,
 } from "@/lib/api/routingUpstreams";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useCodexProviderQuotas } from "@/lib/query/codexProviderQuota";
 import { ApiProviderQuota } from "./ApiProviderQuota";
 import { SubscriptionAccountQuota } from "./SubscriptionAccountQuota";
@@ -115,8 +116,11 @@ function CodexListQuota({
               title={[
                 record.name,
                 account.login,
-                account.plan ??
-                  record.subscriptionPlans?.filter(Boolean).join(" · "),
+                subscriptionPlanLabel(account.plan) ??
+                  record.subscriptionPlans
+                    ?.map(subscriptionPlanLabel)
+                    .filter(Boolean)
+                    .join(" · "),
               ]
                 .filter(Boolean)
                 .join(" · ")}

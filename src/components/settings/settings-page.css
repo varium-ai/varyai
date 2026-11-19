@@ -1,0 +1,68 @@
+.settings-page {
+  container-type: inline-size;
+  padding: var(--workspace-page-top, 24px) 24px 0;
+  color: hsl(var(--foreground));
+}
+.settings-header {
+  padding-bottom: 18px;
+}
+.settings-header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 30px;
+}
+.settings-header p,
+.setting-copy p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: hsl(var(--muted-foreground));
+}
+.settings-group h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+}
+.settings-list,
+.settings-accordion,
+.settings-about {
+  border: 1px solid var(--mp-list-line, hsl(var(--border)));
+  border-radius: 10px;
+  background: var(--mp-list-bg, hsl(var(--card)));
+}
+.settings-list > * + * {
+  border-top: 1px solid var(--mp-list-divider, hsl(var(--border)));
+}
+.setting-row,
+.settings-detail {
+  padding: 13px 18px;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  min-height: 66px;
+}
+.setting-copy {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.setting-copy h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}
+@container (max-width: 440px) {
+  .setting-row:has([role="group"]) .setting-copy {
+    flex-basis: 100%;
+  }
+  .setting-row,
+  .settings-detail {
+    padding-inline: 12px;
+  }
+}

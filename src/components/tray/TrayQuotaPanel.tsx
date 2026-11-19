@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
+import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import {
   apiProviderQuotaEnabled,
   apiProviderQuotaOptions,
@@ -78,7 +79,10 @@ export function TrayQuotaPanel() {
               </span>
               <h2 title={record.name}>{record.name}</h2>
               <span className="tray-quota-plan">
-                {record.subscriptionPlans?.filter(Boolean).join(" · ")}
+                {record.subscriptionPlans
+                  ?.map(subscriptionPlanLabel)
+                  .filter(Boolean)
+                  .join(" · ")}
               </span>
               <button
                 type="button"

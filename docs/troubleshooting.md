@@ -534,6 +534,20 @@ For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entrie
 
 ### Codex native request decoding and body limits
 
+Current intent routes report `routing_request_conversion_failed` (HTTP 400)
+when VaryAI cannot convert the client request before sending it to the selected
+upstream. `routing_conversion_misconfigured` (HTTP 502) points to a route
+configuration that VaryAI cannot execute. `routing_response_conversion_failed`
+(HTTP 502) means VaryAI could not convert an upstream reply while preparing the
+client response. These codes use fixed messages and omit request and reply content.
+
+Converted Responses requests support `tool_choice.type = allowed_tools` for
+named functions and custom tools, including namespaced tools, and for web
+search on supported targets. The converter narrows the offered declarations
+while retaining prior tool calls and results. A required list must select a
+tool the destination can offer. Native Responses forwarding preserves the
+original tool declarations and allowlist.
+
 If switching a Codex/ChatGPT desktop conversation to a Chat, Anthropic or Gemini
 upstream returns `routing_conversion_unsupported` even before the model replies,
 check that the build supports desktop page-context notifications as well as tool
@@ -934,9 +948,17 @@ A changed gateway address, provider, authentication scheme, model list or applie
 profile still requires explicit recovery. On macOS an encrypted key cannot be
 verified from its saved ciphertext: ordinary refresh retains it only for the
 existing connection. A new connection writes its own token instead of reusing a
-seal that may contain a retired token. **Reapply** in Tools rebuilds that
-connection; fully quit and reopen Claude Desktop to load the new credential.
-Reapplying does not restart Desktop automatically.
+seal that may contain a retired token. **Reapply** in Tools keeps the local
+credential for an existing managed gateway profile, so an already running
+Desktop can continue using it. If ownership changed, reapplying rebuilds
+the connection with a fresh credential. Disconnecting and connecting again
+also creates a fresh credential. Fully quit and reopen Desktop to load it.
+
+After connecting or reapplying from the Agents page, Vary AI checks whether
+the running desktop predates the new configuration and offers to restart it.
+Save any work and confirm to load the current credential. If you dismiss the
+prompt, the Agent row still offers **Restart** while the process is stale.
+Retry the original message after Desktop reopens.
 
 When you confirm **Restart** in Tools / Agent, the confirmation closes immediately.
 The affected agent spins its restart icon, shows **Restarting…** and temporarily

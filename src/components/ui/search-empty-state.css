@@ -1,0 +1,26 @@
+.search-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: clamp(32px, 7vh, 72px) 16px 40px;
+  text-align: center;
+}
+
+.search-empty-state > img {
+  width: min(152px, 100%);
+  height: auto;
+}
+
+.search-empty-state h2 {
+  color: var(--mp-fg);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.search-empty-state p {
+  margin-top: 6px;
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  line-height: 1.5;
+}

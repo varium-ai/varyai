@@ -13,6 +13,8 @@ pub struct SessionMeta {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip)]
+    pub(crate) has_native_title: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +96,35 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     });
 
     sessions
+}
+
+pub(crate) fn has_named_sessions(agent: &str) -> bool {
+    agent == "codex" || named_session_reader(agent).is_some()
+}
+
+pub(crate) fn named_session_titles(agent: &str) -> Vec<(String, String)> {
+    if agent == "codex" {
+        return codex::load_thread_titles().into_iter().collect();
+    }
+    named_session_reader(agent).map_or_else(Vec::new, |read| {
+        read()
+            .into_iter()
+            .filter(|session| session.has_native_title && session.provider_id == agent)
+            .filter_map(|session| Some((session.session_id, session.title?)))
+            .collect()
+    })
+}
+
+fn named_session_reader(agent: &str) -> Option<fn() -> Vec<SessionMeta>> {
+    Some(match agent {
+        "claude" => claude::scan_sessions,
+        "opencode" => opencode::scan_sessions,
+        "openclaw" => openclaw::scan_sessions,
+        "hermes" => hermes::scan_sessions,
+        "grokbuild" => grokbuild::scan_sessions,
+        "pi" => pi::scan_sessions,
+        _ => return None,
+    })
 }
 
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {

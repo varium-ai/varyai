@@ -18,27 +18,8 @@
   max-width: 100%;
   gap: 8px;
 }
-.vary-providers .pv-import-trigger {
-  height: 30px;
-  gap: 5px;
-  padding: 0 10px;
-  font-size: 12px;
-}
 .vary-providers .pv-add-trigger {
   flex: none;
-  height: 30px;
-  gap: 5px;
-  padding: 0 10px;
-  background: var(--mp-accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 500;
-}
-.vary-providers .pv-add-trigger:hover {
-  filter: brightness(1.08);
-}
-.dark .vary-providers .pv-add-trigger {
-  color: #151e2b;
 }
 .vary-providers .pv-add-heading {
   display: flex;
@@ -136,14 +117,6 @@
 }
 .vary-providers input.pv-query {
   width: 220px;
-  height: 30px;
-  padding: 0 9px;
-  border: 1px solid var(--mp-line);
-  border-radius: 7px;
-  background: var(--mp-card);
-  color: var(--mp-fg);
-  box-shadow: none;
-  font-size: 13px;
 }
 .vary-providers .pv-row {
   --mp-sortable-divider-left: 18px;
@@ -151,15 +124,17 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 60px;
+  min-height: 56px;
   padding: 9px 20px 9px 24px;
   cursor: pointer;
+  transition: background-color var(--interaction-duration)
+    var(--interaction-easing);
 }
 .vary-providers .pv-row + .pv-row {
   border-top: 0;
 }
 .vary-providers .pv-row:hover:not(.dragging) {
-  background: var(--mp-hover);
+  background: var(--row-hover);
 }
 .vary-providers .pv-open {
   display: flex;
@@ -306,13 +281,14 @@
   gap: 6px;
   flex: none;
   width: 128px;
-  height: 22px;
+  min-height: 26px;
   margin-left: 4px;
   padding: 0 8px;
   overflow: hidden;
-  border-radius: 6px;
-  color: var(--mp-muted);
-  font-size: 11px;
+  border-radius: 4px;
+  background: var(--success-surface);
+  color: var(--success);
+  font-size: 12px;
   white-space: nowrap;
 }
 .vary-providers .pv-key::before {
@@ -329,13 +305,18 @@
 }
 .vary-providers .pv-key.missing {
   color: var(--mp-amber);
-  background: color-mix(in srgb, var(--mp-amber) 9%, transparent);
+  background: var(--warning-surface);
 }
 .vary-providers .pv-key.missing::before {
   background: var(--mp-amber);
 }
 .vary-providers .pv-key.imported::before {
   background: var(--mp-faint);
+}
+.vary-providers .pv-key.imported,
+.vary-providers .pv-row.off .pv-key:not(.missing) {
+  background: var(--mp-card-2);
+  color: var(--mp-muted);
 }
 .vary-providers .pv-key:has(+ .pv-reauth) {
   width: auto;
@@ -366,8 +347,8 @@
   display: grid;
   place-items: center;
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -383,7 +364,7 @@
   color: var(--mp-red);
 }
 .vary-providers .pv-row-delete:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--mp-red) 9%, transparent);
+  background: var(--danger-surface);
 }
 .vary-providers .pv-row-copy:disabled,
 .vary-providers .pv-row-delete:disabled {
@@ -701,9 +682,37 @@
   font-weight: 400;
 }
 .vary-providers .pv-empty {
-  padding: 18px 8px;
-  color: var(--mp-muted);
-  font-size: 12px;
+  display: grid;
+  min-height: 160px;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--mp-line);
+  border-radius: var(--radius);
+  background: var(--mp-card-2);
+  color: var(--mp-fg-2);
+  text-align: center;
+}
+.vary-providers .pv-list-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-block: 0 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--danger-surface);
+  color: var(--mp-red);
+}
+.vary-providers .pv-list-error p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vary-providers .pv-list-error svg {
+  flex: none;
 }
 .pv-editor {
   display: flex;
@@ -1223,41 +1232,16 @@
 
 /* Keep provider sizing above shared dialog rules regardless of CSS load order. */
 .pv-provider-dialog.vary-dialog-surface[role="dialog"] {
-  --mp-card: #fff;
-  --mp-card-2: #f9f9fb;
-  --mp-pill: #f1f1f4;
-  --mp-pill-hover: #e9e9ee;
-  --mp-line: #d4d8e0;
-  --mp-line-2: #e4e7ed;
-  --mp-fg: #202938;
-  --mp-fg-2: #4b5565;
-  --mp-muted: #737d8d;
-  --mp-faint: #b9b9c2;
-  --mp-control: #63636b;
-  --mp-accent-soft: color-mix(in srgb, var(--mp-accent) 10%, var(--mp-card));
+  --mp-accent-soft: var(--mp-pill);
   width: min(560px, calc(100vw - 64px));
   max-width: 560px;
   max-height: calc(100dvh - 80px);
   padding: 0;
   border: 1px solid var(--mp-line);
-  border-radius: 12px;
+  border-radius: var(--radius);
   box-shadow:
     0 24px 64px rgb(15 23 42 / 16%),
     0 4px 16px rgb(15 23 42 / 8%);
-}
-.dark .pv-provider-dialog.vary-dialog-surface[role="dialog"] {
-  --mp-card: #232327;
-  --mp-card-2: #1f1f23;
-  --mp-pill: #2d2d33;
-  --mp-pill-hover: #36363d;
-  --mp-line: #333339;
-  --mp-line-2: #2c2c32;
-  --mp-fg: #ededf1;
-  --mp-fg-2: #b9b9c1;
-  --mp-muted: #8b8b94;
-  --mp-faint: #56565f;
-  --mp-control: #a1a1aa;
-  --mp-accent-soft: color-mix(in srgb, var(--mp-accent) 18%, var(--mp-card));
 }
 .pv-provider-dialog .pv-editor {
   min-height: 0;
@@ -1363,13 +1347,14 @@
 }
 .pv-provider-dialog .pv-editor input:not([type="checkbox"], [type="radio"]),
 .pv-provider-dialog .pv-editor select {
-  height: 28px;
-  padding-inline-start: 9px;
-  border-radius: 7px;
-  font-size: 12.5px;
+  height: 36px;
+  padding-inline-start: 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
 }
 .pv-provider-dialog .pv-editor input:not([type="checkbox"], [type="radio"]) {
-  padding-inline-end: 9px;
+  height: 40px;
+  padding-inline-end: 12px;
 }
 .pv-provider-dialog .pv-editor input:focus-visible,
 .pv-provider-dialog .pv-editor select:focus-visible {
@@ -1378,7 +1363,10 @@
   box-shadow: 0 0 0 3px var(--mp-accent-soft);
 }
 .pv-provider-dialog .pv-editor input::placeholder {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
+}
+.pv-provider-dialog .pv-editor input[aria-invalid="true"] {
+  border-color: var(--mp-red);
 }
 .pv-provider-dialog .pv-editor input[readonly] {
   color: var(--mp-muted);
@@ -1587,7 +1575,7 @@
   flex: 1;
   min-width: 0;
   width: 0;
-  height: 26px;
+  height: 38px;
   padding-inline-end: 8px;
   border: 0;
   outline: none;
@@ -2052,20 +2040,7 @@
   border-top: 1px solid var(--mp-line-2);
 }
 .pv-provider-dialog .pv-editor-foot > button {
-  height: 30px;
-  padding-inline: 14px;
-  border-radius: 7px;
-  font-size: 12.5px;
-  font-weight: 500;
-}
-.pv-provider-dialog .pv-editor-foot > .pv-cancel {
-  border: 1px solid var(--mp-line);
-  background: var(--mp-card);
-  color: var(--mp-fg);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
-}
-.pv-provider-dialog .pv-editor-foot > .pv-cancel:hover:not(:disabled) {
-  background: var(--mp-pill);
+  min-height: 36px;
 }
 @media (max-width: 520px) {
   .pv-provider-dialog.vary-dialog-surface[role="dialog"] {

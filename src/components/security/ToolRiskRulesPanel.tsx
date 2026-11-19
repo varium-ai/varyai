@@ -8,7 +8,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  ShieldAlert,
   Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -462,11 +461,9 @@ export function ToolRiskRulesPanel({
   };
 
   return (
-    <div className="space-y-6">
-      {}
-      <div className="flex items-center justify-between rounded-2xl border border-border/90 bg-card p-5 shadow-sm">
+    <div className="space-y-4">
+      <div className="sc-surface flex items-center justify-between gap-5 px-5 py-4">
         <div className="flex items-start gap-3">
-          <ShieldAlert className="mt-0.5 h-5 w-5 text-amber-500" />
           <div>
             <div className="text-sm font-semibold text-foreground">
               {t("toolRisk.enableTitle", { defaultValue: "工具调用风险预警" })}
@@ -488,6 +485,7 @@ export function ToolRiskRulesPanel({
           </div>
         </div>
         <Switch
+          aria-label={t("toolRisk.enableTitle")}
           checked={settings?.enabled ?? false}
           disabled={isSettingsLoading || isUpdating}
           onCheckedChange={(checked) =>
@@ -501,9 +499,8 @@ export function ToolRiskRulesPanel({
 
       <ShellCommandListsPanel />
 
-      {}
-      <div className="rounded-2xl border border-border/90 bg-card shadow-sm">
-        <div className="flex items-center justify-between border-b border-border/80 px-5 py-4">
+      <div className="sc-surface">
+        <div className="sc-panel-header">
           <div>
             <div className="text-sm font-semibold text-foreground">
               {t("toolRisk.rulesHeading", { defaultValue: "检测规则" })}
@@ -622,12 +619,15 @@ export function ToolRiskRulesPanel({
                 return (
                   <TableRow key={rule.id}>
                     <TableCell>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-sm font-medium text-foreground">
                           {getToolRiskRuleName(t, rule)}
                         </span>
                         {rule.origin === "builtin" && (
-                          <Badge variant="outline" className="text-[10px]">
+                          <Badge
+                            variant="secondary"
+                            className="min-h-0 text-[10px]"
+                          >
                             {t("toolRisk.builtin", { defaultValue: "内置" })}
                           </Badge>
                         )}
@@ -673,7 +673,7 @@ export function ToolRiskRulesPanel({
                     <TableCell>
                       <Badge
                         variant={severityBadgeVariant(rule.severity)}
-                        className="text-[10px]"
+                        className="min-h-0 rounded-full text-[11px]"
                       >
                         {t(`toolRisk.severity.${rule.severity}`, {
                           defaultValue: rule.severity,
@@ -741,8 +741,7 @@ export function ToolRiskRulesPanel({
         </Table>
       </div>
 
-      {}
-      <div className="rounded-2xl border border-border/90 bg-card p-5 shadow-sm">
+      <div className="sc-surface px-5 py-4">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-4 w-4 text-blue-500" />
           <div className="text-sm font-semibold text-foreground">
@@ -796,22 +795,37 @@ export function ToolRiskRulesPanel({
               {t("toolRisk.sandboxOpenaiWriteHint")}
             </p>
           )}
-        <div className="mt-4 grid gap-3 sm:grid-cols-[160px_1fr_auto]">
-          <Input
-            value={sandboxTool}
-            onChange={(e) => setSandboxTool(e.target.value)}
-            placeholder={t("toolRisk.sandboxTool", { defaultValue: "工具名" })}
-          />
-          <Textarea
-            value={sandboxInput}
-            onChange={(e) => setSandboxInput(e.target.value)}
-            rows={2}
-            placeholder='{"command": "ls"}'
-          />
+        <div className="mt-4 grid gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="tool-risk-sandbox-tool">
+              {t("toolRisk.sandboxTool")}
+            </Label>
+            <Input
+              id="tool-risk-sandbox-tool"
+              value={sandboxTool}
+              onChange={(e) => setSandboxTool(e.target.value)}
+              placeholder={t("toolRisk.sandboxTool", {
+                defaultValue: "工具名",
+              })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tool-risk-sandbox-arguments">
+              {t("toolRisk.sandboxArguments")}
+            </Label>
+            <Textarea
+              id="tool-risk-sandbox-arguments"
+              className="font-mono text-xs"
+              value={sandboxInput}
+              onChange={(e) => setSandboxInput(e.target.value)}
+              rows={2}
+              placeholder='{"command": "ls"}'
+            />
+          </div>
           <Button
             onClick={handleRunSandbox}
             disabled={sandbox.isTesting}
-            className="self-start"
+            className="justify-self-end"
           >
             {t("toolRisk.sandboxRun", { defaultValue: "测试" })}
           </Button>
@@ -1472,7 +1486,6 @@ export function ToolRiskRulesPanel({
         </DialogContent>
       </Dialog>
 
-      {}
       <Dialog
         open={!!ruleToDelete}
         onOpenChange={(open) => !open && setRuleToDelete(null)}

@@ -114,7 +114,10 @@ export default function App() {
       )}
       <div className="flex min-h-0 flex-1">
         <WorkspaceNavigation view={view} onSelect={navigate} />
-        <main className="min-w-0 flex-1 overflow-y-auto" key={view}>
+        <main
+          className={`min-w-0 flex-1 ${view === "agents" ? "overflow-hidden" : "overflow-y-auto"}`}
+          key={view}
+        >
           {view === "agents" && (
             <AgentConnectionsPage
               onEditingChange={setEditor}
@@ -135,12 +138,7 @@ export default function App() {
             <StatisticsPage onOpenSecurity={() => setView("security")} />
           )}
           {view === "security" && (
-            <>
-              <div className="flex justify-end px-6 pt-5">
-                <GlobalSecurityToggle />
-              </div>
-              <SecurityCenterPage />
-            </>
+            <SecurityCenterPage headerAction={<GlobalSecurityToggle />} />
           )}
           {view === "settings" && (
             <SettingsPage

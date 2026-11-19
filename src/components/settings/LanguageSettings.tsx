@@ -1,3 +1,4 @@
+import { SettingRow } from "./SettingsGroup";
 import { SlidingSegmentedControl } from "@/components/ui/sliding-segmented-control";
 import { useTranslation } from "react-i18next";
 
@@ -21,20 +22,20 @@ export function LanguageSettings({ value, onChange }: LanguageSettingsProps) {
   ] as const;
 
   return (
-    <section className="space-y-2">
-      <header className="space-y-1">
-        <h3 className="text-sm font-medium">{t("settings.language")}</h3>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.languageHint")}
-        </p>
-      </header>
+    <SettingRow
+      title={t("settings.language")}
+      description={t("settings.languageHint")}
+    >
       <SlidingSegmentedControl
         value={value}
         onValueChange={onChange}
         options={options}
+        indicatorVariant="surface"
+        className="max-w-full border-0 bg-muted"
+        buttonClassName="h-[30px] px-2 text-xs"
         ariaLabel={t("settings.language")}
         indicatorTestId="language-settings-indicator"
       />
-    </section>
+    </SettingRow>
   );
 }

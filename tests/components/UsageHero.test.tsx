@@ -41,7 +41,7 @@ it.each(["codex", "gemini"])("shows reported cache creation for %s", (app) => {
       refreshIntervalMs={0}
     />,
   );
-  const card = screen.getByText("缓存写入").parentElement!.parentElement!;
+  const card = screen.getByText("缓存写入").parentElement!;
   expect(within(card).getByText("12")).toBeVisible();
   expect(screen.queryByText("N/A")).not.toBeInTheDocument();
 });

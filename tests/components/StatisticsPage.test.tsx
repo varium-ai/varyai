@@ -19,9 +19,7 @@ vi.mock("@/hooks/useSettings", () => ({
 }));
 
 vi.mock("@/components/security/SecurityActivitySummary", () => ({
-  SecurityActivitySummary: ({ onOpenSecurity }: any) => (
-    <button onClick={onOpenSecurity}>open-security</button>
-  ),
+  SecurityActivitySummary: () => <section aria-label="today-summary" />,
 }));
 
 vi.mock("@/components/usage/UsageDashboard", () => ({
@@ -67,7 +65,18 @@ describe("StatisticsPage", () => {
 
     expect(screen.getByTestId("refresh-interval")).toHaveTextContent("30000");
     expect(screen.getByTestId("session-auto-sync")).toHaveTextContent("true");
-    fireEvent.click(screen.getByRole("button", { name: "open-security" }));
+    const heading = screen.getByRole("heading", {
+      level: 1,
+      name: "usage.title",
+    });
+    expect(
+      heading.compareDocumentPosition(
+        screen.getByRole("region", { name: "today-summary" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "securityStats.viewLogs" }),
+    );
     expect(onOpenSecurity).toHaveBeenCalledOnce();
   });
 

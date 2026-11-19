@@ -594,6 +594,41 @@ fn scheduling_observer_ignores_headers_and_hidden_reasoning_and_counts_usage_on_
 }
 
 #[test]
+fn live_decode_rate_requires_usage_and_observed_stream_flow() {
+    let start = Instant::now();
+    let mut bindings = Bindings::default();
+    for (first, next) in [
+        (
+            json!({"type":"content_block_delta","delta":{"text":"first"}}),
+            json!({"type":"content_block_delta","delta":{"text":"second"},"usage":{"output_tokens":20}}),
+        ),
+        (
+            json!({"choices":[{"delta":{"content":"first"}}]}),
+            json!({"choices":[{"delta":{"content":"second"}}],"usage":{"completion_tokens":20}}),
+        ),
+        (
+            json!({"type":"response.output_text.delta","delta":"first"}),
+            json!({"type":"response.output_text.delta","delta":"second","usage":{"output_tokens":20}}),
+        ),
+        (
+            json!({"candidates":[{"content":{"parts":[{"text":"first"}]}}]}),
+            json!({"candidates":[{"content":{"parts":[{"text":"second"}]}}],"usageMetadata":{"candidatesTokenCount":20}}),
+        ),
+    ] {
+        let mut observer = Observer::default();
+        observer.started = Some(start);
+        let mut last_sample = None;
+        observer.observe_at(&first, &mut bindings, 0, start);
+        assert_eq!(observer.live_sample(0, &mut last_sample), None);
+        observer.observe_at(&next, &mut bindings, 0, start + Duration::from_millis(500));
+        assert_eq!(observer.live_sample(0, &mut last_sample), Some((500.0, 20)));
+        assert_eq!(observer.live_sample(20, &mut last_sample), None);
+        observer.observe_at(&next, &mut bindings, 0, start + Duration::from_millis(550));
+        assert_eq!(observer.live_sample(0, &mut last_sample), None);
+    }
+}
+
+#[test]
 fn non_streaming_or_burst_responses_never_produce_a_decode_rate() {
     let start = Instant::now();
     let mut observer = Observer::default();

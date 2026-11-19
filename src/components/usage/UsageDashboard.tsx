@@ -14,15 +14,7 @@ import {
   type UsageRangeSelection,
 } from "@/types/usage";
 import { motion } from "framer-motion";
-import {
-  BarChart3,
-  ListFilter,
-  Activity,
-  RefreshCw,
-  LayoutGrid,
-  Loader2,
-  ScanSearch,
-} from "lucide-react";
+import { RefreshCw, LayoutGrid, Loader2, ScanSearch } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   Select,
@@ -345,143 +337,129 @@ export function UsageDashboard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="space-y-8 pb-8"
+      className="stats-dashboard"
     >
-      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-2">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-2xl font-bold tracking-tight">
-            {t("usage.title")}
-          </h2>
-          <p className="text-sm text-muted-foreground">{t("usage.subtitle")}</p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center p-1 bg-muted/30 rounded-lg border border-border/50">
-            {APP_FILTER_OPTIONS.map((type) => {
-              const label = t(`usage.appFilter.${type}`);
-              return (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => changeAppType(type)}
-                  title={label}
-                  aria-label={label}
-                  className={cn(
-                    "flex h-8 items-center justify-center px-2.5 rounded-md transition-all",
-                    appType === type
-                      ? "bg-background text-primary shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
-                  )}
-                >
-                  {type === "all" ? (
-                    <LayoutGrid className="h-4 w-4" />
-                  ) : (
-                    <ProviderIcon
-                      icon={APP_ICON_NAME[type]}
-                      name={label}
-                      size={16}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          <Select
-            value={
-              providerName != null ? encodeOptionValue(providerName) : "all"
-            }
-            onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
-          >
-            <SelectTrigger
-              className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
-              title={
-                selectedSourceOption
-                  ? getUsageSourceLabel(selectedSourceOption, t)
-                  : t("usage.filterBySource")
-              }
-              aria-label={t("usage.filterBySource")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="max-w-[280px]">
-              <SelectItem value="all">{t("usage.allSources")}</SelectItem>
-              {providerOptions.map((source) => (
-                <SelectItem
-                  key={source.providerName}
-                  value={encodeOptionValue(source.providerName)}
-                  title={getUsageSourceLabel(source, t)}
-                  className="[&>span]:min-w-0 [&>span]:truncate"
-                >
-                  {getUsageSourceLabel(source, t)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={model != null ? encodeOptionValue(model) : "all"}
-            onValueChange={(v) => setModel(decodeOptionValue(v))}
-          >
-            <SelectTrigger
-              className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
-              title={selectedModelLabel ?? t("usage.filterByModel")}
-              aria-describedby="usage-model-filter-scope"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="max-w-[280px]">
-              <SelectItem value="all">{t("usage.allModels")}</SelectItem>
-              {visibleModelOptions.map((option) => (
-                <SelectItem
-                  key={option.value}
-                  value={encodeOptionValue(option.value)}
-                  title={option.label}
-                  className="[&>span]:min-w-0 [&>span]:truncate"
-                >
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <span
-            id="usage-model-filter-scope"
-            className="text-xs text-muted-foreground"
-          >
-            {t("usage.modelFilterScope")}
-          </span>
-
-          <div className="flex items-center gap-2 ml-auto lg:ml-0">
-            <Select
-              value={String(refreshIntervalMs)}
-              onValueChange={(v) => changeRefreshInterval(Number(v))}
-            >
-              <SelectTrigger
-                className="h-9 w-[100px] bg-background text-xs focus:border-border-default"
-                title={t("usage.refreshInterval")}
-                aria-label={t("usage.refreshInterval")}
+      <div className="stats-toolbar">
+        <div className="stats-agents">
+          {APP_FILTER_OPTIONS.map((type) => {
+            const label = t(`usage.appFilter.${type}`);
+            return (
+              <button
+                key={type}
+                type="button"
+                onClick={() => changeAppType(type)}
+                title={label}
+                aria-label={label}
+                aria-pressed={appType === type}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  appType === type
+                    ? "bg-card text-primary shadow-sm"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                )}
               >
-                <span className="flex items-center gap-2">
-                  <RefreshCw className="h-3.5 w-3.5 shrink-0" />
-                  <SelectValue />
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                {REFRESH_INTERVAL_OPTIONS_MS.map((ms) => (
-                  <SelectItem key={ms} value={String(ms)}>
-                    {ms > 0 ? `${ms / 1000}s` : t("usage.refreshOff")}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <UsageDateRangePicker
-              selection={range}
-              triggerLabel={rangeLabel}
-              onApply={(nextRange) => setRange(nextRange)}
-            />
-          </div>
+                {type === "all" ? (
+                  <LayoutGrid className="h-4 w-4" />
+                ) : (
+                  <ProviderIcon
+                    icon={APP_ICON_NAME[type]}
+                    name={label}
+                    size={16}
+                  />
+                )}
+              </button>
+            );
+          })}
         </div>
+
+        <Select
+          value={providerName != null ? encodeOptionValue(providerName) : "all"}
+          onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
+        >
+          <SelectTrigger
+            className="h-[34px] w-full bg-card text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+            title={
+              selectedSourceOption
+                ? getUsageSourceLabel(selectedSourceOption, t)
+                : t("usage.filterBySource")
+            }
+            aria-label={t("usage.filterBySource")}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-w-[280px]">
+            <SelectItem value="all">{t("usage.allSources")}</SelectItem>
+            {providerOptions.map((source) => (
+              <SelectItem
+                key={source.providerName}
+                value={encodeOptionValue(source.providerName)}
+                title={getUsageSourceLabel(source, t)}
+                className="[&>span]:min-w-0 [&>span]:truncate"
+              >
+                {getUsageSourceLabel(source, t)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={model != null ? encodeOptionValue(model) : "all"}
+          onValueChange={(v) => setModel(decodeOptionValue(v))}
+        >
+          <SelectTrigger
+            className="h-[34px] w-full bg-card text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+            aria-label={t("usage.filterByModel")}
+            title={selectedModelLabel ?? t("usage.filterByModel")}
+            aria-describedby="usage-model-filter-scope"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-w-[280px]">
+            <SelectItem value="all">{t("usage.allModels")}</SelectItem>
+            {visibleModelOptions.map((option) => (
+              <SelectItem
+                key={option.value}
+                value={encodeOptionValue(option.value)}
+                title={option.label}
+                className="[&>span]:min-w-0 [&>span]:truncate"
+              >
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={String(refreshIntervalMs)}
+          onValueChange={(v) => changeRefreshInterval(Number(v))}
+        >
+          <SelectTrigger
+            className="h-[34px] w-full bg-card text-xs focus:border-border-default"
+            title={t("usage.refreshInterval")}
+            aria-label={t("usage.refreshInterval")}
+          >
+            <span className="flex items-center gap-2">
+              <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+              <SelectValue />
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {REFRESH_INTERVAL_OPTIONS_MS.map((ms) => (
+              <SelectItem key={ms} value={String(ms)}>
+                {ms > 0 ? `${ms / 1000}s` : t("usage.refreshOff")}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <UsageDateRangePicker
+          selection={range}
+          triggerLabel={rangeLabel}
+          onApply={setRange}
+          triggerClassName="h-[34px] w-full px-2"
+        />
+        <span id="usage-model-filter-scope" className="stats-filter-note">
+          {t("usage.modelFilterScope")}
+        </span>
       </div>
 
       <UsageHero
@@ -504,17 +482,26 @@ export function UsageDashboard({
       <div className="space-y-4">
         <Tabs defaultValue="logs" className="w-full">
           <div className="flex items-center justify-between mb-4">
-            <TabsList className="bg-muted/50">
-              <TabsTrigger value="logs" className="gap-2">
-                <ListFilter className="h-4 w-4" />
+            <TabsList
+              slidingIndicator={false}
+              className="h-auto max-w-full flex-wrap justify-start rounded-lg border border-border bg-muted"
+            >
+              <TabsTrigger
+                value="logs"
+                className="min-h-8 min-w-0 data-[state=active]:bg-card data-[state=active]:shadow-sm"
+              >
                 {t("usage.requestLogs")}
               </TabsTrigger>
-              <TabsTrigger value="providers" className="gap-2">
-                <Activity className="h-4 w-4" />
+              <TabsTrigger
+                value="providers"
+                className="min-h-8 min-w-0 data-[state=active]:bg-card data-[state=active]:shadow-sm"
+              >
                 {t("usage.providerStats")}
               </TabsTrigger>
-              <TabsTrigger value="models" className="gap-2">
-                <BarChart3 className="h-4 w-4" />
+              <TabsTrigger
+                value="models"
+                className="min-h-8 min-w-0 data-[state=active]:bg-card data-[state=active]:shadow-sm"
+              >
                 {t("usage.modelStats")}
               </TabsTrigger>
             </TabsList>
@@ -563,14 +550,14 @@ export function UsageDashboard({
       </div>
 
       <div className="space-y-4">
-        <div className="rounded-xl glass-card px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <ScanSearch className="h-5 w-5 text-sky-500" />
+        <div className="stats-surface flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+          <div className="flex min-w-0 flex-[1_1_240px] items-center gap-3">
+            <ScanSearch className="size-4 shrink-0 text-primary" />
             <div>
-              <h3 className="text-base font-semibold">
+              <h3 className="text-sm font-medium">
                 {t("usage.sessionSync.title")}
               </h3>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {t("usage.sessionSync.description")}
               </p>
             </div>

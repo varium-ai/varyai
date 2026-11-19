@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
-import { AppWindow, MonitorUp, Power, EyeOff } from "lucide-react";
-import { ToggleRow } from "@/components/ui/toggle-row";
+import { SettingsGroup, SettingSwitch } from "./SettingsGroup";
+import { TerminalSettings } from "./TerminalSettings";
 import { AnimatePresence, motion } from "framer-motion";
 import { isLinux } from "@/lib/platform";
 
@@ -14,15 +14,9 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
   const { t } = useTranslation();
 
   return (
-    <section className="space-y-4">
-      <div className="flex items-center gap-2 pb-2 border-b border-border/40">
-        <AppWindow className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-medium">{t("settings.windowBehavior")}</h3>
-      </div>
-
-      <div className="space-y-3">
-        <ToggleRow
-          icon={<Power className="h-4 w-4 text-orange-500" />}
+    <>
+      <SettingsGroup title={t("settings.startupWindow")}>
+        <SettingSwitch
           title={t("settings.launchOnStartup")}
           description={t("settings.launchOnStartupDescription")}
           checked={!!settings.launchOnStartup}
@@ -38,8 +32,7 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
               exit={{ opacity: 0, y: 10 }}
               transition={{ duration: 0.3 }}
             >
-              <ToggleRow
-                icon={<EyeOff className="h-4 w-4 text-green-500" />}
+              <SettingSwitch
                 title={t("settings.silentStartup")}
                 description={t("settings.silentStartupDescription")}
                 checked={!!settings.silentStartup}
@@ -49,26 +42,7 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
           )}
         </AnimatePresence>
 
-        <ToggleRow
-          icon={<MonitorUp className="h-4 w-4 text-purple-500" />}
-          title={t("settings.enableClaudePluginIntegration")}
-          description={t("settings.enableClaudePluginIntegrationDescription")}
-          checked={!!settings.enableClaudePluginIntegration}
-          onCheckedChange={(value) =>
-            onChange({ enableClaudePluginIntegration: value })
-          }
-        />
-
-        <ToggleRow
-          icon={<MonitorUp className="h-4 w-4 text-cyan-500" />}
-          title={t("settings.skipClaudeOnboarding")}
-          description={t("settings.skipClaudeOnboardingDescription")}
-          checked={!!settings.skipClaudeOnboarding}
-          onCheckedChange={(value) => onChange({ skipClaudeOnboarding: value })}
-        />
-
-        <ToggleRow
-          icon={<AppWindow className="h-4 w-4 text-blue-500" />}
+        <SettingSwitch
           title={t("settings.minimizeToTray")}
           description={t("settings.minimizeToTrayDescription")}
           checked={settings.minimizeToTrayOnClose}
@@ -78,8 +52,7 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
         />
 
         {isLinux() && (
-          <ToggleRow
-            icon={<AppWindow className="h-4 w-4 text-amber-500" />}
+          <SettingSwitch
             title={t("settings.useAppWindowControls")}
             description={t("settings.useAppWindowControlsDescription")}
             checked={!!settings.useAppWindowControls}
@@ -88,7 +61,29 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
             }
           />
         )}
-      </div>
-    </section>
+      </SettingsGroup>
+      <SettingsGroup title={t("settings.integrationsTerminal")}>
+        <SettingSwitch
+          title={t("settings.enableClaudePluginIntegration")}
+          description={t("settings.enableClaudePluginIntegrationDescription")}
+          checked={!!settings.enableClaudePluginIntegration}
+          onCheckedChange={(value) =>
+            onChange({ enableClaudePluginIntegration: value })
+          }
+        />
+
+        <SettingSwitch
+          title={t("settings.skipClaudeOnboarding")}
+          description={t("settings.skipClaudeOnboardingDescription")}
+          checked={!!settings.skipClaudeOnboarding}
+          onCheckedChange={(value) => onChange({ skipClaudeOnboarding: value })}
+        />
+
+        <TerminalSettings
+          value={settings.preferredTerminal}
+          onChange={(preferredTerminal) => onChange({ preferredTerminal })}
+        />
+      </SettingsGroup>
+    </>
   );
 }

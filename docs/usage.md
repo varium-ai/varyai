@@ -2,6 +2,10 @@
 
 Vary AI manages client configuration and can route supported model traffic through a local gateway. Install the coding clients separately. Build instructions are in the [README](../README.md) and [platform guides](README.md).
 
+## Workspace settings
+
+Open **Settings → General** for appearance and language, the footer profile switcher, startup and window behavior, and terminal preferences. General preferences apply as you change them; a restart prompt appears when needed. Privacy and notification permissions are in the same tab. Use **Advanced** for directory changes, backups, and sync. Directory edits still require an explicit save.
+
 ## Providers
 
 Select a client, add a provider, review its endpoint, credentials and models, then save. Select or enable the provider using that integration's controls. Some clients switch one active configuration; others maintain multiple explicitly configured providers. Reload the client when required.
@@ -25,7 +29,13 @@ Local routing applies only to enabled, supported integrations. Enable the master
 
 The security center displays DLP events and tool-call risk observations and provides the applicable rules and settings. Review enablement, rule actions and coverage rather than assuming every request or every tool execution is inspected. DLP can redact selected request text; a failed safe-redaction check can block forwarding. Tool-risk observations provide warnings and records and do not authorize or sandbox tool execution.
 
+In **Security Center**, use **Security events** to filter records and open their details. In a narrow window, scroll the filter fields horizontally; reset, refresh, and clear stay visible on the right. The first five columns show when an event was detected, its application, type, risk, and handling result. For populated lists, scroll horizontally for session and grouping information. **Detection rules** contains DLP actions and a text sandbox; **Tool Call Risks** has separate warning policies, command lists, and a manual rule preview that does not execute tools.
+
 The [DLP](architecture/security-audit.md) and [tool-risk](architecture/tool-risk.md) references describe current coverage and persistence limits. The [network behavior record](data-and-network.md) explains the application's separate statistics and update behavior.
+
+## Statistics
+
+The Statistics page opens with today’s security event counts. These counts are independent of the usage filters; **View security events** opens the Security Center. Below the counters, choose an Agent, source, model, and time range to inspect token consumption, cost, trends, and request logs. Switch the detail tabs to compare providers or models over the same range.
 
 ## Configuration profiles
 

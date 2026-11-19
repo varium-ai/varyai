@@ -131,15 +131,17 @@ fn scan_sessions_sqlite() -> Vec<SessionMeta> {
     let mut sessions = Vec::new();
     for row in iter.flatten() {
         let (session_id, title, directory, created, updated) = row;
-        let display_title = if title.is_empty() {
-            path_basename(&directory)
-        } else {
+        let has_native_title = !title.trim().is_empty();
+        let display_title = if has_native_title {
             Some(title)
+        } else {
+            path_basename(&directory)
         };
         sessions.push(SessionMeta {
             provider_id: PROVIDER_ID.to_string(),
             session_id: session_id.clone(),
             title: display_title.clone(),
+            has_native_title,
             summary: display_title,
             project_dir: if directory.is_empty() {
                 None
@@ -468,6 +470,7 @@ fn parse_session(storage: &Path, path: &Path) -> Option<SessionMeta> {
         provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
         title: display_title,
+        has_native_title: has_title,
         summary,
         project_dir: directory,
         created_at,

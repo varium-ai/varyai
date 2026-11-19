@@ -184,6 +184,10 @@ fn parse_summary(path: &Path) -> Option<SessionMeta> {
         provider_id: "grokbuild".to_string(),
         session_id: session_id.clone(),
         title,
+        has_native_title: summary
+            .generated_title
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
         summary: session_summary,
         project_dir: summary.info.cwd,
         created_at,

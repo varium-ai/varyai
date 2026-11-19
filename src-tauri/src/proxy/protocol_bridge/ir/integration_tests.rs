@@ -421,6 +421,113 @@ async fn all_twelve_ir_edges_forward_native_wires_after_security_inspection(
 
 #[tokio::test]
 #[serial_test::serial]
+async fn magpie_allowed_tools_route_and_report_the_conversion_stage(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = ResetSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
+    for output in [Protocol::Chat, Protocol::Responses] {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let upstream = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().fallback(move |Json(body): Json<Value>| {
+                    let tx = tx.clone();
+                    async move {
+                        use axum::response::IntoResponse;
+                        let bad_reply = body["messages"][0]["content"] == "Synthetic bad reply";
+                        let _ = tx.send(body);
+                        if bad_reply {
+                            ([("content-type", "application/json")], SENSITIVE).into_response()
+                        } else {
+                            Json(response(output)).into_response()
+                        }
+                    }
+                }),
+            )
+            .await
+        });
+        let runtime = runtime(&format!("http://{address}"), output);
+        runtime.set_menu(runtime.global_snapshot()?.ok_or("missing global menu")?)?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime);
+        let ingress = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let url = format!("http://127.0.0.1:{}/intent/v1/responses", ingress.port);
+        let send = |body: &Value| {
+            client
+                .post(&url)
+                .bearer_auth("synthetic-menu")
+                .json(body)
+                .send()
+        };
+        let original = json!({
+            "model":"vary-auto/ir-wire-fixture",
+            "input":"Synthetic request",
+            "tools":[
+                {"type":"function","name":"synthetic_tool","parameters":{"type":"object"}},
+                {"type":"function","name":"excluded","parameters":{"type":"object"}}
+            ],
+            "tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"synthetic_tool"}]}
+        });
+        let result = send(&original).await?;
+        let status = result.status();
+        if status != http::StatusCode::OK {
+            let error: Value = result.json().await?;
+            let code = error["error"]["code"].as_str().unwrap_or("missing code");
+            return Err(
+                format!("allowlist routing to {output:?} returned {status} ({code})").into(),
+            );
+        }
+        let wire = rx.try_recv()?;
+        if output == Protocol::Responses {
+            assert_eq!(wire["tool_choice"], original["tool_choice"]);
+            assert_eq!(wire["tools"], original["tools"]);
+        } else {
+            assert_eq!(wire["tool_choice"], "required");
+            assert_eq!(
+                wire["tools"]
+                    .as_array()
+                    .ok_or("missing upstream tools")?
+                    .len(),
+                1
+            );
+            assert_eq!(wire["tools"][0]["function"]["name"], "synthetic_tool");
+
+            let mut invalid = original.clone();
+            invalid["tool_choice"]["mode"] = json!(SENSITIVE);
+            let response = send(&invalid).await?;
+            assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+            let error: Value = response.json().await?;
+            assert_eq!(error["error"]["code"], "routing_request_conversion_failed");
+            assert!(!error.to_string().contains(SENSITIVE));
+            assert!(rx.try_recv().is_err());
+
+            let mut request = original;
+            request["input"] = json!("Synthetic bad reply");
+            let response = send(&request).await?;
+            assert_eq!(response.status(), http::StatusCode::BAD_GATEWAY);
+            let error: Value = response.json().await?;
+            assert_eq!(error["error"]["code"], "routing_response_conversion_failed");
+            assert!(!error.to_string().contains(SENSITIVE));
+            assert!(rx.try_recv().is_ok());
+        }
+        server.stop().await?;
+        upstream.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn codex_tool_search_and_loaded_tools_round_trip_through_a_chat_model(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _security = ResetSecurity((*crate::proxy::security::get_security_runtime()).clone());

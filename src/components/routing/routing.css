@@ -420,9 +420,8 @@
 .vary-routing .rt-accts li {
   position: relative;
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  column-gap: 7px;
   row-gap: 0;
   min-height: 30px;
   padding: 5px 9px;
@@ -514,7 +513,6 @@
   li:is(:hover, :focus-visible)
   .rt-seat-status {
   position: static;
-  grid-column: 2;
   width: auto;
   height: auto;
   margin: 3px 0 0;
@@ -534,7 +532,7 @@
 .vary-routing .rt-seat-bar {
   position: absolute;
   bottom: 0;
-  left: 24px;
+  left: 9px;
   right: 9px;
   height: 3px;
   background: var(--rt-card-2);
@@ -547,10 +545,6 @@
   background: var(--rt-muted);
   border-radius: inherit;
 }
-.vary-routing .rt-route-summary {
-  color: var(--rt-muted);
-  font-size: 12px;
-}
 .vary-routing .dot {
   width: 7px;
   height: 7px;
@@ -562,11 +556,6 @@
   border-color: color-mix(in srgb, var(--rt-agent) 42%, var(--rt-line));
   background: color-mix(in srgb, var(--rt-agent) 5%, var(--rt-card-2));
 }
-.vary-routing .rt-accts li.on .dot {
-  background: var(--rt-agent);
-  border-color: var(--rt-agent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--rt-agent) 15%, transparent);
-}
 .vary-routing .rt-accts li.on em {
   color: var(--rt-fg);
 }
@@ -574,24 +563,9 @@
   border-style: dotted;
   opacity: 0.65;
 }
-.vary-routing .now .dot {
-  animation: vary-rt-live 1.8s infinite;
-}
-@keyframes vary-rt-live {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--rt-agent) 40%, transparent);
-  }
-  70%,
-  100% {
-    box-shadow: 0 0 0 6px transparent;
-  }
-}
 .vary-routing .rt-accts li.rest {
   border-style: dashed;
   color: var(--rt-muted);
-}
-.vary-routing .rt-accts li.rest .dot {
-  border-color: var(--rt-red);
 }
 .vary-routing .rt-accts li:focus-visible {
   outline: 2px solid var(--rt-accent);
@@ -601,7 +575,7 @@
   color: var(--rt-red);
 }
 .vary-routing .rt-stage:not(.compact) {
-  grid-template-columns: minmax(76px, 110px) 48px minmax(0, 1fr);
+  grid-template-columns: minmax(96px, 152px) 48px minmax(0, 1fr);
   column-gap: clamp(56px, 10cqi, 112px);
   min-height: 104px;
   padding: 14px 0;
@@ -636,6 +610,12 @@
   width: 20px;
   height: 20px;
   margin: 0;
+}
+.vary-routing .rt-stage:not(.compact) .rt-src b {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .vary-routing .rt-stage:not(.compact) .rt-agent-icon > * {
   width: 20px !important;
@@ -676,9 +656,7 @@
   gap: 7px;
 }
 .vary-routing .rt-stage:not(.compact) .rt-accts li {
-  grid-template-columns: 8px minmax(0, 1fr);
   align-items: start;
-  column-gap: 10px;
   row-gap: 5px;
   min-height: 60px;
   padding: 9px 12px;
@@ -707,9 +685,9 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
 }
-.vary-routing .rt-stage:not(.compact) .rt-seat-status {
+.vary-routing .rt-stage:not(.compact) .rt-seat-status,
+.vary-routing .rt-stage.compact .rt-seat-status.has-response {
   position: static;
-  grid-column: 2;
   width: auto;
   height: auto;
   min-width: 0;
@@ -723,6 +701,11 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.vary-routing .rt-stage.compact .rt-seat-status.has-response {
+  padding: 2px 0 0 22px;
+  font-size: 11px;
+  color: var(--rt-fg);
+}
 .vary-routing .rt-stage:not(.compact) .rt-accts li.on .rt-seat-status {
   color: var(--rt-fg);
 }
@@ -731,7 +714,6 @@
 }
 .vary-routing .rt-stage:not(.compact) .rt-seat-bar {
   position: static;
-  grid-column: 2;
   height: 3px;
   margin: 1px 0 0 24px;
 }
@@ -746,20 +728,29 @@
   text-align: left;
   font-size: 11.5px;
 }
-.vary-routing .rt-stage:not(.compact) .rt-accts .dot {
-  margin-top: 5px;
-  background: none;
-  border: 1.5px solid var(--rt-muted);
+.vary-routing .rt-stage .rt-accts li.on.replying {
+  border-color: color-mix(in srgb, var(--rt-accent) 65%, var(--rt-line));
   box-shadow: none;
-  animation: none;
 }
-.vary-routing .rt-stage:not(.compact) .rt-accts li.on .dot {
-  background: var(--rt-fg);
-  border-color: var(--rt-fg);
+@media (prefers-reduced-motion: no-preference) {
+  .vary-routing .rt-stage .rt-accts li.on.replying::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border: 2px solid var(--rt-accent);
+    border-radius: inherit;
+    pointer-events: none;
+    animation: vary-rt-seat-pulse 2s ease-in-out infinite;
+  }
 }
-.vary-routing .rt-stage:not(.compact) .rt-accts li.rest .dot {
-  background: var(--rt-red);
-  border-color: var(--rt-red);
+@keyframes vary-rt-seat-pulse {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--rt-accent) 45%, var(--rt-line));
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--rt-accent) 42%, #8b5cf6);
+  }
 }
 .vary-routing .rt-window {
   grid-column: 2 / 4;
@@ -1529,7 +1520,8 @@
 .vary-routing .rt-group-table th {
   height: 38px;
   padding: 8px 6px;
-  background: var(--rt-card-2);
+  background: color-mix(in srgb, var(--rt-fg) 2%, var(--rt-card));
+  border-bottom: 1px solid var(--rt-line);
   color: var(--rt-fg-2);
   font-size: 12px;
   font-weight: 500;
@@ -1539,6 +1531,7 @@
 }
 .vary-routing .rt-group-table th:first-child {
   width: auto;
+  padding-left: 18px;
   border-radius: 6px 0 0 6px;
 }
 .vary-routing .rt-group-table th:nth-child(2),
@@ -1558,16 +1551,13 @@
 .vary-routing .rt-group-table th:last-child {
   z-index: 2;
 }
-.vary-routing .rt-group-row td:last-child {
-  background: var(--rt-card);
-}
-.vary-routing .rt-group-row:hover td:last-child {
-  background: var(--mp-hover);
-}
 .vary-routing .rt-group-row td {
   height: 58px;
   padding: 10px 6px;
   vertical-align: middle;
+  background-color: var(--rt-group-row-bg, var(--rt-card));
+  transition: background-color var(--interaction-duration)
+    var(--interaction-easing);
 }
 .vary-routing .rt-group-row + .rt-group-row td {
   border-top: 1px solid var(--mp-line-2);
@@ -1575,8 +1565,15 @@
 .vary-routing .rt-group-row {
   cursor: pointer;
 }
-.vary-routing .rt-group-row:hover {
-  background: var(--mp-hover);
+.vary-routing
+  .rt-group-list:not(.rt-sorting)
+  > .rt-group-row:has(:focus-visible) {
+  --rt-group-row-bg: var(--row-hover);
+}
+@media (hover: hover) {
+  .vary-routing .rt-group-list:not(.rt-sorting) > .rt-group-row:hover {
+    --rt-group-row-bg: var(--row-hover);
+  }
 }
 .vary-routing .rt-group-identity {
   display: flex;
@@ -1661,6 +1658,7 @@
   background: radial-gradient(circle, var(--rt-muted) 0.9px, transparent 1.2px)
     0 0 / 3.5px 3.75px;
   opacity: 0;
+  transition: opacity var(--interaction-duration) var(--interaction-easing);
 }
 .vary-routing .rt-ghandle::before {
   left: 1px;
@@ -1698,7 +1696,9 @@
   background: var(--rt-card-2);
 }
 .vary-routing .rt-group-table .rt-sorting > tr > td {
-  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color var(--interaction-duration) var(--interaction-easing);
 }
 .vary-routing .rt-group-table .rt-sorting,
 .vary-routing .rt-group-table .rt-sorting * {
@@ -1729,7 +1729,8 @@
     transition: none;
   }
 }
-.vary-routing :is(.rt-group-row, .rt-member-row)[data-drag-target="true"] {
+.vary-routing .rt-group-row[data-drag-target="true"] > td,
+.vary-routing .rt-member-row[data-drag-target="true"] {
   box-shadow: inset 0 2px 0 var(--rt-accent);
   background: var(--rt-card-2);
 }
@@ -1798,9 +1799,6 @@
   color: var(--mp-muted);
   font-size: 8.5px;
   font-weight: 600;
-}
-.vary-routing .rt-ghandle:hover {
-  background: var(--mp-hover);
 }
 .vary-routing .rt-group-name {
   display: flex;
@@ -1958,8 +1956,7 @@
   margin-bottom: 10px;
 }
 @media (prefers-reduced-motion: reduce) {
-  .vary-routing .rt-wires path.live,
-  .vary-routing .now .dot {
+  .vary-routing .rt-wires path.live {
     animation: none;
   }
 }
@@ -2053,7 +2050,7 @@
 }
 /* Keep the same inline flow when the workspace stage has less room. */
 .vary-routing .rt-stage.narrow:not(.compact) {
-  grid-template-columns: minmax(0, 76px) 40px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 96px) 40px minmax(0, 1fr);
   column-gap: 20px;
   min-height: 96px;
   padding: 12px 0;
@@ -2075,7 +2072,6 @@
 }
 .vary-routing .rt-stage.narrow:not(.compact) .rt-accts li:not(.idle) {
   padding: 8px;
-  column-gap: 6px;
 }
 .vary-routing .rt-stage.narrow:not(.compact) .rt-accts b {
   flex-wrap: wrap;
@@ -2124,14 +2120,6 @@
   stroke: var(--rt-muted);
   filter: none;
 }
-.vary-routing .rt-packet.held {
-  animation: vary-rt-held 1.2s ease-in-out infinite;
-}
-@keyframes vary-rt-held {
-  50% {
-    opacity: 0.45;
-  }
-}
 /* Magpie's compact-panel packet styles (MIT). */
 .vary-routing .rt-sky.compact {
   z-index: 2;
@@ -2160,6 +2148,10 @@
 }
 .vary-routing .rt-sky.compact .cancelled .pkt {
   fill: var(--rt-muted);
+  filter: none;
+}
+.vary-routing .rt-sky .rt-packet.docked .pkt {
+  clip-path: inset(0 50% 0 0) fill-box;
   filter: none;
 }
 @media (prefers-reduced-motion: reduce) {

@@ -524,6 +524,104 @@ fn responses_tools(value: &Value, request: &mut Request, loaded: bool) -> Result
     }
     Ok(())
 }
+
+pub(crate) struct ResponsesToolAllowlist<'a> {
+    required: bool,
+    web_search: bool,
+    names: HashMap<&'a str, HashMap<String, HashSet<String>>>,
+}
+
+impl<'a> ResponsesToolAllowlist<'a> {
+    pub(crate) fn parse(value: &'a Value) -> Result<Option<Self>, ProxyError> {
+        if value["type"] != "allowed_tools" {
+            return Ok(None);
+        }
+        let required = match value["mode"].as_str() {
+            Some("auto") => false,
+            Some("required") => true,
+            _ => return Err(invalid("Invalid allowed-tools mode")),
+        };
+        let mut allowlist = Self {
+            required,
+            web_search: false,
+            names: HashMap::new(),
+        };
+        for tool in array(&value["tools"])? {
+            match tool["type"].as_str() {
+                Some(kind @ ("function" | "custom")) => {
+                    let name = required_string(tool, "name")?;
+                    let namespace = string(tool, "namespace")?.unwrap_or_default();
+                    allowlist
+                        .names
+                        .entry(kind)
+                        .or_default()
+                        .entry(namespace)
+                        .or_default()
+                        .insert(name);
+                }
+                Some("web_search" | "web_search_preview") => allowlist.web_search = true,
+                _ => return Err(invalid("Unsupported allowed-tool type")),
+            }
+        }
+        Ok(Some(allowlist))
+    }
+
+    pub(crate) fn contains(&self, namespace: &str, kind: &str, name: &str) -> bool {
+        self.names
+            .get(kind)
+            .and_then(|namespaces| namespaces.get(namespace))
+            .is_some_and(|names| names.contains(name))
+    }
+
+    pub(crate) fn mode(&self, has_tools: bool) -> Result<&'static str, ProxyError> {
+        if self.required && !has_tools {
+            return Err(invalid(
+                "Required allowed-tools choice has no callable tools",
+            ));
+        }
+        Ok(if self.required { "required" } else { "auto" })
+    }
+}
+
+fn restrict_responses_tools(value: &Value, request: &mut Request) -> Result<(), ProxyError> {
+    let Some(allowlist) = ResponsesToolAllowlist::parse(value)? else {
+        return Ok(());
+    };
+    request.tools.retain_mut(|tool| match tool.kind.as_str() {
+        "function" | "custom" => allowlist.contains("", &tool.kind, &tool.name),
+        "web_search" => allowlist.web_search,
+        "namespace" if !tool.name.is_empty() => {
+            let Some(native) = tool.native.as_mut() else {
+                return false;
+            };
+            let key = if native.get("tools").is_some() {
+                "tools"
+            } else {
+                "children"
+            };
+            let Some(children) = native.get_mut(key).and_then(Value::as_array_mut) else {
+                return false;
+            };
+            children.retain(|child| {
+                let kind = child["type"].as_str().unwrap_or_default();
+                let name = child["name"].as_str().unwrap_or_default();
+                allowlist.contains(&tool.name, kind, name)
+            });
+            !children.is_empty()
+        }
+        _ => false,
+    });
+    let has_tools = !request.tools.is_empty();
+    let mode = allowlist.mode(has_tools)?;
+    request.tool_choice = has_tools.then_some(if mode == "required" {
+        ToolChoice::Required
+    } else {
+        ToolChoice::Auto
+    });
+    request.native.responses_tool_allowlist = Some(value.clone());
+    Ok(())
+}
+
 fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
     common_openai(body, request)?;
     request.max_tokens = unsigned(body, "max_output_tokens")?;
@@ -545,7 +643,9 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
             request.format = parse_format(value)?;
         }
     }
-    if let Some(value) = field(body, "tool_choice") {
+    let tool_choice = field(body, "tool_choice");
+    let allowlist = tool_choice.filter(|value| value["type"] == "allowed_tools");
+    if let Some(value) = tool_choice.filter(|_| allowlist.is_none()) {
         request.tool_choice = Some(openai_choice(value)?);
     }
     if let Some(tools) = field(body, "tools") {
@@ -557,7 +657,7 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
             role: "user".into(),
             parts: vec![text(value)],
         });
-        return Ok(());
+        return allowlist.map_or(Ok(()), |value| restrict_responses_tools(value, request));
     }
     for item in array(input)? {
         object(item)?;
@@ -728,7 +828,7 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
             _ => {}
         }
     }
-    Ok(())
+    allowlist.map_or(Ok(()), |value| restrict_responses_tools(value, request))
 }
 fn anthropic_parts(value: &Value) -> Result<Vec<Part>, ProxyError> {
     if value.is_null() {

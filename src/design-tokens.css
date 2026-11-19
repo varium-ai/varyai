@@ -1,0 +1,90 @@
+:root {
+  --mp-font: system-ui, sans-serif;
+  --background: 216 50% 98%;
+  --card: 0 0% 100%;
+  --muted: 214 50% 97%;
+  --accent: 219.13 100% 95.49%;
+  --hover-surface: color-mix(in srgb, hsl(var(--primary)) 8%, hsl(var(--card)));
+  --row-hover: color-mix(in srgb, hsl(var(--primary)) 6%, hsl(var(--card)));
+  --interaction-duration: 150ms;
+  --interaction-easing: ease-out;
+
+  --foreground: 212.143 26.415% 20.784%;
+  --secondary-foreground: 214.054 18.408% 39.412%;
+  --muted-foreground: 214.545 14.286% 45.294%;
+  --disabled-foreground: #9ca8b5;
+
+  --border: 211.429 35.593% 88.431%;
+  --border-strong: #b7c5d6;
+
+  --primary: 219.512 100% 59.804%;
+  --primary-hover: #2469ed;
+  --primary-foreground: 0 0% 100%;
+
+  --success: #087f5b;
+  --success-surface: #e7f5ef;
+  --warning: #9a6700;
+  --warning-surface: #fff4dc;
+  --destructive: 355.252 55.823% 51.176%;
+  --danger-surface: #fde6e7;
+
+  --chart-cost: #ed4665;
+  --chart-cache-create: #ff871e;
+  --chart-cache-hit: #a354ff;
+  --chart-input: hsl(var(--primary));
+  --chart-output: #16bf69;
+
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: var(--muted);
+  --accent-foreground: var(--foreground);
+  --destructive-foreground: var(--primary-foreground);
+  --input: var(--border);
+  --ring: var(--primary);
+  --radius: 0.5rem;
+}
+
+:root[data-platform="macos"] {
+  --mp-font: "PingFang SC", -apple-system, sans-serif;
+}
+
+:root[data-platform="windows"] {
+  --mp-font: "Microsoft YaHei", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.dark {
+  --background: 220 4.11% 14.314%;
+  --card: 220 6.122% 19.216%;
+  --muted: 218.182 8.943% 24.118%;
+  --accent: 216.207 43.284% 26.275%;
+  --hover-surface: color-mix(
+    in srgb,
+    hsl(var(--primary)) 16%,
+    hsl(var(--card))
+  );
+  --row-hover: color-mix(in srgb, hsl(var(--primary)) 9%, hsl(var(--card)));
+
+  --foreground: 220 13.043% 90.98%;
+  --secondary-foreground: 216 15.385% 74.51%;
+  --muted-foreground: 216 13.812% 64.51%;
+  --disabled-foreground: #6f7885;
+
+  --border: 220 8.451% 27.843%;
+  --border-strong: #5c626d;
+
+  --primary-hover: #4a8aff;
+
+  --success: #51c99d;
+  --success-surface: #203d33;
+  --warning: #e6b957;
+  --warning-surface: #423821;
+  --destructive: 355.714 78.873% 72.157%;
+  --danger-surface: #442b32;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --interaction-duration: 0ms;
+  }
+}

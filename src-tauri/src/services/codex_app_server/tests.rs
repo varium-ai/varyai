@@ -35,6 +35,54 @@ fn route_change_waits_for_settling_and_running_turns() {
 }
 
 #[test]
+fn disconnecting_native_route_refreshes_the_old_app_server_when_idle(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("config.toml");
+    let restored = "model='synthetic'\n";
+    fs::write(&config, restored)?;
+    let original_route = fingerprint(&config).map_err(|_| "original route")?;
+    fs::write(
+        &config,
+        format!("{restored}openai_base_url='http://127.0.0.1:1234/backend-api/codex'\n"),
+    )?;
+    let connected_route = fingerprint(&config).map_err(|_| "connected route")?;
+    assert_ne!(connected_route, original_route);
+    let mut monitor = Monitor::default();
+    let old = vec![server(10)];
+    assert_eq!(
+        monitor.observe(connected_route, old.clone(), false, 0),
+        Action::None
+    );
+
+    fs::write(&config, restored)?;
+    let restored_route = fingerprint(&config).map_err(|_| "restored route")?;
+    assert_eq!(restored_route, original_route);
+    assert_eq!(
+        monitor.observe(restored_route, old.clone(), true, 1),
+        Action::None
+    );
+    assert_eq!(
+        monitor.observe(restored_route, old.clone(), true, 10),
+        Action::None
+    );
+    assert_eq!(
+        monitor.observe(restored_route, old.clone(), false, 11),
+        Action::Restart(old)
+    );
+    let replacement = vec![server(11)];
+    assert_eq!(
+        monitor.observe(restored_route, replacement.clone(), false, 12),
+        Action::Recovered
+    );
+    assert_eq!(
+        monitor.observe(restored_route, replacement, false, 20),
+        Action::None
+    );
+    Ok(())
+}
+
+#[test]
 fn another_tools_restart_is_adopted_without_terminating_its_replacement() {
     let mut m = Monitor::default();
     m.observe([1; 32], vec![server(10)], false, 0);

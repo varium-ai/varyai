@@ -1,3 +1,4 @@
+import { SettingRow } from "./SettingsGroup";
 import { useTranslation } from "react-i18next";
 import {
   Select,
@@ -88,15 +89,15 @@ export function TerminalSettings({ value, onChange }: TerminalSettingsProps) {
   const currentValue = value || defaultTerminal;
 
   return (
-    <section className="space-y-2">
-      <header className="space-y-1">
-        <h3 className="text-sm font-medium">{t("settings.terminal.title")}</h3>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.terminal.description")}
-        </p>
-      </header>
+    <SettingRow
+      title={t("settings.terminal.title")}
+      description={t("settings.terminal.fallbackHint")}
+    >
       <Select value={currentValue} onValueChange={onChange}>
-        <SelectTrigger className="w-[200px]">
+        <SelectTrigger
+          aria-label={t("settings.terminal.title")}
+          className="h-8 w-auto min-w-32 gap-3"
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -107,9 +108,6 @@ export function TerminalSettings({ value, onChange }: TerminalSettingsProps) {
           ))}
         </SelectContent>
       </Select>
-      <p className="text-xs text-muted-foreground">
-        {t("settings.terminal.fallbackHint")}
-      </p>
-    </section>
+    </SettingRow>
   );
 }

@@ -43,11 +43,11 @@ export function ModelStatsTable({
   );
 
   if (isLoading) {
-    return <div className="h-[400px] animate-pulse rounded bg-gray-100" />;
+    return <div className="h-[400px] animate-pulse rounded bg-muted" />;
   }
 
   return (
-    <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-hidden">
+    <div className="stats-surface overflow-hidden">
       <Table>
         <TableHeader>
           <TableRow>

@@ -6,12 +6,12 @@ mod history;
 pub(crate) use history::Page as HistoryPage;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, RwLock, Weak,
+        Arc, Mutex, RwLock, Weak,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub(crate) const CAPACITY: usize = 60;
@@ -82,6 +82,8 @@ pub(crate) struct Route {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub session: Option<String>,
+    #[serde(skip)]
+    native_session: Option<[u8; 32]>,
     pub model: String,
     pub group_name: String,
     pub strategy: String,
@@ -105,6 +107,13 @@ pub(crate) struct Store {
     active_keys: RwLock<BTreeMap<String, ActiveKey>>,
     salt: String,
     history: Option<history::History>,
+    session_titles: Mutex<BTreeMap<String, SessionTitles>>,
+}
+
+struct SessionTitles {
+    refreshed: Instant,
+    checked: BTreeSet<[u8; 32]>,
+    titles: BTreeMap<[u8; 32], String>,
 }
 
 struct ActiveKey {
@@ -120,6 +129,7 @@ impl Default for Store {
             active_keys: RwLock::default(),
             salt: uuid::Uuid::new_v4().to_string(),
             history: None,
+            session_titles: Mutex::default(),
         }
     }
 }
@@ -340,6 +350,7 @@ impl Store {
                 agent: label(agent),
                 kind: None,
                 session: None,
+                native_session: None,
                 model: label(model),
                 group_name: label(group_name),
                 strategy: label(strategy),
@@ -384,6 +395,73 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn native_session_digest(&self, agent: &str, id: &str) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        for part in ["native-session-title", self.salt.as_str(), agent, id] {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part.as_bytes());
+        }
+        hash.finalize().into()
+    }
+
+    pub(crate) fn live_requests(
+        &self,
+        requests: Vec<Route>,
+        read_titles: impl Fn(&str) -> Vec<(String, String)>,
+    ) -> Vec<LiveRoute> {
+        let mut cache = self.session_titles.lock().ok();
+        let mut wanted = BTreeMap::<&str, BTreeSet<[u8; 32]>>::new();
+        for route in &requests {
+            if let Some(digest) = route.native_session {
+                wanted.entry(&route.agent).or_default().insert(digest);
+            }
+        }
+        if let Some(cache) = cache.as_mut() {
+            for (agent, digests) in wanted {
+                if cache.get(agent).is_some_and(|entry| {
+                    let age = entry.refreshed.elapsed();
+                    age < Duration::from_secs(2)
+                        || (age < Duration::from_secs(15) && digests.is_subset(&entry.checked))
+                }) {
+                    continue;
+                }
+                let titles = read_titles(agent)
+                    .into_iter()
+                    .filter_map(|(id, title)| {
+                        let digest = self.native_session_digest(agent, &id);
+                        if !digests.contains(&digest) {
+                            return None;
+                        }
+                        let title = label(&title);
+                        (!title.trim().is_empty()).then_some((digest, title))
+                    })
+                    .collect();
+                cache.insert(
+                    agent.to_owned(),
+                    SessionTitles {
+                        refreshed: Instant::now(),
+                        checked: digests,
+                        titles,
+                    },
+                );
+            }
+        }
+        requests
+            .into_iter()
+            .map(|route| LiveRoute {
+                session_title: route.native_session.and_then(|digest| {
+                    cache
+                        .as_ref()?
+                        .get(&route.agent)?
+                        .titles
+                        .get(&digest)
+                        .cloned()
+                }),
+                route,
+            })
+            .collect()
     }
 }
 
@@ -441,6 +519,14 @@ impl Request {
         }
         let digest = format!("{:x}", hash.finalize());
         self.update(|row| row.session = Some(digest));
+    }
+
+    pub(super) fn native_session(&self, id: &str) {
+        self.update(|row| {
+            if row.kind.is_none() {
+                row.native_session = Some(self.store.native_session_digest(&row.agent, id));
+            }
+        });
     }
 
     pub(crate) fn plan(&self, candidates: Vec<Candidate>, estimated: Option<u64>) {
@@ -540,12 +626,10 @@ impl Request {
     }
 
     pub(crate) fn speed(&self, decode_ms: f64, output_tokens: u32) {
-        if decode_ms > 0.0 && output_tokens > 0 {
-            let speed = f64::from(output_tokens) * 1000.0 / decode_ms;
-            if speed.is_finite() {
-                self.update(|row| row.output_tokens_per_second = Some(speed));
-            }
-        }
+        let speed = f64::from(output_tokens) * 1000.0 / decode_ms;
+        self.update(|row| {
+            row.output_tokens_per_second = (speed.is_finite() && speed > 0.0).then_some(speed);
+        });
     }
 
     pub(crate) fn finish(&self, status: u16, state: State) {
@@ -668,10 +752,19 @@ pub(crate) struct Allowance {
     pub resets_at: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRoute {
+    #[serde(flatten)]
+    route: Route,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_title: Option<String>,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Snapshot {
-    pub requests: Vec<Route>,
+    pub requests: Vec<LiveRoute>,
     pub accounts: Vec<Account>,
     pub capacity: usize,
     pub running: bool,

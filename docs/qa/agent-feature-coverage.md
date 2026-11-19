@@ -4,6 +4,520 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Live routing source cards
+
+The Routing workspace derives its source cards
+from the existing gateway trace snapshot on macOS and Windows. `Trace` below
+means one card per recorded Agent ID, independent request animations, and
+only destinations referenced by a valid gateway `attempt` step in either
+layout. Candidates that were planned or skipped without an attempt have no
+card or branch. Attempted fallbacks and concurrent routes retain their original
+trace indices for packet motion. Each row uses its existing native or protocol
+adapter. Variants that already share a trace ID share a source card. Flows
+outside the gateway trace recorder have no source card. The compact tray has
+its own selection flow and already supports multiple live sources.
+
+For every Agent and variant below, the workspace and compact tray share the
+candidate card without a leading status dot. The exact seat pulses its fixed
+border between a muted accent and a saturated violet-tinted accent while it
+shows the responding state, without waiting for first content. The shared
+stylesheet changes neither layout geometry nor packet motion. Reduced-motion
+mode keeps a static accent border. Workspace
+source names wrap rather than truncate. A parked packet is stationary at the
+provider edge with only its outer half visible. The existing return and
+failover motion, entry points, native adapters and trace semantics are unchanged
+on macOS and Windows. Renderer checks cover both stage layouts;
+native client and WebView acceptance remain pending.
+
+On the macOS 15.3.1 arm64 working tree based on `8df4a222`, with Node
+24.11.0 and Rust 1.98.1, Chromium verified the half-visible steady dot, the
+border-only pulse, the return after completion, untruncated Agent names and
+reduced motion. `tsc --noEmit`, `vite build`, Prettier and `vitest run` passed
+(4,673 tests, including 204 focused checks). Cargo formatting, `cargo check`
+and Clippy passed. The full Cargo suites were not rerun because recent runs
+exhausted the disk during linking and this follow-up changes only the renderer.
+
+The outward-outline follow-up on the same macOS working tree passed the
+205 focused Vitest checks, TypeScript, the renderer build and targeted
+Prettier. Chromium fixtures verified that the outline expands without
+clipping or shifting the card in either layout, and that completed and
+reduced-motion states are static. Full suites and native clients were not
+rerun for the stylesheet-only follow-up.
+
+The fixed-border follow-up over `ad551d25` on macOS arm64 passed 205
+focused tests, TypeScript, the renderer build and targeted Prettier. It
+does not change route selection, candidate retention or native adapters.
+Native acceptance and full-suite verification were not repeated.
+
+For the attempted-destination filter over `ad551d25`, the shared renderer
+regression exercises each registered Agent ID in both the workspace and tray
+layouts. It covers pre-dispatch hiding, a non-first attempt, response state,
+and completed replay. Additional synthetic cases exercise skipped and invalid
+attempt indices, fallback outcomes, concurrent paths, and packet return.
+Native client and WebView acceptance on macOS and Windows remain pending.
+On the `ad551d25` working tree with this renderer patch, macOS 15.3.1 arm64,
+Node 24.11.0 and Rust 1.98.1, `pnpm typecheck`, `pnpm format:check`,
+`pnpm build:renderer` and `pnpm test:unit` passed (4,678 tests, including 209
+focused checks). Cargo formatting, `cargo check` and Clippy passed. The Rust
+test suites were not rerun because prior linking exhausted available disk space
+and this patch does not change Rust code.
+
+The color-pulse stylesheet follow-up over the same `ad551d25` working tree
+on macOS 15.3.1 arm64 with Node 24.11.0 passed 209 focused tests, TypeScript,
+the renderer build, and Prettier. Headless Chromium fixtures verified distinct
+border colors at the two animation stops, fixed card geometry, and still
+completed and reduced-motion states in both layouts and themes. The full
+suites and native client acceptance were not repeated for this follow-up.
+
+All entries below share per-request rate measurements and both stage layouts.
+The macOS and Windows paths use the same session readers and protocol observer.
+Native title lookup requires an explicit local identity and an exact match.
+Gemini derives its session list title from message content. It uses the same
+short opaque reference as clients that lack a verified native title reader.
+The reference appears when a route has a session digest. Rate availability
+depends on each provider's usage events and stream timing.
+
+| Agent ID | Existing entry point and adapter | Conversation display | Verification |
+| --- | --- | --- | --- |
+| `claude` | Claude Code CLI | Custom title from exact session match | Renderer passed, native pending |
+| `claude-desktop` | Claude Desktop connection | Short reference | Renderer passed, native pending |
+| `codex` | Codex CLI and desktop connection | Thread title from the state DB or index | Renderer passed, native pending |
+| `gemini` | Gemini CLI | Short reference | Renderer passed, native pending |
+| `grokbuild` | Grok Build CLI | Generated title from exact session match | Renderer passed, native pending |
+| `opencode` | OpenCode connection | Stored title from exact session match | Renderer passed, native pending |
+| `openclaw` | OpenClaw connection | Display name when explicit session metadata matches | Renderer passed, native pending |
+| `hermes` | Hermes CLI | Stored title from exact session match | Renderer passed, native pending |
+| `pi` | Pi CLI provider connection | Explicit session name from exact session match | Renderer passed, native pending |
+| `workbuddy` | WorkBuddy China desktop and CLI | Short reference | Renderer passed, native pending |
+| `workbuddy-ai` | WorkBuddy AI international desktop | Short reference | Renderer passed, native pending |
+| `qoder` | Qoder CN desktop | Short reference | Renderer passed, native pending |
+| `doubaowork` | Dedicated Doubao Work connection | Short reference | Renderer passed, native pending |
+| `trae` | TRAE China connection | Short reference | Renderer passed, native pending |
+| `trae-intl` | TRAE International connection | Short reference | Renderer passed, native pending |
+| `kimi` | Kimi Code CLI and desktop | Short reference | Renderer passed, native pending |
+| `qwen` | Qwen Code CLI | Short reference | Renderer passed, native pending |
+| `zcode` | ZCode desktop | Short reference | Renderer passed, native pending |
+| `deepseek-harness` | DeepSeek Harness desktop | Short reference | Renderer passed, native pending |
+| `t3code` | T3 Code desktop | Short reference | Renderer passed, native pending |
+
+The conversation and rate changes were checked on the working tree over
+`fc0fe3c3`, using macOS 15.3.1 arm64, Node 24.11.0, pnpm 10.12.3 and Rust
+1.98.1. TypeScript, the renderer build, Prettier and all 4,689 frontend unit
+tests passed. The 88 routing card tests passed again after strengthening the
+concurrent response assertion. Cargo formatting, `cargo check`, `cargo check
+--tests` and Clippy passed. The Rust test executables could not be built because
+the filesystem ran out of space. Native client checks on macOS and Windows
+remain pending.
+
+## Routing conversion parity (2026-11-18)
+
+The [conversion coverage matrix](2026-11-18-routing-conversion-parity.md)
+tracks Responses allowed-tool restrictions, classified conversion errors and
+the unchanged native adapters for every supported Agent. Shared protocol
+regressions and native acceptance are recorded separately. Native acceptance
+on macOS and Windows remains pending.
+
+## Local connection recovery (2026-11-18)
+
+| Agents | Credential lifecycle on macOS and Windows | Verification |
+| --- | --- | --- |
+| Claude Desktop | Reapply the shared profile with its current credential, including supported sealed values. An ownership conflict requires a fresh connection. | Local HTTP regression, native acceptance pending |
+| Claude Code, Pi, Gemini, Grok Build, OpenCode, OpenClaw, Hermes, Qwen | Reapply the journaled CLI configuration through the ordinary catalog refresh. | Shared adapter regressions, native acceptance pending |
+| WorkBuddy CN and International, Qoder, Kimi, ZCode, DeepSeek Harness, T3 Code | The same refresh uses each native adapter and its existing credential store. | Shared adapter regressions, native acceptance pending |
+| TRAE CN and International, Codex CLI and Desktop, Doubao Work | Dedicated bridge retry, Codex reconnection and audit launch use their own commands. | Outside the shared receipt rebuild path |
+
+The per-Agent inventory below also covers the main and tray connection
+controls on macOS and Windows. After a successful connection write, Claude
+Desktop, WorkBuddy CN/International, Qoder, Kimi, ZCode, Harness, T3 Code,
+TRAE CN/International and Codex Desktop use native freshness to offer a
+confirmed restart. Claude Code, Gemini, Grok Build, OpenCode, OpenClaw,
+Hermes, Pi, Qwen and CLI variants retain session guidance. Doubao Work uses
+its dedicated audit launcher. Shared Agent ingress paths include local
+recovery instructions on credential rejection. Codex and Doubao have
+dedicated ingress paths. Native verification of the new UI is pending.
+
+On the macOS arm64 working tree based on `8df4a222`, the Desktop HTTP
+regression accepted the pre-reapply bearer token on the model catalog endpoint.
+The shared adapter matrix retained each existing credential and detected a
+changed route before reuse. The fresh connection after disconnect had a
+different token. Typecheck, renderer build, 4,617 frontend tests, Prettier,
+Rust formatting, Cargo check, Clippy and the full Cargo test command passed.
+The Rust library suite passed 7,771 tests with 21 ignored. Windows native
+acceptance and remote CI remain pending.
+
+## Figma workspace design preview (2026-11-18)
+
+The workspace, Agent rows and existing shared controls receive the semantic
+light and dark palette. Provider list recovery applies to the shared provider
+registry. The matrix uses `Shared` for the existing Agent row, including its
+current availability, connection, error and disabled states. UI styling is
+shared by macOS and Windows. The connection, projection and protocol adapters
+use their existing entry points.
+
+The desktop Agent directory follow-up moves each installed or recoverable Agent
+into a responsive card with its existing model and connection controls. Each
+row of this matrix also covers the Installed and Not installed tabs, name and
+ID search, and grid ordering on macOS and Windows. Both tabs use the existing
+presence results. The Installed tab keeps model and connection controls. The
+Not installed tab exposes the existing install and official website actions.
+The tray retains its compact entry point. Verification covers synthetic card
+states, tab selection by keyboard, search in either tab, detection refresh,
+horizontal and keyboard sorting, and persisted order. Native Agent and
+Windows WebView2 acceptance are pending.
+
+The List and Cards selector applies to every Agent in this matrix on macOS
+and Windows. Both views use the same installed controls and installation
+actions. The preview checks both tabs, the saved view, ordering and search,
+and keeps the tray on its existing layout.
+
+The List view polish applies to every installed Agent below at the shared
+desktop entry point on macOS and Windows. It removes the icon backplate and
+repeated control captions, and reveals the reorder handle on hover or focus,
+with a visible handle on devices without hover. The model control or official
+model note, connection switch, and platform adapters use their existing paths.
+The reorder handle uses the leading gutter before the icon for every
+sortable desktop Agent row on macOS and Windows.
+
+| Agent ID | Entry point and adapter | Runtime and UI scope |
+| --- | --- | --- |
+| `claude` | Shared connection, Claude Code CLI | Shared |
+| `claude-desktop` | Shared connection, Claude Desktop | Shared |
+| `codex` | Shared connection, Codex CLI and desktop | Shared |
+| `gemini` | Shared connection, Gemini CLI | Shared |
+| `grokbuild` | Shared connection, Grok Build CLI | Shared |
+| `opencode` | Shared connection, OpenCode | Shared |
+| `openclaw` | Shared connection, OpenClaw | Shared |
+| `hermes` | Shared connection, Hermes CLI | Shared |
+| `pi` | Shared connection, Pi CLI | Shared |
+| `workbuddy` | Shared connection, WorkBuddy China desktop and CLI | Shared |
+| `workbuddy-ai` | Shared connection, WorkBuddy AI international desktop | Shared |
+| `qoder` | Shared connection, Qoder CN desktop | Shared |
+| `doubaowork` | Dedicated Doubao Work connection and launch | Shared styling with existing dedicated controls |
+| `trae` | Dedicated TRAE CN connection | Shared styling with existing dedicated controls |
+| `trae-intl` | Dedicated TRAE International connection | Shared styling with existing dedicated controls |
+| `kimi` | Shared connection, Kimi Code CLI and desktop | Shared |
+| `qwen` | Shared connection, Qwen Code CLI | Shared |
+| `zcode` | Shared connection, ZCode desktop | Shared |
+| `deepseek-harness` | Shared connection, DeepSeek Harness desktop | Shared |
+| `t3code` | Shared connection, T3 Code desktop | Shared |
+
+All 20 rows rendered with synthetic connection fixtures in Chromium on macOS.
+The preview exercised the light theme at 1160 × 720 and the dark theme at
+900 × 650 with Windows renderer platform detection. Both runs verified the
+shared provider search, editor and keyboard focus return. Native Agent and
+Windows WebView2 verification remains pending for every row.
+
+Local verification covered the `codex/figma-design-preview` working tree based
+on `8df4a222` on macOS 15.3.1 arm64 with Node 24.11.0, pnpm 10.12.3 and
+Rust 1.98.1.
+
+- `pnpm typecheck`, `pnpm format:check`, `pnpm build:renderer`,
+  `pnpm audit --prod` and `pnpm test:unit` passed. The unit suite passed
+  4,573 tests.
+- The CI merge-policy test and the development, DMG, TRAE, model-default, Pi
+  session, WorkBuddy, Doubao Work, Agent rewards and Qoder helper suites passed.
+- `cargo check`, `cargo fmt --check`, `cargo clippy -- -D warnings`,
+  `cargo test --lib` and `cargo test` passed against `src-tauri/Cargo.toml`.
+  The full run passed 7,934 tests with 21 ignored by the standard command.
+- Remote CI and native cross-platform verification remain pending.
+
+### Agent directory preview verification
+
+The desktop directory uses Figma's raised selected tab on a shared muted
+track in both themes, with equal-width tabs inset from the track edges. Each
+tab shows its installation count. The Not installed
+tab uses the same presence checks and install consent flow as the existing
+catalog. A tool detected after a refresh or a successful CLI install appears
+in the Installed tab.
+
+Chromium on macOS verified all 20 tools across the two tabs using synthetic
+responses in both themes. It exercised one-, two-, and three-column layouts,
+tab selection by keyboard, search and focus recovery, installation refresh,
+and pointer and keyboard card ordering. Native Agent and Windows WebView2
+verification are pending.
+
+Verification used the `codex/figma-design-preview` working tree over
+`8df4a222` on macOS 15.3.1 arm64 with Node 24.11.0, pnpm 10.12.3, and
+Rust 1.98.1. `pnpm typecheck`, `pnpm format:check`, `pnpm build:renderer`,
+`pnpm audit --prod`, `pnpm test:unit` (4,576 tests), the CI policy and helper
+suites, and diff whitespace checks passed. With the CI debug profile
+settings, Rust formatting, check, Clippy, library tests and the full suite
+passed (7,934 total passed and 21 ignored). The final CSS-only spacing
+refinement passed renderer formatting, build and both browser previews.
+
+### List view polish verification
+
+The layout regression exercises the model and connection controls and the
+reorder handles for all 20 Agent IDs. Chromium on macOS verified the List
+and Cards views in both themes with synthetic data. It checked transparent
+icon backplates, the absence of repeated control captions in List, and
+reorder handle visibility at rest, on hover, on keyboard focus, during the
+drag preview and with touch emulation. Native Agent and Windows WebView2
+verification remain pending.
+
+The List and Cards changes were checked in the `codex/figma-design-preview`
+working tree over `8df4a222` on macOS 15.3.1 arm64 with Node 24.11.0, pnpm
+10.12.3, and Rust 1.98.1. After the List polish, `pnpm typecheck`,
+`pnpm format:check`, `pnpm build:renderer`, and `pnpm test:unit` passed
+(4,579 tests). The Rust checks for the layout changes passed with the
+CI debug profile settings. The library test run passed 7,769 tests and the
+full run passed 7,934, with 21 ignored in each run.
+
+### Leading reorder handle
+
+Chromium on macOS verified the leading handle for all 20 installed Agent rows
+with synthetic responses in both themes. The checks covered hover, keyboard
+reordering, drag preview positioning, narrow windows and emulated touch.
+Native Agent and Windows WebView2 verification remain pending.
+
+On macOS 15.3.1 arm64, the `codex/figma-design-preview` working tree over
+`8df4a222` passed `pnpm typecheck`, `pnpm format:check`, `pnpm build:renderer`
+and 411 focused Agent tests with Node 24.11.0 and pnpm 10.12.3. The frontend
+suite passed 4,612 tests and reported three failures in routing and tray
+tests. A focused rerun passed the routing tests and reproduced the tray
+failure. Rust 1.98.1 formatting, check and Clippy passed. Disk space blocked
+compilation of the Rust library tests and the subsequent full Rust test run.
+
+### Agent directory scrolling
+
+Every Agent in the matrix uses the same desktop directory on macOS and Windows.
+The workspace keeps the title, installation check, update notices, tabs,
+search, and footer outside the scrollable area. The Installed tab scrolls its
+rows and the Not installed tab scrolls its installation actions. Each panel
+also contains its own empty states. The tray uses its compact entry point.
+Runtime detection, connection state, and protocol and native adapters follow
+the matrix above.
+
+Chromium on macOS exercised both installation states for all 20 Agent IDs
+with synthetic responses across a light 1160 × 720 viewport and a dark
+900 × 600 viewport with Windows renderer detection. Wheel scrolling,
+PageDown, tab navigation, empty search results, and reorder auto-scroll kept
+the header controls and footer in place. Native WebKit and Windows WebView2
+verification are pending.
+
+The `codex/figma-design-preview` working tree based on `8df4a222` passed
+`pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check`, and 511 focused
+frontend tests on macOS 15.3.1 arm64 with Node 24.11.0 and pnpm 10.12.3.
+The full frontend run passed 4,613 tests and reported eight failures. On a
+focused rerun, the tray, provider, and Windows build-parser tests passed.
+The coverage check still reported duplicate Agent IDs in the live routing
+lanes section.
+
+Rust 1.98.1 formatting, check, and Clippy passed on macOS. The library and
+full Cargo test commands were stopped when available disk space fell below
+400 MiB.
+
+### Workspace surface and hover refinement
+
+The shared palette and control hover styles apply to all 20 Agent IDs in
+the matrix through the existing desktop UI on macOS and Windows. The shared
+styles cover the Agent tabs, model controls and sort handles in both views.
+The tray uses the same palette. Connection state, installation discovery,
+and native and protocol adapters continue through the existing paths.
+
+Chromium on macOS rendered the 20 Agent rows and checked navigation hover,
+stable routing table headers, matching sticky and non-sticky cell colors,
+keyboard focus, editor entry from a summary, and reduced motion in both
+themes. Native Agent and Windows WebView2 verification remain pending.
+
+On macOS 15.3.1 arm64, the `codex/figma-design-preview` working tree over
+`8df4a222` passed TypeScript checking, renderer build, formatting, and
+the full frontend suite with Node 24.11.0 and pnpm 10.12.3. Vitest ran
+4,593 tests using the runner config loader, thread workers, and caching
+disabled after the standard invocation ran out of disk space.
+Rust 1.98.1 formatting, check, and Clippy passed. Disk space blocked a
+fresh compilation of the Rust test binaries. The Rust source tree matched
+`8df4a222`, and running the existing library and integration test binaries
+in this checkout yielded 7,934 passed and 21 ignored.
+
+### Card alignment
+
+Each of the 20 Agents in the matrix above uses the shared Cards layout at
+the desktop directory entry point on macOS and Windows. Installed cards
+separate the name, version metadata, connection status, and secondary
+actions. Model and connection controls align at the bottom of each grid
+row. Installation cards anchor the install and website actions together.
+The directory retains the existing installation, update, restart, rewards,
+connection, and native adapter paths.
+
+Component regressions exercise all 20 installed Agents, both connection
+toggle states, restart and rewards actions, and desktop version order
+with macOS and Windows renderer detection. The existing directory tests
+exercise installation cards for all 20 Agents. Chromium layout fixtures
+verified alignment for installed and installation cards in both themes
+at 290, 600, 900, and 1200 CSS pixels. Native Agent and Windows WebView2
+verification are pending.
+
+Verification used the working tree over `8df4a222` on macOS 15.3.1
+with Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1. The 12 focused
+component tests, TypeScript, targeted Prettier, renderer build,
+repository-wide renderer formatting, Rust check and Rust formatting
+passed. `pnpm test:unit` passed all 325 test files. Disk space blocked
+Rust Clippy and both Rust test commands.
+
+The card outline and density follow-up applies to every Agent in the same
+matrix. In the macOS and Windows desktop directory, installed and
+installation cards use transparent surfaces with complete borders.
+Installed cards also remove the icon backplate and internal divider.
+The shared renderer continues to use the existing version, status,
+rewards, restart, model and connection controls for each Agent.
+
+The working tree over `8df4a222` was checked on macOS 15.3.1
+with Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1. The 17 focused
+directory, border and coverage tests passed. Chromium fixtures verified
+the complete outlines, transparent backgrounds, aligned controls and
+list separator at 280, 560, 900 and 1200 CSS pixels in both themes.
+TypeScript, renderer build, renderer Prettier and Rust formatting passed.
+Disk space interrupted the full unit suite and blocked Rust check,
+Clippy, and both Rust test runs. Native WebView and Agent acceptance
+remain pending.
+
+The Cards and List transition uses the same desktop directory entry
+point for every Agent in the matrix on macOS and Windows. Both installation
+tabs animate explicit layout changes and respect reduced-motion preferences.
+Cards use the themed surface with a white light theme. Installed cards
+remove the repeated model and connection captions. The accessible controls,
+runtime state, and native adapters follow their existing paths.
+
+The Cards and List switch was verified in Chromium with synthetic native
+data on macOS 15.3.1. Both layout directions, reduced motion, caption
+removal and themed card surfaces passed. The workspace frontend suite
+passed 4,596 tests on the checked snapshot over `8df4a222`. After the
+responsive status edits, 20 focused tests, TypeScript, renderer build,
+and targeted formatting passed. Rust check, formatting and Clippy
+passed. Disk space blocked the Rust test builds.
+Native WebView and Agent acceptance remain pending.
+
+### Restart placement in the installed list
+
+The 20 Agent rows in the directory matrix use the shared renderer on macOS
+and Windows. Claude Desktop, Codex, WorkBuddy, WorkBuddy AI, Qoder, TRAE CN,
+TRAE International, Kimi, ZCode, DeepSeek Harness, and T3 Code show Restart
+immediately after the tool name when their runtime state calls for it.
+Doubao Work uses its dedicated launch action. The other eight entries
+do not offer desktop restart. The compact tray renders Restart in its
+inline actions. Restart requires confirmation and dispatches through the
+native adapter for the selected Agent.
+
+The component regression covers placement and visibility for all 20 rows
+with synthetic states under both platform detections. Chromium at a
+720-pixel viewport verified Claude Desktop title alignment and confirmation
+cancellation in both themes. Native restart and WebView acceptance are
+pending.
+
+The working tree over `8df4a222` was checked on macOS 15.3.1 arm64 with
+Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1. TypeScript, renderer build,
+Prettier, production dependency audit, and frontend helper checks passed.
+The installed Qoder codec helper case was skipped. The final renderer
+suite passed 4,590 tests using Vitest thread workers with caching disabled.
+Rust formatting, check, Clippy, and the library tests passed. The library
+suite passed 7,769 tests with 21 ignored.
+
+### List-only desktop directory
+
+All 20 entries in the Agent matrix above use a single-column directory on
+macOS and Windows. The Installed and Not installed tabs use the shared layout.
+Previously saved layout preferences have no effect. Installed rows expose the
+existing status, model, restart, rewards, and connection controls. Installation
+rows retain the actions supplied by each Agent's existing installation adapter.
+The tray uses its compact directory.
+
+Regression coverage uses both platform detections and exercises all 20 matrix
+entries in both tabs, including existing saved order, keyboard and pointer
+sorting, search, and existing layout preferences. The standalone macOS
+WKWebView fixture verified both lists and their row separators at 350, 820,
+and 1180 CSS pixels. Windows WebView2 and live Agent verification are pending.
+
+Verification used the working tree over `8df4a222` on macOS 15.3.1 arm64 with
+Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1. TypeScript, renderer build,
+renderer formatting, production dependency audit, and CI helper suites passed.
+The frontend unit run passed 4,590 tests, and the focused Agent and tray
+suites passed 555 tests after the final test edits. Rust formatting, check,
+and Clippy passed.
+
+### Directory search empty state
+
+Every Agent row in the matrix above uses the shared desktop directory search
+on macOS and Windows. In either installation tab and either layout, a query
+with no matches in a populated tab shows an illustration, localized guidance,
+and a clear action that returns focus to search. The coverage uses the existing
+presence, connection, installation, and protocol adapters.
+
+Synthetic regressions cover all 20 `APP_IDS` entries in each tab and layout
+under macOS and Windows renderer detection. Chromium on macOS verified the
+illustration, localized guidance, layout and focus recovery in both themes
+at 1160 × 720 and 900 × 650. Native WebView and Agent verification remain
+pending for every row.
+
+The new asset is
+[`agent-search-empty.png`](../../src/assets/illustrations/agent-search-empty.png).
+The built-in ImageGen prompt called for a small, transparent desktop search
+illustration with a pale slate-blue directory tray, two stepped index tabs,
+and a cobalt magnifying glass. Rounded shapes and restrained shading keep it
+legible on both themes at 152 CSS pixels.
+
+Verification used the working tree over `8df4a222` on macOS 15.3.1 arm64
+with Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1. `pnpm typecheck`,
+`pnpm build:renderer`, `pnpm audit --prod`, the frontend CI helper suites,
+targeted Prettier, and `git diff --check` passed. The Agent directory
+component suite passed all 397 tests.
+Repository-wide `pnpm format:check` flagged routing and design-token files.
+The full `pnpm test:unit` rerun reported failures in the routing suites and
+exited before producing totals. `cargo fmt --check`, `cargo check`,
+`cargo clippy -- -D warnings`, and `cargo test --lib` passed against
+`src-tauri/Cargo.toml`, with 7,769 library tests passed and 21 ignored.
+Disk space interrupted `cargo test` and prevented the integration-only retry
+from starting. Remote CI was not run.
+
+The button-removal follow-up applies to every Agent row above on macOS and
+Windows, in both installation tabs and layouts. The illustration and guidance
+appear without an action in the empty state. The search input still clears
+the filter and restores the list. Entry points, native adapters, and runtime
+behavior use the existing paths.
+
+On macOS 15.3.1 arm64 with Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1,
+the working tree over `8df4a222` passed all 16 focused tests. Chromium
+verified both themes, both tabs and layouts, the search input's clear
+control, and the provider list's clear action with synthetic data.
+Type checking, renderer build, formatting, Rust formatting, and
+`cargo check` passed. The full frontend run passed 4,588 tests and failed
+five outside search recovery. Low disk space interrupted Clippy and left
+Rust library and integration tests pending. Native WebView verification
+and remote CI remain pending.
+
+### Provider list search empty state
+
+The provider list shares the illustration and layout with every Agent
+directory row in the matrix. When a populated list has no search results,
+the empty state suggests trying a different provider name, endpoint host,
+or model ID. Clearing the search restores the list and returns focus to
+the search field. Both Agent tabs and layouts use the shared component.
+
+On the same host and toolchain, the Agent and provider component suites
+passed all 490 tests against the follow-up working tree. Chromium verified
+both themes and focus recovery using synthetic provider records.
+`pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check`, `pnpm audit --prod`,
+the frontend CI helper suites, and `git diff --check` passed. The full suite
+passed 4,593 tests with `pnpm test:unit --maxWorkers=4 --pool=threads`.
+`cargo fmt --check`, `cargo check`, and `cargo clippy -- -D warnings`
+passed. Disk space prevented the Rust library and integration test builds.
+Native WebView verification and remote CI remain pending.
+
+The shared search empty state shows the illustration and guidance without a
+button on the provider list and on both Agent tabs and layouts. The search
+field clears the filter and restores results for every Agent in the matrix
+on macOS and Windows. This presentation uses the existing shared directory
+entry points and adapters.
+
+On macOS 15.3.1 arm64 with Node 24.11.0, pnpm 10.12.3, and Rust 1.98.1,
+the working tree over `8df4a222` passed 16 focused tests and 4,594 tests
+in the full frontend suite. Chromium verified the provider search input's
+clear control in both themes using synthetic data. Type checking, renderer
+build, formatting, production dependency audit, Rust formatting, `cargo check`,
+and Clippy passed. Insufficient disk space blocked the Rust library and
+integration test builds. Native WebView verification and remote CI remain
+pending.
+
 ## Windows installation discovery (2026-11-18)
 
 Assessment started before implementation against `APP_IDS`, `AppType` and the
@@ -84,6 +598,22 @@ checks and native process handling. Present update results awaiting verification
 without failure colouring, retry stale version observations, and allow read-only
 rechecking without rerunning an installer. Main/tray entry points and all four
 runtime languages are included. Native acceptance is separate from synthetic tests.
+
+The directory spacing follow-up applies to every Agent and variant below on
+macOS and Windows. In the full workspace list, status text sizes to its content
+so an available reconnect or restart action sits beside it. Long text can wrap
+within the space available beside the action. All rows keep their existing
+state, action availability, protocol and native adapter. The compact tray keeps
+its existing layout. The CSS regression covers the shared full-list layout.
+
+Spacing verification used the working tree based on `8df4a222` on macOS
+15.3.1 arm64 with Node 24.11.0 and Rust 1.98.1. Chromium measured a 6px
+gap in wide and narrow fixtures and verified that long text wraps. TypeScript,
+the Vite build, Prettier, and all 4,608 Vitest tests passed. `cargo fmt --check`,
+`cargo check`, and Clippy with `-D warnings` passed. `cargo test --lib`
+encountered sandbox socket restrictions. Its retry and the full `cargo test`
+run stopped with insufficient disk space. Native WebView acceptance remains
+pending on macOS and Windows.
 
 | Agent ID | Entry point and adapter | Runtime and UI | Verification |
 | --- | --- | --- | --- |
@@ -896,6 +1426,58 @@ The user ran the synthetic `kubectl delete pod vary-test-nonexistent --dry-run=c
 Read-only runtime inspection confirmed dispatcher mode and an uninitialized legacy tool-context source in the background webview. The installed client separately hosts `entry-moa` in its native JSRuntime utility process. This exposes a missing adapter path, not successful tool-risk acceptance. The native `jsRuntime.enableDebuggingPort` API rejected requests from the existing background origin with `INVALID_ORIGIN`; no origin change, security-policy override or signed tool mutation was attempted, and no new inspector listener was established. A supported native observation interface is still required. Do not relabel model prose or post-execution text as a pre-execution tool call.
 
 The temporary lifecycle diagnostic recorded only tool names and field-presence metadata, had an automatic three-minute cleanup, and was explicitly removed after the user's test. An attempted invocation of the Doubao executable as a JavaScript host unexpectedly launched extra native processes; that diagnostic process tree was stopped, and the user subsequently opened the client in audit mode. Later scripts ran under standalone Node and closed their debugging connections. No tool-risk implementation fix or acceptance is claimed from this investigation. All other Agent coverage remains as recorded above; no commit or push.
+
+## Disconnect and restart presentation
+
+Pre-implementation comparison: Magpie `3ec89c52` puts the reopen note in the
+Codex and Claude Code disconnect dialog. A Codex route change is handled by the
+desktop app-server worker after turns finish. For desktop Agents with a supported
+lifecycle adapter, the disconnected row can offer a confirmed restart alongside
+its normal status when the running instance predates restoration.
+
+Both the full Agents page and compact panel use the same row and dialog.
+Disconnect and restart continue to use their existing commands. Planned
+synthetic coverage checks each row after disconnect, the dialog notes, enabled
+restart, recovery, and unsupported or stale status. Native verification is
+pending on all platforms.
+
+| Agent | Entry and adapter | Runtime and UI after disconnect |
+| --- | --- | --- |
+| `claude` | Shared switch or model menu. Claude Code config. | Reopen note in confirmation. No process restart action. |
+| `claude-desktop` | Shared switch or model menu. Desktop profile. | Confirmed status-line restart for a stale instance on macOS and Windows. |
+| `codex` | Shared switch or model menu. Codex config and desktop app-server monitor. | Reopen note in confirmation. Route changes refresh the idle app-server on macOS and Windows. Failure gives manual reopen guidance. |
+| `gemini` | Shared switch or model menu. Gemini CLI config. | Normal disconnected status. No process restart action. |
+| `grokbuild` | Shared switch or model menu. Grok Build config. | Normal disconnected status. No process restart action. |
+| `opencode` | Shared switch or model menu. OpenCode config. | Normal disconnected status. No process restart action. |
+| `openclaw` | Shared switch or model menu. OpenClaw config. | Normal disconnected status. No process restart action. |
+| `hermes` | Shared switch or model menu. Hermes profile. | Normal disconnected status. No process restart action. |
+| `pi` | Shared switch or model menu. Pi config and helper. | Normal disconnected status. No process restart action. |
+| `workbuddy` | Shared switch or model menu. WorkBuddy CN catalog. | Confirmed status-line restart for a stale instance on macOS and Windows. |
+| `workbuddy-ai` | Shared switch or model menu. International catalog. | Confirmed status-line restart on macOS and through Vary's existing verified Windows identity. |
+| `qoder` | Shared switch or model menu. Qoder CN adapter. | Confirmed status-line restart on macOS or Windows when native freshness requires it. |
+| `doubaowork` | Shared switch. Official-session audit adapter. | Dedicated audit launch action. No generic restart action. |
+| `trae` | Shared switch. Domestic native bridge. | Confirmed status-line restart for a stale instance on macOS and Windows. Bridge cleanup status takes precedence. |
+| `trae-intl` | Shared switch. International native bridge. | Confirmed status-line restart for a stale instance on macOS and Windows. Bridge cleanup status takes precedence. |
+| `kimi` | Shared switch or model menu. CLI profile and macOS desktop adapter. | Confirmed status-line restart for a stale macOS desktop instance. |
+| `qwen` | Shared switch or model menu. Qwen Code config. | Normal disconnected status. No process restart action. |
+| `zcode` | Shared switch or model menu. ZCode config. | Confirmed status-line restart for a stale instance on macOS and Windows. Use known Windows install paths for process identity. |
+| `deepseek-harness` | Shared switch or model menu. Harness projection. | Confirmed status-line restart for a stale macOS desktop instance. |
+| `t3code` | Shared switch or model menu. T3 Code projection. | Confirmed status-line restart for a stale instance on macOS and Windows. |
+
+Linux and WSL have no native restart path in this change. OpenMausBot exists in
+Magpie's restart registry and has no Vary Agent entry.
+
+Verification used working-tree changes over `8df4a222` on macOS 15.3.1 arm64
+with Rust 1.98.1, Node 24.11.0 and pnpm 10.12.3. Type checking, renderer build,
+frontend and Rust formatting, production dependency audit, CI helper suites,
+`cargo check`, and Clippy with `-D warnings` passed. The full frontend unit run
+passed 4,605 tests across 325 files, including the compact and full Agents
+layouts with macOS, Windows and Linux status fixtures. Isolated Rust harnesses
+passed 23 Windows lifecycle tests and the Codex idle refresh regression.
+
+The full Rust library and integration runs stopped during compilation with
+`ENOSPC`. Native desktop restart and cross-platform CI acceptance remain
+pending.
 
 ## Doubao current-runtime observation follow-up
 
