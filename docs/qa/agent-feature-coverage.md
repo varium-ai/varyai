@@ -2,6 +2,12 @@
 
 ## Tray Usage (macOS and Windows)
 
+For every Agent and ledger adapter in the table below, the tray header refresh
+re-reads the selected period and the activity heatmap through the same shared
+renderer. The header shows a busy state and prevents duplicate clicks while
+the refresh runs. The synthetic renderer regression checks both queries and
+the busy state; native tray verification on macOS and Windows is pending.
+
 For the GPT-6.2 pricing correction, each Agent row below retains its existing
 entry point and adapters. The shared model catalog supplies the standard
 list-price estimate to the gateway, existing session importers, and startup

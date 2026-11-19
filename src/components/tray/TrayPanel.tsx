@@ -43,10 +43,12 @@ export function TrayPanel() {
   );
   const [active, setActive] = useState(true);
   const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const quotaFetching =
     useIsFetching({
       predicate: (query) => quotaRoots.includes(String(query.queryKey[0])),
     }) > 0;
+  const refreshBusy = refreshing || (tab === "quota" && quotaFetching);
   const frame = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLElement>(null);
   const connections = useQuery({
@@ -55,32 +57,38 @@ export function TrayPanel() {
     enabled: active,
     refetchInterval: active ? 5000 : false,
   });
-  function refresh() {
-    if (tab === "usage") {
-      void client.invalidateQueries({ queryKey: trayUsageKey });
-      return;
+  async function refresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      if (tab === "usage") {
+        await client.invalidateQueries({ queryKey: trayUsageKey });
+        return;
+      }
+      const roots =
+        tab === "agents"
+          ? [
+              "agent-connections",
+              "agent-installations",
+              "agent-native-models",
+              "agent-model-catalog",
+              "agent-cli-version",
+              "agent-desktop-versions",
+            ]
+          : tab === "quota"
+            ? quotaRoots
+            : ["security", "securityEvents", "proxyStatus"];
+      await Promise.all(
+        roots.map((root) => client.invalidateQueries({ queryKey: [root] })),
+      );
+    } finally {
+      setRefreshing(false);
     }
-    const roots =
-      tab === "agents"
-        ? [
-            "agent-connections",
-            "agent-installations",
-            "agent-native-models",
-            "agent-model-catalog",
-            "agent-cli-version",
-            "agent-desktop-versions",
-          ]
-        : tab === "quota"
-          ? quotaRoots
-          : ["security", "securityEvents", "proxyStatus"];
-    void Promise.all(
-      roots.map((root) => client.invalidateQueries({ queryKey: [root] })),
-    );
   }
   useTauriEvent("tray-panel-refresh", () => {
     setActive(true);
     frame.current?.focus({ preventScroll: true });
-    refresh();
+    void refresh();
   });
   useTauriEvent<boolean>("tray-panel-active", (active) => setActive(active));
   useEffect(() => {
@@ -144,14 +152,14 @@ export function TrayPanel() {
         <button
           title={t("trayPanel.refresh")}
           aria-label={t("trayPanel.refresh")}
-          disabled={tab === "quota" && quotaFetching}
-          aria-busy={tab === "quota" && quotaFetching}
-          onClick={refresh}
+          disabled={refreshBusy}
+          aria-busy={refreshBusy}
+          onClick={() => void refresh()}
         >
           <RefreshCw
             size={14}
             className={
-              tab === "quota" && quotaFetching
+              refreshBusy
                 ? "animate-spin motion-reduce:animate-none"
                 : undefined
             }

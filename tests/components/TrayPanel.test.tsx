@@ -190,6 +190,25 @@ it("restores the former Routing selection into Usage and refreshes the current p
     ).toHaveLength(2),
   );
 });
+it("refreshes Usage from the header and shows progress while it refetches", async () => {
+  mount();
+  fireEvent.click(screen.getByRole("tab", { name: "trayPanel.usage" }));
+  await screen.findByText("trayUsage.emptyToday");
+
+  const refresh = screen.getByRole("button", { name: "trayPanel.refresh" });
+  fireEvent.click(refresh);
+
+  expect(refresh).toBeDisabled();
+  expect(refresh).toHaveAttribute("aria-busy", "true");
+  expect(refresh.querySelector("svg")).toHaveClass("animate-spin");
+  await waitFor(() => {
+    expect(refresh).toBeEnabled();
+    expect(refresh).toHaveAttribute("aria-busy", "false");
+  });
+  const periods = vi.mocked(trayUsageApi.read).mock.calls.flat();
+  expect(periods.filter((period) => period === "today")).toHaveLength(2);
+  expect(periods.filter((period) => period === "activity")).toHaveLength(2);
+});
 it("opens with neutral focus and preserves keyboard tab navigation", () => {
   mount();
   expect(document.activeElement).toHaveClass("tray-panel");
