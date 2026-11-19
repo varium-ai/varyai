@@ -361,6 +361,22 @@ describe("SecurityCenterPage", () => {
     },
   );
 
+  it("shows the five event overview columns without panning an empty table", () => {
+    render(<SecurityCenterPage />);
+    const table = screen.getByRole("table");
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent),
+    ).toEqual([
+      "security.firstSeenAt",
+      "security.aiService",
+      "security.recordType",
+      "security.riskLevel",
+      "security.recordResult",
+    ]);
+  });
+
   it("shows interception tabs and today's security counts", () => {
     render(<SecurityCenterPage />);
 
@@ -491,6 +507,24 @@ describe("SecurityCenterPage", () => {
     expect(
       screen.getAllByRole("button", { name: "security.ruleActionRedact" }),
     ).toHaveLength(2);
+  });
+
+  it("keeps all three actions outside the scrolling filter fields", () => {
+    render(<SecurityCenterPage />);
+    const fields = screen.getByRole("combobox", {
+      name: "securityEvents.source",
+    });
+    const scroller = fields.closest(".overflow-x-auto");
+    expect(scroller).not.toBeNull();
+    for (const name of [
+      "security.resetFilters",
+      "security.refreshLogs",
+      "securityEvents.clearFiltered",
+    ]) {
+      const button = screen.getByRole("button", { name });
+      expect(scroller).not.toContainElement(button);
+      expect(scroller?.parentElement).toContainElement(button);
+    }
   });
 
   it("keeps both filter focus rings consistent and inside the scroll area", () => {
@@ -935,11 +969,26 @@ it("keeps audit headers on one line with reserved column widths and bounded long
       pixels(getComputedStyle(col).width),
     );
     expect(widths).toHaveLength(11);
-    expect(widths[0]).toBeGreaterThanOrEqual(208);
-    expect(widths[1]).toBeGreaterThanOrEqual(208);
-    expect(widths[2]).toBeGreaterThanOrEqual(112);
-    expect(widths[3]).toBeGreaterThanOrEqual(208);
-    expect(widths.slice(4, 9).every((width) => width >= 96)).toBe(true);
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent);
+    expect(headers.slice(0, 5)).toEqual([
+      "security.firstSeenAt",
+      "security.aiService",
+      "security.recordType",
+      "security.riskLevel",
+      "security.recordResult",
+    ]);
+    for (const key of [
+      "security.firstSeenAt",
+      "security.lastSeenAt",
+      "security.sessionId",
+    ])
+      expect(widths[headers.indexOf(key)]).toBeGreaterThanOrEqual(208);
+    expect(
+      widths[headers.indexOf("security.triggerCount")],
+    ).toBeGreaterThanOrEqual(112);
+    expect(widths.slice(0, -1).every((width) => width >= 96)).toBe(true);
     expect(pixels(getComputedStyle(table).minWidth)).toBeGreaterThanOrEqual(
       widths.reduce((sum, width) => sum + width, 0),
     );

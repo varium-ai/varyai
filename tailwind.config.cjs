@@ -81,16 +81,7 @@ module.exports = {
         xl: "0.875rem",
       },
       fontFamily: {
-        // 使用与之前版本保持一致的系统字体栈
-        sans: [
-          "-apple-system",
-          "BlinkMacSystemFont",
-          '"Segoe UI"',
-          "Roboto",
-          '"Helvetica Neue"',
-          "Arial",
-          "sans-serif",
-        ],
+        sans: ["var(--mp-font)"],
         mono: [
           "ui-monospace",
           "SFMono-Regular",

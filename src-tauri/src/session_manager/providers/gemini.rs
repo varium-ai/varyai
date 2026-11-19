@@ -164,6 +164,7 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
         title: title.clone(),
+        has_native_title: false,
         summary: title,
         project_dir: None, // (optionally) populated later
         created_at,

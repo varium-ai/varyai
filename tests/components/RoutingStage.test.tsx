@@ -144,7 +144,7 @@ it.each(
 )(
   "only shows the attempted destination for $agent in $layout",
   ({ agent, layout }) => {
-    const request = { ...row, agent };
+    const request = { ...row, agent, sessionTitle: "Synthetic conversation" };
     const view = show({
       row: { ...request, steps: [] },
       layout,
@@ -172,12 +172,121 @@ it.each(
     expect(seats()).toHaveLength(1);
     expect(seats()[0]).toHaveClass("replying");
     expect(seats()[0]).toHaveTextContent("model-a");
+    expect(seats()[0]).toHaveTextContent("Synthetic conversation");
+    expect(seats()[0].querySelector(".rt-seat-status")).toHaveClass(
+      "has-response",
+    );
+    expect(seats()[0]).not.toHaveTextContent("routingPage.outputRate");
+    update({ outputTokensPerSecond: 42.5 });
+    expect(seats()[0]).toHaveTextContent("routingPage.outputRate");
     expect(view.container.querySelector(".rt-accts .dot")).toBeNull();
     update({}, true);
     expect(highlighted()).toHaveLength(0);
-    update({ firstTokenMs: 0, state: "completed" });
+    update({
+      firstTokenMs: 0,
+      state: "completed",
+      outputTokensPerSecond: 42.5,
+    });
     expect(highlighted()).toHaveLength(0);
     expect(seats()[0]).toHaveTextContent("routingPage.seatAnswered");
+    expect(seats()[0]).toHaveTextContent("Synthetic conversation");
+    expect(seats()[0]).toHaveTextContent("routingPage.outputRate");
+  },
+);
+
+it("shows only the winning request's title and output rate, never fallback or account metrics", () => {
+  const observed = {
+    ...row,
+    sessionTitle: "Synthetic selected conversation",
+    outputTokensPerSecond: 48,
+    steps: [
+      attempt(0),
+      { kind: "rejected" as const, candidate: 0, atMs: 1 },
+      ...row.steps,
+    ],
+  };
+  show({
+    row: observed,
+    sources: [
+      observed,
+      {
+        ...observed,
+        id: "completed-peer",
+        sessionTitle: "Unrelated conversation",
+        state: "completed",
+        outputTokensPerSecond: 15,
+      },
+    ],
+    currentAccounts: [
+      { ...row.candidates[0].account!, outputTokensPerSecond: 100 },
+    ],
+    liveObservations: true,
+    animate: true,
+  });
+  const [fallback, winner] = document.querySelectorAll(".rt-seat-status");
+  expect(fallback).not.toHaveClass("has-response");
+  expect(fallback).not.toHaveTextContent("Synthetic selected conversation");
+  expect(fallback).not.toHaveTextContent("routingPage.outputRate");
+  expect(winner).toHaveTextContent("Synthetic selected conversation");
+  expect(winner).toHaveTextContent("routingPage.outputRate");
+  expect(winner).not.toHaveTextContent("Unrelated conversation");
+});
+
+it("renders each concurrent response's localized title and measured rate on its card", async () => {
+  const locale = createInstance();
+  await locale.init({ lng: "zh", resources: { zh: { translation: zh } } });
+  const request = {
+    ...row,
+    sessionTitle: "合成测试会话",
+    outputTokensPerSecond: 42.49,
+    steps: [attempt(2)],
+  };
+  const otherRequest = {
+    ...row,
+    id: "stage-peer",
+    agent: "claude",
+    sessionTitle: "另一条测试会话",
+    outputTokensPerSecond: 17.1,
+  };
+  const view = render(
+    <I18nextProvider i18n={locale}>
+      <RoutingStage
+        row={request}
+        sources={[request, otherRequest]}
+        accountName={(candidate) => candidate.providerName}
+        layout="compact"
+        now={now}
+        animate={false}
+        replay={false}
+        speed={1}
+      />
+    </I18nextProvider>,
+  );
+  const [first, second] = view.container.querySelectorAll(
+    ".rt-seat-status.has-response",
+  );
+  expect(first).toHaveTextContent(/正在回答.*合成测试会话 · 42\.5 tok\/s/);
+  expect(first?.closest("li")).toHaveAttribute(
+    "title",
+    expect.stringContaining("合成测试会话 · 42.5 tok/s"),
+  );
+  expect(second).toHaveTextContent(/正在回答.*另一条测试会话 · 17\.1 tok\/s/);
+});
+
+it.each([0, -3, Infinity, NaN, undefined])(
+  "omits unavailable output rate %s and uses an opaque session reference",
+  (rate) => {
+    const digest = "ab123456".repeat(8);
+    show({ row: { ...row, session: digest, outputTokensPerSecond: rate } });
+    expect(document.querySelector(".rt-seat-status")).toHaveTextContent(
+      "routingPage.sessionReference",
+    );
+    expect(document.querySelector(".rt-seat-status")).not.toHaveTextContent(
+      digest,
+    );
+    expect(document.querySelector(".rt-seat-status")).not.toHaveTextContent(
+      "routingPage.outputRate",
+    );
   },
 );
 

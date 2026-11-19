@@ -48,6 +48,23 @@ import {
   securityEventSessionId,
 } from "./securityEventLabels";
 
+const overviewColumns = [
+  ["security.firstSeenAt", "w-56"],
+  ["security.aiService", "w-32"],
+  ["security.recordType", "w-48"],
+  ["security.riskLevel", "w-28"],
+  ["security.recordResult", "w-32"],
+] as const;
+const auditColumns = [
+  ...overviewColumns,
+  ["security.lastSeenAt", "w-56"],
+  ["security.triggerCount", "w-32"],
+  ["security.sessionId", "w-56"],
+  ["security.outboundStatus", "w-64"],
+  ["securityEvents.source", "w-32"],
+  ["", "w-12"],
+] as const;
+
 type Option = { value: string; label: string };
 
 function FilterSelect({
@@ -65,7 +82,7 @@ function FilterSelect({
     <Select value={value || "all"} onValueChange={onChange}>
       <SelectTrigger
         aria-label={label}
-        className="h-8 w-auto min-w-28 flex-none rounded-full bg-card text-xs"
+        className="h-8 w-full min-w-0 rounded-md bg-card text-xs"
       >
         <SelectValue />
       </SelectTrigger>
@@ -312,21 +329,20 @@ export function SecurityEventsPanel({
   const tableLoading = isLoading || isRefreshing;
   const clearDisabled =
     tableLoading || isError || isClearBusy || !eventsResult?.total;
-  const status = isError || !eventsResult?.items.length;
+  const hasEventRows = !isError && Boolean(eventsResult?.items.length);
+  const columns = hasEventRows ? auditColumns : overviewColumns;
+  const status = !hasEventRows;
   return (
     <section
-      className="mt-6 space-y-5"
+      className="mt-5 space-y-4"
       role="tabpanel"
       aria-label={t("security.tabRecords")}
     >
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-2.5">
         {(["redacted", "warnings", "protectiveBlocked"] as const).map(
           (metric) => (
-            <div
-              key={metric}
-              className="rounded-2xl border border-border/90 bg-card p-5 shadow-sm"
-            >
-              <div className="text-3xl font-extrabold">
+            <div key={metric} className="sc-surface sc-metric">
+              <div className="text-2xl font-semibold tabular-nums">
                 {summaryCount(summary.data?.[metric])}
               </div>
               <div className="mt-1.5 text-xs text-muted-foreground">
@@ -336,11 +352,11 @@ export function SecurityEventsPanel({
           ),
         )}
       </div>
-      <div className="rounded-xl border bg-card p-4 text-sm">
+      <div className="sc-summary">
         <p className="text-xs text-muted-foreground">
           {t("securityEvents.summaryScope")}
         </p>
-        <div className="mt-2 flex flex-wrap gap-4">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
           <span data-testid="security-events-summary-total">
             {t("securityEvents.totalRecords")}:{" "}
             {count(
@@ -364,7 +380,7 @@ export function SecurityEventsPanel({
         </div>
       </div>
       <div
-        className="flex gap-2"
+        className="sc-view-picker"
         role="tablist"
         aria-label={t("security.tabRecords")}
       >
@@ -373,6 +389,8 @@ export function SecurityEventsPanel({
             key={view}
             role="tab"
             aria-selected={filter.view === view}
+            size="sm"
+            className="aria-selected:bg-card aria-selected:text-primary aria-selected:shadow-sm"
             variant={filter.view === view ? "secondary" : "ghost"}
             onClick={() => switchView(view)}
           >
@@ -384,181 +402,191 @@ export function SecurityEventsPanel({
           </Button>
         ))}
       </div>
-      <div className="overflow-x-auto p-1">
-        <div className="flex min-w-max items-center gap-2.5 text-xs">
-          <UsageDateRangePicker
-            selection={range}
-            triggerLabel={
-              rangeLabels[range.preset] ??
-              getUsageRangePresetLabel(range.preset, t)
-            }
-            presets={["today", "7d", "30d"]}
-            presetLabels={rangeLabels}
-            triggerClassName="h-8 w-auto rounded-full text-xs"
-            popoverAlign="start"
-            onApply={(next) => {
-              onRangeChange(next);
-              onPageChange(1);
-            }}
-          />
-          {filter.view === "security_events" && (
+      <div className="flex min-w-0 items-center gap-1">
+        <div className="min-w-0 flex-1 overflow-x-auto p-1">
+          <div className="sc-filters">
+            <UsageDateRangePicker
+              selection={range}
+              triggerLabel={
+                rangeLabels[range.preset] ??
+                getUsageRangePresetLabel(range.preset, t)
+              }
+              presets={["today", "7d", "30d"]}
+              presetLabels={rangeLabels}
+              triggerClassName="h-8 w-full min-w-0 text-xs"
+              popoverAlign="start"
+              onApply={(next) => {
+                onRangeChange(next);
+                onPageChange(1);
+              }}
+            />
+            {filter.view === "security_events" && (
+              <FilterSelect
+                label={t("securityEvents.source")}
+                value={filter.eventType}
+                options={[
+                  all("securityEvents.allSources"),
+                  { value: "dlp", label: t("securityEvents.dlp") },
+                  { value: "tool_risk", label: t("securityEvents.toolRisk") },
+                ]}
+                onChange={(value) =>
+                  changeFilter({
+                    eventType:
+                      value === "all"
+                        ? undefined
+                        : (value as "dlp" | "tool_risk"),
+                    category: undefined,
+                    ...(value !== "dlp"
+                      ? { sessionId: undefined, keyword: undefined }
+                      : {}),
+                  })
+                }
+              />
+            )}
             <FilterSelect
-              label={t("securityEvents.source")}
-              value={filter.eventType}
+              label={t("security.allRisks")}
+              value={filter.riskLevel}
               options={[
-                all("securityEvents.allSources"),
-                { value: "dlp", label: t("securityEvents.dlp") },
-                { value: "tool_risk", label: t("securityEvents.toolRisk") },
+                all("security.allRisks"),
+                ...["HIGH", "MEDIUM", "LOW"].map((value) => ({
+                  value,
+                  label: securityEventRiskLabel(t, value),
+                })),
               ]}
               onChange={(value) =>
                 changeFilter({
-                  eventType:
+                  riskLevel:
                     value === "all"
                       ? undefined
-                      : (value as "dlp" | "tool_risk"),
-                  category: undefined,
-                  ...(value !== "dlp"
-                    ? { sessionId: undefined, keyword: undefined }
-                    : {}),
+                      : (value as SecurityEventFilter["riskLevel"]),
                 })
               }
             />
-          )}
-          <FilterSelect
-            label={t("security.allRisks")}
-            value={filter.riskLevel}
-            options={[
-              all("security.allRisks"),
-              ...["HIGH", "MEDIUM", "LOW"].map((value) => ({
-                value,
-                label: securityEventRiskLabel(t, value),
-              })),
-            ]}
-            onChange={(value) =>
-              changeFilter({
-                riskLevel:
-                  value === "all"
-                    ? undefined
-                    : (value as SecurityEventFilter["riskLevel"]),
-              })
-            }
-          />
-          <FilterSelect
-            label={t("security.typeFilter")}
-            value={filter.category}
-            options={categoryOptions}
-            onChange={(value) =>
-              changeFilter({
-                category: value === "all" ? undefined : value,
-                ...(value === "all"
-                  ? {}
-                  : {
-                      eventType: value.startsWith("dlp:") ? "dlp" : "tool_risk",
-                      ...(value.startsWith("tool_risk:")
-                        ? { sessionId: undefined, keyword: undefined }
-                        : {}),
+            <FilterSelect
+              label={t("security.typeFilter")}
+              value={filter.category}
+              options={categoryOptions}
+              onChange={(value) =>
+                changeFilter({
+                  category: value === "all" ? undefined : value,
+                  ...(value === "all"
+                    ? {}
+                    : {
+                        eventType: value.startsWith("dlp:")
+                          ? "dlp"
+                          : "tool_risk",
+                        ...(value.startsWith("tool_risk:")
+                          ? { sessionId: undefined, keyword: undefined }
+                          : {}),
+                      }),
+                })
+              }
+            />
+            <FilterSelect
+              label={t("security.allApps")}
+              value={filter.appType}
+              options={[
+                all("security.allApps"),
+                ...appIds.map((value) => ({
+                  value,
+                  label: value === "openai" ? "OpenAI" : getAppLabel(value),
+                })),
+              ]}
+              onChange={(value) =>
+                changeFilter({ appType: value === "all" ? undefined : value })
+              }
+            />
+            <FilterSelect
+              label={t("security.allActions")}
+              value={filter.result}
+              options={[
+                all("security.allActions"),
+                ...(
+                  [
+                    "redacted",
+                    "warning",
+                    "blocked",
+                    "allowed",
+                    "unchecked",
+                    "uncertain",
+                    "low_risk",
+                    "unknown",
+                  ] as const
+                ).map((value) => ({
+                  value,
+                  label: t(
+                    {
+                      redacted: "security.resultRedacted",
+                      warning: "security.resultAlert",
+                      blocked: "security.resultBlocked",
+                      allowed: "security.actionAllow",
+                      unchecked: "toolRisk.verdict.unchecked",
+                      uncertain: "toolRisk.verdict.uncertain",
+                      low_risk: "toolRisk.verdict.low_risk",
+                      unknown: "securityEvents.unknown",
+                    }[value],
+                  ),
+                })),
+              ]}
+              onChange={(value) =>
+                changeFilter({
+                  result:
+                    value === "all"
+                      ? undefined
+                      : (value as SecurityEventFilter["result"]),
+                })
+              }
+            />
+            {filter.view === "tool_calls" && (
+              <FilterSelect
+                label={t("toolRisk.eventVerdictFilter")}
+                value={filter.toolVerdict}
+                options={[
+                  all("toolRisk.eventFilterAll"),
+                  ...["risky", "unchecked", "uncertain", "low_risk"].map(
+                    (value) => ({
+                      value,
+                      label: t(`toolRisk.verdict.${value}`),
                     }),
-              })
-            }
-          />
-          <FilterSelect
-            label={t("security.allApps")}
-            value={filter.appType}
-            options={[
-              all("security.allApps"),
-              ...appIds.map((value) => ({
-                value,
-                label: value === "openai" ? "OpenAI" : getAppLabel(value),
-              })),
-            ]}
-            onChange={(value) =>
-              changeFilter({ appType: value === "all" ? undefined : value })
-            }
-          />
-          <FilterSelect
-            label={t("security.allActions")}
-            value={filter.result}
-            options={[
-              all("security.allActions"),
-              ...(
-                [
-                  "redacted",
-                  "warning",
-                  "blocked",
-                  "allowed",
-                  "unchecked",
-                  "uncertain",
-                  "low_risk",
-                  "unknown",
-                ] as const
-              ).map((value) => ({
-                value,
-                label: t(
-                  {
-                    redacted: "security.resultRedacted",
-                    warning: "security.resultAlert",
-                    blocked: "security.resultBlocked",
-                    allowed: "security.actionAllow",
-                    unchecked: "toolRisk.verdict.unchecked",
-                    uncertain: "toolRisk.verdict.uncertain",
-                    low_risk: "toolRisk.verdict.low_risk",
-                    unknown: "securityEvents.unknown",
-                  }[value],
-                ),
-              })),
-            ]}
-            onChange={(value) =>
-              changeFilter({
-                result:
-                  value === "all"
-                    ? undefined
-                    : (value as SecurityEventFilter["result"]),
-              })
-            }
-          />
-          {filter.view === "tool_calls" && (
-            <FilterSelect
-              label={t("toolRisk.eventVerdictFilter")}
-              value={filter.toolVerdict}
-              options={[
-                all("toolRisk.eventFilterAll"),
-                ...["risky", "unchecked", "uncertain", "low_risk"].map(
-                  (value) => ({ value, label: t(`toolRisk.verdict.${value}`) }),
-                ),
-              ]}
-              onChange={(value) =>
-                changeFilter({
-                  toolVerdict:
-                    value === "all"
-                      ? undefined
-                      : (value as SecurityEventFilter["toolVerdict"]),
-                })
-              }
-            />
-          )}
-          {filter.view === "security_events" && filter.eventType === "dlp" && (
-            <>
-              <Input
-                aria-label={t("security.sessionFilter")}
-                value={filter.sessionId ?? ""}
-                onChange={(event) =>
-                  changeFilter({ sessionId: event.target.value })
+                  ),
+                ]}
+                onChange={(value) =>
+                  changeFilter({
+                    toolVerdict:
+                      value === "all"
+                        ? undefined
+                        : (value as SecurityEventFilter["toolVerdict"]),
+                  })
                 }
-                placeholder={t("security.sessionFilterPlaceholder")}
-                className="h-8 w-[220px] flex-none text-xs"
               />
-              <Input
-                aria-label={t("securityEvents.keywordHint")}
-                title={t("securityEvents.keywordHint")}
-                value={filter.keyword ?? ""}
-                onChange={(event) =>
-                  changeFilter({ keyword: event.target.value })
-                }
-                placeholder={t("security.searchPlaceholder")}
-                className="h-8 w-[220px] flex-none text-xs"
-              />
-            </>
-          )}
+            )}
+            {filter.view === "security_events" &&
+              filter.eventType === "dlp" && (
+                <>
+                  <Input
+                    aria-label={t("security.sessionFilter")}
+                    value={filter.sessionId ?? ""}
+                    onChange={(event) =>
+                      changeFilter({ sessionId: event.target.value })
+                    }
+                    placeholder={t("security.sessionFilterPlaceholder")}
+                    className="h-8 w-full min-w-0 text-xs"
+                  />
+                  <Input
+                    aria-label={t("securityEvents.keywordHint")}
+                    title={t("securityEvents.keywordHint")}
+                    value={filter.keyword ?? ""}
+                    onChange={(event) =>
+                      changeFilter({ keyword: event.target.value })
+                    }
+                    placeholder={t("security.searchPlaceholder")}
+                    className="h-8 w-full min-w-0 text-xs"
+                  />
+                </>
+              )}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1 pr-1">
           <Button
             variant="ghost"
             size="sm"
@@ -655,43 +683,33 @@ export function SecurityEventsPanel({
             onCreateRule={createRule}
           />
         ) : (
-          <div className="overflow-hidden rounded-2xl border border-border/90 bg-card shadow-sm">
+          <div className="sc-surface overflow-hidden">
             <div className="overflow-x-auto">
               <table
                 aria-busy={tableLoading}
-                className="w-full min-w-[1900px] table-fixed border-collapse text-left"
+                className={
+                  hasEventRows
+                    ? "w-full min-w-[1900px] table-fixed border-collapse text-left"
+                    : "w-full table-fixed border-collapse text-left"
+                }
               >
-                <colgroup>
-                  <col className="w-56" />
-                  <col className="w-56" />
-                  <col className="w-32" />
-                  <col className="w-56" />
-                  <col className="w-48" />
-                  <col className="w-28" />
-                  <col className="w-32" />
-                  <col className="w-36" />
-                  <col className="w-64" />
-                  <col className="w-32" />
-                  <col className="w-12" />
-                </colgroup>
+                {hasEventRows && (
+                  <colgroup>
+                    {columns.map(([key, width]) => (
+                      <col key={key} className={width} />
+                    ))}
+                  </colgroup>
+                )}
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    {[
-                      "security.firstSeenAt",
-                      "security.lastSeenAt",
-                      "security.triggerCount",
-                      "security.sessionId",
-                      "security.recordType",
-                      "security.riskLevel",
-                      "security.recordResult",
-                      "security.aiService",
-                      "security.outboundStatus",
-                      "securityEvents.source",
-                      "",
-                    ].map((key, index) => (
+                    {columns.map(([key], index) => (
                       <th
                         key={key || index}
-                        className="whitespace-nowrap px-4 py-3.5 font-normal"
+                        className={
+                          hasEventRows
+                            ? "whitespace-nowrap px-3 py-3 font-medium"
+                            : "px-3 py-3 font-medium"
+                        }
                       >
                         {key ? t(key) : null}
                       </th>
@@ -715,20 +733,41 @@ export function SecurityEventsPanel({
                           }
                         }}
                       >
-                        <td className="whitespace-nowrap px-4 py-4 font-mono text-xs">
+                        <td className="whitespace-nowrap px-3 py-3 font-mono text-xs">
                           {new Date(event.timestamp).toLocaleString(
                             i18n.language,
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-4 font-mono text-xs">
+                        <td className="px-3 py-3">
+                          <span className="block truncate">
+                            {event.appType
+                              ? getAppLabel(event.appType)
+                              : t("securityEvents.notRecorded")}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span
+                            className="block truncate"
+                            title={securityEventName(t, event)}
+                          >
+                            {securityEventName(t, event)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3">
+                          {securityEventRiskLabel(t, event.riskLevel)}
+                        </td>
+                        <td className="px-3 py-3">
+                          {securityEventResultLabel(t, event)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 font-mono text-xs">
                           {new Date(event.lastSeenAt).toLocaleString(
                             i18n.language,
                           )}
                         </td>
-                        <td className="truncate px-4 py-4 font-mono">
+                        <td className="truncate px-3 py-3 font-mono">
                           {event.triggerCount.toLocaleString(i18n.language)}
                         </td>
-                        <td className="px-4 py-4 font-mono text-xs">
+                        <td className="px-3 py-3 font-mono text-xs">
                           <span
                             className="block truncate"
                             title={securityEventSessionId(event) || undefined}
@@ -741,31 +780,10 @@ export function SecurityEventsPanel({
                               )}
                           </span>
                         </td>
-                        <td className="px-4 py-4">
-                          <span
-                            className="block truncate"
-                            title={securityEventName(t, event)}
-                          >
-                            {securityEventName(t, event)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4">
-                          {securityEventRiskLabel(t, event.riskLevel)}
-                        </td>
-                        <td className="px-4 py-4">
-                          {securityEventResultLabel(t, event)}
-                        </td>
-                        <td className="px-4 py-4">
-                          <span className="block truncate">
-                            {event.appType
-                              ? getAppLabel(event.appType)
-                              : t("securityEvents.notRecorded")}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4 text-xs">
+                        <td className="px-3 py-3 text-xs">
                           {securityEventOutboundLabel(t, event)}
                         </td>
-                        <td className="px-4 py-4">
+                        <td className="px-3 py-3">
                           {t(
                             event.eventType === "dlp"
                               ? "securityEvents.dlp"
@@ -785,13 +803,13 @@ export function SecurityEventsPanel({
             ) : status ? (
               <div
                 role="status"
-                className="flex flex-col items-center justify-center px-4 py-14 text-center text-xs"
+                className="flex flex-col items-center justify-center px-4 py-16 text-center text-sm"
               >
                 {isError ? (
                   t("securityEvents.queryError")
                 ) : (
                   <>
-                    <FileText className="mb-2 h-8 w-8" />
+                    <FileText className="mb-2 h-6 w-6 text-muted-foreground" />
                     {t("security.noFilteredRecords")}
                   </>
                 )}

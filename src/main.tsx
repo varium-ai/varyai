@@ -30,20 +30,11 @@ import {
   syncModelsDevPricingOnStartup,
 } from "./lib/modelsDevAutoSync";
 import { initializeWindowActivity } from "@/lib/windowActivity";
+import { desktopFontPlatform } from "@/lib/platform";
 
 installGlobalErrorHandlers();
 
-// 根据平台添加 body class，便于平台特定样式
-try {
-  const ua = navigator.userAgent || "";
-  const plat = (navigator.platform || "").toLowerCase();
-  const isMac = /mac/i.test(ua) || plat.includes("mac");
-  if (isMac) {
-    document.body.classList.add("is-mac");
-  }
-} catch {
-  // 忽略平台检测失败
-}
+document.documentElement.dataset.platform = desktopFontPlatform();
 
 // 配置加载错误payload类型
 interface ConfigLoadErrorPayload {

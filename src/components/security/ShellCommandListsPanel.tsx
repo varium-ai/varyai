@@ -1,3 +1,4 @@
+import { Pencil, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -461,11 +462,8 @@ export function ShellCommandListsPanel() {
     }
   };
   return (
-    <section
-      data-testid="shell-command-lists-panel"
-      className="rounded-2xl border border-border/90 bg-card shadow-sm"
-    >
-      <div className="flex items-center justify-between gap-3 border-b border-border/80 px-5 py-4">
+    <section data-testid="shell-command-lists-panel" className="sc-surface">
+      <div className="sc-panel-header">
         <div>
           <h3 className="text-sm font-semibold">{t(key("title"))}</h3>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -487,10 +485,10 @@ export function ShellCommandListsPanel() {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{t(key("listType"))}</TableHead>
             <TableHead>{t(key("pattern"))}</TableHead>
             <TableHead>{t(key("matchKind"))}</TableHead>
             <TableHead>{t(key("severity"))}</TableHead>
+            <TableHead>{t(key("enabled"))}</TableHead>
             <TableHead>{t("toolRisk.colActions")}</TableHead>
           </TableRow>
         </TableHeader>
@@ -511,11 +509,14 @@ export function ShellCommandListsPanel() {
           ) : (
             entries.map((entry) => (
               <TableRow key={entry.id}>
-                <TableCell className="text-xs">
-                  {t(key(entry.listType))}
-                </TableCell>
                 <TableCell className="max-w-[240px] break-all font-mono text-xs">
-                  {entry.pattern}
+                  <span>{entry.pattern}</span>
+                  <Badge
+                    variant="secondary"
+                    className="ml-2 min-h-0 font-sans text-[10px]"
+                  >
+                    {t(key(entry.listType))}
+                  </Badge>
                 </TableCell>
                 <TableCell className="text-xs">
                   {t(key(`kind.${entry.matchKind}`))}
@@ -531,23 +532,31 @@ export function ShellCommandListsPanel() {
                       disabled={isSaving || isDeleting}
                       onCheckedChange={(checked) => void toggle(entry, checked)}
                     />
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
                     <Button
-                      size="sm"
+                      size="icon"
                       variant="ghost"
+                      aria-label={t("common.edit")}
+                      title={t("common.edit")}
                       onClick={() => setDialog({ entry })}
                     >
-                      {t("common.edit")}
+                      <Pencil aria-hidden="true" className="size-3.5" />
                     </Button>
                     <Button
-                      size="sm"
+                      size="icon"
                       variant="ghost"
+                      aria-label={t("common.delete")}
+                      title={t("common.delete")}
                       disabled={isSaving || isDeleting}
                       onClick={() => {
                         setError(false);
                         setDeleting(entry);
                       }}
                     >
-                      {t("common.delete")}
+                      <Trash2 aria-hidden="true" className="size-3.5" />
                     </Button>
                   </div>
                 </TableCell>

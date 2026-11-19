@@ -328,7 +328,9 @@ fn parse_session(path: &Path) -> Result<SessionMeta, String> {
     let SessionTree {
         header, summary, ..
     } = read_tree(&source)?;
-    let title = summary.explicit_name.flatten().or_else(|| {
+    let native_title = summary.explicit_name.flatten();
+    let has_native_title = native_title.is_some();
+    let title = native_title.or_else(|| {
         summary
             .first_user_message
             .as_deref()
@@ -345,6 +347,7 @@ fn parse_session(path: &Path) -> Result<SessionMeta, String> {
         provider_id: PROVIDER_ID.to_string(),
         session_id: header.id,
         title,
+        has_native_title,
         summary: summary_text,
         project_dir: (!header.cwd.trim().is_empty()).then(|| header.cwd.clone()),
         created_at: header.timestamp,

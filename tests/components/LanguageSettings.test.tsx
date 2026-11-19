@@ -30,6 +30,6 @@ describe("LanguageSettings", () => {
       screen.getByRole("button", {
         name: "settings.languageOptionEnglish",
       }),
-    ).toHaveClass("hover:!text-white");
+    ).toHaveAttribute("aria-pressed", "true");
   });
 });

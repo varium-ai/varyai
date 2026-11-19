@@ -685,7 +685,8 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
 }
-.vary-routing .rt-stage:not(.compact) .rt-seat-status {
+.vary-routing .rt-stage:not(.compact) .rt-seat-status,
+.vary-routing .rt-stage.compact .rt-seat-status.has-response {
   position: static;
   width: auto;
   height: auto;
@@ -699,6 +700,11 @@
   color: var(--rt-muted);
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.vary-routing .rt-stage.compact .rt-seat-status.has-response {
+  padding: 2px 0 0 22px;
+  font-size: 11px;
+  color: var(--rt-fg);
 }
 .vary-routing .rt-stage:not(.compact) .rt-accts li.on .rt-seat-status {
   color: var(--rt-fg);

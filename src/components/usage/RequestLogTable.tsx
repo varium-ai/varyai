@@ -149,9 +149,9 @@ export function RequestLogTable({
 
   return (
     <div className="space-y-4" aria-busy={isFetching}>
-      <div className="rounded-lg border bg-card/50 p-2 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {/* Status code */}
+      <div className="stats-surface stats-log-filters">
+        <div>
+          <span>{t("usage.status")}</span>
           <Select
             value={statusCode?.toString() || "all"}
             onValueChange={(v) => {
@@ -162,7 +162,10 @@ export function RequestLogTable({
               setPage(0);
             }}
           >
-            <SelectTrigger className="h-8 w-[100px] bg-background text-xs">
+            <SelectTrigger
+              aria-label={t("usage.status")}
+              className="h-[34px] w-full bg-card text-xs"
+            >
               <SelectValue placeholder={t("usage.statusCode")} />
             </SelectTrigger>
             <SelectContent>
@@ -174,15 +177,18 @@ export function RequestLogTable({
               <SelectItem value="500">500</SelectItem>
             </SelectContent>
           </Select>
-
-          {onRangeChange && (
+        </div>
+        {onRangeChange && (
+          <div>
+            <span>{t("usage.timeRange")}</span>
             <UsageDateRangePicker
+              triggerClassName="h-[34px] w-full"
               selection={range}
               triggerLabel={rangeLabel}
               onApply={onRangeChange}
             />
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {isError && (
@@ -206,38 +212,35 @@ export function RequestLogTable({
         />
       ) : (
         <>
-          <div
-            ref={tableRegion}
-            className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto"
-          >
+          <div ref={tableRegion} className="stats-surface overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.time")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.providerOrSource")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.billingModel")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.inputTokens")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.outputTokens")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.totalCost")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.timingInfo")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.status")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
+                  <TableHead className="text-left whitespace-nowrap">
                     {t("usage.source", { defaultValue: "Source" })}
                   </TableHead>
                 </TableRow>
@@ -257,7 +260,7 @@ export function RequestLogTable({
                     const unpriced = isUnpricedUsage(log);
                     return (
                       <TableRow key={log.requestId} className="h-14">
-                        <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
+                        <TableCell className="text-left whitespace-nowrap text-xs px-1.5">
                           {new Date(log.createdAt * 1000).toLocaleString(
                             locale,
                             {
@@ -268,10 +271,10 @@ export function RequestLogTable({
                             },
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className="text-left">
                           <UsageSourceLabel source={log} />
                         </TableCell>
-                        <TableCell className="text-center font-mono text-xs min-w-[160px] max-w-[260px]">
+                        <TableCell className="text-left font-mono text-xs min-w-[160px] max-w-[260px]">
                           <div
                             title={`${t("usage.requestModel")}: ${modelName(log.requestModel || log.model)} → ${t("usage.responseModel")}: ${modelName(log.model)}`}
                           >
@@ -295,7 +298,7 @@ export function RequestLogTable({
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-center px-1.5">
+                        <TableCell className="text-left px-1.5">
                           {(() => {
                             const freshInput = getFreshInputTokens(log);
                             const isCacheInclusive =
@@ -327,7 +330,7 @@ export function RequestLogTable({
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="text-center px-1.5">
+                        <TableCell className="text-left px-1.5">
                           <div className="tabular-nums">
                             {fmtInt(log.outputTokens, locale)}
                             {(() => {
@@ -341,7 +344,7 @@ export function RequestLogTable({
                             })()}
                           </div>
                         </TableCell>
-                        <TableCell className="text-center px-1.5">
+                        <TableCell className="text-left px-1.5">
                           <div
                             className={`font-medium tabular-nums ${
                               unpriced ? "text-muted-foreground" : ""
@@ -361,7 +364,7 @@ export function RequestLogTable({
                               </div>
                             )}
                         </TableCell>
-                        <TableCell className="text-center whitespace-nowrap text-xs tabular-nums">
+                        <TableCell className="text-left whitespace-nowrap text-xs tabular-nums">
                           {(log.latencyMs / 1000).toFixed(1)}s
                           {log.firstTokenMs != null && (
                             <span className="text-muted-foreground">
@@ -369,7 +372,7 @@ export function RequestLogTable({
                             </span>
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className="text-left">
                           <Badge
                             className="tabular-nums"
                             variant={
@@ -381,7 +384,7 @@ export function RequestLogTable({
                             {log.statusCode}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-center text-xs text-muted-foreground">
+                        <TableCell className="text-left text-xs text-muted-foreground">
                           {log.dataSource || "proxy"}
                         </TableCell>
                       </TableRow>

@@ -34,6 +34,8 @@ semantic colors directly. Older workspace surfaces read aliases that resolve
 to the same tokens. Window, sidebar and chart fill opacity are defined by
 their respective surfaces.
 
+Renderer UI text uses the shared `--mp-font` stack: PingFang SC on macOS, Microsoft YaHei on Windows, and system UI fonts elsewhere. Keep code and structured-data editors monospace.
+
 ## Native file dialog languages
 
 macOS chooses the language of native Open and Save panels using the app's

@@ -263,8 +263,8 @@ function ToolRiskEventsTable({
   );
 
   return (
-    <div className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-border/90 bg-card shadow-sm">
-      <div className="flex items-center justify-between border-b border-border/80 px-5 py-4">
+    <div className="min-w-0 max-w-full overflow-hidden sc-surface">
+      <div className="sc-panel-header">
         <div>
           <div className="text-sm font-semibold text-foreground">
             {t("toolRisk.eventsHeading", { defaultValue: "调用记录" })}

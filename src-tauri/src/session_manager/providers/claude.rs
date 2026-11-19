@@ -227,6 +227,7 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
     let session_id = session_id?;
 
     // Title priority: custom-title > first user message > directory basename
+    let has_native_title = custom_title.is_some();
     let title = custom_title
         .map(|t| truncate_summary(&t, TITLE_MAX_CHARS))
         .or_else(|| first_user_message.map(|t| truncate_summary(&t, TITLE_MAX_CHARS)))
@@ -243,6 +244,7 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
         title,
+        has_native_title,
         summary,
         project_dir,
         created_at,

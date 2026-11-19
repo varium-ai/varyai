@@ -18,6 +18,9 @@ export const isWindows = (): boolean => {
   }
 };
 
+export const desktopFontPlatform = () =>
+  isMac() ? "macos" : isWindows() ? "windows" : "other";
+
 export const isLinux = (): boolean => {
   try {
     const ua = navigator.userAgent || "";

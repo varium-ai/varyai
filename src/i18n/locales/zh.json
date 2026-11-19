@@ -727,6 +727,12 @@
     }
   },
   "settings": {
+    "appearanceLanguage": "外观与语言",
+    "startupWindow": "启动与窗口",
+    "integrationsTerminal": "集成与终端",
+    "visibleApplications": "可见应用",
+    "selectedApplications": "已选 {{count}} 个",
+    "addApplication": "添加应用",
     "permissions": {
       "banner": {
         "title": "系统通知未开启",
@@ -4120,6 +4126,7 @@
     "sandboxTitle": "规则沙箱测试",
     "sandboxDescription": "手动预览规则，不受实时观测总开关影响；不执行工具、不产生风险记录、不保存或回显原文。",
     "sandboxObservationDisabled": "实时工具风险观测已关闭。以下仅为手动规则测试，不代表实时防护已开启。",
+    "sandboxArguments": "参数（JSON）",
     "sandboxTool": "工具名",
     "sandboxClient": "客户端（可选）",
     "sandboxDefinitionRef": "可信 schema 引用（可选）",
@@ -5414,6 +5421,8 @@
     "seatAnswering": "正在回答此请求…",
     "seatAnsweringOther": "正在回答另一个请求…",
     "seatAnswered": "已回答此请求",
+    "sessionReference": "会话 {{id}}",
+    "outputRate": "{{value, number}} tok/s",
     "seatWentOn": "已继续尝试下一个",
     "seatFailed": "错误已返回 Agent",
     "seatResting": "冷却中 · {{time}}",

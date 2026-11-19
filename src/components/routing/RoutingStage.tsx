@@ -567,11 +567,39 @@ export function RoutingStage({
                                 : "routingPage.oneKey",
                             );
           // Keep the renewal visible when another state takes the status line.
-          const status =
-            quota && !resting && !baseStatus.includes(remaining(quota.resetsAt))
-              ? `${baseStatus} · ${remaining(quota.resetsAt)}`
-              : baseStatus;
           const replying = answering && !resting && !passed && !failed;
+          const showResponse =
+            replying || (answered && !resting && !passed && !failed);
+          const sessionTitle = showResponse
+            ? trace.sessionTitle?.trim()
+            : undefined;
+          const sessionLabel = sessionTitle
+            ? accountText(sessionTitle)
+            : showResponse &&
+                trace.session &&
+                /^[a-f0-9]{64}$/.test(trace.session)
+              ? t("routingPage.sessionReference", {
+                  id: trace.session.slice(0, 8),
+                })
+              : undefined;
+          const rate = showResponse ? trace.outputTokensPerSecond : undefined;
+          const rateLabel =
+            rate != null && Number.isFinite(rate) && rate > 0
+              ? t("routingPage.outputRate", {
+                  value: rate,
+                  formatParams: { value: { maximumFractionDigits: 1 } },
+                })
+              : undefined;
+          const renewal =
+            quota && !resting ? remaining(quota.resetsAt) : undefined;
+          const status = [
+            baseStatus,
+            sessionLabel,
+            rateLabel,
+            renewal && !baseStatus.includes(renewal) ? renewal : undefined,
+          ]
+            .filter(Boolean)
+            .join(" · ");
           return (
             <li
               key={candidateKey(candidate)}
@@ -601,7 +629,9 @@ export function RoutingStage({
                   {candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""}
                 </code>
               </b>
-              <em className="rt-seat-status">
+              <em
+                className={`rt-seat-status${sessionLabel || rateLabel ? " has-response" : ""}`}
+              >
                 {step?.status != null &&
                   step.status >= 400 &&
                   step.status !== 499 && <code>{step.status}</code>}

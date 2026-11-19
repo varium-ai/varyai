@@ -237,13 +237,20 @@ unavailable history reader reports a generic error without filesystem paths.
 Missing history directories are empty only when their nearest existing ancestor
 is a directory. A regular-file ancestor remains unavailable on every platform,
 including Windows where that filesystem failure is reported as `NotFound`.
-No native session files are read by this recorder or by the routing page.
+Live request cards display the conversation title when a local client supplies
+an explicit identifier that matches a native title. The snapshot command reads
+title metadata on a blocking worker and caches matches briefly. Unmatched
+requests display the first eight characters of the scoped session digest.
+The matching key is scoped to the Agent and proxy runtime.
 
-Files contain the same safe metadata as the live trace, including candidate
-observations, purpose, scoped session digest and relative decision timestamps.
-Scheduler weak references and all credentials are excluded from serialization.
+The recorder writes candidate observations, purpose, scoped session digest
+and relative decision timestamps. Native titles, native matching keys,
+scheduler weak references and credentials are excluded from history.
 Stored history never borrows current credential identities or current quota readings.
-Unknown timing, throughput and prices are omitted from the recorded metadata.
+Request cards show output tokens per second when upstream usage and observed
+stream timing provide a valid measurement for that request. Some providers
+send usage only at the end of the stream. Unknown timing, throughput and
+prices are omitted from the recorded metadata.
 The existing usage queue and native session imports
 continue to feed Statistics independently. Trace history begins with this version;
 older usage summaries are not converted into invented gateway traces.

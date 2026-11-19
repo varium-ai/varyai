@@ -281,6 +281,27 @@ const renderSettingsPage = (
 };
 
 describe("SettingsPage Component", () => {
+  it("groups preferences and keeps the workspace footer switch accessible without legacy agent controls", () => {
+    renderSettingsPage({ globalResourcesOnly: true });
+    expect(
+      screen.getByRole("heading", { level: 1, name: "settings.title" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "settings.appearanceLanguage" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "apps.codex" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: "settings.appVisibility.showProfileSwitcher",
+      }),
+    );
+    expect(settingsMock.autoSaveSettings).toHaveBeenCalledWith({
+      showProfileSwitcher: false,
+    });
+  });
+
   it("exposes the installation statistics preference in general settings", () => {
     renderSettingsPage();
     expect(screen.getByText("theme-settings")).toBeInTheDocument();

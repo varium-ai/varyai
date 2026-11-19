@@ -69,28 +69,45 @@ border colors at the two animation stops, fixed card geometry, and still
 completed and reduced-motion states in both layouts and themes. The full
 suites and native client acceptance were not repeated for this follow-up.
 
-| Agent ID | Existing entry point and adapter | Workspace behavior | Verification |
+All entries below share per-request rate measurements and both stage layouts.
+The macOS and Windows paths use the same session readers and protocol observer.
+Native title lookup requires an explicit local identity and an exact match.
+Gemini derives its session list title from message content. It uses the same
+short opaque reference as clients that lack a verified native title reader.
+The reference appears when a route has a session digest. Rate availability
+depends on each provider's usage events and stream timing.
+
+| Agent ID | Existing entry point and adapter | Conversation display | Verification |
 | --- | --- | --- | --- |
-| `claude` | Claude Code CLI | Trace | Synthetic passed, native pending |
-| `claude-desktop` | Claude Desktop connection | Trace | Synthetic passed, native pending |
-| `codex` | Codex CLI and desktop connection | Trace | Synthetic passed, native pending |
-| `gemini` | Gemini CLI | Trace | Synthetic passed, native pending |
-| `grokbuild` | Grok Build CLI | Trace | Synthetic passed, native pending |
-| `opencode` | OpenCode connection | Trace | Synthetic passed, native pending |
-| `openclaw` | OpenClaw connection | Trace | Synthetic passed, native pending |
-| `hermes` | Hermes CLI | Trace | Synthetic passed, native pending |
-| `pi` | Pi CLI provider connection | Trace | Synthetic passed, native pending |
-| `workbuddy` | WorkBuddy China desktop and CLI | Trace | Synthetic passed, native pending |
-| `workbuddy-ai` | WorkBuddy AI international desktop | Trace | Synthetic passed, native pending |
-| `qoder` | Qoder CN desktop | Trace | Synthetic passed, native pending |
-| `doubaowork` | Dedicated Doubao Work connection | Trace | Synthetic passed, native pending |
-| `trae` | TRAE China connection | Trace | Synthetic passed, native pending |
-| `trae-intl` | TRAE International connection | Trace | Synthetic passed, native pending |
-| `kimi` | Kimi Code CLI and desktop | Trace | Synthetic passed, native pending |
-| `qwen` | Qwen Code CLI | Trace | Synthetic passed, native pending |
-| `zcode` | ZCode desktop | Trace | Synthetic passed, native pending |
-| `deepseek-harness` | DeepSeek Harness desktop | Trace | Synthetic passed, native pending |
-| `t3code` | T3 Code desktop | Trace | Synthetic passed, native pending |
+| `claude` | Claude Code CLI | Custom title from exact session match | Renderer passed, native pending |
+| `claude-desktop` | Claude Desktop connection | Short reference | Renderer passed, native pending |
+| `codex` | Codex CLI and desktop connection | Thread title from the state DB or index | Renderer passed, native pending |
+| `gemini` | Gemini CLI | Short reference | Renderer passed, native pending |
+| `grokbuild` | Grok Build CLI | Generated title from exact session match | Renderer passed, native pending |
+| `opencode` | OpenCode connection | Stored title from exact session match | Renderer passed, native pending |
+| `openclaw` | OpenClaw connection | Display name when explicit session metadata matches | Renderer passed, native pending |
+| `hermes` | Hermes CLI | Stored title from exact session match | Renderer passed, native pending |
+| `pi` | Pi CLI provider connection | Explicit session name from exact session match | Renderer passed, native pending |
+| `workbuddy` | WorkBuddy China desktop and CLI | Short reference | Renderer passed, native pending |
+| `workbuddy-ai` | WorkBuddy AI international desktop | Short reference | Renderer passed, native pending |
+| `qoder` | Qoder CN desktop | Short reference | Renderer passed, native pending |
+| `doubaowork` | Dedicated Doubao Work connection | Short reference | Renderer passed, native pending |
+| `trae` | TRAE China connection | Short reference | Renderer passed, native pending |
+| `trae-intl` | TRAE International connection | Short reference | Renderer passed, native pending |
+| `kimi` | Kimi Code CLI and desktop | Short reference | Renderer passed, native pending |
+| `qwen` | Qwen Code CLI | Short reference | Renderer passed, native pending |
+| `zcode` | ZCode desktop | Short reference | Renderer passed, native pending |
+| `deepseek-harness` | DeepSeek Harness desktop | Short reference | Renderer passed, native pending |
+| `t3code` | T3 Code desktop | Short reference | Renderer passed, native pending |
+
+The conversation and rate changes were checked on the working tree over
+`fc0fe3c3`, using macOS 15.3.1 arm64, Node 24.11.0, pnpm 10.12.3 and Rust
+1.98.1. TypeScript, the renderer build, Prettier and all 4,689 frontend unit
+tests passed. The 88 routing card tests passed again after strengthening the
+concurrent response assertion. Cargo formatting, `cargo check`, `cargo check
+--tests` and Clippy passed. The Rust test executables could not be built because
+the filesystem ran out of space. Native client checks on macOS and Windows
+remain pending.
 
 ## Routing conversion parity (2026-11-18)
 

@@ -1,30 +1,16 @@
-import { cloneElement, isValidElement } from "react";
 import { useTranslation } from "react-i18next";
-import { motion } from "framer-motion";
-import { Card, CardContent } from "@/components/ui/card";
 import { useUsageSummaryByApp } from "@/lib/query/usage";
-import { cn } from "@/lib/utils";
-import { APP_ICON_MAP } from "@/config/appConfig";
-import type { AppId } from "@/lib/api/types";
-import {
-  Activity,
-  ArrowDownToLine,
-  ArrowUpFromLine,
-  Database,
-  Info,
-  Loader2,
-  Sparkles,
-  Zap,
-} from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import {
   fmtUsd,
   formatTokensShort,
   getResolvedLang,
+  getLocaleFromLanguage,
   parseFiniteNumber,
 } from "./format";
 import {
   getCacheWriteAvailability,
-  type AppType,
+  KNOWN_APP_TYPES,
   type UsageRangeSelection,
   type UsageSummary,
   type UsageSummaryByApp,
@@ -37,52 +23,6 @@ interface UsageHeroProps {
   model?: string;
   refreshIntervalMs: number;
 }
-
-interface TitleTheme {
-  /** Foreground color for the icon glyph (text-* class). */
-  accent: string;
-  /** Background tint for the icon square (bg-* class). */
-  iconBg: string;
-}
-
-const TITLE_THEMES: Record<AppType | "all", TitleTheme> = {
-  workbuddy: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  "workbuddy-ai": { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  doubaowork: { accent: "text-blue-600", iconBg: "bg-blue-500/10" },
-  trae: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  kimi: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  qwen: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  zcode: { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  "deepseek-harness": { accent: "text-sky-600", iconBg: "bg-sky-500/10" },
-  qoder: { accent: "text-sky-600 dark:text-sky-400", iconBg: "bg-sky-500/10" },
-  all: { accent: "text-primary", iconBg: "bg-primary/10" },
-  claude: {
-    accent: "text-amber-600 dark:text-amber-400",
-    iconBg: "bg-amber-500/10",
-  },
-  codex: {
-    // OpenAI/Codex 走黑白单色调；中性灰在深浅模式都能透出方块底色，
-    // 不像纯黑 bg-black/10 在深色背景下会糊掉。
-    accent: "text-neutral-700 dark:text-neutral-300",
-    iconBg: "bg-neutral-500/10",
-  },
-  gemini: {
-    accent: "text-sky-600 dark:text-sky-400",
-    iconBg: "bg-sky-500/10",
-  },
-  grokbuild: {
-    accent: "text-rose-600 dark:text-rose-400",
-    iconBg: "bg-rose-500/10",
-  },
-  opencode: {
-    accent: "text-purple-600 dark:text-purple-400",
-    iconBg: "bg-purple-500/10",
-  },
-  pi: {
-    accent: "text-fuchsia-600 dark:text-fuchsia-400",
-    iconBg: "bg-fuchsia-500/10",
-  },
-};
 
 /**
  * Combine per-app summaries into a single rolled-up summary.
@@ -136,27 +76,6 @@ function pickSummary(
   return aggregateSummaries(apps.map((a) => a.summary));
 }
 
-/**
- * Hero 标题图标：选中具体应用时显示该应用的品牌图标，"全部"时回退到通用闪电。
- * 复用 APP_ICON_MAP（与侧边栏 / 应用切换器同一套图标），用 cloneElement 放大到
- * 与原闪电一致的 20px；品牌图标自带配色，外层方块仍按 titleTheme 主题色着色。
- */
-function AppGlyph({
-  appType,
-  accentClass,
-}: {
-  appType?: string;
-  accentClass: string;
-}) {
-  if (appType && appType in APP_ICON_MAP) {
-    const base = APP_ICON_MAP[appType as AppId].icon;
-    if (isValidElement<{ size?: number }>(base)) {
-      return cloneElement(base, { size: 20 });
-    }
-  }
-  return <Zap className={cn("h-5 w-5", accentClass)} />;
-}
-
 export function UsageHero({
   range,
   appType,
@@ -166,6 +85,7 @@ export function UsageHero({
 }: UsageHeroProps) {
   const { t, i18n } = useTranslation();
   const lang = getResolvedLang(i18n);
+  const locale = getLocaleFromLanguage(lang);
 
   const { data, isLoading } = useUsageSummaryByApp(
     range,
@@ -182,11 +102,9 @@ export function UsageHero({
   const allApps = data ?? [];
   const summary = pickSummary(allApps, appType);
 
-  const titleTheme =
-    TITLE_THEMES[(appType ?? "all") as keyof typeof TITLE_THEMES] ??
-    TITLE_THEMES.all;
-  const appLabel =
-    appType && appType in TITLE_THEMES ? t(`usage.appFilter.${appType}`) : null;
+  const appLabel = KNOWN_APP_TYPES.some((type) => type === appType)
+    ? t(`usage.appFilter.${appType}`)
+    : null;
 
   const cacheWriteState = getCacheWriteAvailability(
     appType ? [appType] : allApps.map((a) => a.appType),
@@ -221,11 +139,13 @@ export function UsageHero({
 
   if (isLoading) {
     return (
-      <Card className="border border-border/50 bg-card/40 backdrop-blur-sm">
-        <CardContent className="flex items-center justify-center min-h-[200px]">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/50" />
-        </CardContent>
-      </Card>
+      <div
+        role="status"
+        aria-label={t("common.loading")}
+        className="stats-surface flex min-h-44 items-center justify-center"
+      >
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
@@ -233,171 +153,88 @@ export function UsageHero({
   const hitPercentLabel = hitPercent.toFixed(hitPercent >= 99.95 ? 0 : 1);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 5 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4 }}
+    <section
+      className="stats-surface stats-hero"
+      aria-label={t("usage.realTotal", "真实消耗 Tokens")}
     >
-      <Card className="relative overflow-hidden border border-border/50 bg-card/60 backdrop-blur-xl shadow-sm">
-        <CardContent className="p-4 md:p-5">
-          <div className="flex flex-col gap-4">
-            {/* Top row: Main Token Count, Requests, Cost */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div
-                  className={cn(
-                    "p-2.5 rounded-xl bg-gradient-to-br shadow-sm",
-                    titleTheme.iconBg,
-                  )}
-                >
-                  <AppGlyph appType={appType} accentClass={titleTheme.accent} />
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-0.5">
-                    {appLabel && (
-                      <>
-                        <span
-                          className={cn("font-semibold", titleTheme.accent)}
-                        >
-                          {appLabel}
-                        </span>
-                        <span className="text-muted-foreground/30">•</span>
-                      </>
-                    )}
-                    {t("usage.realTotal", "真实消耗 Tokens")}
-                  </div>
-                  <div className="flex items-baseline gap-2">
-                    <span
-                      className="text-2xl md:text-3xl font-bold tabular-nums tracking-tight leading-none"
-                      title={realTotal.toLocaleString()}
-                    >
-                      {realTotal.toLocaleString()}
-                    </span>
-                    <span className="text-xs text-muted-foreground font-medium bg-muted/40 px-1.5 py-0.5 rounded-md">
-                      ≈ {formatTokensShort(realTotal, lang, 2)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-5 bg-background/50 px-4 py-2.5 rounded-xl border border-border/40 shadow-sm">
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-                    {t("usage.totalRequests")}
-                  </span>
-                  <span className="font-semibold flex items-center gap-1.5 text-sm tabular-nums">
-                    <Activity className="h-3.5 w-3.5 text-blue-500" />
-                    {requests.toLocaleString()}
-                  </span>
-                </div>
-                <div className="w-px h-8 bg-border/60" />
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-                    {t("usage.totalCost")}
-                  </span>
-                  <span className="font-semibold text-green-500 text-sm tabular-nums">
-                    {totalCost == null ? "--" : fmtUsd(totalCost, 4)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom row: Breakdown and Hit Rate */}
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-              <MiniStat
-                icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
-                label={t("usage.freshInput", "新增输入")}
-                value={formatTokensShort(input, lang)}
-                accent="text-blue-500"
-              />
-              <MiniStat
-                icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
-                label={t("usage.output")}
-                value={formatTokensShort(output, lang)}
-                accent="text-purple-500"
-              />
-              <MiniStat
-                icon={<Database className="h-3.5 w-3.5" />}
-                label={t("usage.cacheWrite", "缓存写入")}
-                value={cacheWriteDisplay.value}
-                accent="text-amber-500"
-                muted={cacheWriteDisplay.muted}
-                tooltip={cacheWriteDisplay.tooltip}
-              />
-              <MiniStat
-                icon={<Sparkles className="h-3.5 w-3.5" />}
-                label={t("usage.cacheRead", "缓存命中")}
-                value={formatTokensShort(cacheRead, lang)}
-                accent="text-emerald-500"
-              />
-
-              <div className="col-span-2 lg:col-span-1 flex flex-col justify-center rounded-xl border border-border/40 bg-background/40 p-3 shadow-sm">
-                <div className="flex items-center justify-between text-[11px] mb-2">
-                  <span className="text-muted-foreground font-medium">
-                    {t("usage.cacheHitRate", "缓存命中率")}
-                  </span>
-                  <span className="font-bold text-emerald-500 tabular-nums">
-                    {hitPercentLabel}%
-                  </span>
-                </div>
-                <div className="relative h-1.5 rounded-full bg-muted/60 overflow-hidden">
-                  <motion.div
-                    className="absolute inset-y-0 left-0 bg-emerald-500 rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${hitPercent}%` }}
-                    transition={{ duration: 0.8, ease: "easeOut" }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </motion.div>
+      <dl className="stats-totals">
+        <div className="stats-consumption">
+          <dt>
+            {appLabel && `${appLabel} · `}
+            {t("usage.realTotal", "真实消耗 Tokens")}
+          </dt>
+          <dd>
+            <strong>{realTotal.toLocaleString(locale)}</strong>
+            <small>≈ {formatTokensShort(realTotal, lang, 2)}</small>
+          </dd>
+        </div>
+        <div>
+          <dt>{t("usage.totalRequests")}</dt>
+          <dd>{requests.toLocaleString(locale)}</dd>
+        </div>
+        <div>
+          <dt>{t("usage.totalCost")}</dt>
+          <dd className="text-[var(--success)]">
+            {totalCost == null ? "--" : fmtUsd(totalCost, 4)}
+          </dd>
+        </div>
+      </dl>
+      <dl className="stats-breakdown">
+        <MiniStat
+          label={t("usage.freshInput", "新增输入")}
+          value={formatTokensShort(input, lang)}
+        />
+        <MiniStat
+          label={t("usage.output")}
+          value={formatTokensShort(output, lang)}
+        />
+        <MiniStat
+          label={t("usage.cacheWrite", "缓存写入")}
+          value={cacheWriteDisplay.value}
+          tooltip={cacheWriteDisplay.tooltip}
+          muted={cacheWriteDisplay.muted}
+        />
+        <MiniStat
+          label={t("usage.cacheRead", "缓存命中")}
+          value={formatTokensShort(cacheRead, lang)}
+        />
+        <div>
+          <dt>{t("usage.cacheHitRate", "缓存命中率")}</dt>
+          <dd className="stats-hit-rate">
+            {hitPercentLabel}%
+            <span aria-hidden="true">
+              <i style={{ width: `${hitPercent}%` }} />
+            </span>
+          </dd>
+        </div>
+      </dl>
+    </section>
   );
 }
 
-interface MiniStatProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  accent: string;
-  /** Optional hover tooltip — used to flag protocol-level caveats. */
-  tooltip?: string;
-  /** Visually de-emphasize the value (e.g. for "N/A" cases). */
-  muted?: boolean;
-}
-
 function MiniStat({
-  icon,
   label,
   value,
-  accent,
   tooltip,
   muted,
-}: MiniStatProps) {
+}: {
+  label: string;
+  value: string;
+  tooltip?: string;
+  muted?: boolean;
+}) {
   return (
-    <div
-      className="flex flex-col gap-1 rounded-xl border border-border/40 bg-background/40 p-3 shadow-sm"
-      title={tooltip}
-    >
-      <div
-        className={`flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground ${accent}`}
-      >
-        {icon}
-        <span className="text-foreground/70 tracking-wide">{label}</span>
+    <div title={tooltip}>
+      <dt>
+        {label}
         {tooltip && (
-          <Info className="h-3 w-3 text-muted-foreground/60 shrink-0 ml-auto" />
+          <>
+            <Info aria-hidden="true" size={12} />
+            <span className="sr-only">{tooltip}</span>
+          </>
         )}
-      </div>
-      <div
-        className={cn(
-          "text-sm font-semibold tabular-nums",
-          muted && "text-muted-foreground/70",
-        )}
-      >
-        {value}
-      </div>
+      </dt>
+      <dd className={muted ? "text-muted-foreground" : undefined}>{value}</dd>
     </div>
   );
 }

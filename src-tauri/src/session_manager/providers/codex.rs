@@ -72,7 +72,7 @@ fn scan_sessions_in_roots_with_titles(
     sessions
 }
 
-fn load_thread_titles() -> HashMap<String, String> {
+pub(in crate::session_manager) fn load_thread_titles() -> HashMap<String, String> {
     let config_dir = get_codex_config_dir();
     let config_text = read_codex_config_text().unwrap_or_default();
     let db_paths = codex_state_db_paths(&config_dir, &config_text);
@@ -406,6 +406,7 @@ fn parse_session_with_titles(
         provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
         title,
+        has_native_title: thread_titles.contains_key(&session_id),
         summary,
         project_dir,
         created_at,

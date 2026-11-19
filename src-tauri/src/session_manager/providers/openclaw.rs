@@ -273,9 +273,10 @@ fn parse_session(
     let session_id = session_id?;
 
     // Title priority: displayName (from sessions.json) > first user message > dir basename
-    let title = display_names
+    let native_title = display_names
         .and_then(|m| m.get(&session_id))
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+    let title = native_title
         .map(|t| truncate_summary(t, TITLE_MAX_CHARS))
         .or_else(|| first_user_message.map(|t| truncate_summary(&t, TITLE_MAX_CHARS)))
         .or_else(|| {
@@ -290,6 +291,7 @@ fn parse_session(
         provider_id: PROVIDER_ID.to_string(),
         session_id: session_id.clone(),
         title,
+        has_native_title: native_title.is_some(),
         summary,
         project_dir: cwd,
         created_at,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, FlaskConical, Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,8 @@ import { SecurityEventsPanel } from "./SecurityEventsPanel";
 import type { SecurityEventFilter } from "@/types/securityEvents";
 import type { ToolRiskRuleSeed } from "@/types/toolRisk";
 
+import "./security-center.css";
+
 type SecurityTab = "records" | "rules" | "toolRisk";
 
 function createEmptyRule(): CustomSecurityRule {
@@ -59,8 +61,10 @@ function createEmptyRule(): CustomSecurityRule {
 
 export function SecurityCenterPage({
   activeApp = "claude",
+  headerAction,
 }: {
   activeApp?: string;
+  headerAction?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
@@ -259,14 +263,14 @@ export function SecurityCenterPage({
     <div
       data-testid="security-center"
       data-active-app={activeApp}
-      className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-y-auto px-5 pb-12 pt-7 sm:px-8"
+      className="security-center"
     >
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+      <header className="sc-header">
         <div className="space-y-1">
-          <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
+          <h1 className="text-lg font-semibold leading-7">
             {t("primaryNav.security")}
           </h1>
-          <p className="text-xs text-muted-foreground sm:text-sm">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             {activeTab === "records"
               ? t("security.recordsDescription")
               : activeTab === "rules"
@@ -275,48 +279,38 @@ export function SecurityCenterPage({
           </p>
         </div>
 
-        <div className="flex shrink-0 items-center gap-3 self-start sm:self-center">
-          {activeTab === "rules" && (
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-8 rounded-lg px-2 text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
-              onClick={handleOpenAddRule}
-            >
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              {t("security.addRule")}
-            </Button>
-          )}
-          <SlidingSegmentedControl
-            value={activeTab}
-            onValueChange={(tab) => setActiveTab(tab)}
-            options={[
-              {
-                value: "records",
-                label: t("security.tabRecords"),
-                testId: "security-tab-records",
-              },
-              {
-                value: "rules",
-                label: t("security.tabRules"),
-                testId: "security-tab-rules",
-              },
-              {
-                value: "toolRisk",
-                label: t("toolRisk.tabLabel", { defaultValue: "工具调用风险" }),
-                testId: "security-tab-tool-risk",
-              },
-            ]}
-            ariaLabel={t("primaryNav.security")}
-            role="tablist"
-            itemRole="tab"
-            indicatorVariant="surface"
-            className="rounded-xl border-border/80 bg-muted/60 shadow-sm"
-            buttonClassName="rounded-lg px-4 text-xs font-semibold"
-            indicatorClassName="rounded-lg"
-            indicatorTestId="security-tabs-indicator"
-          />
-        </div>
+        {headerAction}
+      </header>
+      <div className="sc-tab-bar">
+        <SlidingSegmentedControl
+          value={activeTab}
+          onValueChange={(tab) => setActiveTab(tab)}
+          options={[
+            {
+              value: "records",
+              label: t("security.tabRecords"),
+              testId: "security-tab-records",
+            },
+            {
+              value: "rules",
+              label: t("security.tabRules"),
+              testId: "security-tab-rules",
+            },
+            {
+              value: "toolRisk",
+              label: t("toolRisk.tabLabel", { defaultValue: "工具调用风险" }),
+              testId: "security-tab-tool-risk",
+            },
+          ]}
+          ariaLabel={t("primaryNav.security")}
+          role="tablist"
+          itemRole="tab"
+          indicatorVariant="surface"
+          className="max-w-full rounded-lg border-border bg-muted"
+          buttonClassName="min-h-8 rounded-md px-3 text-xs font-medium"
+          indicatorClassName="rounded-md"
+          indicatorTestId="security-tabs-indicator"
+        />
       </div>
 
       {activeTab === "records" ? (
@@ -338,15 +332,15 @@ export function SecurityCenterPage({
         />
       ) : activeTab === "rules" ? (
         <section
-          className="mt-6 space-y-5"
+          className="mt-5 space-y-4"
           role="tabpanel"
           aria-label={t("security.tabRules")}
         >
-          <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+          <div className="sc-notice text-xs leading-5 text-muted-foreground">
             <p>{t("security.redactRestoreScope")}</p>
             <p>{t("security.redactRestoreRisk")}</p>
           </div>
-          <div className="space-y-2.5 pt-2">
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-medium text-muted-foreground">
@@ -356,10 +350,19 @@ export function SecurityCenterPage({
                   {t("security.ruleCount", { count: rules.length })}
                 </span>
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-8 gap-1.5 text-xs"
+                onClick={handleOpenAddRule}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t("security.addRule")}
+              </Button>
             </div>
 
-            <div className="overflow-x-auto rounded-2xl border border-border/90 bg-card shadow-sm">
-              <div className="min-w-[760px] divide-y divide-border/70">
+            <div className="sc-surface">
+              <div className="divide-y divide-border">
                 {isRulesLoading ? (
                   <div className="p-10 text-center text-xs text-muted-foreground">
                     {t("security.loadingRules")}
@@ -381,12 +384,11 @@ export function SecurityCenterPage({
                         key={rule.id}
                         data-testid={`security-rule-${rule.id}`}
                         className={
-                          "group flex min-h-[84px] items-center justify-between gap-8 px-6 py-5 transition-colors hover:bg-muted/20 lg:px-10 " +
-                          (!isEnabled ? "opacity-60" : "")
+                          "sc-rule-row " + (!isEnabled ? "opacity-60" : "")
                         }
                       >
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="truncate text-base font-extrabold tracking-tight text-foreground">
+                        <div className="sc-rule-copy space-y-1">
+                          <div className="break-words text-sm font-medium text-foreground">
                             {getRuleName(rule.id, rule.name)}
                           </div>
                           <p
@@ -397,16 +399,16 @@ export function SecurityCenterPage({
                           </p>
                         </div>
 
-                        <div className="flex shrink-0 items-center gap-2.5">
+                        <div className="sc-rule-actions">
                           {defaultActionOptions.map((option) => {
                             const selected = effectiveAction === option.value;
                             const selectedClass =
                               option.value === "audit"
-                                ? "bg-amber-600 text-white shadow-sm hover:bg-amber-700"
+                                ? "bg-amber-600 text-white hover:bg-amber-700"
                                 : option.value === "redact" ||
                                     option.value === "redact_restore"
-                                  ? "bg-blue-600 text-white shadow-sm hover:bg-blue-700"
-                                  : "bg-emerald-600 text-white shadow-sm hover:bg-emerald-700";
+                                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                                  : "bg-emerald-600 text-white hover:bg-emerald-700";
                             return (
                               <button
                                 key={option.value}
@@ -418,7 +420,7 @@ export function SecurityCenterPage({
                                     : updateCustomAction(rule.id, option.value))
                                 }
                                 className={
-                                  "h-8 min-w-[76px] rounded-xl px-4 text-xs font-semibold transition-colors " +
+                                  "min-h-[30px] rounded-md px-2.5 py-1 text-xs font-medium transition-colors " +
                                   (selected
                                     ? selectedClass
                                     : "bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground")
@@ -477,7 +479,7 @@ export function SecurityCenterPage({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-border/90 bg-card p-5 shadow-sm">
+          <div className="sc-surface p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
                 <FlaskConical className="h-4 w-4 text-blue-600 dark:text-blue-400" />
@@ -551,7 +553,7 @@ export function SecurityCenterPage({
         </section>
       ) : (
         <section
-          className="mt-6 space-y-5"
+          className="mt-5 space-y-4"
           role="tabpanel"
           aria-label={t("toolRisk.tabLabel", { defaultValue: "工具调用风险" })}
         >

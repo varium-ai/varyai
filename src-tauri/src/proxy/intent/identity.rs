@@ -31,6 +31,27 @@ pub(super) fn named(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
+pub(super) fn title_session(
+    agent: &str,
+    headers: &HeaderMap,
+    body: &Value,
+    local_chat: bool,
+) -> Option<String> {
+    if !local_chat
+        || !crate::session_manager::has_named_sessions(agent)
+        || (agent == "claude" && headers.contains_key("x-claude-code-agent-id"))
+    {
+        return None;
+    }
+    let session = crate::proxy::session::extract_client_session_id(headers, body, agent)?;
+    let id = match agent {
+        "codex" => session.session_id.strip_prefix("codex_")?,
+        "grokbuild" => session.session_id.strip_prefix("grokbuild_")?,
+        _ => &session.session_id,
+    };
+    crate::proxy::tool_observation::types::normalized_session_id(Some(id))
+}
+
 pub(super) fn affinity(headers: &HeaderMap, body: &[u8]) -> String {
     let mut key = named(headers)
         .map(str::to_owned)
@@ -325,6 +346,87 @@ fn one_text_part(raw: &RawValue) -> Option<&RawValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_title_identity_requires_local_chat_and_an_explicit_session() {
+        let mut headers = HeaderMap::new();
+        let id = "synthetic-conversation-12345";
+        headers.insert("thread-id", http::HeaderValue::from_static(id));
+        let body = serde_json::json!({"input":"synthetic", "previous_response_id":id});
+        assert_eq!(
+            title_session("codex", &headers, &body, true).as_deref(),
+            Some(id)
+        );
+        assert_eq!(title_session("codex", &headers, &body, false), None);
+        assert_eq!(title_session("codex", &HeaderMap::new(), &body, true), None);
+        assert_eq!(title_session("claude-desktop", &headers, &body, true), None);
+        headers.insert(
+            "x-claude-code-session-id",
+            http::HeaderValue::from_static(id),
+        );
+        assert_eq!(
+            title_session("claude", &headers, &body, true).as_deref(),
+            Some(id)
+        );
+        headers.insert(
+            "x-claude-code-agent-id",
+            http::HeaderValue::from_static("worker"),
+        );
+        assert_eq!(title_session("claude", &headers, &body, true), None);
+        headers.remove("x-claude-code-agent-id");
+        headers.insert(
+            "x-claude-code-session-id",
+            http::HeaderValue::from_static("invalid id"),
+        );
+        assert_eq!(title_session("claude", &headers, &body, true), None);
+    }
+
+    #[test]
+    fn title_lookup_follows_each_supported_native_identity() {
+        let id = "synthetic-conversation-12345";
+        for (agent, header) in [
+            ("claude", "x-claude-code-session-id"),
+            ("codex", "thread-id"),
+            ("grokbuild", "x-grok-conv-id"),
+            ("opencode", "x-opencode-session-id"),
+            ("hermes", "x-hermes-session-id"),
+            ("pi", "x-vary-pi-session-id"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header, http::HeaderValue::from_static(id));
+            assert_eq!(
+                title_session(agent, &headers, &Value::Null, true).as_deref(),
+                Some(id),
+                "{agent}"
+            );
+        }
+        let body = serde_json::json!({"metadata":{"session_id":id}});
+        assert_eq!(
+            title_session("openclaw", &HeaderMap::new(), &body, true).as_deref(),
+            Some(id)
+        );
+        for agent in [
+            "claude-desktop",
+            "gemini",
+            "workbuddy",
+            "workbuddy-ai",
+            "qoder",
+            "doubaowork",
+            "trae",
+            "trae-intl",
+            "kimi",
+            "qwen",
+            "zcode",
+            "deepseek-harness",
+            "t3code",
+        ] {
+            assert_eq!(
+                title_session(agent, &HeaderMap::new(), &body, true),
+                None,
+                "{agent}"
+            );
+        }
+    }
 
     #[test]
     fn magpie_identity_matches_pinned_go_reference() -> Result<(), Box<dyn std::error::Error>> {

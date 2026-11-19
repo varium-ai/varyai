@@ -45,8 +45,6 @@ body:has(.tray-panel),
   background: transparent;
 }
 .tray-panel {
-  --mp-font:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
   --tray-glass: rgb(255 255 255 / 62%);
   --tray-tab-selected: #fff;
   --tray-agent-card: #fff;
@@ -604,11 +602,7 @@ body:has(.tray-panel),
   backdrop-filter: blur(32px) saturate(115%);
   color: var(--tray-menu-fg);
   box-shadow: 0 6px 20px rgb(20 30 45 / 16%);
-  font:
-    400 12px/1.4 -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 400 12px/1.4 var(--mp-font);
 }
 .tray-profile-menu [cmdk-root] {
   height: auto;
@@ -1169,11 +1163,7 @@ body:has(.tray-panel),
   color: var(--mp-fg);
   color-scheme: light;
   box-shadow: 0 4px 12px rgb(39 52 67 / 12%);
-  font:
-    400 12px/1.4 -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 400 12px/1.4 var(--mp-font);
 }
 .dark .tray-strategy-menu[role="listbox"] {
   --mp-fg: #edf2f9;

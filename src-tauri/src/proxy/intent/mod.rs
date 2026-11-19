@@ -1193,6 +1193,27 @@ impl Observer {
                 .min(u64::from(u32::MAX)) as u32,
         );
     }
+    fn live_sample(
+        &self,
+        previous_output: u32,
+        last_sample: &mut Option<Instant>,
+    ) -> Option<(f64, u32)> {
+        let now = self.last_observed?;
+        if self.failed
+            || self.oversized
+            || self.first_text.is_none()
+            || self.output_tokens == previous_output
+            || last_sample.is_some_and(|last| {
+                now.saturating_duration_since(last) < Duration::from_millis(250)
+            })
+        {
+            return None;
+        }
+        *last_sample = Some(now);
+        let (_, _, decode_ms, output_tokens) = self.sample();
+        Some((decode_ms, output_tokens))
+    }
+
     fn sample(&self) -> (u64, f64, f64, u32) {
         let ttft = self
             .started
@@ -1568,6 +1589,14 @@ async fn execute(
     let conversation = (!desktop_probe).then(|| identity::affinity(&parts.headers, &bytes));
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
+    }
+    if let Some(id) = identity::title_session(
+        agent,
+        &parts.headers,
+        &original,
+        !external && !count_tokens && compact.is_none() && desktop_purpose.is_none(),
+    ) {
+        trace.native_session(&id);
     }
     let durable = if external || refresh_credentials {
         state
@@ -3080,6 +3109,7 @@ async fn execute(
         let account_scheduling = target.scheduling.clone();
         let stream = async_stream::stream! {
             let mut content_timed = false;
+            let mut last_rate_sample = None;
             // Magpie holds its affinity mutex only for a lookup/update. The
             // conversation Arc, not a mutex guard, retains state through EOF/drop.
             loop {
@@ -3087,6 +3117,7 @@ async fn execute(
                 let Some(next) = next else { break; };
                 match next {
                     Ok(bytes) => {
+                        let previous_output = observer.output_tokens;
                         if scoped.update(|bindings| observer.push(&bytes, bindings, index)).is_err() {
                             trace.finish(503, trace::State::Failed);
                             yield Err(std::io::Error::other("Routing state unavailable")); return;
@@ -3096,6 +3127,11 @@ async fn execute(
                                 trace.first_content(at);
                                 content_timed = true;
                             }
+                        }
+                        if let Some((decode_ms, output_tokens)) =
+                            observer.live_sample(previous_output, &mut last_rate_sample)
+                        {
+                            trace.speed(decode_ms, output_tokens);
                         }
                         collector.push(&bytes); yield Ok::<_, std::io::Error>(bytes); }
                     Err(_) => {

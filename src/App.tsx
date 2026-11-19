@@ -138,12 +138,7 @@ export default function App() {
             <StatisticsPage onOpenSecurity={() => setView("security")} />
           )}
           {view === "security" && (
-            <>
-              <div className="flex justify-end px-6 pt-5">
-                <GlobalSecurityToggle />
-              </div>
-              <SecurityCenterPage />
-            </>
+            <SecurityCenterPage headerAction={<GlobalSecurityToggle />} />
           )}
           {view === "settings" && (
             <SettingsPage

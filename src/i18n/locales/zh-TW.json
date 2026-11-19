@@ -657,6 +657,12 @@
     }
   },
   "settings": {
+    "appearanceLanguage": "外觀與語言",
+    "startupWindow": "啟動與視窗",
+    "integrationsTerminal": "整合與終端機",
+    "visibleApplications": "可見應用程式",
+    "selectedApplications": "已選 {{count}} 個",
+    "addApplication": "新增應用程式",
     "permissions": {
       "banner": {
         "title": "系統通知未開啟",
@@ -4047,6 +4053,7 @@
     "sandboxTitle": "規則沙箱測試",
     "sandboxDescription": "手動預覽規則，不受即時觀測總開關影響；不執行工具、不產生風險記錄、不儲存或顯示原文。",
     "sandboxObservationDisabled": "即時工具風險觀測已關閉。以下僅為手動規則測試，不代表即時防護已開啟。",
+    "sandboxArguments": "參數（JSON）",
     "sandboxTool": "工具名",
     "sandboxClient": "用戶端（選填）",
     "sandboxDefinitionRef": "可信 schema 引用（選填）",
@@ -5341,6 +5348,8 @@
     "seatAnswering": "正在回答此請求…",
     "seatAnsweringOther": "正在回答另一個請求…",
     "seatAnswered": "已回答此請求",
+    "sessionReference": "會話 {{id}}",
+    "outputRate": "{{value, number}} tok/s",
     "seatWentOn": "已繼續嘗試下一個",
     "seatFailed": "錯誤已傳回 Agent",
     "seatResting": "冷卻中 · {{time}}",

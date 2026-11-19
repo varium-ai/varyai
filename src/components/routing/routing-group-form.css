@@ -13,9 +13,6 @@
   --mp-muted: #85858d;
   --mp-faint: #b9b9c2;
   --mp-control: #63636b;
-  --mp-font:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
-    sans-serif;
   --mp-edge: 0 1px 2px rgb(0 0 0 / 12%), 0 0 0 0.5px rgb(0 0 0 / 6%);
   --rt-card: var(--mp-card);
   --rt-card-2: var(--mp-card-2);

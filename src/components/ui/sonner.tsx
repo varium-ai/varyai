@@ -13,6 +13,7 @@ export function Toaster() {
       richColors
       style={
         {
+          fontFamily: "var(--mp-font)",
           "--normal-bg": "hsl(var(--card))",
           "--normal-border": "hsl(var(--border))",
           "--normal-text": "hsl(var(--foreground))",
