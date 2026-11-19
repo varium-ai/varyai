@@ -5537,7 +5537,7 @@
     "templateSpeed": "応答が速いモデルを優先",
     "templateSpeedHint": "最初の出力までの時間と生成速度の実測値で選びます。測定値がなければ、一覧の順番で試します。",
     "templateExpiry": "有効期限が近い利用枠を優先",
-    "templateExpiryHint": "有効期限を確認できた Sub2API 枠を期限が近い順に使い、次に Codex と Claude を週の残り枠の時間当たりの割合で並べます。5 時間枠を使い切った場合は除外し、週の枠がない場合のみ 5 時間枠で計算します。",
+    "templateExpiryHint": "Sub2API は有効期限順、Codex と Claude は週次枠の消費ペース順です。5 時間枠は可否を確認し、週次枠がない場合のみ順序に使います。",
     "modelOrder": "モデルの順番",
     "applyRecommendedModelOrder": "推奨順に並べ替え",
     "templateCustom": "カスタム",
@@ -5572,7 +5572,13 @@
     "patienceFourMinutes": "4 分",
     "stays": "接続の維持",
     "executionAdvanced": "実行の詳細設定",
-    "manage": "管理"
+    "manage": "管理",
+    "templateSmartContext": "圧縮コンテキスト",
+    "templateSmartHardRule": "難しい課題ルール",
+    "templateSmartEasyRule": "簡単な課題ルール",
+    "templateSmartRules": "テンプレートのルール",
+    "templateHintLabel": "テンプレートの説明",
+    "templateSmartCompactRule": "圧縮コンテキストのルール"
   },
   "providerEditor": {
     "getApiKey": "キーを取得",

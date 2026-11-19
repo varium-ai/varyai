@@ -5615,7 +5615,7 @@
     "templateSpeed": "Fastest first",
     "templateSpeedHint": "Use measured time to first content and output speed. When there are no measurements, start in the order shown.",
     "templateExpiry": "Expiring allowance first",
-    "templateExpiryHint": "Use the earliest confirmed Sub2API expiry, then prioritize Codex and Claude by weekly allowance left per hour. A full 5-hour window sits out. Use its pace only when there is no weekly allowance.",
+    "templateExpiryHint": "Sub2API follows expiry; Codex and Claude follow weekly allowance pace. The 5-hour window checks availability and only affects order when no weekly allowance remains.",
     "modelOrder": "Model order",
     "applyRecommendedModelOrder": "Apply recommended order",
     "templateCustom": "Custom",
@@ -5650,7 +5650,13 @@
     "patienceFourMinutes": "4 min",
     "stays": "Stays",
     "executionAdvanced": "Advanced execution settings",
-    "manage": "Manage"
+    "manage": "Manage",
+    "templateSmartContext": "Compaction context",
+    "templateSmartHardRule": "Hard task rule",
+    "templateSmartEasyRule": "Simple task rule",
+    "templateSmartRules": "Template rules",
+    "templateHintLabel": "How this template works",
+    "templateSmartCompactRule": "Compaction rule"
   },
   "providerEditor": {
     "getApiKey": "Get key",

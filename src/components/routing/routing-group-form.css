@@ -409,6 +409,7 @@
       .rt-setting-row,
       .rt-edit-rules,
       .rt-edit-classifier,
+      .rt-template-hint,
       .rt-edit-levels > .rt-reference-setting
     )
     > *,
@@ -517,6 +518,80 @@
   padding-top: 12px;
 }
 .rt-group-form .rt-form-advanced:not([open]) > .rt-advanced-fields {
+  display: none;
+}
+.rt-group-form .rt-template-hint {
+  display: grid;
+  grid-column: 2;
+  gap: 2px;
+  max-width: 680px;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--mp-line-2);
+  border-radius: 7px;
+  background: var(--mp-card);
+  color: var(--mp-fg-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.rt-group-form .rt-template-hint strong {
+  color: var(--mp-fg);
+  font-size: 12px;
+}
+.rt-group-form .rt-template-hint span {
+  color: var(--mp-fg-2);
+}
+.rt-group-form .rt-template-smart-summary {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  padding-bottom: 2px;
+}
+.rt-group-form
+  .rt-template-smart-summary
+  > :is(.rt-template-smart-context, .rt-template-smart-rules) {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 10px 14px;
+  align-items: start;
+}
+.rt-group-form .rt-template-smart-summary > div > span {
+  padding-top: 2px;
+  color: var(--mp-fg-2);
+  font-size: 12px;
+  text-align: right;
+}
+.rt-group-form .rt-template-smart-rules {
+  gap: 6px 14px;
+}
+.rt-group-form .rt-template-smart-rules > span {
+  grid-row: 1 / span 3;
+}
+.rt-group-form .rt-template-smart-rule {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--mp-line-2);
+  border-radius: 7px;
+  background: var(--mp-card);
+}
+.rt-group-form .rt-template-smart-rule strong {
+  color: var(--mp-fg);
+  font-size: 12px;
+}
+.rt-group-form .rt-template-smart-rule span {
+  color: var(--mp-fg-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.rt-group-form .rt-template-smart-settings .rt-edit-patterns,
+.rt-group-form .rt-template-smart-settings [data-routing-field="model-lists"],
+.rt-group-form .rt-template-smart-settings [data-routing-field="rate-limits"],
+.rt-group-form .rt-template-smart-settings .rt-execution-picks,
+.rt-group-form .rt-template-smart-settings .rt-edit-rules,
+.rt-group-form .rt-template-smart-settings .rt-diagnostics,
+.rt-group-form .rt-template-smart-settings .rt-classifier-advanced {
   display: none;
 }
 .rt-group-form .rt-member-picker {

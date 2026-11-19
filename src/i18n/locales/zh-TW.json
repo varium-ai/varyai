@@ -5538,7 +5538,7 @@
     "templateSpeed": "速度快的優先使用",
     "templateSpeedHint": "依據實測的首段內容延遲及輸出速度選擇模型。尚無測速資料時，依列表順序嘗試。",
     "templateExpiry": "即將到期的額度優先使用",
-    "templateExpiryHint": "先用已確認最早到期的 Sub2API 額度，再依 Codex 和 Claude 每小時可用的剩餘週額度排序。5 小時額度用滿時跳過；只有沒有週額度時，才用 5 小時額度計算。",
+    "templateExpiryHint": "Sub2API 依到期時間；Codex、Claude 依每週額度消耗節奏。5 小時視窗只判斷可用性，沒有每週額度時才參與排序。",
     "modelOrder": "模型順序",
     "applyRecommendedModelOrder": "依建議順序排列",
     "templateCustom": "自訂",
@@ -5573,7 +5573,13 @@
     "patienceFourMinutes": "4 分鐘",
     "stays": "維持路由",
     "executionAdvanced": "進階執行設定",
-    "manage": "管理"
+    "manage": "管理",
+    "templateSmartContext": "壓縮上下文",
+    "templateSmartHardRule": "難題規則",
+    "templateSmartEasyRule": "簡單問題規則",
+    "templateSmartRules": "範本規則",
+    "templateHintLabel": "範本說明",
+    "templateSmartCompactRule": "壓縮上下文規則"
   },
   "providerEditor": {
     "getApiKey": "取得金鑰",

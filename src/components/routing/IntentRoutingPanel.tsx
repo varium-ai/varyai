@@ -1082,9 +1082,10 @@ export function IntentRoutingPanel({
             </div>
           )}
           {draft.quotaOrder && (
-            <p className="rt-field-hint">
-              {t("routingPage.templateExpiryHint")}
-            </p>
+            <div className="rt-template-hint">
+              <strong>{t("routingPage.templateHintLabel")}</strong>
+              <span>{t("routingPage.templateExpiryHint")}</span>
+            </div>
           )}
           {draft.routing === "manual" &&
             manualSelect(draft, (manualMemberId) =>
@@ -1107,6 +1108,47 @@ export function IntentRoutingPanel({
                 </summary>
               )}
               <div className="rt-advanced-fields">
+                {draftTemplate === "templateSmart" && (
+                  <div className="rt-template-smart-summary">
+                    <div className="rt-template-smart-context">
+                      <span>{t("intentRouting.contextPolicy")}</span>
+                      <strong>
+                        {t(
+                          draft.contextWindow === -1
+                            ? "intentRouting.contextSmallest"
+                            : "intentRouting.contextLargest",
+                        )}
+                      </strong>
+                    </div>
+                    <div className="rt-template-smart-rules">
+                      <span>{t("routingPage.templateSmartRules")}</span>
+                      <div className="rt-template-smart-rule">
+                        <strong>
+                          {t("routingPage.templateSmartCompactRule")}
+                        </strong>
+                        <span>{t("intentRouting.compactionHelp")}</span>
+                      </div>
+                      {draft.rules
+                        .filter(
+                          (rule) =>
+                            rule.name === "Hard task" ||
+                            rule.name === "Easy task",
+                        )
+                        .map((rule) => (
+                          <div className="rt-template-smart-rule" key={rule.id}>
+                            <strong>
+                              {t(
+                                rule.name === "Hard task"
+                                  ? "routingPage.templateSmartHardRule"
+                                  : "routingPage.templateSmartEasyRule",
+                              )}
+                            </strong>
+                            <span>{rule.description}</span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
                 <div className="rt-edit-patterns" data-routing-field="patterns">
                   <span>{t("intentRouting.matchPatterns")}</span>
                   <div className="rt-patterns">
