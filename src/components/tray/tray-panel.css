@@ -45,6 +45,13 @@ body:has(.tray-panel),
   background: transparent;
 }
 .tray-panel {
+  --tu-bg: #f1f1f3;
+  --tu-card: #fdfdfd;
+  --tu-border: #e4e4e6;
+  --tu-muted: #73737e;
+  --tu-text: #1d1d24;
+  --tu-green: #129451;
+  --tu-selected: #fff;
   --tray-glass: rgb(255 255 255 / 62%);
   --tray-tab-selected: #fff;
   --tray-agent-card: #fff;
@@ -73,7 +80,7 @@ body:has(.tray-panel),
   overflow: hidden;
   border: 0;
   border-radius: 12px;
-  background: var(--tray-glass);
+  background: var(--tu-bg);
   -webkit-backdrop-filter: blur(40px) saturate(115%);
   backdrop-filter: blur(40px) saturate(115%);
   color-scheme: light;
@@ -82,6 +89,13 @@ body:has(.tray-panel),
   -webkit-font-smoothing: antialiased;
 }
 .dark .tray-panel {
+  --tu-bg: #202128;
+  --tu-card: #282932;
+  --tu-border: #393a46;
+  --tu-muted: #b4b5c3;
+  --tu-text: #f2f2f7;
+  --tu-green: #73dba0;
+  --tu-selected: #353642;
   --tray-glass: rgb(24 30 40 / 62%);
   --tray-tab-selected: rgb(255 255 255 / 12%);
   --tray-agent-card: #202936;
@@ -157,7 +171,7 @@ body:has(.tray-panel),
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 12px 14px;
+  padding: 4px 14px;
   flex: none;
 }
 .tray-brand {
@@ -187,6 +201,7 @@ body:has(.tray-panel),
 }
 .tray-header > .tray-update {
   width: auto;
+  height: 24px;
   gap: 3px;
   margin-right: 4px;
   padding: 0 7px;
@@ -564,7 +579,8 @@ body:has(.tray-panel),
   flex: none;
   min-height: 40px;
   padding: 5px 12px;
-  border-top: 0;
+  border-top: 1px solid var(--tu-border);
+  background: var(--tu-bg);
   color: var(--mp-control);
 }
 .tray-footer-actions {
