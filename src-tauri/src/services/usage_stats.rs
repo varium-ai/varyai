@@ -2,6 +2,9 @@
 //!
 //! 提供使用量数据的聚合查询功能
 
+mod tray;
+pub use tray::{TrayPeriod, TrayUsageRow};
+
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::ModelPricing;
@@ -2496,6 +2499,199 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn tray_uses_effective_detail_and_pruned_days_without_agent_whitelist() -> Result<(), AppError>
+    {
+        let mut db = Database::memory()?;
+        let extension = Connection::open_in_memory()?;
+        Database::create_extension_tables_on_conn(&extension)?;
+        extension.execute(
+            "INSERT INTO routing_upstreams (id, revision, config) VALUES ('fixture-codex', 1, ?)",
+            [r#"{"schemaVersion":1,"id":"fixture-codex","revision":1,"name":"ChatGPT / Codex","source":{"kind":"codex"},"enabled":false}"#],
+        )?;
+        db.extension_conn = Some(std::sync::Mutex::new(extension));
+        let now = local_ts(2026, 11, 19, 12, 0, 0);
+        {
+            let conn = lock_conn!(db.conn);
+            for app in [
+                "claude",
+                "claude-desktop",
+                "codex",
+                "gemini",
+                "grokbuild",
+                "opencode",
+                "pi",
+                "openclaw",
+                "hermes",
+                "workbuddy",
+                "workbuddy-ai",
+                "qoder",
+                "doubaowork",
+                "trae",
+                "trae-intl",
+                "kimi",
+                "qwen",
+                "zcode",
+                "deepseek-harness",
+                "t3code",
+            ] {
+                insert_usage_log(
+                    &conn,
+                    app,
+                    app,
+                    "fixture-codex",
+                    "fixture",
+                    "proxy",
+                    now,
+                    30,
+                    5,
+                    10,
+                    0,
+                    200,
+                    "1",
+                )?;
+            }
+            insert_usage_log(
+                &conn,
+                "duplicate",
+                "codex",
+                "_codex_session",
+                "fixture",
+                "codex_session",
+                now,
+                30,
+                5,
+                10,
+                0,
+                200,
+                "1",
+            )?;
+            conn.execute(
+                "INSERT INTO usage_daily_rollups
+                 (date,app_type,provider_id,model,request_count,success_count)
+                 VALUES ('2026-11-12','pi','fixture-codex','test',4,3),
+                        ('2025-11-17','codex','fixture-codex','test',2,2),
+                        ('2025-11-16','codex','fixture-codex','test',1,1)",
+                [],
+            )?;
+        }
+        let today = db.tray_usage(TrayPeriod::Today, now)?;
+        assert_eq!(today.iter().map(|r| r.requests).sum::<u64>(), 20);
+        assert_eq!(today.iter().map(|r| r.input).sum::<u64>(), 570);
+        assert!(today.iter().all(|r| r.bucket == "12:00"));
+        assert!(today.iter().all(|r| r.provider_name == "Codex"));
+        assert_eq!(
+            db.tray_usage(TrayPeriod::Week, now)?
+                .iter()
+                .map(|r| r.requests)
+                .sum::<u64>(),
+            20
+        );
+        for period in [TrayPeriod::Month, TrayPeriod::All] {
+            let rows = db.tray_usage(period, now)?;
+            let expected = if matches!(period, TrayPeriod::All) {
+                27
+            } else {
+                24
+            };
+            assert_eq!(rows.iter().map(|r| r.requests).sum::<u64>(), expected);
+            assert_eq!(rows.iter().map(|r| r.failed).sum::<u64>(), 1);
+            assert!(rows.iter().all(|r| r.provider_name == "Codex"));
+        }
+        let activity = db.tray_usage(TrayPeriod::Activity, now)?;
+        assert_eq!(activity.iter().map(|r| r.requests).sum::<u64>(), 26);
+        assert!(activity.iter().any(|row| row.bucket == "2025-11-17"));
+        assert!(activity.iter().all(|row| row.model.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn tray_resolves_routing_execution_identity_and_keeps_other_labels() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = local_ts(2026, 11, 19, 12, 0, 0);
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO routing_upstreams (id, revision, config) VALUES
+                 ('renamed', 1, ?1), ('relay', 1, ?2), ('broken', 1, 'malformed')",
+                [
+                    r#"{"schemaVersion":1,"id":"renamed","revision":1,"name":"Personal Codex","source":{"kind":"codex"}}"#,
+                    r#"{"schemaVersion":1,"id":"relay","revision":1,"name":"ChatGPT / Codex","source":{"kind":"api"}}"#,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO intent_routing_preferences (key, value) VALUES ('provider_identities', ?)",
+                [r#"{"renamed":"fixture-old-id"}"#],
+            )?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config)
+                 VALUES ('relay', 'claude', 'Saved Claude provider', '{}')",
+                [],
+            )?;
+            for (id, app, provider, source) in [
+                ("renamed", "codex", "fixture-old-id", "proxy"),
+                ("configured", "claude", "relay", "proxy"),
+                ("custom", "pi", "relay", "proxy"),
+                ("unknown", "codex", "unknown", "proxy"),
+                ("broken", "codex", "broken", "proxy"),
+                ("session", "codex", "_codex_session", "codex_session"),
+            ] {
+                let created_at = if source == "codex_session" {
+                    now - SESSION_PROXY_DEDUP_WINDOW_SECONDS - 1
+                } else {
+                    now
+                };
+                insert_usage_log(
+                    &conn, id, app, provider, id, source, created_at, 30, 5, 10, 0, 200, "1",
+                )?;
+            }
+        }
+        let rows = db.tray_usage(TrayPeriod::Today, now)?;
+        let names = rows
+            .iter()
+            .map(|r| (r.model.as_str(), r.provider_name.as_str()))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            names,
+            HashMap::from([
+                ("renamed", "Personal Codex"),
+                ("configured", "Saved Claude provider"),
+                ("custom", "ChatGPT / Codex"),
+                ("unknown", "unknown"),
+                ("broken", "broken"),
+                ("session", "Codex (Session)"),
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tray_excludes_recorded_local_block_and_keeps_upstream_failure() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = local_ts(2026, 11, 19, 12, 0, 0);
+        {
+            let conn = lock_conn!(db.conn);
+            for request_id in ["blocked", "upstream"] {
+                insert_usage_log(
+                    &conn, request_id, "claude", "fixture", "model", "proxy", now, 0, 0, 0, 0, 400,
+                    "0",
+                )?;
+            }
+            conn.execute(
+                "UPDATE proxy_request_logs SET error_message = ? WHERE request_id = 'blocked'",
+                [
+                    crate::proxy::security::http_restoration::DlpForwardError::Blocked
+                        .client_message(),
+                ],
+            )?;
+        }
+        let rows = db.tray_usage(TrayPeriod::Today, now)?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].requests, 1);
+        assert_eq!(rows[0].failed, 1);
+        Ok(())
+    }
+
     fn create_legacy_nullable_logs_table(conn: &Connection) -> Result<(), AppError> {
         conn.execute(
             "CREATE TABLE proxy_request_logs (
@@ -2742,6 +2938,76 @@ mod tests {
         assert_eq!(output_cost, "30.000000");
         assert_eq!(total_cost, "35.000000");
 
+        Ok(())
+    }
+
+    #[test]
+    fn tray_backfills_gpt_6_2_estimates_from_seeded_catalog() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = local_ts(2026, 11, 19, 14, 0, 0);
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "DELETE FROM model_pricing WHERE model_id = 'gpt-6.2-astra'",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO model_pricing VALUES
+                 ('gpt-6.2-sol', 'Custom Sol', '3', '11', '0.2', '3')",
+                [],
+            )?;
+            for (request, model, source, time) in [
+                ("astra-proxy", "gpt-6.2-astra", "proxy", now - 1_200),
+                ("astra-session", "gpt-6.2-astra", "codex_session", now),
+                ("sol-proxy", "gpt-6.2-sol", "proxy", now),
+                ("unknown-proxy", "unlisted-model", "proxy", now),
+            ] {
+                insert_usage_log(
+                    &conn, request, "codex", source, model, source, time, 120_000, 10_000, 20_000,
+                    10_000, 200, "0",
+                )?;
+            }
+        }
+
+        db.ensure_model_pricing_seeded()?;
+        {
+            let conn = lock_conn!(db.conn);
+            assert_eq!(
+                find_model_pricing_row(&conn, "gpt-6.2-sol")?,
+                Some(("3".into(), "11".into(), "0.2".into(), "3".into()))
+            );
+        }
+        assert_eq!(db.backfill_missing_usage_costs()?, 3);
+        assert_eq!(db.backfill_missing_usage_costs()?, 0);
+        let rows = db.tray_usage(TrayPeriod::Today, now)?;
+        assert_eq!(rows.len(), 4);
+        for row in rows {
+            let (unpriced, cost) = match row.model.as_str() {
+                "gpt-6.2-astra" => (0, 1.308),
+                "gpt-6.2-sol" => (0, 0.444),
+                "unlisted-model" => (1, 0.0),
+                model => panic!("Unexpected fixture model {model}"),
+            };
+            assert_eq!((row.requests, row.unpriced), (1, unpriced));
+            assert!(
+                (row.cost - cost).abs() < 1e-9,
+                "{} cost was {}, expected {}",
+                row.model,
+                row.cost,
+                cost
+            );
+        }
+
+        let conn = lock_conn!(db.conn);
+        conn.execute(
+            "DELETE FROM model_pricing WHERE model_id = 'gpt-6.2-sol'",
+            [],
+        )?;
+        Database::ensure_model_pricing_seeded_on_conn(&conn)?;
+        assert_eq!(
+            find_model_pricing_row(&conn, "gpt-6.2-sol")?,
+            Some(("2".into(), "10".into(), "0.1".into(), "2.5".into()))
+        );
         Ok(())
     }
 

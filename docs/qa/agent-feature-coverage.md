@@ -1,5 +1,108 @@
 # Agent feature coverage
 
+## Tray Usage (macOS and Windows)
+
+For every Agent and ledger adapter in the table below, the tray header refresh
+re-reads the selected period and the activity heatmap through the same shared
+renderer. The header shows a busy state and prevents duplicate clicks while
+the refresh runs. The synthetic renderer regression checks both queries and
+the busy state; native tray verification on macOS and Windows is pending.
+
+For the GPT-6.2 pricing correction, each Agent row below retains its existing
+entry point and adapters. The shared model catalog supplies the standard
+list-price estimate to the gateway, existing session importers, and startup
+backfill on both platforms. All rows display the result through the same
+statistics and tray projections. The focused synthetic regression covers the
+affected proxy and Codex session ledger sources, plus an unknown model and a
+user-defined override. Native client and Windows verification remain pending.
+
+For each Agent and native adapter in the matrix below, the tray heatmap uses
+the same recorded ledger details and archived daily rollups. The calendar,
+metric control, provider scope and keyboard navigation use the shared macOS
+and Windows renderer. The synthetic fixture covers every Agent ID, the
+first Monday of the 53-week window and exclusion of the preceding day.
+The renderer fixture covers an empty selected period with recorded calendar
+history, metric switching and keyboard navigation.
+
+The heatmap patch over `bda7541b` passed 32 Chromium and WebKit cases across
+320- and 440-point trays, both themes and all four runtime languages on
+macOS 15.3.1 arm64. Type checking, formatting, the renderer build, Cargo
+check and Clippy passed, using Node 24.11.0, pnpm 10.12.3 and Rust 1.98.1.
+The full renderer suite passed all 4,701 tests with four Vitest workers.
+The Rust suites passed 7,786 library and 165 integration tests, with 21
+library tests ignored. Windows and native tray acceptance remain pending
+for every Agent.
+
+This read-only tab displays existing usage ledger records from every Agent ID.
+The tray reads aggregated records without accessing client configuration.
+All rows use the same entry point (tray → Usage), provider/model controls and
+empty state when nothing has been recorded. Native self-tests are pending for every row.
+The macOS synthetic SQLite regression covers the 20 Agent IDs below,
+session deduplication, cache accounting, date boundaries and archived usage.
+Chromium and WebKit renderer fixtures passed for 320- and 440-point panels in
+all four runtime languages and both themes. Windows and native webview
+verification remain pending.
+
+The trend tooltip shares the same ledger projection and renderer across every
+Agent row below. Hover and keyboard focus expose the selected bucket's provider
+or model values and request count. On the same macOS host and base revision, the
+tooltip follow-up passed 73 focused tests, all 4,697 renderer tests, TypeScript,
+Prettier and the renderer build. Chromium and WebKit passed 32 synthetic tooltip
+and drill-down cases across widths, themes and languages. Native webview
+verification remains pending. The Rust build and test suites were not repeated
+for this renderer-only follow-up.
+
+For each Agent entry below, including the listed desktop, CLI and regional
+variants, the provider label is resolved after its existing ledger adapter
+records usage. The same macOS and Windows tray command feeds the picker,
+ranking and trend labels. The label regression uses one routed ledger detail
+for each Agent ID and also checks archived usage, saved and custom names,
+disabled upstreams, malformed catalog metadata and unknown IDs. Native
+self-tests remain pending for each Agent and platform.
+
+The provider label patch over `bda7541b` passed all three tray ledger
+regressions on macOS 15.3.1 arm64 with Rust 1.98.1. `cargo check`,
+`cargo fmt --check` and `cargo clippy -- -D warnings` passed. The library
+and full Cargo suites passed 7,786 library tests with 21 ignored and
+165 integration tests. With Node 24.11.0 and pnpm 10.12.3, `pnpm typecheck`,
+`pnpm format:check`, `pnpm build:renderer`, `pnpm audit --prod` and the
+development helper checks passed. `pnpm test:unit` passed all 4,700 tests.
+Windows and native Agent acceptance remain pending.
+
+Verification used the local Usage patch over `bda7541b` on macOS 15.3.1 arm64
+with Node 24.11.0, pnpm 10.12.3 and Rust 1.98.1. TypeScript, the renderer
+build, Prettier, the production dependency audit, the helper tests, Cargo
+check, Rust formatting and Clippy passed. The two focused Vitest files passed
+70 tests. The full Vitest run passed 4,693 tests and failed the DeepSeek
+multi-currency balance test in concurrent quota changes. The failure also
+reproduced in the quota test file by itself. Cargo library and full test runs
+passed 7,782 library tests with 21 ignored and 165 integration tests. Browser
+checks used synthetic data. Platform CI and native Agent checks remain pending.
+
+| Agent / entry variants | Ledger adapter / limitation |
+| --- | --- |
+| Claude Code | Gateway and Claude session importer |
+| Claude Desktop | Recorded gateway calls; not a full desktop chat history |
+| Codex CLI / Desktop | Gateway and Codex session importer; shared identity |
+| Gemini CLI | Gateway and Gemini session importer |
+| Grok Build | Gateway and Grok session importer |
+| OpenCode | OpenCode session importer |
+| Pi CLI | Pi session importer and recorded gateway calls |
+| OpenClaw | Ledger records only; no new native reader |
+| Hermes | Ledger records only; no new native reader |
+| WorkBuddy CN desktop / CLI | Recorded gateway calls |
+| WorkBuddy International | Recorded gateway calls |
+| Qoder desktop | Recorded gateway calls |
+| Doubao Work | Recorded gateway calls |
+| TRAE CN | Recorded bridge calls |
+| TRAE International | Recorded bridge calls |
+| Kimi CLI / desktop | Recorded gateway calls |
+| Qwen CLI | Recorded gateway calls |
+| ZCode desktop | Recorded gateway calls |
+| DeepSeek Harness | Recorded gateway calls |
+| T3 Code | Ledger records only; no new native reader |
+
+
 This is a required implementation and acceptance ledger, not a declaration that every listed feature is supported. Follow the mandatory Agent coverage rules in [AGENTS.md](../../AGENTS.md). Derive the inventory from `src/config/appConfig.tsx`, `AppType` and the connection registries, including native integrations outside the shared `APPS` list.
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.

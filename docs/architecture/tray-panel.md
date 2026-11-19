@@ -1,7 +1,45 @@
 # Tray Panel
 
 The tray uses the independent `index.html?panel=tray` renderer, with Agent,
-Allowances, Routing and Security tabs. It must not render the main workspace sidebar.
+Allowances, Usage and Security tabs. It must not render the main workspace sidebar.
+
+Usage follows Magpie's compact usage view. The toolbar offers Today, 7 days,
+30 days and All, a provider picker, refresh and Open Usage. The last action
+opens workspace statistics. A saved Routing selection opens Usage. The four
+summary cells show cache-inclusive tokens, requests, effective cost and
+prompt cache hits. The stacked trend and ranked list switch together between
+tokens, cost and requests. Selecting a provider displays its model breakdown.
+Hover or focus a chart column to see its date or hour, colored breakdown,
+total and request count.
+
+The picker, ranking and chart resolve supplier names from local provider
+metadata, following Magpie's
+[`providerFaces`](https://github.com/yetone/magpie/blob/14b6b955563cbca042c6c5d4e6e5efd7d122be48/internal/usageapi/usageapi.go#L140)
+display-name lookup. The global routing catalog resolves historical details
+and rollups by execution identity, including disabled and renamed providers.
+The default native `ChatGPT / Codex` entry displays as `Codex`. Custom names,
+Agent-specific supplier names and local session labels retain their identities.
+Unrecognized suppliers retain their recorded IDs.
+
+Select a day on a daily trend to narrow the totals and ranking. The heatmap
+follows Magpie's full Usage calendar. It shows the last 53 week columns from
+Monday through the current local day, with month and weekday labels. Its
+scrolling area starts at the latest week and keeps weekday labels visible.
+The heatmap keeps its own token, request and cost preference, uses the
+selected provider and remains visible when the selected period is empty
+but the calendar contains activity. The five shades use quartiles when at
+least eight days have positive values and a proportional scale otherwise.
+Hover or focus a day for its date and totals. The arrow keys move between days
+and weeks.
+
+The tab refreshes its aggregate ledger view every 10 seconds while visible.
+It combines existing gateway and imported session usage, applies ledger
+deduplication and includes older daily rollups. Local policy blocks with the
+recorded block marker are excluded from detail aggregates. Archived rollups
+carry totals only, so historical policy blocks and individual timing or
+price observations cannot be separated. The tray query leaves storage and
+forwarding unchanged. Only the period, metric and grouping preferences are
+saved in browser storage.
 
 Allowances follows Magpie's compact provider/account cards: provider icon and plan,
 account labels, one ring per supported quota window, named reset times, and a
@@ -66,7 +104,7 @@ failures remain auxiliary. This cache and private atomic replacement run on both
 macOS and Windows without database schema changes.
 
 An unsuccessful first discovery hides the card and heading. Explicit credential
-rejection remains visible. An already discovered interface still reports query
+rejection hides the tray card. An already discovered interface still reports query
 failures; a failed or unrecognized refresh after a successful reading keeps that
 reading with a stale status. An explicit key rejection clears the previous
 balance. Each successful observation reads a fresh balance at the discovered
@@ -105,14 +143,13 @@ container; keyboard navigation must still expose a visible focus indicator on
 tabs and controls.
 
 Use the shared `--mp-hover` surface for neutral buttons and clickable rows,
-including header actions, routing controls and footer
+including header and footer
 actions. It is opaque white in light mode and dark blue-gray in dark mode.
 Keep selected and expanded surfaces, menu highlights and switch tracks distinct.
 The selected tab uses an opaque white indicator in light mode and a brighter
 translucent surface in dark mode. Tabs do not change their background or text
 color on hover. Preserve the selected indicator and visible keyboard focus.
-Routing request cards, routing group lists, strategy controls, the security
-protection card and recent security events use opaque white backgrounds in
+The security protection card and recent security events use opaque white backgrounds in
 light mode. Keep the surrounding panel translucent and preserve dark-mode
 surfaces, selection states and hover feedback.
 
@@ -131,9 +168,10 @@ scrolls. Do not resize the native window after query updates, tab switches or
 expanded Agent details. The legacy resize IPC entry point still enforces this
 fixed geometry.
 
-Place the current tab's routing or security details action in the footer,
-immediately before Quit. Keep the profile switcher on the left and the actions
-on the right. The Agent tab has no details action.
+Place the allowance or security details action in the footer immediately
+before Quit. Keep the profile switcher on the left and actions on the right
+for Agent, Allowances and Security. Usage provides its details action in the
+toolbar and shows Quit in the footer.
 
 The footer's compact profile menu is a 232-point frosted popover with a 34-point
 search field and 30-point list items. It must remain inside the webview and scroll
@@ -141,30 +179,15 @@ its list independently when many profiles exist. Empty lists have no redundant
 section separator. Scope these styles to `.tray-profile-menu`, since the shared
 profile switcher also appears in the main workspace.
 
-Routing uses the stage's compact layout: keep the Agent, gateway and upstreams
-in explicit left-to-right columns, with a 32-point gateway and a bounded stage
-height. Leave 20–32 points between nodes and cap the upstream label at 148
-points instead of stretching it across the remaining space. Truncate long
-provider and model labels while retaining their full hover descriptions.
-Do not apply the workspace stage's narrow layout in the tray. An empty
-candidate message is a request status, not an upstream; never draw a wire to it.
-Request indicators distinguish live traffic, successful replies, errors and
-cancellations. HTTP error statuses must not appear as successful replies.
+Keep panel switches at 30 by 18 points, including the Agent and Security tabs.
+Use the shared portalled Radix Select for the Usage provider menu. The menu
+fits inside the webview and consumes Escape before the quick panel dismisses.
 
-Routing groups use flat 44-point rows with a single-line, ellipsized name and a
-muted model count. Keep strategy triggers at 24 points tall and panel switches
-at 30 by 18 points, including the Agent and Security tabs. Use the shared Radix
-Select with a compact, portalled menu instead of a native HTML select. The menu
-must fit inside the webview, support keyboard selection and consume Escape before
-the quick panel is dismissed. Generated groups retain their protected switches.
-
-The panel follows the application theme: white frosted glass with dark text in
-light mode and charcoal glass with bright text in dark mode. Both use a 62% tint,
-40-pixel backdrop blur and 115% saturation. Keep fills translucent so background
-colors still diffuse through the panel. Strategy menus use a 76% tint and
-32-pixel blur, and portalled menus inherit the matching theme tokens. Theme
-changes from other windows must update an already-open panel through the shared
-theme storage key. Keep its tabs, footer and strategy controls free of outline
+Agent, Allowances and Security follow the application's frosted theme with a
+62% tint, 40-pixel backdrop blur and 115% saturation. Usage uses neutral solid
+surfaces for the chart and ranking. Portalled menus inherit the matching theme
+tokens. Theme changes from other windows must update an already-open panel
+through the shared theme storage key. Keep the shared tabs and footer free of outline
 borders; the Agent list has one subtle outer border, with row separators and
 fills distinguishing its contents.
 The renderer's backdrop filter also provides a browser preview.
@@ -202,3 +225,23 @@ as typed profile scopes; unknown backend IDs must not enter profile actions.
 
 Use `cargo check` and isolated tests for verification. Do not start another
 native application instance or restart the user's clients as a routine check.
+
+### First-party API allowances
+
+The tray and provider editor query the first enabled API key on a saved provider. The backend selects the reader from its effective HTTPS origin. Fixed first-party billing hosts serve ModelScope, Mistral key identification and OpenCode Go. Requests reject redirects and bound the response size. Each reported currency or credit unit stays separate, including zero. The tray hides a provider until it has an amount or quota window to display.
+
+| Provider | Reading |
+| --- | --- |
+| DeepSeek | Each currency in `GET /user/balance` |
+| Moonshot and StepFun | Available account balance in the configured region's currency |
+| OpenRouter | Account credits minus usage, subject to the key's permissions |
+| AiHubMix | A limited key's remaining balance |
+| ModelScope | Available Magicubes, excluding frozen units |
+| Zhipu and Z.ai | Available account balance or GLM Coding Plan windows |
+| Kimi Code, MiniMax Coding Plan, OpenCode Go | Reported coding allowance windows |
+| Ollama Cloud | Purchased credits and included allowance or legacy session and weekly limits |
+| Command Code | Remaining credits and reported five-hour and weekly limits |
+| Mistral | The monthly API or Vibe budget identified for this key |
+| Novita AI | Available balance in USD, converted from the API's billing units |
+
+The API-key inventory follows Magpie's [balance readers](https://github.com/yetone/magpie/blob/593ea437d8dbd0d6bbc7b9f0acd722f23bfe81e6/internal/provider/balance.go) and [plan readers](https://github.com/yetone/magpie/blob/593ea437d8dbd0d6bbc7b9f0acd722f23bfe81e6/internal/provider/planquota.go). Novita comes from Vary AI's existing balance integration. SiliconFlow retired its balance endpoint. OpenCode Zen exposes workspace credit through its console. AiHubMix's account-wide reader requires a separate console token. These configurations have no automatic API-key balance in the tray. The test fixtures exercise provider response contracts independently of live account access.

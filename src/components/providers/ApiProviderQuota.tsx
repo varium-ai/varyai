@@ -62,8 +62,34 @@ export function ApiProviderQuotaView({
         { defaultValue: tier.name },
       ),
     }));
-  if (card)
-    return (
+  const wallets =
+    quota?.balances ??
+    (quota?.balance != null ? [{ unit: "USD", amount: quota.balance }] : []);
+  const amounts = wallets.flatMap(({ unit, amount }) => {
+    if (!Number.isFinite(amount)) return [];
+    if (unit === "magicubes" || unit === "credits") {
+      return [
+        t(`subscriptionProvider.${unit}Amount`, {
+          amount: new Intl.NumberFormat(i18n.language).format(amount),
+        }),
+      ];
+    }
+    return /^[A-Z]{3}$/.test(unit)
+      ? [
+          new Intl.NumberFormat(i18n.language, {
+            style: "currency",
+            currency: unit,
+          }).format(amount),
+        ]
+      : [];
+  });
+  const balanceLabels = amounts.map((amount, i) => (
+    <span key={i}>{t("subscriptionProvider.balance", { amount })}</span>
+  ));
+  if (card) {
+    if (quota?.status !== "ready" || (!items.length && !amounts.length))
+      return null;
+    const content = (
       <ProviderQuotaCard
         name={record.name}
         card={card}
@@ -74,18 +100,11 @@ export function ApiProviderQuotaView({
         disabled={disabled}
         refresh={refresh}
       >
-        {quota?.balance != null && Number.isFinite(quota.balance) && (
-          <span>
-            {t("subscriptionProvider.balance", {
-              amount: new Intl.NumberFormat(i18n.language, {
-                style: "currency",
-                currency: "USD",
-              }).format(quota.balance),
-            })}
-          </span>
-        )}
+        {balanceLabels}
       </ProviderQuotaCard>
     );
+    return card.renderGroup ? card.renderGroup(content) : content;
+  }
   const summary = (
     <SubscriptionQuotaSummary
       label={`${t("subscriptionProvider.allowance")} ${record.name}`}
@@ -94,16 +113,7 @@ export function ApiProviderQuotaView({
       fetching={query.isFetching}
       loading={!query.data && query.isFetching}
     >
-      {quota?.balance != null && Number.isFinite(quota.balance) && (
-        <span>
-          {t("subscriptionProvider.balance", {
-            amount: new Intl.NumberFormat(i18n.language, {
-              style: "currency",
-              currency: "USD",
-            }).format(quota.balance),
-          })}
-        </span>
-      )}
+      {balanceLabels}
     </SubscriptionQuotaSummary>
   );
   if (compact) return summary;

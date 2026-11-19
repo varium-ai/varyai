@@ -35,13 +35,19 @@ This covers all 21 API presets, including relay presets. The links open through
 the desktop's existing external-browser action, and typed keys are never added
 to those URLs. Endpoint display does not change which transport is saved.
 
+Adding an API provider from a supplier preset fetches its model catalog with the
+entered key before saving. If discovery fails or returns an empty catalog, the
+form keeps the key so you can retry. For an existing provider with an empty
+catalog, open its editor, choose **Fetch models**, then **Save**.
+
 The shared API provider editor places **Select all** and **Fetch models** together above
 the model chips. The checkbox is checked when all currently filtered chat
 models are selected and shows a mixed state for a partial selection. Checking
 it selects those models within the existing 256-model limit; unchecking it
 clears those models while preserving hidden selections and image models.
-Saved providers that follow the supplier catalog show a checked box so a single
-click can switch to an empty manual selection.
+For saved providers that follow the supplier catalog, the first 24 chat models
+start checked. Editing a selection starts with those checked models, including
+when a search hides some of them.
 Before a catalog is available, selection is disabled and discovery remains
 available when the provider has an endpoint and credentials.
 Fetching the API model catalog only puts the fetch button into a loading state.

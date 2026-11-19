@@ -223,7 +223,7 @@ it("shows an empty state when every relay is unsupported and can retry from the 
   expect(routingUpstreamsApi.quota).toHaveBeenLastCalledWith(relay.id, 7, true);
 });
 it.each(["failed", "unauthorized"])(
-  "keeps %s relay queries visible for retry",
+  "hides %s relay cards and headings",
   async (state) => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([relay]);
     if (state === "failed") {
@@ -241,11 +241,9 @@ it.each(["failed", "unauthorized"])(
       state === "failed"
         ? "codexProvider.quotaFailed"
         : "subscriptionProvider.quotaKeyRejected";
-    expect(await screen.findByText(message)).toBeVisible();
-    expect(screen.getByRole("region", { name: "Relay" })).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "codexProvider.refreshQuota Relay" }),
-    ).toBeEnabled();
+    expect(await screen.findByText("trayPanel.quotaEmpty")).toBeVisible();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Synthetic private failure"),
     ).not.toBeInTheDocument();
@@ -380,7 +378,7 @@ it("retries a hidden relay after a temporary discovery failure in five minutes",
   view.unmount();
   client.clear();
 });
-it("names unavailable observations instead of inventing a zero balance", async () => {
+it("hides a subscription group with unavailable credentials", async () => {
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
     {
       ...provider,
@@ -405,11 +403,8 @@ it("names unavailable observations instead of inventing a zero balance", async (
     tiers: [],
   });
   mount();
-  const card = await screen.findByRole("article", { name: "Claude" });
-  expect(
-    await within(card).findByText("codexProvider.quotaLoginRequired"),
-  ).toBeVisible();
-  expect(within(card).queryByRole("meter")).not.toBeInTheDocument();
+  expect(await screen.findByText("trayPanel.quotaEmpty")).toBeVisible();
+  expect(screen.queryByRole("region")).not.toBeInTheDocument();
   expect(screen.queryByText("0%")).not.toBeInTheDocument();
 });
 it("keeps model pools and their window spans distinct", async () => {
@@ -548,6 +543,24 @@ it("refreshes only the clicked account, spins through the request and keeps the 
   expect(within(card).getByText("27%")).toBeVisible();
   expect(within(card).getByText("codexProvider.quotaStale")).toBeVisible();
   expect(screen.queryByText("Synthetic quota failure")).not.toBeInTheDocument();
+});
+it("hides only the Codex accounts without readings and restores them on refresh", async () => {
+  const client = new QueryClient();
+  vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValueOnce({
+    ...quota,
+    tiers: [],
+  });
+  mount(client);
+  await screen.findByRole("article", { name: "Second account" });
+  expect(
+    screen.queryByRole("article", { name: "First account" }),
+  ).not.toBeInTheDocument();
+  await act(() =>
+    client.invalidateQueries({ queryKey: ["codex-provider-quota"] }),
+  );
+  expect(
+    await screen.findByRole("article", { name: "First account" }),
+  ).toBeVisible();
 });
 it("reuses cached account readings when the tab reopens", async () => {
   const client = new QueryClient();

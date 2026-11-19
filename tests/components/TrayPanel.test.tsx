@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
@@ -15,16 +21,12 @@ import zh from "@/i18n/locales/zh.json";
 import ja from "@/i18n/locales/ja.json";
 import zhTW from "@/i18n/locales/zh-TW.json";
 import { TrayPanel } from "@/components/tray/TrayPanel";
+import { calendarDays, localDateKey } from "@/components/tray/trayUsageData";
 import { trayPanelApi } from "@/lib/trayPanel";
+import { trayUsageApi, type TrayUsageRow } from "@/lib/api/trayUsage";
 import { routingTraceApi } from "@/lib/api/routingTrace";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { securityEventsApi } from "@/lib/api/securityEvents";
-import type { RoutingTrace } from "@/lib/api/routingTrace";
-import {
-  intentRoutingApi,
-  type RoutingCatalog,
-  type RoutingGroup,
-} from "@/lib/api/intentRouting";
 
 const updateState = vi.hoisted(() => ({
   isChecking: false,
@@ -67,11 +69,9 @@ vi.mock("@/lib/api/routingTrace", () => ({
 vi.mock("@/lib/api/routingUpstreams", () => ({
   routingUpstreamsApi: { list: vi.fn(async () => []) },
 }));
-vi.mock("@/lib/api/intentRouting", () => ({
-  intentRoutingApi: {
-    list: vi.fn<() => Promise<RoutingCatalog>>(),
-    save: vi.fn(async (group: RoutingGroup) => group),
-  },
+vi.mock("@/lib/api/trayUsage", async (original) => ({
+  ...(await original<typeof import("@/lib/api/trayUsage")>()),
+  trayUsageApi: { read: vi.fn(async () => []) },
 }));
 vi.mock("@/lib/api/security", () => ({
   securityApi: { getSettings: vi.fn(async () => ({ enabled: true })) },
@@ -110,11 +110,6 @@ beforeEach(() => {
   vi.mocked(securityApi.getSettings).mockResolvedValue({ enabled: true });
   updateState.isChecking = false;
   updateState.hasUpdate = false;
-  vi.mocked(intentRoutingApi.list).mockResolvedValue({
-    groups: [],
-    autoCreate: false,
-    omittedGroups: 0,
-  });
   vi.mocked(securityEventsApi.getEvents).mockResolvedValue({
     items: [],
     total: 0,
@@ -122,32 +117,8 @@ beforeEach(() => {
     pageSize: 8,
   });
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
+  vi.mocked(trayUsageApi.read).mockResolvedValue([]);
 });
-const group: RoutingGroup = {
-  id: "synthetic-group",
-  name: "Synthetic routing group",
-  revision: 3,
-  client: "global",
-  enabled: true,
-  routing: "smart",
-  members: [
-    { id: "first", providerId: "synthetic", modelId: "model-a" },
-    { id: "second", providerId: "synthetic", modelId: "model-b" },
-  ],
-  defaultMemberId: "first",
-  fallbackMemberIds: ["second"],
-  intentRecognitionEnabled: false,
-  classifierTarget: null,
-  classificationBudgetMs: 2000,
-  rules: [],
-};
-function mockGroups(groups: RoutingGroup[]) {
-  vi.mocked(intentRoutingApi.list).mockResolvedValue({
-    groups,
-    autoCreate: false,
-    omittedGroups: 0,
-  });
-}
 function mount(
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
@@ -175,31 +146,68 @@ it("shows the update entry only for an available version and reopens its dialog"
   expect(updateState.resetDismiss).toHaveBeenCalledOnce();
   expect(updateState.checkUpdate).not.toHaveBeenCalled();
 });
-it("renders exactly four tabs and compact agents, never the main sidebar", async () => {
+it("opens Usage through the third tab and hands off to workspace statistics", async () => {
   mount();
   expect(screen.getAllByRole("tab")).toHaveLength(4);
   expect(screen.getByTestId("compact-agents")).toHaveTextContent("true");
   expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   expect(screen.getByText("top")).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: "trayPanel.manageRouting" }),
-  ).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  expect(
-    await screen.findByText("routingPage.gatewayStopped"),
-  ).toBeInTheDocument();
-  expect(localStorage.getItem("vary:tray-tab")).toBe("routing");
+  expect(trayUsageApi.read).not.toHaveBeenCalled();
+  expect(screen.queryByRole("tab", { name: "trayPanel.routing" })).toBeNull();
+  const usage = screen.getByRole("tab", { name: "trayPanel.usage" });
+  expect(screen.getAllByRole("tab")[2]).toBe(usage);
+  fireEvent.click(usage);
+  expect(await screen.findByText("trayUsage.emptyToday")).toBeVisible();
+  expect(localStorage.getItem("vary:tray-tab")).toBe("usage");
+  expect(routingTraceApi.snapshot).not.toHaveBeenCalled();
   const details = screen.getByRole("button", {
-    name: "trayPanel.manageRouting",
+    name: "trayUsage.open",
   });
-  expect(details.closest("footer")).toBeInTheDocument();
-  expect(details.nextElementSibling).toBe(
-    screen.getByRole("button", { name: "trayPanel.quit" }),
-  );
+  expect(details.closest("main")).toBeInTheDocument();
   fireEvent.click(details);
-  expect(trayPanelApi.open).toHaveBeenCalledWith("routing");
+  expect(trayPanelApi.open).toHaveBeenNthCalledWith(1, "stats");
   fireEvent.click(screen.getByRole("button", { name: "trayPanel.openMain" }));
-  expect(trayPanelApi.open).toHaveBeenCalledWith("routing");
+  expect(trayPanelApi.open).toHaveBeenNthCalledWith(2, "stats");
+});
+it("restores the former Routing selection into Usage and refreshes the current period", async () => {
+  localStorage.setItem("vary:tray-tab", "routing");
+  mount();
+  expect(screen.getByRole("tab", { name: "trayPanel.usage" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await screen.findByText("trayUsage.emptyToday");
+  fireEvent.click(screen.getByRole("button", { name: "trayUsage.week" }));
+  await screen.findByText("trayUsage.empty");
+  expect(trayUsageApi.read).toHaveBeenLastCalledWith("week");
+  fireEvent.click(screen.getByRole("button", { name: "trayUsage.refresh" }));
+  await waitFor(() =>
+    expect(
+      vi
+        .mocked(trayUsageApi.read)
+        .mock.calls.map(([period]) => period)
+        .filter((period) => period === "week"),
+    ).toHaveLength(2),
+  );
+});
+it("refreshes Usage from the header and shows progress while it refetches", async () => {
+  mount();
+  fireEvent.click(screen.getByRole("tab", { name: "trayPanel.usage" }));
+  await screen.findByText("trayUsage.emptyToday");
+
+  const refresh = screen.getByRole("button", { name: "trayPanel.refresh" });
+  fireEvent.click(refresh);
+
+  expect(refresh).toBeDisabled();
+  expect(refresh).toHaveAttribute("aria-busy", "true");
+  expect(refresh.querySelector("svg")).toHaveClass("animate-spin");
+  await waitFor(() => {
+    expect(refresh).toBeEnabled();
+    expect(refresh).toHaveAttribute("aria-busy", "false");
+  });
+  const periods = vi.mocked(trayUsageApi.read).mock.calls.flat();
+  expect(periods.filter((period) => period === "today")).toHaveLength(2);
+  expect(periods.filter((period) => period === "activity")).toHaveLength(2);
 });
 it("opens with neutral focus and preserves keyboard tab navigation", () => {
   mount();
@@ -211,9 +219,9 @@ it("opens with neutral focus and preserves keyboard tab navigation", () => {
   expect(quota).toHaveFocus();
   expect(quota).toHaveAttribute("aria-selected", "true");
   fireEvent.keyDown(quota, { key: "ArrowRight" });
-  const routing = screen.getByRole("tab", { name: "trayPanel.routing" });
-  expect(routing).toHaveFocus();
-  expect(routing).toHaveAttribute("aria-selected", "true");
+  const usage = screen.getByRole("tab", { name: "trayPanel.usage" });
+  expect(usage).toHaveFocus();
+  expect(usage).toHaveAttribute("aria-selected", "true");
 });
 it("opens and restores allowances, with provider navigation and four-tab keyboard wrapping", async () => {
   localStorage.setItem("vary:tray-tab", "quota");
@@ -287,8 +295,8 @@ it("keeps the native panel height fixed when content and tabs change", async () 
     body.style.padding = "0 8px 8px";
     resize();
     await new Promise((resolve) => setTimeout(resolve, 60));
-    fireEvent.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-    await screen.findByText("routingPage.gatewayStopped");
+    fireEvent.click(screen.getByRole("tab", { name: "trayPanel.usage" }));
+    await screen.findByText("trayUsage.emptyToday");
     resize();
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(trayPanelApi.resize).not.toHaveBeenCalled();
@@ -376,121 +384,224 @@ it("lets inner dialogs consume Escape before dismissing the panel", async () => 
   dialog.remove();
 });
 
-it("keeps errors and cancellations distinct from successful requests", async () => {
-  const request: RoutingTrace = {
-    id: "early-failure",
-    agent: "trae",
-    model: "synthetic-model",
-    groupName: "",
-    strategy: "ordered",
-    startedAt: Date.now(),
-    durationMs: 10,
-    candidates: [],
-    steps: [{ kind: "failed", atMs: 10, status: 409 }],
-    state: "failed",
-    status: 409,
-  };
-  vi.mocked(routingTraceApi.snapshot).mockResolvedValueOnce({
-    requests: [
-      request,
-      { ...request, id: "cancelled", state: "cancelled", status: 499 },
-      { ...request, id: "http-error", state: "completed", status: 502 },
-      { ...request, id: "completed", state: "completed", status: 200 },
-    ],
-    accounts: [],
-    running: true,
-    days: [],
-    capacity: 8,
-  });
+const usageFixture: TrayUsageRow = {
+  bucket: "09:00",
+  providerId: "_codex_session",
+  providerName: "Codex (Session)",
+  model: "synthetic-session-model",
+  requests: 3,
+  failed: 0,
+  input: 10,
+  output: 5,
+  reads: 80,
+  writes: 5,
+  cost: 0.03,
+  unpriced: 0,
+  firstMs: 1500,
+  firstCount: 3,
+  timedOutput: 5,
+  generationMs: 1000,
+  timedCount: 2,
+};
+
+it("shows a labeled 53-week heatmap with its own metric even if today is empty", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  const now = new Date();
+  const weekday = (now.getDay() + 6) % 7;
+  const dates = calendarDays(365 + weekday, now);
+  vi.mocked(trayUsageApi.read).mockImplementation(async (period) =>
+    period === "activity"
+      ? [
+          { ...usageFixture, bucket: dates[0], input: 900, requests: 1 },
+          { ...usageFixture, bucket: dates.at(-1)!, input: 0, requests: 20 },
+        ]
+      : [],
+  );
   mount();
-  fireEvent.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  const failed = await screen.findByRole("button", { name: /409/ });
-  expect(failed).toHaveAttribute("aria-pressed", "true");
-  expect(failed.querySelector(".tray-dot")).toHaveClass("bad");
-  const cancelled = document.querySelector('.tray-dot[data-state="cancelled"]');
-  expect(cancelled).not.toHaveClass("bad");
-  expect(cancelled?.closest("button")).not.toHaveTextContent("499");
-  expect(
-    screen.getByRole("button", { name: /502/ }).querySelector(".tray-dot"),
-  ).toHaveClass("bad");
-  const completed = screen.getByRole("button", { name: /200/ });
-  expect(completed.querySelector(".tray-dot")).not.toHaveClass("bad");
-  fireEvent.click(completed);
-  expect(completed).toHaveAttribute("aria-pressed", "true");
-  expect(failed).toHaveAttribute("aria-pressed", "false");
+  expect(await screen.findByText("trayUsage.emptyToday")).toBeVisible();
+  const heatmap = await screen.findByRole("region", {
+    name: "trayUsage.activity",
+  });
+  expect(within(heatmap).getByText("trayUsage.activityRange")).toBeVisible();
+  expect(within(heatmap).getByText("周一")).toBeVisible();
+  expect(within(heatmap).getByText("trayUsage.activityLess")).toBeVisible();
+  expect(within(heatmap).getByText("trayUsage.activityMore")).toBeVisible();
+  const oldest = heatmap.querySelector(`[data-date="${dates[0]}"]`);
+  const today = heatmap.querySelector(`[data-date="${localDateKey(now)}"]`);
+  expect(heatmap.querySelectorAll("[data-date]")).toHaveLength(dates.length);
+  expect(oldest).toHaveAttribute("data-level", "4");
+  expect(today).toHaveAttribute("data-level", "1");
+  fireEvent.click(
+    within(heatmap).getByRole("button", { name: "trayUsage.requests" }),
+  );
+  expect(oldest).toHaveAttribute("data-level", "1");
+  expect(today).toHaveAttribute("data-level", "4");
+  expect(localStorage.getItem("vary:tray-usage-heat-metric")).toBe("requests");
+  expect(localStorage.getItem("vary:tray-usage-metric")).toBeNull();
+  fireEvent.focus(today!);
+  expect(within(heatmap).getByRole("tooltip")).toHaveTextContent(
+    "trayUsage.callCount",
+  );
+  fireEvent.keyDown(today!, { key: "ArrowLeft" });
+  expect(heatmap.querySelector(`[data-date="${dates.at(-8)}"]`)).toHaveFocus();
 });
 
-it("changes routing strategy through the application selector without losing group settings", async () => {
-  mockGroups([group]);
-  mount();
-  const user = userEvent.setup();
-  await user.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  const strategy = await screen.findByRole("combobox", {
-    name: `intentRouting.routingStrategy ${group.name}`,
+it("uses cache-inclusive totals, switches chart metrics and drills into provider models", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  vi.mocked(trayUsageApi.read).mockImplementation(async (period) =>
+    period === "activity"
+      ? []
+      : [
+          usageFixture,
+          {
+            ...usageFixture,
+            providerId: "fixture",
+            providerName: "Synthetic provider",
+            model: "synthetic-gateway-model",
+            requests: 1,
+            failed: 1,
+          },
+        ],
+  );
+  const { container } = mount();
+  const summary = (metric: string) =>
+    container.querySelector(`[data-metric="${metric}"]`);
+  const provider = await screen.findByRole("button", {
+    name: /Synthetic provider/,
   });
-  expect(strategy.tagName).toBe("BUTTON");
-  await user.click(strategy);
-  expect(screen.getAllByRole("option")).toHaveLength(9);
-  await user.click(
-    screen.getByRole("option", { name: "routingPage.strategy.ordered" }),
-  );
-  await waitFor(() =>
-    expect(intentRoutingApi.save).toHaveBeenCalledWith({
-      ...group,
-      routing: "ordered",
-    }),
-  );
+  expect(summary("tokens")).toHaveTextContent("200");
+  expect(summary("requests")).toHaveTextContent("4");
+  expect(summary("cache")).toHaveTextContent("84%");
+  expect(summary("cost")).toHaveTextContent("$0.06");
+  fireEvent.click(screen.getByRole("button", { name: "trayUsage.cost" }));
+  expect(screen.getByRole("img", { name: "09:00 · $0.06" })).toBeVisible();
+  fireEvent.click(provider);
+  expect(await screen.findByText("synthetic-gateway-model")).toBeVisible();
+  expect(summary("tokens")).toHaveTextContent("100");
+  expect(summary("requests")).toHaveTextContent("1");
+  expect(screen.queryByRole("group", { name: "trayUsage.split" })).toBeNull();
+  expect(localStorage.getItem("vary:tray-usage-metric")).toBe("cost");
 });
 
-it("dismisses the strategy menu with Escape before hiding the panel", async () => {
-  mockGroups([group]);
+it("dismisses the provider menu with Escape before hiding the panel", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
   mount();
   const user = userEvent.setup();
-  await user.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  const strategy = await screen.findByRole("combobox", {
-    name: `intentRouting.routingStrategy ${group.name}`,
+  const picker = await screen.findByRole("combobox", {
+    name: "trayUsage.provider",
   });
-  await user.click(strategy);
+  await user.click(picker);
+  expect(screen.getByRole("listbox")).toBeVisible();
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   expect(trayPanelApi.hide).not.toHaveBeenCalled();
-  expect(strategy).toHaveFocus();
+  expect(picker).toHaveFocus();
   await user.keyboard("{Escape}");
   expect(trayPanelApi.hide).toHaveBeenCalledOnce();
 });
 
-it("preserves generated-group protection and disables changes while saving", async () => {
-  mockGroups([
-    group,
-    { ...group, id: "generated", name: "Generated group", autoGenerated: true },
+it.each([
+  ["tokens", "250", "150", "100"],
+  ["cost", "$0.10", "$0.07", "$0.03"],
+  ["requests", "8", "5", "3"],
+] as const)(
+  "shows the hourly %s breakdown and total on hover",
+  async (metric, total, providerValue, sessionValue) => {
+    localStorage.setItem("vary:tray-tab", "usage");
+    localStorage.setItem("vary:tray-usage-metric", metric);
+    vi.mocked(trayUsageApi.read).mockResolvedValue([
+      usageFixture,
+      {
+        ...usageFixture,
+        providerId: "fixture",
+        providerName: "Synthetic provider",
+        model: "synthetic-gateway-model",
+        input: 60,
+        requests: 5,
+        cost: 0.07,
+      },
+      {
+        ...usageFixture,
+        bucket: "11:00",
+        output: 1_000,
+        requests: 50,
+        cost: 1,
+      },
+    ]);
+    mount();
+    const column = await screen.findByRole("img", { name: `09:00 · ${total}` });
+    fireEvent.pointerEnter(column);
+    const tooltip = within(screen.getByRole("tooltip"));
+    expect(
+      tooltip.getByText(
+        `${localDateKey(new Date()).replaceAll("-", "/")} 09:00`,
+      ),
+    ).toBeVisible();
+    expect(
+      tooltip.getAllByRole("listitem").map((item) => item.textContent),
+    ).toEqual([
+      `Synthetic provider${providerValue}`,
+      `trayUsage.sessions${sessionValue}`,
+    ]);
+    expect(tooltip.getByText("trayUsage.total")).toBeVisible();
+    expect(
+      tooltip.getByText(total, { exact: metric === "requests" }),
+    ).toBeVisible();
+    if (metric !== "requests")
+      expect(screen.getByRole("tooltip")).toHaveTextContent(
+        "trayUsage.callCount",
+      );
+    fireEvent.pointerLeave(
+      screen.getByRole("group", { name: "trayUsage.trend" }),
+    );
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  },
+);
+
+it("narrows the summaries to a selected day without losing the trend", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  localStorage.setItem("vary:tray-usage-period", "week");
+  const [yesterday, today] = calendarDays(2);
+  vi.mocked(trayUsageApi.read).mockResolvedValue([
+    { ...usageFixture, bucket: yesterday },
+    { ...usageFixture, bucket: today },
   ]);
-  let finish!: (group: RoutingGroup) => void;
-  vi.mocked(intentRoutingApi.save).mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  );
-  mount();
-  const user = userEvent.setup();
-  await user.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
-  const toggle = await screen.findByRole("switch", { name: group.name });
-  expect(
-    screen.getByRole("switch", { name: "Generated group" }),
-  ).toBeDisabled();
-  await user.click(toggle);
-  expect(intentRoutingApi.save).toHaveBeenCalledWith({
-    ...group,
-    enabled: false,
+  const { container } = mount();
+  const selectedDay = await screen.findByRole("button", {
+    name: `${yesterday} · 100`,
   });
-  expect(toggle).toBeDisabled();
-  expect(
-    screen.getByRole("combobox", {
-      name: `intentRouting.routingStrategy ${group.name}`,
-    }),
-  ).toBeDisabled();
-  finish({ ...group, enabled: false });
-  await waitFor(() => expect(toggle).toBeEnabled());
+  const totalRequests = container.querySelector('[data-metric="requests"]');
+  expect(totalRequests).toHaveTextContent("6");
+  fireEvent.focus(selectedDay);
+  expect(screen.getByRole("tooltip")).toHaveTextContent(
+    yesterday.replaceAll("-", "/"),
+  );
+  expect(selectedDay).toHaveAccessibleDescription(/trayUsage.sessions/);
+  fireEvent.keyDown(selectedDay, { key: "Escape" });
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(trayPanelApi.hide).not.toHaveBeenCalled();
+  fireEvent.click(selectedDay);
+  expect(selectedDay).toHaveAttribute("aria-pressed", "true");
+  expect(totalRequests).toHaveTextContent("3");
+  expect(screen.getByRole("button", { name: `${today} · 100` })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "trayUsage.clearDay" }));
+  expect(totalRequests).toHaveTextContent("6");
+});
+
+it("reports refresh errors and allows a retry", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  let failed = false;
+  vi.mocked(trayUsageApi.read).mockImplementation(async (period) => {
+    if (period === "today" && !failed) {
+      failed = true;
+      throw new Error("fixture");
+    }
+    return [];
+  });
+  mount();
+  expect(await screen.findByRole("alert")).toHaveTextContent("trayUsage.error");
+  fireEvent.click(screen.getByRole("button", { name: "trayUsage.refresh" }));
+  expect(await screen.findByText("trayUsage.emptyToday")).toBeVisible();
 });
 
 const eventCases = [

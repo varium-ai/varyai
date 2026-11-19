@@ -84,3 +84,5 @@ The application retains its configured update feed. A locally built package is d
 ## Problems and reports
 
 Start with [troubleshooting](troubleshooting.md). Include the application revision, platform, affected client, synthetic reproduction and sanitized diagnostics. Use the project's [security policy](../SECURITY.md) for private vulnerability reports; credentials and private conversations do not belong in public issues.
+
+The tray’s **Quota** tab lists accounts with a reported allowance, including zero balances and exhausted limits. Refresh the tab to check hidden accounts again. A temporary failure can leave a previous reading visible with a stale indicator.
