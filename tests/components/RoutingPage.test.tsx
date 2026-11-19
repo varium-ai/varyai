@@ -306,6 +306,30 @@ it("shows only the recorded destination for a direct request", async () => {
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
 });
 
+it("shows only the attempted model for a group with unused candidates", async () => {
+  snapshot([
+    {
+      ...route,
+      state: "completed",
+      candidates: [
+        { ...route.candidates[1], model: "unused-model" },
+        route.candidates[1],
+      ],
+      steps: [
+        { kind: "attempt", candidate: 1, atMs: 1 },
+        { kind: "completed", candidate: 1, atMs: 20 },
+      ],
+    },
+  ]);
+  show();
+  await screen.findByText("model-b", { selector: ".rt-accts .mdl" });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "unused-model",
+  );
+  expect(document.querySelector(".rt-route-summary")).toBeNull();
+});
+
 it("keeps cancellation neutral and hides HTTP 499 while retaining actual upstream errors", async () => {
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
     requests: [
@@ -667,7 +691,11 @@ it.each([...APP_IDS, "external-fixture"])(
     const otherAgent = agent === "codex" ? "gemini" : "codex";
     snapshot([
       sourceRequest(otherAgent),
-      sourceRequest(agent, { model: "other-model", session: "other-session" }),
+      sourceRequest(agent, {
+        model: "other-model",
+        session: "other-session",
+        steps: [{ kind: "attempt", candidate: 1, atMs: 1 }],
+      }),
     ]);
     show();
     await waitFor(() =>
@@ -680,9 +708,7 @@ it.each([...APP_IDS, "external-fixture"])(
     expect(document.querySelector(".rt-what")).toHaveTextContent(
       "routingPage.stage",
     );
-    expect(document.querySelector(".rt-what")).not.toHaveTextContent(
-      "routingPage.seatsOn",
-    );
+    expect(document.querySelector(".rt-route-summary")).toBeNull();
   },
 );
 
@@ -820,9 +846,7 @@ it("masks duplicate supplier labels and email-shaped IDs in the stage and toolti
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );
   const seats = document.querySelector(".rt-accts")!;
-  await waitFor(() =>
-    expect(seats.innerHTML).not.toContain("Synthetic relay"),
-  );
+  await waitFor(() => expect(seats.innerHTML).not.toContain("Synthetic relay"));
   expect(seats.querySelector(".account-mask")).not.toBeNull();
   expect(seats.innerHTML).not.toContain("fixture.account@example.test");
   expect(seats.textContent).toContain("supplier-a");

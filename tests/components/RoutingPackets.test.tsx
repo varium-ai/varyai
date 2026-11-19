@@ -192,6 +192,43 @@ it("returns a rejected attempt to the hub before moving to the next recorded can
   );
 });
 
+it("docks and returns from a non-first attempt without following invalid or skipped destinations", () => {
+  const trace: RoutingTrace = {
+    ...request,
+    steps: [
+      { kind: "context", candidate: 0, atMs: 1 },
+      { kind: "attempt", candidate: 99, atMs: 2 },
+      { kind: "attempt", candidate: 1, atMs: 3 },
+    ],
+  };
+  const view = render(<RoutingPackets row={trace} paths={paths} active />);
+  finishFlights();
+  expect(point(view.container)).toHaveClass("held", "docked");
+  expect(point(view.container)).toHaveAttribute(
+    "transform",
+    "translate(200 100)",
+  );
+  view.rerender(
+    <RoutingPackets
+      row={{
+        ...trace,
+        state: "completed",
+        steps: [...trace.steps, { kind: "completed", candidate: 1, atMs: 20 }],
+      }}
+      paths={paths}
+      active
+    />,
+  );
+  frame(0);
+  expect(point(view.container)).toHaveClass("back");
+  expect(point(view.container)).toHaveAttribute(
+    "transform",
+    "translate(200 100)",
+  );
+  finishFlights();
+  expect(point(view.container)).toHaveAttribute("visibility", "hidden");
+});
+
 it("keeps historical selections still, while explicit replay follows only the supplied steps", () => {
   const old = {
     ...request,

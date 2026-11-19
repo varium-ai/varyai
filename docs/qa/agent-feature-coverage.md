@@ -6,18 +6,23 @@ For every Agent-facing change, assess all entries below against its entry point,
 
 ## Live routing source cards
 
-Pre-implementation assessment. The Routing workspace derives its source cards
+The Routing workspace derives its source cards
 from the existing gateway trace snapshot on macOS and Windows. `Trace` below
 means one card per recorded Agent ID, independent request animations, and
-recorded candidates only. Each row uses its existing native or protocol
+only destinations referenced by a valid gateway `attempt` step in either
+layout. Candidates that were planned or skipped without an attempt have no
+card or branch. Attempted fallbacks and concurrent routes retain their original
+trace indices for packet motion. Each row uses its existing native or protocol
 adapter. Variants that already share a trace ID share a source card. Flows
 outside the gateway trace recorder have no source card. The compact tray has
 its own selection flow and already supports multiple live sources.
 
 For every Agent and variant below, the workspace and compact tray share the
-candidate card without a leading status dot. An outline expands outward from
-the exact seat and fades while it shows the responding state, without waiting
-for first content. Reduced-motion mode keeps the border static. Workspace
+candidate card without a leading status dot. The exact seat pulses its fixed
+border between a muted accent and a saturated violet-tinted accent while it
+shows the responding state, without waiting for first content. The shared
+stylesheet changes neither layout geometry nor packet motion. Reduced-motion
+mode keeps a static accent border. Workspace
 source names wrap rather than truncate. A parked packet is stationary at the
 provider edge with only its outer half visible. The existing return and
 failover motion, entry points, native adapters and trace semantics are unchanged
@@ -39,28 +44,53 @@ clipping or shifting the card in either layout, and that completed and
 reduced-motion states are static. Full suites and native clients were not
 rerun for the stylesheet-only follow-up.
 
+The fixed-border follow-up over `ad551d25` on macOS arm64 passed 205
+focused tests, TypeScript, the renderer build and targeted Prettier. It
+does not change route selection, candidate retention or native adapters.
+Native acceptance and full-suite verification were not repeated.
+
+For the attempted-destination filter over `ad551d25`, the shared renderer
+regression exercises each registered Agent ID in both the workspace and tray
+layouts. It covers pre-dispatch hiding, a non-first attempt, response state,
+and completed replay. Additional synthetic cases exercise skipped and invalid
+attempt indices, fallback outcomes, concurrent paths, and packet return.
+Native client and WebView acceptance on macOS and Windows remain pending.
+On the `ad551d25` working tree with this renderer patch, macOS 15.3.1 arm64,
+Node 24.11.0 and Rust 1.98.1, `pnpm typecheck`, `pnpm format:check`,
+`pnpm build:renderer` and `pnpm test:unit` passed (4,678 tests, including 209
+focused checks). Cargo formatting, `cargo check` and Clippy passed. The Rust
+test suites were not rerun because prior linking exhausted available disk space
+and this patch does not change Rust code.
+
+The color-pulse stylesheet follow-up over the same `ad551d25` working tree
+on macOS 15.3.1 arm64 with Node 24.11.0 passed 209 focused tests, TypeScript,
+the renderer build, and Prettier. Headless Chromium fixtures verified distinct
+border colors at the two animation stops, fixed card geometry, and still
+completed and reduced-motion states in both layouts and themes. The full
+suites and native client acceptance were not repeated for this follow-up.
+
 | Agent ID | Existing entry point and adapter | Workspace behavior | Verification |
 | --- | --- | --- | --- |
-| `claude` | Claude Code CLI | Trace | Synthetic planned, native pending |
-| `claude-desktop` | Claude Desktop connection | Trace | Synthetic planned, native pending |
-| `codex` | Codex CLI and desktop connection | Trace | Synthetic planned, native pending |
-| `gemini` | Gemini CLI | Trace | Synthetic planned, native pending |
-| `grokbuild` | Grok Build CLI | Trace | Synthetic planned, native pending |
-| `opencode` | OpenCode connection | Trace | Synthetic planned, native pending |
-| `openclaw` | OpenClaw connection | Trace | Synthetic planned, native pending |
-| `hermes` | Hermes CLI | Trace | Synthetic planned, native pending |
-| `pi` | Pi CLI provider connection | Trace | Synthetic planned, native pending |
-| `workbuddy` | WorkBuddy China desktop and CLI | Trace | Synthetic planned, native pending |
-| `workbuddy-ai` | WorkBuddy AI international desktop | Trace | Synthetic planned, native pending |
-| `qoder` | Qoder CN desktop | Trace | Synthetic planned, native pending |
-| `doubaowork` | Dedicated Doubao Work connection | Trace | Synthetic planned, native pending |
-| `trae` | TRAE China connection | Trace | Synthetic planned, native pending |
-| `trae-intl` | TRAE International connection | Trace | Synthetic planned, native pending |
-| `kimi` | Kimi Code CLI and desktop | Trace | Synthetic planned, native pending |
-| `qwen` | Qwen Code CLI | Trace | Synthetic planned, native pending |
-| `zcode` | ZCode desktop | Trace | Synthetic planned, native pending |
-| `deepseek-harness` | DeepSeek Harness desktop | Trace | Synthetic planned, native pending |
-| `t3code` | T3 Code desktop | Trace | Synthetic planned, native pending |
+| `claude` | Claude Code CLI | Trace | Synthetic passed, native pending |
+| `claude-desktop` | Claude Desktop connection | Trace | Synthetic passed, native pending |
+| `codex` | Codex CLI and desktop connection | Trace | Synthetic passed, native pending |
+| `gemini` | Gemini CLI | Trace | Synthetic passed, native pending |
+| `grokbuild` | Grok Build CLI | Trace | Synthetic passed, native pending |
+| `opencode` | OpenCode connection | Trace | Synthetic passed, native pending |
+| `openclaw` | OpenClaw connection | Trace | Synthetic passed, native pending |
+| `hermes` | Hermes CLI | Trace | Synthetic passed, native pending |
+| `pi` | Pi CLI provider connection | Trace | Synthetic passed, native pending |
+| `workbuddy` | WorkBuddy China desktop and CLI | Trace | Synthetic passed, native pending |
+| `workbuddy-ai` | WorkBuddy AI international desktop | Trace | Synthetic passed, native pending |
+| `qoder` | Qoder CN desktop | Trace | Synthetic passed, native pending |
+| `doubaowork` | Dedicated Doubao Work connection | Trace | Synthetic passed, native pending |
+| `trae` | TRAE China connection | Trace | Synthetic passed, native pending |
+| `trae-intl` | TRAE International connection | Trace | Synthetic passed, native pending |
+| `kimi` | Kimi Code CLI and desktop | Trace | Synthetic passed, native pending |
+| `qwen` | Qwen Code CLI | Trace | Synthetic passed, native pending |
+| `zcode` | ZCode desktop | Trace | Synthetic passed, native pending |
+| `deepseek-harness` | DeepSeek Harness desktop | Trace | Synthetic passed, native pending |
+| `t3code` | T3 Code desktop | Trace | Synthetic passed, native pending |
 
 ## Routing conversion parity (2026-11-18)
 

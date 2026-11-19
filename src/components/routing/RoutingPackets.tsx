@@ -2,6 +2,7 @@
 // See third_party/routing-reference/LICENSE.
 import { useEffect, useRef, type CSSProperties } from "react";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
+import { attemptCandidateIndex } from "./routingAttempts";
 
 type Position = "source" | "hub" | number;
 type Leg = { wire: number; reverse?: boolean };
@@ -389,11 +390,8 @@ function packetPlayer(
       return;
     }
     for (const step of row.steps.slice(seen)) {
-      if (
-        step.kind === "attempt" &&
-        step.candidate != null &&
-        step.candidate >= 0
-      ) {
+      const index = attemptCandidateIndex(row, step);
+      if (index != null) {
         if (typeof destination === "number") {
           queue.push({
             legs: [{ wire: destination + 1, reverse: true }],
@@ -410,14 +408,11 @@ function packetPlayer(
           queue[0].to === "hub";
         if (fromSource) queue.pop();
         queue.push({
-          legs: [
-            ...(fromSource ? [{ wire: 0 }] : []),
-            { wire: step.candidate + 1 },
-          ],
+          legs: [...(fromSource ? [{ wire: 0 }] : []), { wire: index + 1 }],
           duration: compact ? 460 : fromSource ? 1400 : 900,
-          to: step.candidate,
+          to: index,
         });
-        destination = step.candidate;
+        destination = index;
       } else if (
         ["rejected", "first_token_timeout"].includes(step.kind) &&
         typeof destination === "number"

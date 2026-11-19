@@ -147,14 +147,7 @@ export function RoutingPage({
             {multipleRoutes ? (
               <b>{t("routingPage.stage")}</b>
             ) : shown ? (
-              <>
-                {requestedModel(shown)}
-                {shown.candidates.length > 0 && (
-                  <span className="rt-route-summary">
-                    {t("routingPage.seatsOn", { n: shown.candidates.length })}
-                  </span>
-                )}
-              </>
+              requestedModel(shown)
             ) : (
               <b>
                 {t(

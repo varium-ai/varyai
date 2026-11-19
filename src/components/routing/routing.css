@@ -406,7 +406,6 @@
   margin-bottom: 0;
 }
 .vary-routing .rt-accts {
-  --rt-seat-ripple-gutter: 7px;
   position: relative;
   z-index: 1;
   list-style: none;
@@ -414,8 +413,8 @@
   gap: 7px;
   min-width: 0;
   max-height: 260px;
-  padding: var(--rt-seat-ripple-gutter);
-  margin: calc(-1 * var(--rt-seat-ripple-gutter));
+  padding: 4px;
+  margin: -4px;
   overflow-y: auto;
 }
 .vary-routing .rt-accts li {
@@ -546,10 +545,6 @@
   background: var(--rt-muted);
   border-radius: inherit;
 }
-.vary-routing .rt-route-summary {
-  color: var(--rt-muted);
-  font-size: 12px;
-}
 .vary-routing .dot {
   width: 7px;
   height: 7px;
@@ -655,8 +650,8 @@
   white-space: nowrap;
 }
 .vary-routing .rt-stage:not(.compact) .rt-accts {
-  width: calc(100% + 2 * var(--rt-seat-ripple-gutter));
-  max-width: calc(100% + 2 * var(--rt-seat-ripple-gutter));
+  width: calc(100% + 8px);
+  max-width: calc(100% + 8px);
   max-height: 320px;
   gap: 7px;
 }
@@ -728,28 +723,27 @@
   font-size: 11.5px;
 }
 .vary-routing .rt-stage .rt-accts li.on.replying {
-  border-color: color-mix(in srgb, var(--rt-accent) 38%, var(--rt-line));
+  border-color: color-mix(in srgb, var(--rt-accent) 65%, var(--rt-line));
   box-shadow: none;
 }
 @media (prefers-reduced-motion: no-preference) {
   .vary-routing .rt-stage .rt-accts li.on.replying::after {
     content: "";
     position: absolute;
-    border: 1px solid var(--rt-accent);
+    inset: -1px;
+    border: 2px solid var(--rt-accent);
     border-radius: inherit;
     pointer-events: none;
-    animation: vary-rt-seat-ripple 2.8s ease-out infinite;
+    animation: vary-rt-seat-pulse 2s ease-in-out infinite;
   }
 }
-@keyframes vary-rt-seat-ripple {
-  from {
-    inset: -1px;
-    opacity: 0.65;
+@keyframes vary-rt-seat-pulse {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--rt-accent) 45%, var(--rt-line));
   }
-  78%,
-  to {
-    inset: calc(-1 * var(--rt-seat-ripple-gutter));
-    opacity: 0;
+  50% {
+    border-color: color-mix(in srgb, var(--rt-accent) 42%, #8b5cf6);
   }
 }
 .vary-routing .rt-window {

@@ -13,6 +13,7 @@ import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import appIcon from "@/assets/icons/app-icon.png";
 import { RoutingPackets } from "./RoutingPackets";
+import { attemptCandidateIndex } from "./routingAttempts";
 import { formatRoutingDuration } from "@/lib/routingDuration";
 import { useRoutingFlights } from "./useRoutingFlights";
 import type {
@@ -44,9 +45,14 @@ const candidateKey = (candidate: RoutingCandidate) =>
     candidate.model,
     candidate.fixedEffort,
   ]);
-const chosenCandidate = (trace?: RoutingTrace) =>
-  [...(trace?.steps ?? [])].reverse().find((step) => step.kind === "attempt")
-    ?.candidate;
+function chosenCandidate(trace?: RoutingTrace) {
+  if (!trace) return undefined;
+  for (let stepIndex = trace.steps.length - 1; stepIndex >= 0; stepIndex--) {
+    const index = attemptCandidateIndex(trace, trace.steps[stepIndex]);
+    if (index != null) return index;
+  }
+  return undefined;
+}
 function isAnswering(trace?: RoutingTrace) {
   const chosen = chosenCandidate(trace);
   return (
@@ -132,7 +138,13 @@ export function RoutingStage({
     { candidate: RoutingCandidate; trace: RoutingTrace; index: number }
   >();
   for (const trace of traces) {
-    trace.candidates.forEach((candidate, index) => {
+    const attempted = new Set<number>();
+    for (const step of trace.steps) {
+      const index = attemptCandidateIndex(trace, step);
+      if (index != null) attempted.add(index);
+    }
+    for (const index of [...attempted].sort((left, right) => left - right)) {
+      const candidate = trace.candidates[index];
       const key = candidateKey(candidate);
       const previous = seats.get(key);
       if (
@@ -144,7 +156,7 @@ export function RoutingStage({
         (!live(previous.trace) && live(trace))
       )
         seats.set(key, { candidate, trace, index });
-    });
+    }
   }
   const candidates = [...seats.values()];
   const providersByName = new Map<string, Set<string>>();
@@ -176,15 +188,12 @@ export function RoutingStage({
     concurrent
       .filter((r) => r.id !== row?.id && live(r))
       .flatMap((r) => {
-        const index = [...r.steps]
-          .reverse()
-          .find((step) => step.kind === "attempt")?.candidate;
+        const index = chosenCandidate(r);
         const last = [...r.steps]
           .reverse()
           .find((step) => step.candidate === index);
         if (
           index == null ||
-          !r.candidates[index] ||
           !["attempt", "connected"].includes(last?.kind ?? "")
         )
           return [];
@@ -473,7 +482,9 @@ export function RoutingStage({
             attempt >= 0 &&
             trace.steps.some(
               (s, i) =>
-                i > attempt && s.kind === "attempt" && s.candidate !== index,
+                i > attempt &&
+                s.candidate !== index &&
+                attemptCandidateIndex(trace, s) != null,
             );
           const failed =
             ["rejected", "failed", "first_token_timeout"].includes(

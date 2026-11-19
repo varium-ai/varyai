@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { render, screen, within } from "@testing-library/react";
 import postcss from "postcss";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createInstance } from "i18next";
 import { I18nextProvider } from "react-i18next";
 import zh from "@/i18n/locales/zh.json";
@@ -51,13 +51,13 @@ const row: RoutingTrace = {
     {
       providerId: "account-vendor",
       providerName: "Synthetic account",
-      model: "model-a",
+      model: "unused-model",
       account: {
         id: "account-a",
         kind: "account",
         providerId: "account-vendor",
         providerName: "Synthetic account",
-        model: "model-a",
+        model: "unused-model",
         restUntil: 0,
         windows: [
           {
@@ -73,6 +73,15 @@ const row: RoutingTrace = {
     { kind: "attempt", candidate: 1, atMs: 1 },
     { kind: "connected", candidate: 1, atMs: 20, status: 200 },
   ],
+};
+const attempt = (candidate: number) => ({
+  kind: "attempt" as const,
+  candidate,
+  atMs: 0,
+});
+const allSeatsRow = {
+  ...row,
+  steps: [attempt(0), attempt(2), ...row.steps],
 };
 function show(overrides: Partial<Parameters<typeof RoutingStage>[0]> = {}) {
   return render(
@@ -90,29 +99,42 @@ function show(overrides: Partial<Parameters<typeof RoutingStage>[0]> = {}) {
   );
 }
 
-it("expands a separate outline only when motion is enabled", () => {
+it("pulses between two border colors on the fixed card outline only when motion is enabled", () => {
   const stylesheet = postcss.parse(
     readFileSync("src/components/routing/routing.css", "utf8"),
   );
   const outline = ".vary-routing .rt-stage .rt-accts li.on.replying::after";
   let motionRule = false;
+  let inset: string | undefined;
+  let border: string | undefined;
   stylesheet.walkAtRules("media", (media) => {
     if (media.params !== "(prefers-reduced-motion: no-preference)") return;
     media.walkRules(outline, (rule) => {
       rule.walkDecls("animation", ({ value }) => {
-        motionRule = value.startsWith("vary-rt-seat-ripple ");
+        motionRule = value.startsWith("vary-rt-seat-pulse ");
+      });
+      rule.walkDecls("inset", ({ value }) => {
+        inset = value;
+      });
+      rule.walkDecls("border", ({ value }) => {
+        border = value;
       });
     });
   });
-  const insets: string[] = [];
+  const animatedProperties = new Set<string>();
+  const colors = new Set<string>();
   stylesheet.walkAtRules("keyframes", (animation) => {
-    if (animation.params !== "vary-rt-seat-ripple") return;
-    animation.walkDecls("inset", ({ value }) => {
-      insets.push(value);
+    if (animation.params !== "vary-rt-seat-pulse") return;
+    animation.walkDecls(({ prop, value }) => {
+      animatedProperties.add(prop);
+      if (prop === "border-color") colors.add(value);
     });
   });
   expect(motionRule).toBe(true);
-  expect(insets).toEqual(["-1px", "calc(-1 * var(--rt-seat-ripple-gutter))"]);
+  expect(inset).toBe("-1px");
+  expect(border).toMatch(/^2px solid\b/);
+  expect([...animatedProperties]).toEqual(["border-color"]);
+  expect(colors.size).toBe(2);
 });
 
 it.each(
@@ -120,7 +142,7 @@ it.each(
     (["responsive", "compact"] as const).map((layout) => ({ agent, layout })),
   ),
 )(
-  "highlights only the replying provider for $agent in $layout",
+  "only shows the attempted destination for $agent in $layout",
   ({ agent, layout }) => {
     const request = { ...row, agent };
     const view = show({
@@ -139,19 +161,23 @@ it.each(
           replay={replay}
         />,
       );
-    const seats = () => view.container.querySelectorAll(".rt-accts li");
+    const seats = () =>
+      view.container.querySelectorAll(".rt-accts li:not(.idle)");
     const highlighted = () =>
       view.container.querySelectorAll(".rt-accts .replying");
     expect(highlighted()).toHaveLength(0);
+    expect(seats()).toHaveLength(0);
     update({ firstTokenMs: null });
     expect(highlighted()).toHaveLength(1);
-    expect(seats()[1]).toHaveClass("replying");
+    expect(seats()).toHaveLength(1);
+    expect(seats()[0]).toHaveClass("replying");
+    expect(seats()[0]).toHaveTextContent("model-a");
     expect(view.container.querySelector(".rt-accts .dot")).toBeNull();
     update({}, true);
     expect(highlighted()).toHaveLength(0);
     update({ firstTokenMs: 0, state: "completed" });
     expect(highlighted()).toHaveLength(0);
-    expect(seats()[1]).toHaveTextContent("routingPage.seatAnswered");
+    expect(seats()[0]).toHaveTextContent("routingPage.seatAnswered");
   },
 );
 
@@ -202,7 +228,7 @@ it("keeps the gateway active while an older concurrent request is streaming", ()
 });
 
 it("renders individual safe key seats, the requested alias, actual listener and strategy", () => {
-  show();
+  show({ row: allSeatsRow });
   const src = document.querySelector(".rt-src")!;
   expect(src).toHaveTextContent("apps.codex");
   expect(src).toHaveTextContent("auto/research");
@@ -232,6 +258,7 @@ it("names provider seats by their supplier even when legacy labels remain", () =
   show({
     row: {
       ...row,
+      steps: [attempt(0)],
       candidates: [
         {
           ...row.candidates[0],
@@ -256,6 +283,7 @@ it("shows the supplier for a legacy key label when only one configured key is en
   show({
     row: {
       ...row,
+      steps: [attempt(0)],
       candidates: [
         {
           ...row.candidates[0],
@@ -292,6 +320,7 @@ it("shows the supplier for a legacy key label when only one configured key is en
 
 it("uses each candidate's configured supplier icon instead of credential-type icons", () => {
   show({
+    row: allSeatsRow,
     upstreams: [
       {
         schemaVersion: 1,
@@ -338,6 +367,7 @@ it("shows recorded masked key labels instead of provider names and key ordinals"
   show({
     row: {
       ...row,
+      steps: [attempt(0), ...row.steps],
       candidates: row.candidates.slice(0, 2).map((candidate, index) => ({
         ...candidate,
         account: {
@@ -371,6 +401,7 @@ it.each([true, false])(
         status: 499,
         candidates: hasCandidates ? row.candidates : [],
         steps: [
+          ...(hasCandidates ? [attempt(1)] : []),
           {
             kind: "cancelled",
             candidate: hasCandidates ? 1 : undefined,
@@ -380,6 +411,9 @@ it.each([true, false])(
         ],
       },
     });
+    expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(
+      hasCandidates ? 1 : 0,
+    );
     expect(document.querySelector(".rt-accts")).not.toHaveTextContent("499");
     expect(document.querySelector(".rt-accts .rest")).toBeNull();
     if (!hasCandidates)
@@ -412,6 +446,7 @@ it("distinguishes a retry from the final error and does not animate completed se
     },
   });
   const seats = document.querySelectorAll(".rt-accts li");
+  expect(seats).toHaveLength(2);
   expect(seats[0]).toHaveTextContent("routingPage.seatWentOn");
   expect(seats[0]).toHaveTextContent("502");
   expect(seats[1]).toHaveTextContent("routingPage.seatAnswered");
@@ -426,6 +461,7 @@ it("only uses fresh observations for the exact account and model while live", ()
     ],
   };
   const { rerender } = show({
+    row: allSeatsRow,
     currentAccounts: [fresh],
     liveObservations: true,
   });
@@ -435,7 +471,7 @@ it("only uses fresh observations for the exact account and model while live", ()
   );
   rerender(
     <RoutingStage
-      row={row}
+      row={allSeatsRow}
       accountName={(c) => c.providerName}
       animate={false}
       replay={true}
@@ -447,13 +483,17 @@ it("only uses fresh observations for the exact account and model while live", ()
   );
   expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
 });
-it("does not turn an untried seat busy from an unrelated request", () => {
+it("shows other activity on an attempted seat without highlighting it as selected", () => {
   const another: RoutingTrace = {
     ...row,
     id: "another",
     steps: [{ kind: "attempt", candidate: 0, atMs: 1 }],
   };
-  show({ concurrent: [another], liveObservations: true });
+  show({
+    row: { ...row, steps: [attempt(0), ...row.steps] },
+    concurrent: [another],
+    liveObservations: true,
+  });
   const seats = document.querySelectorAll(".rt-accts li");
   expect(seats[0]).toHaveTextContent("routingPage.seatAnsweringOther");
   expect(seats[0]).not.toHaveClass("on");
@@ -476,21 +516,62 @@ it("shows an idle placeholder before any request has been recorded", () => {
   );
 });
 
-it("shows one branch for a direct request and preserves every recorded fallback for a group", () => {
-  const view = show({
-    row: { ...row, candidates: [row.candidates[0]], steps: [] },
+it("does not draw destinations skipped before dispatch or referenced by invalid attempts", () => {
+  show({
+    row: {
+      ...row,
+      state: "failed",
+      status: 400,
+      steps: [
+        { kind: "context", candidate: 0, atMs: 1 },
+        { kind: "images", candidate: 1, atMs: 2 },
+        { kind: "attempt", candidate: null, atMs: 3 },
+        { kind: "attempt", candidate: -1, atMs: 4 },
+        { kind: "attempt", candidate: 0.5, atMs: 5 },
+        { kind: "attempt", candidate: 99, atMs: 6 },
+        { kind: "failed", atMs: 7, status: 400 },
+      ],
+    },
   });
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
-  expect(document.querySelector(".rt-accts")).toHaveTextContent("model-a");
-  view.unmount();
-  show();
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
+  expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(0);
+  expect(document.querySelectorAll(".rt-wires path")).toHaveLength(1);
+  expect(
+    screen.getByText("routingPage.noCandidatesFailed"),
+  ).toBeInTheDocument();
+  expect(document.querySelector(".rt-accts")).toHaveTextContent("400");
 });
+
+it.each(["responsive", "compact"] as const)(
+  "keeps the packet wire at the original candidate index in the %s stage",
+  (layout) => {
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.matches(".rt-src")) return new DOMRect(0, 10, 120, 40);
+        if (this.matches(".rt-hub")) return new DOMRect(180, 10, 60, 40);
+        if (this.matches(".rt-accts li")) return new DOMRect(320, 10, 140, 40);
+        return new DOMRect(0, 0, 700, 120);
+      });
+    try {
+      const view = show({ layout });
+      const wires = view.container.querySelectorAll(".rt-wires path");
+      const packetWires = view.container.querySelectorAll(".rt-packet-path");
+      expect(wires).toHaveLength(2);
+      expect(packetWires).toHaveLength(4);
+      expect(wires[1].getAttribute("d")).toMatch(/320,30$/);
+      expect(packetWires[1]).toHaveAttribute("d", "");
+      expect(packetWires[2]).toHaveAttribute("d", wires[1].getAttribute("d"));
+      expect(packetWires[3]).toHaveAttribute("d", "");
+    } finally {
+      bounds.mockRestore();
+    }
+  },
+);
 
 it("keeps simultaneous request paths on stage when the latest request changes", () => {
   const older: RoutingTrace = {
     ...row,
-    candidates: [row.candidates[0]],
+    candidates: [row.candidates[0], row.candidates[2]],
     steps: [{ kind: "attempt", candidate: 0, atMs: 1 }],
   };
   const view = show({ row: older, animate: true, concurrent: [older] });
@@ -499,7 +580,10 @@ it("keeps simultaneous request paths on stage when the latest request changes", 
     ...older,
     id: "newer-stage-request",
     agent: "gemini",
-    candidates: [row.candidates[2]],
+    candidates: [
+      { ...row.candidates[2], model: "other-model" },
+      { ...row.candidates[0], model: "another-unused-model" },
+    ],
   };
   view.rerender(
     <RoutingStage
@@ -513,6 +597,11 @@ it("keeps simultaneous request paths on stage when the latest request changes", 
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(2);
   expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  expect(
+    [...document.querySelectorAll(".rt-accts .mdl")]
+      .map((model) => model.textContent)
+      .sort(),
+  ).toEqual(["model-a", "other-model"]);
   expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
   expect([...document.querySelectorAll(".rt-packet")].includes(packet!)).toBe(
     true,
@@ -531,7 +620,7 @@ it("keeps simultaneous request paths on stage when the latest request changes", 
   expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
 });
 
-it("shows one node per shared candidate without duplicating a concurrent branch", () => {
+it("shows one node per shared destination without duplicating a concurrent branch", () => {
   const view = show({ row, animate: true, concurrent: [row] });
   const next = { ...row, id: "same-route-next" };
   view.rerender(
@@ -545,7 +634,7 @@ it("shows one node per shared candidate without duplicating a concurrent branch"
     />,
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
   expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
 });
 
@@ -558,9 +647,14 @@ it("uses unnumbered key status without repeating credential ordinals", () => {
         ...candidate,
         account: { ...candidate.account!, label: `Masked key ${index + 1}` },
       })),
-      steps: [],
+      steps: [
+        attempt(0),
+        attempt(1),
+        { kind: "cancelled", candidate: 1, atMs: 1 },
+      ],
     },
   });
+  expect(document.querySelectorAll(".rt-seat-status")).toHaveLength(2);
   for (const status of document.querySelectorAll(".rt-seat-status")) {
     expect(status).toHaveTextContent("routingPage.apiKey");
     expect(status).not.toHaveTextContent("routingPage.keyLabel");
@@ -570,7 +664,7 @@ it("uses unnumbered key status without repeating credential ordinals", () => {
 it("shows recorded subscription plans beside names without guessing a plan for keys", () => {
   show({
     row: {
-      ...row,
+      ...allSeatsRow,
       candidates: row.candidates.map((candidate) => ({
         ...candidate,
         account: { ...candidate.account!, plan: "ChatGPT Plus" },
@@ -586,7 +680,7 @@ it("keeps renewal information alongside an answering account's status", () => {
   show({
     row: { ...row, steps: [{ kind: "attempt", candidate: 2, atMs: 1 }] },
   });
-  const status = document.querySelectorAll(".rt-seat-status")[2];
+  const status = document.querySelector(".rt-seat-status");
   expect(status).toHaveTextContent("routingPage.seatAnswering");
   expect(status).toHaveTextContent("routingPage.resetIn");
 });
@@ -595,10 +689,10 @@ it("prioritizes passed-over context before active and quota states", () => {
   show({
     row: {
       ...row,
-      steps: [{ kind: "context", candidate: 2, atMs: 1 }],
+      steps: [attempt(2), { kind: "context", candidate: 2, atMs: 1 }],
     },
   });
-  const status = document.querySelectorAll(".rt-seat-status")[2];
+  const status = document.querySelector(".rt-seat-status");
   expect(status).toHaveTextContent("routingPage.step.context");
   expect(status).not.toHaveTextContent("routingPage.seatQuota");
 });
@@ -657,6 +751,7 @@ it("resolves a renamed supplier's icon by its public identity while retaining ex
   show({
     row: {
       ...row,
+      steps: [attempt(0)],
       candidates: [
         {
           ...row.candidates[0],
@@ -691,7 +786,10 @@ it.each(["responsive", "compact"] as const)(
       providerName: "Synthetic relay",
       model: "shared-model",
     }));
-    show({ layout, row: { ...row, candidates } });
+    show({
+      layout,
+      row: { ...row, candidates, steps: [attempt(0), attempt(1)] },
+    });
     const seats = document.querySelectorAll(".rt-accts li");
     expect(seats).toHaveLength(2);
     candidates.forEach((candidate, index) => {
@@ -706,6 +804,7 @@ it("uses the public supplier ID when a configured name is duplicated outside the
   show({
     row: {
       ...row,
+      steps: [attempt(0)],
       candidates: [
         {
           providerId: "internal-execution-owner",
@@ -748,7 +847,7 @@ it("uses the public supplier ID when a configured name is duplicated outside the
 it("does not treat one supplier's models, effort variants or execution identities as duplicate providers", () => {
   show({
     row: {
-      ...row,
+      ...allSeatsRow,
       candidates: ["model-a", "model-b", "model-b"].map((model, index) => ({
         providerId: `execution-owner-${index}`,
         sourceProviderId: "supplier-a",
@@ -777,6 +876,7 @@ it("does not treat one supplier's models, effort variants or execution identitie
 it("distinguishes same-named providers across concurrent requests", () => {
   const older: RoutingTrace = {
     ...row,
+    steps: [attempt(0)],
     candidates: [
       {
         providerId: "supplier-a",
@@ -812,7 +912,7 @@ it("distinguishes same-named providers across concurrent requests", () => {
 it("preserves configured account and key labels when their providers have duplicate names", () => {
   show({
     row: {
-      ...row,
+      ...allSeatsRow,
       candidates: row.candidates.map((candidate, index) => ({
         ...candidate,
         providerName: "Synthetic relay",
@@ -820,6 +920,7 @@ it("preserves configured account and key labels when their providers have duplic
       })),
     },
   });
+  expect(document.querySelectorAll(".rt-accts .who")).toHaveLength(3);
   for (const [index, label] of [
     ...document.querySelectorAll(".rt-accts .who"),
   ].entries()) {

@@ -36,9 +36,10 @@ navigation, and reduced-motion settings suppress control and stage movement.
   a newer request arrives. Up to four recorded Agents share the stage; identical
   candidate seats share one branch, matched by provider, account, model and effort.
   Workspace Agent names wrap rather than truncate. Candidate cards omit the
-  leading status dot. While a card shows the responding state, a thin outline
-  expands outward and fades without waiting for first content. Reduced motion
-  keeps only the static border highlight. Quota indicators are unchanged.
+  leading status dot. While a card shows the responding state, its fixed outline
+  pulses between a muted accent and a saturated violet-tinted accent without
+  waiting for first content. Reduced motion keeps a static accent border.
+  Quota indicators are unchanged.
   The workspace creates one source card per recorded Agent ID and gives active
   sources priority. Each Agent's latest completion can linger for 12 seconds,
   measured from finish time. The stage keeps the latest recorded request as
@@ -78,10 +79,12 @@ navigation, and reduced-motion settings suppress control and stage movement.
   nodes or branches. Before any request, the stage shows a generic robot icon, Agent label and
   empty placeholder. A single instruction sits beneath the waiting heading;
   the footer contains only the aligned counters until a request has a status.
-  A direct request has only its recorded destination; a group retains every
-  recorded candidate, including untried fallbacks. A request that fails before
-  recording any candidates shows its failure state and status without borrowing
-  providers from configuration or earlier requests.
+  Both stages draw only destinations referenced by a recorded `attempt` step.
+  Untried candidates and destinations skipped before dispatch are not drawn.
+  Attempted fallbacks remain visible with their outcomes, and packet paths retain
+  the original trace indices. A request that fails before any attempt shows its
+  failure state and status without borrowing providers from configuration or
+  earlier requests.
   The live selected destination receives the Agent's color;
   moving paths and packets follow actual attempts and fallback decisions. A solid
   point travels to the provider and waits for completion; a hollow ring returns
@@ -102,7 +105,7 @@ navigation, and reduced-motion settings suppress control and stage movement.
   Finished players are removed once the return ends and stay finished on
   subsequent polls. Newly completed long requests use their finish time for
   admission. Recent workspace source cards can appear with stationary paths
-  on first load, including the candidates from those recorded requests.
+  on first load, including only the attempted destinations from those requests.
   Completed requests have stationary paths. Listener and strategy details remain
   on the gateway's tooltip, and branch status appears on hover or keyboard focus.
   Client and provider lists have bounded scrolling, and paths are recalculated
