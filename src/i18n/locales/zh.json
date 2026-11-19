@@ -5522,7 +5522,7 @@
     "importLabel": "路由组 JSON",
     "reviewImport": "导入",
     "invalidImport": "无法导入此路由组。请检查成员的供应商和模型；不支持的路由选项需要明确移除。",
-    "templateHint": "选择模板后，可以检查和修改预填的模型与规则，再保存。",
+    "templateHint": "选择模板后，可以检查和调整推荐的模型及顺序，再保存。",
     "metric": {
       "duration": "耗时",
       "ttft": "首 Token",

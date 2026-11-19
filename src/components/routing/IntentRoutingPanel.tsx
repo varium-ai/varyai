@@ -1075,694 +1075,711 @@ export function IntentRoutingPanel({
             manualSelect(draft, (manualMemberId) =>
               edit({ ...draft, manualMemberId }),
             )}
-          <details key={draft.id} className="rt-form-advanced">
-            <summary>
-              <ChevronDown
-                className="rt-advanced-chevron"
-                size={13}
-                aria-hidden
-              />
-              <span>{t("intentRouting.advancedSettings")}</span>
-            </summary>
-            <div className="rt-advanced-fields">
-              <div className="rt-edit-patterns" data-routing-field="patterns">
-                <span>{t("intentRouting.matchPatterns")}</span>
-                <div className="rt-patterns">
-                  <div className="rt-pattern-list">
-                    {(draft.match ?? []).map((pattern) => (
-                      <div key={pattern} className="rt-pattern-row">
-                        <code>{pattern}</code>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={pending}
-                          aria-label={`${t("intentRouting.removePattern")} ${pattern}`}
-                          onClick={() =>
-                            edit({
-                              ...draft,
-                              match: draft.match?.filter(
-                                (value) => value !== pattern,
-                              ),
-                              manualMemberId:
-                                (draft.match?.length ?? 0) <= 1 &&
-                                draft.manualMemberId?.startsWith("match-")
-                                  ? undefined
-                                  : draft.manualMemberId,
-                              off:
-                                (draft.match?.length ?? 0) > 1
-                                  ? draft.off
-                                  : draft.off?.filter((id) =>
-                                      draft.members.some(
-                                        (member) => member.id === id,
-                                      ),
-                                    ),
-                            })
-                          }
-                        >
-                          {t("common.delete")}
-                        </Button>
-                      </div>
-                    ))}
-                    <div className="rt-pattern-add">
-                      <input
-                        type="text"
-                        className="rg-input"
-                        autoComplete="off"
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        disabled={pending || (draft.match?.length ?? 0) >= 32}
-                        aria-label={t("intentRouting.matchPatterns")}
-                        placeholder="openrouter/*:free"
-                        value={patternInput}
-                        onChange={(event) =>
-                          setPatternInput(event.target.value)
-                        }
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            addPattern();
-                          }
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="rg-text"
-                        disabled={
-                          pending ||
-                          !patternInput.trim() ||
-                          (draft.match?.length ?? 0) >= 32
-                        }
-                        onClick={addPattern}
-                      >
-                        {t("intentRouting.addPattern")}
-                      </button>
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("intentRouting.matchPatternsHelp")}
-                  </p>
-                  {patternsChanged &&
-                  draft.match?.length &&
-                  (matches.isPending || matches.isError) ? (
-                    <p role={matches.isError ? "alert" : "status"}>
-                      {t(
-                        matches.isError
-                          ? "intentRouting.failed"
-                          : "common.loading",
-                      )}
-                    </p>
-                  ) : null}
-                  {!!matchedMembers.length && (
-                    <div
-                      className="rt-pattern-matches"
-                      aria-label={t("intentRouting.matchedModels")}
-                    >
-                      {matchedMembers.map((member) => (
-                        <div key={member.id}>
-                          <Switch
-                            className="mp-switch"
+          {!draftTemplate && (
+            <details key={draft.id} className="rt-form-advanced">
+              <summary>
+                <ChevronDown
+                  className="rt-advanced-chevron"
+                  size={13}
+                  aria-hidden
+                />
+                <span>{t("intentRouting.advancedSettings")}</span>
+              </summary>
+              <div className="rt-advanced-fields">
+                <div className="rt-edit-patterns" data-routing-field="patterns">
+                  <span>{t("intentRouting.matchPatterns")}</span>
+                  <div className="rt-patterns">
+                    <div className="rt-pattern-list">
+                      {(draft.match ?? []).map((pattern) => (
+                        <div key={pattern} className="rt-pattern-row">
+                          <code>{pattern}</code>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
                             disabled={pending}
-                            aria-label={`${t("intentRouting.memberEnabled")} ${member.modelId}`}
-                            checked={!draft.off?.includes(member.id)}
-                            onCheckedChange={(enabled) =>
+                            aria-label={`${t("intentRouting.removePattern")} ${pattern}`}
+                            onClick={() =>
                               edit({
                                 ...draft,
-                                off: enabled
-                                  ? (draft.off ?? []).filter(
-                                      (id) => id !== member.id,
-                                    )
-                                  : [...(draft.off ?? []), member.id],
+                                match: draft.match?.filter(
+                                  (value) => value !== pattern,
+                                ),
+                                manualMemberId:
+                                  (draft.match?.length ?? 0) <= 1 &&
+                                  draft.manualMemberId?.startsWith("match-")
+                                    ? undefined
+                                    : draft.manualMemberId,
+                                off:
+                                  (draft.match?.length ?? 0) > 1
+                                    ? draft.off
+                                    : draft.off?.filter((id) =>
+                                        draft.members.some(
+                                          (member) => member.id === id,
+                                        ),
+                                      ),
                               })
                             }
-                          />
-                          <code>
-                            <AccountLabel>{`${member.providerId}/${member.modelId}`}</AccountLabel>
-                          </code>
-                          <small>{t("intentRouting.byPattern")}</small>
+                          >
+                            {t("common.delete")}
+                          </Button>
                         </div>
                       ))}
+                      <div className="rt-pattern-add">
+                        <input
+                          type="text"
+                          className="rg-input"
+                          autoComplete="off"
+                          autoCapitalize="off"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          disabled={pending || (draft.match?.length ?? 0) >= 32}
+                          aria-label={t("intentRouting.matchPatterns")}
+                          placeholder="openrouter/*:free"
+                          value={patternInput}
+                          onChange={(event) =>
+                            setPatternInput(event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              addPattern();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="rg-text"
+                          disabled={
+                            pending ||
+                            !patternInput.trim() ||
+                            (draft.match?.length ?? 0) >= 32
+                          }
+                          onClick={addPattern}
+                        >
+                          {t("intentRouting.addPattern")}
+                        </button>
+                      </div>
                     </div>
-                  )}
-                </div>
-              </div>
-              <div className="rt-setting-row" data-routing-field="model-lists">
-                <span>{t("intentRouting.modelLists")}</span>
-                <div className="rt-field-content">
-                  <RoutingSegments
-                    label={t("intentRouting.modelLists")}
-                    value={draft.unlists ? "group" : "all"}
-                    disabled={pending}
-                    options={[
-                      { value: "all", label: t("intentRouting.listModelsToo") },
-                      {
-                        value: "group",
-                        label: t("intentRouting.listGroupOnly"),
-                      },
-                    ]}
-                    onChange={(value) =>
-                      edit({ ...draft, unlists: value === "group" })
-                    }
-                  />
-                  <p className="rt-field-hint">
-                    {t(
-                      draft.unlists
-                        ? "intentRouting.unlistsHelp"
-                        : "intentRouting.listModelsHelp",
+                    <p className="text-xs text-muted-foreground">
+                      {t("intentRouting.matchPatternsHelp")}
+                    </p>
+                    {patternsChanged &&
+                    draft.match?.length &&
+                    (matches.isPending || matches.isError) ? (
+                      <p role={matches.isError ? "alert" : "status"}>
+                        {t(
+                          matches.isError
+                            ? "intentRouting.failed"
+                            : "common.loading",
+                        )}
+                      </p>
+                    ) : null}
+                    {!!matchedMembers.length && (
+                      <div
+                        className="rt-pattern-matches"
+                        aria-label={t("intentRouting.matchedModels")}
+                      >
+                        {matchedMembers.map((member) => (
+                          <div key={member.id}>
+                            <Switch
+                              className="mp-switch"
+                              disabled={pending}
+                              aria-label={`${t("intentRouting.memberEnabled")} ${member.modelId}`}
+                              checked={!draft.off?.includes(member.id)}
+                              onCheckedChange={(enabled) =>
+                                edit({
+                                  ...draft,
+                                  off: enabled
+                                    ? (draft.off ?? []).filter(
+                                        (id) => id !== member.id,
+                                      )
+                                    : [...(draft.off ?? []), member.id],
+                                })
+                              }
+                            />
+                            <code>
+                              <AccountLabel>{`${member.providerId}/${member.modelId}`}</AccountLabel>
+                            </code>
+                            <small>{t("intentRouting.byPattern")}</small>
+                          </div>
+                        ))}
+                      </div>
                     )}
-                  </p>
+                  </div>
                 </div>
-              </div>
-              {sinkable(draft.routing) && (
                 <div
                   className="rt-setting-row"
-                  data-routing-field="rate-limits"
+                  data-routing-field="model-lists"
                 >
-                  <span>{t("intentRouting.sink")}</span>
+                  <span>{t("intentRouting.modelLists")}</span>
                   <div className="rt-field-content">
                     <RoutingSegments
-                      label={t("intentRouting.sink")}
-                      value={draft.sink ? "back" : "keep"}
+                      label={t("intentRouting.modelLists")}
+                      value={draft.unlists ? "group" : "all"}
                       disabled={pending}
                       options={[
-                        { value: "keep", label: t("intentRouting.sinkKeep") },
-                        { value: "back", label: t("intentRouting.sinkBack") },
+                        {
+                          value: "all",
+                          label: t("intentRouting.listModelsToo"),
+                        },
+                        {
+                          value: "group",
+                          label: t("intentRouting.listGroupOnly"),
+                        },
                       ]}
                       onChange={(value) =>
-                        edit({ ...draft, sink: value === "back" })
+                        edit({ ...draft, unlists: value === "group" })
                       }
                     />
                     <p className="rt-field-hint">
                       {t(
-                        draft.sink
-                          ? "intentRouting.sinkHelp"
-                          : "intentRouting.sinkKeepHelp",
+                        draft.unlists
+                          ? "intentRouting.unlistsHelp"
+                          : "intentRouting.listModelsHelp",
                       )}
                     </p>
                   </div>
                 </div>
-              )}
-              <div className="rt-edit-routing">
-                <RoutingExecutionSettings
-                  key={draft.id}
-                  group={draft}
-                  disabled={pending}
-                  memberWindows={draft.members.flatMap((member) => {
-                    const capacity = providers.data
-                      ?.find((provider) => provider.id === member.providerId)
-                      ?.models?.find(
-                        (model) => model.id === member.modelId,
-                      )?.contextWindow;
-                    return capacity ? [capacity] : [];
-                  })}
-                  onChange={edit}
-                />
-                <fieldset
-                  disabled={draft.routing === "manual"}
-                  className="min-w-0 space-y-5 disabled:opacity-60"
-                >
-                  {draft.routing === "manual" && (
-                    <p className="text-xs text-muted-foreground">
-                      {t("intentRouting.manualPaused")}
-                    </p>
-                  )}
-                  <div className="rt-edit-rules">
-                    <h4 className="font-medium">{t("intentRouting.rules")}</h4>
-                    <RoutingRulesEditor
-                      rules={draft.rules}
-                      members={draft.members}
-                      disabled={pending || draft.routing === "manual"}
-                      onChange={(rules) => edit({ ...draft, rules })}
-                    />
+                {sinkable(draft.routing) && (
+                  <div
+                    className="rt-setting-row"
+                    data-routing-field="rate-limits"
+                  >
+                    <span>{t("intentRouting.sink")}</span>
+                    <div className="rt-field-content">
+                      <RoutingSegments
+                        label={t("intentRouting.sink")}
+                        value={draft.sink ? "back" : "keep"}
+                        disabled={pending}
+                        options={[
+                          { value: "keep", label: t("intentRouting.sinkKeep") },
+                          { value: "back", label: t("intentRouting.sinkBack") },
+                        ]}
+                        onChange={(value) =>
+                          edit({ ...draft, sink: value === "back" })
+                        }
+                      />
+                      <p className="rt-field-hint">
+                        {t(
+                          draft.sink
+                            ? "intentRouting.sinkHelp"
+                            : "intentRouting.sinkKeepHelp",
+                        )}
+                      </p>
+                    </div>
                   </div>
-                  {(draft.classifierTarget ||
-                    draft.rules.some(
-                      (rule) => !rule.pause && rule.description.trim(),
-                    )) && (
-                    <div className="rt-edit-classifier">
-                      <h4>{t("routingPage.intentToldBy")}</h4>
-                      <div className="rt-classifier-pick">
-                        <Popover
-                          open={pickingClassifier}
-                          onOpenChange={setPickingClassifier}
-                        >
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className={`rt-cond${draft.classifierTarget ? " on" : ""}`}
-                              disabled={pending || draft.routing === "manual"}
-                              aria-label={t("routingPage.intentToldBy")}
-                            >
-                              <AccountLabel>
-                                {classifierName
-                                  ? `${classifierName.name} · ${classifierName.group}`
-                                  : draft.classifierTarget
-                                    ? `${draft.classifierTarget.modelId} · ${providers.data?.find((provider) => provider.id === draft.classifierTarget?.providerId)?.name ?? draft.classifierTarget.providerId}`
-                                    : t("routingPage.chooseClassifier")}
-                              </AccountLabel>
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="mp-model-popover rt-form-theme"
-                            align="start"
+                )}
+                <div className="rt-edit-routing">
+                  <RoutingExecutionSettings
+                    key={draft.id}
+                    group={draft}
+                    disabled={pending}
+                    memberWindows={draft.members.flatMap((member) => {
+                      const capacity = providers.data
+                        ?.find((provider) => provider.id === member.providerId)
+                        ?.models?.find(
+                          (model) => model.id === member.modelId,
+                        )?.contextWindow;
+                      return capacity ? [capacity] : [];
+                    })}
+                    onChange={edit}
+                  />
+                  <fieldset
+                    disabled={draft.routing === "manual"}
+                    className="min-w-0 space-y-5 disabled:opacity-60"
+                  >
+                    {draft.routing === "manual" && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("intentRouting.manualPaused")}
+                      </p>
+                    )}
+                    <div className="rt-edit-rules">
+                      <h4 className="font-medium">
+                        {t("intentRouting.rules")}
+                      </h4>
+                      <RoutingRulesEditor
+                        rules={draft.rules}
+                        members={draft.members}
+                        disabled={pending || draft.routing === "manual"}
+                        onChange={(rules) => edit({ ...draft, rules })}
+                      />
+                    </div>
+                    {(draft.classifierTarget ||
+                      draft.rules.some(
+                        (rule) => !rule.pause && rule.description.trim(),
+                      )) && (
+                      <div className="rt-edit-classifier">
+                        <h4>{t("routingPage.intentToldBy")}</h4>
+                        <div className="rt-classifier-pick">
+                          <Popover
+                            open={pickingClassifier}
+                            onOpenChange={setPickingClassifier}
                           >
-                            <SharedModelPicker
-                              models={classifierModels}
-                              selected={
-                                selectedClassifier ? [selectedClassifier] : []
-                              }
-                              onPick={(id) => {
-                                const chosen = providers.data
-                                  ?.filter(
-                                    (provider) => provider.classifierEligible,
-                                  )
-                                  .flatMap((provider) =>
-                                    (provider.models ?? []).map((model) => ({
-                                      id: JSON.stringify([
-                                        provider.id,
-                                        model.id,
-                                      ]),
-                                      providerId: provider.id,
-                                      modelId: model.id,
-                                    })),
-                                  )
-                                  .find((model) => model.id === id);
-                                if (
-                                  chosen &&
-                                  !pending &&
-                                  draft.routing !== "manual"
-                                ) {
-                                  edit({
-                                    ...draft,
-                                    intentRecognitionEnabled: true,
-                                    classifierTarget: {
-                                      providerId: chosen.providerId,
-                                      modelId: chosen.modelId,
-                                    },
-                                  });
-                                  setPickingClassifier(false);
-                                }
-                              }}
-                            />
-                            {draft.classifierTarget && (
+                            <PopoverTrigger asChild>
                               <button
                                 type="button"
-                                className="rt-clear-classifier"
-                                onClick={() => {
-                                  edit({
-                                    ...draft,
-                                    classifierTarget: null,
-                                    intentRecognitionEnabled: false,
-                                  });
-                                  setPickingClassifier(false);
-                                }}
+                                className={`rt-cond${draft.classifierTarget ? " on" : ""}`}
+                                disabled={pending || draft.routing === "manual"}
+                                aria-label={t("routingPage.intentToldBy")}
                               >
-                                {t("intentRouting.none")}
+                                <AccountLabel>
+                                  {classifierName
+                                    ? `${classifierName.name} · ${classifierName.group}`
+                                    : draft.classifierTarget
+                                      ? `${draft.classifierTarget.modelId} · ${providers.data?.find((provider) => provider.id === draft.classifierTarget?.providerId)?.name ?? draft.classifierTarget.providerId}`
+                                      : t("routingPage.chooseClassifier")}
+                                </AccountLabel>
                               </button>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                        <span
-                          className="rt-info"
-                          tabIndex={0}
-                          role="img"
-                          aria-label={t("intentRouting.classifierNotice")}
-                          title={t("intentRouting.classifierNotice")}
-                        >
-                          <Info size={14} />
-                        </span>
-                      </div>
-                      <details className="rt-classifier-advanced">
-                        <summary>{t("routingPage.classifierAdvanced")}</summary>
-                        <div>
-                          <label className="block space-y-1 text-sm">
-                            {t("intentRouting.classifierProvider")}
-                            <Select
-                              disabled={pending}
-                              value={
-                                draft.classifierTarget
-                                  ? `provider:${draft.classifierTarget.providerId}`
-                                  : "none"
-                              }
-                              onValueChange={(value) =>
-                                edit({
-                                  ...draft,
-                                  intentRecognitionEnabled:
-                                    value !== "none" &&
-                                    !!draft.classifierTarget?.modelId.trim(),
-                                  classifierTarget:
-                                    value !== "none"
-                                      ? {
-                                          providerId: value.slice(
-                                            "provider:".length,
-                                          ),
-                                          modelId:
-                                            draft.classifierTarget?.modelId ??
-                                            "",
-                                        }
-                                      : null,
-                                })
-                              }
+                            </PopoverTrigger>
+                            <PopoverContent
+                              className="mp-model-popover rt-form-theme"
+                              align="start"
                             >
-                              <SelectTrigger
-                                aria-label={t(
-                                  "intentRouting.classifierProvider",
-                                )}
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="none">
+                              <SharedModelPicker
+                                models={classifierModels}
+                                selected={
+                                  selectedClassifier ? [selectedClassifier] : []
+                                }
+                                onPick={(id) => {
+                                  const chosen = providers.data
+                                    ?.filter(
+                                      (provider) => provider.classifierEligible,
+                                    )
+                                    .flatMap((provider) =>
+                                      (provider.models ?? []).map((model) => ({
+                                        id: JSON.stringify([
+                                          provider.id,
+                                          model.id,
+                                        ]),
+                                        providerId: provider.id,
+                                        modelId: model.id,
+                                      })),
+                                    )
+                                    .find((model) => model.id === id);
+                                  if (
+                                    chosen &&
+                                    !pending &&
+                                    draft.routing !== "manual"
+                                  ) {
+                                    edit({
+                                      ...draft,
+                                      intentRecognitionEnabled: true,
+                                      classifierTarget: {
+                                        providerId: chosen.providerId,
+                                        modelId: chosen.modelId,
+                                      },
+                                    });
+                                    setPickingClassifier(false);
+                                  }
+                                }}
+                              />
+                              {draft.classifierTarget && (
+                                <button
+                                  type="button"
+                                  className="rt-clear-classifier"
+                                  onClick={() => {
+                                    edit({
+                                      ...draft,
+                                      classifierTarget: null,
+                                      intentRecognitionEnabled: false,
+                                    });
+                                    setPickingClassifier(false);
+                                  }}
+                                >
                                   {t("intentRouting.none")}
-                                </SelectItem>
-                                {draft.classifierTarget &&
-                                  !providers.data?.some(
-                                    (p) =>
-                                      p.id ===
-                                        draft.classifierTarget?.providerId &&
-                                      p.classifierEligible,
-                                  ) && (
-                                    <SelectItem
-                                      value={`provider:${draft.classifierTarget.providerId}`}
-                                    >
-                                      {t("intentRouting.providerUnavailable")}
-                                    </SelectItem>
-                                  )}
-                                {providers.data
-                                  ?.filter((p) => p.classifierEligible)
-                                  .map((p) => (
-                                    <SelectItem
-                                      key={p.id}
-                                      value={`provider:${p.id}`}
-                                    >
-                                      <AccountLabel>{p.name}</AccountLabel>
-                                      {p.appType ? ` · ${p.appType}` : ""}
-                                    </SelectItem>
-                                  ))}
-                              </SelectContent>
-                            </Select>
-                          </label>
-                          {draft.classifierTarget && (
+                                </button>
+                              )}
+                            </PopoverContent>
+                          </Popover>
+                          <span
+                            className="rt-info"
+                            tabIndex={0}
+                            role="img"
+                            aria-label={t("intentRouting.classifierNotice")}
+                            title={t("intentRouting.classifierNotice")}
+                          >
+                            <Info size={14} />
+                          </span>
+                        </div>
+                        <details className="rt-classifier-advanced">
+                          <summary>
+                            {t("routingPage.classifierAdvanced")}
+                          </summary>
+                          <div>
                             <label className="block space-y-1 text-sm">
-                              {t("intentRouting.classifierModel")}
-                              <Input
-                                required
-                                maxLength={200}
-                                value={draft.classifierTarget.modelId}
-                                onChange={(e) =>
+                              {t("intentRouting.classifierProvider")}
+                              <Select
+                                disabled={pending}
+                                value={
+                                  draft.classifierTarget
+                                    ? `provider:${draft.classifierTarget.providerId}`
+                                    : "none"
+                                }
+                                onValueChange={(value) =>
                                   edit({
                                     ...draft,
                                     intentRecognitionEnabled:
-                                      !!e.target.value.trim(),
-                                    classifierTarget: {
-                                      ...draft.classifierTarget!,
-                                      modelId: e.target.value,
-                                    },
+                                      value !== "none" &&
+                                      !!draft.classifierTarget?.modelId.trim(),
+                                    classifierTarget:
+                                      value !== "none"
+                                        ? {
+                                            providerId: value.slice(
+                                              "provider:".length,
+                                            ),
+                                            modelId:
+                                              draft.classifierTarget?.modelId ??
+                                              "",
+                                          }
+                                        : null,
+                                  })
+                                }
+                              >
+                                <SelectTrigger
+                                  aria-label={t(
+                                    "intentRouting.classifierProvider",
+                                  )}
+                                >
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">
+                                    {t("intentRouting.none")}
+                                  </SelectItem>
+                                  {draft.classifierTarget &&
+                                    !providers.data?.some(
+                                      (p) =>
+                                        p.id ===
+                                          draft.classifierTarget?.providerId &&
+                                        p.classifierEligible,
+                                    ) && (
+                                      <SelectItem
+                                        value={`provider:${draft.classifierTarget.providerId}`}
+                                      >
+                                        {t("intentRouting.providerUnavailable")}
+                                      </SelectItem>
+                                    )}
+                                  {providers.data
+                                    ?.filter((p) => p.classifierEligible)
+                                    .map((p) => (
+                                      <SelectItem
+                                        key={p.id}
+                                        value={`provider:${p.id}`}
+                                      >
+                                        <AccountLabel>{p.name}</AccountLabel>
+                                        {p.appType ? ` · ${p.appType}` : ""}
+                                      </SelectItem>
+                                    ))}
+                                </SelectContent>
+                              </Select>
+                            </label>
+                            {draft.classifierTarget && (
+                              <label className="block space-y-1 text-sm">
+                                {t("intentRouting.classifierModel")}
+                                <Input
+                                  required
+                                  maxLength={200}
+                                  value={draft.classifierTarget.modelId}
+                                  onChange={(e) =>
+                                    edit({
+                                      ...draft,
+                                      intentRecognitionEnabled:
+                                        !!e.target.value.trim(),
+                                      classifierTarget: {
+                                        ...draft.classifierTarget!,
+                                        modelId: e.target.value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </label>
+                            )}
+                            <label className="block space-y-1 text-sm">
+                              {t("intentRouting.budget")}
+                              <Input
+                                type="number"
+                                required
+                                min={500}
+                                max={MAX_CLASSIFICATION_BUDGET_MS}
+                                step={1}
+                                value={draft.classificationBudgetMs}
+                                onChange={(e) =>
+                                  edit({
+                                    ...draft,
+                                    classificationBudgetMs: Number(
+                                      e.target.value,
+                                    ),
                                   })
                                 }
                               />
                             </label>
-                          )}
-                          <label className="block space-y-1 text-sm">
-                            {t("intentRouting.budget")}
-                            <Input
-                              type="number"
-                              required
-                              min={500}
-                              max={MAX_CLASSIFICATION_BUDGET_MS}
-                              step={1}
-                              value={draft.classificationBudgetMs}
-                              onChange={(e) =>
-                                edit({
-                                  ...draft,
-                                  classificationBudgetMs: Number(
-                                    e.target.value,
-                                  ),
-                                })
+                          </div>
+                        </details>
+                      </div>
+                    )}
+                    <details className="rt-diagnostics">
+                      <summary>{t("intentRouting.trialTitle")}</summary>
+                      <p className="text-xs text-muted-foreground">
+                        {t("intentRouting.trialNotice")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        <AccountLabel>
+                          {providers.data?.find(
+                            (p) => p.id === draft.classifierTarget?.providerId,
+                          )?.name || t("intentRouting.none")}
+                        </AccountLabel>
+                        {draft.classifierTarget &&
+                          ` / ${draft.classifierTarget.modelId}`}
+                      </p>
+                      <label className="block space-y-1 text-sm">
+                        {t("intentRouting.trialText")}
+                        <Textarea
+                          maxLength={16000}
+                          value={trialText}
+                          onChange={(event) => {
+                            invalidatePreview();
+                            setTrialConsent(false);
+                            setTrialText(event.target.value);
+                          }}
+                        />
+                      </label>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={trialConsent}
+                          onChange={(event) => {
+                            invalidatePreview();
+                            setTrialConsent(event.target.checked);
+                          }}
+                        />
+                        {t("intentRouting.trialConsent")}
+                      </label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          !valid ||
+                          draft.routing === "manual" ||
+                          !draft.classifierTarget ||
+                          !trialText.trim() ||
+                          !trialConsent ||
+                          trialPending
+                        }
+                        onClick={() => void runTrial()}
+                      >
+                        {t(
+                          trialPending
+                            ? "common.loading"
+                            : "intentRouting.runTrial",
+                        )}
+                      </Button>
+                      {trialResult && (
+                        <div role="status" className="space-y-2 text-sm">
+                          <p>
+                            {t(
+                              trialResult.outcome === "timeout" &&
+                                draft.classificationBudgetMs >=
+                                  MAX_CLASSIFICATION_BUDGET_MS
+                                ? "intentRouting.trialOutcome.timeoutAtLimit"
+                                : `intentRouting.trialOutcome.${trialResult.outcome}`,
+                              { budgetMs: draft.classificationBudgetMs },
+                            )}
+                          </p>
+                          {trialResult.intentId && (
+                            <p>
+                              {
+                                draft.rules.find(
+                                  (r) => r.id === trialResult.intentId,
+                                )?.name
                               }
-                            />
-                          </label>
+                            </p>
+                          )}
+                          <ol
+                            aria-label={t("intentRouting.plan")}
+                            className="space-y-1"
+                          >
+                            {trialResult.plan.candidates.map(
+                              (member, index) => (
+                                <li key={member.id} className="break-all">
+                                  {index + 1}.{" "}
+                                  <AccountLabel>
+                                    {providers.data?.find(
+                                      (p) => p.id === member.providerId,
+                                    )?.name || member.providerId}
+                                  </AccountLabel>{" "}
+                                  / {member.modelId}
+                                </li>
+                              ),
+                            )}
+                          </ol>
                         </div>
-                      </details>
-                    </div>
-                  )}
+                      )}
+                    </details>
+                  </fieldset>
                   <details className="rt-diagnostics">
-                    <summary>{t("intentRouting.trialTitle")}</summary>
+                    <summary>{t("intentRouting.offlineTitle")}</summary>
                     <p className="text-xs text-muted-foreground">
-                      {t("intentRouting.trialNotice")}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      <AccountLabel>
-                        {providers.data?.find(
-                          (p) => p.id === draft.classifierTarget?.providerId,
-                        )?.name || t("intentRouting.none")}
-                      </AccountLabel>
-                      {draft.classifierTarget &&
-                        ` / ${draft.classifierTarget.modelId}`}
+                      {t("intentRouting.offlineNotice")}
                     </p>
                     <label className="block space-y-1 text-sm">
-                      {t("intentRouting.trialText")}
+                      {t("intentRouting.classificationJson")}
                       <Textarea
-                        maxLength={16000}
-                        value={trialText}
-                        onChange={(event) => {
+                        maxLength={4096}
+                        value={classification}
+                        onChange={(e) => {
                           invalidatePreview();
-                          setTrialConsent(false);
-                          setTrialText(event.target.value);
+                          setClassification(e.target.value);
                         }}
                       />
-                    </label>
-                    <label className="flex items-start gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={trialConsent}
-                        onChange={(event) => {
-                          invalidatePreview();
-                          setTrialConsent(event.target.checked);
-                        }}
-                      />
-                      {t("intentRouting.trialConsent")}
                     </label>
                     <Button
                       type="button"
                       variant="outline"
-                      disabled={
-                        !valid ||
-                        draft.routing === "manual" ||
-                        !draft.classifierTarget ||
-                        !trialText.trim() ||
-                        !trialConsent ||
-                        trialPending
-                      }
-                      onClick={() => void runTrial()}
+                      disabled={!valid || previewPending}
+                      onClick={() => void inspectPlan()}
                     >
-                      {t(
-                        trialPending
-                          ? "common.loading"
-                          : "intentRouting.runTrial",
-                      )}
+                      {t("intentRouting.preview")}
                     </Button>
-                    {trialResult && (
-                      <div role="status" className="space-y-2 text-sm">
-                        <p>
-                          {t(
-                            trialResult.outcome === "timeout" &&
-                              draft.classificationBudgetMs >=
-                                MAX_CLASSIFICATION_BUDGET_MS
-                              ? "intentRouting.trialOutcome.timeoutAtLimit"
-                              : `intentRouting.trialOutcome.${trialResult.outcome}`,
-                            { budgetMs: draft.classificationBudgetMs },
-                          )}
-                        </p>
-                        {trialResult.intentId && (
-                          <p>
-                            {
-                              draft.rules.find(
-                                (r) => r.id === trialResult.intentId,
-                              )?.name
-                            }
-                          </p>
-                        )}
-                        <ol
-                          aria-label={t("intentRouting.plan")}
-                          className="space-y-1"
-                        >
-                          {trialResult.plan.candidates.map((member, index) => (
-                            <li key={member.id} className="break-all">
-                              {index + 1}.{" "}
-                              <AccountLabel>
-                                {providers.data?.find(
-                                  (p) => p.id === member.providerId,
-                                )?.name || member.providerId}
-                              </AccountLabel>{" "}
-                              / {member.modelId}
-                            </li>
-                          ))}
-                        </ol>
-                      </div>
+                    {preview && (
+                      <ol
+                        className="space-y-1 text-sm"
+                        aria-label={t("intentRouting.plan")}
+                      >
+                        {preview.candidates.map((m, index) => (
+                          <li key={m.id} className="break-all">
+                            {index + 1}.{" "}
+                            <AccountLabel>
+                              {providers.data?.find(
+                                (p) => p.id === m.providerId,
+                              )?.name || m.providerId}
+                            </AccountLabel>{" "}
+                            / {m.modelId}
+                          </li>
+                        ))}
+                      </ol>
                     )}
                   </details>
-                </fieldset>
-                <details className="rt-diagnostics">
-                  <summary>{t("intentRouting.offlineTitle")}</summary>
-                  <p className="text-xs text-muted-foreground">
-                    {t("intentRouting.offlineNotice")}
-                  </p>
-                  <label className="block space-y-1 text-sm">
-                    {t("intentRouting.classificationJson")}
-                    <Textarea
-                      maxLength={4096}
-                      value={classification}
-                      onChange={(e) => {
-                        invalidatePreview();
-                        setClassification(e.target.value);
-                      }}
-                    />
-                  </label>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={!valid || previewPending}
-                    onClick={() => void inspectPlan()}
-                  >
-                    {t("intentRouting.preview")}
-                  </Button>
-                  {preview && (
-                    <ol
-                      className="space-y-1 text-sm"
-                      aria-label={t("intentRouting.plan")}
+                </div>
+                <div className="rt-edit-levels">
+                  {" "}
+                  <div className="rt-reference-setting">
+                    <span id={`routing-levels-${draft.id}`}>
+                      {t("intentRouting.levels")}
+                    </span>
+                    <div
+                      className="rt-reference-seg"
+                      role="radiogroup"
+                      aria-labelledby={`routing-levels-${draft.id}`}
                     >
-                      {preview.candidates.map((m, index) => (
-                        <li key={m.id} className="break-all">
-                          {index + 1}.{" "}
-                          <AccountLabel>
-                            {providers.data?.find((p) => p.id === m.providerId)
-                              ?.name || m.providerId}
-                          </AccountLabel>{" "}
-                          / {m.modelId}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </details>
-              </div>
-              <div className="rt-edit-levels">
-                {" "}
-                <div className="rt-reference-setting">
-                  <span id={`routing-levels-${draft.id}`}>
-                    {t("intentRouting.levels")}
-                  </span>
-                  <div
-                    className="rt-reference-seg"
-                    role="radiogroup"
-                    aria-labelledby={`routing-levels-${draft.id}`}
-                  >
-                    {[false, true].map((own) => (
-                      <button
-                        key={String(own)}
-                        type="button"
-                        role="radio"
-                        aria-checked={!!draft.levels?.length === own}
-                        onClick={() =>
-                          edit({
-                            ...draft,
-                            levels: own ? ["low", "medium", "high"] : [],
-                          })
-                        }
-                      >
-                        {t(
-                          own
-                            ? "intentRouting.levelsNamed"
-                            : "intentRouting.levelsShared",
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                  {!!draft.levels?.length && (
-                    <div className="rt-reference-chips">
-                      {routingLevels.map((level) => (
+                      {[false, true].map((own) => (
                         <button
-                          key={level}
+                          key={String(own)}
                           type="button"
-                          aria-pressed={draft.levels?.includes(level)}
-                          disabled={
-                            draft.levels?.length === 1 &&
-                            draft.levels.includes(level)
-                          }
+                          role="radio"
+                          aria-checked={!!draft.levels?.length === own}
                           onClick={() =>
                             edit({
                               ...draft,
-                              levels: routingLevels.filter((value) =>
-                                value === level
-                                  ? !draft.levels?.includes(value)
-                                  : draft.levels?.includes(value),
-                              ),
+                              levels: own ? ["low", "medium", "high"] : [],
                             })
                           }
                         >
-                          {level}
+                          {t(
+                            own
+                              ? "intentRouting.levelsNamed"
+                              : "intentRouting.levelsShared",
+                          )}
                         </button>
                       ))}
                     </div>
-                  )}
-                  <p>{t("intentRouting.levelsHelp")}</p>
-                </div>
-              </div>
-              <details className="rt-edit-settings">
-                <summary className="cursor-pointer text-sm text-muted-foreground">
-                  {t("modelPicker.groupSettings")}
-                </summary>
-                <div className="mt-3 space-y-4">
-                  <div className="flex items-start justify-between gap-5">
-                    <div className="space-y-1">
-                      <label
-                        htmlFor={`routing-publication-${draft.id}`}
-                        className="text-sm font-medium"
-                      >
-                        {t("intentRouting.publishGateway")}
-                      </label>
-                      <p
-                        id={`routing-publication-help-${draft.id}`}
-                        className="text-xs text-muted-foreground"
-                      >
-                        {t("intentRouting.publishGatewayHelp")}
-                      </p>
-                    </div>
-                    <Switch
-                      className="mp-switch"
-                      id={`routing-publication-${draft.id}`}
-                      aria-describedby={`routing-publication-help-${draft.id}`}
-                      checked={draft.enabled}
-                      disabled={pending}
-                      onCheckedChange={(enabled) => edit({ ...draft, enabled })}
-                    />
+                    {!!draft.levels?.length && (
+                      <div className="rt-reference-chips">
+                        {routingLevels.map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            aria-pressed={draft.levels?.includes(level)}
+                            disabled={
+                              draft.levels?.length === 1 &&
+                              draft.levels.includes(level)
+                            }
+                            onClick={() =>
+                              edit({
+                                ...draft,
+                                levels: routingLevels.filter((value) =>
+                                  value === level
+                                    ? !draft.levels?.includes(value)
+                                    : draft.levels?.includes(value),
+                                ),
+                              })
+                            }
+                          >
+                            {level}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <p>{t("intentRouting.levelsHelp")}</p>
                   </div>
-                  <label className="block space-y-1 text-sm">
-                    {t("intentRouting.defaultTarget")}
-                    <Select
-                      disabled={pending}
-                      value={draft.defaultMemberId}
-                      onValueChange={(value) => {
-                        draftOrderEdited.current = true;
-                        edit({ ...draft, defaultMemberId: value });
-                      }}
-                    >
-                      <SelectTrigger
-                        aria-label={t("intentRouting.defaultTarget")}
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>{memberOptions}</SelectContent>
-                    </Select>
-                  </label>
-                  <p className="text-xs text-muted-foreground">
-                    {t("intentRouting.fallbackHelp")}
-                  </p>
                 </div>
-              </details>
-            </div>
-          </details>
+                <details className="rt-edit-settings">
+                  <summary className="cursor-pointer text-sm text-muted-foreground">
+                    {t("modelPicker.groupSettings")}
+                  </summary>
+                  <div className="mt-3 space-y-4">
+                    <div className="flex items-start justify-between gap-5">
+                      <div className="space-y-1">
+                        <label
+                          htmlFor={`routing-publication-${draft.id}`}
+                          className="text-sm font-medium"
+                        >
+                          {t("intentRouting.publishGateway")}
+                        </label>
+                        <p
+                          id={`routing-publication-help-${draft.id}`}
+                          className="text-xs text-muted-foreground"
+                        >
+                          {t("intentRouting.publishGatewayHelp")}
+                        </p>
+                      </div>
+                      <Switch
+                        className="mp-switch"
+                        id={`routing-publication-${draft.id}`}
+                        aria-describedby={`routing-publication-help-${draft.id}`}
+                        checked={draft.enabled}
+                        disabled={pending}
+                        onCheckedChange={(enabled) =>
+                          edit({ ...draft, enabled })
+                        }
+                      />
+                    </div>
+                    <label className="block space-y-1 text-sm">
+                      {t("intentRouting.defaultTarget")}
+                      <Select
+                        disabled={pending}
+                        value={draft.defaultMemberId}
+                        onValueChange={(value) => {
+                          draftOrderEdited.current = true;
+                          edit({ ...draft, defaultMemberId: value });
+                        }}
+                      >
+                        <SelectTrigger
+                          aria-label={t("intentRouting.defaultTarget")}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>{memberOptions}</SelectContent>
+                      </Select>
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      {t("intentRouting.fallbackHelp")}
+                    </p>
+                  </div>
+                </details>
+              </div>
+            </details>
+          )}
         </div>
       </fieldset>
     </form>

@@ -5449,7 +5449,7 @@
     "importLabel": "路由群組 JSON",
     "reviewImport": "匯入",
     "invalidImport": "無法匯入此群組。請檢查成員的供應商和模型；不支援的選項需要明確移除。",
-    "templateHint": "選擇範本後，可檢查及修改預填的模型與規則，再儲存。",
+    "templateHint": "選擇範本後，可檢查及調整推薦的模型與順序，再儲存。",
     "metric": {
       "duration": "耗時",
       "ttft": "首 Token",

@@ -87,11 +87,12 @@ Click the group name, member summary, blank row space or **Edit** to open its ed
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
 
-Choose one of four templates or **Custom** in **Create group**. All five
-choices open an editable draft. Review the model order, adjust the models and
-rules, then save a normal group. Cancel discards the draft. Templates can be
-opened while the model catalog is unavailable, and an empty draft requires
-members or a matching pattern before saving.
+Choose one of four templates or **Custom** in **Create group**. In a template
+draft, edit the name, models and model order before saving a normal group.
+**Advanced settings** are hidden in template drafts, which save with the
+template's preset settings. Use **Custom** or reopen a saved group to edit
+advanced settings. Cancel discards the draft. Templates can be opened while
+the model catalog is unavailable, but require at least one model before saving.
 
 - **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
   the suggested primary, fallback and cheaper model. Image requests with
@@ -100,10 +101,11 @@ members or a matching pattern before saving.
   primary order. Other members can still serve as backups. If catalog prices
   do not identify a cheaper model, the draft has no automatic task split.
   Automatic suggestions skip the Codex automatic approval review model.
-  Use a model that serves Chat Completions for the intent classifier.
+  Use a model that serves Chat Completions when customizing the intent
+  classifier in a saved group.
 - **Most capable first.** The draft starts with up to three suggested members.
-  Changing the selection keeps the recommended order. Moving a model or
-  choosing a default manually preserves that order for the rest of the edit.
+  Changing the selection keeps the recommended order. Moving a model manually
+  preserves that order for the rest of the edit.
   Select **Apply recommended order** to resume automatic ranking.
   Recognizable model names put flagship variants before
   standard variants and lightweight variants last. Within the same family
@@ -218,7 +220,8 @@ This aligns the nine strategy algorithms for the supported Codex transport with 
 
 ## Offline plan validation
 
-Open a draft and enter a synthetic JSON classification result:
+In **Advanced settings** for a Custom draft or saved group, enter a synthetic
+JSON classification result:
 
 ```json
 { "intentId": null }
@@ -230,7 +233,7 @@ This operation makes no network calls. It does not classify arbitrary user messa
 
 ## Network classification trial
 
-Configure a Chat Completions API-key classifier in the group editor, enter synthetic task text, review the displayed provider/model and check outbound consent before running. The call may incur charges. Saving never sends text. Editing group fields or test text revokes consent and invalidates late results.
+In **Advanced settings** for a Custom draft or saved group, configure a Chat Completions API-key classifier, enter synthetic task text, review the displayed provider/model and check outbound consent before running. The call may incur charges. Saving never sends text. Editing group fields or test text revokes consent and invalidates late results.
 
 The trial uses the draft's **Classification budget (ms)** under **Advanced classifier settings**. New drafts start at 2,000 ms. If the trial times out, raise the deadline up to 5,000 ms or select a faster classifier. The group uses the same deadline during live classification after saving.
 

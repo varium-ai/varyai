@@ -841,7 +841,7 @@ describe("IntentRoutingPanel", () => {
     "templateSpeed",
     "templateExpiry",
   ] as const)(
-    "opens %s from the creation chooser and saves the reviewed draft",
+    "opens %s without advanced settings and saves the reviewed draft",
     async (key) => {
       vi.mocked(intentRoutingApi.list).mockResolvedValue({
         groups: [],
@@ -923,6 +923,9 @@ describe("IntentRoutingPanel", () => {
           name: `routingPage.${key}`,
         });
         expect(dialog).toContainElement(screen.getByRole("form"));
+        expect(
+          within(dialog).queryByText("intentRouting.advancedSettings"),
+        ).not.toBeInTheDocument();
         expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
           `routingPage.${key}`,
         );

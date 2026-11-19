@@ -5526,7 +5526,7 @@
     "importLabel": "Routing group JSON",
     "reviewImport": "Import",
     "invalidImport": "This group cannot be imported. Check the member providers and models. Unsupported routing options must be removed explicitly.",
-    "templateHint": "Choose a template to review and edit its suggested models and rules before saving.",
+    "templateHint": "Choose a template to review and adjust its suggested models and their order before saving.",
     "metric": {
       "duration": "Duration",
       "ttft": "First token",
