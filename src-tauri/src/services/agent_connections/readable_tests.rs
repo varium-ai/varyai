@@ -108,7 +108,28 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                 "gemini" if matches!(file.format, Format::Env) => {
                     assert_eq!(file.installed["GEMINI_MODEL"], name)
                 }
-                "gemini" => assert_eq!(file.installed["model"]["name"], name),
+                "gemini" => {
+                    assert_eq!(file.installed["model"]["name"], name);
+                    assert_eq!(
+                        file.installed["experimental"]["dynamicModelConfiguration"],
+                        true
+                    );
+                    for model in &catalog {
+                        let id = model_wire(
+                            &upgraded.model_map,
+                            upgraded.visible_models.as_deref(),
+                            &model.id,
+                        );
+                        assert_eq!(
+                            file.installed["modelConfigs"]["modelDefinitions"][id]["displayName"],
+                            model.name
+                        );
+                        assert_eq!(
+                            file.installed["modelConfigs"]["modelDefinitions"][id]["isVisible"],
+                            true
+                        );
+                    }
+                }
                 "opencode" => assert_eq!(file.installed["model"], format!("varyai/{name}")),
                 "openclaw" => assert_eq!(
                     file.installed["agents"]["defaults"]["model"]["primary"],
@@ -180,6 +201,11 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                 .refresh(app, &renamed, "http://127.0.0.1:1")?
                 .ok_or("missing reduced receipt")?;
             let selected = model_wire(&reduced.model_map, reduced.visible_models.as_deref(), first);
+            if app == "gemini" {
+                let definitions = &reduced.files[1].installed["modelConfigs"]["modelDefinitions"];
+                assert_eq!(definitions.as_object().map(|rows| rows.len()), Some(1));
+                assert_eq!(definitions[selected]["displayName"], "Renamed · 我的模型");
+            }
             assert_eq!(serde_json::to_value(native::get(app)?)?["model"], selected);
         }
         manager.disconnect(app)?;

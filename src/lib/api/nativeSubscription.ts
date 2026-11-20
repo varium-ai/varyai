@@ -3,7 +3,9 @@ export type NativeSubscriptionProvider =
   | "claude"
   | "chatgpt_api"
   | "gemini_cli"
-  | "antigravity";
+  | "antigravity"
+  | "workbuddy"
+  | "workbuddy-ai";
 export interface SubscriptionAccount {
   id: string;
   login: string;

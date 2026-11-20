@@ -243,6 +243,7 @@ it("previews account and import sources as named brand icons", () => {
     "GitHub Copilot",
     "Gemini CLI",
     "Antigravity",
+    "WorkBuddy",
     "Grok",
   ];
   const importNames = [

@@ -891,7 +891,11 @@ export function IntentRoutingPanel({
     (draft.classifierTarget ||
       draft.rules.some((rule) => !rule.pause && rule.description.trim())) && (
       <div className="rt-classifier-pick">
-        <Popover open={pickingClassifier} onOpenChange={setPickingClassifier}>
+        <Popover
+          modal
+          open={pickingClassifier}
+          onOpenChange={setPickingClassifier}
+        >
           <PopoverTrigger asChild>
             <button
               type="button"

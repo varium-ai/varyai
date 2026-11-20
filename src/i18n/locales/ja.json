@@ -6115,7 +6115,9 @@
     "hint_claude": "Claude Code 経由でサブスクリプションを使用します。事前に Claude Code をインストールしてください。インポートした認証情報は初回利用時に更新される場合があります。",
     "hint_chatgpt_api": "OpenAI API と ChatGPT プラン用の独立した認証です。Codex のログインとは別に管理します。",
     "hint_gemini_cli": "Gemini Code Assist を使用します。Standard と Enterprise では Google Cloud プロジェクトが必要な場合があります。ローカルの Gemini CLI ログインを読み込めます。",
-    "hint_antigravity": "Antigravity アカウントと利用可能なモデルを使用します。Google ログインまたはアカウント JSON のインポートに対応しています。"
+    "hint_antigravity": "Antigravity アカウントと利用可能なモデルを使用します。Google ログインまたはアカウント JSON のインポートに対応しています。",
+    "hint_workbuddy": "ブラウザーで WorkBuddy にサインインして、中国版アカウントのモデルを取得します。",
+    "hint_workbuddy-ai": "ブラウザーで WorkBuddy AI にサインインして、国際版アカウントのモデルを取得します。"
   },
   "agentRewards": {
     "currentWindow": "現在の期間",

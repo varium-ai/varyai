@@ -246,3 +246,26 @@ it("displays the computer's local date instead of the Beijing service day", asyn
     localDate.mockRestore();
   }
 });
+
+it("shows progress while saving the automatic check-in preference and restores it on failure", async () => {
+  let fail!: (reason: Error) => void;
+  vi.mocked(doubaoCheckinApi.setAutoEnabled).mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+  );
+  mount();
+  const toggle = await screen.findByRole("switch", {
+    name: "doubaowork.checkin.autoLabel",
+  });
+  await waitFor(() => expect(toggle).toBeEnabled());
+  fireEvent.click(toggle);
+  await screen.findByText("common.saving");
+  expect(toggle).toBeChecked();
+  expect(toggle).toBeDisabled();
+  fail(new Error("synthetic-private-detail"));
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).not.toBeChecked();
+  expect(screen.queryByText("common.saving")).toBeNull();
+});

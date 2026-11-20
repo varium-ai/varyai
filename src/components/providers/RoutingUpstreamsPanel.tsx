@@ -935,6 +935,8 @@ export function RoutingUpstreamsPanel({
               chatgpt_api: "ChatGPT",
               gemini_cli: "Google",
               antigravity: "Google",
+              workbuddy: "WorkBuddy",
+              "workbuddy-ai": "WorkBuddy AI",
             }[record.source.provider]
         : t("providerParity.subscription");
     const subscription = plans

@@ -544,6 +544,26 @@ impl Database {
         self.routing_catalog_providers(false)
     }
 
+    /// Resolve trace execution identities to the current configured provider IDs.
+    pub(crate) fn routing_trace_supplier_ids(&self) -> Result<HashMap<String, String>, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let identities = identity::read(&conn)?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM routing_upstreams")
+            .map_err(|_| FAILED)?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| FAILED)?;
+        let mut suppliers = HashMap::new();
+        for id in ids {
+            let id = id.map_err(|_| FAILED)?;
+            if let Some(identity) = identities.get(&id).filter(|identity| *identity != &id) {
+                suppliers.insert(identity.clone(), id);
+            }
+        }
+        Ok(suppliers)
+    }
+
     /// Usage records the execution identity. Read labels without loading credentials
     /// or requiring a provider to be enabled.
     pub(crate) fn routing_usage_names(&self) -> Result<HashMap<String, String>, String> {

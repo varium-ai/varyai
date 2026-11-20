@@ -48,6 +48,14 @@ Use a disposable profile and explicitly synthetic message content when testing. 
 
 New suppliers are saved as inactive alternatives. Creating a supplier does not apply it to WorkBuddy; select it explicitly to replace the managed catalog.
 
+## Use WorkBuddy as a model supplier
+
+In **Providers → Add → Subscription**, select **WorkBuddy** for China or
+**WorkBuddy AI** for the international edition. Complete the browser sign-in,
+choose the available models, then save the provider. Use the models through a
+connected Agent or assign them to a routing group. See the
+[subscription provider guide](subscription-providers.md#account-setup).
+
 ## Daily check-in
 
 The WorkBuddy page offers an account selector and **Check in now** for WorkBuddy China. **Add account** opens WorkBuddy's official browser sign-in; repeat it to authorize independent accounts. Choose an account before claiming its reward or changing its automatic check-in switch. Adding an API supplier does not authorize a check-in account. WorkBuddy AI's international campaign is outside this integration.

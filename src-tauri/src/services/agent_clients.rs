@@ -45,10 +45,22 @@ pub(crate) fn config_path(app: &str) -> Result<PathBuf, AppError> {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".qwen"))
             .join("settings.json")),
-        "zcode" => Ok(home.join(".zcode/v2/provider_config.json")),
+        "zcode" => {
+            let override_path = std::env::var("CC_SWITCH_TEST_HOME")
+                .is_err()
+                .then(|| std::env::var_os("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"))
+                .flatten();
+            Ok(zcode_config_path(&home, override_path))
+        }
         "deepseek-harness" => Ok(super::deepseek_harness::config_path()),
         _ => Err(invalid()),
     }
+}
+fn zcode_config_path(home: &Path, override_path: Option<std::ffi::OsString>) -> PathBuf {
+    override_path
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".zcode/v2/provider_config.json"))
 }
 pub(crate) fn validate(config: &Value) -> Result<(), AppError> {
     let url =
@@ -1338,6 +1350,24 @@ pub(crate) fn migrate_legacy_kimi_provider_names(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn zcode_honors_an_absolute_native_provider_config_path(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let normal = dir.path().join(".zcode/v2/provider_config.json");
+        let explicit = dir.path().join("custom-config.json");
+        assert_eq!(zcode_config_path(dir.path(), None), normal);
+        assert_eq!(
+            zcode_config_path(dir.path(), Some("relative.json".into())),
+            normal
+        );
+        assert_eq!(
+            zcode_config_path(dir.path(), Some(explicit.clone().into_os_string())),
+            explicit
+        );
+        Ok(())
+    }
 
     fn provider() -> Value {
         json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-test-key","protocol":"openai","models":[{"model":"alpha"},{"model":"beta"}]})

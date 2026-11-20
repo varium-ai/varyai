@@ -9,7 +9,7 @@ const { createBridge, workbenchServices } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 const { createTraeRewards } = require("./rewards.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 20;
+const REVISION = 21;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 const MODEL_OPERATION_TIMEOUT = 300_000;

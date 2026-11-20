@@ -32,7 +32,9 @@ export type UpstreamSource =
         | "claude"
         | "chatgpt_api"
         | "gemini_cli"
-        | "antigravity";
+        | "antigravity"
+        | "workbuddy"
+        | "workbuddy-ai";
       accountId: string;
       models: unknown[];
       catalog: unknown[];

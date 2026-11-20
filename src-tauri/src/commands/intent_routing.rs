@@ -22,6 +22,7 @@ pub(crate) async fn routing_trace_snapshot(
     let db = state.db.clone();
     let inventory = tokio::task::spawn_blocking(move || {
         recorded_gateway_costs(&db, &mut requests);
+        resolve_trace_suppliers(&db, &mut requests);
         let requests = store.live_requests(requests, crate::session_manager::named_session_titles);
         (requests, store.history_days())
     })
@@ -55,11 +56,28 @@ pub(crate) async fn routing_trace_history(
     tokio::task::spawn_blocking(move || {
         let mut history = store.history(Some(&day))?;
         recorded_gateway_costs(&db, &mut history.requests);
+        resolve_trace_suppliers(&db, &mut history.requests);
         Ok::<_, std::io::Error>(history)
     })
     .await
     .map_err(|_| "Routing history unavailable".to_string())?
     .map_err(|_| "Routing history unavailable".to_string())
+}
+
+fn resolve_trace_suppliers(
+    db: &crate::database::Database,
+    requests: &mut [crate::proxy::intent::trace::Route],
+) {
+    let Ok(suppliers) = db.routing_trace_supplier_ids() else {
+        return;
+    };
+    for row in requests {
+        for candidate in &mut row.candidates {
+            if let Some(source) = suppliers.get(&candidate.provider_id) {
+                candidate.source_provider_id = Some(source.clone());
+            }
+        }
+    }
 }
 
 fn recorded_gateway_costs(

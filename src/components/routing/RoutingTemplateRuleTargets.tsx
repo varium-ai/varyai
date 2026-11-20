@@ -133,6 +133,7 @@ export function RoutingTemplateRuleTargets({
                 )}
               </span>
               <Popover
+                modal
                 open={open === rowId}
                 onOpenChange={(next) => setOpen(next ? rowId : null)}
               >

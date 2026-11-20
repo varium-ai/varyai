@@ -233,6 +233,7 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     let installed = &receipt.files[0].installed;
     assert_eq!(installed["env"]["CLAUDE_CODE_USE_BEDROCK"], "0");
     assert!(installed["env"].get("ANTHROPIC_MODEL").is_none());
+    assert_eq!(installed["modelPicker"]["replaceBuiltInOptions"], true);
     for model in models(&menu) {
         assert!(
             installed["availableModels"]

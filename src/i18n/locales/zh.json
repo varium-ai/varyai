@@ -6189,7 +6189,9 @@
     "hint_claude": "通过 Claude Code 使用订阅，请先安装 Claude Code。导入会复制凭据；首次使用时，Claude Code 可能更新登录凭据。",
     "hint_chatgpt_api": "单独授权使用 OpenAI API 和 ChatGPT 套餐，与 Codex 登录独立管理。",
     "hint_gemini_cli": "通过 Gemini Code Assist 使用订阅。Standard 和 Enterprise 账号可能需要 Google Cloud 项目；支持读取本机 Gemini CLI 登录。",
-    "hint_antigravity": "使用 Antigravity 账号及其可用模型，支持 Google 登录或导入账号 JSON。"
+    "hint_antigravity": "使用 Antigravity 账号及其可用模型，支持 Google 登录或导入账号 JSON。",
+    "hint_workbuddy": "在浏览器登录 WorkBuddy，读取国内版账号的可用模型。",
+    "hint_workbuddy-ai": "在浏览器登录 WorkBuddy AI，读取国际版账号的可用模型。"
   },
   "agentRewards": {
     "currentWindow": "本轮",

@@ -184,8 +184,20 @@ pub(crate) enum SubscriptionProvider {
     ChatgptApi,
     GeminiCli,
     Antigravity,
+    Workbuddy,
+    #[serde(rename = "workbuddy-ai")]
+    WorkbuddyAi,
 }
 impl SubscriptionProvider {
+    pub(crate) fn is_workbuddy(self) -> bool {
+        matches!(self, Self::Workbuddy | Self::WorkbuddyAi)
+    }
+    pub(crate) fn workbuddy_messages(self, model: &str) -> bool {
+        self == Self::Workbuddy
+            && model
+                .get(..7)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("claude-"))
+    }
     pub(crate) fn endpoint(self) -> &'static str {
         match self {
             Self::GithubCopilot => "https://api.githubcopilot.com",
@@ -194,11 +206,13 @@ impl SubscriptionProvider {
             Self::ChatgptApi => "https://api.openai.com/v1",
             Self::GeminiCli => "https://cloudcode-pa.googleapis.com",
             Self::Antigravity => "https://daily-cloudcode-pa.googleapis.com",
+            Self::Workbuddy => "https://copilot.tencent.com/v2",
+            Self::WorkbuddyAi => "https://www.workbuddy.ai/v2",
         }
     }
     pub(crate) fn format(self) -> &'static str {
         match self {
-            Self::GithubCopilot => "openai_chat",
+            Self::GithubCopilot | Self::Workbuddy | Self::WorkbuddyAi => "openai_chat",
             Self::XaiOauth | Self::ChatgptApi => "openai_responses",
             Self::Claude => "anthropic",
             Self::GeminiCli | Self::Antigravity => "gemini_native",

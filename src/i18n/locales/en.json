@@ -6197,7 +6197,9 @@
     "hint_claude": "Uses Claude Code to run your subscription. Install Claude Code first. Imported credentials are copied; Claude Code may rotate the sign-in on first use.",
     "hint_chatgpt_api": "Uses a separate Sign in with ChatGPT authorization for the OpenAI API and your ChatGPT plan. Codex sign-in is managed separately.",
     "hint_gemini_cli": "Uses Gemini Code Assist. Standard and Enterprise accounts may need a Google Cloud project. Import reads your local Gemini CLI sign-in.",
-    "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export."
+    "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export.",
+    "hint_workbuddy": "Sign in to WorkBuddy in your browser to load the China account’s models.",
+    "hint_workbuddy-ai": "Sign in to WorkBuddy AI in your browser to load the international account’s models."
   },
   "agentRewards": {
     "currentWindow": "Current window",

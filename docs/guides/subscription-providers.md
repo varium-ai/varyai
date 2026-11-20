@@ -1,13 +1,14 @@
 # Subscription providers
 
 The global provider picker offers Claude, ChatGPT / Codex, ChatGPT API,
-GitHub Copilot, Gemini CLI, Antigravity, and Grok. Subscription accounts are
+GitHub Copilot, Gemini CLI, Antigravity, Grok, WorkBuddy, and WorkBuddy AI.
+Subscription accounts are
 separate from API-key vendors. Each saved provider binds an explicit account;
 changing another application's default account does not change that binding.
 
 ## Account setup
 
-Clicking any of the seven subscription tiles starts sign-in directly below
+Clicking a subscription tile starts sign-in directly below
 the subscription grid. The tile stays selected while its panel shows progress,
 the authorization link when available, copy/reopen and cancellation controls.
 Codex can switch between browser authorization, device codes and file import;
@@ -53,7 +54,14 @@ it does not open the editor before authentication or create another provider.
   Model discovery uses `fetchAvailableModels` for the selected account. Account
   JSON imports accept Google OAuth fields, optionally nested under `token`.
 
-The four additional account types keep credentials under
+- **WorkBuddy** and **WorkBuddy AI** open the vendor's browser sign-in for
+  China and international accounts respectively. Vary AI polls for completion
+  and opens the provider editor with the selected account. Save the provider
+  to make its discovered models available for the shared Agent catalog and
+  routing groups. The account grants are independent of desktop sign-in and
+  the WorkBuddy China daily check-in account list.
+
+The managed native subscriptions keep credentials under
 `~/.varyai/subscription-accounts`, outside portable routing data. JSON writes
 are atomic and owner-only on Unix. The renderer receives account summaries;
 the routing registry stores account IDs and model preferences, never tokens.
@@ -130,6 +138,22 @@ Automated checks use synthetic credentials and dynamic loopback ports. They
 do not establish live account entitlement, OAuth approval, or compatibility
 with every installed Claude Code version. Real sign-in and inference require
 validation with the user's own authorized account.
+
+WorkBuddy discovers each account's models from `/v3/config`, including CLI
+models and account-specific enterprise models. China Claude models use
+streamed `/v1/messages`. Other China models and WorkBuddy AI use streamed
+`/v2/chat/completions`. The gateway converts supported consumer protocols and
+aggregates the upstream stream for non-streaming callers. Native Messages
+preserves signed thinking and drops unsigned thinking carried from other
+protocols. Tool calls remain the consumer's responsibility. Requests that
+require reversible DLP restoration fail closed on these specialized upstreams.
+
+Browser authorization is the supported sign-in method for these supplier
+entries. The implementation excludes desktop credential reuse, credential
+file and API-key import, image generation, Magpie's free-only option, and
+its client identification rewrites. The quota card shows vendor-reported
+credit utilization when the billing endpoint reports totals. Per-model token
+windows remain unknown. See the [Magpie WorkBuddy plugin reference](https://github.com/magpie-community/plugins/tree/2ecc2b6754562cea4c855d3b3a01153bb96c98de/packages/workbuddy).
 
 ## References
 

@@ -439,3 +439,26 @@ it("anchors the calendar to the official UTC+8 service day", async () => {
   expect(days[6]).toHaveAttribute("data-date", "2026-11-02");
   expect(days[6]).toHaveAttribute("aria-current", "date");
 });
+
+it("shows progress while saving the automatic check-in preference and restores it on failure", async () => {
+  let fail!: (reason: Error) => void;
+  vi.mocked(workbuddyCheckinApi.setAutoEnabled).mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+  );
+  mount();
+  const toggle = await screen.findByRole("switch", {
+    name: "workbuddy.checkin.autoLabel",
+  });
+  await waitFor(() => expect(toggle).toBeEnabled());
+  fireEvent.click(toggle);
+  await screen.findByText("common.saving");
+  expect(toggle).toBeChecked();
+  expect(toggle).toBeDisabled();
+  fail(new Error("synthetic-private-detail"));
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).not.toBeChecked();
+  expect(screen.queryByText("common.saving")).toBeNull();
+});

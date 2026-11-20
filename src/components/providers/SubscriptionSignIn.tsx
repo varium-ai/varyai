@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  isWorkBuddySubscription,
   subscriptionProviders,
   type SubscriptionProviderId,
 } from "@/config/subscriptionProviders";
@@ -250,7 +251,9 @@ function NativeSignIn({
           );
       }}
       onSubmit={
-        provider !== "claude" ? (value) => void login.submit(value) : undefined
+        provider !== "claude" && !isWorkBuddySubscription(provider)
+          ? (value) => void login.submit(value)
+          : undefined
       }
       onProxy={(value) => {
         setProxy(value);
@@ -261,7 +264,7 @@ function NativeSignIn({
         login.error ? () => void login.start(undefined, proxy) : undefined
       }
       onImport={
-        provider !== "chatgpt_api"
+        provider !== "chatgpt_api" && !isWorkBuddySubscription(provider)
           ? () => {
               void (async () => {
                 await login.cancel();
