@@ -17,6 +17,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 mod workbuddy;
 
+/// Classify a subscription upstream rejection from fixed numeric metadata
+/// only. Upstream message text is never read, echoed, or logged.
+pub(in crate::proxy) fn rejection_code(
+    provider: &Provider,
+    status: u16,
+    bytes: &[u8],
+) -> Option<&'static str> {
+    if status != 400
+        || !crate::services::subscription_provider::binding(provider)?
+            .provider
+            .is_workbuddy()
+    {
+        return None;
+    }
+    workbuddy::rejection_code(bytes)
+}
+
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 fn invalid() -> ProxyError {
     ProxyError::TransformError("Subscription response is unavailable".into())
@@ -183,13 +200,16 @@ pub(crate) async fn forward(
         } else {
             ir::build::request(&request, source_protocol)?
         };
-        let default_effort = provider
+        let catalog_row = provider
             .settings_config
             .pointer("/modelCatalog/models")
             .and_then(Value::as_array)
-            .and_then(|rows| rows.iter().find(|row| row["model"] == request.model))
-            .and_then(|row| row["defaultReasoningLevel"].as_str());
-        let response = workbuddy::send(
+            .and_then(|rows| rows.iter().find(|row| row["model"] == request.model));
+        let default_effort = catalog_row.and_then(|row| row["defaultReasoningLevel"].as_str());
+        let model_name = catalog_row
+            .and_then(|row| row["displayName"].as_str())
+            .filter(|name| !name.is_empty());
+        let (response, names) = workbuddy::send(
             &client,
             account.as_ref().ok_or_else(invalid)?,
             source_protocol,
@@ -198,14 +218,29 @@ pub(crate) async fn forward(
             caller_headers,
             protocol == Protocol::Anthropic && endpoint.ends_with("?beta=true"),
             default_effort,
+            model_name,
         )
         .await?;
-        if streaming && protocol == source_protocol {
+        if streaming && protocol == source_protocol && names.is_empty() {
             return Ok(ProxyResponse::Reqwest(response));
         }
-        Box::pin(response.bytes_stream().map(|chunk| {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let mapped = response.bytes_stream().map(|chunk| {
             chunk.map_err(|_| std::io::Error::other("Subscription stream interrupted"))
-        })) as ByteStream
+        });
+        if streaming && protocol == source_protocol {
+            return Ok(ProxyResponse::streamed(
+                status,
+                headers,
+                workbuddy::restore_tool_names(Box::pin(mapped), names, source_protocol),
+            ));
+        }
+        if names.is_empty() {
+            Box::pin(mapped) as ByteStream
+        } else {
+            workbuddy::restore_tool_names(Box::pin(mapped), names, source_protocol)
+        }
     } else if binding.provider == SubscriptionProvider::XaiOauth {
         let body = if protocol == Protocol::Responses {
             payload.clone()

@@ -88,6 +88,9 @@ impl Account {
     pub(crate) fn token(&self) -> &str {
         &self.access
     }
+    pub(crate) fn workbuddy_uid(&self) -> &str {
+        &self.workbuddy.uid
+    }
     pub(crate) fn claude_dir(&self) -> PathBuf {
         root()
             .join("claude")
