@@ -1389,6 +1389,9 @@ pub(crate) async fn handle(
     } else {
         bytes
     };
+    if super::gateway::codex_model_changed(&parts.extensions, &original) {
+        return catalog_stale();
+    }
     let session = menu
         .as_ref()
         .and_then(|m| {
@@ -2261,7 +2264,12 @@ async fn execute(
             .and_then(|meta| meta.api_format.as_deref())
             .and_then(Protocol::from_format)
             .unwrap_or(Protocol::Responses);
-        if count_tokens && output != Protocol::Anthropic {
+        let workbuddy_upstream = target
+            .upstream
+            .as_ref()
+            .and_then(crate::services::subscription_provider::binding)
+            .is_some_and(|binding| binding.provider.is_workbuddy());
+        if count_tokens && (output != Protocol::Anthropic || workbuddy_upstream) {
             if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
                 return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
             }
@@ -2527,6 +2535,7 @@ async fn execute(
                         protocol,
                         &bridge_body,
                         &endpoint,
+                        &caller_headers,
                         conversation.as_deref(),
                         scoped.shadow.clone(),
                         scoped.history.clone(),

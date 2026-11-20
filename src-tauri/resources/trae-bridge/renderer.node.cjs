@@ -267,6 +267,9 @@ test("starting selection resolves only an exact owned native model and propagate
   assert.deepEqual(selected, []);
   assert.equal(await bridge.select("fixture", "fixture-a"), true);
   assert.deepEqual(selected, [f.models[0].custom_model_id]);
+  f.models[0].model_name = `custom_openai_compatible//fixture-a`;
+  assert.equal(await bridge.select("fixture", "fixture-a"), true);
+  assert.deepEqual(selected, [f.models[0].custom_model_id, f.models[0].custom_model_id]);
   const unavailable = nativeBridge(
     f.service,
     async () => ({}),

@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 use std::{pin::Pin, sync::Arc, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+mod workbuddy;
+
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 fn invalid() -> ProxyError {
     ProxyError::TransformError("Subscription response is unavailable".into())
@@ -83,7 +85,7 @@ pub(crate) fn specialized(provider: &Provider) -> bool {
                 | SubscriptionProvider::ChatgptApi
                 | SubscriptionProvider::GeminiCli
                 | SubscriptionProvider::Antigravity
-        )
+        ) || binding.provider.is_workbuddy()
     })
 }
 fn envelope(
@@ -117,6 +119,7 @@ pub(crate) async fn forward(
     protocol: Protocol,
     payload: &Value,
     endpoint: &str,
+    caller_headers: &HeaderMap,
     session: Option<&str>,
     shadow: Arc<super::providers::gemini_shadow::GeminiShadowStore>,
     history: Arc<super::providers::codex_chat_history::CodexChatHistoryStore>,
@@ -168,11 +171,42 @@ pub(crate) async fn forward(
     let source_protocol = match binding.provider {
         SubscriptionProvider::Claude => Protocol::Anthropic,
         SubscriptionProvider::ChatgptApi | SubscriptionProvider::XaiOauth => Protocol::Responses,
+        service if service.workbuddy_messages(&request.model) => Protocol::Anthropic,
+        service if service.is_workbuddy() => Protocol::Chat,
         _ => Protocol::Gemini,
     };
     let context =
         super::providers::transform_codex_chat::build_codex_tool_context_from_request(&payload);
-    let source = if binding.provider == SubscriptionProvider::XaiOauth {
+    let source = if binding.provider.is_workbuddy() {
+        let body = if protocol == source_protocol {
+            payload.clone()
+        } else {
+            ir::build::request(&request, source_protocol)?
+        };
+        let default_effort = provider
+            .settings_config
+            .pointer("/modelCatalog/models")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.iter().find(|row| row["model"] == request.model))
+            .and_then(|row| row["defaultReasoningLevel"].as_str());
+        let response = workbuddy::send(
+            &client,
+            account.as_ref().ok_or_else(invalid)?,
+            source_protocol,
+            body,
+            session,
+            caller_headers,
+            protocol == Protocol::Anthropic && endpoint.ends_with("?beta=true"),
+            default_effort,
+        )
+        .await?;
+        if streaming && protocol == source_protocol {
+            return Ok(ProxyResponse::Reqwest(response));
+        }
+        Box::pin(response.bytes_stream().map(|chunk| {
+            chunk.map_err(|_| std::io::Error::other("Subscription stream interrupted"))
+        })) as ByteStream
+    } else if binding.provider == SubscriptionProvider::XaiOauth {
         let body = if protocol == Protocol::Responses {
             payload.clone()
         } else {

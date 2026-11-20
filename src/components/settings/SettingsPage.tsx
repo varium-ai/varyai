@@ -55,8 +55,8 @@ import { useSettings } from "@/hooks/useSettings";
 import { useImportExport } from "@/hooks/useImportExport";
 import { SettingsGroup } from "./SettingsGroup";
 import "./settings-page.css";
-import { useQuery } from "@tanstack/react-query";
-import { proxyApi } from "@/lib/api/proxy";
+import { useProxyStatusQuery, useProxyTakeoverStatus } from "@/lib/query/proxy";
+import { DEFAULT_PROXY_PORT } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
 
@@ -587,14 +587,13 @@ export function SettingsPage({
 }
 
 function SharedGatewaySettings() {
-  const { data } = useQuery({
-    queryKey: ["proxyStatus"],
-    queryFn: proxyApi.getProxyStatus,
-  });
+  const { data } = useProxyStatusQuery();
+  const { data: takeoverStatus } = useProxyTakeoverStatus();
   return (
     <GatewayKeysPanel
-      port={String(data?.port ?? 15721)}
+      port={String(data?.port ?? DEFAULT_PROXY_PORT)}
       running={data?.running}
+      takeoverStatus={takeoverStatus}
     />
   );
 }

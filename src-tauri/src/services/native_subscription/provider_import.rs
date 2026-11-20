@@ -25,6 +25,9 @@ pub(crate) fn parse(
     row: &Value,
 ) -> Result<ImportedAccount, String> {
     supported(provider)?;
+    if provider.is_workbuddy() {
+        return Err(INVALID.into());
+    }
     let auth = &row["auth"];
     let mut account = Account {
         id: String::new(),
@@ -54,6 +57,7 @@ pub(crate) fn parse(
         client_id: String::new(),
         subject: String::new(),
         id_token: String::new(),
+        workbuddy: workbuddy::Identity::default(),
     };
     let mut credentials = None;
     let mut profile = None;

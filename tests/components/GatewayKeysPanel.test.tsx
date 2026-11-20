@@ -10,9 +10,13 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { GatewayKeysPanel } from "@/components/proxy/GatewayKeysPanel";
 import { gatewayApi } from "@/lib/api/gateway";
-import { APP_IDS } from "@/config/appConfig";
+import { APP_IDS, getAppLabel } from "@/config/appConfig";
 import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
+import { agentConnectionsApi } from "@/lib/api/agentConnections";
+vi.mock("@/lib/api/agentConnections", () => ({
+  agentConnectionsApi: { list: vi.fn() },
+}));
 vi.mock("@/lib/api/proxy", () => ({
   proxyApi: { startProxyServer: vi.fn(), setProxyTakeoverForApp: vi.fn() },
 }));
@@ -120,11 +124,12 @@ function mount(
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
   vi.mocked(gatewayApi.list).mockResolvedValue([]);
   vi.mocked(gatewayApi.catalog).mockResolvedValue({
     agents: APP_IDS.map((id) => ({
       id,
-      localRouting: !["opencode", "openclaw", "hermes"].includes(id),
+      localRouting: id !== "openclaw",
     })),
     models: [
       { agent: "claude-desktop", provider: "Synthetic", model: "allowed" },
@@ -407,7 +412,7 @@ it("offers every agent, binds routed agents and explains direct-only agents", as
   await waitFor(() =>
     expect(gatewayApi.bind).toHaveBeenCalledWith("claude-desktop", "key"),
   );
-  expect(screen.getAllByText("gatewayKeys.manualAgent")).toHaveLength(3);
+  expect(screen.getAllByText("gatewayKeys.manualAgent")).toHaveLength(1);
 });
 
 it("shows usage attributed to a key and agent, including missing usage", async () => {
@@ -546,3 +551,71 @@ it.each([false, true])(
     expect(dialog).toBeInTheDocument();
   },
 );
+
+it("reports shared connection readiness for every policy-capable Agent", async () => {
+  const external = ["openclaw"];
+  const routed = APP_IDS.filter((app) => !external.includes(app));
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "key",
+      policy,
+      agents: routed,
+      revoked: false,
+      usedTokens: 0,
+      resetsAt: null,
+    },
+  ]);
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue(
+    routed.map((app) => ({
+      app,
+      enabled: true,
+      configured: app !== "claude-desktop",
+      recoveryPending: app === "claude-desktop",
+      model: null,
+      restartRequired: false,
+    })),
+  );
+  mount({ running: true });
+  fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.agents" }));
+  await waitFor(() => {
+    for (const app of routed) {
+      const row = screen.getByLabelText(getAppLabel(app)).parentElement!;
+      expect(row).toHaveTextContent(
+        app === "claude-desktop"
+          ? "gatewayKeys.routeRequired"
+          : "gatewayKeys.bindingActive",
+      );
+    }
+  });
+  expect(screen.getAllByText("gatewayKeys.manualAgent")).toHaveLength(
+    external.length,
+  );
+});
+
+it("shows readable catalog names while storing exact route IDs", async () => {
+  const model = {
+    agent: "global",
+    provider: "Synthetic supplier",
+    model: "vary-provider/opaque-fixture",
+    name: "Example Model",
+  };
+  vi.mocked(gatewayApi.catalog).mockResolvedValue({
+    agents: [],
+    models: [model],
+  });
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "fixture",
+      policy: { ...policy, models: [model.model] },
+      revoked: false,
+      usedTokens: 0,
+      resetsAt: null,
+    },
+  ]);
+  mount();
+  expect(await screen.findByText(model.name)).toBeInTheDocument();
+  expect(screen.queryByText(model.model)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.edit" }));
+  expect(screen.getByRole("checkbox", { name: /Example Model/ })).toBeChecked();
+  expect(screen.getByLabelText("gatewayKeys.models")).toHaveValue(model.model);
+});

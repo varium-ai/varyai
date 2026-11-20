@@ -12,6 +12,7 @@ pub use ingress::handle;
 pub(crate) use ingress::{error as policy_error, meter as meter_response};
 mod bindings;
 mod secrets;
+pub(crate) use bindings::codex_model_changed;
 pub use bindings::{catalog, enforce_agent, GatewayCatalog, GatewayModel, GatewayUsage};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]

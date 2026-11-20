@@ -159,6 +159,7 @@ export function RoutingTemplateMemberPicker({
                   <GripVertical size={15} aria-hidden />
                 </Button>
                 <Popover
+                  modal
                   open={openIndex === index}
                   onOpenChange={(open) => setOpenIndex(open ? index : null)}
                 >
@@ -244,6 +245,7 @@ export function RoutingTemplateMemberPicker({
         <div className="rt-template-member-actions">
           {canAdd && (
             <Popover
+              modal
               open={openIndex === members.length}
               onOpenChange={(open) =>
                 setOpenIndex(open ? members.length : null)

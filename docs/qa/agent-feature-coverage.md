@@ -107,6 +107,55 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## WorkBuddy subscription upstreams
+
+Both regional providers enter through Providers → Add → Subscription. The
+shared editor binds a browser-authorized account and publishes its selected
+models to the normal routing group catalog on macOS and Windows. Each row below
+uses its existing setup and model selection UI. Chat completions and China
+Claude Messages are the upstream protocols. The gateway adapts each consumer's
+protocol and retains the existing routing and security decisions.
+
+| Agent ID | Agent | Entry and native adapter | Native acceptance (macOS / Windows) |
+| --- | --- | --- | --- |
+| `claude` | Claude Code | Routing connection and Messages | Pending / Pending |
+| `claude-desktop` | Claude Desktop | Built-in gateway and Messages | Pending / Pending |
+| `codex` | Codex CLI / Desktop | Shared Codex catalog and Responses | Pending / Pending |
+| `gemini` | Gemini CLI | Routing connection and Gemini native | Pending / Pending |
+| `grokbuild` | Grok Build | Routing connection and Responses | Pending / Pending |
+| `opencode` | OpenCode | Published gateway provider and Chat or native protocol | Pending / Pending |
+| `openclaw` | OpenClaw | Published gateway provider and Chat or native protocol | Pending / Pending |
+| `hermes` | Hermes | Published gateway provider and Chat | Pending / Pending |
+| `pi` | Pi | Published routing provider and Pi wire adapter | Pending / Pending |
+| `workbuddy` | WorkBuddy China desktop / CLI | Native custom model catalog and Chat | Pending / Pending |
+| `workbuddy-ai` | WorkBuddy AI desktop / CLI | Native custom model catalog and Chat | Pending / Pending |
+| `qoder` | Qoder desktop | Native connection and Qoder upstream projection | Pending / Pending |
+| `doubaowork` | Doubao Work | Audit-only native integration. No selectable routing group connection | Missing / Missing |
+| `trae` | TRAE China | Native custom model and Chat bridge | Pending / Pending |
+| `trae-intl` | TRAE International | Native custom model and Chat bridge | Pending / Pending |
+| `kimi` | Kimi CLI / desktop | Native connection and Chat | Pending / Pending |
+| `qwen` | Qwen CLI | Native connection and Chat | Pending / Pending |
+| `zcode` | ZCode desktop | Native connection and gateway protocol projection | Pending / Pending |
+| `deepseek-harness` | DeepSeek Harness | Native connection and Responses or Chat | Pending / Pending |
+| `t3code` | T3 Code | Published gateway provider and Responses | Pending / Pending |
+
+The renderer fixture covers account binding and catalog discovery for each
+edition. The HTTP fixture captures each edition's upstream path and checks
+that structured tool calls retain their name and ID when rendered in Chat,
+Messages, Responses, and Gemini. Native client verification and authenticated
+vendor inference remain pending. Doubao Work lacks a native route to a global
+supplier in the existing connection registry.
+
+Local verification used the working tree based on `763ee981` on macOS 26.6.2
+arm64 with Rust 1.98.1, Node 22.22.0, and pnpm 10.12.3. Type checking,
+renderer build, renderer formatting, the 4,741-test renderer run, the
+development helper tests, and the production dependency audit passed.
+`cargo check` and `cargo clippy -- -D warnings` passed. The full Cargo run
+passed 7,803 library and 165 integration tests, with 21 library tests ignored.
+Rust formatting passed for the WorkBuddy patch files. The repository-wide
+Rust format check reported diffs in concurrent routing-trace and protocol-probe
+changes. Platform CI and native acceptance remain pending.
+
 ## Routing group creation templates
 
 Pre-implementation assessment against `APP_IDS`, `AppType`, the shared Agent
@@ -195,6 +244,28 @@ request field preservation, revoked connections and malformed input. The
 renderer covers the four templates, the Custom draft, model order, cancel/save,
 expiry import/export and legacy groups. Validation uses fixture upstreams and
 does not imply acceptance on any installed Agent or actual relay account.
+
+Model picker scrolling applies to every row in this matrix through the Vary AI
+Create group editor on macOS and Windows. It covers smart rule targets, the smart
+default target and classifier, and adding or replacing members in the other
+three templates. Each row retains its listed entry point, catalog eligibility,
+adapter and runtime behavior. Doubao Work retains its audit-only projection.
+The synthetic renderer checks wheel delivery inside the picker, blocking
+background scrolling, selecting a model, and Escape restoring focus without
+closing the editor. Without the picker scroll-lock fix, the wheel regressions
+fail for all four templates and the separate smart default-target case.
+Native Vary AI WebView verification on macOS and Windows is pending for every row.
+
+The model-picker follow-up was checked on the working tree based on
+`763ee981` on macOS 26.6.2 arm64 with Node 20.20.2, pnpm 10.12.3, and
+Rust 1.98.1. The focused renderer run passed 123 tests and the full renderer
+run passed 4,756 tests. TypeScript, renderer build, Prettier, the production
+dependency audit, and the CI helper checks passed. Cargo formatting, check,
+and Clippy passed. Both the library-only and full Cargo suites passed with
+7,805 library tests and 21 ignored; the full suite also passed 165
+integration tests. A fresh Chromium run could not start its renderer under
+the local sandbox, so this check did not provide new browser wheel results.
+No platform CI ran for this working tree.
 
 Local validation used `baf1c29e` plus the routing template working-tree changes
 on macOS 26.6.2 arm64, Node 20.20.2, pnpm 10.12.3 and Rust 1.98.1.
@@ -1758,3 +1829,31 @@ Added a separate bounded CDP Network collector and shell-report parser, retainin
 Checked working-tree changes over `f010e2b3` on macOS arm64, Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. `pnpm typecheck`, `pnpm build:renderer`, `pnpm test:unit` (322 files, 4,376 tests), `pnpm format:check`, production dependency audit, targeted helper/document formatting and diff whitespace checks passed. TRAE's 72 helper tests passed. The development runner, CI policy, macOS DMG, default-model, Pi session, WorkBuddy authentication, Doubao check-in, Doubao legacy tool hook, Agent rewards, Qoder codec and shared-v23 recovery helper suites also passed. Renderer generation did not build, install or launch the desktop application.
 
 The initial full Rust run found a fixture pinned to TRAE helper revision 19 after the production helper moved to 20. The fixture now reads the bundled revision and retains its assertion that configuration synchronization must not enable auditing. The initial frontend run found an outdated generic Doubao restart-button expectation; the all-Agent recovery test now expects Doubao's dedicated audit launcher, while the other Agents retain generic restart expectations. Full frontend regression passed after that correction. Final `cargo check`, `cargo fmt --check`, `cargo clippy -- -D warnings` and full `cargo test` (all with `--manifest-path src-tauri/Cargo.toml`) passed: 7,904 tests passed and 21 intentionally ignored, including 7,739 library tests passed. The existing test-only unused-method and macOS unwind-table linker warnings remain. Native new-build notifications, Windows/Linux CI and installer acceptance are not inferred from local checks. Earlier no-test notes above describe earlier revisions, not this final verification run.
+
+## November 20 bug-list regression coverage
+
+The Agent picker and key binding status use the following paths on macOS and
+Windows. Each platform needs a native self-test in addition to fixture tests.
+
+| Agent | Picker entry point and adapter | Policy status entry point and runtime | Verification |
+| --- | --- | --- | --- |
+| `claude` | `/model`, Claude Code settings, Messages | Settings key binding, shared or legacy Messages route | Pending |
+| `claude-desktop` | Native Desktop catalog and Messages | Settings key binding, Desktop connection or legacy route | Pending |
+| `codex` | CLI and Desktop model pickers, managed Responses | Settings key binding, managed or legacy Responses route | Pending |
+| `gemini` | `/model`, Gemini settings and native Gemini requests | Settings key binding, shared or legacy Gemini route | Pending |
+| `grokbuild` | CLI model profiles and provider-selected protocol | Settings key binding, shared or legacy route | Pending |
+| `opencode` | CLI provider catalog and provider-selected protocol | Settings key binding, shared connection | Pending |
+| `openclaw` | Native provider and model registry | Settings displays external key setup | Pending |
+| `hermes` | CLI provider catalog and Chat | Settings key binding, shared connection | Pending |
+| `pi` | CLI model registry and provider-selected protocol | Settings key binding, shared or native Pi routing | Pending |
+| `workbuddy` | China Desktop model registry and Chat | Settings key binding, shared or native route | Pending |
+| `workbuddy-ai` | International Desktop model registry and Chat | Settings key binding, shared connection | Pending |
+| `qoder` | China Desktop provider and Chat | Settings key binding, shared or Qoder gateway | Pending |
+| `doubaowork` | Native model picker and separate audit adapter | Settings key binding, native route readiness | Pending |
+| `trae` | China bridge catalog and Chat | Settings key binding, China bridge readiness | Pending |
+| `trae-intl` | International bridge catalog and Chat | Settings key binding, international bridge readiness | Pending |
+| `kimi` | Native Kimi selection and provider projection | Settings key binding, shared or native route | Pending |
+| `qwen` | CLI model settings and Chat | Settings key binding, shared or native route | Pending |
+| `zcode` | Desktop model registry and native projection | Settings key binding, shared or native route | Pending |
+| `deepseek-harness` | Native model registry and Chat/Responses/Messages | Settings key binding, shared or native route | Pending |
+| `t3code` | Managed Codex instance picker and Responses | Settings key binding, shared connection | Pending |

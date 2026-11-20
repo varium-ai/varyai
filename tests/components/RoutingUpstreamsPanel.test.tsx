@@ -1928,15 +1928,39 @@ describe("global upstream editor", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.detect" }),
     );
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "modelProviders.errors.testModels",
-        expect.any(Object),
-      ),
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "modelProviders.errors.testModels",
     );
-    expect(screen.queryByRole("alert")).toBeNull();
     expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
     expect(detectProviderProtocols).not.toHaveBeenCalled();
+  });
+  it("dismisses a protocol result without closing or discarding the edited provider", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.probe).mockRejectedValueOnce(
+      new Error("synthetic-private-detail"),
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+      target: { value: "Draft supplier" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    const result = await screen.findByRole("alert");
+    expect(result).toHaveTextContent("modelProviders.errors.testModels");
+    fireEvent.click(
+      within(result).getByRole("button", { name: "common.close" }),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByLabelText("modelProviders.name")).toHaveValue(
+      "Draft supplier",
+    );
   });
   it("probes an available unselected catalog model without requiring another discovery", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
@@ -1997,11 +2021,8 @@ describe("global upstream editor", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providerEditor.detect" }),
     );
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "modelProviders.errors.testModels",
-        expect.any(Object),
-      ),
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "modelProviders.errors.testModels",
     );
     expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
     expect(

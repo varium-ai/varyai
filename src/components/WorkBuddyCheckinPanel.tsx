@@ -296,12 +296,21 @@ export function WorkBuddyCheckinPanel({
             <p className="mp-checkin-muted">
               {t("workbuddy.checkin.autoHint")}
             </p>
+            {auto.isPending && (
+              <p className="mp-checkin-muted" role="status">
+                {t("common.saving")}
+              </p>
+            )}
           </div>
           <Switch
             id={toggleId}
             className="mp-switch"
+            aria-busy={auto.isPending}
             checked={
-              (selected ? data?.autoEnabled : data?.autoConfigured) ?? false
+              auto.isPending
+                ? auto.variables.enabled
+                : ((selected ? data?.autoEnabled : data?.autoConfigured) ??
+                  false)
             }
             disabled={!selected || busy || status.isError}
             onCheckedChange={(enabled) => {

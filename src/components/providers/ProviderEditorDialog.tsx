@@ -168,6 +168,7 @@ export function ProviderEditorDialog({
         }
       : null;
   const [probing, setProbing] = useState(false);
+  const [probeFailed, setProbeFailed] = useState(false);
   const probeRequest = useRef<object | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [iconBusy, setIconBusy] = useState(false);
@@ -181,6 +182,7 @@ export function ProviderEditorDialog({
   useEffect(() => {
     probeRequest.current = null;
     setProbing(false);
+    setProbeFailed(false);
     setResults([]);
     return () => {
       probeRequest.current = null;
@@ -306,6 +308,7 @@ export function ProviderEditorDialog({
     const request = {};
     probeRequest.current = request;
     setProbing(true);
+    setProbeFailed(false);
     setResults([]);
     try {
       let model = chatSelected.map(providerModelId).find(Boolean);
@@ -325,8 +328,8 @@ export function ProviderEditorDialog({
       const detected = await onProbe(model);
       if (probeRequest.current === request)
         setResults([{ model, results: detected }]);
-    } catch (cause) {
-      if (probeRequest.current === request) onError("testModels", cause);
+    } catch {
+      if (probeRequest.current === request) setProbeFailed(true);
     } finally {
       if (probeRequest.current === request) {
         probeRequest.current = null;
@@ -714,8 +717,29 @@ export function ProviderEditorDialog({
                             {t("providerEditor.detect")}
                           </Button>
                         </div>
-                        {!!results.length && (
-                          <div className="pv-probe-results" role="status">
+                        {(probeFailed || !!results.length) && (
+                          <div
+                            className="pv-probe-results"
+                            role={probeFailed ? "alert" : "status"}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              {probeFailed && (
+                                <p>{t("modelProviders.errors.testModels")}</p>
+                              )}
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="ml-auto shrink-0"
+                                aria-label={t("common.close")}
+                                onClick={() => {
+                                  setProbeFailed(false);
+                                  setResults([]);
+                                }}
+                              >
+                                <X size={14} aria-hidden="true" />
+                              </Button>
+                            </div>
                             {results.map((value) => (
                               <div key={value.model}>
                                 <code>{value.model}</code>
@@ -735,7 +759,9 @@ export function ProviderEditorDialog({
                                     }{" "}
                                     ·{" "}
                                     {t(
-                                      `providerEditor.${result.text.status === "verified" ? "verified" : "unverified"}`,
+                                      result.text.status === "verified"
+                                        ? "providerEditor.verified"
+                                        : `providerDetection.status.${result.text.status}`,
                                     )}
                                     {result.stream &&
                                       ` / ${t(result.stream.status === "verified" ? "providerEditor.streamVerified" : "providerEditor.streamUnverified")}`}

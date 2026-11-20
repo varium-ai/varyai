@@ -446,3 +446,26 @@ it.each(["native", "browser"] as const)(
     expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
   },
 );
+
+it("shows progress while saving the automatic check-in preference and restores it on failure", async () => {
+  let fail!: (reason: Error) => void;
+  vi.mocked(agentRewardsApi.setAuto).mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+  );
+  mount("trae");
+  const toggle = await screen.findByRole("switch", {
+    name: "agentRewards.autoLabel",
+  });
+  await waitFor(() => expect(toggle).toBeEnabled());
+  fireEvent.click(toggle);
+  await screen.findByText("common.saving");
+  expect(toggle).toBeChecked();
+  expect(toggle).toBeDisabled();
+  fail(new Error("synthetic-private-detail"));
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).not.toBeChecked();
+  expect(screen.queryByText("common.saving")).toBeNull();
+});

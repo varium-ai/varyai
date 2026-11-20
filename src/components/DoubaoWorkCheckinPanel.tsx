@@ -204,12 +204,20 @@ export function DoubaoWorkCheckinPanel({
             <p className="mp-checkin-muted">
               {t("doubaowork.checkin.autoHint")}
             </p>
+            {auto.isPending && (
+              <p className="mp-checkin-muted" role="status">
+                {t("common.saving")}
+              </p>
+            )}
           </div>
           <Switch
             id={autoId}
             className="mp-switch"
+            aria-busy={auto.isPending}
             checked={
-              selected?.autoEnabled ?? query.data?.autoConfigured ?? false
+              auto.isPending
+                ? auto.variables.enabled
+                : (selected?.autoEnabled ?? query.data?.autoConfigured ?? false)
             }
             disabled={
               !query.data?.connected || !selected || busy || query.isError

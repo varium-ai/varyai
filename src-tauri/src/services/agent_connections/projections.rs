@@ -102,6 +102,7 @@ pub(super) fn build(
     token: &str,
     selected: &str,
     receipt: &mut Receipt,
+    previous: Option<&Receipt>,
 ) -> Result<(), String> {
     let path = match app {
         "gemini" => crate::gemini_config::get_gemini_env_path(),
@@ -179,17 +180,41 @@ pub(super) fn build(
         receipt.files.push(credentials);
     }
     if app == "gemini" {
-        receipt.files.push(FileEdit::prepare(
-            crate::gemini_config::get_gemini_settings_path(),
-            |value| {
-                set(
-                    value,
-                    &["security", "auth", "selectedType"],
-                    json!("gemini-api-key"),
-                )?;
-                set(value, &["model", "name"], json!(chosen))
-            },
-        )?);
+        let settings = crate::gemini_config::get_gemini_settings_path();
+        let prior = previous.and_then(|receipt| receipt.files.iter().find(|f| f.path == settings));
+        receipt.files.push(FileEdit::prepare(settings, |value| {
+            set(
+                value,
+                &["security", "auth", "selectedType"],
+                json!("gemini-api-key"),
+            )?;
+            set(value, &["model", "name"], json!(chosen))?;
+            set(value, &["experimental", "dynamicModelConfiguration"], json!(true))?;
+
+            let definitions_path = ["modelConfigs".to_owned(), "modelDefinitions".to_owned()];
+            if let Some(prior) = prior {
+                let original = prior.format.parse(prior.original.as_deref())?;
+                if let Some(definitions) = super::at(&prior.installed, &definitions_path).and_then(Value::as_object) {
+                    for (id, definition) in definitions {
+                        let mut path = definitions_path.to_vec();
+                        path.push(id.clone());
+                        let baseline = super::at(&original, &path);
+                        if baseline != Some(definition)
+                            && super::at(value, &path) == Some(definition)
+                            && !projected.iter().any(|model| model.id == *id)
+                        {
+                            put(value, &path, baseline.cloned())?;
+                        }
+                    }
+                }
+            }
+            for model in &projected {
+                set(value, &["modelConfigs", "modelDefinitions", &model.id], json!({
+                    "displayName":model.name, "isVisible":true, "tier":"custom", "family":"custom"
+                }))?;
+            }
+            Ok(())
+        })?);
     }
     Ok(())
 }
@@ -561,6 +586,7 @@ mod tests {
                     "synthetic-token",
                     &catalog[0].id,
                     &mut receipt,
+                    None,
                 )?;
                 let config = &receipt.files[0].installed["providers"]["varyai"];
                 let rows = config["models"].as_array().ok_or(FAILED)?;
@@ -1282,6 +1308,7 @@ mod tests {
                     "synthetic-token",
                     &catalog[0].id,
                     &mut receipt,
+                    None,
                 )
             })?;
             assert_eq!(
@@ -1333,6 +1360,7 @@ mod tests {
                     "synthetic-token",
                     &catalog[0].id,
                     &mut repeated,
+                    None,
                 )
             })?;
             assert_eq!(

@@ -57,7 +57,14 @@ pub(crate) async fn resolve(
             } else {
                 account.token().to_string()
             };
-            (token, service.endpoint().into())
+            let endpoint = if service.is_workbuddy()
+                && provider.meta.as_ref().and_then(|m| m.api_format.as_deref()) == Some("anthropic")
+            {
+                service.endpoint().trim_end_matches("/v2")
+            } else {
+                service.endpoint()
+            };
+            (token, endpoint.into())
         }
     };
     if !crate::services::routing_upstreams::valid_url(&endpoint) {
@@ -112,7 +119,27 @@ fn with_credentials(
 /// Model-specific endpoints are part of the account's observed catalog.
 pub(crate) fn for_model(provider: &Provider, model: &str) -> Result<Provider, String> {
     let mut provider = provider.clone();
-    if !binding(&provider).is_some_and(|b| b.provider == SubscriptionProvider::GithubCopilot) {
+    let Some(binding) = binding(&provider) else {
+        return Ok(provider);
+    };
+    if binding.provider.is_workbuddy() {
+        let messages = binding.provider.workbuddy_messages(model);
+        let format = if messages { "anthropic" } else { "openai_chat" };
+        let base = binding.provider.endpoint();
+        let base = if messages {
+            base.trim_end_matches("/v2")
+        } else {
+            base
+        };
+        provider
+            .meta
+            .get_or_insert_with(Default::default)
+            .api_format = Some(format.into());
+        provider.settings_config["apiFormat"] = json!(format);
+        provider.settings_config["env"]["ANTHROPIC_BASE_URL"] = json!(base);
+        return Ok(provider);
+    }
+    if binding.provider != SubscriptionProvider::GithubCopilot {
         return Ok(provider);
     }
     let row = provider
@@ -163,6 +190,8 @@ mod tests {
             "chatgpt_api",
             "gemini_cli",
             "antigravity",
+            "workbuddy",
+            "workbuddy-ai",
         ] {
             let draft = serde_json::from_value(json!({
                 "schemaVersion":1,"id":"","name":service,"revision":0,
@@ -196,6 +225,41 @@ mod tests {
             assert!(row["source"].get("accessToken").is_none());
             assert_eq!(row["source"]["accountId"], "fixture-account");
         }
+    }
+
+    #[test]
+    fn workbuddy_regional_model_transport_is_reselected_on_retarget() -> Result<(), String> {
+        for (service, origin, claude_path) in [
+            ("workbuddy", "https://copilot.tencent.com", "/v1/messages"),
+            (
+                "workbuddy-ai",
+                "https://www.workbuddy.ai",
+                "/v2/chat/completions",
+            ),
+        ] {
+            let upstream = serde_json::from_value(json!({
+                "schemaVersion":1,"id":"fixture","name":"Fixture","revision":0,
+                "source":{"kind":"subscription","provider":service,"accountId":"fixture-account",
+                    "models":[],"catalog":["claude-fixture","other-fixture"],"mode":"vendor"}
+            }))
+            .map_err(|e| e.to_string())?;
+            let db = crate::database::Database::memory().map_err(|e| e.to_string())?;
+            let saved = db.save_routing_upstream(upstream)?;
+            let provider = db.routing_discovery_provider(&saved.id, saved.revision)?;
+            let provider = for_model(&provider, "claude-fixture")?;
+            let (url, _) = crate::services::intent_routing::execution::static_transport(
+                &provider,
+                "claude-fixture",
+            )?;
+            assert_eq!(url, format!("{origin}{claude_path}"));
+            let provider = for_model(&provider, "other-fixture")?;
+            let (url, _) = crate::services::intent_routing::execution::static_transport(
+                &provider,
+                "other-fixture",
+            )?;
+            assert_eq!(url, format!("{origin}/v2/chat/completions"));
+        }
+        Ok(())
     }
 
     #[test]

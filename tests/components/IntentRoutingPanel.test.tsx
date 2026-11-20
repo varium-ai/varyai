@@ -125,6 +125,23 @@ function mockTwoTaskModels() {
   ]);
 }
 
+function expectModelPickerWheelAllowed() {
+  const list = screen.getByRole("radiogroup", { name: "modelPicker.models" });
+  // JSDOM has no layout. Give the scroll lock a list with room to scroll.
+  list.style.overflowY = "auto";
+  Object.defineProperties(list, {
+    clientHeight: { value: 200 },
+    scrollHeight: { value: 800 },
+  });
+  const wheel = { deltaY: 60, cancelable: true };
+  const row = within(list).queryAllByRole("radio").at(-1);
+  expect(fireEvent.wheel(row ?? list, wheel)).toBe(true);
+  expect(fireEvent.wheel(document.body, wheel)).toBe(false);
+  list.scrollTop = 240;
+  fireEvent.scroll(list);
+  expect(list).toBeVisible();
+}
+
 describe("IntentRoutingPanel", () => {
   it("unlocks an acknowledged group toggle while catalog queries are still pending", async () => {
     const client = new QueryClient({
@@ -1220,6 +1237,7 @@ describe("IntentRoutingPanel", () => {
     await user.click(
       screen.getByRole("button", { name: "intentRouting.defaultTarget" }),
     );
+    expectModelPickerWheelAllowed();
     await user.click(screen.getByRole("radio", { name: /Second task model/ }));
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
@@ -1229,6 +1247,76 @@ describe("IntentRoutingPanel", () => {
     ]);
     expect(saved.rules).toEqual([]);
   });
+  it.each([
+    [
+      "templateSmart",
+      [".rt-template-rule-model", ".rt-classifier-pick button"],
+    ],
+    ["templateCapability", [".rt-template-member", ".rt-template-member-add"]],
+    ["templateSpeed", [".rt-template-member", ".rt-template-member-add"]],
+    ["templateExpiry", [".rt-template-member", ".rt-template-member-add"]],
+  ] as const)(
+    "allows wheel scrolling in the %s model pickers",
+    async (key, triggers) => {
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue(
+        ["a", "b"].map((id) => ({
+          id,
+          name: `Synthetic provider ${id}`,
+          taskEligible: true,
+          classifierEligible: true,
+          models: Array.from({ length: 24 }, (_, index) => ({
+            id: `${id}-model-${index}`,
+            name: `Model ${index}`,
+            outputPrice: index === 0 ? 15 : 1,
+          })),
+        })),
+      );
+      mount();
+      const user = userEvent.setup();
+      const create = screen.getByRole("button", {
+        name: "intentRouting.create",
+      });
+      await waitFor(() => expect(create).toBeEnabled());
+      await user.click(create);
+      await user.click(
+        screen.getByRole("button", { name: `routingPage.${key}` }),
+      );
+      const dialog = screen.getByRole("dialog", { name: `routingPage.${key}` });
+      for (const selector of triggers) {
+        const buttons = dialog.querySelectorAll<HTMLButtonElement>(selector);
+        expect(buttons.length).toBeGreaterThan(0);
+        for (const trigger of buttons) {
+          await user.click(trigger);
+          expectModelPickerWheelAllowed();
+          await user.keyboard("{Escape}");
+          expect(
+            screen.queryByRole("radiogroup", { name: "modelPicker.models" }),
+          ).not.toBeInTheDocument();
+          expect(trigger).toHaveFocus();
+          expect(dialog).toHaveAttribute("data-state", "open");
+        }
+      }
+
+      const trigger = dialog.querySelector<HTMLButtonElement>(
+        triggers[triggers.length - 1],
+      )!;
+      await user.click(trigger);
+      await user.type(screen.getByRole("searchbox"), "Model 23");
+      await user.click(
+        screen.getByRole("radio", { name: /Model 23.*provider b/ }),
+      );
+      const updatedDialog = screen.getByRole("dialog", {
+        name: `routingPage.${key}`,
+      });
+      expect(updatedDialog).toHaveTextContent(
+        "Model 23 · Synthetic provider b",
+      );
+      expect(
+        screen.queryByRole("radiogroup", { name: "modelPicker.models" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it.each(["templateCapability", "templateSpeed", "templateExpiry"] as const)(
     "drags a fourth model to the top of %s and saves the visible order",
     async (key) => {

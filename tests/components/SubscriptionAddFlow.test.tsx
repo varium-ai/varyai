@@ -160,6 +160,34 @@ it.each(subscriptionProviders)(
     else await waitFor(() => expect(native.start).toHaveBeenCalled());
   },
 );
+it.each([
+  ["WorkBuddy", "workbuddy"],
+  ["WorkBuddy AI", "workbuddy-ai"],
+] as const)(
+  "binds %s to its own browser account and catalog",
+  async (name, id) => {
+    mount();
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerParity.subscription" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name }));
+    await waitFor(() =>
+      expect(native.start).toHaveBeenCalledWith(id, undefined),
+    );
+    await waitFor(() => expect(native.poll).toHaveBeenCalled(), {
+      timeout: 2500,
+    });
+    await act(async () => finishNative({ ...pending, state: "done", account }));
+    const dialog = await screen.findByRole("dialog", { name });
+    expect(
+      within(dialog).getByRole("radio", { name: account.login }),
+    ).toBeChecked();
+    await waitFor(() =>
+      expect(native.models).toHaveBeenCalledWith(id, account.id),
+    );
+    expect(routing.save).not.toHaveBeenCalled();
+  },
+);
 it.each(["shortcut", "picker"])(
   "opens a selected native account's unsaved editor after sign-in from the %s",
   async (entry) => {

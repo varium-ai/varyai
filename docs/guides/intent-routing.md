@@ -92,6 +92,8 @@ hide **Advanced settings** and save with the template's preset settings. The
 task-classification draft has no separate member or model-order controls: choose
 a task model directly for each rule, or choose the default model when there is
 no automatic task split. Choose the classifier separately in **Intent told by**.
+Scroll within an open model picker to browse models. Escape closes the picker
+and returns focus to its button.
 The other three templates prefill up to three model members. The member list
 itself shows the starting order. Drag the grip at the left of a row to move it,
 or focus the grip and press Alt+↑/↓. The move buttons are also available. Escape

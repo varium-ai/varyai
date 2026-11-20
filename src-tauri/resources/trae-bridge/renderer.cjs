@@ -632,7 +632,7 @@ function createBridge(
         throw Error("starting_model_unavailable");
       await refreshModels();
       const rows = (await list()).filter(
-        (row) => row.id === owned[0].id && row.name === model,
+        (row) => row.id === owned[0].id && modelNameMatches(row.name, model),
       );
       if (rows.length !== 1) throw Error("starting_model_unavailable");
       return startingModel.select(owned[0].id);

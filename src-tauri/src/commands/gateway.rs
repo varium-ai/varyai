@@ -24,7 +24,8 @@ pub async fn get_gateway_catalog(
             if !catalog.models.iter().any(|row| row.model == model.id) {
                 catalog.models.push(crate::proxy::gateway::GatewayModel {
                     agent: "global".into(),
-                    provider: model.name,
+                    provider: model.group,
+                    name: model.name,
                     model: model.id,
                 });
             }

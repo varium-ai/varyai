@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
+import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { proxyKeys } from "@/lib/query/proxy";
 import type { ProxyTakeoverStatus } from "@/types/proxy";
@@ -35,6 +36,12 @@ export function GatewayKeysPanel({
   const { t } = useTranslation();
   const client = useQueryClient();
   const [view, setView] = useState<View>("keys");
+  const { data: connections } = useQuery({
+    queryKey: ["agent-connections"],
+    queryFn: agentConnectionsApi.list,
+    enabled: view === "agents" && running,
+    refetchInterval: view === "agents" && running ? 5000 : false,
+  });
   const { data: keys = [], isError } = useQuery({
     queryKey: ["gateway-keys"],
     queryFn: gatewayApi.list,
@@ -45,6 +52,11 @@ export function GatewayKeysPanel({
     queryFn: gatewayApi.catalog,
     refetchInterval: 10000,
   });
+  const modelNames = new Map(
+    catalog?.models
+      .filter((model) => model.name)
+      .map((row) => [row.model, row.name]),
+  );
   const { data: usage = [], isError: usageError } = useQuery({
     queryKey: ["gateway-usage"],
     queryFn: () => gatewayApi.usage(),
@@ -255,14 +267,14 @@ export function GatewayKeysPanel({
           <div className="max-h-48 overflow-y-auto rounded border p-2 space-y-2">
             {(catalog?.models ?? [])
               .filter((m) =>
-                `${m.model} ${m.provider} ${label(m.agent)}`
+                `${m.name ?? ""} ${m.model} ${m.provider} ${label(m.agent)}`
                   .toLowerCase()
                   .includes(search.toLowerCase()),
               )
               .map((m, i) => (
                 <label
                   key={`${m.agent}:${m.provider}:${m.model}:${i}`}
-                  className="flex items-center gap-2 text-xs"
+                  className="flex min-w-0 items-center gap-2 text-xs"
                 >
                   <input
                     type="checkbox"
@@ -276,11 +288,14 @@ export function GatewayKeysPanel({
                       )
                     }
                   />
-                  <span>
-                    {m.model}
+                  <span className="min-w-0 break-words" title={m.model}>
+                    {m.name || m.model}
                     <span className="text-muted-foreground">
                       {" "}
-                      · {label(m.agent)} / {m.provider}
+                      ·{" "}
+                      {m.agent === "global"
+                        ? m.provider
+                        : `${label(m.agent)} / ${m.provider}`}
                     </span>
                   </span>
                 </label>
@@ -479,11 +494,21 @@ export function GatewayKeysPanel({
                     )}
                   </span>
                 </div>
-                <p className="text-xs break-all">
-                  {key.policy.allModels
-                    ? t("gatewayKeys.allModels")
-                    : key.policy.models.join(", ")}
-                </p>
+                {key.policy.allModels ? (
+                  <p className="text-xs">{t("gatewayKeys.allModels")}</p>
+                ) : (
+                  <ul className="flex flex-wrap gap-1 text-xs">
+                    {key.policy.models.map((id) => (
+                      <li
+                        key={id}
+                        title={id}
+                        className="max-w-full truncate rounded bg-muted px-2 py-0.5"
+                      >
+                        {modelNames.get(id) || id}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <p className="text-sm">
                   {t("gatewayKeys.usage", {
                     used: key.usedTokens.toLocaleString(),
@@ -615,7 +640,16 @@ export function GatewayKeysPanel({
                 catalog?.agents.find((a) => a.id === app)?.localRouting ??
                 false;
               const bound = keys.find((key) => key.agents?.includes(app));
-              const enabled = running && takeoverStatus?.[app];
+              const enabled =
+                running &&
+                (takeoverStatus?.[app] ||
+                  connections?.some(
+                    (connection) =>
+                      connection.app === app &&
+                      connection.enabled &&
+                      connection.configured &&
+                      !connection.recoveryPending,
+                  ));
               return (
                 <div key={app} className="rounded-lg border p-3 space-y-2">
                   <Label htmlFor={`gateway-agent-${app}`}>{label(app)}</Label>
