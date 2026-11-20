@@ -107,6 +107,167 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Routing group creation templates
+
+Pre-implementation assessment against `APP_IDS`, `AppType`, the shared Agent
+registry and the separate native integrations. Creation, editing and tray state
+are shared on macOS and Windows. The template builds a normal global group.
+The native catalogs, wire protocols and continuation adapters feed the same
+candidate planner where a global group is selectable. Routing must preserve
+request parameters, replies, exact continuation ownership and per-Agent visibility.
+The allowance observation is tied to the upstream credential and applies only
+when a new destination can be selected.
+
+The subscription allowance follow-up applies to each shared gateway entry
+listed below, independently of the calling Agent. Codex official targets use
+the frozen account's quota observations. Claude subscription targets use the
+explicit managed account and model scope. Messages, Chat, Responses and Gemini
+adapters must retain request and response semantics, authorization, and exact
+continuation ownership. Doubao Work retains its separate audit entry. The
+template help is shared by the macOS and Windows renderer.
+
+The model order layout follow-up uses the same shared renderer for every entry
+below. It changes the creation editor on macOS and Windows. Native catalogs,
+Agent connections, candidate planning and protocol adapters retain their
+existing behavior.
+
+The automatic review model filter applies to the shared template editor for
+every entry below on macOS and Windows. It affects default task and classifier
+suggestions in new drafts. Agent protocols, manual selections and saved groups
+keep their existing behavior.
+
+The classifier timeout message uses the shared group editor for every entry
+below on macOS and Windows. It displays the draft's deadline and recovery
+steps. No native adapter or runtime classification behavior changes.
+
+The gap between the classifier controls and trial uses the same shared
+editor for every entry below on macOS and Windows. This spacing change
+affects only the layout of those controls.
+
+Recommended model ordering uses the shared editor for every entry below on
+macOS and Windows. The capability template action reorders explicitly selected
+members before save. It writes the existing default and fallback fields, so
+the protocol adapters continue to consume the ordinary ordered plan.
+
+The capability recommendation now uses model tiers and within-family versions
+for both initial suggestions and reordered members. The same shared editor
+applies to every entry below on macOS and Windows, and the saved plan uses
+the existing member IDs, default and fallback fields.
+
+The capability draft reapplies the recommendation after member selection
+until the user moves a member manually. The same editor behavior applies
+to each entry below on macOS and Windows, before the ordinary group is saved.
+
+The shared editor hides Advanced settings while creating from the capability,
+speed and expiry templates, for every entry below on macOS and Windows. The
+task-classification template keeps its rules, classifier and trial visible;
+Custom and saved group editors keep the remaining settings. No Agent entry
+point, protocol adapter, or runtime behavior changes. Renderer checks cover
+the template and regular editors; installed Agent tests do not exercise this
+Vary AI editor change.
+
+| Agent ID           | Entry point and adapter                                      | Runtime and UI                                                               | Verification                                      |
+| ------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------- |
+| `claude`           | Claude Code / Messages                                       | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `claude-desktop`   | Claude Desktop / Messages                                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `codex`            | Codex CLI and Desktop / Responses                            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `gemini`           | Gemini CLI / Gemini                                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `grokbuild`        | Grok Build CLI / shared gateway                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `opencode`         | OpenCode / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `openclaw`         | OpenClaw / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `hermes`           | Hermes / shared catalog and gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `pi`               | Pi custom provider / shared gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `workbuddy`        | WorkBuddy China desktop / native bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `workbuddy-ai`     | WorkBuddy international desktop / native bridge              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `qoder`            | Qoder China desktop / native TLS and gateway                 | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `doubaowork`       | Doubao Work / separate native audit connection               | Audit connection only. No global model group projection in the native client | Native audit path outside group execution         |
+| `trae`             | TRAE China / native Chat bridge                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `trae-intl`        | TRAE International / native Chat bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `kimi`             | Kimi Code CLI and desktop / shared gateway                   | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `qwen`             | Qwen Code CLI / shared gateway                               | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `zcode`            | ZCode desktop / native adapter and shared gateway            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `deepseek-harness` | DeepSeek Harness desktop / native adapter and shared gateway | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| `t3code`           | T3 Code desktop / managed Codex Responses                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+
+The synthetic gateway matrix exercises Messages, Chat, Responses and Gemini
+requests, including native continuations, exact provider and model selection,
+request field preservation, revoked connections and malformed input. The
+renderer covers the four templates, the Custom draft, model order, cancel/save,
+expiry import/export and legacy groups. Validation uses fixture upstreams and
+does not imply acceptance on any installed Agent or actual relay account.
+
+Local validation used `baf1c29e` plus the routing template working-tree changes
+on macOS 26.6.2 arm64, Node 20.20.2, pnpm 10.12.3 and Rust 1.98.1.
+`pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check` and
+`pnpm test:unit` passed (4,376 tests). The helper checks listed in Development
+and `pnpm audit --prod` passed. `cargo fmt --check`, `cargo check`,
+`cargo clippy -- -D warnings` and `cargo test --lib` passed against
+`src-tauri/Cargo.toml` (7,749 passed and 21 ignored in the library suite).
+The full `cargo test --manifest-path src-tauri/Cargo.toml` also passed, with
+165 integration tests in addition to the library suite.
+
+The subscription allowance follow-up was checked on `3226a979` with the UI
+layout and allowance changes applied, using the same macOS host and toolchain.
+The expanded gateway matrix passed for all four protocols, including
+exhausted-account exclusion, relay expiry preference and durable continuation
+after restart. Tests cover account-scoped pace, 5-hour-only confirmation,
+missing or stale data, and Claude's model-specific weekly limits.
+`pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check`,
+`pnpm test:unit` (4,376 passed), the Development helper checks and
+`pnpm audit --prod` passed. Rust formatting, `cargo check`,
+`cargo clippy -- -D warnings`, and the full Cargo test suite
+(7,921 passed, 21 ignored) passed. Native subscription accounts and Windows
+were not exercised.
+
+The automatic review follow-up was checked on `3226a979` with the routing
+template working-tree changes on the same macOS host, Node and pnpm versions.
+The fixture reproduced the incorrect classifier suggestion before the fix.
+`pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check`, and
+`pnpm test:unit` (4,377 passed) passed with the fix. Live classifier requests
+and native clients were not exercised for this follow-up.
+
+The timeout guidance was checked on the same revision and host with the
+routing template changes. `pnpm typecheck`, `pnpm build:renderer`,
+`pnpm format:check` and `pnpm test:unit` (4,378 passed) passed. Seven classifier
+tests from the local Rust test binary passed, including a rule match and a
+timeout fallback against synthetic HTTP upstreams. Live classifier requests
+and native clients were not exercised for this follow-up.
+
+The spacing follow-up was checked on `3226a979` with the routing template
+working-tree changes on the same macOS host, Node and pnpm versions. A
+Chromium layout fixture using the built renderer CSS measured both gaps at
+10 px with the panels collapsed or expanded, at 490 px and 820 px dialog
+widths. `pnpm build:renderer`, `pnpm format:check` and 121 focused renderer
+tests passed. Native window layout was not exercised.
+
+Recommended ordering was checked on `3226a979` with the routing template
+working-tree changes on the same macOS host, Node and pnpm versions. The
+renderer regression reorders 50 selected members, excludes an unselected
+model, and verifies the saved default and fallback order. A unit fixture
+checks equal ranks and missing catalog entries. `pnpm typecheck`,
+`pnpm build:renderer`, `pnpm format:check` and `pnpm test:unit` (4,380 passed)
+passed. Native clients were not exercised for this editor change.
+
+Capability ranking was checked on `3226a979` with the routing template
+working-tree changes on the same macOS host, Node and pnpm versions. Tests
+cover tier precedence, numeric version segments, and independent family
+ordering. `pnpm typecheck`, `pnpm build:renderer`, `pnpm format:check` and
+`pnpm test:unit` (4,382 passed) passed. The macOS dev editor also reordered
+13 existing catalog selections in an unsaved draft. Live routing and the
+Windows native editor were not exercised for this change.
+
+Selection ordering was verified on the merge of `origin/main` at `815b2286`
+into `3226a979` with all routing template follow-ups applied. The 50-member
+fixture covers removing and reselecting a model, preserving a manual order,
+resuming recommendations and saving. On macOS 26.6.2 arm64 with Node 20.20.2,
+pnpm 10.12.3 and Rust 1.98.1, `pnpm typecheck`, `pnpm build:renderer`,
+`pnpm format:check`, and `pnpm test:unit` (4,578 passed) passed. The helper
+tests listed in Development and `pnpm audit --prod` passed. `cargo fmt
+--check`, `cargo check --locked`, `cargo clippy --locked -- -D warnings`,
+and `cargo test --locked --no-fail-fast` passed against `src-tauri/Cargo.toml`.
+The Rust build and test checks ran with debug information and incremental
+compilation disabled. The locked desktop prevented a native editor recheck.
+
 ## Live routing source cards
 
 The Routing workspace derives its source cards

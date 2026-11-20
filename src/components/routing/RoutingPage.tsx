@@ -24,8 +24,10 @@ function rerouted(row: Row) {
 }
 export function RoutingPage({
   onEditingChange,
+  onAddProvider,
 }: {
   onEditingChange?: (state: EditingState) => void;
+  onAddProvider?: () => void;
 }) {
   const { t } = useTranslation();
   const [masked, setMasked] = useState(false);
@@ -168,12 +170,8 @@ export function RoutingPage({
                   )
                 : shown?.candidates.length === 1
                   ? t("routingPage.singleSeat")
-                  : shown?.strategy
-                    ? t(`routingPage.strategyHelp.${shown.strategy}`, {
-                        defaultValue: t(
-                          `routingPage.strategy.${shown.strategy}`,
-                        ),
-                      })
+                  : shown
+                    ? t("routingPage.candidateSeats")
                     : t("routingPage.emptyStage")}
             </p>
           )}
@@ -190,7 +188,6 @@ export function RoutingPage({
           currentAccounts={accounts}
           concurrent={concurrent}
           sources={sources}
-          multipleRoutes={multipleRoutes}
           liveObservations={running}
         />
         <div className={`rt-foot${shown ? "" : " idle"}`}>
@@ -221,6 +218,7 @@ export function RoutingPage({
           showCreateButton={false}
           maskAccounts={masked}
           onEditingChange={onEditingChange}
+          onAddProvider={onAddProvider}
         />
       </div>
     </AccountMask>

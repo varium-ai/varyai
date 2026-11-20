@@ -88,6 +88,12 @@ pub(crate) struct Rule {
     pub pause: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum QuotaOrder {
+    EarliestExpiry,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RoutingGroup {
@@ -112,6 +118,8 @@ pub(crate) struct RoutingGroup {
     pub auto_generated: bool,
     #[serde(default)]
     pub routing: RoutingStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_order: Option<QuotaOrder>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +248,7 @@ impl RoutingGroup {
                 self.affinity.as_str(),
                 "" | "session" | "turn" | "off" | "strict"
             )
+            || (self.quota_order.is_some() && self.routing != RoutingStrategy::Ordered)
             || self.first_token > 3600
             || !effort::valid_levels(&self.levels)
             || !(-1..=240).contains(&self.patience)

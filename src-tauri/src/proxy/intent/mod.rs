@@ -28,6 +28,7 @@ mod replay_tests;
 mod resume_tests;
 pub(crate) mod scheduling;
 mod scopes;
+mod subscription_budget;
 pub(crate) mod trace;
 #[cfg(test)]
 mod trace_tests;
@@ -2004,6 +2005,22 @@ async fn execute(
                 candidates[at] = index;
             }
         }
+    }
+    if !count_tokens
+        && pinned.is_none()
+        && session.group.quota_order.is_some()
+        && subscription_budget::prioritize(
+            &session,
+            &mut candidates,
+            &states,
+            chrono::Utc::now().timestamp(),
+        )
+        && candidates.is_empty()
+    {
+        return fail(
+            StatusCode::TOO_MANY_REQUESTS,
+            "routing_subscription_quota_exhausted",
+        );
     }
     if pinned.is_none() && session.group.sink {
         scheduling::sink_last(

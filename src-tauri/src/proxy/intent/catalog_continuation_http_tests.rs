@@ -4,7 +4,12 @@ use crate::{
     database::Database,
     proxy::{server::ProxyServer, ProxyConfig},
 };
-use axum::{extract::OriginalUri, routing::post, Json, Router};
+use axum::{
+    extract::OriginalUri,
+    routing::{get, post},
+    Json, Router,
+};
+use http::HeaderMap;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -308,9 +313,22 @@ async fn server(
     Ok((server, runtime, info.port))
 }
 
-async fn exercise(protocol: Protocol) -> TestResult {
+fn earlier_key(headers: &HeaderMap) -> bool {
+    headers
+        .get("authorization")
+        .is_some_and(|value| value == "Bearer synthetic-earlier")
+        || headers
+            .get("x-api-key")
+            .is_some_and(|value| value == "synthetic-earlier")
+        || headers
+            .get("x-goog-api-key")
+            .is_some_and(|value| value == "synthetic-earlier")
+}
+
+async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
     let _security = Security((*crate::proxy::security::get_security_runtime()).clone());
     crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let root = tempfile::tempdir()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (tx, mut received) = tokio::sync::mpsc::channel(4);
@@ -319,24 +337,40 @@ async fn exercise(protocol: Protocol) -> TestResult {
     let upstream = tokio::spawn(async move {
         let _ = axum::serve(
             listener,
-            Router::new().route(
-                "/*path",
-                post(
-                    move |OriginalUri(uri): OriginalUri, Json(body): Json<Value>| {
-                        let tx = tx.clone();
-                        let count = count.clone();
-                        async move {
-                            let call =
-                                format!("synthetic-call-{}", count.fetch_add(1, Ordering::SeqCst));
-                            let stream = body["stream"] == true
-                                || uri.path().ends_with(":streamGenerateContent");
-                            let reply = response(protocol, &call, stream);
-                            let _ = tx.send((body, call)).await;
-                            reply
-                        }
-                    },
+            Router::new()
+                .route(
+                    "/v1/usage",
+                    get(|headers: HeaderMap| async move {
+                        let seconds = if earlier_key(&headers) { 3600 } else { 7200 };
+                        let expires = chrono::Utc::now() + chrono::Duration::seconds(seconds);
+                        Json(json!({
+                            "mode":"unrestricted","isValid":true,"remaining":1,
+                            "subscription":{"expires_at":expires.to_rfc3339()},
+                        }))
+                    }),
+                )
+                .route(
+                    "/*path",
+                    post(
+                        move |OriginalUri(uri): OriginalUri,
+                              headers: HeaderMap,
+                              Json(body): Json<Value>| {
+                            let tx = tx.clone();
+                            let count = count.clone();
+                            async move {
+                                let call = format!(
+                                    "synthetic-call-{}",
+                                    count.fetch_add(1, Ordering::SeqCst)
+                                );
+                                let stream = body["stream"] == true
+                                    || uri.path().ends_with(":streamGenerateContent");
+                                let reply = response(protocol, &call, stream);
+                                let _ = tx.send((body, call, earlier_key(&headers))).await;
+                                reply
+                            }
+                        },
+                    ),
                 ),
-            ),
         )
         .await;
     });
@@ -358,6 +392,126 @@ async fn exercise(protocol: Protocol) -> TestResult {
         api_format: Some(protocol.format().into()),
         ..Default::default()
     });
+    if use_expiry {
+        use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+        use crate::services::intent_routing::catalog::freeze_execution;
+        use crate::services::intent_routing::{QuotaOrder, RoutingStrategy};
+        route.group.routing = RoutingStrategy::Ordered;
+        route.group.quota_order = Some(QuotaOrder::EarliestExpiry);
+        route.group.affinity = "turn".into();
+
+        let mut member = route.group.members[0].clone();
+        member.id = "earlier".into();
+        member.provider_id = "earlier".into();
+        route.group.fallback_member_ids.push(member.id.clone());
+        route.group.members.push(member);
+
+        let mut earlier_provider = provider.clone();
+        earlier_provider.id = "earlier".into();
+        earlier_provider.settings_config["auth"]["OPENAI_API_KEY"] = json!("synthetic-earlier");
+        earlier_provider.settings_config["env"]["ANTHROPIC_AUTH_TOKEN"] =
+            json!("synthetic-earlier");
+        earlier_provider.settings_config["env"]["GEMINI_API_KEY"] = json!("synthetic-earlier");
+        let mut earlier = route.targets[0].clone();
+        earlier.provider_id = "earlier".into();
+        earlier.headers.insert(
+            header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer synthetic-earlier"),
+        );
+        earlier.upstream = Some(earlier_provider);
+        earlier.scheduling = Arc::default();
+        route.targets.push(earlier);
+
+        // Wait for the detached read to complete before checking the warm route.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let now = chrono::Utc::now().timestamp();
+                let expiry: Vec<_> = route
+                    .targets
+                    .iter()
+                    .map(|target| {
+                        crate::services::routing_provider_quota::observe_expiry(
+                            &target.url,
+                            &target.headers,
+                            now,
+                        )
+                    })
+                    .collect();
+                if let [Some(later), Some(earlier)] = expiry.as_slice() {
+                    assert!(earlier < later);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+
+        let now = chrono::Utc::now().timestamp();
+        for (id, official) in [("exhausted-codex", true), ("exhausted-claude", false)] {
+            let mut member = route.group.members[0].clone();
+            member.id = id.into();
+            member.provider_id = id.into();
+            route.group.fallback_member_ids.push(member.id.clone());
+            route.group.members.push(member);
+
+            let mut target = route.targets[0].clone();
+            target.provider_id = id.into();
+            target.official = official;
+            target.scheduling = Arc::new(scheduling::Scheduling::new(official));
+            target.scheduling.claim_budget_refresh(now);
+            if official {
+                let manager = Arc::new(CodexOAuthManager::new(root.path().to_owned()));
+                manager
+                    .add_test_account_with_user_identity(
+                        "fixture-codex",
+                        "synthetic-usage-token",
+                        "fixture-user",
+                    )
+                    .await?;
+                let mut account = crate::provider::Provider::with_id(
+                    id.into(),
+                    "Synthetic Codex".into(),
+                    json!({}),
+                    None,
+                );
+                account.category = Some("official".into());
+                crate::services::codex_provider::bind(&mut account, "fixture-codex");
+                target.credentials = Some(Arc::new(
+                    freeze_execution(&account, manager)
+                        .await
+                        .ok_or("missing fixture Codex identity")?,
+                ));
+                target.scheduling.observe_event(
+                    &json!({"type":"codex.rate_limits","rate_limits":{
+                        "primary":{"window_minutes":300,"used_percent":100,"reset_at":now+1800},
+                        "secondary":{"window_minutes":10080,"used_percent":10,"reset_at":now+7200}
+                    }}),
+                    now,
+                );
+            } else {
+                let mut bound = provider.clone();
+                bound.id = id.into();
+                bound.settings_config["routingSubscription"] =
+                    json!({"provider":"claude","accountId":"synthetic-quota-account"});
+                target.upstream = Some(bound);
+                target.scheduling.observe_claude_quota(
+                    crate::services::native_subscription::ClaudeRoutingQuota {
+                        tiers: vec![crate::services::subscription::QuotaTier {
+                            name: "five_hour".into(),
+                            utilization: 100.0,
+                            resets_at: chrono::DateTime::from_timestamp(now + 1800, 0)
+                                .map(|time| time.to_rfc3339()),
+                            used_value_usd: None,
+                            max_value_usd: None,
+                        }],
+                        short_only: false,
+                    },
+                    now,
+                );
+            }
+            route.targets.push(target);
+        }
+    }
     route.targets[0].upstream = Some(provider);
     let alias = route.group.alias();
     menu.models.insert(
@@ -369,7 +523,6 @@ async fn exercise(protocol: Protocol) -> TestResult {
             order: 0,
         },
     );
-    let root = tempfile::tempdir()?;
     let (mut proxy, mut runtime, mut port) = server(menu, root.path()).await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     let mut cases = cases(protocol, &alias);
@@ -407,13 +560,33 @@ async fn exercise(protocol: Protocol) -> TestResult {
                 case.named
             );
             let text = reply.text().await?;
-            let (sent, call) = tokio::time::timeout(Duration::from_secs(2), received.recv())
-                .await?
-                .ok_or("missing upstream request")?;
+            let (sent, call, used_earlier) =
+                tokio::time::timeout(Duration::from_secs(2), received.recv())
+                    .await?
+                    .ok_or("missing upstream request")?;
+            assert_eq!(
+                used_earlier, use_expiry,
+                "incorrect allowance preference for {}",
+                case.app
+            );
             assert!(
                 text.contains(&call),
                 "the native tool call must reach the client"
             );
+            if use_expiry && phase == 0 {
+                let traces = runtime.traces.snapshot();
+                let row = traces.first().ok_or("missing route trace")?;
+                assert_eq!(
+                    row.candidates.len(),
+                    2,
+                    "full subscription was planned for {}",
+                    case.app
+                );
+                assert!(row
+                    .candidates
+                    .iter()
+                    .all(|seat| !seat.provider_id.starts_with("exhausted-")));
+            }
             let history = match protocol {
                 Protocol::Responses => "input",
                 Protocol::Gemini => "contents",
@@ -461,22 +634,36 @@ async fn exercise(protocol: Protocol) -> TestResult {
 #[tokio::test]
 #[serial_test::serial]
 async fn catalog_continuation_http_messages_all_agents() -> TestResult {
-    exercise(Protocol::Anthropic).await
+    exercise(Protocol::Anthropic, false).await
 }
 #[tokio::test]
 #[serial_test::serial]
 async fn catalog_continuation_http_chat_all_agents() -> TestResult {
-    exercise(Protocol::Chat).await
+    exercise(Protocol::Chat, false).await
 }
 #[tokio::test]
 #[serial_test::serial]
 async fn catalog_continuation_http_responses_all_agents_and_codex_entries() -> TestResult {
-    exercise(Protocol::Responses).await
+    exercise(Protocol::Responses, false).await
 }
 #[tokio::test]
 #[serial_test::serial]
 async fn catalog_continuation_http_gemini_all_agents() -> TestResult {
-    exercise(Protocol::Gemini).await
+    exercise(Protocol::Gemini, false).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn expiring_subscription_template_preserves_native_wire_and_continuations() -> TestResult {
+    for protocol in [
+        Protocol::Anthropic,
+        Protocol::Chat,
+        Protocol::Responses,
+        Protocol::Gemini,
+    ] {
+        exercise(protocol, true).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]

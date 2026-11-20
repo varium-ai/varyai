@@ -51,6 +51,7 @@ fn direct_group(provider: &Provider, model: &str) -> RoutingGroup {
         retired_policy: None,
         auto_generated: false,
         routing: Default::default(),
+        quota_order: None,
         model_alias: None,
         manual_member_id: None,
         context_window: None,

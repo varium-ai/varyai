@@ -85,7 +85,6 @@ export function RoutingStage({
   upstreams = [],
   concurrent = [],
   sources,
-  multipleRoutes = false,
   liveObservations = false,
   layout: stageLayout = "responsive",
   now = Date.now(),
@@ -102,7 +101,6 @@ export function RoutingStage({
   upstreams?: RoutingUpstream[];
   concurrent?: RoutingTrace[];
   sources?: RoutingTrace[];
-  multipleRoutes?: boolean;
   liveObservations?: boolean;
   layout?: "responsive" | "compact";
   now?: number;
@@ -276,15 +274,7 @@ export function RoutingStage({
         : live(row)
           ? "planningCandidates"
           : "noCandidatesRecorded";
-  const hubDescription = [
-    "Vary AI",
-    address || t("routingPage.listenerUnknown"),
-    row && !multipleRoutes && row.candidates.length > 1
-      ? t(`routingPage.strategy.${row.strategy}`)
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const hubDescription = `Vary AI · ${address || t("routingPage.listenerUnknown")}`;
   return (
     <div
       className={`rt-stage${narrow ? " narrow" : ""}${stageLayout === "compact" ? " compact" : ""}`}
@@ -434,11 +424,6 @@ export function RoutingStage({
         <small className={stageLayout === "compact" ? "sr-only" : undefined}>
           {address || t("routingPage.listenerUnknown")}
         </small>
-        {row && !multipleRoutes && row.candidates.length > 1 && (
-          <i className={stageLayout === "compact" ? "sr-only" : undefined}>
-            {t(`routingPage.strategy.${row.strategy}`)}
-          </i>
-        )}
       </div>
       <ol className="rt-accts" aria-label={t("routingPage.candidateSeats")}>
         {!candidates.length && (

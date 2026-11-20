@@ -120,35 +120,36 @@ it.each([false, true])(
     ).not.toBeInTheDocument();
   },
 );
-it.each(["templateSmart", "templateThrifty", "templateSteady"])(
-  "opens %s without models and validates the draft only when saving",
-  async (template) => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [],
-      autoCreate: false,
-      omittedGroups: 0,
-    });
-    vi.mocked(intentRoutingApi.providers).mockResolvedValue([]);
-    mount();
-    const title = await screen.findByText(`routingPage.${template}`);
-    const add = within(title.parentElement!).getByRole("button", {
-      name: "routingPage.addTemplate",
-    });
-    expect(add).toBeEnabled();
-    expect(add).toHaveAccessibleDescription(
-      "routingPage.templateNeed_provider",
-    );
-    fireEvent.click(add);
-    const dialog = await screen.findByRole("dialog");
-    const save = within(dialog).getByRole("button", { name: "common.save" });
-    expect(save).toBeDisabled();
-    fireEvent.click(save);
-    expect(intentRoutingApi.save).not.toHaveBeenCalled();
-  },
-);
+it.each([
+  "templateSmart",
+  "templateCapability",
+  "templateSpeed",
+  "templateExpiry",
+])("shows a warning instead of opening %s without models", async (template) => {
+  vi.mocked(intentRoutingApi.list).mockResolvedValue({
+    groups: [],
+    autoCreate: false,
+    omittedGroups: 0,
+  });
+  vi.mocked(intentRoutingApi.providers).mockResolvedValue([]);
+  mount();
+  const create = screen.getByRole("button", { name: "intentRouting.create" });
+  await waitFor(() => expect(create).toBeEnabled());
+  fireEvent.click(create);
+  const add = screen.getByRole("button", { name: `routingPage.${template}` });
+  expect(add).toBeEnabled();
+  expect(add).toHaveAccessibleDescription("routingPage.templateNeed_provider");
+  fireEvent.click(add);
+  const dialog = await screen.findByRole("dialog", {
+    name: "routingPage.cannotCreateGroup",
+  });
+  expect(dialog).toHaveAccessibleDescription("routingPage.noAvailableModels");
+  expect(screen.queryByRole("form")).toBeNull();
+  expect(intentRoutingApi.save).not.toHaveBeenCalled();
+});
 
 it.each(["loading", "failed"])(
-  "allows opening a template while the model catalog is %s",
+  "does not show a false zero-model warning when the model catalog is %s",
   async (state) => {
     if (state === "loading")
       vi.mocked(intentRoutingApi.providers).mockImplementation(
@@ -159,35 +160,50 @@ it.each(["loading", "failed"])(
         new Error("Synthetic catalog failure"),
       );
     mount();
-    const title = await screen.findByText("routingPage.templateSmart");
-    const add = within(title.parentElement!).getByRole("button", {
-      name: "routingPage.addTemplate",
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    const add = screen.getByRole("button", {
+      name: "routingPage.templateSmart",
     });
-    expect(add).toBeEnabled();
-    fireEvent.click(add);
-    expect(await screen.findByRole("dialog")).toBeVisible();
+    if (state === "loading") {
+      expect(add).toBeDisabled();
+    } else {
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      expect(await screen.findByRole("form")).toBeVisible();
+    }
+    expect(
+      screen.queryByRole("dialog", { name: "routingPage.cannotCreateGroup" }),
+    ).toBeNull();
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
   },
 );
 
-it("opens the smart template with one model and explains the shared task target", async () => {
+it("explains the shared task target when no cheaper model is available", async () => {
   vi.mocked(intentRoutingApi.providers).mockResolvedValue([
     {
       id: "synthetic",
       name: "Synthetic",
       taskEligible: true,
       classifierEligible: true,
-      models: [{ id: "synthetic-strong", name: "Strong", outputPrice: 12 }],
+      models: [
+        { id: "synthetic-strong", name: "Strong", outputPrice: 12 },
+        { id: "synthetic-alternate", name: "Alternate", outputPrice: 12 },
+      ],
     },
   ]);
   mount();
+  const create = screen.getByRole("button", { name: "intentRouting.create" });
+  await waitFor(() => expect(create).toBeEnabled());
+  fireEvent.click(create);
   const title = await screen.findByText("routingPage.templateSmart");
   const card = title.parentElement!;
   expect(
     within(card).getByText("routingPage.templateSmartSameModelHint"),
   ).toBeVisible();
   const add = within(card).getByRole("button", {
-    name: "routingPage.addTemplate",
+    name: "routingPage.templateSmart",
   });
   expect(add).toBeEnabled();
   fireEvent.click(add);
