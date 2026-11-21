@@ -56,7 +56,7 @@ export default function App() {
       .then((next) => {
         if (next) navigation.current(next);
       })
-      .catch(() => { });
+      .catch(() => {});
   }, []);
   useTauriEvent("workspace-navigation", async () => {
     const next = await trayPanelApi.navigation();

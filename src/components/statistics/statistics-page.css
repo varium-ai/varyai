@@ -3,11 +3,12 @@
   width: 100%;
   max-width: var(--workspace-page-max-width, 1232px);
   margin-inline: auto;
-  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px) 32px;
+  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px)
+    32px;
   color: hsl(var(--foreground));
 }
 
-.stats-page>*+* {
+.stats-page > * + * {
   margin-top: 20px;
 }
 
@@ -19,7 +20,7 @@
   gap: 8px 16px;
 }
 
-.stats-header+* {
+.stats-header + * {
   margin-top: var(--workspace-section-gap);
 }
 
@@ -97,8 +98,10 @@
 
 .stats-toolbar {
   display: grid;
-  grid-template-columns:
-    minmax(140px, 1fr) repeat(2, minmax(0, 128px)) 88px 112px;
+  grid-template-columns: minmax(140px, 1fr) repeat(
+      2,
+      minmax(0, 128px)
+    ) 88px 112px;
   align-items: center;
   gap: 6px 8px;
 }
@@ -166,7 +169,7 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
-.stats-breakdown>div {
+.stats-breakdown > div {
   padding: 9px 12px;
   border: 1px solid hsl(var(--border));
   border-radius: 9px;
@@ -184,7 +187,7 @@
   color: var(--success);
 }
 
-.stats-hit-rate>span {
+.stats-hit-rate > span {
   flex: 0 1 46px;
   height: 4px;
   border-radius: 4px;
@@ -209,7 +212,7 @@
   padding: 14px 18px;
 }
 
-.stats-log-filters>div>span {
+.stats-log-filters > div > span {
   display: block;
   margin-bottom: 5px;
   color: hsl(var(--secondary-foreground));
@@ -245,13 +248,12 @@
     flex-wrap: wrap;
   }
 
-  .stats-breakdown>div {
+  .stats-breakdown > div {
     flex: 1 1 130px;
   }
 }
 
 @container (max-width: 500px) {
-
   .stats-security-grid,
   .stats-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));

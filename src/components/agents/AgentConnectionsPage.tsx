@@ -597,8 +597,8 @@ export function AgentConnectionsPage({
     setError(app, null);
     setSelected(
       states.data?.find((state) => state.app === app)?.model ??
-      catalog.data?.[0]?.id ??
-      "",
+        catalog.data?.[0]?.id ??
+        "",
     );
     void client.invalidateQueries({ queryKey: ["agent-model-catalog"] });
   }
@@ -712,7 +712,7 @@ export function AgentConnectionsPage({
     const desktopRestart = state?.desktopState === "restart_required";
     const modelControl = needsModelControl(app)
       ? modelControls[modelControlApps.findIndex((known) => known === app)]
-        ?.data
+          ?.data
       : undefined;
     const codexReloadRestart =
       app === "codex" &&
@@ -725,9 +725,9 @@ export function AgentConnectionsPage({
       !!state &&
       (enabled
         ? state.restartRequired ||
-        desktopRestart ||
-        codexReloadRestart ||
-        !!modelControl?.pending
+          desktopRestart ||
+          codexReloadRestart ||
+          !!modelControl?.pending
         : app !== "codex" && desktopRestart);
     const native = nativeQuery.data;
     const nativeAvailable = native?.available && !nativeQuery.isError;
@@ -738,10 +738,10 @@ export function AgentConnectionsPage({
     const nativeLabel = nativeAvailable
       ? (nativeModel ?? t("agentConnections.nativeDefault"))
       : t(
-        nativeQuery.isPending
-          ? "common.loading"
-          : "agentConnections.nativeUnavailable",
-      );
+          nativeQuery.isPending
+            ? "common.loading"
+            : "agentConnections.nativeUnavailable",
+        );
     const currentModel =
       needsModelControl(app) && (!enabled || !modelControl?.authorized)
         ? t("agentConnections.nativeDefault")
@@ -866,8 +866,8 @@ export function AgentConnectionsPage({
                 : catalog.isPending
                   ? t("common.loading")
                   : t("agentConnections.allModels", {
-                    count: catalog.data?.length ?? 0,
-                  })}
+                      count: catalog.data?.length ?? 0,
+                    })}
             </span>
             <ChevronDown size={11} />
           </button>
@@ -923,12 +923,12 @@ export function AgentConnectionsPage({
       checkinStatuses.every((status) =>
         ["claimed", "already_checked"].includes(
           ("savedOutcome" in status ? status.savedOutcome : null) ??
-          status.outcome,
+            status.outcome,
         ),
       );
     const checkinCredit =
       checkinComplete &&
-        checkinStatuses.every((status) => status.credit != null)
+      checkinStatuses.every((status) => status.credit != null)
         ? checkinStatuses.reduce((sum, status) => sum + (status.credit ?? 0), 0)
         : null;
     const checkinTriggerLabel = checkinInactive
@@ -937,31 +937,31 @@ export function AgentConnectionsPage({
     const checkinTrigger = (app === "workbuddy" ||
       app === "doubaowork" ||
       hasAgentRewards(app)) && (
-        <button
-          type="button"
-          className="mp-agent-start mp-agent-checkin-trigger"
-          data-complete={checkinComplete}
-          data-inactive={checkinInactive}
-          aria-label={`${checkinTriggerLabel} ${name(app)}`}
-          aria-describedby={`${detailsId}-checkin-summary`}
-          aria-expanded={checkinApp === app}
-          aria-controls={`${detailsId}-checkin`}
-          onClick={() => {
-            setOpenedCheckins((previous) =>
-              previous.includes(app) ? previous : [...previous, app],
-            );
-            setCheckinApp((previous) => (previous === app ? null : app));
-          }}
-        >
-          {checkinComplete ? (
-            <CheckCircle2 size={14} aria-hidden="true" />
-          ) : (
-            <Gift size={14} aria-hidden="true" />
-          )}
-          <span id={`${detailsId}-checkin-summary`}>
-            {t("dailyCheckin.title")} ·{" "}
-            {checkinComplete
-              ? t(
+      <button
+        type="button"
+        className="mp-agent-start mp-agent-checkin-trigger"
+        data-complete={checkinComplete}
+        data-inactive={checkinInactive}
+        aria-label={`${checkinTriggerLabel} ${name(app)}`}
+        aria-describedby={`${detailsId}-checkin-summary`}
+        aria-expanded={checkinApp === app}
+        aria-controls={`${detailsId}-checkin`}
+        onClick={() => {
+          setOpenedCheckins((previous) =>
+            previous.includes(app) ? previous : [...previous, app],
+          );
+          setCheckinApp((previous) => (previous === app ? null : app));
+        }}
+      >
+        {checkinComplete ? (
+          <CheckCircle2 size={14} aria-hidden="true" />
+        ) : (
+          <Gift size={14} aria-hidden="true" />
+        )}
+        <span id={`${detailsId}-checkin-summary`}>
+          {t("dailyCheckin.title")} ·{" "}
+          {checkinComplete
+            ? t(
                 app === "zcode"
                   ? checkinCredit != null
                     ? "dailyCheckin.claimedReward"
@@ -971,14 +971,14 @@ export function AgentConnectionsPage({
                     : "dailyCheckin.todayChecked",
                 { credit: checkinCredit },
               )
-              : checkinTriggerLabel}
-          </span>
-          {checkinComplete && (
-            <span className="sr-only">{checkinLabel(app)}</span>
-          )}
-          <ChevronDown size={11} aria-hidden="true" />
-        </button>
-      );
+            : checkinTriggerLabel}
+        </span>
+        {checkinComplete && (
+          <span className="sr-only">{checkinLabel(app)}</span>
+        )}
+        <ChevronDown size={11} aria-hidden="true" />
+      </button>
+    );
     const restartButton = app !== "doubaowork" &&
       (operation === "restarting" || (canRestart && !connection.isError)) && (
         <button
@@ -1019,13 +1019,13 @@ export function AgentConnectionsPage({
         )}
         {(updates.installing === app ||
           (!installations.isError && installations.data?.[app] === false)) && (
-            <AgentInstallButton
-              app={app}
-              updates={updates}
-              disabled={rowBusy(app)}
-              onSelect={() => updates.requestInstall(app, websites[app])}
-            />
-          )}
+          <AgentInstallButton
+            app={app}
+            updates={updates}
+            disabled={rowBusy(app)}
+            onSelect={() => updates.requestInstall(app, websites[app])}
+          />
+        )}
         {!bypassed && reapplyButton}
         {app === "codex" && (
           <CodexProxyWarning
@@ -1063,15 +1063,15 @@ export function AgentConnectionsPage({
         onClick={
           compact
             ? (event) => {
-              if (
-                event.currentTarget.contains(event.target as Node) &&
-                !(event.target as Element).closest(
-                  "button, a, input, label, select, textarea, [role='button'], [role='switch'], [role='combobox'], .mp-agent-expanded, .mp-agent-checkin",
-                ) &&
-                window.getSelection()?.isCollapsed !== false
-              )
-                setExpanded(expanded === app ? null : app);
-            }
+                if (
+                  event.currentTarget.contains(event.target as Node) &&
+                  !(event.target as Element).closest(
+                    "button, a, input, label, select, textarea, [role='button'], [role='switch'], [role='combobox'], .mp-agent-expanded, .mp-agent-checkin",
+                  ) &&
+                  window.getSelection()?.isCollapsed !== false
+                )
+                  setExpanded(expanded === app ? null : app);
+              }
             : undefined
         }
       >
@@ -1207,18 +1207,18 @@ export function AgentConnectionsPage({
                   title={
                     needsModelControl(app)
                       ? t(
-                        app === "qoder"
-                          ? "agentConnections.modelControlHint"
-                          : "agentConnections.workbuddyModelControlHint",
-                      )
+                          app === "qoder"
+                            ? "agentConnections.modelControlHint"
+                            : "agentConnections.workbuddyModelControlHint",
+                        )
                       : !enabled
                         ? `${nativeLabel}\n${t(
-                          nativeAvailable
-                            ? native.model
-                              ? "agentConnections.nativeModelHint"
-                              : "agentConnections.nativeDefaultHint"
-                            : "agentConnections.nativeUnavailable",
-                        )}`
+                            nativeAvailable
+                              ? native.model
+                                ? "agentConnections.nativeModelHint"
+                                : "agentConnections.nativeDefaultHint"
+                              : "agentConnections.nativeUnavailable",
+                          )}`
                         : currentModel
                   }
                 >
@@ -1284,41 +1284,41 @@ export function AgentConnectionsPage({
                               ? t("agentConnections.deepseekStartingModelHint")
                               : needsModelControl(app)
                                 ? t(
-                                  app === "qoder"
-                                    ? "agentConnections.modelControlHint"
-                                    : "agentConnections.workbuddyModelControlHint",
-                                )
+                                    app === "qoder"
+                                      ? "agentConnections.modelControlHint"
+                                      : "agentConnections.workbuddyModelControlHint",
+                                  )
                                 : app === "claude-desktop"
                                   ? t(
-                                    "agentConnections.desktopStartingModelHint",
-                                  )
+                                      "agentConnections.desktopStartingModelHint",
+                                    )
                                   : undefined
                       }
                       disabled={rowBusy(app)}
                       models={[
                         ...(!enabled && nativeAvailable
                           ? [
-                            {
-                              id: `native-current/${app}`,
-                              name: nativeLabel,
-                              source: "native" as const,
-                              logo: APP_ICON_NAME[app],
-                              disabled: true,
-                            },
-                          ]
+                              {
+                                id: `native-current/${app}`,
+                                name: nativeLabel,
+                                source: "native" as const,
+                                logo: APP_ICON_NAME[app],
+                                disabled: true,
+                              },
+                            ]
                           : []),
                         ...(catalog.isError ? [] : (catalog.data ?? [])).filter(
                           (model) =>
                             app !== "claude-desktop" ||
                             (!!desktopVisibility.data &&
                               desktopVisibility.data.ids.includes(model.id) ===
-                              desktopVisibility.data.only),
+                                desktopVisibility.data.only),
                         ),
                       ]}
                       selected={
                         enabled &&
-                          state?.model &&
-                          (!needsModelControl(app) || modelControl?.authorized)
+                        state?.model &&
+                        (!needsModelControl(app) || modelControl?.authorized)
                           ? [state.model]
                           : nativeAvailable
                             ? [`native-current/${app}`]
@@ -1329,9 +1329,9 @@ export function AgentConnectionsPage({
                       onDisconnect={
                         enabled || orphaned || inactiveCodexIntent
                           ? () => {
-                            setPicking(null);
-                            setDisconnecting(app);
-                          }
+                              setPicking(null);
+                              setDisconnecting(app);
+                            }
                           : undefined
                       }
                       disconnectLabel={
@@ -1391,10 +1391,8 @@ export function AgentConnectionsPage({
             )}
             {((app === "doubaowork" && !state?.configured) ||
               (enabled && !state?.recoveryPending && app !== "doubaowork")) && (
-                <div className="mp-agent-detail-actions">
-                  {doubaoLauncher}
-                </div>
-              )}
+              <div className="mp-agent-detail-actions">{doubaoLauncher}</div>
+            )}
             {isTrae(app) && (
               <>
                 <p className="text-xs text-muted-foreground">
@@ -1493,8 +1491,8 @@ export function AgentConnectionsPage({
           onDragEnd: ({ active, over }) =>
             over
               ? t("agentConnections.sorting.dropped", {
-                position: announcePosition(active.id, over.id),
-              })
+                  position: announcePosition(active.id, over.id),
+                })
               : t("agentConnections.sorting.cancelled"),
           onDragCancel: () => t("agentConnections.sorting.cancelled"),
         },
@@ -1610,10 +1608,11 @@ export function AgentConnectionsPage({
               ) && (
                 <span className="mp-agent-status bad" role="status">
                   {t(
-                    `agentConnections.states.${connections[APP_IDS.indexOf(app)].data?.reloadState ===
+                    `agentConnections.states.${
+                      connections[APP_IDS.indexOf(app)].data?.reloadState ===
                       "failed"
-                      ? "reloadFailed"
-                      : "catalogStale"
+                        ? "reloadFailed"
+                        : "catalogStale"
                     }`,
                   )}
                 </span>
@@ -1630,13 +1629,13 @@ export function AgentConnectionsPage({
             {(updates.installing === app ||
               (!installations.isError &&
                 installations.data?.[app] === false)) && (
-                <AgentInstallButton
-                  app={app}
-                  updates={updates}
-                  disabled={rowBusy(app)}
-                  onSelect={() => updates.requestInstall(app, websites[app])}
-                />
-              )}
+              <AgentInstallButton
+                app={app}
+                updates={updates}
+                disabled={rowBusy(app)}
+                onSelect={() => updates.requestInstall(app, websites[app])}
+              />
+            )}
             {supported.includes(app) && installations.data?.[app] === true && (
               <Button
                 size="sm"

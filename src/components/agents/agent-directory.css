@@ -15,11 +15,11 @@
   margin-bottom: var(--workspace-section-gap);
 }
 
-.vary-agents:not(.tray-agents)>.mp-agent-updates {
+.vary-agents:not(.tray-agents) > .mp-agent-updates {
   margin-bottom: var(--workspace-section-gap);
 }
 
-.vary-agents .agent-directory-toolbar~[role="tabpanel"] {
+.vary-agents .agent-directory-toolbar ~ [role="tabpanel"] {
   margin-top: 0;
 }
 
@@ -62,7 +62,7 @@
   font-weight: 600;
 }
 
-.agent-directory-tabs [role="tab"]>svg {
+.agent-directory-tabs [role="tab"] > svg {
   flex: none;
   width: 14px;
   height: 14px;
@@ -83,13 +83,13 @@
 }
 
 .agent-directory-rows,
-.vary-agents [role="tabpanel"]>.mp-agent-empty {
+.vary-agents [role="tabpanel"] > .mp-agent-empty {
   border: 1px solid var(--mp-line);
   border-radius: var(--radius);
   background: var(--mp-card);
 }
 
-.agent-directory-rows>.mp-agent-install-row {
+.agent-directory-rows > .mp-agent-install-row {
   min-width: 0;
   min-height: var(--workspace-row-height);
   padding: var(--workspace-row-padding);
@@ -137,7 +137,7 @@
   color: var(--success);
 }
 
-.agent-list-row .agent-list-ready>.mp-agent-dot {
+.agent-list-row .agent-list-ready > .mp-agent-dot {
   background: var(--success);
 }
 
@@ -153,7 +153,7 @@
   font-size: 11px;
 }
 
-.agent-list-controls>.mp-switch {
+.agent-list-controls > .mp-switch {
   grid-column: 2;
   justify-self: end;
 }
@@ -183,15 +183,15 @@
   transform: translateY(-50%);
 }
 
-.agent-list-row.mp-sortable-row[data-sortable]+.agent-list-row::before {
+.agent-list-row.mp-sortable-row[data-sortable] + .agent-list-row::before {
   content: none;
 }
 
-.agent-directory-rows>.agent-list-row.dragging {
+.agent-directory-rows > .agent-list-row.dragging {
   border-style: dashed;
 }
 
-.agent-directory-rows>.agent-list-row.dragging>* {
+.agent-directory-rows > .agent-list-row.dragging > * {
   opacity: 0;
   pointer-events: none;
 }
@@ -201,16 +201,16 @@
   margin: auto 0 6px;
 }
 
-.agent-directory-rows>.agent-list-row,
-.agent-directory-rows>.mp-agent-install-row,
-.agent-directory-rows>.mp-agent-empty,
+.agent-directory-rows > .agent-list-row,
+.agent-directory-rows > .mp-agent-install-row,
+.agent-directory-rows > .mp-agent-empty,
 .agent-directory-rows .agent-list-row.mp-agent-placeholder {
   border: 0;
   background: transparent;
 }
 
-.agent-directory-rows>.agent-list-row+.agent-list-row,
-.agent-directory-rows>.mp-agent-install-row+.mp-agent-install-row {
+.agent-directory-rows > .agent-list-row + .agent-list-row,
+.agent-directory-rows > .mp-agent-install-row + .mp-agent-install-row {
   border-top: 1px solid var(--mp-line);
   border-top-left-radius: 0;
   border-top-right-radius: 0;
@@ -220,6 +220,6 @@
   flex-basis: auto;
 }
 
-.agent-directory-rows .mp-agent-install-row>p {
+.agent-directory-rows .mp-agent-install-row > p {
   flex-basis: 100%;
 }
