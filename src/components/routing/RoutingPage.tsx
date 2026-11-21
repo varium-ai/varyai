@@ -143,14 +143,17 @@ export function RoutingPage({
           <Plus size={13} />
           {t("intentRouting.create")}
         </Button>
-        <button
-          className="text rt-mask"
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="rt-mask"
           aria-pressed={masked}
           onClick={() => setMasked(!masked)}
         >
           {masked ? <Eye size={14} /> : <EyeOff size={14} />}
           {t(masked ? "routingPage.showAccounts" : "routingPage.hideAccounts")}
-        </button>
+        </Button>
       </header>
       {trace.isError && (
         <p role="alert" className="rt-error">

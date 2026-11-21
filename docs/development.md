@@ -34,6 +34,12 @@ semantic colors directly. Older workspace surfaces read aliases that resolve
 to the same tokens. Window, sidebar and chart fill opacity are defined by
 their respective surfaces.
 
+Standard single-line fields and small action buttons share `--compact-control-height`
+(2rem, normally 32px). Size bordered search and URL wrappers with this token and
+let the inner field fill the wrapper. Multiline editors keep their own sizing.
+Use `SearchInput` for standalone fields with a leading search icon so its
+alignment and text inset stay consistent when control heights change.
+
 Renderer UI text uses the shared `--mp-font` stack: PingFang SC on macOS, Microsoft YaHei on Windows, and system UI fonts elsewhere. Keep code and structured-data editors monospace.
 
 ## Native file dialog languages

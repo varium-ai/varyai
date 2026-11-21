@@ -264,6 +264,17 @@ fn extract_message_node<'a>(msg: &'a Value, path: &str, nodes: &mut Vec<Extracte
                                     });
                                 }
                             }
+                            "refusal" => {
+                                if let Some(refusal_text) =
+                                    b_obj.get("refusal").and_then(Value::as_str)
+                                {
+                                    nodes.push(ExtractedTextNode {
+                                        location: format!("{b_path}.refusal"),
+                                        text: refusal_text,
+                                        is_password_field: false,
+                                    });
+                                }
+                            }
                             _ => {
                                 if let Some(text) = b_obj.get("text").and_then(Value::as_str) {
                                     nodes.push(ExtractedTextNode {
@@ -278,6 +289,16 @@ fn extract_message_node<'a>(msg: &'a Value, path: &str, nodes: &mut Vec<Extracte
                 }
             }
             _ => {}
+        }
+    }
+
+    for key in ["reasoning_content", "reasoning", "refusal"] {
+        if let Some(text) = m_obj.get(key).and_then(Value::as_str) {
+            nodes.push(ExtractedTextNode {
+                location: format!("{path}.{key}"),
+                text,
+                is_password_field: false,
+            });
         }
     }
 

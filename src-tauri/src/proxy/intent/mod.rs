@@ -1419,14 +1419,21 @@ pub(crate) async fn handle(
                 .cloned()
         })
         .or(session);
+    let requested_model = original["model"].as_str().filter(|model| !model.is_empty());
     let Some(session) = session else {
-        return fail(StatusCode::NOT_FOUND, "routing_model_unavailable");
+        return match requested_model {
+            Some(model) => reject_unrouted(&state, "codex", model),
+            None => fail(StatusCode::NOT_FOUND, "routing_model_unavailable"),
+        };
     };
     if menu.is_none()
         && original["model"] != session.group.alias()
         && original["model"] != format!("vary-auto/{}", session.group.id)
     {
-        return fail(StatusCode::NOT_FOUND, "routing_model_unavailable");
+        return match requested_model {
+            Some(model) => reject_unrouted(&state, "codex", model),
+            None => fail(StatusCode::NOT_FOUND, "routing_model_unavailable"),
+        };
     }
     execute(
         state,
@@ -1447,6 +1454,19 @@ pub(crate) async fn handle(
 
 pub(crate) fn catalog_stale() -> Response {
     error(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale")
+}
+/// Record a request whose model matched no routing group, so the routing page
+/// still shows the attempt. Routing semantics are unchanged: the caller still
+/// receives the same `routing_model_unavailable` rejection.
+fn reject_unrouted(state: &super::server::ProxyState, agent: &str, model: &str) -> Response {
+    let rejected =
+        state
+            .intent_runtime
+            .traces
+            .begin(agent, model, model, "unrouted", Instant::now());
+    rejected.step(trace::Kind::Rejected, None, None);
+    rejected.finish(StatusCode::NOT_FOUND.as_u16(), trace::State::Failed);
+    error(StatusCode::NOT_FOUND, "routing_model_unavailable")
 }
 pub(crate) async fn handle_global(
     state: super::server::ProxyState,
@@ -1469,7 +1489,12 @@ pub(crate) async fn handle_global(
         }
     };
     let Some(session) = session else {
-        return error(StatusCode::NOT_FOUND, "routing_model_unavailable");
+        let agent = request
+            .extensions()
+            .get::<super::connections::Agent>()
+            .map(|agent| agent.0)
+            .unwrap_or("external");
+        return reject_unrouted(&state, agent, alias);
     };
     let (parts, body) = request.into_parts();
     let endpoint = parts
@@ -1798,6 +1823,11 @@ async fn execute(
     let inspection_app = consumer_app
         .and_then(|app| app.parse::<crate::app_config::AppType>().ok())
         .unwrap_or_else(|| wire_app.clone());
+    let security_failure = |error: super::security::http_restoration::DlpForwardError| {
+        let response = error.into_routed_app_response(&wire_app);
+        trace.finish(response.status().as_u16(), trace::State::Failed);
+        response
+    };
     let tool_session_id =
         super::security::audit_session_id(&inspection_app, &parts.headers, &original);
     let dlp_request: Option<Arc<super::security::http_restoration::DlpHttpRequest>> = if external {
@@ -1815,11 +1845,12 @@ async fn execute(
                 Some(Arc::from(request))
             }
             Ok(super::security::http_restoration::RestorationAdmission::Intercepted(response)) => {
-                return response
+                trace.finish(response.status().as_u16(), trace::State::Failed);
+                return response;
             }
             Ok(super::security::http_restoration::RestorationAdmission::Passthrough) => None,
             Err(super::ProxyError::DlpForward(error)) => {
-                return error.into_routed_app_response(&inspection_app)
+                return security_failure(error);
             }
             Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_inspection_failed"),
         }
@@ -1854,7 +1885,9 @@ async fn execute(
     let routing_body = match &dlp_request {
         Some(request) => match request.routing_projection(&canonical_projection) {
             Ok(body) => Some(body),
-            Err(error) => return error.into_routed_app_response(&inspection_app),
+            Err(error) => {
+                return security_failure(error);
+            }
         },
         None => None,
     };
@@ -2393,8 +2426,9 @@ async fn execute(
             payload
         };
         if dlp_request.is_some() && (target.upstream.is_none() || official_conversion) {
-            return super::security::http_restoration::DlpForwardError::RestoreUnsupported
-                .into_routed_app_response(&inspection_app);
+            return security_failure(
+                super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+            );
         }
         let resolved_subscription = if let Some(provider) = target
             .upstream
@@ -2551,8 +2585,15 @@ async fn execute(
             );
             let forward = async {
                 if specialized && dlp_request.is_some() {
+                    // A subscription upstream wraps the request in its own provider
+                    // envelope, so the answer this proxy sees is not a verifiable
+                    // native entity and no local round trip exists. Name that
+                    // reason instead of blaming the client's route.
+                    log::warn!("[DLP] restore_refused reason=subscription_transport agent={agent}");
                     return Err(super::ProxyError::DlpForward(
-                        super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                        super::security::http_restoration::DlpForwardError::RestoreUnsupportedFor(
+                            super::security::http_restoration::RestoreUnsupportedCause::SubscriptionTransport,
+                        ),
                     ));
                 }
                 if specialized {
@@ -2575,6 +2616,7 @@ async fn execute(
                     observation_extensions.insert(super::group_forward::RoutedRestoration {
                         request: request.clone(),
                         actor: agent,
+                        gateway: state.restoration_gateway.clone(),
                     });
                 }
                 observation_extensions.insert(super::tool_observation::mount::ClientToolSession(
@@ -2615,7 +2657,7 @@ async fn execute(
             match forwarded {
                 Ok(response) => response,
                 Err(super::ProxyError::DlpForward(error)) => {
-                    return error.into_routed_app_response(&inspection_app)
+                    return security_failure(error);
                 }
                 Err(super::ProxyError::UpstreamError {
                     status,

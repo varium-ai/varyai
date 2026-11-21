@@ -20,8 +20,8 @@
   margin-block: 3px;
 }
 .vary-providers .pv-skeleton-search {
-  width: 220px;
-  height: 40px;
+  width: 100%;
+  height: var(--compact-control-height);
   border-radius: var(--radius);
 }
 .vary-providers .pv-skeleton-manage {
@@ -100,9 +100,5 @@
     height: 18px;
     margin: 0;
     padding: 0;
-  }
-  .vary-providers .pv-skeleton-search {
-    flex: 1;
-    min-width: 140px;
   }
 }

@@ -13,6 +13,8 @@ use futures::StreamExt;
 pub(crate) struct RoutedRestoration {
     pub request: Arc<DlpHttpRequest>,
     pub actor: &'static str,
+    /// Re-admission for a converted body needs the same published policy.
+    pub gateway: crate::proxy::security::http_restoration::RestorationGateway,
 }
 
 #[allow(clippy::too_many_arguments)]

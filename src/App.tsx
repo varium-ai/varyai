@@ -140,9 +140,7 @@ export default function App() {
               onAddProvider={addProvider}
             />
           )}
-          {view === "stats" && (
-            <StatisticsPage onOpenSecurity={() => setView("security")} />
-          )}
+          {view === "stats" && <StatisticsPage />}
           {view === "security" && (
             <SecurityCenterPage headerAction={<GlobalSecurityToggle />} />
           )}

@@ -12,7 +12,53 @@ use super::super::{
 use super::*;
 use crate::proxy::{hyper_client::ProxyResponse, protocol_bridge::Protocol};
 
-const ENTITY_LIMIT: usize = 1024 * 1024;
+/// Upper bound for one buffered response entity. The buffer only charges bytes
+/// it actually receives against the shared payload budget, so this is headroom,
+/// not a pre-reservation. Long agent turns legitimately stream several MiB of
+/// SSE frames; the former 1 MiB cap killed such streams at EOF.
+pub(in crate::proxy::security) const ENTITY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Deliberate diagnostic: keep the exact upstream entity that failed verification
+/// so it can be replayed in a unit test. Debug builds only, and only when asked,
+/// because the entity is real upstream content.
+#[cfg(debug_assertions)]
+fn dump_verification_failure(stage: &'static str, entity: &[u8]) {
+    if std::env::var_os("VARY_DLP_DUMP_FAILURES").is_none() {
+        return;
+    }
+    let dir = std::env::temp_dir().join("vary-dlp-failures");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or_default();
+    let path = dir.join(format!("{stage}-{stamp}.entity"));
+    if let Err(error) = std::fs::write(&path, entity) {
+        log::warn!("[DLP] dump_failed path={} error={error}", path.display());
+    } else {
+        log::warn!("[DLP] dump_entity stage={stage} path={}", path.display());
+    }
+}
+
+fn log_sse_error(stage: &'static str, error: &RestoreError, entity: &[u8]) {
+    #[cfg(debug_assertions)]
+    dump_verification_failure(stage, entity);
+    if log::log_enabled!(log::Level::Warn) {
+        let data_lines = entity
+            .split(|byte| *byte == b'\n')
+            .filter(|line| line.starts_with(b"data:"))
+            .count();
+        let reason = error
+            .reason_at(RestoreStage::ResponseProcessing)
+            .map_or("unspecified", |reason| reason.label());
+        log::warn!(
+            "[DLP] native_sse stage={stage} code={} reason={reason} data_lines={data_lines}",
+            error.code()
+        );
+    }
+}
 
 /// Boxed delivery stream returned by the native finalizer.
 type NativeDelivery = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
@@ -234,6 +280,7 @@ fn admit_with_ingress(
     };
     Ok(match build() {
         Ok(request) => RestorationAdmission::Admitted(Box::new(request)),
+        Err(error) if shared => return Err(crate::proxy::error::ProxyError::DlpForward(error)),
         Err(error) => RestorationAdmission::Intercepted(error.into_app_response(app)),
     })
 }
@@ -737,18 +784,18 @@ pub(super) fn capture_original(
         let ready = if token_free_gemini {
             OriginalReady::Verbatim(bytes)
         } else if sse {
-            if let Some(error) = native_sse_error(bytes.as_slice(), &budget, error_safety, protocol).map_err(|_| io::Error::other("Response stream failed."))? {
+            if let Some(error) = native_sse_error(bytes.as_slice(), &budget, error_safety, protocol).inspect_err(|error| log_sse_error("upstream_framing", error, bytes.as_slice())).map_err(|_| io::Error::other("Response stream failed."))? {
                 OriginalReady::SseError(error)
             } else {
                 let mut verifier = completion_verifier::NativeSseVerifier::new(pair, actual.clone(), binding, budget);
-                verifier.consume_upstream_sse(bytes.as_slice(), &actual).map_err(|_| io::Error::other("Response stream failed."))?;
+                verifier.consume_upstream_sse(bytes.as_slice(), &actual).inspect_err(|error| log_sse_error("upstream_verify", error, bytes.as_slice())).map_err(|_| io::Error::other("Response stream failed."))?;
                 OriginalReady::Sse(verifier)
             }
         } else {
             // The actual upstream yielded None above; decoding cannot manufacture EOF.
             let bytes = decoder.decode(bytes, &budget, ENTITY_LIMIT).map_err(|_| io::Error::other("Response stream failed."))?;
             let mut verifier = completion_verifier::NativeJsonVerifier::new(pair, actual.clone(), binding, budget);
-            verifier.consume_upstream_json(bytes.as_slice(), &actual).map_err(|_| io::Error::other("Response stream failed."))?;
+            verifier.consume_upstream_json(bytes.as_slice(), &actual).inspect_err(|error| log_sse_error("upstream_json_verify", error, bytes.as_slice())).map_err(|_| io::Error::other("Response stream failed."))?;
             OriginalReady::Json(verifier, bytes)
         };
         record_original(&observer, ready)?;
@@ -772,7 +819,6 @@ fn native_sse_error(
     let mut offset = 0usize;
     let mut error = None;
     let mut terminal = false;
-    let mut frames = 0usize;
     for line in raw.split_inclusive('\n') {
         offset += line.len();
         let content = line.strip_suffix('\n').ok_or(RestoreError::RestoreFailed)?;
@@ -783,10 +829,9 @@ fn native_sse_error(
         if !content.is_empty() {
             continue;
         }
-        frames += 1;
-        if frames > 4096 {
-            return Err(RestoreError::RestoreFailed);
-        }
+        // No frame-count cap: frames are bounded by the entity byte budget
+        // (`ENTITY_LIMIT`), and long agent answers legitimately exceed any
+        // fixed frame count. Each frame still gets full framing validation.
         let frame = &raw[frame_start..offset];
         frame_start = offset;
         let mut event = None;
@@ -1105,9 +1150,6 @@ fn sse_payloads_contain_marker(text: &str, scan: &mut MarkerScan) -> Result<bool
             continue;
         }
         frames += 1;
-        if frames > 4096 {
-            return Err(());
-        }
         if scan_sse_block(&text[frame_start..offset], scan)? {
             return Ok(true);
         }
@@ -1229,8 +1271,14 @@ impl DlpPreparedAttempt {
                 Ok(Box::pin(stream))
             }
             (true, OriginalReady::Sse(mut verifier)) => {
-                verifier.consume_client_sse(client.as_slice(), &self.provenance)?;
-                let proof = verifier.finish()?;
+                verifier
+                    .consume_client_sse(client.as_slice(), &self.provenance)
+                    .inspect_err(|error| {
+                        log_sse_error("client_verify", error, client.as_slice())
+                    })?;
+                let proof = verifier.finish().inspect_err(|error| {
+                    log_sse_error("completion_proof", error, client.as_slice())
+                })?;
                 let finalize = match self.native_protocol {
                     Some(Protocol::Chat) => chat::response::finalize_sse,
                     Some(Protocol::Anthropic) => {
@@ -1250,6 +1298,7 @@ impl DlpPreparedAttempt {
                     proof,
                     ENTITY_LIMIT,
                 )
+                .inspect_err(|error| log_sse_error("restore", error, client.as_slice()))
                 .map(|delivery| delivery.into_delivery_stream());
                 Self::degrade_restoration(restored, client, recoverable, self.native_protocol, sse)
             }

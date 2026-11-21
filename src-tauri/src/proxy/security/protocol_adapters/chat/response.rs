@@ -26,6 +26,16 @@ fn client() -> ClientProtocol {
     ClientProtocol::new(Protocol::Chat)
 }
 
+fn check_sse_limit(metric: &'static str, actual: usize, limit: usize) -> Result<(), RestoreError> {
+    if actual <= limit {
+        return Ok(());
+    }
+    log::warn!("[DLP] native_sse stage=restore metric={metric} actual={actual} limit={limit}");
+    Err(RestoreError::capacity(
+        crate::proxy::security::tokenization::TokenError::CapacityExceeded,
+    ))
+}
+
 fn observe_text<'native>(
     node: &'native Value,
     policy: TextPolicy,
@@ -224,20 +234,17 @@ pub(in crate::proxy::security) fn finalize_sse(
             stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
             NativeSseSnapshotSelection, NativeSseTextStream,
         },
-        tokenization::TokenError,
     };
     lease
         .require_native_attempt_binding(client(), binding)
         .map_err(RestoreError::scan_error)?;
-    if entity.len() > max.min(1024 * 1024) {
-        return Err(RestoreError::capacity(TokenError::CapacityExceeded));
-    }
+    // The caller passes the capture-side ENTITY_LIMIT; honor it instead of a
+    // tighter hidden clamp, so an entity the guard already accepted and verified
+    // is not refused again at staging time by a smaller constant.
+    check_sse_limit("entity_bytes", entity.len(), max)?;
     let mut remaining = std::str::from_utf8(entity).map_err(|_| RestoreError::RestoreFailed)?;
     let mut parsed = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     while !remaining.is_empty() {
-        if parsed.len() >= 1024 {
-            return Err(RestoreError::capacity(TokenError::CapacityExceeded));
-        }
         let end = remaining
             .bytes()
             .enumerate()
@@ -284,7 +291,6 @@ pub(in crate::proxy::security) fn finalize_sse(
     let mut frames = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut snapshots = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut groups = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
-    let mut site_count = 0usize;
     for (frame_index, (raw, source)) in parsed.as_slice().iter().enumerate() {
         let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
         if let Some(source) = source {
@@ -295,9 +301,6 @@ pub(in crate::proxy::security) fn finalize_sse(
                 .filter(|choices| choices.len() <= 128)
                 .ok_or(RestoreError::RestoreFailed)?;
             for choice in choices {
-                if snapshots.len() >= 128 {
-                    return Err(RestoreError::capacity(TokenError::CapacityExceeded));
-                }
                 snapshots
                     .push(NativeSseSnapshotSelection::chat_choice(frame_index, choice))
                     .map_err(RestoreError::capacity)?;
@@ -357,10 +360,6 @@ pub(in crate::proxy::security) fn finalize_sse(
                 }
             }
         }
-        site_count = site_count
-            .checked_add(sites.len())
-            .filter(|count| *count <= 128)
-            .ok_or_else(|| RestoreError::capacity(TokenError::CapacityExceeded))?;
         frames
             .push(NativeSseFrameObservation::new(
                 raw,
@@ -374,14 +373,8 @@ pub(in crate::proxy::security) fn finalize_sse(
     for frame in frames.as_slice() {
         ordered.push(frame).map_err(RestoreError::capacity)?;
     }
-    let observation = NativeSseObservation::new(
-        entity,
-        ordered.as_slice(),
-        client(),
-        lease,
-        binding,
-        budget.clone(),
-    )?;
+    let observation =
+        NativeSseObservation::new_chat(entity, ordered.as_slice(), lease, binding, budget.clone())?;
     let mut streams = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     for group in groups.as_slice() {
         streams

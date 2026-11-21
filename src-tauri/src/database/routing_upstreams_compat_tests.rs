@@ -359,9 +359,29 @@ async fn api_provider_id_rename_moves_references_and_preserves_agent_and_transpo
                 .ok_or("target identity changed")?;
             assert_eq!(old.url, next.url);
             assert_eq!(old.headers, next.headers);
+            // Transport identity survives the rename: provider_id, url and
+            // headers above are immutable, and the embedded upstream snapshot
+            // may only differ in its public supplier id, which now follows
+            // the renamed record so traces and the UI show the configured
+            // supplier instead of the opaque execution identity.
+            let mut old_snapshot = serde_json::to_value(&old.upstream)?;
+            let mut next_snapshot = serde_json::to_value(&next.upstream)?;
+            for snapshot in [&mut old_snapshot, &mut next_snapshot] {
+                if let Some(upstream) = snapshot.as_object_mut() {
+                    upstream.remove("id");
+                }
+            }
+            assert_eq!(old_snapshot, next_snapshot);
+            // The public supplier id follows the current record: renamed for
+            // the migrated identity, itself for every untouched one.
+            let expected = if old.provider_id == saved.id {
+                renamed.id.as_str()
+            } else {
+                next.provider_id.as_str()
+            };
             assert_eq!(
-                serde_json::to_value(&old.upstream)?,
-                serde_json::to_value(&next.upstream)?
+                next.upstream.as_ref().map(|p| p.id.as_str()),
+                Some(expected)
             );
         }
     }

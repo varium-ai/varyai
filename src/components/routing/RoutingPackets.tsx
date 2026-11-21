@@ -3,6 +3,7 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 import { attemptCandidateIndex } from "./routingAttempts";
+import { FINISHED_REPLAY_WINDOW_MS } from "./useRoutingFlights";
 
 type Position = "source" | "hub" | number;
 type Leg = { wire: number; reverse?: boolean };
@@ -367,14 +368,17 @@ function packetPlayer(
       id = row?.id;
       replaying = replay;
       activeMode = active;
-      // A sub-second request can already be done in its first polling snapshot.
+      // A sub-second request can already be done in its first polling snapshot,
+      // and a request sent just before opening this page replays within the
+      // finished-replay window instead of staying silent.
       allowed =
         active &&
         !!row &&
         (replay ||
           row.state === "routing" ||
           row.state === "streaming" ||
-          row.startedAt + row.durationMs >= Date.now() - 5000);
+          row.startedAt + row.durationMs >=
+            Date.now() - FINISHED_REPLAY_WINDOW_MS);
       if (allowed) {
         queue.push({
           legs: [{ wire: 0 }],

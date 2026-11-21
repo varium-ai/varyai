@@ -22,10 +22,10 @@ export function ProviderListSkeleton() {
       <span className="sr-only">{t("common.loading")}</span>
       <div className="pv-head" aria-hidden="true">
         <span className="pv-skeleton pv-skeleton-search" />
-        <span className="pv-skeleton pv-skeleton-manage" />
         <span className="pv-search-scope">
           <span className="pv-skeleton pv-skeleton-hint" />
         </span>
+        <span className="pv-skeleton pv-skeleton-manage" />
       </div>
       <div className="mp-list pv-list" aria-hidden="true">
         {Array.from({ length: 6 }, (_, index) => (

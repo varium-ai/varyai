@@ -12,10 +12,10 @@ use std::{
 };
 
 #[test]
-fn default_handles_share_the_exact_global_64_mib_ceiling() -> Result<(), TokenError> {
+fn default_handles_share_the_exact_global_ceiling() -> Result<(), TokenError> {
     let first = PayloadBudget::default();
     let second = PayloadBudget::default();
-    assert_eq!(first.limit(), 64 * 1024 * 1024);
+    assert_eq!(first.limit(), 256 * 1024 * 1024);
     assert_eq!(second.limit(), first.limit());
     assert_eq!(first.used(), 0);
     let reservation = first.reserve(first.limit())?;

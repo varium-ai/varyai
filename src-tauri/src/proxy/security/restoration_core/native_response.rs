@@ -829,6 +829,24 @@ pub(in crate::proxy::security) struct NativeSseObservation<'native> {
 }
 
 impl<'native> NativeSseObservation<'native> {
+    pub(in crate::proxy::security) fn new_chat(
+        entity: &'native [u8],
+        ordered_frames: &[&'native NativeSseFrameObservation<'native>],
+        lease: &DlpRequestLease,
+        binding: &'native ActualAttemptBinding,
+        budget: PayloadBudget,
+    ) -> Result<Self, RestoreError> {
+        Self::with_limits(
+            entity,
+            ordered_frames,
+            ClientProtocol::new(crate::proxy::protocol_bridge::Protocol::Chat),
+            lease,
+            binding,
+            budget,
+            None,
+        )
+    }
+
     pub(in crate::proxy::security) fn new(
         entity: &'native [u8],
         ordered_frames: &[&'native NativeSseFrameObservation<'native>],
@@ -836,6 +854,26 @@ impl<'native> NativeSseObservation<'native> {
         lease: &DlpRequestLease,
         binding: &'native ActualAttemptBinding,
         budget: PayloadBudget,
+    ) -> Result<Self, RestoreError> {
+        Self::with_limits(
+            entity,
+            ordered_frames,
+            client,
+            lease,
+            binding,
+            budget,
+            Some((1024, 128)),
+        )
+    }
+
+    fn with_limits(
+        entity: &'native [u8],
+        ordered_frames: &[&'native NativeSseFrameObservation<'native>],
+        client: ClientProtocol,
+        lease: &DlpRequestLease,
+        binding: &'native ActualAttemptBinding,
+        budget: PayloadBudget,
+        count_limits: Option<(usize, usize)>,
     ) -> Result<Self, RestoreError> {
         use super::super::tokenization::TokenError;
         use crate::proxy::protocol_bridge::Protocol;
@@ -846,7 +884,9 @@ impl<'native> NativeSseObservation<'native> {
         lease
             .require_native_attempt_binding(client, binding)
             .map_err(RestoreError::scan_error)?;
-        if entity.len() > 1024 * 1024 || ordered_frames.len() > 1024 {
+        if entity.len() > 1024 * 1024
+            || count_limits.is_some_and(|(frames, _)| ordered_frames.len() > frames)
+        {
             return Err(RestoreError::capacity(TokenError::CapacityExceeded));
         }
         if entity.is_empty() || ordered_frames.is_empty() || std::str::from_utf8(entity).is_err() {
@@ -868,7 +908,7 @@ impl<'native> NativeSseObservation<'native> {
             offset = end;
             site_count = site_count
                 .checked_add(frame.sites.len())
-                .filter(|count| *count <= 128)
+                .filter(|count| count_limits.is_none_or(|(_, sites)| *count <= sites))
                 .ok_or_else(|| RestoreError::capacity(TokenError::CapacityExceeded))?;
             if let Some(source) = frame.source {
                 // Reuse bounded immutable source traversal, never a caller snapshot.
@@ -962,7 +1002,7 @@ impl<'native> NativeSseSnapshotSelection<'native> {
 }
 
 // All retained candidates and encodings have independent, precharged owners.
-// A missing candidate denotes opaque DONE, whose original wire is preserved.
+// Unedited Chat frames borrow their original JSON; opaque DONE has no JSON.
 // No wire getter or extraction is available outside this private module.
 struct StagedNativeSseFrame<'native> {
     source: &'native NativeSseFrameObservation<'native>,
@@ -1510,7 +1550,7 @@ fn inspect_native_sse_streams<'native>(
     for index in 0..observed.frame_count() {
         let frame = observed.frame(index).ok_or(RestoreError::RestoreFailed)?;
         for site_index in 0..frame.sites().len() {
-            if sites.len() >= 128 {
+            if protocol != Protocol::Chat && sites.len() >= 128 {
                 return Err(RestoreError::RestoreFailed);
             }
             let site = frame
@@ -1539,7 +1579,7 @@ fn inspect_native_sse_streams<'native>(
         }
     }
     let count = sites.len();
-    if streams.len() > count || count > 128 {
+    if streams.len() > count.min(128) {
         return Err(RestoreError::RestoreFailed);
     }
     let mut selected = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
@@ -1920,7 +1960,7 @@ fn stage_native_sse_inner<'native>(
     if snapshots.is_empty() {
         return Err(RestoreError::RestoreFailed);
     }
-    if snapshots.len() > 128 {
+    if !snapshots[0].chat_choice && snapshots.len() > 128 {
         return Err(RestoreError::capacity(TokenError::CapacityExceeded));
     }
 
@@ -2112,18 +2152,28 @@ fn stage_native_sse_inner<'native>(
                     .push(JsonStringReplacement { target, text })
                     .map_err(RestoreError::capacity)?;
             }
-            let candidate = PayloadJson::try_with_replacements(
-                source,
-                edits.as_slice(),
-                budget.clone(),
-                budget.limit(),
-            )
-            .map_err(RestoreError::capacity)?;
+            let candidate = if composed_chat_snapshots && !frame_changed {
+                None
+            } else {
+                Some(
+                    PayloadJson::try_with_replacements(
+                        source,
+                        edits.as_slice(),
+                        budget.clone(),
+                        budget.limit(),
+                    )
+                    .map_err(RestoreError::capacity)?,
+                )
+            };
             drop(edits);
             drop(restored_sites);
             drop(legacy_texts);
             // Encoding is mandatory even when there were no mappings or sites.
-            let data = serialize_json_with_budget(candidate.as_value(), &budget, wire_limit)?;
+            let data = serialize_json_with_budget(
+                candidate.as_ref().map_or(source, PayloadJson::as_value),
+                &budget,
+                wire_limit,
+            )?;
             NativeSseFrameObservation::charge_work(&mut remaining_work, data.len())?;
             let encoded = if frame_changed {
                 let mut length = 0usize;
@@ -2145,7 +2195,7 @@ fn stage_native_sse_inner<'native>(
                     .map_err(RestoreError::capacity)?
             };
             changed |= frame_changed;
-            (Some(candidate), encoded)
+            (candidate, encoded)
         } else {
             // Opaque DONE is retained verbatim, with no completion interpretation.
             let encoded =
@@ -2178,15 +2228,9 @@ fn stage_native_sse_inner<'native>(
         let candidate = frame
             .candidate
             .as_ref()
+            .map_or(source, PayloadJson::as_value);
+        let value = candidate_node(source, selection.native, candidate, 0, &mut remaining_work)?
             .ok_or(RestoreError::RestoreFailed)?;
-        let value = candidate_node(
-            source,
-            selection.native,
-            candidate.as_value(),
-            0,
-            &mut remaining_work,
-        )?
-        .ok_or(RestoreError::RestoreFailed)?;
         selections
             .push(NativeSseSnapshotSelection {
                 frame_index: selection.frame_index,
@@ -2517,7 +2561,7 @@ pub(in crate::proxy::security) fn compose_chat_snapshots(
         }
         out.raw(b"}")
     }
-    if choices.is_empty() || choices.len() > 128 {
+    if choices.is_empty() {
         return Err(RestoreError::RestoreFailed);
     }
     let mut remaining_work = 4 * 1024 * 1024;
@@ -2551,9 +2595,6 @@ pub(in crate::proxy::security) fn compose_chat_snapshots(
                     let index = index(tool)?;
                     if !tool_order.as_slice().contains(&index) {
                         tool_order.push(index).map_err(RestoreError::capacity)?;
-                    }
-                    if tools.len() >= 128 {
-                        return Err(RestoreError::capacity(TokenError::CapacityExceeded));
                     }
                     tools.push(tool).map_err(RestoreError::capacity)?;
                 }

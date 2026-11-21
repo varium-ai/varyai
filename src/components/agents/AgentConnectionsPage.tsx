@@ -129,7 +129,7 @@ const websites: Record<AppId, string> = {
   "trae-intl": "https://www.trae.ai/",
   kimi: "https://www.kimi.com/code",
   qwen: "https://qwenlm.github.io/qwen-code-docs/",
-  zcode: "https://zcode.ai/",
+  zcode: "https://zcode.z.ai/",
   "deepseek-harness": "https://www.deepseek.com/harness/",
 };
 export function AgentConnectionsPage({
@@ -252,15 +252,11 @@ export function AgentConnectionsPage({
       refetchInterval: 3000,
     })),
   });
-  const nativeModels = useQueries({
-    queries: APP_IDS.map((app) => ({
-      queryKey: ["agent-native-models", app],
-      queryFn: () =>
-        nativePicker(app) || needsModelControl(app) || isTrae(app)
-          ? Promise.resolve({ app, model: null, available: false })
-          : agentConnectionsApi.nativeModel(app),
-      refetchInterval: 5000,
-    })),
+  const nativeModels = useQuery({
+    queryKey: ["agent-native-models"],
+    queryFn: agentConnectionsApi.nativeModels,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   });
   const gateway = useQuery({
     queryKey: ["proxyStatus"],
@@ -653,6 +649,13 @@ export function AgentConnectionsPage({
     name(app).toLocaleLowerCase().includes(searchTerm);
   const visible = filtered ? shown.filter(matchesName) : shown;
   const available = filtered ? other.filter(matchesName) : other;
+  const sortableVisible =
+    !compact && !filtered
+      ? visible.filter((app) => {
+          const query = connections[APP_IDS.indexOf(app)];
+          return !query.isPending || query.data !== undefined;
+        })
+      : [];
   function reorder({ active, over }: DragEndEvent) {
     if (
       compact ||
@@ -686,7 +689,6 @@ export function AgentConnectionsPage({
     const operation = rowOperation(app);
     const connection = connections[APP_IDS.indexOf(app)];
     const state = connection.data;
-    const nativeQuery = nativeModels[APP_IDS.indexOf(app)];
     const enabled = !!state?.enabled;
     const orphaned = app === "codex" && state?.recoveryReason === "orphaned";
     const inactiveCodexIntent =
@@ -729,16 +731,18 @@ export function AgentConnectionsPage({
           codexReloadRestart ||
           !!modelControl?.pending
         : app !== "codex" && desktopRestart);
-    const native = nativeQuery.data;
-    const nativeAvailable = native?.available && !nativeQuery.isError;
+    const native = nativeModels.data?.find((model) => model.app === app);
+    const nativeAvailable = native?.available && !nativeModels.isError;
     const nativeModel =
       app === "opencode"
         ? native?.model?.replace(/^[^/]+\//, "")
         : native?.model;
+    const hasNativeModelQuery =
+      !nativePicker(app) && !needsModelControl(app) && !isTrae(app);
     const nativeLabel = nativeAvailable
       ? (nativeModel ?? t("agentConnections.nativeDefault"))
       : t(
-          nativeQuery.isPending
+          nativeModels.isPending && hasNativeModelQuery
             ? "common.loading"
             : "agentConnections.nativeUnavailable",
         );
@@ -1463,6 +1467,23 @@ export function AgentConnectionsPage({
       </SortableAgentRow>
     );
   }
+  function rowPlaceholder(app: AppId) {
+    return (
+      <div
+        key={`${app}-loading`}
+        className={`mp-agent-row mp-agent-placeholder${compact ? "" : " agent-list-row"}`}
+        role="status"
+        aria-label={`${name(app)}: ${t("agentConnections.states.checking")}`}
+      >
+        <span className="mp-agent-placeholder-icon" aria-hidden="true" />
+        <span className="mp-agent-placeholder-copy" aria-hidden="true">
+          <span className="mp-agent-placeholder-name" />
+          <span className="mp-agent-placeholder-status" />
+        </span>
+        <span className="mp-agent-placeholder-control" aria-hidden="true" />
+      </div>
+    );
+  }
   const rescanButton = (variant: "outline" | "ghost", className?: string) => (
     <Button
       variant={variant}
@@ -1512,7 +1533,10 @@ export function AgentConnectionsPage({
         },
       }}
     >
-      <SortableContext items={visible} strategy={verticalListSortingStrategy}>
+      <SortableContext
+        items={sortableVisible}
+        strategy={verticalListSortingStrategy}
+      >
         <div className={compact ? "mp-list" : "agent-directory-rows"}>
           {(installations.isPending || states.isPending) &&
             shown.length === 0 && (
@@ -1527,24 +1551,32 @@ export function AgentConnectionsPage({
                     aria-hidden="true"
                   >
                     <span className="mp-agent-placeholder-icon" />
-                    <span className="mp-agent-placeholder-name" />
+                    <span className="mp-agent-placeholder-copy">
+                      <span className="mp-agent-placeholder-name" />
+                      <span className="mp-agent-placeholder-status" />
+                    </span>
                     <span className="mp-agent-placeholder-control" />
                   </div>
                 ))}
               </div>
             )}
-          {visible.map((app, index) => (
-            <Fragment key={app}>
-              {compact &&
-                connectionRank(app) === 0 &&
-                (index === 0 || connectionRank(shown[index - 1]) > 0) && (
-                  <p className="tray-unconfigured">
-                    {t("trayPanel.notConfigured")}
-                  </p>
-                )}
-              {row(app)}
-            </Fragment>
-          ))}
+          {visible.map((app, index) => {
+            const connection = connections[APP_IDS.indexOf(app)];
+            return (
+              <Fragment key={app}>
+                {compact &&
+                  connectionRank(app) === 0 &&
+                  (index === 0 || connectionRank(shown[index - 1]) > 0) && (
+                    <p className="tray-unconfigured">
+                      {t("trayPanel.notConfigured")}
+                    </p>
+                  )}
+                {connection.isPending && !connection.data
+                  ? rowPlaceholder(app)
+                  : row(app)}
+              </Fragment>
+            );
+          })}
           {!installations.isPending &&
             !states.isPending &&
             !states.isError &&

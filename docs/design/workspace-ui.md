@@ -26,7 +26,11 @@ native client support.
   selection animation.
   Do not use the export's 32 px raster for the brand: Retina displays require
   a source larger than its CSS display size.
-- The Tools / Agent page uses an 18 px title without an introductory subtitle.
+- Top-level sidebar destinations use `WorkspacePageHeading`: an 18 px semibold
+  title with 26 px line height in a minimum 32 px row. Optional descriptions
+  use 12 px text, 18 px line height and an 8 px gap. Keep the platform's shared
+  page-top inset; do not add a per-page offset for the heading.
+- The Tools / Agent page has no introductory subtitle.
   Keep its opaque header at the top of the main scroll area while the update
   notice and tool lists scroll beneath it. Place page content 24 px below the
   window top. On macOS, use a 24 px drag region with no extra page inset and a
@@ -49,6 +53,12 @@ native client support.
   corners and 36 x 20 px switches. Keep switch tracks pill-shaped in dialogs by excluding
   `role="switch"` controls from ordinary button rounding. Preserve recognizable
   vendor logos.
+- The desktop Tools and Providers directories use the shared workspace spacing
+  tokens: 12 px between header, notice, toolbar and list; 8 px between related
+  copy or toolbar lines. Only one side owns each gap. Standard rows use a 60 px
+  minimum height, 8 px vertical padding, a 24 px leading drag gutter and a 16 px
+  trailing inset. Rows grow for wrapped text and narrow-screen controls; tray
+  rows keep their separate compact layout.
 - The Routing account-visibility control masks email addresses and known account
   logins with blurred stand-in text in labels, menus and request history. Keep
   vendor names, model names and brand icons recognizable; do not rename providers
@@ -135,6 +145,9 @@ native client support.
   keeps controls attached to their tool and never changes a connection.
   The compact tray view keeps its existing connected-first grouping and omits
   drag handles.
+- The Models / Providers list toolbar leads with search on the left, followed by
+  its scope hint and trailing management actions. On narrow windows the hint
+  wraps below the controls. Use the same layout while loading.
 - The Models / Providers list uses the same handles and drag surface. Keep the
   handle inside the row's leading padding, leaving only a narrow gap before the
   icon. Dragging uses an inert visual copy in a portal with the same width and

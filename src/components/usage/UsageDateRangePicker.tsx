@@ -287,7 +287,7 @@ export function UsageDateRangePicker({
               field === "start" ? "usage.startDate" : "usage.endDate",
             )}
             className={cn(
-              "h-7 flex-1 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
+              "flex-1 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
               isEndLive && "pointer-events-none",
             )}
             value={fmtDate(ts)}
@@ -309,7 +309,7 @@ export function UsageDateRangePicker({
             aria-label={label}
             step={60}
             className={cn(
-              "h-7 w-[90px] flex-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
+              "w-[90px] flex-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
               isEndLive && "pointer-events-none",
             )}
             value={fmtTime(ts)}

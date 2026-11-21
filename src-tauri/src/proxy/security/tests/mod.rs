@@ -2209,3 +2209,41 @@ async fn restore_route_refusal_does_not_claim_the_rule_is_configured_to_block() 
         assert!(!message.contains("当前处理方式为「拦截」"));
     }
 }
+
+#[test]
+fn payload_extractor_covers_chat_reasoning_and_refusal_fields_for_redaction() {
+    let mut runtime = SecurityRuntimeConfig::default();
+    runtime
+        .builtin_action_overrides
+        .insert("catalog:openrouter-key".into(), AuditAction::Redact);
+    let key = "v1-synthetic-extractor-key";
+    let mut body = json!({
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [{"type": "refusal", "refusal": format!("part {key}")}],
+                "reasoning_content": format!("rc {key}"),
+                "reasoning": format!("r {key}"),
+                "refusal": format!("top {key}")
+            }
+        ]
+    });
+    let locations: Vec<_> = super::extractor::extract_payload_texts(&body)
+        .into_iter()
+        .map(|node| node.location)
+        .collect();
+    for expected in [
+        "messages[0].content[0].refusal",
+        "messages[0].reasoning_content",
+        "messages[0].reasoning",
+        "messages[0].refusal",
+    ] {
+        assert!(
+            locations.iter().any(|location| location == expected),
+            "missing extracted location: {expected}"
+        );
+    }
+    let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+    assert!(!result.blocked);
+    assert!(!body.to_string().contains(key));
+}

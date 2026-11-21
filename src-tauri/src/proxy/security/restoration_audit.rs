@@ -177,7 +177,16 @@ impl PendingRequestAudit {
         runtime: &SecurityRuntimeConfig,
         budget: PayloadBudget,
     ) -> Result<Self, TokenError> {
-        Self::capture_refusal_with_history(body, runtime, budget, None)
+        Self::capture_refusal_with_history_and_lease(body, runtime, budget, None, None)
+    }
+
+    pub(super) fn capture_refusal_for_lease(
+        body: &Value,
+        runtime: &SecurityRuntimeConfig,
+        lease: &DlpRequestLease,
+        budget: PayloadBudget,
+    ) -> Result<Self, TokenError> {
+        Self::capture_refusal_with_history_and_lease(body, runtime, budget, None, Some(lease))
     }
 
     pub(super) fn capture_refusal_with_history(
@@ -185,6 +194,16 @@ impl PendingRequestAudit {
         runtime: &SecurityRuntimeConfig,
         budget: PayloadBudget,
         projection: Option<&DlpHistoryProjection<'_>>,
+    ) -> Result<Self, TokenError> {
+        Self::capture_refusal_with_history_and_lease(body, runtime, budget, projection, None)
+    }
+
+    fn capture_refusal_with_history_and_lease(
+        body: &Value,
+        runtime: &SecurityRuntimeConfig,
+        budget: PayloadBudget,
+        projection: Option<&DlpHistoryProjection<'_>>,
+        lease: Option<&DlpRequestLease>,
     ) -> Result<Self, TokenError> {
         let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
         let current_turn = CurrentTurn::new(body);
@@ -195,24 +214,13 @@ impl PendingRequestAudit {
             {
                 return Ok(());
             }
-            for found in detect_spans_with_budget(
+            pending.push_refusal_text_findings(
                 leaf.text,
                 leaf.is_password_field,
                 runtime,
-                budget.clone(),
-            )?
-            .as_slice()
-            {
-                pending.push(
-                    leaf.text,
-                    found.range.clone(),
-                    found.rule_id,
-                    found.action,
-                    runtime,
-                    &budget,
-                )?;
-            }
-            Ok(())
+                &budget,
+                lease,
+            )
         })?;
         // The legacy extractor has no exact leaf policy and must not reintroduce proven reasoning.
         if projection.is_some() {
@@ -226,25 +234,48 @@ impl PendingRequestAudit {
             if current_turn.is_historical(&field.location) {
                 continue;
             }
-            for found in detect_spans_with_budget(
+            pending.push_refusal_text_findings(
                 field.text,
                 field.is_password_field,
                 runtime,
-                budget.clone(),
-            )?
-            .as_slice()
-            {
-                pending.push(
-                    field.text,
-                    found.range.clone(),
-                    found.rule_id,
-                    found.action,
-                    runtime,
-                    &budget,
-                )?;
-            }
+                &budget,
+                lease,
+            )?;
         }
         Ok(pending)
+    }
+
+    fn push_refusal_text_findings(
+        &mut self,
+        text: &str,
+        is_password_field: bool,
+        runtime: &SecurityRuntimeConfig,
+        budget: &PayloadBudget,
+        lease: Option<&DlpRequestLease>,
+    ) -> Result<(), TokenError> {
+        let references = match lease {
+            Some(lease) => Some(collect_authorized_references(text, lease, budget)?),
+            None => None,
+        };
+        for found in
+            detect_spans_with_budget(text, is_password_field, runtime, budget.clone())?.as_slice()
+        {
+            if references
+                .as_ref()
+                .is_some_and(|refs| covered_by_reference(refs.as_slice(), &found.range))
+            {
+                continue;
+            }
+            self.push(
+                text,
+                found.range.clone(),
+                found.rule_id,
+                found.action,
+                runtime,
+                budget,
+            )?;
+        }
+        Ok(())
     }
 
     fn push(
@@ -367,6 +398,43 @@ fn charge_extraction(
 
 fn overlaps(left: &Range<usize>, right: &Range<usize>) -> bool {
     left.start < right.end && right.start < left.end
+}
+
+fn collect_authorized_references(
+    text: &str,
+    lease: &DlpRequestLease,
+    budget: &PayloadBudget,
+) -> Result<PayloadVec<Range<usize>>, TokenError> {
+    const MAX_REFERENCES: usize = 4096;
+    let mut references = PayloadVec::new(budget.clone())?;
+    let mut offset = 0;
+    while let Some((start, prefix_len)) = super::token_format::next_candidate(text, offset) {
+        offset = start + prefix_len;
+        let bytes = &text.as_bytes()[start..];
+        let Some(layout) = super::token_format::header(bytes) else {
+            continue;
+        };
+        if !layout.complete(bytes) {
+            // Incomplete or malformed prefixes never suppress refusal auditing of real sibling plaintext.
+            continue;
+        }
+        let end = start + layout.len;
+        offset = end;
+        if lease.resolve_if_authorized(&text[start..end])?.is_some() {
+            if references.len() >= MAX_REFERENCES {
+                return Err(TokenError::CapacityExceeded);
+            }
+            references.push(start..end)?;
+        }
+    }
+    Ok(references)
+}
+
+fn covered_by_reference(references: &[Range<usize>], span: &Range<usize>) -> bool {
+    !span.is_empty()
+        && references
+            .iter()
+            .any(|range| range.start <= span.start && span.end <= range.end)
 }
 
 fn safe_metadata(value: &str) -> bool {

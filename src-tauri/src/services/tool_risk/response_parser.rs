@@ -328,6 +328,30 @@ mod tests {
     }
     static DIAGNOSTIC_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+    fn run_isolated_diagnostic_test(test_name: &str) -> bool {
+        const CHILD: &str = "VARYAI_RESPONSE_PARSER_DIAGNOSTIC_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            return false;
+        }
+
+        let qualified_name = format!("{}::{test_name}", module_path!());
+        let exact_name = qualified_name
+            .split_once("::")
+            .map_or(qualified_name.as_str(), |(_, path)| path);
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("test executable path should be available"),
+        )
+        .args(["--exact", exact_name, "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .expect("isolated diagnostic test process should start");
+        assert!(
+            output.status.success(),
+            "isolated diagnostic test process failed"
+        );
+        true
+    }
+
     #[tokio::test]
     async fn request_owned_session_reaches_json_observations_without_inventing_missing_ids() {
         for session in [Some("synthetic-session-a"), None, Some("invalid\nsession")] {
@@ -361,15 +385,20 @@ mod tests {
         fn flush(&self) {}
     }
     fn enable_diagnostic_logger() {
-        static INIT: std::sync::Once = std::sync::Once::new();
         static LOGGER: DiagnosticLogger = DiagnosticLogger;
-        INIT.call_once(|| {
-            log::set_logger(&LOGGER).unwrap();
-            log::set_max_level(log::LevelFilter::Info);
-        });
+        assert!(
+            log::set_logger(&LOGGER).is_ok(),
+            "isolated diagnostic test process should not have a logger"
+        );
+        log::set_max_level(log::LevelFilter::Info);
     }
     #[tokio::test]
     async fn diagnostic_parser_logs_first_reason_once_and_preserves_clean_result() {
+        if run_isolated_diagnostic_test(
+            "diagnostic_parser_logs_first_reason_once_and_preserves_clean_result",
+        ) {
+            return;
+        }
         enable_diagnostic_logger();
         for fault in [false, true] {
             let (tx, mut rx) = create_channel(4);
@@ -447,6 +476,11 @@ mod tests {
 
     #[tokio::test]
     async fn diagnostic_parser_distinguishes_queue_fault_and_partial_frame_at_end() {
+        if run_isolated_diagnostic_test(
+            "diagnostic_parser_distinguishes_queue_fault_and_partial_frame_at_end",
+        ) {
+            return;
+        }
         enable_diagnostic_logger();
         for reason in ["queue_full", "incomplete_sse_frame"] {
             let (tx, mut rx) = create_channel(1);

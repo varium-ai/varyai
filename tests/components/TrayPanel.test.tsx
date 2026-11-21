@@ -8,6 +8,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { createInstance } from "i18next";
 import { I18nextProvider } from "react-i18next";
 import { APP_IDS } from "@/config/appConfig";
@@ -21,6 +22,7 @@ import zh from "@/i18n/locales/zh.json";
 import ja from "@/i18n/locales/ja.json";
 import zhTW from "@/i18n/locales/zh-TW.json";
 import { TrayPanel } from "@/components/tray/TrayPanel";
+import { readFileSync } from "node:fs";
 import { calendarDays, localDateKey } from "@/components/tray/trayUsageData";
 import { trayPanelApi } from "@/lib/trayPanel";
 import { trayUsageApi, type TrayUsageRow } from "@/lib/api/trayUsage";
@@ -34,6 +36,8 @@ const updateState = vi.hoisted(() => ({
   checkUpdate: vi.fn(async () => false),
   resetDismiss: vi.fn(),
 }));
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/components/agents/AgentConnectionsPage", () => ({
   AgentConnectionsPage: ({ compact }: { compact: boolean }) => (
@@ -208,6 +212,55 @@ it("refreshes Usage from the header and shows progress while it refetches", asyn
   const periods = vi.mocked(trayUsageApi.read).mock.calls.flat();
   expect(periods.filter((period) => period === "today")).toHaveLength(2);
   expect(periods.filter((period) => period === "activity")).toHaveLength(2);
+});
+it("confirms a toolbar refresh even when the totals have not changed", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  mount();
+  await screen.findByText("trayUsage.emptyToday");
+  let finishActivity!: (rows: TrayUsageRow[]) => void;
+  const activity = new Promise<TrayUsageRow[]>((resolve) => {
+    finishActivity = resolve;
+  });
+  vi.mocked(trayUsageApi.read).mockImplementation(async (period) =>
+    period === "activity" ? activity : [],
+  );
+  const refresh = screen.getByRole("button", { name: "trayUsage.refresh" });
+  fireEvent.click(refresh);
+  expect(refresh).toBeDisabled();
+  expect(refresh).toHaveAttribute("aria-busy", "true");
+  expect(toast.success).not.toHaveBeenCalled();
+  finishActivity([]);
+  await waitFor(() =>
+    expect(toast.success).toHaveBeenCalledWith("settings.autoReload"),
+  );
+  expect(refresh).toBeEnabled();
+  expect(vi.mocked(trayUsageApi.read).mock.calls.flat().sort()).toEqual([
+    "activity",
+    "activity",
+    "today",
+    "today",
+  ]);
+});
+
+it("reports a failed heatmap refresh without losing totals and allows retry", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  mount();
+  await screen.findByText("trayUsage.emptyToday");
+  vi.mocked(trayUsageApi.read).mockImplementation(async (period) => {
+    if (period === "activity") throw new Error("fixture");
+    return [usageFixture];
+  });
+  const refresh = screen.getByRole("button", { name: "trayUsage.refresh" });
+  fireEvent.click(refresh);
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith("trayUsage.error"),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(screen.getByText("trayUsage.noneFailed")).toBeVisible();
+  vi.mocked(trayUsageApi.read).mockResolvedValue([]);
+  fireEvent.click(refresh);
+  await screen.findByText("trayUsage.emptyToday");
+  expect(toast.success).toHaveBeenCalledWith("settings.autoReload");
 });
 it("opens with neutral focus and preserves keyboard tab navigation", () => {
   mount();
@@ -403,6 +456,33 @@ const usageFixture: TrayUsageRow = {
   generationMs: 1000,
   timedCount: 2,
 };
+
+it("allows long model IDs to shrink without widening the usage ranking", async () => {
+  localStorage.setItem("vary:tray-tab", "usage");
+  localStorage.setItem("vary:tray-usage-split", "model");
+  const model = "syntheticmodel".repeat(16);
+  vi.mocked(trayUsageApi.read).mockImplementation(async (period) =>
+    period === "activity" ? [] : [{ ...usageFixture, model }],
+  );
+  const sheet = document.createElement("style");
+  sheet.textContent = readFileSync(
+    "src/components/tray/tray-usage.css",
+    "utf8",
+  );
+  document.head.appendChild(sheet);
+  try {
+    mount();
+    const label = await screen.findByTitle(model);
+    const ranking = label.closest("ul");
+    expect(ranking).not.toBeNull();
+    expect(getComputedStyle(ranking!).gridTemplateColumns).toBe(
+      "minmax(0, 1fr)",
+    );
+    expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+  } finally {
+    sheet.remove();
+  }
+});
 
 it("shows a labeled 53-week heatmap with its own metric even if today is empty", async () => {
   localStorage.setItem("vary:tray-tab", "usage");

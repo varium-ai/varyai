@@ -41,8 +41,22 @@ impl<'a> ChatCompletionReason<'a> {
         Self(reason)
     }
 
+    /// A provider terminal marker, not proof that the answer was written in full.
+    ///
+    /// `length` and `content_filter` end the entity exactly like `stop` does: no
+    /// further chunk may follow and the transport still has to reach EOF and
+    /// `[DONE]`. Refusing them turned a budget-truncated answer into a proxy
+    /// error even though every frame was complete, so a caller could not even
+    /// see the text the model did produce. The truncation stays visible through
+    /// `legacy_status`, which reports `length` as "incomplete".
+    ///
+    /// A truncated tool call still fails closed: the tool state below validates
+    /// the accumulated arguments and rejects a partial JSON payload.
     pub(crate) fn permits_completion(&self) -> bool {
-        matches!(self.0, Some("stop" | "tool_calls" | "function_call"))
+        matches!(
+            self.0,
+            Some("stop" | "tool_calls" | "function_call" | "length" | "content_filter")
+        )
     }
 
     pub(crate) fn legacy_status(&self) -> &'static str {

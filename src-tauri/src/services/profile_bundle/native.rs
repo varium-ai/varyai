@@ -506,6 +506,10 @@ pub fn model_labels(value: &Value) -> Vec<String> {
                     "output",
                     "temperature",
                     "top_p",
+                    // Codex reasoning settings, never model identifiers.
+                    "model_reasoning_effort",
+                    "model_reasoning_summary",
+                    "model_verbosity",
                 ]
                 .contains(&key.as_str())
                 {
@@ -523,6 +527,17 @@ pub fn model_labels(value: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_reasoning_settings_are_not_model_labels() {
+        let labels = model_labels(&json!({
+            "model": "gpt-5.1",
+            "model_reasoning_effort": "high",
+            "model_reasoning_summary": "none",
+            "model_verbosity": "low"
+        }));
+        assert_eq!(labels, ["gpt-5.1"]);
+    }
 
     #[test]
     fn qwen_profile_identity_preserves_protocol_endpoint_and_ambiguity_checks() {

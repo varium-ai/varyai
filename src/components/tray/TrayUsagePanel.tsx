@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Box, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import {
   Select,
@@ -123,7 +124,15 @@ const heatMetrics = ["tokens", "requests", "cost"] as const;
 const heatWeekdays = [0, 1, 2, 3, 4, 5, 6];
 const dayLabel = (day: string) => new Date(`${day}T12:00:00`);
 
-function Activity({ active, provider }: { active: boolean; provider: string }) {
+function Activity({
+  active,
+  provider,
+  rows,
+}: {
+  active: boolean;
+  provider: string;
+  rows: TrayUsageRow[];
+}) {
   const { t, i18n } = useTranslation();
   const [metric, setMetric] = useChoice<UsageMetric>(
     "heat-metric",
@@ -135,22 +144,15 @@ function Activity({ active, provider }: { active: boolean; provider: string }) {
   const [focusDay, setFocusDay] = useState<string>();
   const [tip, setTip] = useState<{ index: number; x: number; y: number }>();
   const [scrollbar, setScrollbar] = useState({ position: 1000, width: 50 });
-  const { data } = useQuery({
-    queryKey: [...trayUsageKey, "activity"],
-    queryFn: () => trayUsageApi.read("activity"),
-    enabled: active,
-    staleTime: 60000,
-    refetchInterval: active ? 60000 : false,
-  });
   const grouped = useMemo(
     () =>
       groupUsage(
-        (data ?? noRows).filter(
+        rows.filter(
           (row) => provider === allProviders || providerKey(row) === provider,
         ),
         (row) => row.bucket,
       ),
-    [data, provider],
+    [rows, provider],
   );
   const today = localDateKey(new Date());
   const dates = useMemo(() => activityDates(dayLabel(today)), [today]);
@@ -403,6 +405,30 @@ export function TrayUsagePanel({
     staleTime: 2000,
     refetchInterval: active ? 10000 : false,
   });
+  const activity = useQuery({
+    queryKey: [...trayUsageKey, "activity"],
+    queryFn: () => trayUsageApi.read("activity"),
+    enabled: active,
+    staleTime: 60000,
+    refetchInterval: active ? 60000 : false,
+  });
+  const [refreshing, setRefreshing] = useState(false);
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      const results = await Promise.all([
+        query.refetch({ cancelRefetch: false }),
+        activity.refetch({ cancelRefetch: false }),
+      ]);
+      if (results.some((result) => result.isError)) {
+        toast.error(t("trayUsage.error"));
+      } else {
+        toast.success(t("settings.autoReload"));
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }
   const rows = query.data ?? noRows;
   const providerNames = useMemo(() => {
     const names = new Map<string, string>();
@@ -581,14 +607,14 @@ export function TrayUsagePanel({
             type="button"
             title={t("trayUsage.refresh")}
             aria-label={t("trayUsage.refresh")}
-            aria-busy={query.isFetching}
-            disabled={query.isFetching}
-            onClick={() => void query.refetch()}
+            aria-busy={refreshing}
+            disabled={refreshing}
+            onClick={() => void refresh()}
           >
             <RefreshCw
               size={14}
               className={
-                query.isFetching
+                refreshing
                   ? "animate-spin motion-reduce:animate-none"
                   : undefined
               }
@@ -890,7 +916,11 @@ export function TrayUsagePanel({
           </>
         )
       )}
-      <Activity active={active} provider={provider} />
+      <Activity
+        active={active}
+        provider={provider}
+        rows={activity.data ?? noRows}
+      />
     </section>
   );
 }

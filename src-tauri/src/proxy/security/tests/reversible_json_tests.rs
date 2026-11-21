@@ -318,10 +318,11 @@ fn json_copy_preserves_explicit_nonlexical_key_order_and_exact_scalar_forms(
 
 const DECODED_FIXTURE: &str = r#"{"x":"synthetic"}"#;
 fn decoded_fixture_charges() -> (usize, usize) {
-    // Object, key and value are three lexical nodes; one object entry.
+    // Object, key and value are three lexical nodes; one object entry. The
+    // fixture is a small document, so the tiered small-document charges apply.
     (
-        DECODED_FIXTURE.len() + 3 * 512 + 1024,
-        1024 + 4 * DECODED_FIXTURE.len() + 512,
+        DECODED_FIXTURE.len() + 3 * 384 + 256,
+        1024 + 4 * DECODED_FIXTURE.len() + 128,
     )
 }
 
@@ -445,7 +446,7 @@ fn decoded_json_encoded_depth_and_node_bounds_reject_before_parser() {
     });
     let wide = format!("[{}null]", "null,".repeat(65_536));
     for encoded in [
-        "x".repeat(1024 * 1024 + 1),
+        "x".repeat(8 * 1024 * 1024 + 1),
         format!("{}null{}", "[".repeat(65), "]".repeat(65)),
         wide,
     ] {
@@ -531,11 +532,16 @@ fn decoded_json_retained_charge_covers_deep_singleton_array_minimum_capacity(
         }
     }
     let encoded = format!("{}null{}", "[".repeat(64), "]".repeat(64));
-    let retained = encoded.len() + 65 * 512;
+    let retained = encoded.len() + 65 * 384;
     let budget = PayloadBudget::with_limit(LIMIT);
     let owner = PayloadJson::try_from_str(&encoded, budget.clone(), LIMIT)?;
     assert_eq!(budget.used(), retained);
-    assert!(budget.used() >= array_storage(owner.as_value()));
+    assert!(
+        budget.used() >= array_storage(owner.as_value()),
+        "retained charge {} must cover real array storage {}",
+        budget.used(),
+        array_storage(owner.as_value())
+    );
     drop(owner);
     assert_eq!(budget.used(), 0);
     Ok(())
@@ -572,8 +578,16 @@ fn decoded_json_raw_value_sentinel_cannot_hide_array_or_depth_allocations() -> R
         format!("{}0{}", "[".repeat(65), "]".repeat(65)),
     ] {
         let encoded = format!(r#"{{"$serde_json::private::RawValue":"{inner}"}}"#);
-        let retained = encoded.len() + 3 * 512 + 1024;
-        let scratch = 1024 + 4 * encoded.len() + 512;
+        // The sentinel hides the inner array inside one string, so the lexical
+        // charge model sees three nodes and one entry; the coefficient tier
+        // follows the encoded length exactly as production does.
+        let (node, entry, scratch_entry) = if encoded.len() <= 8 * 1024 {
+            (384, 256, 128)
+        } else {
+            (512, 1024, 512)
+        };
+        let retained = encoded.len() + 3 * node + entry;
+        let scratch = 1024 + 4 * encoded.len() + scratch_entry;
         let budget = PayloadBudget::with_limit(retained + scratch);
         let owner = PayloadJson::try_from_str(&encoded, budget.clone(), LIMIT)?;
         assert_eq!(

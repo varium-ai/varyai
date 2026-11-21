@@ -318,6 +318,7 @@
 
 .tray-use-ranking {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 5px 5px 1px;
 }

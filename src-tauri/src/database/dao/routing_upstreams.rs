@@ -3,7 +3,8 @@ use crate::database::Database;
 use crate::provider::Provider;
 use crate::services::routing_upstreams::{
     resolve_provider, valid_identity, valid_name, RoutingUpstream, UpstreamSource,
-    DEFAULT_CODEX_NAME, INVALID, MAX_CONFIG_BYTES, MAX_UPSTREAMS,
+    CREDENTIAL_REENTRY_REQUIRED, DEFAULT_CODEX_NAME, ENDPOINT_SETTINGS_REENTRY_REQUIRED, INVALID,
+    INVALID_KEY_POOL, MAX_CONFIG_BYTES, MAX_UPSTREAMS,
 };
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
@@ -141,15 +142,19 @@ fn restore_transport(
         };
     if next.headers.is_none() && old.headers.as_ref().is_some_and(|h| !h.is_empty()) {
         if !same_destination {
-            return Err(INVALID.into());
+            return Err(ENDPOINT_SETTINGS_REENTRY_REQUIRED.into());
         }
         next.headers = old.headers.clone();
     }
     for key in &mut next.keys {
         if key.key.is_none() {
-            let original = old.keys.iter().find(|k| k.id == key.id).ok_or(INVALID)?;
+            let original = old
+                .keys
+                .iter()
+                .find(|k| k.id == key.id)
+                .ok_or(INVALID_KEY_POOL)?;
             if !same_destination || original.api_format != key.api_format {
-                return Err(INVALID.into());
+                return Err(CREDENTIAL_REENTRY_REQUIRED.into());
             }
             key.key = original.key.clone();
         }
@@ -414,7 +419,7 @@ impl Database {
                             && t.endpoints.get(api_format) == Some(base_url)
                     });
                     if (!known_endpoint && base_url != old_url) || auth_type != old_auth {
-                        return Err(INVALID.into());
+                        return Err(CREDENTIAL_REENTRY_REQUIRED.into());
                     }
                     *api_key = old_key.clone();
                 }
@@ -474,7 +479,7 @@ impl Database {
             ) => {
                 if api_key.as_deref().is_none_or(str::is_empty) {
                     if *base_url != old_url || *api_format != old_format || *auth_type != old_auth {
-                        return Err(INVALID.into());
+                        return Err(CREDENTIAL_REENTRY_REQUIRED.into());
                     }
                     *api_key = key;
                 }

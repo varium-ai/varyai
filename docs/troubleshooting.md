@@ -2,6 +2,12 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## A restored native chat stream ends with `terminated`
+
+Native Chat restoration does not reject a reply based on its cumulative number of SSE frames, choice records or text fragments. The 1 MiB entity cap, shared memory and processing budgets, distinct choice indices and completion checks still apply.
+
+An upstream HTTP 200 and a `[DONE]` frame do not guarantee local delivery. Reproduce with a synthetic value and inspect `[DLP] native_sse` warnings. `stage` identifies the failing step; `data_lines` counts SSE data lines, not tokens or distinct choices. Count-limit warnings such as `choice_records=129 limit=128` or `metric=text_sites` with `limit=2048` identify older builds. A generic capacity warning alone does not identify the exhausted resource. At debug level, `payload budget exhausted` reports a failed reservation in bytes without logging payloads.
+
 ## Installed Windows Agents are missing
 
 Use **Tools / Agent → Rescan installations** after installing or removing an
