@@ -146,6 +146,8 @@ one model per supplier.
   Automatic suggestions skip the Codex automatic approval review model.
   Set the classification deadline and test the selected intent model in
   the same editor. New drafts use a 10,000 ms deadline.
+  The built-in hard and easy rule descriptions follow the interface language.
+  The classifier uses the saved rule descriptions, including any custom text.
 - **Most capable first.** The initial list follows the template's recommendation.
   Replacing a model keeps its position. Select **Apply recommended order** to
   rank the current members again.
