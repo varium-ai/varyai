@@ -247,6 +247,45 @@ it("displays the computer's local date instead of the Beijing service day", asyn
   }
 });
 
+it("keeps the observed reward and updates only the account whose preference was saved", async () => {
+  vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+    ...initial,
+    accounts: [
+      { ...initial.accounts[0], outcome: "already_checked", credit: 200 },
+      initial.accounts[1],
+    ],
+  });
+  vi.mocked(doubaoCheckinApi.setAutoEnabled).mockResolvedValueOnce({
+    ...initial,
+    autoConfigured: true,
+    accounts: [
+      { ...initial.accounts[0], autoEnabled: true },
+      initial.accounts[1],
+    ],
+  });
+  mount();
+  await screen.findByText("doubaowork.checkin.outcomes.already_checked");
+  const toggle = screen.getByRole("switch", {
+    name: "doubaowork.checkin.autoLabel",
+  });
+  fireEvent.click(toggle);
+  await waitFor(() => {
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeEnabled();
+  });
+  expect(doubaoCheckinApi.setAutoEnabled).toHaveBeenCalledWith(
+    "account-a",
+    true,
+  );
+  expect(
+    screen.getByText("doubaowork.checkin.outcomes.already_checked"),
+  ).toBeVisible();
+  fireEvent.change(screen.getByRole("combobox"), {
+    target: { value: "account-b" },
+  });
+  expect(toggle).not.toBeChecked();
+});
+
 it("shows progress while saving the automatic check-in preference and restores it on failure", async () => {
   let fail!: (reason: Error) => void;
   vi.mocked(doubaoCheckinApi.setAutoEnabled).mockImplementationOnce(

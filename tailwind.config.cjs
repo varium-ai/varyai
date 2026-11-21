@@ -4,7 +4,20 @@ module.exports = {
   darkMode: ["selector", ".dark"],
   theme: {
     extend: {
+      textColor: {
+        primary: {
+          DEFAULT: "hsl(var(--primary-text))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+      },
+      backgroundColor: {
+        primary: {
+          DEFAULT: "hsl(var(--primary-action))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+      },
       colors: {
+        brand: "hsl(var(--primary))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
         card: {
@@ -161,4 +174,3 @@ module.exports = {
   },
   plugins: [],
 };
-

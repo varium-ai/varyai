@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
+import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { subscriptionProviders } from "@/config/subscriptionProviders";
 import { routingUpstreamsApi as routing } from "@/lib/api/routingUpstreams";
@@ -125,6 +126,47 @@ function mount(
     </QueryClientProvider>,
   );
 }
+it.each([
+  ["Claude", "claude"],
+  ["ChatGPT API", "chatgpt_api"],
+  ["Gemini CLI", "gemini_cli"],
+  ["Antigravity", "antigravity"],
+  ["WorkBuddy", "workbuddy"],
+  ["WorkBuddy AI", "workbuddy-ai"],
+] as const)(
+  "finishes onboarding for %s while background account and catalog refreshes are pending",
+  async (name, provider) => {
+    const client = new QueryClient();
+    vi.spyOn(client, "invalidateQueries").mockImplementation(
+      () => new Promise(() => {}),
+    );
+    vi.mocked(native.start).mockResolvedValueOnce({
+      ...pending,
+      state: "done",
+      account,
+    });
+    vi.mocked(native.models).mockResolvedValueOnce([
+      { model: "fixture-model" },
+    ]);
+    const finish = vi.fn().mockResolvedValue(undefined);
+    render(
+      <QueryClientProvider client={client}>
+        <OnboardingWizard onFinish={finish} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name }));
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(native.models).toHaveBeenCalledExactlyOnceWith(provider, account.id);
+    expect(routing.save).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        source: expect.objectContaining({ provider, accountId: account.id }),
+      }),
+    );
+  },
+);
 it.each(subscriptionProviders)(
   "starts $name inside the subscription dialog without opening an editor",
   async (provider) => {

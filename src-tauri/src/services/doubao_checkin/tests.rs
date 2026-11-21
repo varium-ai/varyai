@@ -73,6 +73,7 @@ struct Fixture {
     manager: Manager,
     current: Arc<StdMutex<String>>,
     claims: Arc<AtomicUsize>,
+    status_reads: Arc<AtomicUsize>,
     switches: Arc<StdMutex<Vec<String>>>,
     switch_fails: Arc<AtomicBool>,
     completed: Arc<StdMutex<HashSet<String>>>,
@@ -88,6 +89,7 @@ async fn fixture() -> Fixture {
     let directory = tempfile::tempdir().expect("temporary directory");
     let current = Arc::new(StdMutex::new(String::from("synthetic-a")));
     let claims = Arc::new(AtomicUsize::new(0));
+    let status_reads = Arc::new(AtomicUsize::new(0));
     let switches = Arc::new(StdMutex::new(Vec::new()));
     let switch_fails = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(StdMutex::new(HashSet::<String>::new()));
@@ -97,6 +99,7 @@ async fn fixture() -> Fixture {
     let address = listener.local_addr().expect("address");
     let active = current.clone();
     let captured = claims.clone();
+    let observed = status_reads.clone();
     let switched = switches.clone();
     let failing = switch_fails.clone();
     let checked = completed.clone();
@@ -104,6 +107,7 @@ async fn fixture() -> Fixture {
         while let Ok((stream, _)) = listener.accept().await {
             let active = active.clone();
             let captured = captured.clone();
+            let observed = observed.clone();
             let switched = switched.clone();
             let failing = failing.clone();
             let checked = checked.clone();
@@ -146,6 +150,7 @@ async fn fixture() -> Fixture {
                             } else if input["expectedAccountId"] != current {
                                 json!({"outcome":"switch_required"})
                             } else if input["mode"] == "status" {
+                                observed.fetch_add(1, Ordering::SeqCst);
                                 if checked.lock().expect("completed").contains(&current) {
                                     reward_result(&current, "already_checked")
                                 } else {
@@ -187,6 +192,7 @@ async fn fixture() -> Fixture {
         manager,
         current,
         claims,
+        status_reads,
         switches,
         switch_fails,
         completed,
@@ -220,7 +226,12 @@ async fn selection_auto_and_daily_cache_are_independent_for_native_accounts() {
     assert_eq!(reward["totalDays"], 9);
     assert_eq!(*f.current.lock().expect("current"), "synthetic-b");
     assert_eq!(f.claims.load(Ordering::SeqCst), 1);
-    f.manager.set_auto(&a, true).await.expect("enable A");
+    let before_toggle = f.status_reads.load(Ordering::SeqCst);
+    assert!(f.manager.set_auto("unknown-id", true).await.is_err());
+    let enabled = f.manager.set_auto(&a, true).await.expect("enable A");
+    assert!(enabled.accounts[0].auto_enabled);
+    assert!(!enabled.accounts[1].auto_enabled);
+    assert_eq!(f.status_reads.load(Ordering::SeqCst), before_toggle);
     f.manager.run_auto().await.expect("automatic A");
     f.manager.check_in(&a).await.expect("cached A");
     assert_eq!(f.claims.load(Ordering::SeqCst), 2);

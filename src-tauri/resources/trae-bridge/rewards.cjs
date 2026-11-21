@@ -32,6 +32,8 @@ function createTraeRewards(ipc = globalThis.vscode?.ipcRenderer) {
     try {
       const current = await account();
       if (!current) return { outcome: "sign_in_required" };
+      if (input.mode === "identity")
+        return { ...current, outcome: "not_checked" };
       const until =
         Math.floor((Date.now() + 8 * 3600000) / 86400000) * 86400000 +
         16 * 3600000;

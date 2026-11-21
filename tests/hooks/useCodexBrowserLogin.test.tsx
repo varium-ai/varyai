@@ -91,14 +91,16 @@ it("cancels a late start after the editor unmounts and never opens its URL", asy
   await waitFor(() => expect(api.cancel).toHaveBeenCalledWith(flow.id));
   expect(settingsApi.openExternal).not.toHaveBeenCalled();
 });
-it("refreshes managed account status and publishes completion only for the current flow", async () => {
+it("publishes the current login while managed account status is refreshing", async () => {
   vi.mocked(api.poll).mockResolvedValue({
     ...flow,
     status: "done",
     account: { id: "fixture-account", login: "fixture@example.test" },
   });
   const { result, client } = mount();
-  const invalidate = vi.spyOn(client, "invalidateQueries");
+  const invalidate = vi
+    .spyOn(client, "invalidateQueries")
+    .mockImplementation(() => new Promise(() => {}));
   await act(() => result.current.start());
   await waitFor(
     () => expect(result.current.completion?.accountId).toBe("fixture-account"),

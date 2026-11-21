@@ -825,13 +825,22 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
     });
     let runtime = Arc::new(Runtime::default());
     let now = chrono::Utc::now().timestamp();
-    let strategies = [RoutingStrategy::Ordered, RoutingStrategy::Fastest];
+    let strategies = [
+        (RoutingStrategy::Ordered, None, &["a"][..]),
+        (RoutingStrategy::Fastest, Some(328), &["b"][..]),
+        (RoutingStrategy::Fastest, None, &["a"][..]),
+        (
+            RoutingStrategy::Fastest,
+            Some(0),
+            &["a", "a", "a", "a", "b"][..],
+        ),
+    ];
     let mut groups = HashMap::new();
-    for (k, routing) in strategies.iter().enumerate() {
+    for (k, (routing, second_rate, _)) in strategies.iter().enumerate() {
         let mut group: RoutingGroup = serde_json::from_value(json!({
             "id":format!("strategy-{k}"),"name":"Synthetic strategy","revision":0,"client":"codex","enabled":false,
-            "members":[{"id":"a","providerId":"a","modelId":"exact-a"},{"id":"b","providerId":"b","modelId":"exact-b","free":true}],
-            "defaultMemberId":"a","fallbackMemberIds":["b"],"intentRecognitionEnabled":false,
+            "members":[{"id":"a","providerId":"a","modelId":"shared-model"},{"id":"b","providerId":"b","modelId":"shared-model"},{"id":"c","providerId":"c","modelId":"alternate-model"}],
+            "defaultMemberId":"a","fallbackMemberIds":["b","c"],"intentRecognitionEnabled":false,
             "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
         })).expect("group");
         group.routing = *routing;
@@ -841,14 +850,17 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
             .enumerate()
             .map(|(i, m)| {
                 let scheduling = Arc::new(scheduling::Scheduling::new(false));
-                if *routing == RoutingStrategy::Fastest {
+                if let Some(second_rate) = second_rate.filter(|_| i < 2) {
                     scheduling.served(
                         1,
-                        if i == 0 { 100.0 } else { 200.0 },
+                        if i == 0 { 150.0 } else { 650.0 },
                         1000.0,
-                        if i == 0 { 10 } else { 100 },
+                        if i == 0 { 100 } else { second_rate },
                         now,
                     );
+                }
+                if i == 2 && *second_rate == Some(0) {
+                    scheduling.failed(&http::HeaderMap::new(), now);
                 }
                 Target {
                     fixed_effort: None,
@@ -897,31 +909,38 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
         Arc::new(Database::memory().expect("db")),
         None,
     )
-    .with_intent_runtime(runtime);
+    .with_intent_runtime(runtime.clone());
     let info = server.start().await.expect("start");
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
         .expect("client");
-    for (k, routing) in strategies.iter().enumerate() {
-        let value = client
-            .post(format!(
-                "http://127.0.0.1:{}/intent/v1/responses",
-                info.port
-            ))
-            .bearer_auth(concat!("synthetic", "-strategies"))
-            .header("session-id", format!("synthetic-strategy-{k}-0"))
-            .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
-            .send()
-            .await
-            .expect("send")
-            .json::<Value>()
-            .await
-            .expect("json");
-        let picked = value["model"].as_str().expect("model");
-        match routing {
-            RoutingStrategy::Ordered => assert_eq!(picked, "exact-a"),
-            RoutingStrategy::Fastest => assert_eq!(picked, "exact-b"),
+    for (k, (_, _, expected)) in strategies.iter().enumerate() {
+        for (turn, provider) in expected.iter().enumerate() {
+            let value = client
+                .post(format!(
+                    "http://127.0.0.1:{}/intent/v1/responses",
+                    info.port
+                ))
+                .bearer_auth(concat!("synthetic", "-strategies"))
+                .header("session-id", format!("synthetic-strategy-{k}-{turn}"))
+                .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
+                .send()
+                .await
+                .expect("send")
+                .json::<Value>()
+                .await
+                .expect("json");
+            assert_eq!(value["model"], "shared-model");
+            let rows = runtime.traces.snapshot();
+            assert_eq!(rows[0].candidates.len(), 3);
+            let attempted = rows[0]
+                .steps
+                .iter()
+                .find(|step| step.kind == trace::Kind::Attempt)
+                .and_then(|step| step.candidate)
+                .expect("attempted upstream");
+            assert_eq!(&rows[0].candidates[attempted].provider_id, provider);
         }
     }
     server.stop().await.expect("stop");

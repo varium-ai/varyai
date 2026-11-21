@@ -1114,7 +1114,9 @@ export function RoutingUpstreamsPanel({
       {!adding && (
         <header className="pv-page-head">
           <div className="pv-page-copy">
-            <h1 className="mp-page-heading">{t("modelProviders.title")}</h1>
+            <h1 className="mp-page-heading vary-page-title">
+              {t("modelProviders.title")}
+            </h1>
             <p className="mp-lead">{t("modelProviders.description")}</p>
           </div>
           <div className="pv-page-actions">

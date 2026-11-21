@@ -115,7 +115,7 @@ export function RoutingPage({
       data-testid="routing-page"
     >
       <header className="row-head rt-page-head">
-        <h1 className="label">{t("workspaceNav.routing")}</h1>
+        <h1 className="vary-page-title">{t("workspaceNav.routing")}</h1>
         <span
           className={`rt-livedot ${!running || trace.isError ? "off" : ""}`}
           aria-hidden
@@ -199,6 +199,8 @@ export function RoutingPage({
           {shown && !multipleRoutes && (
             <p className="rt-cap" aria-live="polite">
               {t(`routingPage.state.${shown.state}`)}
+              {shown.classificationOutcome &&
+                ` · ${t(`routingPage.classificationOutcome.${shown.classificationOutcome}`)}`}
             </p>
           )}
           <div className="rt-stats">

@@ -125,9 +125,16 @@ export function RoutingRuleConditions({
   };
   const timePatch = (patch: Partial<typeof time>) =>
     update({ time: { ...time, ...patch } });
+  const selectedAgents = rule.conditions?.agents?.join(", ");
+  const timeRange =
+    time.from && time.to ? `${time.from} - ${time.to}` : label("time");
+  const weekdays = time.days
+    ?.map((day) => t(`intentRouting.weekdays.${day}`))
+    .join(", ");
+  const timeLabel = weekdays ? `${timeRange} · ${weekdays}` : timeRange;
   return (
     <div
-      className="rt-line when"
+      className="rt-line"
       ref={host}
       onKeyDown={(event) => {
         if (
@@ -146,7 +153,7 @@ export function RoutingRuleConditions({
             <label
               className={`rt-cond in${rule.description.trim() ? " on" : ""}`}
             >
-              <span>{t("routingPage.asksFor")}</span>
+              <span>{label(kind)}</span>
               <span
                 className="rt-grow"
                 data-v={rule.description || t("routingPage.intentPlaceholder")}
@@ -266,8 +273,9 @@ export function RoutingRuleConditions({
                   disabled={disabled}
                   className={`rt-cond${rule.conditions?.agents?.length ? " on" : ""}`}
                   aria-label={label(kind)}
+                  title={selectedAgents}
                 >
-                  {rule.conditions?.agents?.join(", ") || label(kind)}
+                  <span>{selectedAgents || label(kind)}</span>
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent className="mp-row-menu">
@@ -299,13 +307,9 @@ export function RoutingRuleConditions({
                   disabled={disabled}
                   className={`rt-cond${rule.conditions?.time ? " on" : ""}`}
                   aria-label={label(kind)}
+                  title={timeLabel}
                 >
-                  {time.from && time.to
-                    ? `${time.from} - ${time.to}`
-                    : label(kind)}
-                  {time.days?.length
-                    ? ` · ${time.days.map((day) => t(`intentRouting.weekdays.${day}`)).join(", ")}`
-                    : ""}
+                  <span>{timeLabel}</span>
                 </button>
               </PopoverTrigger>
               <PopoverContent className="mp-rule-time" align="start">
@@ -362,7 +366,7 @@ export function RoutingRuleConditions({
             aria-label={`${t("intentRouting.removeCondition")} ${label(kind)}`}
             onClick={() => remove(kind)}
           >
-            <X size={8} />
+            <X size={12} />
           </button>
         </span>
       ))}
@@ -372,11 +376,10 @@ export function RoutingRuleConditions({
             <button
               type="button"
               disabled={disabled}
-              className={`rt-addc${shown.length ? "" : " wide"}`}
-              aria-label={t("intentRouting.addCondition")}
+              className="rt-rule-add rt-addc"
             >
-              <Plus size={11} />
-              {!shown.length && t("intentRouting.addCondition")}
+              <Plus size={12} />
+              {t("intentRouting.addCondition")}
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent

@@ -12,6 +12,7 @@ mod concurrency_tests;
 mod continuation;
 mod identity;
 pub(super) mod length;
+pub(crate) use length::visible_reasoning;
 pub(crate) mod native;
 mod native_gateway;
 #[cfg(test)]
@@ -1878,20 +1879,34 @@ async fn execute(
         && session.group.uses_classifier()
         && !classifier_candidates.is_empty()
     {
-        if let (Some(text), Some(provider)) = (
+        match (
             classifier::extract_user_text(inspected_projection),
             session.classifier.clone(),
         ) {
-            let mut eligible = session.group.clone();
-            eligible
-                .rules
-                .retain(|rule| classifier_candidates.contains(&rule.id));
-            classifier::trial_prepared(eligible, provider, text)
-                .await
-                .ok()
-                .and_then(|r| r.intent_id)
-        } else {
-            None
+            (Some(text), Some(provider)) => {
+                let mut eligible = session.group.clone();
+                eligible
+                    .rules
+                    .retain(|rule| classifier_candidates.contains(&rule.id));
+                match classifier::trial_prepared(eligible, provider, text).await {
+                    Ok(result) => {
+                        trace.classification(result.outcome);
+                        result.intent_id
+                    }
+                    Err(_) => {
+                        trace.classification("unavailable");
+                        None
+                    }
+                }
+            }
+            (None, _) => {
+                trace.classification("no_user_text");
+                None
+            }
+            (_, None) => {
+                trace.classification("unavailable");
+                None
+            }
         }
     } else {
         None

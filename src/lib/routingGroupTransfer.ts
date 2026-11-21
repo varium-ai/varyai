@@ -13,6 +13,8 @@ import {
 } from "./routingMemberSelection";
 import { compareVersions } from "./version";
 
+export const MAX_CLASSIFICATION_BUDGET_MS = 15000;
+
 const strategy = z.enum(["ordered", "fastest"]);
 const templateKey = z.enum([
   "templateSmart",
@@ -178,7 +180,11 @@ const nativeGroup = z
       .object({ providerId: text, modelId: text })
       .strict()
       .nullable(),
-    classificationBudgetMs: z.number().int().min(500).max(5000),
+    classificationBudgetMs: z
+      .number()
+      .int()
+      .min(500)
+      .max(MAX_CLASSIFICATION_BUDGET_MS),
     rules: z
       .array(
         z
@@ -925,7 +931,9 @@ export function recommendRoutingMemberOrder(
           (a, b) =>
             compareTemplateCandidates(a, b) || a.catalogIndex - b.catalogIndex,
         )
-      : rankCapabilityCandidates(selected);
+      : rankCapabilityCandidates(
+          selected.sort((a, b) => a.catalogIndex - b.catalogIndex),
+        );
   return [...ranked.map(({ member }) => member), ...unmatched];
 }
 
@@ -1098,6 +1106,7 @@ export function routingTemplates(
       affinity: "turn",
       contextWindow: -1,
       firstToken: key === "templateSpeed" ? 30 : 0,
+      ...(key === "templateSmart" ? { classificationBudgetMs: 10000 } : {}),
       ...(key === "templateSpeed" ? { routing: "fastest" } : {}),
       ...(key === "templateExpiry" ? { quotaOrder: "earliest_expiry" } : {}),
     };

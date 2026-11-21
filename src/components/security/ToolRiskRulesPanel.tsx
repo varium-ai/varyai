@@ -549,10 +549,10 @@ export function ToolRiskRulesPanel({
               <TableHead>
                 {t("toolRisk.colScope", { defaultValue: "范围" })}
               </TableHead>
-              <TableHead>
+              <TableHead className="whitespace-nowrap">
                 {t("toolRisk.colCategory", { defaultValue: "风险类别" })}
               </TableHead>
-              <TableHead>
+              <TableHead className="whitespace-nowrap">
                 {t("toolRisk.colSeverity", { defaultValue: "严重度" })}
               </TableHead>
               <TableHead className="text-right">
@@ -663,14 +663,14 @@ export function ToolRiskRulesPanel({
                           })}`}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <span className="text-xs">
                         {t(`toolRisk.category.${rule.riskCategory}`, {
                           defaultValue: rule.riskCategory,
                         })}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <Badge
                         variant={severityBadgeVariant(rule.severity)}
                         className="min-h-0 rounded-full text-[11px]"

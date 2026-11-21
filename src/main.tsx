@@ -122,6 +122,7 @@ async function bootstrap() {
 
   initializeWindowActivity();
   const panel = isTrayPanel(window.location.search);
+  if (!panel) document.documentElement.dataset.renderer = "application";
   connectWorkspaceQueries(queryClient);
 
   ReactDOM.createRoot(document.getElementById("root")!).render(

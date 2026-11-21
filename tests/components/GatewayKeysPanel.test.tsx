@@ -391,6 +391,29 @@ it("creates a name-only key with an explicit all-model policy", async () => {
   );
 });
 
+it("switches all connection examples through the protocol menu", async () => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  const { container } = mount();
+  fireEvent.click(
+    screen.getByRole("tab", { name: "gatewayKeys.tabs.connect" }),
+  );
+  const protocol = screen.getByRole("combobox", {
+    name: "gatewayKeys.clientProtocol",
+  });
+  for (const [name, endpoint] of [
+    ["OpenAI Chat Completions", "/v1/chat/completions"],
+    ["OpenAI Responses", "/v1/responses"],
+    ["Gemini", ":generateContent"],
+    ["Anthropic Messages", "/v1/messages"],
+  ]) {
+    fireEvent.keyDown(protocol, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name }));
+    expect(container.querySelector("pre")).toHaveTextContent(endpoint);
+  }
+  expect(gatewayApi.create).not.toHaveBeenCalled();
+  expect(gatewayApi.bind).not.toHaveBeenCalled();
+});
+
 it("offers every agent, binds routed agents and explains direct-only agents", async () => {
   vi.mocked(gatewayApi.list).mockResolvedValue([
     {

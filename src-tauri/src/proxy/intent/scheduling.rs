@@ -622,11 +622,21 @@ pub(crate) fn arrange(
                 bands[*i] = band;
             }
             fast.sort_by_key(|i| (bands[*i], *i));
-            if !fast.is_empty() && !unknown.is_empty() {
+            let probes = unknown
+                .iter()
+                .copied()
+                .chain(
+                    fast.iter()
+                        .copied()
+                        .filter(|i| mid > 0.0 && seats[*i].tps <= 0.0),
+                )
+                .collect::<Vec<_>>();
+            if !fast.is_empty() && !probes.is_empty() {
                 pool.probes += 1;
                 if pool.probes >= 5 {
-                    let at = pool.probe_turn % unknown.len();
-                    let probe = unknown.remove(at);
+                    let probe = probes[pool.probe_turn % probes.len()];
+                    fast.retain(|i| *i != probe);
+                    unknown.retain(|i| *i != probe);
                     pool.probes = 0;
                     pool.probe_turn = pool.probe_turn.wrapping_add(1);
                     fast.insert(0, probe);
@@ -857,6 +867,66 @@ mod tests {
         assert_eq!(
             order(RoutingStrategy::Fastest, &[0, 1], &close, 100),
             [0, 1]
+        );
+    }
+
+    #[test]
+    fn fastest_probes_members_with_only_first_content_measurements() {
+        let states = [
+            Health {
+                ttft: 150.0,
+                tps: 100.0,
+                ..Default::default()
+            },
+            Health {
+                ttft: 650.0,
+                ..Default::default()
+            },
+            Health {
+                rest_until: 200,
+                ..Default::default()
+            },
+            // This measurement belongs to a different upstream outside the group.
+            Health {
+                ttft: 100.0,
+                tps: 328.8,
+                ..Default::default()
+            },
+        ];
+        let mut pool = Pool::default();
+        for _ in 0..4 {
+            assert_eq!(
+                arrange(
+                    RoutingStrategy::Fastest,
+                    &[0, 1, 2],
+                    &states,
+                    &mut pool,
+                    100
+                ),
+                [0, 1, 2]
+            );
+        }
+        assert_eq!(
+            arrange(
+                RoutingStrategy::Fastest,
+                &[0, 1, 2],
+                &states,
+                &mut pool,
+                100
+            ),
+            [1, 0, 2]
+        );
+        let mut measured = states;
+        measured[1].tps = 328.8;
+        assert_eq!(
+            arrange(
+                RoutingStrategy::Fastest,
+                &[0, 1, 2],
+                &measured,
+                &mut pool,
+                100
+            ),
+            [1, 0, 2]
         );
     }
 

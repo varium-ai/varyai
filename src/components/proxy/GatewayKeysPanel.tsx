@@ -3,6 +3,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -811,17 +818,22 @@ export function GatewayKeysPanel({
           <Label htmlFor="gateway-connect-format">
             {t("gatewayKeys.clientProtocol")}
           </Label>
-          <select
-            id="gateway-connect-format"
-            className="w-full h-9 rounded border bg-background px-2"
-            value={format}
-            onChange={(e) => setFormat(e.target.value)}
-          >
-            <option value="anthropic">Anthropic Messages</option>
-            <option value="openai_chat">OpenAI Chat Completions</option>
-            <option value="openai_responses">OpenAI Responses</option>
-            <option value="gemini_native">Gemini</option>
-          </select>
+          <Select value={format} onValueChange={setFormat}>
+            <SelectTrigger
+              id="gateway-connect-format"
+              className="vary-task-select"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="vary-task-select-menu" sideOffset={8}>
+              <SelectItem value="anthropic">Anthropic Messages</SelectItem>
+              <SelectItem value="openai_chat">
+                OpenAI Chat Completions
+              </SelectItem>
+              <SelectItem value="openai_responses">OpenAI Responses</SelectItem>
+              <SelectItem value="gemini_native">Gemini</SelectItem>
+            </SelectContent>
+          </Select>
           <p className="text-xs">{t("gatewayKeys.exampleHint")}</p>
           <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{`curl '${base}${endpoint}' \\\n  -H 'Authorization: Bearer YOUR_GATEWAY_KEY' \\\n  -H 'Content-Type: application/json' \\\n${format === "anthropic" ? "  -H 'anthropic-version: 2023-06-01' \\\n" : ""}  --data '${JSON.stringify(exampleBody)}'`}</pre>
           <p className="text-xs text-muted-foreground">

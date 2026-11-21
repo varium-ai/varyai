@@ -325,23 +325,9 @@ pub(crate) fn static_transport(
     let (legacy_base, token) =
         provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let base = adapter.extract_base_url(provider).unwrap_or(legacy_base);
-    let format = provider
-        .meta
-        .as_ref()
-        .and_then(|m| m.api_format.as_deref())
-        .or_else(|| {
-            provider
-                .settings_config
-                .get("api_format")
-                .and_then(serde_json::Value::as_str)
-        })
-        .or_else(|| {
-            provider
-                .settings_config
-                .get("apiFormat")
-                .and_then(serde_json::Value::as_str)
-        })
-        .ok_or("intentRouting.providerUnavailable")?;
+    let format = super::static_protocol(provider)
+        .ok_or("intentRouting.providerUnavailable")?
+        .format();
     let url = if provider.meta.as_ref().and_then(|m| m.is_full_url) == Some(true) {
         base.clone()
     } else {

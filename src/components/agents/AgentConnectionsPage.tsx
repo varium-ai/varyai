@@ -1685,7 +1685,9 @@ export function AgentConnectionsPage({
     >
       {!compact && (
         <header className="agent-directory-header">
-          <h1 className="mp-page-heading">{t("agentConnections.title")}</h1>
+          <h1 className="mp-page-heading vary-page-title">
+            {t("agentConnections.title")}
+          </h1>
           {rescanButton("outline")}
         </header>
       )}
@@ -1750,6 +1752,7 @@ export function AgentConnectionsPage({
               <Search size={16} aria-hidden="true" />
               <Input
                 type="search"
+                className="leading-5"
                 aria-label={t("agentConnections.directory.search")}
                 placeholder={t("agentConnections.directory.search")}
                 value={search}
@@ -1978,7 +1981,7 @@ export function AgentConnectionsPage({
           )}
           {(!catalog.data?.length || catalog.isError) && (
             <div>
-              <p role="alert" className="text-sm text-amber-700">
+              <p role="alert" className="text-sm text-[var(--warning)]">
                 {t("agentConnections.noModels")}
               </p>
               {onAddProvider && (

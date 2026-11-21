@@ -20,6 +20,7 @@
   --mp-faint: var(--disabled-foreground);
   --mp-control: hsl(var(--secondary-foreground));
   --mp-accent: hsl(var(--primary));
+  --mp-action-text: hsl(var(--primary-text));
   --mp-green: var(--success);
   --mp-red: hsl(var(--destructive));
   --mp-amber: var(--warning);
@@ -203,7 +204,7 @@
 }
 .workspace-nav-item[aria-current="page"] {
   background: transparent;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   font-weight: 500;
 }
 .workspace-nav-item[aria-current="page"] svg {
@@ -256,11 +257,13 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-page-heading {
   display: flex;
   align-items: center;
-  min-height: 26px;
   margin: 0 0 12px;
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 26px;
+}
+.vary-page-title {
+  font-family: Inter, "Noto Sans SC", var(--mp-font);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 28px;
 }
 .vary-agents:not(.tray-agents) {
   padding-top: 0;

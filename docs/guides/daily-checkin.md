@@ -12,6 +12,11 @@ The button shows **Automatic check-in** when any saved account for that Agent ha
 
 Check-in panels start hidden. The same button expands or collapses the panel below its Agent row. Only one panel is shown at a time, without a second heading toggle or a separate home-page card. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently. Confirmed claims and existing check-ins disable the claim button and show **Checked in** for the current day or campaign window. The Agent row dropdown always remains available so users can inspect details, select accounts and change automatic mode, including after all accounts have completed check-in. Its accessible label retains the saved **Manual check-in** or **Automatic check-in** mode even when the visible pill shows a confirmed reward. Status refresh re-enables the claim button when the vendor reports the next eligible day or campaign window; it does not change the saved automatic mode.
 
+Saving the automatic check-in switch verifies the account and writes its local
+preference without a separate campaign query. The panel keeps the last
+displayed reward until the next status refresh. Actual check-ins still verify
+eligibility with the service.
+
 Closing a native client or disconnecting its Agent preserves confirmed local check-in results for the current day or unexpired campaign window. Panels display the saved result separately from connection or credential warnings, with claiming disabled while unavailable. Without an observable account, the rewards panel shows the most recent valid confirmed record for that Agent; Doubao Work lists its confirmed daily records using local account references. These records describe previously confirmed accounts and do not establish the current login. Reconnecting uses the observed account and campaign, so another account or a new campaign never inherits that saved completion. Refreshing an official confirmed reward also remembers its result locally without claiming again. Credentials and native account names are not added to the reward stores.
 
 | Client          | Daily reward                                                | Account selection                                                                                                          |

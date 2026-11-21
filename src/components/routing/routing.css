@@ -106,7 +106,7 @@
 .vary-routing .rt-reference-chips button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--rt-accent) 35%, var(--rt-line));
   background: color-mix(in srgb, var(--rt-accent) 7%, var(--rt-card));
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-execution-settings > label {
   display: grid;
@@ -142,14 +142,6 @@
 }
 .vary-routing .rt-page-head {
   margin-bottom: 14px;
-}
-.vary-routing .rt-page-head > h1 {
-  color: var(--rt-fg);
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 26px;
-  letter-spacing: normal;
-  text-transform: none;
 }
 .vary-routing .label {
   font-size: 11px;
@@ -551,7 +543,7 @@
 }
 .vary-routing .rt-accts li.left {
   border-style: dotted;
-  opacity: 0.65;
+  color: var(--rt-muted);
 }
 .vary-routing .rt-accts li.rest {
   border-style: dashed;
@@ -945,7 +937,7 @@
 .vary-routing .rt-group-by .rt-day.on {
   background: var(--mp-pill);
   border-color: color-mix(in srgb, var(--rt-accent) 30%, var(--rt-line));
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-purpose-tools {
   flex: none;
@@ -1855,7 +1847,7 @@
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:hover,
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:focus-visible {
   background: color-mix(in srgb, var(--rt-accent) 10%, transparent);
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-delete {
   color: var(--rt-red);
@@ -1971,7 +1963,7 @@
   margin-top: auto;
 }
 .vary-routing .rt-template-actions .primary {
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-template-cards b {
   font-size: 12.5px;
@@ -1985,7 +1977,7 @@
   color: var(--rt-fg-2);
 }
 .vary-routing .rt-template-cards .off > span {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   white-space: normal;
 }
 .vary-routing .rt-template-cards small {
@@ -2111,212 +2103,167 @@
 }
 
 /* The reference implementation routing rule sentences (MIT); see third_party/routing-reference/LICENSE. */
-.vary-routing .rt-rules .fbl:not(:empty) + .rt-gadds {
-  margin-top: 2px;
+.vary-routing .rt-rules {
+  min-width: 0;
 }
-.vary-routing .rt-rules .fbl {
+.vary-routing .rt-rules-heading,
+.vary-routing .rt-rule-heading {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.vary-routing .rt-rules-heading {
+  flex-wrap: wrap;
+}
+.vary-routing .rt-rule-heading h5 {
+  margin: 0;
+  color: var(--rt-fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+.vary-routing .rt-rule-list {
+  display: grid;
+  gap: 8px;
+}
+.vary-routing .rt-rule-list:empty {
+  display: none;
 }
 .vary-routing .rt-rule {
+  min-width: 0;
+  border: 1px solid var(--rt-line);
+  border-radius: 8px;
+  background: var(--rt-card);
+  font-size: 12px;
+}
+.vary-routing .rt-rule-heading {
+  min-height: 36px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--rt-line);
+}
+.vary-routing .rt-rule-heading .rt-rmore {
+  margin-inline-start: auto;
+  flex: none;
+}
+.vary-routing .rt-rule-status {
+  color: var(--rt-muted);
+}
+.vary-routing .rt-rule-fields {
   display: grid;
-  grid-template-columns: 16px fit-content(50%) minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px 12px 10px;
+}
+.vary-routing .rt-rule-field {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
   align-items: start;
-  column-gap: 8px;
-  padding: 7px 0;
-  border-top: 1px solid var(--rt-line);
-  font-size: 12.5px;
+  gap: 4px 8px;
 }
-.vary-routing .rt-rule > .rt-line.when {
-  min-width: var(--rt-condw, 0);
+.vary-routing .rt-rule-field > span {
+  padding-top: 5px;
+  color: var(--rt-fg-2);
+  line-height: 16px;
 }
-.vary-routing .rt-rule:first-child {
-  border-top: 0;
-  padding-top: 2px;
+@container routing-form (max-width: 520px) {
+  .vary-routing .rt-rule-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vary-routing .rt-rule-field > span {
+    padding-top: 0;
+  }
 }
-.vary-routing .rt-rule > .i {
-  line-height: 26px;
-  color: var(--rt-muted);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-.vary-routing .rt-rule > .rt-rhandle {
-  position: relative;
-  width: 16px;
-  height: 26px;
-  padding: 0;
-  margin: 0;
-  font: inherit;
-  font-size: 11.5px;
-  line-height: 26px;
-  color: var(--rt-muted);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-.vary-routing .rt-rule > .rt-rhandle::before {
-  content: "";
-  position: absolute;
-  left: -5px;
-  top: 50%;
-  width: 5px;
-  height: 11px;
-  margin-top: -5.5px;
-  background: radial-gradient(circle, var(--rt-muted) 0.9px, transparent 1.2px)
-    0 0 / 3.5px 3.75px;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.vary-routing .rt-rule:is(:hover, .rt-drag-lift) > .rt-rhandle::before {
-  opacity: 1;
-}
-.vary-routing .rt-rule > .rt-rhandle:focus-visible::before {
-  opacity: 1;
-}
-.vary-routing .rt-rules > .fbl.rt-sorting {
+.vary-routing .rt-rule-list.rt-sorting {
   user-select: none;
   -webkit-user-select: none;
 }
-.vary-routing .rt-rules > .fbl.rt-sorting > .rt-rule {
+.vary-routing .rt-rule-list.rt-sorting > .rt-rule {
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.vary-routing .rt-rules > .fbl.rt-sorting .rt-rhandle {
+.vary-routing .rt-rule-list.rt-sorting .rt-rhandle {
   cursor: grabbing;
 }
-.vary-routing .rt-rules > .fbl > .rt-rule.rt-drag-lift {
+.vary-routing .rt-rule-list > .rt-rule.rt-drag-lift {
   position: relative;
   z-index: 2;
-  background: var(--rt-card);
-  box-shadow:
-    0 6px 18px rgba(20, 22, 30, 0.12),
-    0 0 0 1px var(--rt-line);
-  border-radius: 8px;
+  box-shadow: 0 6px 18px rgb(20 22 30 / 12%);
   transition: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .vary-routing .rt-rules > .fbl.rt-sorting > .rt-rule {
+  .vary-routing .rt-rule-list.rt-sorting > .rt-rule {
     transition: none;
   }
 }
 .vary-routing .rt-line {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
 }
-@container routing-page (max-width: 640px) {
-  .vary-routing .rt-rule {
-    grid-template-columns: 16px minmax(0, 1fr) auto;
-    row-gap: 6px;
-  }
-  .vary-routing .rt-rule > .rt-line.when {
-    min-width: 0;
-  }
-  .vary-routing .rt-rule > .rt-then {
-    grid-column: 2;
-    grid-row: 2;
-  }
-  .vary-routing .rt-rule > .rt-rmore {
-    grid-column: 3;
-    grid-row: 1;
-  }
-}
-.vary-routing .rt-arrow {
-  color: var(--rt-muted);
-  font-size: 12px;
-  padding: 0 1px;
-}
-.vary-routing .rt-c {
-  position: relative;
+.vary-routing .rt-rules .rt-c {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 2px;
   min-width: 0;
   max-width: 100%;
 }
-.vary-routing .rt-cx {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid var(--rt-line);
-  background: var(--rt-card);
-  color: var(--rt-muted);
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 0.12s,
-    color 0.12s;
+.vary-routing .rt-rules .rt-c > .rt-cond {
+  min-width: 0;
 }
-.vary-routing .rt-cx:hover {
-  color: var(--rt-fg);
-  border-color: var(--rt-muted);
+.vary-routing .rt-rules .rt-c[data-condition="intent"] {
+  width: 100%;
 }
-.vary-routing .rt-c:hover > .rt-cx,
-.vary-routing .rt-c:focus-within > .rt-cx {
-  opacity: 1;
-  pointer-events: auto;
+.vary-routing .rt-rules .rt-cond.in {
+  flex: 1;
+  padding: 3px 8px;
+  border-radius: 6px;
 }
-@media (hover: none) {
-  .vary-routing .rt-cx {
-    opacity: 1;
-    pointer-events: auto;
-  }
+.vary-routing .rt-rules .rt-cond > .rt-grow {
+  flex: 1;
+  min-width: 0;
 }
-.vary-routing .rt-addc,
-.vary-routing .rt-adduse {
-  display: inline-grid;
-  grid-auto-flow: column;
-  place-items: center;
-  gap: 5px;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border-radius: 999px;
+.vary-routing .rt-rules .rt-cond > svg {
+  flex: none;
+}
+.vary-routing .rt-rules :is(.rt-rhandle, .rt-cx, .rt-rule-add) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
   border: 1px solid transparent;
+  border-radius: 5px;
   background: transparent;
   color: var(--rt-muted);
-  font: inherit;
+}
+.vary-routing .rt-rules :is(.rt-rhandle, .rt-cx) {
+  flex: 0 0 26px;
+}
+.vary-routing .rt-rules .rt-rhandle {
+  touch-action: none;
+  cursor: grab;
+}
+.vary-routing .rt-rules .rt-rule-add {
+  gap: 5px;
+  padding: 2px 8px;
+  border-color: var(--rt-line);
+  color: var(--rt-fg-2);
   font-size: 12px;
-  cursor: pointer;
-  transition:
-    color 0.15s,
-    border-color 0.15s,
-    background 0.15s;
 }
-.vary-routing .rt-addc.wide {
-  width: auto;
-  height: 26px;
-  padding: 0 10px 0 8px;
-  border: 1px dashed var(--rt-line);
-}
-.vary-routing .rt-addc:hover,
-.vary-routing .rt-addc.open,
-.vary-routing .rt-addc:focus-visible,
-.vary-routing .rt-adduse:hover,
-.vary-routing .rt-adduse.open,
-.vary-routing .rt-adduse:focus-visible {
-  color: var(--rt-fg);
+.vary-routing .rt-rules .rt-rules-heading .rt-rule-add {
   background: var(--rt-card-2);
 }
-.vary-routing .rt-addc.wide:hover,
-.vary-routing .rt-addc.wide.open {
-  border-color: var(--rt-muted);
-}
-.vary-routing .rt-rule > .rt-rmore {
-  align-self: start;
-}
-.vary-routing .rt-rule > .rt-rmore.open {
-  background: var(--mp-pill);
+.vary-routing .rt-rules :is(.rt-rhandle, .rt-cx, .rt-rule-add):enabled:hover,
+.vary-routing .rt-rules button[data-state="open"] {
+  background: var(--rt-card-2);
   color: var(--rt-fg);
+}
+.vary-routing .rt-rules button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.vary-routing .rt-rules button:focus-visible,
+.vary-routing .rt-rules label.rt-cond:focus-within {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 1px;
 }
 .vary-routing .rt-rule > .rt-rneed {
   grid-column: 2 / -1;
@@ -2345,12 +2292,6 @@
 }
 .vary-routing .rt-info[hidden] {
   display: none;
-}
-.vary-routing .rt-gadds {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
 }
 .vary-routing .rt-pickrow {
   display: flex;
@@ -2508,12 +2449,6 @@
   display: none;
 }
 
-.vary-routing .rt-rule {
-  grid-template-columns: 16px fit-content(50%) minmax(0, 1fr) 24px;
-}
-.vary-routing .rt-rule-off {
-  opacity: 0.6;
-}
 .vary-routing .rt-classifier-pick {
   display: flex;
   align-items: center;
@@ -2551,29 +2486,10 @@
 .vary-routing .rt-cond.tk input {
   width: 8ch;
 }
-.vary-routing .rt-rules .rt-rhandle {
-  touch-action: none;
-  cursor: grab;
-  border: 0;
-  background: transparent;
-}
 .vary-routing .rt-rule-hint {
-  font-size: 11.5px;
+  margin: 0;
   color: var(--rt-muted);
-  margin-top: 4px;
-}
-.vary-routing .rt-rules .rt-gadd {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
-  border: 1px dashed var(--rt-line);
-  border-radius: 8px;
   font-size: 12px;
-  color: var(--rt-fg-2);
-}
-.vary-routing .rt-rules .rt-gadds {
-  margin-top: 4px;
 }
 .mp-rule-time {
   width: min(320px, calc(100vw - 32px));
@@ -2608,9 +2524,6 @@
   margin-bottom: 6px;
 }
 @container routing-page (max-width: 640px) {
-  .vary-routing .rt-rule {
-    grid-template-columns: 16px minmax(0, 1fr) 24px;
-  }
   .vary-routing .rt-execution-settings > label {
     grid-template-columns: minmax(0, 1fr) minmax(100px, 44%);
   }
@@ -2688,6 +2601,6 @@
 }
 
 .vary-routing .rt-group-table .rt-group-actions > button {
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
   padding-inline: 0;
 }

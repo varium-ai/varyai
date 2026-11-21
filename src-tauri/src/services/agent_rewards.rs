@@ -258,7 +258,12 @@ impl Manager {
         }
         let directory = self.path.parent().ok_or(ERROR)?.join("agent-rewards");
         #[cfg(target_os = "macos")]
-        if app == "qoder" && matches!(input["mode"].as_str(), Some("status" | "claim")) {
+        if app == "qoder"
+            && matches!(
+                input["mode"].as_str(),
+                Some("identity" | "status" | "claim")
+            )
+        {
             let cache = self.native_cache.clone();
             let home = crate::config::get_home_dir();
             let interactive = input["nativeInteractive"] == true;
@@ -483,7 +488,10 @@ impl Manager {
         valid_app(app)?;
         let _guard = self.lock.lock().await;
         let mut store = self.read().await?;
-        let native = self.observe(app, None).await?;
+        let value = self.helper(app, json!({"mode":"identity"})).await?;
+        let native = serde_json::from_value::<Observation>(value)
+            .map_err(|_| ERROR.to_owned())?
+            .validate()?;
         if native.account_id.as_deref() != Some(id) {
             return Err("agentRewards.accountChanged".into());
         }

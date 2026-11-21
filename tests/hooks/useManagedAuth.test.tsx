@@ -284,31 +284,35 @@ describe("useManagedAuth", () => {
   });
 });
 
-it("publishes the completed target only after refreshing account status", async () => {
-  apiMocks.authStartLogin.mockResolvedValue({
-    provider: "codex_oauth",
-    device_code: "device-complete",
-    user_code: "ABCD-EFGH",
-    verification_uri: "https://example.test/device",
-    expires_in: 600,
-    interval: 5,
-  });
-  apiMocks.authPollForAccount.mockResolvedValue({ id: "acct-1" });
-  const { result } = renderHook(() => useManagedAuth("codex_oauth"), {
-    wrapper: createWrapper(),
-  });
-  await waitFor(() => expect(result.current.isStatusSuccess).toBe(true));
-  expect(result.current.loginCompletion).toBeNull();
-  act(() => result.current.reauthAccount("acct-1"));
-  await waitFor(() =>
-    expect(result.current.loginCompletion).toEqual({
-      accountId: "acct-1",
-      generation: expect.any(Number),
-    }),
-  );
-  expect(result.current.isAddingAccount).toBe(false);
-  expect(apiMocks.authGetStatus.mock.calls.length).toBeGreaterThan(1);
-});
+it.each(["codex_oauth", "github_copilot", "xai_oauth"] as const)(
+  "publishes the completed %s device login while account status is refreshing",
+  async (provider) => {
+    apiMocks.authStartLogin.mockResolvedValue({
+      provider,
+      device_code: "device-complete",
+      user_code: "ABCD-EFGH",
+      verification_uri: "https://example.test/device",
+      expires_in: 600,
+      interval: 5,
+    });
+    apiMocks.authPollForAccount.mockResolvedValue({ id: "acct-1" });
+    const { result } = renderHook(() => useManagedAuth(provider), {
+      wrapper: createWrapper(),
+    });
+    await waitFor(() => expect(result.current.isStatusSuccess).toBe(true));
+    apiMocks.authGetStatus.mockImplementationOnce(() => new Promise(() => {}));
+    expect(result.current.loginCompletion).toBeNull();
+    act(() => result.current.reauthAccount("acct-1"));
+    await waitFor(() =>
+      expect(result.current.loginCompletion).toEqual({
+        accountId: "acct-1",
+        generation: expect.any(Number),
+      }),
+    );
+    expect(result.current.isAddingAccount).toBe(false);
+    expect(apiMocks.authGetStatus.mock.calls.length).toBeGreaterThan(1);
+  },
+);
 
 it("cancels a late login-start response after the editor closes without opening a browser", async () => {
   let finish!: (value: unknown) => void;

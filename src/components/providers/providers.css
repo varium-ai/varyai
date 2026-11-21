@@ -340,7 +340,7 @@
 .vary-providers .pv-reauth:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--mp-accent) 45%, var(--mp-line));
   background: var(--mp-hover);
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .vary-providers .pv-row-copy,
 .vary-providers .pv-row-delete {
@@ -358,7 +358,7 @@
 }
 .vary-providers .pv-row-copy:hover:not(:disabled) {
   background: var(--mp-pill);
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .vary-providers .pv-row-delete {
   color: var(--mp-red);
@@ -374,10 +374,6 @@
 .vary-providers .pv-chevron {
   flex: none;
   color: var(--mp-faint);
-}
-.vary-providers .pv-row.off .pv-open,
-.vary-providers .pv-row.off .pv-key {
-  opacity: 0.65;
 }
 .vary-providers .pv-off-badge {
   flex: none;
@@ -406,7 +402,7 @@
   transform: rotate(90deg);
 }
 .vary-providers .pv-off-head small {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   font-size: 11px;
 }
 .vary-providers .pv-sheet {
@@ -483,7 +479,7 @@
   height: 38px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--mp-accent) 10%, var(--mp-card));
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .vary-providers .pv-method-copy {
   display: grid;
@@ -533,22 +529,6 @@
   min-width: 0;
   width: 240px;
   max-width: 100%;
-}
-.vary-providers .pv-vendor-search > svg {
-  position: absolute;
-  left: 9px;
-  top: 9px;
-  color: var(--mp-muted);
-}
-.vary-providers .pv-vendor-search > input {
-  height: 32px;
-  padding: 0 9px 0 30px;
-  border: 1px solid var(--mp-line);
-  border-radius: 8px;
-  background: var(--mp-card);
-  color: var(--mp-fg);
-  box-shadow: none;
-  font-size: 12px;
 }
 .vary-providers .pv-common-providers {
   overflow: hidden;
@@ -1000,13 +980,6 @@
 .pv-editor .pv-editor-foot {
   justify-content: flex-end;
 }
-.pv-editor .pv-editor-foot > button {
-  height: 28px;
-  padding: 0 12px;
-  border-color: var(--mp-line);
-  box-shadow: none;
-  font-weight: 400;
-}
 .pv-editor .pv-discovered {
   margin: 0 0 10px;
   padding: 8px;
@@ -1149,7 +1122,7 @@
   margin-top: 5px;
 }
 .pv-editor .mnames .hint {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   font-size: 11px;
 }
 .pv-editor .mnames > .hint {
@@ -1222,7 +1195,7 @@
   text-align: left;
 }
 .pv-editor .mname small {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
 }
 @media (max-height: 640px) {
   .pv-editor .mnames {
@@ -1280,7 +1253,7 @@
   gap: 4px;
   max-width: 28%;
   overflow: hidden;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   font-size: 12px;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -1412,7 +1385,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   box-shadow: none;
   font-size: 11.5px;
   font-weight: 400;
@@ -1589,7 +1562,7 @@
   padding: 0 7px;
   border: 0;
   background: transparent;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   box-shadow: none;
   font-size: 11.5px;
   font-weight: 500;
@@ -1809,7 +1782,7 @@
   border: 0;
   border-radius: 5px;
   background: var(--mp-accent-soft);
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   box-shadow: none;
   font-size: 11.5px;
   font-weight: 500;
@@ -2018,10 +1991,10 @@
 .pv-provider-dialog .pv-editor button.pv-model-chip.selected {
   border-color: color-mix(in srgb, var(--mp-accent) 45%, transparent);
   background: var(--mp-accent-soft);
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .pv-provider-dialog .pv-model-chip.selected > svg {
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .pv-provider-dialog .pv-model-chip small {
   flex: none;
@@ -2034,13 +2007,10 @@
 }
 .pv-provider-dialog .pv-editor-foot {
   min-height: 60px;
-  margin-inline: 24px;
+  margin-inline: 24px 20px;
   padding: 14px 0 16px;
-  gap: 8px;
+  gap: 12px;
   border-top: 1px solid var(--mp-line-2);
-}
-.pv-provider-dialog .pv-editor-foot > button {
-  min-height: 36px;
 }
 @media (max-width: 520px) {
   .pv-provider-dialog.vary-dialog-surface[role="dialog"] {
@@ -2063,7 +2033,6 @@
     flex-wrap: wrap;
     margin-inline: 20px;
     padding-bottom: 20px;
-    gap: 8px;
   }
   .pv-provider-dialog .pv-editor-foot > button {
     padding-inline: 12px;
@@ -2404,7 +2373,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   font-size: 11px;
 }
 .pv-import-source label {
@@ -2420,7 +2389,7 @@
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .pv-import-dialog input[type="checkbox"] {
   accent-color: var(--mp-accent);
@@ -2463,7 +2432,7 @@
 }
 .pv-import-name small,
 .pv-import-sub {
-  color: var(--mp-muted);
+  color: var(--mp-fg-2);
   font-size: 11.5px;
   overflow-wrap: anywhere;
 }
@@ -2476,7 +2445,7 @@
   background: var(--mp-pill);
   font-size: 11px;
 }
-.pv-import-dim {
+.pv-import-dim > :is(input, .pv-import-icon) {
   opacity: 0.5;
 }
 .pv-import-modes {
@@ -2522,14 +2491,14 @@
 .pv-import-error {
   padding: 10px 20px;
   font-size: 12px;
-  color: var(--destructive);
+  color: var(--mp-red);
 }
 .pv-import-footer {
   display: flex;
   align-items: center;
   flex: none;
-  gap: 8px;
-  padding: 12px 18px;
+  gap: 12px;
+  padding: 12px 20px 12px 18px;
   border-top: 1px solid var(--mp-line);
 }
 .pv-import-footer > span {
@@ -2537,14 +2506,12 @@
   color: var(--mp-muted);
   font-size: 12px;
 }
-.pv-import-footer button {
-  height: 30px;
-  padding: 0 10px;
-  font-size: 12px;
+.pv-provider-dialog .pv-editor .pv-editor-foot > button {
+  border-radius: var(--radius);
+  font-size: 13px;
 }
-.pv-import-footer button:last-child {
-  background: var(--mp-accent);
-  color: white;
+:is(.pv-import-footer, .pv-editor-foot) > button {
+  line-height: 20px;
 }
 .pv-import-dialog button:focus-visible,
 .pv-import-dialog input:focus-visible {
@@ -2707,8 +2674,11 @@
   font-size: inherit;
 }
 .pv-sheet .cx-signing .mp-primary {
-  background: var(--mp-accent);
-  color: #fff;
+  background: hsl(var(--primary-action));
+  color: hsl(var(--primary-foreground));
+}
+.pv-sheet .cx-signing .mp-primary:hover:enabled {
+  background: var(--primary-action-hover);
 }
 .pv-sheet .cx-signing input {
   height: 30px;
@@ -2718,7 +2688,7 @@
 }
 .pv-sheet .pv-tile.on {
   background: var(--mp-pill);
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .pv-sheet .pv-signed-in-dot {
   width: 6px;

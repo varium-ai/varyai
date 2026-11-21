@@ -1,5 +1,45 @@
 # Agent feature coverage
 
+## UI consistency and text contrast
+
+Pre-implementation assessment against `APP_IDS`, `AppType`, and the Agent
+connections registry (including both TRAE bridge variants and Doubao Work's
+separate audit entry). The same application-mode renderer runs on macOS and
+Windows. For each row, the Tools heading and existing text use shared
+presentation. VA-12 applies to the existing profile capture picker when offered.
+The gateway protocol menu only selects a connection example. The existing
+availability metadata, native adapters, and runtime commands own behavior.
+
+| Agent ID | Existing profile picker state | Verification plan |
+| --- | --- | --- |
+| `claude` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `claude-desktop` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `codex` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `gemini` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `grokbuild` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `opencode` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `openclaw` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `hermes` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `pi` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `workbuddy` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `workbuddy-ai` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `qoder` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `doubaowork` | Unavailable with existing reason | Synthetic picker passed; native macOS / Windows pending |
+| `trae` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `trae-intl` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `kimi` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `qwen` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `zcode` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `deepseek-harness` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `t3code` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+
+The application picker fixture verified all 20 displayed entries. Renderer
+regressions exercised capture for each of the 19 available entries and checked
+that Doubao Work was disabled with its existing availability metadata. The
+gateway menu fixture exercised its four protocol examples. See the
+[UI visual consistency verification](ui-visual-consistency.md) for computed
+styles, color measurements and browser coverage.
+
 ## Tray Usage (macOS and Windows)
 
 For every Agent and ledger adapter in the table below, the tray header refresh
@@ -2108,6 +2148,115 @@ continuation ownership are checked separately from client display. A shared
 renderer regression covers installed Tools rows for all 19 picker-capable
 Agents while the executable catalog lacks the saved group.
 
+The routing group editor also uses the Agent inventory below for saved model
+order. The shared editor opens legacy ranked groups, updates their default
+and fallback IDs, and reapplies catalog ranking when requested. Each
+executable adapter consumes those saved IDs through the existing group
+route. Doubao Work retains its audit-only path. Renderer fixtures cover the
+editor and saved order on the shared macOS and Windows code path. Native
+verification remains separate for the adapters listed below.
+
+The routing group model count uses the shared workspace table for each
+Agent listed below on macOS and Windows. It includes a separately
+configured classifier once per supplier and model. The existing Agent
+adapters continue to receive the same task member order and classifier
+configuration. Renderer fixtures cover the table count.
+
+Verified the count change on the working tree based on `21dceb85`, using
+macOS 26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3. TypeScript, Prettier
+and the renderer build passed. The full renderer suite passed 4,844 tests,
+including the new cases for repeated supplier and model pairs, matched
+members and separate suppliers. Installed-client verification is pending.
+
+For each Agent in the matrix below, the Custom routing group's rule editor
+uses the same renderer on macOS and Windows. The layout groups the match
+conditions, preferred member and ordered fallbacks. The editor continues to
+save the same rule fields, which feed the existing native adapter and runtime
+listed for each Agent. Doubao Work remains audit-only. Editor verification
+covers condition editing, pause rules, disabled rules, keyboard ordering and
+saved targets with synthetic fixtures. Native status remains as listed below.
+
+On the working tree based on `21dceb85`, Chromium on macOS 26.6.2 arm64
+verified the editor at 544 and 900 px in both themes across Simplified Chinese,
+Traditional Chinese, English and Japanese. The fixtures exercise long model
+IDs, conditions covering the full Agent inventory, mouse and keyboard rule
+ordering, and focus on the intent field after adding a rule. The full renderer
+suite passed 4,848 tests with Node 20.20.2 and pnpm 10.12.3 after the concurrent
+classifier changes and before the alignment follow-up. Windows WebView2 and
+installed-client verification remain pending.
+
+The alignment follow-up reproduced the rules starting at the form's left
+edge and the live trial starting in a separate column. At 900 and 544 px,
+Chromium verified a common left edge for rules, live trial, offline plan
+validation and advanced execution settings, with empty and populated rules.
+TypeScript, Prettier, the renderer build and all 136 routing panel tests passed
+after the alignment change.
+
+The rules title now uses the same label styling and column as the other
+advanced settings. Chromium verified the label's position, font and color,
+the adjacent **Add rule** button and the help popover at both widths, for
+empty and populated rules. The popover opens by mouse or keyboard and returns
+focus to the information button on Escape. All 137 routing panel tests,
+TypeScript, Prettier and the renderer build passed after this change.
+
+The Custom rule model picker uses the same renderer as the template picker
+for every Agent in the matrix below. It selects existing group member IDs,
+including effort variants. Primary, fallback and pause selections still feed
+the same saved rule fields and the same native adapters.
+Chromium on macOS verified wheel scrolling within a 44-member list at 900 and
+544 px, along with search, model replacement and saved fallback order.
+The renderer regressions cover retained effort variants and changing the
+member selected by a pause rule. On the working tree based on `21dceb85`,
+macOS 26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3 passed TypeScript, Prettier,
+the renderer build and all 4,849 renderer tests. Windows WebView2 was not
+exercised for this change.
+
+The Fastest and intent-rule regressions use the same inventory. Each
+executable adapter uses the shared exact-upstream measurements, candidate
+pool, continuation ownership and live rule selection. The classifier sees
+the latest supported user text through each adapter's canonical request
+projection. Codex Responses fixtures also exercise replayed reasoning
+summaries. Native acceptance remains pending on both platforms.
+
+The classifier protocol and deadline update applies to each executable Agent
+below through the listed adapter and shared runtime. The editor uses the same
+provider picker, deadline and trial on macOS and Windows. The classifier's
+outbound protocol is independent of the incoming Agent protocol. WorkBuddy
+China and international have a dedicated incoming Chat regression for deadline
+fallback and easy-rule selection. Doubao Work has no executable intent route.
+
+On macOS 26.6.2 arm64, the working tree based on `21dceb85` passed the
+classifier protocol and privacy tests with Rust 1.98.1. Loopback tests used the
+WorkBuddy China and international Chat entry points with the same short task
+and a classifier that returned after 2,300 ms. A 2,000 ms deadline recorded a
+timeout and selected the default model. A 5,000 ms deadline recorded a match
+and selected the easy model. Renderer tests covered the same outcomes and
+verified that changing a saved deadline survives reopening the editor.
+
+TypeScript, Prettier and the renderer build passed with Node 20.20.2 and
+pnpm 10.12.3. The renderer suite passed 4,848 tests. Cargo check, formatting
+and Clippy with warnings denied passed. The full Rust suite passed 7,993
+tests with 21 ignored. Installed clients and Windows remain pending.
+
+The longer opt-in classifier deadline and Gemini 3 classification effort
+apply through the same shared runtime and editor for every executable Agent
+below on macOS and Windows. Conversation ownership stays with each adapter's
+existing continuation path. Doubao Work has no executable intent route.
+
+The follow-up loopback regression verifies `MINIMAL` on the classifier's
+Gemini Native request. In both WorkBuddy editions a synthetic 5,300 ms
+classifier response caused a fallback with a 5,000 ms deadline and selected
+the easy model with a 10,000 ms deadline. Unknown Gemini models in the
+protocol fixture use their upstream thinking default. Renderer fixtures
+cover timeout guidance below and at the new 15,000 ms limit.
+The updated renderer suite passed 4,849 tests on macOS. Cargo check and
+Clippy with warnings denied passed for the follow-up.
+
+New hard/easy drafts use a 10,000 ms classification deadline in the shared
+editor for every executable Agent below. The editor regression checks the
+default in the draft and the saved configuration. Existing groups keep
+their saved deadlines.
+
 | Agent ID | Entry point and native adapter | Verification scope |
 | --- | --- | --- |
 | `claude` | Claude Code CLI, Messages catalog and shared runtime | Shared classifier tests. Native pending |
@@ -2119,8 +2268,8 @@ Agents while the executable catalog lacks the saved group.
 | `openclaw` | OpenClaw, provider model registry and shared runtime | Shared classifier tests. Native pending |
 | `hermes` | Hermes, provider model registry and shared runtime | Shared classifier tests. Native pending |
 | `pi` | Pi, custom provider registry and shared runtime | Shared classifier tests. Native pending |
-| `workbuddy` | WorkBuddy China desktop, native model list and shared runtime | Shared classifier tests. Native pending |
-| `workbuddy-ai` | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests. Native pending |
+| `workbuddy` | WorkBuddy China desktop, native model list and shared runtime | Shared classifier tests and Chat deadline regression passed with loopback fixtures. Native pending |
+| `workbuddy-ai` | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests and Chat deadline regression passed with loopback fixtures. Native pending |
 | `qoder` | Qoder China desktop, provider registry and shared runtime | Shared classifier tests. Native pending |
 | `doubaowork` | Doubao Work desktop, audit-only integration | No executable model picker or intent route in this integration |
 | `trae` | TRAE China desktop, Chat bridge and shared runtime | Shared classifier tests. Native pending |
@@ -2154,3 +2303,81 @@ and the pending patch were identical across the fast-forward. The remaining
 development checks, `pnpm test:agent-rewards` and
 `python3 -B scripts/tests/recover-shared-v23.test.py`, passed with 13 and 5
 tests respectively.
+
+The ranked editor follow-up was verified on the working tree based on
+`868cf24b` on macOS 26.6.2 arm64 with Rust 1.98.1, Node 20.20.2 and
+pnpm 10.12.3. The legacy capability fixture reopens the saved group, moves
+a member that is missing from the current catalog, checks the default and
+fallback IDs sent on save, and reopens the edited order. The recommendation
+fixture restores the same priority after a manual swap between tied models.
+TypeScript, Prettier, the renderer build and all 4,785 renderer tests passed.
+The Cargo library tests filtered by `intent` passed 588 tests with two
+ignored. The recorded Fastest and custom-rule requests still need live
+reproduction. Native Windows verification remains pending.
+
+The next routing follow-up compared the Fastest report with the saved
+group shown in its recording. The standalone Gemini measurement and the
+selected Gemini member used different upstreams. A synthetic three-member
+loopback fixture checks the saved order before measurements, distinct
+upstreams that share a model ID, and the fifth eligible request rotating
+to a member with first-content timing and no output rate. The original
+single-candidate trace does not show why the other members were absent.
+
+The Codex Responses loopback fixture runs translation and arithmetic in
+one named conversation and verifies different rule targets. The classifier
+receives only the current user text. A request carrying a known prior
+response ID retains the upstream that owns the response. Focused fixtures
+also reject encrypted or incomplete reasoning history, and reject actual
+or malformed tool fields in classifiers' output.
+
+Verified the updated working tree based on `868cf24b` on macOS 26.6.2
+arm64 with Rust 1.98.1. Cargo formatting, check and strict Clippy passed.
+The full Cargo test command passed 7,825 library and 165 integration tests
+with 21 library tests ignored. The Agent coverage inventory test passed.
+The reported upstreams and native Windows clients still need live
+verification.
+
+## First-run sign-in and automatic check-in settings
+
+The first-run wizard receives the confirmed account ID and uses each
+provider's own model catalog. This shared flow also supports ChatGPT API,
+GitHub Copilot, and Antigravity. The daily check-in settings validate the
+selected account and persist its preference. The renderer retains the last
+reward observation until the next refresh. These paths are shared by macOS
+and Windows, with Qoder's native account adapter on macOS and browser
+authorization available on both platforms. The entries with only the shared
+wizard have no automatic check-in adapter.
+
+| Agent ID | Entry point and adapter | Verification scope |
+| --- | --- | --- |
+| `claude` | Claude Code CLI, Claude subscription | Claude first-run fixture passed. Installed client pending |
+| `claude-desktop` | Claude Desktop, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `codex` | Codex desktop and CLI, Codex browser and device sign-in | Codex browser, device and first-run fixtures passed. Installed client pending |
+| `gemini` | Gemini CLI, Gemini CLI subscription | Gemini CLI first-run fixture passed. Installed client pending |
+| `grokbuild` | Grok Build CLI, Grok device sign-in | Grok device and first-run fixtures passed. Installed client pending |
+| `opencode` | OpenCode, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `openclaw` | OpenClaw, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `hermes` | Hermes, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `pi` | Pi, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `workbuddy` | WorkBuddy China desktop, WorkBuddy subscription and existing account-scoped preference command | First-run and check-in renderer fixtures passed. Installed client pending |
+| `workbuddy-ai` | WorkBuddy international desktop, WorkBuddy AI subscription | WorkBuddy AI first-run fixture passed. Installed client pending |
+| `qoder` | Qoder China desktop, native macOS and browser reward accounts | Native and browser identity fixtures and renderer tests passed. Installed client pending |
+| `doubaowork` | Doubao Work desktop, native account list and account-scoped preference | Check-in renderer and account preference fixtures passed. Installed client pending |
+| `trae` | TRAE China desktop, native account identity through the rewards bridge | Identity IPC fixture and check-in renderer tests passed. Installed client pending |
+| `trae-intl` | TRAE International desktop, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `kimi` | Kimi Code CLI, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `qwen` | Qwen Code CLI, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `zcode` | ZCode desktop, native rewards credentials and account identity | Native identity fixtures and check-in renderer tests passed. Installed client pending |
+| `deepseek-harness` | DeepSeek Harness CLI, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `t3code` | T3 Code desktop, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+
+Verified the working tree based on `868cf24b` on macOS 26.6.2 arm64 with
+Rust 1.98.1, Node 20.20.2, and pnpm 10.12.3. `pnpm typecheck`,
+`pnpm build:renderer`, `pnpm format:check`, and `pnpm test:unit` passed.
+The renderer suite passed 4,783 tests. `pnpm test:agent-rewards` and
+`pnpm test:trae-bridge` passed 14 and 73 tests respectively. Cargo
+formatting, check, strict Clippy, and the full Cargo test command passed
+against the `src-tauri` manifest. Cargo reported 7,821 library tests and
+165 integration tests passed with 21 library tests ignored. The original
+reporter's subscription accounts and the installed Windows clients still
+need live verification.

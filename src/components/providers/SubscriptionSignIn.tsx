@@ -25,17 +25,8 @@ type Props = {
 };
 export function SubscriptionSignIn(props: Props) {
   const client = useQueryClient();
-  const mounted = useRef(true);
-  const completed = useRef(props.onComplete);
-  completed.current = props.onComplete;
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const onComplete = async (id: string) => {
-    await Promise.all([
+  const onComplete = (id: string) => {
+    void Promise.allSettled([
       client.resetQueries({
         queryKey:
           props.provider === "codex"
@@ -45,23 +36,23 @@ export function SubscriptionSignIn(props: Props) {
       client.invalidateQueries({ queryKey: ["routing-upstreams"] }),
       client.invalidateQueries({ queryKey: ["agent-model-catalog"] }),
     ]);
-    if (mounted.current) completed.current(id);
+    props.onComplete(id);
   };
   if (props.provider === "codex")
-    return <CodexSignIn {...props} onComplete={(id) => void onComplete(id)} />;
+    return <CodexSignIn {...props} onComplete={onComplete} />;
   if (props.provider === "github_copilot" || props.provider === "xai_oauth")
     return (
       <DeviceSignIn
         {...props}
         provider={props.provider}
-        onComplete={(id) => void onComplete(id)}
+        onComplete={onComplete}
       />
     );
   return (
     <NativeSignIn
       {...props}
       provider={props.provider}
-      onComplete={(id) => void onComplete(id)}
+      onComplete={onComplete}
     />
   );
 }
@@ -193,9 +184,11 @@ function CodexSignIn({ onCancel, onComplete }: Props) {
               return;
             }
             const account = await routingUpstreamsApi.importCodexAccount(path);
-            await client.invalidateQueries({
-              queryKey: ["managed-auth-status", "codex_oauth"],
-            });
+            void client
+              .invalidateQueries({
+                queryKey: ["managed-auth-status", "codex_oauth"],
+              })
+              .catch(() => {});
             if (attempt === generation.current) onComplete(account.id);
           } catch {
             if (attempt === generation.current) setError("codexBrowser.failed");
@@ -282,9 +275,11 @@ function NativeSignIn({
                     provider,
                     path,
                   );
-                  await client.invalidateQueries({
-                    queryKey: ["native-subscription-accounts", provider],
-                  });
+                  void client
+                    .invalidateQueries({
+                      queryKey: ["native-subscription-accounts", provider],
+                    })
+                    .catch(() => {});
                   if (mounted.current) onComplete(account.id);
                 } catch {
                   if (mounted.current)

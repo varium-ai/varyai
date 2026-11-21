@@ -94,11 +94,12 @@ export function useNativeSubscriptionLogin(
         setFlow(next);
         setStarting(false);
         if (next.state === "done" && next.account) {
-          await client.invalidateQueries({
-            queryKey: ["native-subscription-accounts", provider],
-          });
-          if (mounted.current && attempt === generation.current)
-            setCompletion(next.account.id);
+          void client
+            .invalidateQueries({
+              queryKey: ["native-subscription-accounts", provider],
+            })
+            .catch(() => {});
+          setCompletion(next.account.id);
         } else if (next.state === "failed") {
           setError(safeError(next.error));
         } else if (next.state === "waiting" && next.url) {
@@ -123,10 +124,11 @@ export function useNativeSubscriptionLogin(
         const next = await api.poll(flow.id);
         if (stopped || attempt !== generation.current) return;
         if (next.state === "done" && next.account) {
-          await client.invalidateQueries({
-            queryKey: ["native-subscription-accounts", provider],
-          });
-          if (stopped || attempt !== generation.current) return;
+          void client
+            .invalidateQueries({
+              queryKey: ["native-subscription-accounts", provider],
+            })
+            .catch(() => {});
           active.current = undefined;
           setFlow(next);
           setCompletion(next.account.id);

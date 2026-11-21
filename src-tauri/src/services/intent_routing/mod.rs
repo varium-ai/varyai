@@ -15,7 +15,7 @@ pub(crate) mod model_preferences;
 pub(crate) mod rules;
 pub(crate) mod speed;
 
-use crate::{app_config::AppType, provider::Provider};
+use crate::{app_config::AppType, provider::Provider, proxy::Protocol};
 pub(crate) use discovery::{discover_groups, discover_stand_ins, legacy_ids};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -251,7 +251,7 @@ impl RoutingGroup {
                 .any(|pattern| membership::compile(pattern).is_err())
             || self.rules.len() > 16
             || self.fallback_member_ids.len() > 256
-            || !(500..=5000).contains(&self.classification_budget_ms)
+            || !(500..=15_000).contains(&self.classification_budget_ms)
             || !context::Metadata::valid_group_window(self.context_window)
             || !matches!(
                 self.affinity.as_str(),
@@ -445,30 +445,7 @@ pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
     {
         return false;
     }
-    let format = provider
-        .meta
-        .as_ref()
-        .and_then(|m| m.api_format.as_deref())
-        .or_else(|| {
-            provider
-                .settings_config
-                .get("api_format")
-                .and_then(|v| v.as_str())
-        })
-        .or_else(|| {
-            provider
-                .settings_config
-                .get("apiFormat")
-                .and_then(|v| v.as_str())
-        });
-    if if classifier {
-        format != Some("openai_chat")
-    } else {
-        !matches!(
-            format,
-            Some("openai_chat" | "openai_responses" | "anthropic" | "gemini_native")
-        )
-    } {
+    if static_protocol(provider).is_none() {
         return false;
     }
     let (endpoint, key) = provider.resolve_usage_credentials(&AppType::Codex);
@@ -484,6 +461,31 @@ pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
         && url.query().is_none()
         && url.fragment().is_none()
         && !matches!(url.host_str(), Some("chatgpt.com" | "chat.openai.com"))
+}
+
+fn static_protocol(provider: &Provider) -> Option<Protocol> {
+    let format = provider
+        .meta
+        .as_ref()
+        .and_then(|m| m.api_format.as_deref())
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(|v| v.as_str())
+        })?;
+    match format {
+        "openai_chat" | "openai_responses" | "anthropic" | "gemini_native" => {
+            Protocol::from_format(format)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

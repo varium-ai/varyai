@@ -9,6 +9,178 @@ use std::sync::Mutex;
 
 #[tokio::test]
 #[serial_test::serial]
+async fn codex_rule_groups_classify_new_turns_and_keep_opaque_continuations_bound(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let classified = seen.clone();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            Router::new()
+                .route(
+                    "/v1/chat/completions",
+                    post(move |Json(body): Json<Value>| {
+                        let classified = classified.clone();
+                        async move {
+                            let request: Value = serde_json::from_str(
+                                body["messages"][1]["content"]
+                                    .as_str()
+                                    .expect("classifier payload"),
+                            )
+                            .expect("classifier JSON");
+                            let intent = match request["text"].as_str().expect("user text") {
+                                "Synthetic translation" => "translate",
+                                "Synthetic arithmetic" => "calculate",
+                                "Synthetic lookup" => "lookup",
+                                _ => panic!("classifier should see only the new user turn"),
+                            };
+                            classified
+                                .lock()
+                                .expect("fixture observations")
+                                .push(intent);
+                            Json(json!({"choices":[{"finish_reason":"stop","message":{
+                                "content":json!({"intentId":intent}).to_string(),
+                                "tool_calls":null,"function_call":null
+                            }}]}))
+                        }
+                    }),
+                )
+                .route(
+                    "/responses",
+                    post(|Json(body): Json<Value>| async move {
+                        let model = &body["model"];
+                        Json(json!({
+                            "id":format!("synthetic-{}",model.as_str().expect("model")),
+                            "model":model,"status":"completed","output":[]
+                        }))
+                    }),
+                ),
+        )
+        .await;
+    });
+    let group: RoutingGroup = serde_json::from_value(json!({
+        "id":"synthetic-intents","name":"Synthetic intents","revision":0,"client":"codex","enabled":false,
+        "members":[
+            {"id":"primary","providerId":"fixture","modelId":"default-model"},
+            {"id":"translate","providerId":"fixture","modelId":"translation-model"},
+            {"id":"calculate","providerId":"fixture","modelId":"arithmetic-model"}
+        ],
+        "defaultMemberId":"primary","fallbackMemberIds":["translate","calculate"],
+        "intentRecognitionEnabled":true,
+        "classifierTarget":{"providerId":"classifier","modelId":"synthetic-classifier"},"classificationBudgetMs":5000,
+        "rules":[
+            {"id":"translate","name":"Translation","description":"Translation requests","enabled":true,"targetMemberId":"translate"},
+            {"id":"calculate","name":"Arithmetic","description":"Arithmetic requests","enabled":true,"targetMemberId":"calculate"},
+            {"id":"lookup","name":"Lookup","description":"Lookup requests","enabled":true,"targetMemberId":"primary"}
+        ],
+        "affinity":"session"
+    }))?;
+    let classifier = crate::provider::Provider::with_id(
+        "classifier".into(),
+        "Synthetic classifier".into(),
+        json!({
+            "apiFormat":"openai_chat","auth":{"OPENAI_API_KEY":"synthetic-key"},
+            "config":format!("model_provider = \"fixture\"\n[model_providers.fixture]\nbase_url = \"http://{address}/v1\"\nwire_api = \"chat\"")
+        }),
+        None,
+    );
+    let url: reqwest::Url = format!("http://{address}/responses").parse()?;
+    let targets = group
+        .members
+        .iter()
+        .map(|member| Target {
+            provider_id: member.provider_id.clone(),
+            model: member.model_id.clone(),
+            fixed_effort: None,
+            upstream: None,
+            effort: Default::default(),
+            url: url.clone(),
+            headers: Default::default(),
+            official: false,
+            credentials: None,
+            scheduling: Arc::default(),
+        })
+        .collect();
+    let runtime = Arc::new(Runtime::default());
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let token = runtime.install(
+        Session {
+            group,
+            targets,
+            classifier: Some(classifier),
+            client: client.clone(),
+            created: Instant::now(),
+            bindings: Arc::default(),
+        },
+        None,
+    )?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let url = format!("http://127.0.0.1:{}/intent/v1/responses", info.port);
+    let history = [
+        json!({"role":"user","content":"Synthetic translation"}),
+        json!({"type":"reasoning","id":"synthetic-summary","status":"completed","summary":[{"type":"summary_text","text":"Synthetic historical summary"}],"encrypted_content":null}),
+        json!({"role":"assistant","content":[{"type":"output_text","text":"Synthetic historical reply"}]}),
+    ];
+    let mut arithmetic = history.to_vec();
+    arithmetic.push(
+        json!({"role":"user","content":[{"type":"input_text","text":"Synthetic arithmetic"}]}),
+    );
+    for (mut body, expected, step) in [
+        (
+            json!({"input":"Synthetic translation"}),
+            "translation-model",
+            trace::Kind::Rule,
+        ),
+        (
+            json!({"input":arithmetic}),
+            "arithmetic-model",
+            trace::Kind::Rule,
+        ),
+        (
+            json!({"input":"Synthetic lookup","previous_response_id":"synthetic-arithmetic-model"}),
+            "arithmetic-model",
+            trace::Kind::Pinned,
+        ),
+    ] {
+        body["model"] = json!("vary-auto/synthetic-intents");
+        let reply: Value = client
+            .post(&url)
+            .bearer_auth(&token)
+            .header("session-id", "synthetic-classifier-session")
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(reply["model"], expected);
+        assert!(runtime.traces.snapshot()[0]
+            .steps
+            .iter()
+            .any(|entry| entry.kind == step));
+    }
+    assert_eq!(
+        *seen.lock().map_err(|_| "fixture observations")?,
+        ["translate", "calculate"]
+    );
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn codex_new_conversations_forward_optional_and_unobserved_state_intact(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
