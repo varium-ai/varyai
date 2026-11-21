@@ -56,7 +56,23 @@ export function DoubaoWorkCheckinPanel({
   const auto = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       doubaoCheckinApi.setAutoEnabled(id, enabled),
-    onSuccess: update,
+    onSuccess: (value, { id }) => {
+      const saved = value.accounts.find((account) => account.id === id);
+      if (!saved) return;
+      client.setQueryData<DoubaoCheckinStatus>(
+        queryKey,
+        (previous) =>
+          previous && {
+            ...previous,
+            autoConfigured: value.autoConfigured,
+            accounts: previous.accounts.map((account) =>
+              account.id === id
+                ? { ...account, autoEnabled: saved.autoEnabled }
+                : account,
+            ),
+          },
+      );
+    },
   });
   const busy = claim.isPending || auto.isPending;
   const canClaim =

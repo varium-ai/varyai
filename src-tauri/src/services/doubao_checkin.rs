@@ -285,10 +285,7 @@ impl Manager {
     pub(crate) async fn set_auto(&self, id: &str, enabled: bool) -> Result<Snapshot, String> {
         let _guard = self.lock.lock().await;
         let mut store = self.read_store().await?;
-        let native = self
-            .native_with_status()
-            .await
-            .map_err(|_| ACCOUNT_ERROR.to_owned())?;
+        let native = self.native().await.map_err(|_| ACCOUNT_ERROR.to_owned())?;
         if !native.accounts.iter().any(|account| key(&account.id) == id) {
             return Err(ACCOUNT_ERROR.into());
         }

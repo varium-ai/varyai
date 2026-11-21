@@ -12,6 +12,7 @@ mod concurrency_tests;
 mod continuation;
 mod identity;
 pub(super) mod length;
+pub(crate) use length::visible_reasoning;
 pub(crate) mod native;
 mod native_gateway;
 #[cfg(test)]

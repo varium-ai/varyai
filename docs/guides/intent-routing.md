@@ -105,9 +105,11 @@ Rule descriptions wrap in full. On narrow forms the model picker sits under
 its rule description.
 Select the information icon beside the classifier to read about task text and
 potential charges. Press Escape to close the explanation.
-The other three templates prefill up to three model members. The member list
-itself shows the starting order. Drag the grip at the left of a row to move it,
-or focus the grip and press Alt+↑/↓. The move buttons are also available. Escape
+The other three templates prefill up to three model members. The numbered list
+shows their priority during creation and editing, including for capability
+presets saved before the template key was stored. Drag the grip at the left
+of a row to move it, or focus the grip and press Alt+↑/↓. The move buttons
+are also available. Escape
 cancels an active drag without closing the editor. **Add model** appends another
 eligible model, including another model from the same provider, without
 rearranging existing members. The three-model
@@ -142,8 +144,9 @@ one model per supplier.
   standard, and efficiency lines. Within a family and tier, known editions
   and numeric versions set the order. Across families, catalog metadata
   sets the order rather than a benchmark score. Unknown names remain neutral,
-  and models outside the template catalog go last. The action makes no model
-  requests. Adjust the list before saving. The first member becomes the
+  and models outside the template catalog go last. Tied models follow the
+  catalog order each time the recommendation is applied. The action makes
+  no model requests. Adjust the list before saving. The first member becomes the
   default and the rest become fallbacks in order.
 - **Fastest first.** Choose models whose outputs you can use. Recent time to
   first content and output speed drive new selections. Without measurements,
@@ -212,7 +215,7 @@ Automatic groups and saved groups without a scheduler value use **In order**.
 The runtime supports two scheduling modes plus optional expiry sorting:
 
 - **In order:** try the configured default and approved fallbacks in order (used by **Strong models for hard tasks, cheaper models for easy tasks**, **Most capable first**, **Expiring allowance first**, and **Custom**).
-- **Speed first (`fastest`):** compare streamed first-content latency plus the estimated time to write 200 tokens (used by **Fastest first**). Output rate excludes hidden reasoning; buffered bursts and non-streaming replies do not manufacture a speed. Ten-percent bands retain configured order. Every fifth selection with both measured and unmeasured awake routes puts an unmeasured route first, rotating probes. These are ordinary user requests, not extra inference calls.
+- **Speed first (`fastest`):** compare streamed first-content latency plus the estimated time to write 200 tokens (used by **Fastest first**). Output rate excludes hidden reasoning. Buffered bursts and non-streaming replies provide no output rate. Ten-percent bands retain configured order. Every fifth eligible selection rotates a route lacking a first-content measurement, or lacking an output-rate measurement when another candidate has one, to the front. These probes use ordinary user requests. Measurements belong to the exact upstream and model. A test of one account supplies measurements for that account.
 
 Both modes retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
 
@@ -276,6 +279,12 @@ Only test text and enabled rule descriptions are sent with the classifier's own 
 Independent privacy inspection runs even if business auditing is disabled. Enabled audit/allow rules become redaction rules; block rules remain blocking. Both text and descriptions are inspected. Redaction precedes Unicode-safe truncation to 4,000 scalar values (first 3,000 and last 1,000). Limits: 32 KiB payload, 64 KiB response, 4 KiB classification content, four concurrent trials and the configured 500–5,000 ms deadline including preparation. No redirects or retries. Detection cannot guarantee finding every secret; use synthetic examples.
 
 The network classifier accepts a single `{ "intentId": "enabled-rule-id" }` or `{ "intentId": null }` object, with optional surrounding Markdown code fences. Unknown IDs, extra fields, explanatory prose, tool calls, refusals and truncated responses are rejected. Errors, timeout and privacy rejection return the default candidate order and a fixed reason, never raw responses. VaryAI does not persist trial text or results.
+
+For eligible new turns, live classification sends the latest user text and
+the eligible rule descriptions. Completed, visible Responses reasoning
+summaries from prior turns are omitted from the classifier input. Opaque
+continuations still use their existing ownership. The classifier response
+may include null tool fields or an empty tool-call array.
 
 The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
 

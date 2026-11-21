@@ -117,10 +117,11 @@ export function useCodexBrowserLogin() {
         if (stopped || attempt !== generation.current) return;
         if (next.status === "done" && next.account) {
           current.current = undefined;
-          await client.invalidateQueries({
-            queryKey: ["managed-auth-status", "codex_oauth"],
-          });
-          if (stopped || attempt !== generation.current) return;
+          void client
+            .invalidateQueries({
+              queryKey: ["managed-auth-status", "codex_oauth"],
+            })
+            .catch(() => {});
           setCompletion({ accountId: next.account.id, generation: attempt });
           setFlow(undefined);
         } else if (next.status === "failed") {

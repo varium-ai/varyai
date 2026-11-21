@@ -355,17 +355,21 @@ it("uses configured equivalence before spending a slot on an alias", () => {
   ).toEqual(["a", "b", "c"]);
 });
 
-it("keeps selected identities and tie order when applying capability recommendations", () => {
+it("keeps selected identities and resolves ranking ties in catalog order", () => {
   const stale = { id: "stale", providerId: "a", modelId: "missing" };
   const fromB = { id: "from-b", providerId: "b", modelId: "large" };
   const mini = { id: "mini", providerId: "a", modelId: "small-mini" };
   const fromA = { id: "from-a", providerId: "a", modelId: "large" };
   const selected = [stale, fromB, mini, fromA];
   expect(recommendRoutingMemberOrder(selected, providers)).toEqual([
-    fromB,
     fromA,
+    fromB,
     mini,
     stale,
+  ]);
+  expect(recommendRoutingMemberOrder([fromA, fromB], providers)).toEqual([
+    fromA,
+    fromB,
   ]);
   expect(selected).toEqual([stale, fromB, mini, fromA]);
 });

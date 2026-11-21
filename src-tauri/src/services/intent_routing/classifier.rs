@@ -35,13 +35,14 @@ pub(crate) fn extract_user_text(body: &Value) -> Option<String> {
     let items = input.as_array()?;
     if items.len() > 1024
         || items.iter().any(|item| {
-            !matches!(
-                item.get("type").and_then(Value::as_str),
-                None | Some("message")
-            ) || !matches!(
-                item.get("role").and_then(Value::as_str),
-                Some("user" | "assistant" | "system" | "developer")
-            )
+            !crate::proxy::intent::visible_reasoning(item)
+                && (!matches!(
+                    item.get("type").and_then(Value::as_str),
+                    None | Some("message")
+                ) || !matches!(
+                    item.get("role").and_then(Value::as_str),
+                    Some("user" | "assistant" | "system" | "developer")
+                ))
         })
     {
         return None;
@@ -163,19 +164,21 @@ fn decode_result(group: &RoutingGroup, value: Value) -> (Option<String>, &'stati
     let Some(choices) = value.get("choices").and_then(Value::as_array) else {
         return (None, "invalid_output");
     };
-    if choices.len() != 1
-        || choices[0]
-            .get("finish_reason")
-            .is_some_and(|v| !v.is_null() && v != "stop")
-        || choices[0]["message"]
-            .get("refusal")
-            .is_some_and(|v| !v.is_null())
-        || choices[0]["message"].get("tool_calls").is_some()
-        || choices[0]["message"].get("function_call").is_some()
+    if choices.len() != 1 {
+        return (None, "invalid_output");
+    }
+    let message = &choices[0]["message"];
+    if choices[0]
+        .get("finish_reason")
+        .is_some_and(|v| !v.is_null() && v != "stop")
+        || !message["refusal"].is_null()
+        || (!message["tool_calls"].is_null()
+            && !message["tool_calls"].as_array().is_some_and(Vec::is_empty))
+        || !message["function_call"].is_null()
     {
         return (None, "invalid_output");
     }
-    match choices[0]["message"]["content"]
+    match message["content"]
         .as_str()
         .filter(|content| content.len() <= 4096)
         .and_then(|content| {
@@ -571,6 +574,54 @@ mod tests {
         ] {
             assert!(extract_user_text(&body).is_none());
         }
+    }
+
+    #[test]
+    fn extracts_the_latest_user_turn_after_completed_visible_reasoning() {
+        let mut body = json!({"input":[
+            {"role":"user","content":"Synthetic translation"},
+            {"type":"reasoning","id":"synthetic-reasoning","status":"completed",
+             "summary":[{"type":"summary_text","text":"Synthetic historical summary"}],
+             "encrypted_content":null},
+            {"role":"assistant","content":[{"type":"output_text","text":"Historical reply"}]},
+            {"role":"user","content":[{"type":"input_text","text":"Synthetic arithmetic"}]}
+        ]});
+        assert_eq!(
+            extract_user_text(&body).as_deref(),
+            Some("Synthetic arithmetic")
+        );
+        body["input"][1]["encrypted_content"] = json!("synthetic-sealed");
+        assert!(extract_user_text(&body).is_none());
+        body["input"][1]["encrypted_content"] = Value::Null;
+        body["input"][1]["status"] = json!("in_progress");
+        assert!(extract_user_text(&body).is_none());
+    }
+
+    #[test]
+    fn empty_optional_tool_fields_do_not_discard_classifier_matches() {
+        let group = group();
+        let mut response = json!({"choices":[{"finish_reason":"stop","message":{
+            "content":"{\"intentId\":\"debug\"}", "tool_calls":null, "function_call":null
+        }}]});
+        assert_eq!(
+            decode_result(&group, response.clone()),
+            (Some("debug".into()), "matched")
+        );
+        response["choices"][0]["message"]["tool_calls"] = json!([]);
+        assert_eq!(
+            decode_result(&group, response.clone()),
+            (Some("debug".into()), "matched")
+        );
+        for invalid in [json!([{"type":"function"}]), json!({}), json!("invalid")] {
+            response["choices"][0]["message"]["tool_calls"] = invalid;
+            assert_eq!(
+                decode_result(&group, response.clone()),
+                (None, "invalid_output")
+            );
+        }
+        response["choices"][0]["message"]["tool_calls"] = Value::Null;
+        response["choices"][0]["message"]["function_call"] = json!({"name":"synthetic"});
+        assert_eq!(decode_result(&group, response), (None, "invalid_output"));
     }
 
     #[test]

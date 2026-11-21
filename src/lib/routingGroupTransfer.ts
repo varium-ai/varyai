@@ -925,7 +925,9 @@ export function recommendRoutingMemberOrder(
           (a, b) =>
             compareTemplateCandidates(a, b) || a.catalogIndex - b.catalogIndex,
         )
-      : rankCapabilityCandidates(selected);
+      : rankCapabilityCandidates(
+          selected.sort((a, b) => a.catalogIndex - b.catalogIndex),
+        );
   return [...ranked.map(({ member }) => member), ...unmatched];
 }
 

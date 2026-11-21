@@ -2148,6 +2148,21 @@ continuation ownership are checked separately from client display. A shared
 renderer regression covers installed Tools rows for all 19 picker-capable
 Agents while the executable catalog lacks the saved group.
 
+The routing group editor also uses the Agent inventory below for saved model
+order. The shared editor opens legacy ranked groups, updates their default
+and fallback IDs, and reapplies catalog ranking when requested. Each
+executable adapter consumes those saved IDs through the existing group
+route. Doubao Work retains its audit-only path. Renderer fixtures cover the
+editor and saved order on the shared macOS and Windows code path. Native
+verification remains separate for the adapters listed below.
+
+The Fastest and intent-rule regressions use the same inventory. Each
+executable adapter uses the shared exact-upstream measurements, candidate
+pool, continuation ownership and live rule selection. The classifier sees
+the latest supported user text through each adapter's canonical request
+projection. Codex Responses fixtures also exercise replayed reasoning
+summaries. Native acceptance remains pending on both platforms.
+
 | Agent ID | Entry point and native adapter | Verification scope |
 | --- | --- | --- |
 | `claude` | Claude Code CLI, Messages catalog and shared runtime | Shared classifier tests. Native pending |
@@ -2194,3 +2209,81 @@ and the pending patch were identical across the fast-forward. The remaining
 development checks, `pnpm test:agent-rewards` and
 `python3 -B scripts/tests/recover-shared-v23.test.py`, passed with 13 and 5
 tests respectively.
+
+The ranked editor follow-up was verified on the working tree based on
+`868cf24b` on macOS 26.6.2 arm64 with Rust 1.98.1, Node 20.20.2 and
+pnpm 10.12.3. The legacy capability fixture reopens the saved group, moves
+a member that is missing from the current catalog, checks the default and
+fallback IDs sent on save, and reopens the edited order. The recommendation
+fixture restores the same priority after a manual swap between tied models.
+TypeScript, Prettier, the renderer build and all 4,785 renderer tests passed.
+The Cargo library tests filtered by `intent` passed 588 tests with two
+ignored. The recorded Fastest and custom-rule requests still need live
+reproduction. Native Windows verification remains pending.
+
+The next routing follow-up compared the Fastest report with the saved
+group shown in its recording. The standalone Gemini measurement and the
+selected Gemini member used different upstreams. A synthetic three-member
+loopback fixture checks the saved order before measurements, distinct
+upstreams that share a model ID, and the fifth eligible request rotating
+to a member with first-content timing and no output rate. The original
+single-candidate trace does not show why the other members were absent.
+
+The Codex Responses loopback fixture runs translation and arithmetic in
+one named conversation and verifies different rule targets. The classifier
+receives only the current user text. A request carrying a known prior
+response ID retains the upstream that owns the response. Focused fixtures
+also reject encrypted or incomplete reasoning history, and reject actual
+or malformed tool fields in classifiers' output.
+
+Verified the updated working tree based on `868cf24b` on macOS 26.6.2
+arm64 with Rust 1.98.1. Cargo formatting, check and strict Clippy passed.
+The full Cargo test command passed 7,825 library and 165 integration tests
+with 21 library tests ignored. The Agent coverage inventory test passed.
+The reported upstreams and native Windows clients still need live
+verification.
+
+## First-run sign-in and automatic check-in settings
+
+The first-run wizard receives the confirmed account ID and uses each
+provider's own model catalog. This shared flow also supports ChatGPT API,
+GitHub Copilot, and Antigravity. The daily check-in settings validate the
+selected account and persist its preference. The renderer retains the last
+reward observation until the next refresh. These paths are shared by macOS
+and Windows, with Qoder's native account adapter on macOS and browser
+authorization available on both platforms. The entries with only the shared
+wizard have no automatic check-in adapter.
+
+| Agent ID | Entry point and adapter | Verification scope |
+| --- | --- | --- |
+| `claude` | Claude Code CLI, Claude subscription | Claude first-run fixture passed. Installed client pending |
+| `claude-desktop` | Claude Desktop, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `codex` | Codex desktop and CLI, Codex browser and device sign-in | Codex browser, device and first-run fixtures passed. Installed client pending |
+| `gemini` | Gemini CLI, Gemini CLI subscription | Gemini CLI first-run fixture passed. Installed client pending |
+| `grokbuild` | Grok Build CLI, Grok device sign-in | Grok device and first-run fixtures passed. Installed client pending |
+| `opencode` | OpenCode, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `openclaw` | OpenClaw, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `hermes` | Hermes, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `pi` | Pi, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `workbuddy` | WorkBuddy China desktop, WorkBuddy subscription and existing account-scoped preference command | First-run and check-in renderer fixtures passed. Installed client pending |
+| `workbuddy-ai` | WorkBuddy international desktop, WorkBuddy AI subscription | WorkBuddy AI first-run fixture passed. Installed client pending |
+| `qoder` | Qoder China desktop, native macOS and browser reward accounts | Native and browser identity fixtures and renderer tests passed. Installed client pending |
+| `doubaowork` | Doubao Work desktop, native account list and account-scoped preference | Check-in renderer and account preference fixtures passed. Installed client pending |
+| `trae` | TRAE China desktop, native account identity through the rewards bridge | Identity IPC fixture and check-in renderer tests passed. Installed client pending |
+| `trae-intl` | TRAE International desktop, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `kimi` | Kimi Code CLI, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `qwen` | Qwen Code CLI, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `zcode` | ZCode desktop, native rewards credentials and account identity | Native identity fixtures and check-in renderer tests passed. Installed client pending |
+| `deepseek-harness` | DeepSeek Harness CLI, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+| `t3code` | T3 Code desktop, shared first-run wizard | Shared first-run fixtures passed. Installed client pending |
+
+Verified the working tree based on `868cf24b` on macOS 26.6.2 arm64 with
+Rust 1.98.1, Node 20.20.2, and pnpm 10.12.3. `pnpm typecheck`,
+`pnpm build:renderer`, `pnpm format:check`, and `pnpm test:unit` passed.
+The renderer suite passed 4,783 tests. `pnpm test:agent-rewards` and
+`pnpm test:trae-bridge` passed 14 and 73 tests respectively. Cargo
+formatting, check, strict Clippy, and the full Cargo test command passed
+against the `src-tauri` manifest. Cargo reported 7,821 library tests and
+165 integration tests passed with 21 library tests ignored. The original
+reporter's subscription accounts and the installed Windows clients still
+need live verification.

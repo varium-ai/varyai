@@ -71,6 +71,112 @@ beforeEach(() => {
   vi.mocked(intentRoutingApi.autoGroupSkip).mockResolvedValue([]);
 });
 afterEach(() => vi.restoreAllMocks());
+it("reopens a legacy capability group with its saved, editable priority order", async () => {
+  const legacy: RoutingGroup = {
+    ...group,
+    affinity: "turn",
+    contextWindow: -1,
+    firstToken: 0,
+    patience: 0,
+  };
+  const catalog = {
+    groups: [legacy],
+    autoCreate: false,
+    omittedGroups: 0,
+  };
+  vi.mocked(intentRoutingApi.list).mockResolvedValue(catalog);
+  vi.mocked(intentRoutingApi.save).mockImplementationOnce(async (draft) => {
+    const saved = { ...draft, revision: legacy.revision + 1 };
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      ...catalog,
+      groups: [saved],
+    });
+    return saved;
+  });
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+  const rows = () =>
+    within(
+      screen.getByRole("list", { name: "routingPage.modelOrder" }),
+    ).getAllByRole("listitem");
+  expect(rows()[0]).toHaveTextContent("first");
+  expect(rows()[1]).toHaveTextContent("removed");
+  fireEvent.click(
+    within(rows()[1]).getByRole("button", {
+      name: "intentRouting.moveUp removed",
+    }),
+  );
+  expect(rows()[0]).toHaveTextContent("removed");
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(intentRoutingApi.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [legacy.members[1], legacy.members[0]],
+        routing: "ordered",
+        revision: legacy.revision,
+        defaultMemberId: "removed",
+        fallbackMemberIds: ["first"],
+      }),
+    ),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "common.edit" }));
+  expect(rows()[0]).toHaveTextContent("removed");
+  expect(rows()[1]).toHaveTextContent("first");
+});
+
+it("restores the same recommended order for models with tied ranking metadata", async () => {
+  const members = [
+    { id: "z", providerId: "provider", modelId: "z-model" },
+    { id: "a", providerId: "provider", modelId: "a-model" },
+  ];
+  vi.mocked(intentRoutingApi.list).mockResolvedValue({
+    groups: [
+      {
+        ...group,
+        template: "templateCapability",
+        members,
+        defaultMemberId: "z",
+        fallbackMemberIds: ["a"],
+      },
+    ],
+    autoCreate: false,
+    omittedGroups: 0,
+  });
+  vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+    {
+      id: "provider",
+      name: "Synthetic provider",
+      taskEligible: true,
+      classifierEligible: false,
+      models: [
+        { id: "z-model", name: "Z model" },
+        { id: "a-model", name: "A model" },
+      ],
+    },
+  ]);
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+  const rows = () =>
+    within(
+      screen.getByRole("list", { name: "routingPage.modelOrder" }),
+    ).getAllByRole("listitem");
+  fireEvent.click(
+    within(rows()[1]).getByRole("button", {
+      name: "intentRouting.moveUp A model",
+    }),
+  );
+  expect(rows()[0]).toHaveTextContent("A model");
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "routingPage.applyRecommendedModelOrder",
+    }),
+  );
+  expect(rows()[0]).toHaveTextContent("Z model");
+  expect(rows()[1]).toHaveTextContent("A model");
+  expect(intentRoutingApi.save).not.toHaveBeenCalled();
+});
+
 it.each([false, true])(
   "removes groups without exposing archived controls with automatic discovery=%s",
   async (automatic) => {

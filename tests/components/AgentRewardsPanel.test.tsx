@@ -149,6 +149,34 @@ it("enables automation only for the currently displayed account", async () => {
   );
   expect(agentRewardsApi.claim).not.toHaveBeenCalled();
 });
+it.each(["qoder", "trae", "zcode"] as const)(
+  "keeps the observed %s reward when saving an account preference",
+  async (app) => {
+    const observed = { ...initial, app, outcome: "already_checked" as const };
+    vi.mocked(agentRewardsApi.status).mockResolvedValue(observed);
+    vi.mocked(agentRewardsApi.setAuto).mockResolvedValue({
+      ...initial,
+      app,
+      credit: null,
+      autoEnabled: true,
+      autoConfigured: true,
+    });
+    const client = mount(app);
+    await screen.findByText("Synthetic account");
+    const toggle = await screen.findByRole("switch", {
+      name: "agentRewards.autoLabel",
+    });
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(client.getQueryData(["agentRewards", app])).toEqual({
+        ...observed,
+        autoEnabled: true,
+        autoConfigured: true,
+      }),
+    );
+    expect(toggle).toBeChecked();
+  },
+);
 it("authorizes Qoder independently without claiming or enabling automation", async () => {
   vi.mocked(agentRewardsApi.startLogin).mockResolvedValue({
     loginId: "synthetic-login",

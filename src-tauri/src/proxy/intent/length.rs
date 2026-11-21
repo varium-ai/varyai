@@ -2,7 +2,7 @@
 use serde_json::Value;
 
 /// A completed visible summary carries text, not a server-owned item reference.
-pub(super) fn visible_reasoning(item: &Value) -> bool {
+pub(crate) fn visible_reasoning(item: &Value) -> bool {
     item["type"] == "reasoning"
         && item.as_object().is_some_and(|fields| {
             fields.iter().all(|(key, value)| match key.as_str() {
