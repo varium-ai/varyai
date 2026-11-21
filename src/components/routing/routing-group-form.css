@@ -592,12 +592,13 @@
 }
 .rt-group-form .rt-template-rule-target {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) minmax(180px, 280px);
-  align-items: center;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(180px, min(42%, 280px));
+  align-items: start;
   gap: 8px;
   min-height: 30px;
 }
 .rt-group-form .rt-template-rule-number {
+  padding-top: 4px;
   color: var(--mp-muted);
   font-size: 11px;
   text-align: center;
@@ -606,12 +607,7 @@
   display: grid;
   min-width: 0;
   gap: 1px;
-}
-.rt-group-form .rt-template-rule-description strong,
-.rt-group-form .rt-template-rule-description span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .rt-group-form .rt-template-rule-description strong {
   color: var(--mp-fg);
@@ -641,6 +637,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+@container routing-form (max-width: 520px) {
+  .rt-group-form .rt-template-rule-target {
+    grid-template-columns: 18px minmax(0, 1fr);
+    row-gap: 4px;
+  }
+  .rt-group-form .rt-template-rule-model {
+    grid-column: 2;
+    width: min(100%, 280px);
+  }
 }
 .rt-group-form .rt-member-picker {
   display: grid;

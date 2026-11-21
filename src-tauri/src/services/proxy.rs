@@ -8862,40 +8862,38 @@ mod tests {
             &after.groups[&direct_alias].bindings,
             &after.groups["vary-auto/fixture"].bindings
         ));
-        saved.routing = super::super::intent_routing::RoutingStrategy::Weighted;
-        saved.members[0].weight = 3;
+        saved.routing = super::super::intent_routing::RoutingStrategy::Fastest;
         saved.members[0].free = Some(true);
-        saved.manual_member_id = Some(saved.members[0].id.clone());
-        saved = db.save_intent_routing_group(saved).expect("save weights");
+        saved = db.save_intent_routing_group(saved).expect("save fastest");
         super::super::intent_routing::menu::refresh_active(&service).await;
-        let weighted = service
+        let fastest = service
             .intent_runtime
             .menu_snapshot()
             .expect("runtime")
             .expect("menu");
         assert!(Arc::ptr_eq(
             &after.groups["vary-auto/fixture"].bindings,
-            &weighted.groups["vary-auto/fixture"].bindings
+            &fastest.groups["vary-auto/fixture"].bindings
         ));
         assert!(Arc::ptr_eq(
             &after.groups["vary-auto/fixture"].targets[0].scheduling,
-            &weighted.groups["vary-auto/fixture"].targets[0].scheduling
+            &fastest.groups["vary-auto/fixture"].targets[0].scheduling
         ));
         assert_eq!(
-            weighted.groups["vary-auto/fixture"].group.members[0].weight,
-            3
+            fastest.groups["vary-auto/fixture"].group.routing,
+            super::super::intent_routing::RoutingStrategy::Fastest
         );
-        saved.routing = super::super::intent_routing::RoutingStrategy::Manual;
-        saved = db.save_intent_routing_group(saved).expect("save manual");
+        saved.routing = super::super::intent_routing::RoutingStrategy::Ordered;
+        saved = db.save_intent_routing_group(saved).expect("save ordered");
         super::super::intent_routing::menu::refresh_active(&service).await;
-        let manual = service
+        let ordered = service
             .intent_runtime
             .menu_snapshot()
             .expect("runtime")
             .expect("menu");
         assert!(Arc::ptr_eq(
             &after.groups["vary-auto/fixture"].bindings,
-            &manual.groups["vary-auto/fixture"].bindings
+            &ordered.groups["vary-auto/fixture"].bindings
         ));
         provider.settings_config["auth"]["OPENAI_API_KEY"] = json!("synthetic-new-key");
         db.save_provider("codex", &provider)

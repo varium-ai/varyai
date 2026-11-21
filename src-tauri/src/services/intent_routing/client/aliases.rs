@@ -1,5 +1,6 @@
 //! Codex picker source labels and stable routing identities.
 
+use crate::proxy::intent::Menu;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -119,16 +120,15 @@ pub(crate) fn project_readable(
 
 // Source identities are routing keys, not picker labels. Allocate readable source
 // labels once per visible source so every model from it has the same suffix.
-fn source_labels(
-    models: &[Value],
-    menu: Option<&crate::proxy::intent::Menu>,
+fn source_labels<'a>(
+    aliases: impl Iterator<Item = &'a str>,
+    menu: &Menu,
 ) -> BTreeMap<String, String> {
     let mut sources = BTreeMap::new();
-    for model in models.iter().filter(|model| model["visibility"] != "hide") {
-        let Some(target) = model["slug"]
-            .as_str()
-            .filter(|slug| slug.starts_with("vary-provider/"))
-            .and_then(|slug| menu?.groups.get(slug))
+    for alias in aliases.filter(|alias| alias.starts_with("vary-provider/")) {
+        let Some(target) = menu
+            .groups
+            .get(alias)
             .and_then(|session| session.targets.first())
         else {
             continue;
@@ -178,13 +178,12 @@ fn source_labels(
     sources
 }
 
-pub(crate) fn qualify_menu_labels(menu: &mut crate::proxy::intent::Menu) {
-    let entries = menu
-        .models
-        .values()
-        .map(|entry| serde_json::json!({"slug":entry.alias}))
-        .collect::<Vec<_>>();
-    let sources = source_labels(&entries, Some(menu));
+pub(crate) fn menu_source_labels(menu: &Menu) -> BTreeMap<String, String> {
+    source_labels(menu.models.values().map(|entry| entry.alias.as_str()), menu)
+}
+
+pub(crate) fn qualify_menu_labels(menu: &mut Menu) {
+    let sources = menu_source_labels(menu);
     for entry in menu.models.values_mut() {
         let Some((target, source)) = menu
             .groups
@@ -262,7 +261,13 @@ pub(super) fn project_menu(
             Ok((canonical.to_owned(), id, provider, label))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let sources = source_labels(models, menu);
+    let sources = menu.map_or_else(BTreeMap::new, |menu| {
+        let visible = models
+            .iter()
+            .filter(|model| model["visibility"] != "hide")
+            .filter_map(|model| model["slug"].as_str());
+        source_labels(visible, menu)
+    });
     for (index, (canonical, _, provider, label)) in entries.iter().enumerate() {
         if let Some(source) = sources
             .get(provider)

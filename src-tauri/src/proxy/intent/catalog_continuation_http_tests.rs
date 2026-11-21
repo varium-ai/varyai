@@ -381,7 +381,7 @@ async fn exercise(protocol: Protocol, use_expiry: bool) -> TestResult {
     ));
     let route = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing route")?);
     route.group.levels.clear();
-    route.group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
+    route.group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
     let mut provider = crate::provider::Provider::with_id(
         "fixture".into(),
         "Synthetic".into(),
@@ -693,7 +693,7 @@ async fn responses_model_switch_named_item_recovery_all_connection_entries() -> 
     let alias = menu.groups.keys().next().ok_or("missing alias")?.clone();
     let route = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing route")?);
     route.group.levels.clear();
-    route.group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
+    route.group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
     let mut provider = crate::provider::Provider::with_id(
         "fixture".into(),
         "Synthetic".into(),

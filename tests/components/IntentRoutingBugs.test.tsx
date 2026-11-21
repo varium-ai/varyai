@@ -39,8 +39,7 @@ const group: RoutingGroup = {
   defaultMemberId: "first",
   fallbackMemberIds: ["removed"],
   rules: [],
-  routing: "manual",
-  manualMemberId: "first",
+  routing: "ordered",
 };
 function mount() {
   return render(
@@ -72,11 +71,6 @@ beforeEach(() => {
   vi.mocked(intentRoutingApi.autoGroupSkip).mockResolvedValue([]);
 });
 afterEach(() => vi.restoreAllMocks());
-it("disables a manual route member removed from the provider catalog", async () => {
-  mount();
-  expect(await screen.findByRole("radio", { name: "removed" })).toBeDisabled();
-  expect(screen.getByRole("radio", { name: "first" })).toBeEnabled();
-});
 it.each([false, true])(
   "removes groups without exposing archived controls with automatic discovery=%s",
   async (automatic) => {

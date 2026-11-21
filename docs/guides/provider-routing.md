@@ -196,6 +196,10 @@ For supported local-proxy clients, start the routing master switch and enable ro
 
 Taking over a client changes its live endpoint configuration. The client-facing URL can include `/v1` where its protocol requires it. Keep the provider's upstream endpoint separate from that loopback URL. Do not change the listener to a public interface just to resolve an endpoint-format error.
 
+In the VaryAI Agent model picker, suppliers with the same name appear under
+separate numbered filters. Each filter uses the same supplier number as its
+model labels. Selecting a model uses that supplier's saved route.
+
 Claude Desktop uses the same per-agent takeover controls as other clients. Its provider editor configures models and upstream protocol without a separate direct/proxy mode selector. Enabling routing writes the local gateway profile; disabling it restores a compatible native provider or official login and rejects requests from cached gateway connections. Providers requiring model mapping or protocol conversion remain saved and require Desktop routing to be enabled before use. The Desktop switch does not stop the shared gateway or disconnect other agents. Restart Desktop to reload its native profile after changing routing. Normal application exit restores native configuration while retaining the routing preference for the next startup.
 
 The current local proxy covers Claude Code, Codex, Gemini CLI and Grok Build. Other client integrations have separate capabilities. [WorkBuddy](workbuddy.md) and [Qoder](qoder.md) have their own takeover and recovery paths; a provider appearing in the app does not imply identical proxy coverage.

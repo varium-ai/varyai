@@ -230,13 +230,6 @@ pub(crate) async fn trial_prepared(
     if bounded_text(&text).is_none() {
         return Err("intentRouting.invalid".into());
     }
-    if group.routing == super::RoutingStrategy::Manual {
-        return Ok(TrialResult {
-            plan: group.plan_prepared(None)?,
-            intent_id: None,
-            outcome: "manual",
-        });
-    }
     let target = group
         .classifier_target
         .as_ref()

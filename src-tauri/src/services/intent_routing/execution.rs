@@ -110,23 +110,14 @@ async fn prepare_inner(
     };
     let mut targets: Vec<Target> = Vec::new();
     for member in &group.members {
-        if !providers.contains_key(&member.provider_id)
-            && (group.routing != super::RoutingStrategy::Manual || !group.includes_in_menu(member))
-        {
+        let Some(source) = providers.get(&member.provider_id) else {
             continue;
-        }
-        let source = providers
-            .get(&member.provider_id)
-            .ok_or("intentRouting.providerUnavailable")?;
+        };
         if !crate::services::codex_provider::serves(source, &member.model_id)
             || !crate::services::routing_upstreams::serves(source, &member.model_id)
         {
-            if group.includes_in_menu(member) && group.routing == super::RoutingStrategy::Manual {
-                return Err("intentRouting.providerUnavailable".into());
-            }
             continue;
         }
-        let before = targets.len();
         let variants = if enforce_account_models {
             crate::services::routing_upstreams::variants_for_model(source, &member.model_id)
         } else {
@@ -232,28 +223,12 @@ async fn prepare_inner(
                 })
             }
             .await;
-            match prepared {
-                Ok(mut target) => {
-                    if let Some(previous) = targets.iter().find(|t| t.same_account(&target)) {
-                        target.scheduling = Arc::new(previous.scheduling.for_model());
-                    }
-                    targets.push(target);
+            if let Ok(mut target) = prepared {
+                if let Some(previous) = targets.iter().find(|t| t.same_account(&target)) {
+                    target.scheduling = Arc::new(previous.scheduling.for_model());
                 }
-                Err(_) if !group.includes_in_menu(member) => {}
-                Err(_)
-                    if source
-                        .settings_config
-                        .get(crate::services::codex_provider::POLICY)
-                        .is_some() => {}
-                Err(_) if group.routing != super::RoutingStrategy::Manual => {}
-                Err(error) => return Err(error),
+                targets.push(target);
             }
-        }
-        if targets.len() == before
-            && group.includes_in_menu(member)
-            && group.routing == super::RoutingStrategy::Manual
-        {
-            return Err("intentRouting.providerUnavailable".into());
         }
     }
     if targets.is_empty() {
@@ -763,13 +738,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_temporary_catalog_and_preparation_use_the_pick_not_unavailable_members() {
+    async fn temporary_catalog_and_preparation_skip_unavailable_members() {
         let dir = tempfile::tempdir().expect("dir");
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let mut group = super::super::tests::fixture();
-        group.routing = super::super::RoutingStrategy::Manual;
-        group.manual_member_id = Some("strong".into());
-        group.intent_recognition_enabled = true;
         group.members[0].provider_id = "missing".into();
         let provider = crate::provider::Provider::with_id(
             "fixture".into(),
@@ -783,7 +755,7 @@ mod tests {
         );
         let session = prepare_with_providers(manager, group, vec![provider])
             .await
-            .expect("manual");
+            .expect("prepared");
         assert_eq!(session.targets.len(), 1);
         assert_eq!(session.targets[0].model, "strong-model");
         let file = temporary_catalog(&session).await.expect("catalog");

@@ -582,13 +582,11 @@ impl Database {
             } else {
                 !identities.contains(&m.provider_id)
             }
-        }) || (group.routing != crate::services::intent_routing::RoutingStrategy::Manual
-            && group.classifier_target.as_ref().is_some_and(|t| {
-                !providers
-                    .get(&t.provider_id)
-                    .is_some_and(|p| eligible_provider(p, true))
-            }))
-        {
+        }) || group.classifier_target.as_ref().is_some_and(|t| {
+            !providers
+                .get(&t.provider_id)
+                .is_some_and(|p| eligible_provider(p, true))
+        }) {
             return Err("intentRouting.providerUnavailable".into());
         }
         Ok(())

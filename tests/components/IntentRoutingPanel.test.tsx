@@ -97,6 +97,20 @@ function mount(
   );
 }
 
+const keepRankedOrder = () => 0.999999;
+
+function drawTemplateSuggestions(
+  trigger: HTMLElement,
+  random = keepRankedOrder,
+) {
+  const draw = vi.spyOn(Math, "random").mockImplementation(random);
+  try {
+    fireEvent.click(trigger);
+  } finally {
+    draw.mockRestore();
+  }
+}
+
 async function openManagement() {
   const manage = await screen.findByRole("button", {
     name: "routingPage.manage",
@@ -543,9 +557,9 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
-  it("clears an inapplicable sink setting only when the edited group is saved", async () => {
+  it("preserves sink on edit for ordered and fastest groups", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [{ ...group, routing: "weighted", sink: true }],
+      groups: [{ ...group, routing: "fastest", sink: true }],
       autoCreate: false,
       omittedGroups: 0,
     });
@@ -555,7 +569,7 @@ describe("IntentRoutingPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
-        expect.objectContaining({ routing: "weighted", sink: false }),
+        expect.objectContaining({ routing: "fastest", sink: true }),
       ),
     );
   });
@@ -776,7 +790,6 @@ describe("IntentRoutingPanel", () => {
           ...group,
           members,
           off: ["member"],
-          manualMemberId: "member",
           fallbackMemberIds: ["next", "last"],
           rules: [
             { ...group.rules[0], fallbackMemberIds: ["next", "last"] },
@@ -804,7 +817,6 @@ describe("IntentRoutingPanel", () => {
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
     expect(saved.members.map((member) => member.id)).toEqual(["next", "last"]);
     expect(saved.defaultMemberId).toBe("next");
-    expect(saved.manualMemberId).toBe("next");
     expect(saved.off).toEqual([]);
     expect(saved.rules).toEqual([
       expect.objectContaining({
@@ -846,6 +858,18 @@ describe("IntentRoutingPanel", () => {
     expect(
       screen.getByRole("button", { name: "routingPage.intentToldBy" }),
     ).toHaveTextContent("Tiny classifier");
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.intentToldBy" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "intentRouting.none" }),
+    );
+    const classifier = screen.getByRole("button", {
+      name: "routingPage.intentToldBy",
+    });
+    expect(classifier).toHaveTextContent("routingPage.chooseClassifier");
+    await user.click(classifier);
+    await user.click(screen.getByRole("radio", { name: /Tiny classifier/ }));
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
@@ -1003,16 +1027,18 @@ describe("IntentRoutingPanel", () => {
           ],
         },
       ];
-      const expected = routingTemplates(providers).find(
+      const expected = routingTemplates(providers, keepRankedOrder).find(
         (template) => template.key === key,
       )!.group;
       vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
       mount();
       const user = userEvent.setup();
       const open = async () => {
-        await user.click(
-          await screen.findByRole("button", { name: "intentRouting.create" }),
-        );
+        const create = screen.getByRole("button", {
+          name: "intentRouting.create",
+        });
+        await waitFor(() => expect(create).toBeEnabled());
+        drawTemplateSuggestions(create);
         const chooser = screen.getByRole("dialog", {
           name: "routingPage.templates",
         });
@@ -1063,6 +1089,18 @@ describe("IntentRoutingPanel", () => {
         expect(screen.getByLabelText("intentRouting.name")).toHaveValue(
           `routingPage.${key}`,
         );
+        const ruleHint = dialog.querySelector(".rt-template-hint");
+        expect(ruleHint).not.toBeNull();
+        expect(
+          within(ruleHint as HTMLElement).getByText(
+            "routingPage.templateHintLabel",
+          ),
+        ).toBeVisible();
+        expect(
+          within(ruleHint as HTMLElement).getByText(
+            `routingPage.${key}RuleHint`,
+          ),
+        ).toBeVisible();
         expect(dialog.querySelectorAll(".rt-template-member")).toHaveLength(
           key === "templateSmart" ? 0 : Math.min(expected.members.length, 3),
         );
@@ -1106,6 +1144,7 @@ describe("IntentRoutingPanel", () => {
       const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
       expect(saved).toMatchObject({
         name: "Reviewed template",
+        template: key,
         routing: expected.routing,
         classifierTarget: expected.classifierTarget,
         intentRecognitionEnabled: expected.intentRecognitionEnabled,
@@ -1146,6 +1185,173 @@ describe("IntentRoutingPanel", () => {
           ),
         })),
       );
+    },
+  );
+  it.each([
+    "templateSmart",
+    "templateCapability",
+    "templateSpeed",
+    "templateExpiry",
+  ] as const)(
+    "edits a saved %s group with the template editor and without advanced settings",
+    async (key) => {
+      const providers = [
+        {
+          id: "a",
+          name: "Synthetic A",
+          taskEligible: true,
+          classifierEligible: true,
+          models: [
+            {
+              id: "large",
+              name: "Large",
+              outputPrice: 15,
+              maker: true,
+              images: true,
+              reasoning: true,
+            },
+            {
+              id: "small-mini",
+              name: "Mini",
+              outputPrice: 2,
+              maker: true,
+              reasoning: false,
+            },
+          ],
+        },
+        {
+          id: "b",
+          name: "Synthetic B",
+          taskEligible: true,
+          classifierEligible: true,
+          models: [
+            {
+              id: "large",
+              name: "Large copy",
+              outputPrice: 15,
+              maker: true,
+              images: true,
+            },
+            {
+              id: "other-mini",
+              name: "Other",
+              outputPrice: 1,
+              maker: true,
+              reasoning: false,
+            },
+          ],
+        },
+      ];
+      const savedGroup = {
+        ...routingTemplates(providers).find((template) => template.key === key)!
+          .group,
+        id: `saved-${key}`,
+        name: `Saved ${key}`,
+        revision: 2,
+      };
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [savedGroup],
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+      mount();
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: "common.edit" }),
+      );
+      const dialog = screen.getByRole("dialog", { name: `Saved ${key}` });
+      expect(
+        within(dialog).queryByText("intentRouting.advancedSettings"),
+      ).not.toBeInTheDocument();
+      const ruleHint = dialog.querySelector(".rt-template-hint");
+      expect(ruleHint).not.toBeNull();
+      expect(
+        within(ruleHint as HTMLElement).getByText(
+          "routingPage.templateHintLabel",
+        ),
+      ).toBeVisible();
+      expect(
+        within(ruleHint as HTMLElement).getByText(`routingPage.${key}RuleHint`),
+      ).toBeVisible();
+      if (key === "templateSmart") {
+        expect(
+          within(dialog).getByText("routingPage.templateSmartRules"),
+        ).toBeInTheDocument();
+        expect(
+          within(dialog).getByRole("button", {
+            name: "routingPage.intentToldBy",
+          }),
+        ).toBeVisible();
+      } else {
+        expect(dialog.querySelectorAll(".rt-template-member")).toHaveLength(
+          Math.min(savedGroup.members.length, 3),
+        );
+      }
+      if (key === "templateCapability") {
+        expect(
+          within(dialog).getByRole("button", {
+            name: "routingPage.applyRecommendedModelOrder",
+          }),
+        ).toBeVisible();
+      }
+      await user.click(screen.getByRole("button", { name: "common.save" }));
+      await waitFor(() =>
+        expect(intentRoutingApi.save).toHaveBeenCalledWith(
+          expect.objectContaining({ id: `saved-${key}`, template: key }),
+        ),
+      );
+    },
+  );
+  it.each(["templateSmart", "templateSpeed", "templateExpiry"] as const)(
+    "also hides advanced settings when editing legacy %s groups saved without a template field",
+    async (key) => {
+      const providers = [
+        {
+          id: "a",
+          name: "Synthetic A",
+          taskEligible: true,
+          classifierEligible: true,
+          models: [
+            { id: "large", name: "Large", outputPrice: 15, maker: true },
+            { id: "mini", name: "Mini", outputPrice: 1, maker: true },
+          ],
+        },
+        {
+          id: "b",
+          name: "Synthetic B",
+          taskEligible: true,
+          classifierEligible: true,
+          models: [
+            { id: "large", name: "Large copy", outputPrice: 15, maker: true },
+          ],
+        },
+      ];
+      const { template: _omitted, ...legacyGroup } = {
+        ...routingTemplates(providers).find((template) => template.key === key)!
+          .group,
+        id: `legacy-${key}`,
+        name: `Legacy ${key}`,
+        revision: 1,
+      };
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [legacyGroup],
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+      mount();
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: "common.edit" }),
+      );
+      const dialog = screen.getByRole("dialog", { name: `Legacy ${key}` });
+      expect(
+        within(dialog).queryByText("intentRouting.advancedSettings"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(dialog).getByText(`routingPage.${key}RuleHint`),
+      ).toBeVisible();
     },
   );
   it("chooses smart rule targets independently from the full task catalog", async () => {
@@ -1205,13 +1411,60 @@ describe("IntentRoutingPanel", () => {
     });
     expect(saved.members.map(({ modelId }) => modelId)).toEqual([
       "strong",
-      "cheap",
       "extra",
     ]);
     const extra = saved.members.find(({ modelId }) => modelId === "extra")!;
+    expect(saved.defaultMemberId).toBe(extra.id);
+    expect(saved.fallbackMemberIds).toEqual([saved.members[0].id]);
     expect(
       saved.rules.slice(1).map(({ targetMemberId }) => targetMemberId),
     ).toEqual([extra.id, extra.id]);
+  });
+  it("removes hidden preset models when resaving an oversized smart group", async () => {
+    const members = [
+      "old-primary",
+      "old-backup",
+      "compact",
+      "hard",
+      "easy",
+    ].map((modelId) => ({ id: modelId, modelId, providerId: "provider" }));
+    const savedGroup: RoutingGroup = {
+      ...group,
+      template: "templateSmart",
+      members,
+      defaultMemberId: "old-primary",
+      fallbackMemberIds: ["old-backup", "easy"],
+      off: ["old-backup"],
+      rules: ["Compaction", "Hard task", "Easy task"].map((name, index) => ({
+        ...group.rules[0],
+        id: members[index + 2].id,
+        name,
+        targetMemberId: members[index + 2].id,
+        fallbackMemberIds: ["old-primary", "old-backup"],
+      })),
+    };
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [savedGroup],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "common.edit" }),
+    );
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    expect(vi.mocked(intentRoutingApi.save).mock.calls[0][0]).toMatchObject({
+      members: members.slice(2),
+      defaultMemberId: "hard",
+      fallbackMemberIds: ["easy", "compact"],
+      off: [],
+      rules: savedGroup.rules.map((rule) => ({
+        ...rule,
+        fallbackMemberIds: [],
+      })),
+    });
   });
   it("can change the smart template’s default target without a price split", async () => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
@@ -1230,7 +1483,7 @@ describe("IntentRoutingPanel", () => {
     const user = userEvent.setup();
     const create = screen.getByRole("button", { name: "intentRouting.create" });
     await waitFor(() => expect(create).toBeEnabled());
-    await user.click(create);
+    drawTemplateSuggestions(create);
     await user.click(
       screen.getByRole("button", { name: "routingPage.templateSmart" }),
     );
@@ -1277,7 +1530,7 @@ describe("IntentRoutingPanel", () => {
         name: "intentRouting.create",
       });
       await waitFor(() => expect(create).toBeEnabled());
-      await user.click(create);
+      drawTemplateSuggestions(create);
       await user.click(
         screen.getByRole("button", { name: `routingPage.${key}` }),
       );
@@ -1287,6 +1540,15 @@ describe("IntentRoutingPanel", () => {
         expect(buttons.length).toBeGreaterThan(0);
         for (const trigger of buttons) {
           await user.click(trigger);
+          if (key === "templateSmart") {
+            const search = screen.getByRole("searchbox");
+            expect(search.closest(".mp-model-picker-popover")).toHaveAttribute(
+              "data-variant",
+              "agent",
+            );
+            expect(search.closest(".mp-agent-model-picker")).not.toBeNull();
+            await waitFor(() => expect(search).toHaveFocus());
+          }
           expectModelPickerWheelAllowed();
           await user.keyboard("{Escape}");
           expect(
@@ -1339,7 +1601,7 @@ describe("IntentRoutingPanel", () => {
         name: "intentRouting.create",
       });
       await waitFor(() => expect(create).toBeEnabled());
-      await user.click(create);
+      drawTemplateSuggestions(create);
       await user.click(
         screen.getByRole("button", { name: `routingPage.${key}` }),
       );
@@ -1413,6 +1675,52 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
+  it("draws again on a new creation and saves the models shown in the chooser", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue(
+      Array.from({ length: 4 }, (_, index) => ({
+        id: `supplier-${index}`,
+        name: `Supplier ${index}`,
+        taskEligible: true,
+        classifierEligible: false,
+        models: [{ id: `fixture-${index}`, name: `Model ${index}` }],
+      })),
+    );
+    mount();
+    const create = await screen.findByRole("button", {
+      name: "intentRouting.create",
+    });
+    await waitFor(() => expect(create).toBeEnabled());
+    const choose = (random: () => number, modelIds: string[]) => {
+      drawTemplateSuggestions(create, random);
+      const chooser = screen.getByRole("dialog", {
+        name: "routingPage.templates",
+      });
+      const template = within(chooser).getByRole("button", {
+        name: "routingPage.templateCapability",
+      });
+      expect(template.parentElement?.parentElement).toHaveTextContent(
+        modelIds.join(" → "),
+      );
+      fireEvent.click(template);
+    };
+    choose(keepRankedOrder, ["fixture-0", "fixture-1", "fixture-2"]);
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+
+    const drawn = ["fixture-1", "fixture-2", "fixture-3"];
+    choose(() => 0, drawn);
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(saved.members.map(({ modelId }) => modelId)).toEqual(drawn);
+  });
+
   it("keeps the template picker compact while preserving ranked members", async () => {
     const models = Array.from({ length: 51 }, (_, index) => ({
       id: `model-${index + 1}`,
@@ -1440,7 +1748,7 @@ describe("IntentRoutingPanel", () => {
       name: "intentRouting.create",
     });
     await waitFor(() => expect(create).toBeEnabled());
-    fireEvent.click(create);
+    drawTemplateSuggestions(create);
     fireEvent.click(
       screen.getByRole("button", { name: "routingPage.templateCapability" }),
     );
@@ -2366,7 +2674,7 @@ describe("IntentRoutingPanel", () => {
       groups: [
         {
           ...group,
-          members: [{ ...group.members[0], effort: "high", weight: 7 }],
+          members: [{ ...group.members[0], effort: "high", free: true }],
           off: ["member"],
         },
       ],
@@ -2399,7 +2707,7 @@ describe("IntentRoutingPanel", () => {
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
           members: [
-            { ...group.members[0], effort: "high", weight: 7 },
+            { ...group.members[0], effort: "high", free: true },
             expect.objectContaining({ modelId: "extra" }),
           ],
           defaultMemberId: "member",
@@ -2912,17 +3220,13 @@ describe("IntentRoutingPanel", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("keeps the selected member editable when editing a legacy manual group", async () => {
+  it("preserves routing and free status on edit", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
         {
           ...group,
-          routing: "manual",
-          manualMemberId: "member",
-          members: [
-            ...group.members,
-            { id: "second", providerId: "provider", modelId: "other-model" },
-          ],
+          routing: "fastest",
+          members: [{ ...group.members[0], free: true }],
         },
       ],
       autoCreate: false,
@@ -2933,108 +3237,16 @@ describe("IntentRoutingPanel", () => {
     await user.click(
       await screen.findByRole("button", { name: "common.edit" }),
     );
-    expect(
-      screen.queryByRole("radiogroup", {
-        name: "intentRouting.routingStrategy",
-      }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("combobox", { name: "intentRouting.manualMember" }),
-    ).toBeEnabled();
-    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+    expect(screen.getByText("routingPage.templateSpeedRuleHint")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
-          routing: "manual",
-          manualMemberId: "member",
+          routing: "fastest",
+          members: [expect.objectContaining({ free: true })],
         }),
       ),
     );
-    expect(screen.queryByRole("form")).not.toBeInTheDocument();
-  });
-
-  it("preserves legacy routing, member weights and free status on edit", async () => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [
-        {
-          ...group,
-          routing: "free_first",
-          members: [{ ...group.members[0], weight: 3, free: true }],
-        },
-      ],
-      autoCreate: false,
-      omittedGroups: 0,
-    });
-    mount();
-    const user = userEvent.setup();
-    await user.click(
-      await screen.findByRole("button", { name: "common.edit" }),
-    );
-    await user.click(screen.getByRole("button", { name: "common.save" }));
-    await waitFor(() =>
-      expect(intentRoutingApi.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          routing: "free_first",
-          members: [expect.objectContaining({ weight: 3, free: true })],
-        }),
-      ),
-    );
-  });
-
-  it("selects a manual member directly without opening the editor", async () => {
-    const manual = {
-      ...group,
-      routing: "manual" as const,
-      manualMemberId: "member",
-      members: [
-        ...group.members,
-        { id: "second", providerId: "provider", modelId: "other-model" },
-      ],
-    };
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [manual],
-      autoCreate: false,
-      omittedGroups: 0,
-    });
-    mount();
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("radio", { name: /other-model/ }));
-    await waitFor(() =>
-      expect(intentRoutingApi.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          manualMemberId: "second",
-          routing: "manual",
-        }),
-      ),
-    );
-    expect(screen.queryByRole("form")).not.toBeInTheDocument();
-  });
-
-  it("does not mark a manual group unavailable because an unused member is unavailable", async () => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [
-        {
-          ...group,
-          routing: "manual",
-          manualMemberId: "member",
-          members: [
-            ...group.members,
-            { id: "unused", providerId: "missing", modelId: "unavailable" },
-          ],
-        },
-      ],
-      autoCreate: false,
-      omittedGroups: 0,
-    });
-    mount();
-    await screen.findByText("Fixture group");
-    await screen.findByRole("radiogroup", {
-      name: "intentRouting.manualMember",
-    });
-    expect(
-      screen.queryByLabelText("intentRouting.noMemberReady"),
-    ).not.toBeInTheDocument();
   });
 
   it("does not report unavailable members before the provider catalog loads", async () => {
@@ -3058,7 +3270,7 @@ describe("IntentRoutingPanel", () => {
     ).toBeVisible();
   });
 
-  it.each(["smart", "ordered", "round_robin"] as const)(
+  it.each(["ordered", "fastest"] as const)(
     "keeps a %s group ready when only some members are unavailable",
     async (routing) => {
       vi.mocked(intentRoutingApi.list).mockResolvedValue({
@@ -3104,28 +3316,20 @@ describe("IntentRoutingPanel", () => {
     {
       members: group.members,
       matched: [],
-      routing: "smart" as const,
+      routing: "fastest" as const,
       off: ["member"],
     },
     {
       members: [{ id: "missing", providerId: "gone", modelId: "gone-model" }],
       matched: [],
-      routing: "smart" as const,
-      off: [],
-    },
-    {
-      members: group.members,
-      matched: [],
-      routing: "manual" as const,
+      routing: "ordered" as const,
       off: [],
     },
   ])(
     "warns when no participating member is ready: %j",
     async ({ members, matched, routing, off }) => {
       vi.mocked(intentRoutingApi.list).mockResolvedValue({
-        groups: [
-          { ...group, members, routing, off, manualMemberId: "missing" },
-        ],
+        groups: [{ ...group, members, routing, off }],
         matchedMembers: { [group.id]: matched },
         autoCreate: false,
         omittedGroups: 0,
@@ -3137,7 +3341,7 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
-  it.each(["ordered", "manual"] as const)(
+  it.each(["ordered", "fastest"] as const)(
     "counts pattern matches in %s group readiness",
     async (routing) => {
       vi.mocked(intentRoutingApi.list).mockResolvedValue({
@@ -3145,7 +3349,6 @@ describe("IntentRoutingPanel", () => {
           {
             ...group,
             routing,
-            manualMemberId: "dynamic",
             members: [
               { id: "missing", providerId: "gone", modelId: "gone-model" },
             ],
@@ -3170,27 +3373,6 @@ describe("IntentRoutingPanel", () => {
       ).not.toBeInTheDocument();
     },
   );
-
-  it("pauses classifier controls in manual mode and retains the stored rules", async () => {
-    vi.mocked(intentRoutingApi.list).mockResolvedValue({
-      groups: [{ ...group, routing: "manual" }],
-      autoCreate: false,
-      omittedGroups: 0,
-    });
-    mount();
-    const user = userEvent.setup();
-    await user.click(
-      await screen.findByRole("button", { name: "common.edit" }),
-    );
-    expect(screen.getByLabelText("intentRouting.description")).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "intentRouting.runTrial" }),
-    ).toBeDisabled();
-    expect(screen.getByLabelText("intentRouting.description")).toHaveValue(
-      "Diagnose bugs",
-    );
-    expect(screen.getByText("intentRouting.manualPaused")).toBeInTheDocument();
-  });
 
   it.each(["cancel", "escape"])(
     "dismisses existing group changes with %s and restores focus without saving",
@@ -3397,7 +3579,7 @@ describe("IntentRoutingPanel", () => {
         {
           ...group,
           modelAlias: "auto/fixture-model",
-          routing: "smart",
+          routing: "ordered",
           autoGenerated: true,
         },
       ],
@@ -3421,7 +3603,7 @@ describe("IntentRoutingPanel", () => {
         expect.objectContaining({
           id: "fixture",
           modelAlias: "auto/fixture-model",
-          routing: "smart",
+          routing: "ordered",
           name: "Fixture group updated",
           members: group.members,
         }),

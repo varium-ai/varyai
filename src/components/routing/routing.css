@@ -1814,41 +1814,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.vary-routing .rt-picks {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
-}
-.vary-routing .rt-pick {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 7px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--rt-fg-2);
-  font-size: 11.5px;
-}
-.vary-routing .rt-pick[aria-checked="true"] {
-  background: var(--mp-pill);
-  border-color: var(--rt-line);
-  color: var(--rt-fg);
-}
-.vary-routing .rt-pick-dot {
-  width: 9px;
-  height: 9px;
-  border: 1px solid var(--rt-muted);
-  border-radius: 50%;
-}
-.vary-routing .rt-pick[aria-checked="true"] .rt-pick-dot {
-  background: var(--mp-control);
-  box-shadow: inset 0 0 0 2px var(--mp-pill);
-}
-.vary-routing .rt-pick:disabled {
-  opacity: 0.45;
-}
 .vary-routing .rt-group-actions {
   display: flex;
   flex-wrap: nowrap;
@@ -2568,13 +2533,6 @@
   grid-template-columns: minmax(0, 1fr) minmax(100px, 260px);
   align-items: center;
   gap: 8px;
-}
-.rt-clear-classifier {
-  display: block;
-  margin-top: 8px;
-  padding: 4px;
-  color: var(--mp-muted);
-  font-size: 12px;
 }
 .vary-routing .rt-rules .rt-cond input {
   height: 20px;

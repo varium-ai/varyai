@@ -39,7 +39,7 @@ fn direct_group(provider: &Provider, model: &str) -> RoutingGroup {
             id: "direct".into(),
             provider_id: provider.id.clone(),
             model_id: model.into(),
-            weight: 1,
+            retired_weight: None,
             free: None,
         }],
         default_member_id: "direct".into(),
@@ -50,10 +50,11 @@ fn direct_group(provider: &Provider, model: &str) -> RoutingGroup {
         rules: vec![],
         retired_policy: None,
         auto_generated: false,
+        template: None,
         routing: Default::default(),
         quota_order: None,
         model_alias: None,
-        manual_member_id: None,
+        retired_manual_member_id: None,
         context_window: None,
         affinity: String::new(),
         first_token: 0,
@@ -326,16 +327,7 @@ pub(crate) async fn prepare(
             .members
             .iter()
             .zip(&available)
-            .all(|(member, target)| {
-                group.routing != super::RoutingStrategy::Manual
-                    || !group.includes_in_menu(member)
-                    || target.is_some()
-            })
-            && group
-                .members
-                .iter()
-                .zip(&available)
-                .any(|(member, target)| group.includes_in_menu(member) && target.is_some());
+            .any(|(member, target)| group.includes_in_menu(member) && target.is_some());
         let classifier = if group.uses_classifier() {
             group.classifier_target.as_ref().and_then(|t| {
                 let provider = providers
@@ -642,7 +634,7 @@ mod tests {
             id: "disabled".into(),
             provider_id: "disabled".into(),
             model_id: "shared-model".into(),
-            weight: 1,
+            retired_weight: None,
             free: None,
             effort: None,
         });
@@ -1194,7 +1186,7 @@ mod tests {
             id: "small".into(),
             provider_id: "b".into(),
             model_id: "shared-model".into(),
-            weight: 1,
+            retired_weight: None,
             free: None,
         });
         group.fallback_member_ids.push("small".into());
@@ -1255,7 +1247,7 @@ mod tests {
             id: "known".into(),
             provider_id: "known".into(),
             model_id: "shared-model".into(),
-            weight: 1,
+            retired_weight: None,
             free: None,
         });
         group.fallback_member_ids.push("known".into());
@@ -1338,33 +1330,6 @@ mod tests {
             &changed.groups[&alias].bindings,
             &next.groups[&alias].bindings
         ));
-    }
-
-    #[tokio::test]
-    async fn context_manual_pick_publishes_only_the_selected_member() {
-        let dir = tempfile::tempdir().expect("dir");
-        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
-        let mut a = provider("a");
-        a.settings_config["modelCatalog"]["models"][0]["contextWindow"] = json!(128000);
-        let mut b = provider("b");
-        b.settings_config["modelCatalog"]["models"][0]["contextWindow"] = json!(1000000);
-        let mut group = direct_group(&a, "shared-model");
-        group.id = "manual-context".into();
-        group.routing = super::super::RoutingStrategy::Manual;
-        group.members.push(Member {
-            effort: None,
-            id: "large".into(),
-            provider_id: "b".into(),
-            model_id: "shared-model".into(),
-            weight: 1,
-            free: None,
-        });
-        group.manual_member_id = Some("large".into());
-        let menu = prepare(manager, vec![a, b], vec![group], None)
-            .await
-            .expect("menu");
-        let projection = super::super::client::menu_catalog(&menu, "").expect("catalog");
-        assert_eq!(projection["models"][0]["context_window"], 1000000);
     }
 
     #[tokio::test]
@@ -1463,7 +1428,7 @@ mod tests {
             id: "other".into(),
             provider_id: provider.id.clone(),
             model_id: "model-b".into(),
-            weight: 1,
+            retired_weight: None,
             free: None,
         });
         group.fallback_member_ids.push("other".into());
@@ -1476,28 +1441,6 @@ mod tests {
         assert!(targets[1].url.path().ends_with("/model-b:generateContent"));
     }
 
-    #[tokio::test]
-    async fn manual_publishes_its_pick_when_unused_members_and_classifier_are_unavailable() {
-        let dir = tempfile::tempdir().expect("dir");
-        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
-        let a = provider("a");
-        let mut b = provider("b");
-        b.settings_config["apiFormat"] = json!("unsupported");
-        let group: RoutingGroup = serde_json::from_value(json!({
-            "id":"manual-fixture","name":"Manual fixture","revision":0,"client":"codex","enabled":false,"routing":"manual",
-            "members":[{"id":"b","providerId":"b","modelId":"unavailable"},{"id":"a","providerId":"a","modelId":"shared-model"}],
-            "manualMemberId":"a","defaultMemberId":"b","fallbackMemberIds":["b"],"intentRecognitionEnabled":true,
-            "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
-        })).expect("group");
-        let menu = prepare(manager, vec![a, b], vec![group], None)
-            .await
-            .expect("menu");
-        let session = &menu.groups["vary-auto/manual-fixture"];
-        assert_eq!(session.targets.len(), 1);
-        assert_eq!(session.targets[0].provider_id, "a");
-        assert!(session.classifier.is_none());
-        assert_eq!(session.menu_targets().count(), 1);
-    }
     #[tokio::test]
     async fn direct_models_and_groups_coexist_with_stable_isolated_aliases() {
         let dir = tempfile::tempdir().unwrap();
@@ -1512,7 +1455,7 @@ mod tests {
             id: "other".into(),
             provider_id: b.id.clone(),
             model_id: "shared-model".into(),
-            weight: 1,
+            retired_weight: None,
             free: None,
         });
         group.fallback_member_ids.push("other".into());

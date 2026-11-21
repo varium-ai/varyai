@@ -583,7 +583,7 @@ fn scheduling_observer_ignores_headers_and_hidden_reasoning_and_counts_usage_on_
     other.served(10, 100.0, 1000.0, 20, chrono::Utc::now().timestamp());
     assert_eq!(
         scheduling::arrange(
-            crate::services::intent_routing::RoutingStrategy::LeastUsed,
+            crate::services::intent_routing::RoutingStrategy::Fastest,
             &[0, 1],
             &[scheduling.snapshot(), other.snapshot()],
             &mut Default::default(),
@@ -768,25 +768,21 @@ fn refreshed_groups_share_account_telemetry_and_keep_only_exact_model_latency() 
     let a = &next.groups["added-group"].targets[0].scheduling;
     let b = &next.groups["other-model"].targets[0].scheduling;
     assert!(!Arc::ptr_eq(a, b));
-    b.served(100, 0.0, 0.0, 0, now);
+    b.rate_limited(now);
     let empty = scheduling::Scheduling::default();
-    empty.served(150, 0.0, 0.0, 0, now);
-    // Both models see the same 200 recent tokens; rotated credentials see none.
+    // Both models share account rate-limit telemetry; rotated credentials do not.
     let states = [
         a.snapshot(),
         b.snapshot(),
         next.groups["rotated"].targets[0].scheduling.snapshot(),
         empty.snapshot(),
     ];
-    let order = scheduling::arrange(
-        crate::services::intent_routing::RoutingStrategy::LeastUsed,
-        &[0, 1, 2, 3],
-        &states,
-        &mut Default::default(),
-        now,
-    );
+    let mut order = [0, 1, 2, 3];
+    scheduling::sink_last(&mut order, &states, now);
     assert_eq!(&order[..2], &[2, 3]);
     // Only the exact original model retains its latency measurement.
+    assert!(a.trace_account().and_then(|t| t.first_token_ms).is_some());
+    assert!(b.trace_account().and_then(|t| t.first_token_ms).is_none());
     assert_eq!(
         scheduling::arrange(
             crate::services::intent_routing::RoutingStrategy::Fastest,
@@ -829,34 +825,45 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
     });
     let runtime = Arc::new(Runtime::default());
     let now = chrono::Utc::now().timestamp();
-    let strategies = [
-        RoutingStrategy::Smart,
-        RoutingStrategy::Ordered,
-        RoutingStrategy::RoundRobin,
-        RoutingStrategy::LeastUsed,
-        RoutingStrategy::Pace,
-        RoutingStrategy::FreeFirst,
-        RoutingStrategy::Fastest,
-        RoutingStrategy::Weighted,
-    ];
+    let strategies = [RoutingStrategy::Ordered, RoutingStrategy::Fastest];
     let mut groups = HashMap::new();
     for (k, routing) in strategies.iter().enumerate() {
-        let mut group:RoutingGroup=serde_json::from_value(json!({
+        let mut group: RoutingGroup = serde_json::from_value(json!({
             "id":format!("strategy-{k}"),"name":"Synthetic strategy","revision":0,"client":"codex","enabled":false,
-            "members":[{"id":"a","providerId":"a","modelId":"exact-a","weight":3},{"id":"b","providerId":"b","modelId":"exact-b","weight":1,"free":true}],
+            "members":[{"id":"a","providerId":"a","modelId":"exact-a"},{"id":"b","providerId":"b","modelId":"exact-b","free":true}],
             "defaultMemberId":"a","fallbackMemberIds":["b"],"intentRecognitionEnabled":false,
             "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
         })).expect("group");
         group.routing = *routing;
-        let targets=group.members.iter().enumerate().map(|(i,m)| {
-            let scheduling=Arc::new(scheduling::Scheduling::new(false));
-            if matches!(routing,RoutingStrategy::Smart|RoutingStrategy::Pace) {
-                scheduling.observe_event(&json!({"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":if i==0 {20} else {80},"window_minutes":10080,"reset_at":now+if i==0 {360000} else {3600}}}}),now);
-            }
-            if *routing==RoutingStrategy::LeastUsed && i==0 { scheduling.served(1000,0.0,0.0,0,now); }
-            if *routing==RoutingStrategy::Fastest { scheduling.served(1,if i==0 {100.0} else {200.0},1000.0,if i==0 {10} else {100},now); }
-            Target { fixed_effort: None,provider_id:m.provider_id.clone(),upstream: None, model:m.model_id.clone(),effort:Default::default(),url:format!("http://{address}/responses").parse().expect("url"),headers:Default::default(),official:false,credentials:None,scheduling}
-        }).collect();
+        let targets = group
+            .members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let scheduling = Arc::new(scheduling::Scheduling::new(false));
+                if *routing == RoutingStrategy::Fastest {
+                    scheduling.served(
+                        1,
+                        if i == 0 { 100.0 } else { 200.0 },
+                        1000.0,
+                        if i == 0 { 10 } else { 100 },
+                        now,
+                    );
+                }
+                Target {
+                    fixed_effort: None,
+                    provider_id: m.provider_id.clone(),
+                    upstream: None,
+                    model: m.model_id.clone(),
+                    effort: Default::default(),
+                    url: format!("http://{address}/responses").parse().expect("url"),
+                    headers: Default::default(),
+                    official: false,
+                    credentials: None,
+                    scheduling,
+                }
+            })
+            .collect();
         groups.insert(
             group.alias(),
             Arc::new(Session {
@@ -897,212 +904,33 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
         .build()
         .expect("client");
     for (k, routing) in strategies.iter().enumerate() {
-        let mut picks = Vec::new();
-        let n = if *routing == RoutingStrategy::Weighted {
-            8
-        } else if *routing == RoutingStrategy::RoundRobin {
-            3
-        } else {
-            1
-        };
-        for turn in 0..n {
-            let value = client
-                .post(format!(
-                    "http://127.0.0.1:{}/intent/v1/responses",
-                    info.port
-                ))
-                .bearer_auth(concat!("synthetic", "-strategies"))
-                .header("session-id", format!("synthetic-strategy-{k}-{turn}"))
-                .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
-                .send()
-                .await
-                .expect("send")
-                .json::<Value>()
-                .await
-                .expect("json");
-            picks.push(value["model"].as_str().expect("model").to_owned());
-        }
-        match routing {
-            RoutingStrategy::Ordered => assert_eq!(picks, ["exact-a"]),
-            RoutingStrategy::RoundRobin => assert_eq!(picks, ["exact-a", "exact-b", "exact-a"]),
-            RoutingStrategy::Weighted => assert_eq!(
-                picks,
-                [
-                    "exact-a", "exact-a", "exact-b", "exact-a", "exact-a", "exact-a", "exact-b",
-                    "exact-a"
-                ]
-            ),
-            _ => assert_eq!(picks, ["exact-b"], "{routing:?}"),
-        }
-    }
-    server.stop().await.expect("stop");
-    task.abort();
-}
-
-#[tokio::test]
-#[serial_test::serial]
-async fn manual_routes_only_the_pick_pauses_classification_and_never_falls_back() {
-    use crate::{
-        database::Database,
-        proxy::{server::ProxyServer, ProxyConfig},
-        services::intent_routing::RoutingStrategy,
-    };
-    use axum::{response::IntoResponse, routing::post, Json, Router};
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let captured = seen.clone();
-    let upstream = Router::new().route(
-        "/responses",
-        post(move |Json(body): Json<Value>| {
-            let captured = captured.clone();
-            async move {
-                captured
-                    .lock()
-                    .expect("seen")
-                    .push(body["model"].as_str().expect("model").to_owned());
-                if body["input"] == "fail" {
-                    (StatusCode::TOO_MANY_REQUESTS, "synthetic").into_response()
-                } else {
-                    Json(json!({"id":"manual-response", "model":body["model"]})).into_response()
-                }
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("listener");
-    let address = listener.local_addr().expect("address");
-    let task = tokio::spawn(async move {
-        axum::serve(listener, upstream).await.expect("fixture");
-    });
-    let mut group: RoutingGroup = serde_json::from_value(json!({
-        "id":"development","name":"Manual fixture","revision":0,"client":"codex","enabled":false,
-        "members":[{"id":"balanced","providerId":"fixture","modelId":"balanced-model"},{"id":"strong","providerId":"fixture","modelId":"strong-model"}],
-        "defaultMemberId":"balanced","fallbackMemberIds":["balanced","strong"],"intentRecognitionEnabled":false,
-        "classifierTarget":null,"classificationBudgetMs":2000,
-        "rules":[{"id":"debug","name":"Debug","description":"Synthetic diagnosis","enabled":true,"targetMemberId":"balanced"}]
-    })).expect("fixture");
-    group.routing = RoutingStrategy::Manual;
-    group.manual_member_id = Some("strong".into());
-    group.intent_recognition_enabled = true;
-    // No classifier is available: Manual must never try to prepare or call it.
-    group.classifier_target = None;
-    let session = Session {
-        targets: group
-            .members
-            .iter()
-            .map(|m| Target {
-                fixed_effort: None,
-                provider_id: m.provider_id.clone(),
-                model: m.model_id.clone(),
-                upstream: None,
-                effort: Default::default(),
-                url: format!("http://{address}/responses").parse().expect("url"),
-                headers: Default::default(),
-                official: false,
-                credentials: None,
-                scheduling: Arc::default(),
-            })
-            .collect(),
-        group,
-        classifier: None,
-        client: reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .expect("client"),
-        created: Instant::now(),
-        bindings: Arc::default(),
-    };
-    let runtime = Arc::new(Runtime::default());
-    let session = Arc::new(session);
-    runtime
-        .set_menu(Arc::new(Menu {
-            token: concat!("synthetic", "-manual").into(),
-            models: Default::default(),
-            default_model: None,
-            omitted_entries: 0,
-            context_settings: Default::default(),
-            groups: HashMap::from([("vary-auto/development".into(), session.clone())]),
-        }))
-        .expect("menu");
-    let server = ProxyServer::new(
-        ProxyConfig {
-            listen_port: 0,
-            ..Default::default()
-        },
-        Arc::new(Database::memory().expect("db")),
-        None,
-    )
-    .with_intent_runtime(runtime.clone());
-    let info = server.start().await.expect("start");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("client");
-    let url = format!("http://127.0.0.1:{}/intent/v1/responses", info.port);
-    for input in ["synthetic", "fail"] {
-        let response = client
-            .post(&url)
-            .bearer_auth(concat!("synthetic", "-manual"))
-            .json(&json!({"model":"vary-auto/development","input":input}))
+        let value = client
+            .post(format!(
+                "http://127.0.0.1:{}/intent/v1/responses",
+                info.port
+            ))
+            .bearer_auth(concat!("synthetic", "-strategies"))
+            .header("session-id", format!("synthetic-strategy-{k}-0"))
+            .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
             .send()
             .await
-            .expect("send");
-        if input == "fail" {
-            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        } else {
-            assert_eq!(
-                response.json::<Value>().await.expect("json")["model"],
-                "strong-model"
-            );
+            .expect("send")
+            .json::<Value>()
+            .await
+            .expect("json");
+        let picked = value["model"].as_str().expect("model");
+        match routing {
+            RoutingStrategy::Ordered => assert_eq!(picked, "exact-a"),
+            RoutingStrategy::Fastest => assert_eq!(picked, "exact-b"),
         }
     }
-    assert_eq!(
-        *seen.lock().expect("seen"),
-        ["strong-model", "strong-model"]
-    );
-    // A later manual pick cannot move a response/tool continuation to another account.
-    let mut group = session.group.clone();
-    group.manual_member_id = Some("balanced".into());
-    runtime
-        .set_menu(Arc::new(Menu {
-            token: concat!("synthetic", "-manual").into(),
-            models: Default::default(),
-            default_model: None,
-            omitted_entries: 0,
-            context_settings: Default::default(),
-            groups: HashMap::from([(
-                "vary-auto/development".into(),
-                Arc::new(Session {
-                    group,
-                    targets: session.targets.clone(),
-                    classifier: None,
-                    client: client.clone(),
-                    created: Instant::now(),
-                    bindings: session.bindings.clone(),
-                }),
-            )]),
-        }))
-        .expect("refresh");
-    let continued=client.post(&url).bearer_auth(concat!("synthetic", "-manual")).json(&json!({"model":"vary-auto/development","previous_response_id":"manual-response","input":"continue"})).send().await.expect("send").json::<Value>().await.expect("json");
-    assert_eq!(continued["model"], "strong-model");
-    let next = client
-        .post(&url)
-        .bearer_auth(concat!("synthetic", "-manual"))
-        .json(&json!({"model":"vary-auto/development","input":"next"}))
-        .send()
-        .await
-        .expect("send")
-        .json::<Value>()
-        .await
-        .expect("json");
-    assert_eq!(next["model"], "balanced-model");
     server.stop().await.expect("stop");
     task.abort();
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn readable_auto_alias_uses_smart_order_but_continuations_ignore_cooldown() {
+async fn readable_auto_alias_uses_ordered_routing_but_continuations_ignore_cooldown() {
     use crate::{
         database::Database,
         proxy::{server::ProxyServer, ProxyConfig},
@@ -1119,51 +947,28 @@ async fn readable_auto_alias_uses_smart_order_but_continuations_ignore_cooldown(
         axum::serve(listener, upstream).await.expect("server");
     });
     let mut group: RoutingGroup = serde_json::from_value(json!({
-        "id":"smart","name":"Smart fixture","revision":0,"client":"codex","enabled":false,
+        "id":"ordered","name":"Ordered fixture","revision":0,"client":"codex","enabled":false,
         "members":[{"id":"balanced","providerId":"fixture","modelId":"balanced-model"},{"id":"strong","providerId":"fixture","modelId":"strong-model"}],
-        "defaultMemberId":"balanced","fallbackMemberIds":["strong"],"intentRecognitionEnabled":false,
+        "defaultMemberId":"strong","fallbackMemberIds":["balanced"],"intentRecognitionEnabled":false,
         "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
     })).expect("group");
-    group.routing = crate::services::intent_routing::RoutingStrategy::Smart;
+    group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
     group.model_alias = Some("auto/synthetic-model".into());
-    group.fallback_member_ids = vec!["strong".into()];
     let now = chrono::Utc::now().timestamp();
     let targets: Vec<_> = group
         .members
         .iter()
-        .enumerate()
-        .map(|(i, member)| {
-            let scheduling = Arc::new(scheduling::Scheduling::default());
-            let headers = http::HeaderMap::from_iter([
-                (
-                    "x-codex-primary-used-percent".parse().expect("name"),
-                    http::HeaderValue::from_static("20"),
-                ),
-                (
-                    "x-codex-primary-window-minutes".parse().expect("name"),
-                    http::HeaderValue::from_static("10080"),
-                ),
-                (
-                    "x-codex-primary-reset-at".parse().expect("name"),
-                    http::HeaderValue::from_str(
-                        &(now + if i == 0 { 18000 } else { 3600 }).to_string(),
-                    )
-                    .expect("value"),
-                ),
-            ]);
-            scheduling.observe_headers(&headers, now);
-            Target {
-                fixed_effort: None,
-                provider_id: member.provider_id.clone(),
-                model: member.model_id.clone(),
-                upstream: None,
-                effort: Default::default(),
-                url: format!("http://{address}/responses").parse().expect("url"),
-                headers: http::HeaderMap::new(),
-                official: false,
-                credentials: None,
-                scheduling,
-            }
+        .map(|member| Target {
+            fixed_effort: None,
+            provider_id: member.provider_id.clone(),
+            model: member.model_id.clone(),
+            upstream: None,
+            effort: Default::default(),
+            url: format!("http://{address}/responses").parse().expect("url"),
+            headers: http::HeaderMap::new(),
+            official: false,
+            credentials: None,
+            scheduling: Arc::new(scheduling::Scheduling::default()),
         })
         .collect();
     let preferred_health = targets[1].scheduling.clone();

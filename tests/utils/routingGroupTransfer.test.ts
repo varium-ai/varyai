@@ -121,8 +121,7 @@ it("imports shared models through available providers and reports omitted seats 
       group: {
         name: "Portable",
         members: ["elsewhere/model-a:high", "lost/no-model", "beta/model-b"],
-        routing: "weight",
-        weights: { "elsewhere/model-a:high": 4 },
+        routing: "fast",
         off: ["elsewhere/model-a:high", "beta/model-b"],
         rules: [
           { images: true, use: "lost/no-model", more: ["beta/model-b"] },
@@ -139,7 +138,7 @@ it("imports shared models through available providers and reports omitted seats 
     ["alpha", "model-a", "high"],
     ["beta", "model-b", undefined],
   ]);
-  expect(imported.group.members[0].weight).toBe(4);
+  expect(imported.group.routing).toBe("fastest");
   expect(imported.group.off).toEqual([]);
   expect(imported.group.rules).toHaveLength(1);
   expect(imported.group.rules[0].targetMemberId).toBe(
@@ -292,7 +291,6 @@ it("imports effort-qualified seats without confusing a vendor model suffix for r
         "alpha/model-a:free",
       ],
       off: ["alpha/model-a:high"],
-      pick: "alpha/model-a:low",
     }),
     catalog,
   );
@@ -371,8 +369,7 @@ it("imports explicit the reference implementation members without binding the gr
       id: "shared",
       name: "Shared",
       members: ["alpha/model-a", "beta/model-b"],
-      routing: "weighted",
-      weights: { "alpha/model-a": 3 },
+      routing: "fastest",
       context: -1,
       unlists: true,
       sink: true,
@@ -382,7 +379,7 @@ it("imports explicit the reference implementation members without binding the gr
   );
   expect(group.client).toBe("global");
   expect(group.revision).toBe(0);
-  expect(group.members.map((member) => member.weight)).toEqual([3, 1]);
+  expect(group.routing).toBe("fastest");
   expect(group.contextWindow).toBe(-1);
   expect(group.unlists).toBe(true);
   expect(group.sink).toBe(true);

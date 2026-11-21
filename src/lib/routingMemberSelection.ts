@@ -44,8 +44,6 @@ export function routingGroupHasReadyMember(
   return [...group.members, ...matchedMembers].some(
     (member) =>
       !group.off?.includes(member.id) &&
-      (group.routing !== "manual" ||
-        member.id === (group.manualMemberId ?? group.defaultMemberId)) &&
       routingMemberAvailable(providers, member),
   );
 }
@@ -105,10 +103,6 @@ export function withRoutingMembers(
     ...group,
     members,
     defaultMemberId,
-    manualMemberId:
-      group.manualMemberId && removed.has(group.manualMemberId)
-        ? members[0]?.id
-        : group.manualMemberId,
     off: group.off?.filter((id) => !removed.has(id)),
     fallbackMemberIds: [
       ...group.fallbackMemberIds.filter(
@@ -137,5 +131,27 @@ export function withRoutingMembers(
           ]
         : [];
     }),
+  };
+}
+
+export function withSmartRuleMembers(group: RoutingGroup): RoutingGroup {
+  const defaultMemberId =
+    group.rules.find((rule) => rule.name === "Hard task")?.targetMemberId ??
+    group.defaultMemberId;
+  const selected = new Set(
+    group.rules.length
+      ? group.rules.map((rule) => rule.targetMemberId)
+      : [defaultMemberId],
+  );
+  const members = group.members.filter(({ id }) => selected.has(id));
+  const updated = withRoutingMembers({ ...group, defaultMemberId }, members);
+  return {
+    ...updated,
+    fallbackMemberIds: [
+      ...new Set([
+        ...updated.fallbackMemberIds,
+        ...members.map(({ id }) => id),
+      ]),
+    ].filter((id) => id !== updated.defaultMemberId),
   };
 }

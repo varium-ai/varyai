@@ -9,7 +9,7 @@ const MAX_JSON: usize = 4 * 1024 * 1024;
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Identity {
-    uid: String,
+    pub(crate) uid: String,
     domain: String,
     enterprise: String,
     refresh_expires: i64,
