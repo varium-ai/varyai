@@ -37,11 +37,11 @@ describe("switch visual language", () => {
     expect(switchElement.matches(rounding.selector)).toBe(false);
   });
 
-  it("uses the primary track color for the shared switch", () => {
+  it("uses the brand track color for the shared switch", () => {
     render(<Switch checked onCheckedChange={() => undefined} />);
 
     const switchElement = screen.getByRole("switch");
-    expect(switchElement).toHaveClass("data-[state=checked]:bg-primary");
+    expect(switchElement).toHaveClass("data-[state=checked]:bg-brand");
     expect(switchElement).toHaveClass(
       "w-[34px]",
       "data-[state=unchecked]:bg-[var(--border-strong)]",
@@ -53,11 +53,11 @@ describe("switch visual language", () => {
     );
   });
 
-  it("uses the same primary switch treatment for prompt toggles", () => {
+  it("uses the same brand switch treatment for prompt toggles", () => {
     render(<PromptToggle enabled onChange={() => undefined} />);
 
     const switchElement = screen.getByRole("switch");
-    expect(switchElement).toHaveClass("bg-primary");
+    expect(switchElement).toHaveClass("bg-brand");
     expect(switchElement.firstElementChild).toHaveClass(
       "h-5",
       "w-5",

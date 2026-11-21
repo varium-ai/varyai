@@ -169,7 +169,7 @@
   font-size: 12.5px;
 }
 .mp-am-search input::placeholder {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
 }
 .mp-am-search:focus-within {
   box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--mp-accent) 55%, transparent);
@@ -283,7 +283,7 @@
 .mp-am-rail small,
 .mp-am-fold small {
   flex: none;
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -332,7 +332,7 @@
   border: 0;
   border-radius: 6px;
   background: none;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   font: inherit;
   font-size: 11.5px;
   opacity: 0;
@@ -390,7 +390,7 @@ button.mp-am-row:hover,
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11.5px;
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   font-variant-numeric: tabular-nums;
 }
 .mp-am-check {
@@ -398,10 +398,10 @@ button.mp-am-row:hover,
   flex: none;
   justify-content: center;
   width: 16px;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .mp-am-row.off .mp-am-name {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
 }
 .mp-am-row.off .mp-am-logo {
   opacity: 0.45;
@@ -437,7 +437,7 @@ button.mp-am-row:hover,
   font-size: 11.5px;
 }
 .mp-am-foot > button:hover:not(:disabled) {
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .mp-am-foot > button:disabled {
   color: var(--mp-muted);
@@ -620,7 +620,7 @@ button.mp-am-row:hover,
   align-items: flex-end;
   height: 24px;
   padding: 7px 8px 0;
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   font-size: 10.5px;
   font-weight: 600;
 }
@@ -657,7 +657,7 @@ button.mp-am-row:hover,
   margin-left: -4px;
   padding: 0 4px;
   border-radius: 4px;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   background: var(--mp-model-accent-soft);
   font-size: 9px;
   font-weight: 500;

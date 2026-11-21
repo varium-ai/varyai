@@ -29,6 +29,7 @@ pub mod model_mapper;
 mod native_protocol;
 mod native_subscription;
 mod protocol_bridge;
+pub(crate) use protocol_bridge::Protocol;
 pub mod provider_router;
 pub mod providers;
 pub(crate) mod qoder;

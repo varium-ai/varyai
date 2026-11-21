@@ -246,11 +246,7 @@ export function UsageTrendChart({
         <div className="rounded-lg border bg-background/95 p-3 shadow-lg backdrop-blur-md">
           <p className="mb-2 font-medium">{heading}</p>
           {payload.map((entry: any, index: number) => (
-            <div
-              key={index}
-              className="flex items-center gap-2 text-sm"
-              style={{ color: entry.color }}
-            >
+            <div key={index} className="flex items-center gap-2 text-sm">
               <div
                 className="h-2 w-2 rounded-full"
                 style={{ backgroundColor: entry.color }}
@@ -283,11 +279,11 @@ export function UsageTrendChart({
             <span
               key={item.dataKey}
               className="inline-flex items-center gap-1.5 whitespace-nowrap"
-              style={{ color: item.color }}
             >
               <svg
                 aria-hidden="true"
                 className="h-3 w-3.5 shrink-0"
+                style={{ color: item.color }}
                 viewBox="0 0 20 12"
                 fill="none"
               >

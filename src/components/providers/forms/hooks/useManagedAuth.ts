@@ -179,9 +179,7 @@ export function useManagedAuth(
             flowGenerationRef.current += 1;
             const completionGeneration = flowGenerationRef.current;
             setPollingState("success");
-            await refetchStatus();
-            await queryClient.invalidateQueries({ queryKey });
-            if (completionGeneration !== flowGenerationRef.current) return;
+            void queryClient.invalidateQueries({ queryKey }).catch(() => {});
             setLoginCompletion({
               accountId: newAccount.id,
               generation: completionGeneration,

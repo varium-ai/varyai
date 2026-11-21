@@ -9,7 +9,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground hover:bg-[var(--primary-hover)] active:bg-[var(--primary-hover)]",
+          "bg-primary text-primary-foreground hover:bg-[var(--primary-action-hover)] active:bg-[var(--primary-action-hover)]",
         destructive:
           "bg-[var(--danger-surface)] text-destructive hover:bg-[color-mix(in_srgb,var(--danger-surface),currentColor_10%)] active:bg-[color-mix(in_srgb,var(--danger-surface),currentColor_10%)]",
         outline:
@@ -18,7 +18,7 @@ const buttonVariants = cva(
           "border border-border bg-card text-secondary-foreground hover:bg-[var(--hover-surface)] active:bg-accent",
         ghost:
           "text-secondary-foreground hover:bg-[var(--hover-surface)] active:bg-accent",
-        mcp: "bg-emerald-500 text-white hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700",
+        mcp: "bg-[var(--mcp-action)] text-white hover:bg-[var(--mcp-action-hover)]",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

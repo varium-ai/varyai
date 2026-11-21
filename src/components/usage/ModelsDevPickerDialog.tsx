@@ -280,7 +280,7 @@ export function ModelsDevPickerDialog({
                               {entry.providerName}
                             </span>
                             {entry.releaseDate && (
-                              <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                              <span className="shrink-0 text-[10px] text-muted-foreground">
                                 {entry.releaseDate}
                               </span>
                             )}

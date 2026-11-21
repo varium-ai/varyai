@@ -24,6 +24,11 @@
 
   --primary: 219.512 100% 59.804%;
   --primary-hover: #2469ed;
+  --primary-text: var(--primary);
+  --primary-action: var(--primary);
+  --primary-action-hover: var(--primary-hover);
+  --mcp-action: #10b981;
+  --mcp-action-hover: #059669;
   --primary-foreground: 0 0% 100%;
 
   --success: #087f5b;
@@ -79,6 +84,8 @@
   --border-strong: #5c626d;
 
   --primary-hover: #4a8aff;
+  --mcp-action: #059669;
+  --mcp-action-hover: #047857;
 
   --success: #51c99d;
   --success-surface: #203d33;
@@ -86,6 +93,27 @@
   --warning-surface: #423821;
   --destructive: 355.714 78.873% 72.157%;
   --danger-surface: #442b32;
+}
+
+/* Application text and filled controls have distinct contrast requirements from the brand. */
+:root[data-renderer="application"] {
+  --primary-action: 218.965517 73.109244% 46.666667%;
+  --primary-action-hover: #174cae;
+  --mcp-action: #087954;
+  --mcp-action-hover: #065f46;
+}
+
+:root[data-renderer="application"]:not(.dark) {
+  --primary-text: 218.965517 73.109244% 46.666667%;
+  --muted-foreground: 213.75 14.678899% 42.745098%;
+  --success: #087954;
+  --warning: #916000;
+  --destructive: 354.586466 56.118143% 46.470588%;
+}
+
+:root[data-renderer="application"].dark {
+  --primary-text: 218.360656 100% 76.078431%;
+  --muted-foreground: 216 15.923567% 69.215686%;
 }
 
 @media (prefers-reduced-motion: reduce) {

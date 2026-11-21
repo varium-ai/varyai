@@ -30,6 +30,15 @@ function fixture({ checked = false, code = 0, change = false } = {}) {
     }),
   };
 }
+test("TRAE reads the current identity without querying reward status", async () => {
+  const f = fixture();
+  const result = await f.run({ mode: "identity" });
+  assert.equal(result.outcome, "not_checked");
+  assert.match(result.accountId, /^[a-f0-9]{64}$/);
+  assert.equal(result.label, user.account.username);
+  assert.deepEqual(f.calls, ["vscode:sandbox::main-invoke-getUserInfo"]);
+  assert.ok(!JSON.stringify(result).includes(user.token));
+});
 test("TRAE refresh exports only reward/account metadata and never claims", async () => {
   const f = fixture();
   const result = await f.run({ mode: "status" });

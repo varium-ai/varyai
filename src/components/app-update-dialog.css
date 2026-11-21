@@ -50,7 +50,7 @@
   text-align: left;
 }
 .vary-update-notes-toolbar button:hover {
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .vary-update-notes-toolbar button:focus-visible,
 .vary-update-markdown a:focus-visible {
@@ -150,7 +150,7 @@
   background: transparent;
 }
 .vary-update-markdown a {
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   text-decoration: underline;
   text-underline-offset: 3px;
 }

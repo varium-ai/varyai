@@ -87,6 +87,8 @@ pub(crate) struct Route {
     pub model: String,
     pub group_name: String,
     pub strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification_outcome: Option<String>,
     pub candidates: Vec<Candidate>,
     pub steps: Vec<Step>,
     pub state: State,
@@ -354,6 +356,7 @@ impl Store {
                 model: label(model),
                 group_name: label(group_name),
                 strategy: label(strategy),
+                classification_outcome: None,
                 candidates: Vec::new(),
                 steps: Vec::new(),
                 state: State::Routing,
@@ -473,6 +476,10 @@ pub(crate) struct Request {
 }
 
 impl Request {
+    pub(crate) fn classification(&self, outcome: &'static str) {
+        self.update(|row| row.classification_outcome = Some(outcome.into()));
+    }
+
     pub(crate) fn auxiliary_purpose(&self, kind: &'static str) {
         self.update(|row| row.kind = Some(kind.into()));
     }

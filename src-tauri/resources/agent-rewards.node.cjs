@@ -17,6 +17,37 @@ const campaign = {
   endAt: Date.UTC(2026, 10, 6, 2),
   benefit: { amount: 100 },
 };
+test("Qoder reads an expired browser grant's identity without refreshing or checking rewards", async (t) => {
+  const fs = require("node:fs/promises"),
+    os = require("node:os"),
+    path = require("node:path");
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "varyai-qoder-identity-"),
+  );
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("unexpected network request");
+  });
+  const file = path.join(root, "qoder-auth.json");
+  const stored = JSON.stringify({
+    account: {
+      uid: "synthetic-user",
+      token: "synthetic-token",
+      refreshToken: "synthetic-refresh-token",
+      expiresAt: 1,
+      label: "Synthetic Qoder",
+    },
+  });
+  await fs.writeFile(file, stored);
+  const result = await run({ app: "qoder", mode: "identity", directory: root });
+  assert.equal(result.outcome, "not_checked");
+  assert.match(result.accountId, /^[a-f0-9]{64}$/);
+  assert.equal(result.accountId, result.browserAccountId);
+  assert.equal(result.source, "browser");
+  assert.ok(!JSON.stringify(result).includes("synthetic-token"));
+  assert.equal(request.mock.callCount(), 0);
+  assert.equal(await fs.readFile(file, "utf8"), stored);
+});
 test("Qoder native credentials use the installed encrypted account without rotating its refresh token", async () => {
   const fs = require("node:fs/promises"),
     os = require("node:os"),
@@ -91,6 +122,14 @@ test("Qoder native credentials use the installed encrypted account without rotat
     });
     assert.equal(primary.source, "native");
     assert.notEqual(primary.accountId, primary.browserAccountId);
+    const identity = await run({
+      app: "qoder",
+      mode: "identity",
+      native: { file, password },
+      directory: root,
+    });
+    assert.equal(identity.accountId, primary.accountId);
+    assert.equal(identity.outcome, "not_checked");
     const backup = await run({
       app: "qoder",
       mode: "claim",
@@ -447,7 +486,7 @@ test("Qoder device authorization is independent, cancellable and never claims", 
   }
 });
 
-test("ZCode reads native profile names across providers without exposing token claims", async () => {
+test("ZCode reads native profile names across providers without exposing token claims", async (t) => {
   const fs = require("node:fs/promises");
   const os = require("node:os");
   const path = require("node:path");
@@ -455,6 +494,9 @@ test("ZCode reads native profile names across providers without exposing token c
     path.join(os.tmpdir(), "varyai-zcode-profile-"),
   );
   const originalHome = os.homedir;
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("unexpected network request");
+  });
   const directory = path.join(root, ".zcode/v2");
   try {
     os.homedir = () => root;
@@ -516,7 +558,13 @@ test("ZCode reads native profile names across providers without exposing token c
       else assert.match(result.label, /^ZCode · [a-f0-9]{6}$/);
       assert.ok(!JSON.stringify(result).includes("private-token-claim"));
       assert.ok(!JSON.stringify(result).includes(token));
+      const identity = await run({ app: "zcode", mode: "identity" });
+      assert.equal(identity.outcome, "not_checked");
+      assert.equal(identity.accountId, result.accountId);
+      assert.equal(identity.label, result.label);
+      assert.ok(!JSON.stringify(identity).includes(token));
     }
+    assert.equal(request.mock.callCount(), 0);
   } finally {
     os.homedir = originalHome;
     await fs.rm(root, { recursive: true, force: true });

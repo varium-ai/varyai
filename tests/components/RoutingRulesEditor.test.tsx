@@ -53,6 +53,7 @@ function Fixture({
       <RoutingRulesEditor
         rules={value}
         members={members}
+        providers={[]}
         disabled={disabled}
         onChange={setValue}
       />
@@ -151,15 +152,15 @@ describe("the reference implementation routing rule sentences", () => {
     await user.click(
       within(row).getByRole("button", { name: "routingPage.addRuleModel" }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "medium" }));
+    await user.click(screen.getByRole("radio", { name: "medium · relay" }));
     await user.click(
       within(row).getByRole("button", { name: "routingPage.addRuleModel" }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "small" }));
+    await user.click(screen.getByRole("radio", { name: "small · relay" }));
     expect(saved()[0].fallbackMemberIds).toEqual(["c", "b"]);
     await user.click(
       within(row).getByRole("button", {
-        name: "routingPage.removeRuleModel large",
+        name: "routingPage.removeRuleModel large · vendor",
       }),
     );
     expect(saved()[0]).toMatchObject({
@@ -185,6 +186,14 @@ describe("the reference implementation routing rule sentences", () => {
     expect(
       screen.queryByLabelText("intentRouting.description"),
     ).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "intentRouting.pauseMember large · vendor",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: "large · vendor" })).toBeChecked();
+    await user.click(screen.getByRole("radio", { name: "small · relay" }));
+    expect(saved()[0]).toMatchObject({ pause: true, targetMemberId: "b" });
     await user.click(
       screen.getAllByRole("button", { name: "intentRouting.addCondition" })[0],
     );

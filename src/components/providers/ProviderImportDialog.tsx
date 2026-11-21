@@ -449,7 +449,7 @@ export function ProviderImportDialog({
       )}
       <footer className="pv-import-footer">
         <span>{t("providerImport.selected", { count })}</span>
-        <Button variant="ghost" disabled={busy} onClick={onClose}>
+        <Button variant="secondary" disabled={busy} onClick={onClose}>
           {t("common.cancel")}
         </Button>
         <Button

@@ -48,7 +48,16 @@ export function AgentRewardsPanel({
   const auto = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       agentRewardsApi.setAuto(app, id, enabled),
-    onSuccess: update,
+    onSuccess: (value) =>
+      client.setQueryData<AgentRewardStatus>(queryKey, (previous) =>
+        previous?.accountId === value.accountId
+          ? {
+              ...previous,
+              autoEnabled: value.autoEnabled,
+              autoConfigured: value.autoConfigured,
+            }
+          : previous,
+      ),
   });
   const native = useMutation({
     mutationFn: agentRewardsApi.nativeAccount,

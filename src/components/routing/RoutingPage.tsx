@@ -11,7 +11,6 @@ import { liveRoutingSources, routeInProgress } from "./useRoutingFlights";
 import { routingModelLabel } from "@/lib/routingModelLabel";
 import { AccountMask } from "@/components/AccountLabel";
 import { Button } from "@/components/ui/button";
-import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import * as authApi from "@/lib/api/auth";
@@ -116,7 +115,7 @@ export function RoutingPage({
       data-testid="routing-page"
     >
       <header className="row-head rt-page-head">
-        <WorkspacePageHeading title={t("workspaceNav.routing")} />
+        <h1 className="vary-page-title">{t("workspaceNav.routing")}</h1>
         <span
           className={`rt-livedot ${!running || trace.isError ? "off" : ""}`}
           aria-hidden
@@ -203,6 +202,8 @@ export function RoutingPage({
           {shown && !multipleRoutes && (
             <p className="rt-cap" aria-live="polite">
               {t(`routingPage.state.${shown.state}`)}
+              {shown.classificationOutcome &&
+                ` · ${t(`routingPage.classificationOutcome.${shown.classificationOutcome}`)}`}
             </p>
           )}
           <div className="rt-stats">

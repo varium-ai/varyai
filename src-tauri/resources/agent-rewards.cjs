@@ -395,7 +395,11 @@ async function qoderBrowserAccount(input) {
   const store = await readJSON(file, {});
   let account = store.account;
   if (!account?.uid || !account.token) throw failure("sign_in_required");
-  if (account.expiresAt && account.expiresAt < Date.now() + 60000) {
+  if (
+    input.mode !== "identity" &&
+    account.expiresAt &&
+    account.expiresAt < Date.now() + 60000
+  ) {
     if (!account.refreshToken) throw failure("sign_in_required");
     const result = await http(
       QODER,
@@ -580,7 +584,8 @@ async function run(input) {
     ["login_start", "login_poll", "login_cancel", "forget"].includes(input.mode)
   )
     return login(input);
-  if (!["status", "claim"].includes(input.mode)) throw failure("failed");
+  if (!["identity", "status", "claim"].includes(input.mode))
+    throw failure("failed");
   let account;
   try {
     account =
@@ -620,6 +625,7 @@ async function run(input) {
       : null;
   }
   if (account.unavailable) return { ...result, outcome: account.unavailable };
+  if (input.mode === "identity") return { ...result, outcome: "not_checked" };
   if (input.mode === "claim" && input.expectedAccountId !== account.id)
     return { ...result, outcome: "switch_required" };
   let status;

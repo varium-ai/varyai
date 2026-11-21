@@ -356,6 +356,62 @@ describe("IntentRoutingPanel", () => {
     );
   });
 
+  it.each([
+    ["absent", null, 3],
+    [
+      "a separate classifier",
+      { providerId: "provider", modelId: "classifier" },
+      4,
+    ],
+    [
+      "an explicit member",
+      { providerId: "provider", modelId: "fixture-model" },
+      3,
+    ],
+    [
+      "a pattern match",
+      { providerId: "provider", modelId: "matched-model" },
+      3,
+    ],
+    [
+      "the same model at a different supplier",
+      { providerId: "other", modelId: "fixture-model" },
+      4,
+    ],
+  ] as const)(
+    "counts configured models with %s",
+    async (_, classifierTarget, expected) => {
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [
+          {
+            ...group,
+            classifierTarget,
+            intentRecognitionEnabled: classifierTarget !== null,
+            members: [
+              ...group.members,
+              { ...group.members[0], id: "fixed-effort", effort: "high" },
+            ],
+            match: ["matched-*"],
+          },
+        ],
+        matchedMembers: {
+          [group.id]: [
+            { id: "matched", providerId: "provider", modelId: "matched-model" },
+          ],
+        },
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      mount();
+      const row = (
+        await screen.findByRole("heading", { name: group.name })
+      ).closest("tr")!;
+      expect(within(row).getAllByRole("cell")[1]).toHaveTextContent(
+        new RegExp(`^${expected}$`),
+      );
+    },
+  );
+
   it("keeps the member summary readable and opens the editor from it without a native tooltip", async () => {
     mount();
     const table = await screen.findByRole("table", {
@@ -1451,9 +1507,14 @@ describe("IntentRoutingPanel", () => {
       screen.getByRole("button", { name: "routingPage.intentToldBy" }),
     );
     await user.click(screen.getByRole("radio", { name: /Classify/ }));
+    expect(
+      screen.getByRole("spinbutton", { name: "intentRouting.budget" }),
+    ).toHaveValue(10000);
+    expect(screen.getByText("intentRouting.trialTitle")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(saved.classificationBudgetMs).toBe(10000);
     expect(saved.classifierTarget).toEqual({
       providerId: "classifier",
       modelId: "classify",
@@ -1599,6 +1660,8 @@ describe("IntentRoutingPanel", () => {
       const savedGroup: RoutingGroup = {
         ...group,
         template: explicit ? "templateSmart" : undefined,
+        intentRecognitionEnabled: true,
+        classifierTarget: { providerId: "provider", modelId: "strong" },
         members: [unused, strong, easy],
         defaultMemberId: strong.id,
         fallbackMemberIds: [unused.id, easy.id],
@@ -1625,21 +1688,32 @@ describe("IntentRoutingPanel", () => {
           },
         ],
       };
-      vi.mocked(intentRoutingApi.list).mockResolvedValue({
-        groups: [savedGroup],
+      let storedGroup = savedGroup;
+      vi.mocked(intentRoutingApi.list).mockImplementation(async () => ({
+        groups: [storedGroup],
         autoCreate: false,
         omittedGroups: 0,
+      }));
+      vi.mocked(intentRoutingApi.save).mockImplementationOnce(async (value) => {
+        storedGroup = { ...value, revision: value.revision + 1 };
+        return storedGroup;
       });
       mount();
       const user = userEvent.setup();
       const open = async () =>
         user.click(await screen.findByRole("button", { name: "common.edit" }));
       await open();
+      const deadline = screen.getByRole("spinbutton", {
+        name: "intentRouting.budget",
+      });
+      expect(deadline).toHaveValue(2000);
+      fireEvent.change(deadline, { target: { value: "4500" } });
       await user.click(screen.getByRole("button", { name: "common.save" }));
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
           template: "templateSmart",
+          classificationBudgetMs: 4500,
           members: [strong, easy],
           defaultMemberId: strong.id,
           fallbackMemberIds: [easy.id],
@@ -1653,6 +1727,11 @@ describe("IntentRoutingPanel", () => {
       expect(
         within(editor).getByText("routingPage.templateSmartRules"),
       ).toBeVisible();
+      expect(
+        within(editor).getByRole("spinbutton", {
+          name: "intentRouting.budget",
+        }),
+      ).toHaveValue(4500);
       expect(within(editor).queryByText("intentRouting.members")).toBeNull();
       expect(within(editor).queryByText(/unused/)).toBeNull();
     },
@@ -2222,7 +2301,7 @@ describe("IntentRoutingPanel", () => {
       ),
     );
   });
-  it("saves a rule's selected fallback seats in their click order", async () => {
+  it("searches and scrolls the rule model picker and saves fallbacks in selection order", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [
         {
@@ -2230,6 +2309,8 @@ describe("IntentRoutingPanel", () => {
           members: [
             group.members[0],
             { ...group.members[0], id: "variant", effort: "none" },
+            { ...group.members[0], id: "high-variant", effort: "high" },
+            { ...group.members[0], id: "medium-variant", effort: "medium" },
           ],
         },
       ],
@@ -2239,16 +2320,140 @@ describe("IntentRoutingPanel", () => {
     mount();
     const user = userEvent.setup();
     fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+    fireEvent.click(screen.getByText("intentRouting.advancedSettings"));
+    const rule = screen.getByRole("group", {
+      name: "intentRouting.ruleNumber",
+    });
+    expect(within(rule).getByText("routingPage.ruleConditions")).toBeVisible();
+    expect(
+      within(rule).getByRole("button", {
+        name: /^intentRouting.target fixture-model/,
+      }),
+    ).toBeVisible();
     await user.click(
-      screen.getByRole("button", { name: "routingPage.addRuleModel" }),
+      within(rule).getByRole("button", { name: "routingPage.addRuleModel" }),
+    );
+    expectModelPickerWheelAllowed();
+    const search = screen.getByRole("searchbox", {
+      name: "modelPicker.search",
+    });
+    expect(search).toHaveFocus();
+    await user.type(search, "high");
+    expect(
+      screen.queryByRole("radio", { name: /fixture-model :none/ }),
+    ).toBeNull();
+    await user.click(
+      screen.getByRole("radio", { name: /fixture-model :high/ }),
     );
     await user.click(
-      screen.getByRole("menuitem", { name: "fixture-model :none" }),
+      within(rule).getByRole("button", { name: "routingPage.addRuleModel" }),
+    );
+    await user.click(
+      screen.getByRole("radio", { name: /fixture-model :none/ }),
+    );
+    const fallbacks = within(rule).getAllByRole("button", {
+      name: /^routingPage.ruleFallbackModels /,
+    });
+    expect(fallbacks[0]).toHaveTextContent("fixture-model :high");
+    expect(fallbacks[1]).toHaveTextContent("fixture-model :none");
+    await user.click(fallbacks[0]);
+    expect(
+      screen.getByRole("radio", { name: /fixture-model :high/ }),
+    ).toBeChecked();
+    expect(
+      screen.queryByRole("radio", { name: /fixture-model :none/ }),
+    ).toBeNull();
+    await user.keyboard("{Escape}");
+    expect(fallbacks[0]).toHaveFocus();
+    await user.click(fallbacks[0]);
+    await user.click(
+      screen.getByRole("radio", { name: /fixture-model :medium/ }),
+    );
+    const preferred = within(rule).getByRole("button", {
+      name: /^intentRouting.target fixture-model/,
+    });
+    await user.click(preferred);
+    expect(
+      screen.getByRole("radio", { name: /^fixture-model ·/ }),
+    ).toBeChecked();
+    await user.click(
+      screen.getByRole("radio", { name: /fixture-model :high/ }),
     );
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalled());
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
-    expect(saved.rules[0].fallbackMemberIds).toEqual([saved.members[1].id]);
+    expect(saved.rules[0].targetMemberId).toBe(saved.members[2].id);
+    expect(saved.rules[0].fallbackMemberIds).toEqual([
+      saved.members[3].id,
+      saved.members[1].id,
+    ]);
+  });
+  it("opens rule help by click or keyboard and returns focus on Escape", async () => {
+    mount();
+    const user = userEvent.setup();
+    fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+    fireEvent.click(screen.getByText("intentRouting.advancedSettings"));
+    const help = screen.getByRole("button", { name: "routingPage.ruleHelp" });
+    const add = screen.getByRole("button", { name: "intentRouting.addRule" });
+    expect(help.nextElementSibling).toBe(add);
+    await user.click(help);
+    const explanation = () =>
+      screen.getByRole("dialog", { name: "routingPage.ruleHelp" });
+    expect(explanation()).toHaveTextContent("intentRouting.conditionsHelp");
+    await user.keyboard("{Escape}");
+    expect(help).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(explanation()).toBeVisible();
+  });
+  it("focuses a new custom rule and keeps keyboard reordering available", async () => {
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [
+        {
+          ...group,
+          members: [
+            ...group.members,
+            { ...group.members[0], id: "variant", effort: "high" },
+          ],
+          rules: [{ ...group.rules[0], enabled: false }],
+        },
+      ],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount();
+    const user = userEvent.setup();
+    fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+    fireEvent.click(screen.getByText("intentRouting.advancedSettings"));
+    expect(screen.getByText("routingPage.ruleDisabled")).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "intentRouting.addRule" }),
+    );
+    const [, added] = screen.getAllByRole("group", {
+      name: "intentRouting.ruleNumber",
+    });
+    const description = within(added).getByRole("textbox", {
+      name: "intentRouting.description",
+    });
+    await waitFor(() => expect(description).toHaveFocus());
+    await user.type(description, "Write focused tests");
+    const grip = within(added).getByRole("button", {
+      name: "routingPage.moveRule",
+    });
+    grip.focus();
+    await user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+    const [first] = screen.getAllByRole("group", {
+      name: "intentRouting.ruleNumber",
+    });
+    expect(first).toBe(added);
+    await waitFor(() => expect(grip).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalled());
+    const { rules } = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(rules[0]).toMatchObject({
+      description: "Write focused tests",
+      enabled: true,
+    });
+    expect(rules[1]).toMatchObject({ ...group.rules[0], enabled: false });
   });
   it("recalculates pattern membership in an unsaved draft without adding the matches to its definition", async () => {
     vi.mocked(intentRoutingApi.matchedMembers).mockResolvedValue([
@@ -4264,7 +4469,23 @@ describe("IntentRoutingPanel", () => {
       true,
     );
     expect(
-      await screen.findByText("intentRouting.trialOutcome.timeoutAtLimit 5000"),
+      await screen.findByText("intentRouting.trialOutcome.timeout 5000"),
+    ).toBeInTheDocument();
+
+    const deadline = screen.getByLabelText("intentRouting.budget");
+    expect(deadline).toHaveAttribute("max", "15000");
+    fireEvent.change(deadline, { target: { value: "15000" } });
+    fireEvent.click(consent);
+    fireEvent.click(run);
+    expect(intentRoutingApi.trial).toHaveBeenLastCalledWith(
+      expect.objectContaining({ classificationBudgetMs: 15000 }),
+      "Synthetic task",
+      true,
+    );
+    expect(
+      await screen.findByText(
+        "intentRouting.trialOutcome.timeoutAtLimit 15000",
+      ),
     ).toBeInTheDocument();
   });
 

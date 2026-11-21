@@ -142,6 +142,26 @@ it("keeps the live overview and group editor without request details, history or
   expect(routingTraceApi.history).not.toHaveBeenCalled();
 });
 
+it.each(["timeout", "matched", "no_match"])(
+  "shows live classification outcome %s independently of the request status",
+  async (classificationOutcome) => {
+    vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+      requests: [{ ...route, classificationOutcome }],
+      accounts: [],
+      capacity: 60,
+      running: true,
+      days: [],
+    });
+    show();
+    const stage = screen.getByRole("region", { name: "routingPage.stage" });
+    expect(
+      await within(stage).findByText(
+        `routingPage.state.completed · routingPage.classificationOutcome.${classificationOutcome}`,
+      ),
+    ).toBeVisible();
+  },
+);
+
 it("requests a new group from the toolbar without scrolling the page", async () => {
   const originalScroll = Element.prototype.scrollIntoView;
   const scrollIntoView = vi.fn();

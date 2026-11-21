@@ -11,7 +11,7 @@ Open **Plans / Routing** from the sidebar. Manage independent global connections
 - Create, edit and delete up to 32 groups, each with up to 256 members and 16 intent rules. Removing a member promotes each rule's next surviving target and drops only rules with no targets.
 - Add global providers explicitly in **Models / Providers**, or manually import a supported existing Agent configuration from the add sheet. Startup, catalog reads and proxy refreshes never import saved Agent configurations automatically. Imported references read the source provider's stored configuration; they do not copy managed OAuth tokens or change its live client files. Existing identities, including legacy Codex IDs, remain stable so saved groups and direct-model aliases remain usable. Names or URLs never merge accounts automatically.
 - Group members reference global upstream IDs. The persisted JSON key remains `providerId` for compatibility. Older `client:"codex"` documents remain readable; saving normalizes them to `client:"global"`. The field no longer determines ownership.
-- Choose the default and explicitly approved fallbacks. The planner deduplicates candidates and retains each exact upstream model ID. Classifiers require an explicitly configured Chat Completions API-key upstream.
+- Choose the default and explicitly approved fallbacks. The planner deduplicates candidates and retains each exact upstream model ID. Classifiers support API-key upstreams using Chat Completions, OpenAI Responses, Anthropic Messages or Gemini Native.
 - **Publish to gateway**, followed by **Save**, makes an executable group available through authenticated external access. It does not start the listener, connect an agent or broaden an existing key's allowlist. Existing saved false publication flags stay false. Automatically discovered groups are enabled immediately; they do not need a separate save before entering the authenticated global catalog.
 - The separately authorized Codex switch continues to synchronize executable saved/discovered groups regardless of external publication. Turning off external publication does not remove a group from that Codex menu. Saving with Codex routing off does not activate it.
 
@@ -92,6 +92,10 @@ preset settings. The
 task-classification draft has no separate member or model-order controls: choose
 a task model directly for each rule, or choose the default model when there is
 no automatic task split. Choose the classifier separately in **Intent told by**.
+The **Models** count in the routing group list includes a configured
+classifier when its supplier and model combination is absent from the
+explicit and pattern-matched members. A classifier shared with a task
+member is counted with that member.
 For smart groups with rules, the suggested list and saved group contain the
 rule targets shown in the editor. Reusing the same supplier and model across
 rules counts as one member. The hard-task target becomes the default, and the
@@ -105,9 +109,11 @@ Rule descriptions wrap in full. On narrow forms the model picker sits under
 its rule description.
 Select the information icon beside the classifier to read about task text and
 potential charges. Press Escape to close the explanation.
-The other three templates prefill up to three model members. The member list
-itself shows the starting order. Drag the grip at the left of a row to move it,
-or focus the grip and press Alt+↑/↓. The move buttons are also available. Escape
+The other three templates prefill up to three model members. The numbered list
+shows their priority during creation and editing, including for capability
+presets saved before the template key was stored. Drag the grip at the left
+of a row to move it, or focus the grip and press Alt+↑/↓. The move buttons
+are also available. Escape
 cancels an active drag without closing the editor. **Add model** appends another
 eligible model, including another model from the same provider, without
 rearranging existing members. The three-model
@@ -133,8 +139,8 @@ one model per supplier.
   primary order. Other members can still serve as backups. If catalog prices
   do not identify a cheaper model, the draft has no automatic task split.
   Automatic suggestions skip the Codex automatic approval review model.
-  Use a model that serves Chat Completions when customizing the intent
-  classifier in a saved group.
+  Set the classification deadline and test the selected intent model in
+  the same editor. New drafts use a 10,000 ms deadline.
 - **Most capable first.** The initial list follows the template's recommendation.
   Replacing a model keeps its position. Select **Apply recommended order** to
   rank the current members again.
@@ -142,8 +148,9 @@ one model per supplier.
   standard, and efficiency lines. Within a family and tier, known editions
   and numeric versions set the order. Across families, catalog metadata
   sets the order rather than a benchmark score. Unknown names remain neutral,
-  and models outside the template catalog go last. The action makes no model
-  requests. Adjust the list before saving. The first member becomes the
+  and models outside the template catalog go last. Tied models follow the
+  catalog order each time the recommendation is applied. The action makes
+  no model requests. Adjust the list before saving. The first member becomes the
   default and the rest become fallbacks in order.
 - **Fastest first.** Choose models whose outputs you can use. Recent time to
   first content and output speed drive new selections. Without measurements,
@@ -159,6 +166,15 @@ one model per supplier.
   request priority.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
+
+In **Advanced settings → Rules**, select the information icon to see how match
+conditions work. Select **Add rule** beside it to start editing a rule. Each
+rule shows its preferred member and the fallback models in the order they will
+be tried. A pause rule shows the member it pauses. Select a model or
+**Add fallback** to open the same searchable picker used by the templates.
+Search by model name, model ID or supplier, and scroll within the list.
+Drag a rule by its grip or press Alt+↑/↓ while the grip has focus to
+change rule priority. The rule's action menu also provides move controls.
 
 The editor and tray no longer expose a scheduling selector. Previously stored
 retired strategy values remain readable and normalize to **In order**.
@@ -212,7 +228,7 @@ Automatic groups and saved groups without a scheduler value use **In order**.
 The runtime supports two scheduling modes plus optional expiry sorting:
 
 - **In order:** try the configured default and approved fallbacks in order (used by **Strong models for hard tasks, cheaper models for easy tasks**, **Most capable first**, **Expiring allowance first**, and **Custom**).
-- **Speed first (`fastest`):** compare streamed first-content latency plus the estimated time to write 200 tokens (used by **Fastest first**). Output rate excludes hidden reasoning; buffered bursts and non-streaming replies do not manufacture a speed. Ten-percent bands retain configured order. Every fifth selection with both measured and unmeasured awake routes puts an unmeasured route first, rotating probes. These are ordinary user requests, not extra inference calls.
+- **Speed first (`fastest`):** compare streamed first-content latency plus the estimated time to write 200 tokens (used by **Fastest first**). Output rate excludes hidden reasoning. Buffered bursts and non-streaming replies provide no output rate. Ten-percent bands retain configured order. Every fifth eligible selection rotates a route lacking a first-content measurement, or lacking an output-rate measurement when another candidate has one, to the front. These probes use ordinary user requests. Measurements belong to the exact upstream and model. A test of one account supplies measurements for that account.
 
 Both modes retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
 
@@ -267,15 +283,21 @@ This operation makes no network calls. It does not classify arbitrary user messa
 
 ## Network classification trial
 
-In **Advanced settings** for a Custom draft or saved group, configure a Chat Completions API-key classifier, enter synthetic task text, review the displayed provider/model and check outbound consent before running. The call may incur charges. Saving never sends text. Editing group fields or test text revokes consent and invalidates late results.
+Open **Live classification trial** under the intent model in the hard/easy template, or under **Advanced settings** in a Custom group. Select an API-key classifier, enter synthetic task text, review the displayed provider/model and check outbound consent before running. The call may incur charges. Saving never sends text. Editing group fields or test text revokes consent and invalidates late results.
 
-The trial uses the draft's **Classification budget (ms)** under **Advanced classifier settings**. New drafts start at 2,000 ms. If the trial times out, raise the deadline up to 5,000 ms or select a faster classifier. The group uses the same deadline during live classification after saving.
+The trial and live routing use the group's **Classification budget (ms)**. New hard/easy drafts start at 10,000 ms and new Custom drafts start at 2,000 ms. Saved groups keep their configured deadline. If a trial times out, raise the deadline up to 15,000 ms or select a faster classifier. Gemini 3 classifiers use their lowest declared native thinking level to reduce classification latency. During live routing, the stage displays whether classification matched, timed out, or produced another outcome. The routing trace records the fixed outcome without storing task text or model output.
 
 Only test text and enabled rule descriptions are sent with the classifier's own credentials. The trial never reads conversation history, activates routing, switches accounts, changes client files or forwards tasks. Official/OAuth task members may appear in the proposed plan: this is not transport readiness validation. The offline validator remains unchanged.
 
-Independent privacy inspection runs even if business auditing is disabled. Enabled audit/allow rules become redaction rules; block rules remain blocking. Both text and descriptions are inspected. Redaction precedes Unicode-safe truncation to 4,000 scalar values (first 3,000 and last 1,000). Limits: 32 KiB payload, 64 KiB response, 4 KiB classification content, four concurrent trials and the configured 500–5,000 ms deadline including preparation. No redirects or retries. Detection cannot guarantee finding every secret; use synthetic examples.
+Independent privacy inspection runs even if business auditing is disabled. Enabled audit/allow rules become redaction rules; block rules remain blocking. Both text and descriptions are inspected. Redaction precedes Unicode-safe truncation to 4,000 scalar values (first 3,000 and last 1,000). Limits: 32 KiB payload, 64 KiB response, 4 KiB classification content, four concurrent trials and the configured 500–15,000 ms deadline including preparation. No redirects or retries. Detection cannot guarantee finding every secret; use synthetic examples.
 
 The network classifier accepts a single `{ "intentId": "enabled-rule-id" }` or `{ "intentId": null }` object, with optional surrounding Markdown code fences. Unknown IDs, extra fields, explanatory prose, tool calls, refusals and truncated responses are rejected. Errors, timeout and privacy rejection return the default candidate order and a fixed reason, never raw responses. VaryAI does not persist trial text or results.
+
+For eligible new turns, live classification sends the latest user text and
+the eligible rule descriptions. Completed, visible Responses reasoning
+summaries from prior turns are omitted from the classifier input. Opaque
+continuations still use their existing ownership. The classifier response
+may include null tool fields or an empty tool-call array.
 
 The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
 

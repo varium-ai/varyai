@@ -471,24 +471,47 @@ it.each([
   },
 );
 
-it("captures another single Agent directly without entering multi-agent mode", async () => {
-  mount("claude");
+it.each(APP_IDS.filter((app) => app !== "doubaowork"))(
+  "captures %s directly through the application single-Agent picker",
+  async (app) => {
+    mount("claude");
+    fireEvent.click(await screen.findByRole("combobox"));
+    fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+    const picker = screen.getByRole("combobox", {
+      name: zh.profiles.bundle.singleAgent,
+    });
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual(
+      APP_IDS.map((app) => zh.apps[app]),
+    );
+    expect(
+      screen.getByRole("option", { name: zh.apps.doubaowork }),
+    ).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByRole("option", { name: zh.apps[app] }));
+    expect(
+      screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
+    ).not.toBeChecked();
+    fireEvent.change(screen.getByPlaceholderText(zh.profiles.namePlaceholder), {
+      target: { value: "Single Pi fixture" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
+    await waitFor(() =>
+      expect(profilesApi.captureBundle).toHaveBeenCalledWith(
+        "Single Pi fixture",
+        [app],
+      ),
+    );
+  },
+);
+
+it("keeps the compact profile picker native and unavailable Agents disabled", async () => {
+  mount("claude", APP_IDS, true);
   fireEvent.click(await screen.findByRole("combobox"));
   fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
-  fireEvent.change(screen.getByLabelText(zh.profiles.bundle.singleAgent), {
-    target: { value: "pi" },
-  });
+  const select = screen.getByLabelText(zh.profiles.bundle.singleAgent);
+  expect(select).toBeInstanceOf(HTMLSelectElement);
   expect(
-    screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
-  ).not.toBeChecked();
-  fireEvent.change(screen.getByPlaceholderText(zh.profiles.namePlaceholder), {
-    target: { value: "Single Pi fixture" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
-  await waitFor(() =>
-    expect(profilesApi.captureBundle).toHaveBeenCalledWith(
-      "Single Pi fixture",
-      ["pi"],
-    ),
-  );
+    screen.getByRole("option", { name: zh.apps.doubaowork }),
+  ).toBeDisabled();
 });

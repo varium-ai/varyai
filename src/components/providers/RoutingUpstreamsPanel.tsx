@@ -12,7 +12,6 @@ import {
 } from "@/lib/api/routingUpstreams";
 import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { Button } from "@/components/ui/button";
-import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { CopyAgentSetupButton } from "@/components/CopyAgentSetupButton";
 import { SearchInput } from "@/components/ui/search-input";
 import { SearchEmptyState } from "@/components/ui/search-empty-state";
@@ -1128,10 +1127,12 @@ export function RoutingUpstreamsPanel({
     >
       {!adding && (
         <header className="pv-page-head">
-          <WorkspacePageHeading
-            title={t("modelProviders.title")}
-            description={t("modelProviders.description")}
-          />
+          <div className="pv-page-copy">
+            <h1 className="mp-page-heading vary-page-title">
+              {t("modelProviders.title")}
+            </h1>
+            <p className="mp-lead">{t("modelProviders.description")}</p>
+          </div>
           <div className="pv-page-actions">
             <CopyAgentSetupButton
               labelKey="onboarding.copyForAgent"

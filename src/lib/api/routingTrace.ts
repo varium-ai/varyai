@@ -41,6 +41,7 @@ export interface RoutingTrace {
   model: string;
   groupName: string;
   strategy: string;
+  classificationOutcome?: string;
   candidates: RoutingCandidate[];
   steps: RoutingTraceStep[];
   state: "routing" | "streaming" | "completed" | "failed" | "cancelled";

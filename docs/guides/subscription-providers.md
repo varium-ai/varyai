@@ -19,6 +19,11 @@ the pending flow. A completed account opens its provider editor with that accoun
 selected. An existing subscription tile adds an account to its existing provider;
 it does not open the editor before authentication or create another provider.
 
+During first-run setup, confirmed sign-in starts model discovery for that
+account while the account list, quota and Agent model catalog refresh in the
+background. If discovery returns an error or an empty catalog, use **Retry**
+to query the same authenticated account again.
+
 - **Claude** uses an installed `claude` executable. Browser sign-in runs
   `claude auth login --claudeai` in an isolated configuration directory. Local
   credential import copies the original sign-in without editing its source.

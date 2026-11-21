@@ -2,22 +2,62 @@
 
 ## Routed security errors (macOS and Windows)
 
-| Agent entries | Runtime and UI | Verification |
-| --- | --- | --- |
+| Agent entries                                                                                                                             | Runtime and UI                                                                                                                    | Verification                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | DeepSeek Harness, Pi, Grok Build, OpenCode, OpenClaw, Hermes, Kimi, Qwen, ZCode, Qoder, T3 Code, TRAE, TRAE Intl, WorkBuddy, WorkBuddy AI | Authenticated routing-group requests only; error envelope follows the wire protocol. Routing history records the returned status. | Synthetic protocol projections; individual native clients pending |
-| Codex, Claude, Claude Desktop, Gemini | Same contract on routing-group requests; direct routes unchanged | Synthetic protocol projections; native acceptance pending |
-| Doubao Work | Audit-only, no model error projection | Not applicable |
+| Codex, Claude, Claude Desktop, Gemini                                                                                                     | Same contract on routing-group requests; direct routes unchanged                                                                  | Synthetic protocol projections; native acceptance pending         |
+| Doubao Work                                                                                                                               | Audit-only, no model error projection                                                                                             | Not applicable                                                    |
 
 ## Fragmented native Chat restoration (macOS and Windows)
 
-| Agent entry points | Applicable runtime path | Verification |
-| --- | --- | --- |
-| DeepSeek Harness, Pi | Shared native Chat restoration when selected | Pre-fix failures observed on macOS; post-fix native acceptance pending |
-| Codex, Grok Build, OpenCode, OpenClaw, Hermes, Kimi, Qwen, ZCode, Qoder, TRAE, TRAE Intl, WorkBuddy, WorkBuddy AI, T3 Code | Only requests admitted to the native Chat finalizer; no change to other routes | Shared synthetic regression, not individual native acceptance |
-| Claude, Claude Desktop, Gemini | Other native protocols retain existing limits | No new route or UI behavior |
-| Doubao Work | Audit-only | Not a model restoration path |
+| Agent entry points                                                                                                         | Applicable runtime path                                                        | Verification                                                           |
+| -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| DeepSeek Harness, Pi                                                                                                       | Shared native Chat restoration when selected                                   | Pre-fix failures observed on macOS; post-fix native acceptance pending |
+| Codex, Grok Build, OpenCode, OpenClaw, Hermes, Kimi, Qwen, ZCode, Qoder, TRAE, TRAE Intl, WorkBuddy, WorkBuddy AI, T3 Code | Only requests admitted to the native Chat finalizer; no change to other routes | Shared synthetic regression, not individual native acceptance          |
+| Claude, Claude Desktop, Gemini                                                                                             | Other native protocols retain existing limits                                  | No new route or UI behavior                                            |
+| Doubao Work                                                                                                                | Audit-only                                                                     | Not a model restoration path                                           |
 
 Native Chat has no cumulative fragment-count cutoff. Shared HTTP fixtures cover an answer with 2,049 choice records and interleaved reasoning and content exceeding the old text-site cutoff. The rule UI, disabled policy, and platform adapters are unchanged. No Agent gains restoration authority from this change.
+
+## UI consistency and text contrast
+
+Pre-implementation assessment against `APP_IDS`, `AppType`, and the Agent
+connections registry (including both TRAE bridge variants and Doubao Work's
+separate audit entry). The same application-mode renderer runs on macOS and
+Windows. For each row, the Tools heading and existing text use shared
+presentation. VA-12 applies to the existing profile capture picker when offered.
+The gateway protocol menu only selects a connection example. The existing
+availability metadata, native adapters, and runtime commands own behavior.
+
+| Agent ID           | Existing profile picker state      | Verification plan                                       |
+| ------------------ | ---------------------------------- | ------------------------------------------------------- |
+| `claude`           | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `claude-desktop`   | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `codex`            | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `gemini`           | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `grokbuild`        | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `opencode`         | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `openclaw`         | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `hermes`           | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `pi`               | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `workbuddy`        | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `workbuddy-ai`     | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `qoder`            | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `doubaowork`       | Unavailable with existing reason   | Synthetic picker passed; native macOS / Windows pending |
+| `trae`             | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `trae-intl`        | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `kimi`             | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `qwen`             | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `zcode`            | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `deepseek-harness` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `t3code`           | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+
+The application picker fixture verified all 20 displayed entries. Renderer
+regressions exercised capture for each of the 19 available entries and checked
+that Doubao Work was disabled with its existing availability metadata. The
+gateway menu fixture exercised its four protocol examples. See the
+[UI visual consistency verification](ui-visual-consistency.md) for computed
+styles, color measurements and browser coverage.
 
 ## Tray Usage (macOS and Windows)
 
@@ -98,29 +138,28 @@ reproduced in the quota test file by itself. Cargo library and full test runs
 passed 7,782 library tests with 21 ignored and 165 integration tests. Browser
 checks used synthetic data. Platform CI and native Agent checks remain pending.
 
-| Agent / entry variants | Ledger adapter / limitation |
-| --- | --- |
-| Claude Code | Gateway and Claude session importer |
-| Claude Desktop | Recorded gateway calls; not a full desktop chat history |
-| Codex CLI / Desktop | Gateway and Codex session importer; shared identity |
-| Gemini CLI | Gateway and Gemini session importer |
-| Grok Build | Gateway and Grok session importer |
-| OpenCode | OpenCode session importer |
-| Pi CLI | Pi session importer and recorded gateway calls |
-| OpenClaw | Ledger records only; no new native reader |
-| Hermes | Ledger records only; no new native reader |
-| WorkBuddy CN desktop / CLI | Recorded gateway calls |
-| WorkBuddy International | Recorded gateway calls |
-| Qoder desktop | Recorded gateway calls |
-| Doubao Work | Recorded gateway calls |
-| TRAE CN | Recorded bridge calls |
-| TRAE International | Recorded bridge calls |
-| Kimi CLI / desktop | Recorded gateway calls |
-| Qwen CLI | Recorded gateway calls |
-| ZCode desktop | Recorded gateway calls |
-| DeepSeek Harness | Recorded gateway calls |
-| T3 Code | Ledger records only; no new native reader |
-
+| Agent / entry variants     | Ledger adapter / limitation                             |
+| -------------------------- | ------------------------------------------------------- |
+| Claude Code                | Gateway and Claude session importer                     |
+| Claude Desktop             | Recorded gateway calls; not a full desktop chat history |
+| Codex CLI / Desktop        | Gateway and Codex session importer; shared identity     |
+| Gemini CLI                 | Gateway and Gemini session importer                     |
+| Grok Build                 | Gateway and Grok session importer                       |
+| OpenCode                   | OpenCode session importer                               |
+| Pi CLI                     | Pi session importer and recorded gateway calls          |
+| OpenClaw                   | Ledger records only; no new native reader               |
+| Hermes                     | Ledger records only; no new native reader               |
+| WorkBuddy CN desktop / CLI | Recorded gateway calls                                  |
+| WorkBuddy International    | Recorded gateway calls                                  |
+| Qoder desktop              | Recorded gateway calls                                  |
+| Doubao Work                | Recorded gateway calls                                  |
+| TRAE CN                    | Recorded bridge calls                                   |
+| TRAE International         | Recorded bridge calls                                   |
+| Kimi CLI / desktop         | Recorded gateway calls                                  |
+| Qwen CLI                   | Recorded gateway calls                                  |
+| ZCode desktop              | Recorded gateway calls                                  |
+| DeepSeek Harness           | Recorded gateway calls                                  |
+| T3 Code                    | Ledger records only; no new native reader               |
 
 This is a required implementation and acceptance ledger, not a declaration that every listed feature is supported. Follow the mandatory Agent coverage rules in [AGENTS.md](../../AGENTS.md). Derive the inventory from `src/config/appConfig.tsx`, `AppType` and the connection registries, including native integrations outside the shared `APPS` list.
 
@@ -135,28 +174,28 @@ uses its existing setup and model selection UI. Chat completions and China
 Claude Messages are the upstream protocols. The gateway adapts each consumer's
 protocol and retains the existing routing and security decisions.
 
-| Agent ID | Agent | Entry and native adapter | Native acceptance (macOS / Windows) |
-| --- | --- | --- | --- |
-| `claude` | Claude Code | Routing connection and Messages | Pending / Pending |
-| `claude-desktop` | Claude Desktop | Built-in gateway and Messages | Pending / Pending |
-| `codex` | Codex CLI / Desktop | Shared Codex catalog and Responses | Pending / Pending |
-| `gemini` | Gemini CLI | Routing connection and Gemini native | Pending / Pending |
-| `grokbuild` | Grok Build | Routing connection and Responses | Pending / Pending |
-| `opencode` | OpenCode | Published gateway provider and Chat or native protocol | Pending / Pending |
-| `openclaw` | OpenClaw | Published gateway provider and Chat or native protocol | Pending / Pending |
-| `hermes` | Hermes | Published gateway provider and Chat | Pending / Pending |
-| `pi` | Pi | Published routing provider and Pi wire adapter | Pending / Pending |
-| `workbuddy` | WorkBuddy China desktop / CLI | Native custom model catalog and Chat | Pending / Pending |
-| `workbuddy-ai` | WorkBuddy AI desktop / CLI | Native custom model catalog and Chat | Pending / Pending |
-| `qoder` | Qoder desktop | Native connection and Qoder upstream projection | Pending / Pending |
-| `doubaowork` | Doubao Work | Audit-only native integration. No selectable routing group connection | Missing / Missing |
-| `trae` | TRAE China | Native custom model and Chat bridge | Pending / Pending |
-| `trae-intl` | TRAE International | Native custom model and Chat bridge | Pending / Pending |
-| `kimi` | Kimi CLI / desktop | Native connection and Chat | Pending / Pending |
-| `qwen` | Qwen CLI | Native connection and Chat | Pending / Pending |
-| `zcode` | ZCode desktop | Native connection and gateway protocol projection | Pending / Pending |
-| `deepseek-harness` | DeepSeek Harness | Native connection and Responses or Chat | Pending / Pending |
-| `t3code` | T3 Code | Published gateway provider and Responses | Pending / Pending |
+| Agent ID           | Agent                         | Entry and native adapter                                              | Native acceptance (macOS / Windows) |
+| ------------------ | ----------------------------- | --------------------------------------------------------------------- | ----------------------------------- |
+| `claude`           | Claude Code                   | Routing connection and Messages                                       | Pending / Pending                   |
+| `claude-desktop`   | Claude Desktop                | Built-in gateway and Messages                                         | Pending / Pending                   |
+| `codex`            | Codex CLI / Desktop           | Shared Codex catalog and Responses                                    | Pending / Pending                   |
+| `gemini`           | Gemini CLI                    | Routing connection and Gemini native                                  | Pending / Pending                   |
+| `grokbuild`        | Grok Build                    | Routing connection and Responses                                      | Pending / Pending                   |
+| `opencode`         | OpenCode                      | Published gateway provider and Chat or native protocol                | Pending / Pending                   |
+| `openclaw`         | OpenClaw                      | Published gateway provider and Chat or native protocol                | Pending / Pending                   |
+| `hermes`           | Hermes                        | Published gateway provider and Chat                                   | Pending / Pending                   |
+| `pi`               | Pi                            | Published routing provider and Pi wire adapter                        | Pending / Pending                   |
+| `workbuddy`        | WorkBuddy China desktop / CLI | Native custom model catalog and Chat                                  | Pending / Pending                   |
+| `workbuddy-ai`     | WorkBuddy AI desktop / CLI    | Native custom model catalog and Chat                                  | Pending / Pending                   |
+| `qoder`            | Qoder desktop                 | Native connection and Qoder upstream projection                       | Pending / Pending                   |
+| `doubaowork`       | Doubao Work                   | Audit-only native integration. No selectable routing group connection | Missing / Missing                   |
+| `trae`             | TRAE China                    | Native custom model and Chat bridge                                   | Pending / Pending                   |
+| `trae-intl`        | TRAE International            | Native custom model and Chat bridge                                   | Pending / Pending                   |
+| `kimi`             | Kimi CLI / desktop            | Native connection and Chat                                            | Pending / Pending                   |
+| `qwen`             | Qwen CLI                      | Native connection and Chat                                            | Pending / Pending                   |
+| `zcode`            | ZCode desktop                 | Native connection and gateway protocol projection                     | Pending / Pending                   |
+| `deepseek-harness` | DeepSeek Harness              | Native connection and Responses or Chat                               | Pending / Pending                   |
+| `t3code`           | T3 Code                       | Published gateway provider and Responses                              | Pending / Pending                   |
 
 The renderer fixture covers account binding and catalog discovery for each
 edition. The HTTP fixture captures each edition's upstream path and checks
@@ -300,28 +339,28 @@ point, protocol adapter, or runtime behavior changes. Renderer checks cover
 the template and regular editors; installed Agent tests do not exercise this
 Vary AI editor change.
 
-| Agent ID           | Entry point and adapter                                      | Runtime and UI                                                               | Verification                                      |
-| ------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------- |
-| `claude`           | Claude Code / Messages                                       | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `claude-desktop`   | Claude Desktop / Messages                                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `codex`            | Codex CLI and Desktop / Responses                            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `gemini`           | Gemini CLI / Gemini                                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `grokbuild`        | Grok Build CLI / shared gateway                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `opencode`         | OpenCode / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `openclaw`         | OpenClaw / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `hermes`           | Hermes / shared catalog and gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `pi`               | Pi custom provider / shared gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `workbuddy`        | WorkBuddy China desktop / native bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `workbuddy-ai`     | WorkBuddy international desktop / native bridge              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `qoder`            | Qoder China desktop / native TLS and gateway                 | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `doubaowork`       | Doubao Work / separate native audit connection               | Audit connection only. No global model group projection in the native client | Native audit path outside group execution         |
-| `trae`             | TRAE China / native Chat bridge                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `trae-intl`        | TRAE International / native Chat bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `kimi`             | Kimi Code CLI and desktop / shared gateway                   | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `qwen`             | Qwen Code CLI / shared gateway                               | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `zcode`            | ZCode desktop / native adapter and shared gateway            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `deepseek-harness` | DeepSeek Harness desktop / native adapter and shared gateway | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
-| `t3code`           | T3 Code desktop / managed Codex Responses                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending  |
+| Agent ID           | Entry point and adapter                                      | Runtime and UI                                                               | Verification                                     |
+| ------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------ |
+| `claude`           | Claude Code / Messages                                       | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `claude-desktop`   | Claude Desktop / Messages                                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `codex`            | Codex CLI and Desktop / Responses                            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `gemini`           | Gemini CLI / Gemini                                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `grokbuild`        | Grok Build CLI / shared gateway                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `opencode`         | OpenCode / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `openclaw`         | OpenClaw / shared catalog and gateway                        | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `hermes`           | Hermes / shared catalog and gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `pi`               | Pi custom provider / shared gateway                          | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `workbuddy`        | WorkBuddy China desktop / native bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `workbuddy-ai`     | WorkBuddy international desktop / native bridge              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `qoder`            | Qoder China desktop / native TLS and gateway                 | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `doubaowork`       | Doubao Work / separate native audit connection               | Audit connection only. No global model group projection in the native client | Native audit path outside group execution        |
+| `trae`             | TRAE China / native Chat bridge                              | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `trae-intl`        | TRAE International / native Chat bridge                      | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `kimi`             | Kimi Code CLI and desktop / shared gateway                   | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `qwen`             | Qwen Code CLI / shared gateway                               | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `zcode`            | ZCode desktop / native adapter and shared gateway            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `deepseek-harness` | DeepSeek Harness desktop / native adapter and shared gateway | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `t3code`           | T3 Code desktop / managed Codex Responses                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
 
 The synthetic gateway matrix exercises Messages, Chat, Responses and Gemini
 requests, including native continuations, exact provider and model selection,
@@ -553,28 +592,28 @@ short opaque reference as clients that lack a verified native title reader.
 The reference appears when a route has a session digest. Rate availability
 depends on each provider's usage events and stream timing.
 
-| Agent ID | Existing entry point and adapter | Conversation display | Verification |
-| --- | --- | --- | --- |
-| `claude` | Claude Code CLI | Custom title from exact session match | Renderer passed, native pending |
-| `claude-desktop` | Claude Desktop connection | Short reference | Renderer passed, native pending |
-| `codex` | Codex CLI and desktop connection | Thread title from the state DB or index | Renderer passed, native pending |
-| `gemini` | Gemini CLI | Short reference | Renderer passed, native pending |
-| `grokbuild` | Grok Build CLI | Generated title from exact session match | Renderer passed, native pending |
-| `opencode` | OpenCode connection | Stored title from exact session match | Renderer passed, native pending |
-| `openclaw` | OpenClaw connection | Display name when explicit session metadata matches | Renderer passed, native pending |
-| `hermes` | Hermes CLI | Stored title from exact session match | Renderer passed, native pending |
-| `pi` | Pi CLI provider connection | Explicit session name from exact session match | Renderer passed, native pending |
-| `workbuddy` | WorkBuddy China desktop and CLI | Short reference | Renderer passed, native pending |
-| `workbuddy-ai` | WorkBuddy AI international desktop | Short reference | Renderer passed, native pending |
-| `qoder` | Qoder CN desktop | Short reference | Renderer passed, native pending |
-| `doubaowork` | Dedicated Doubao Work connection | Short reference | Renderer passed, native pending |
-| `trae` | TRAE China connection | Short reference | Renderer passed, native pending |
-| `trae-intl` | TRAE International connection | Short reference | Renderer passed, native pending |
-| `kimi` | Kimi Code CLI and desktop | Short reference | Renderer passed, native pending |
-| `qwen` | Qwen Code CLI | Short reference | Renderer passed, native pending |
-| `zcode` | ZCode desktop | Short reference | Renderer passed, native pending |
-| `deepseek-harness` | DeepSeek Harness desktop | Short reference | Renderer passed, native pending |
-| `t3code` | T3 Code desktop | Short reference | Renderer passed, native pending |
+| Agent ID           | Existing entry point and adapter   | Conversation display                                | Verification                    |
+| ------------------ | ---------------------------------- | --------------------------------------------------- | ------------------------------- |
+| `claude`           | Claude Code CLI                    | Custom title from exact session match               | Renderer passed, native pending |
+| `claude-desktop`   | Claude Desktop connection          | Short reference                                     | Renderer passed, native pending |
+| `codex`            | Codex CLI and desktop connection   | Thread title from the state DB or index             | Renderer passed, native pending |
+| `gemini`           | Gemini CLI                         | Short reference                                     | Renderer passed, native pending |
+| `grokbuild`        | Grok Build CLI                     | Generated title from exact session match            | Renderer passed, native pending |
+| `opencode`         | OpenCode connection                | Stored title from exact session match               | Renderer passed, native pending |
+| `openclaw`         | OpenClaw connection                | Display name when explicit session metadata matches | Renderer passed, native pending |
+| `hermes`           | Hermes CLI                         | Stored title from exact session match               | Renderer passed, native pending |
+| `pi`               | Pi CLI provider connection         | Explicit session name from exact session match      | Renderer passed, native pending |
+| `workbuddy`        | WorkBuddy China desktop and CLI    | Short reference                                     | Renderer passed, native pending |
+| `workbuddy-ai`     | WorkBuddy AI international desktop | Short reference                                     | Renderer passed, native pending |
+| `qoder`            | Qoder CN desktop                   | Short reference                                     | Renderer passed, native pending |
+| `doubaowork`       | Dedicated Doubao Work connection   | Short reference                                     | Renderer passed, native pending |
+| `trae`             | TRAE China connection              | Short reference                                     | Renderer passed, native pending |
+| `trae-intl`        | TRAE International connection      | Short reference                                     | Renderer passed, native pending |
+| `kimi`             | Kimi Code CLI and desktop          | Short reference                                     | Renderer passed, native pending |
+| `qwen`             | Qwen Code CLI                      | Short reference                                     | Renderer passed, native pending |
+| `zcode`            | ZCode desktop                      | Short reference                                     | Renderer passed, native pending |
+| `deepseek-harness` | DeepSeek Harness desktop           | Short reference                                     | Renderer passed, native pending |
+| `t3code`           | T3 Code desktop                    | Short reference                                     | Renderer passed, native pending |
 
 The conversation and rate changes were checked on the working tree over
 `fc0fe3c3`, using macOS 15.3.1 arm64, Node 24.11.0, pnpm 10.12.3 and Rust
@@ -595,12 +634,12 @@ on macOS and Windows remains pending.
 
 ## Local connection recovery (2026-11-18)
 
-| Agents | Credential lifecycle on macOS and Windows | Verification |
-| --- | --- | --- |
-| Claude Desktop | Reapply the shared profile with its current credential, including supported sealed values. An ownership conflict requires a fresh connection. | Local HTTP regression, native acceptance pending |
-| Claude Code, Pi, Gemini, Grok Build, OpenCode, OpenClaw, Hermes, Qwen | Reapply the journaled CLI configuration through the ordinary catalog refresh. | Shared adapter regressions, native acceptance pending |
-| WorkBuddy CN and International, Qoder, Kimi, ZCode, DeepSeek Harness, T3 Code | The same refresh uses each native adapter and its existing credential store. | Shared adapter regressions, native acceptance pending |
-| TRAE CN and International, Codex CLI and Desktop, Doubao Work | Dedicated bridge retry, Codex reconnection and audit launch use their own commands. | Outside the shared receipt rebuild path |
+| Agents                                                                        | Credential lifecycle on macOS and Windows                                                                                                     | Verification                                          |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Claude Desktop                                                                | Reapply the shared profile with its current credential, including supported sealed values. An ownership conflict requires a fresh connection. | Local HTTP regression, native acceptance pending      |
+| Claude Code, Pi, Gemini, Grok Build, OpenCode, OpenClaw, Hermes, Qwen         | Reapply the journaled CLI configuration through the ordinary catalog refresh.                                                                 | Shared adapter regressions, native acceptance pending |
+| WorkBuddy CN and International, Qoder, Kimi, ZCode, DeepSeek Harness, T3 Code | The same refresh uses each native adapter and its existing credential store.                                                                  | Shared adapter regressions, native acceptance pending |
+| TRAE CN and International, Codex CLI and Desktop, Doubao Work                 | Dedicated bridge retry, Codex reconnection and audit launch use their own commands.                                                           | Outside the shared receipt rebuild path               |
 
 The per-Agent inventory below also covers the main and tray connection
 controls on macOS and Windows. After a successful connection write, Claude
@@ -654,28 +693,28 @@ model note, connection switch, and platform adapters use their existing paths.
 The reorder handle uses the leading gutter before the icon for every
 sortable desktop Agent row on macOS and Windows.
 
-| Agent ID | Entry point and adapter | Runtime and UI scope |
-| --- | --- | --- |
-| `claude` | Shared connection, Claude Code CLI | Shared |
-| `claude-desktop` | Shared connection, Claude Desktop | Shared |
-| `codex` | Shared connection, Codex CLI and desktop | Shared |
-| `gemini` | Shared connection, Gemini CLI | Shared |
-| `grokbuild` | Shared connection, Grok Build CLI | Shared |
-| `opencode` | Shared connection, OpenCode | Shared |
-| `openclaw` | Shared connection, OpenClaw | Shared |
-| `hermes` | Shared connection, Hermes CLI | Shared |
-| `pi` | Shared connection, Pi CLI | Shared |
-| `workbuddy` | Shared connection, WorkBuddy China desktop and CLI | Shared |
-| `workbuddy-ai` | Shared connection, WorkBuddy AI international desktop | Shared |
-| `qoder` | Shared connection, Qoder CN desktop | Shared |
-| `doubaowork` | Dedicated Doubao Work connection and launch | Shared styling with existing dedicated controls |
-| `trae` | Dedicated TRAE CN connection | Shared styling with existing dedicated controls |
-| `trae-intl` | Dedicated TRAE International connection | Shared styling with existing dedicated controls |
-| `kimi` | Shared connection, Kimi Code CLI and desktop | Shared |
-| `qwen` | Shared connection, Qwen Code CLI | Shared |
-| `zcode` | Shared connection, ZCode desktop | Shared |
-| `deepseek-harness` | Shared connection, DeepSeek Harness desktop | Shared |
-| `t3code` | Shared connection, T3 Code desktop | Shared |
+| Agent ID           | Entry point and adapter                               | Runtime and UI scope                            |
+| ------------------ | ----------------------------------------------------- | ----------------------------------------------- |
+| `claude`           | Shared connection, Claude Code CLI                    | Shared                                          |
+| `claude-desktop`   | Shared connection, Claude Desktop                     | Shared                                          |
+| `codex`            | Shared connection, Codex CLI and desktop              | Shared                                          |
+| `gemini`           | Shared connection, Gemini CLI                         | Shared                                          |
+| `grokbuild`        | Shared connection, Grok Build CLI                     | Shared                                          |
+| `opencode`         | Shared connection, OpenCode                           | Shared                                          |
+| `openclaw`         | Shared connection, OpenClaw                           | Shared                                          |
+| `hermes`           | Shared connection, Hermes CLI                         | Shared                                          |
+| `pi`               | Shared connection, Pi CLI                             | Shared                                          |
+| `workbuddy`        | Shared connection, WorkBuddy China desktop and CLI    | Shared                                          |
+| `workbuddy-ai`     | Shared connection, WorkBuddy AI international desktop | Shared                                          |
+| `qoder`            | Shared connection, Qoder CN desktop                   | Shared                                          |
+| `doubaowork`       | Dedicated Doubao Work connection and launch           | Shared styling with existing dedicated controls |
+| `trae`             | Dedicated TRAE CN connection                          | Shared styling with existing dedicated controls |
+| `trae-intl`        | Dedicated TRAE International connection               | Shared styling with existing dedicated controls |
+| `kimi`             | Shared connection, Kimi Code CLI and desktop          | Shared                                          |
+| `qwen`             | Shared connection, Qwen Code CLI                      | Shared                                          |
+| `zcode`            | Shared connection, ZCode desktop                      | Shared                                          |
+| `deepseek-harness` | Shared connection, DeepSeek Harness desktop           | Shared                                          |
+| `t3code`           | Shared connection, T3 Code desktop                    | Shared                                          |
 
 All 20 rows rendered with synthetic connection fixtures in Chromium on macOS.
 The preview exercised the light theme at 1160 × 720 and the dark theme at
@@ -1003,28 +1042,28 @@ remain read-only and must never start a client. Protocol, native configuration,
 security policy and forwarding behavior are unaffected. macOS bundle discovery
 and Linux CLI discovery must retain their existing behavior.
 
-| Agent ID | Entry point and native discovery adapter | Runtime / UI assessment | Verification |
-| --- | --- | --- | --- |
-| `claude` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence independently of version execution | Existing CLI regressions; native unverified |
-| `claude-desktop` | Shared presence/version; Windows desktop adapter | Missing Windows discovery; must show installed desktop | Synthetic adapter and native read-only discovery passed; client execution untested |
-| `codex` | Shared presence/version; CLI and Windows desktop adapters | Desktop-only installs must not depend on a CLI | Synthetic adapter and native read-only discovery passed; client execution untested |
-| `gemini` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
-| `grokbuild` | Shared presence; `grok` CLI alias | Retain alias and native installer paths | Existing CLI regressions; native unverified |
-| `opencode` | Shared presence; CLI and installer paths | Currently detected on this Windows host | Existing CLI presence evidence; native execution untested |
-| `openclaw` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
-| `hermes` | Shared presence; Windows CLI/Python candidates | Retain CLI presence | Existing CLI regressions; native unverified |
-| `pi` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
-| `workbuddy` | Shared presence/version; China desktop and CLI | Missing Windows desktop discovery; keep editions separate | Synthetic adapter and native read-only discovery passed; client execution untested |
-| `workbuddy-ai` | Shared presence/version; international desktop | Missing Windows desktop discovery; keep editions separate | Synthetic adapter passed on Windows; native unverified |
-| `qoder` | Shared presence/version; China desktop | Missing Windows desktop discovery; reject international product | Synthetic adapter passed on Windows; native unverified |
-| `doubaowork` | Shared presence/version; desktop | Missing Windows desktop discovery | Synthetic adapter passed on Windows; native unverified |
-| `trae` | Shared presence/version; China desktop | Installed on D:; fixed default roots miss custom installation | Synthetic adapter passed; native read-only discovery passed |
-| `trae-intl` | Shared presence/version; international desktop | Fixed default roots miss custom installation; keep editions separate | Synthetic adapter passed on Windows; native unverified |
-| `kimi` | Shared presence/version; desktop and CLI | Missing Windows desktop discovery; retain CLI fallback | Synthetic adapter passed on Windows; native unverified |
-| `qwen` | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence | Existing CLI regressions; native unverified |
-| `zcode` | Shared presence/version; desktop | Missing Windows desktop discovery | Synthetic adapter passed on Windows; native unverified |
-| `deepseek-harness` | Shared presence/version; desktop | Missing Windows desktop discovery | Synthetic adapter passed on Windows; native unverified |
-| `t3code` | Shared presence/version; stable/alpha/beta desktop | Fixed default roots miss custom installation | Synthetic adapter passed on Windows; native unverified |
+| Agent ID           | Entry point and native discovery adapter                   | Runtime / UI assessment                                              | Verification                                                                       |
+| ------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `claude`           | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence independently of version execution               | Existing CLI regressions; native unverified                                        |
+| `claude-desktop`   | Shared presence/version; Windows desktop adapter           | Missing Windows discovery; must show installed desktop               | Synthetic adapter and native read-only discovery passed; client execution untested |
+| `codex`            | Shared presence/version; CLI and Windows desktop adapters  | Desktop-only installs must not depend on a CLI                       | Synthetic adapter and native read-only discovery passed; client execution untested |
+| `gemini`           | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence                                                  | Existing CLI regressions; native unverified                                        |
+| `grokbuild`        | Shared presence; `grok` CLI alias                          | Retain alias and native installer paths                              | Existing CLI regressions; native unverified                                        |
+| `opencode`         | Shared presence; CLI and installer paths                   | Currently detected on this Windows host                              | Existing CLI presence evidence; native execution untested                          |
+| `openclaw`         | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence                                                  | Existing CLI regressions; native unverified                                        |
+| `hermes`           | Shared presence; Windows CLI/Python candidates             | Retain CLI presence                                                  | Existing CLI regressions; native unverified                                        |
+| `pi`               | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence                                                  | Existing CLI regressions; native unverified                                        |
+| `workbuddy`        | Shared presence/version; China desktop and CLI             | Missing Windows desktop discovery; keep editions separate            | Synthetic adapter and native read-only discovery passed; client execution untested |
+| `workbuddy-ai`     | Shared presence/version; international desktop             | Missing Windows desktop discovery; keep editions separate            | Synthetic adapter passed on Windows; native unverified                             |
+| `qoder`            | Shared presence/version; China desktop                     | Missing Windows desktop discovery; reject international product      | Synthetic adapter passed on Windows; native unverified                             |
+| `doubaowork`       | Shared presence/version; desktop                           | Missing Windows desktop discovery                                    | Synthetic adapter passed on Windows; native unverified                             |
+| `trae`             | Shared presence/version; China desktop                     | Installed on D:; fixed default roots miss custom installation        | Synthetic adapter passed; native read-only discovery passed                        |
+| `trae-intl`        | Shared presence/version; international desktop             | Fixed default roots miss custom installation; keep editions separate | Synthetic adapter passed on Windows; native unverified                             |
+| `kimi`             | Shared presence/version; desktop and CLI                   | Missing Windows desktop discovery; retain CLI fallback               | Synthetic adapter passed on Windows; native unverified                             |
+| `qwen`             | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence                                                  | Existing CLI regressions; native unverified                                        |
+| `zcode`            | Shared presence/version; desktop                           | Missing Windows desktop discovery                                    | Synthetic adapter passed on Windows; native unverified                             |
+| `deepseek-harness` | Shared presence/version; desktop                           | Missing Windows desktop discovery                                    | Synthetic adapter passed on Windows; native unverified                             |
+| `t3code`           | Shared presence/version; stable/alpha/beta desktop         | Fixed default roots miss custom installation                         | Synthetic adapter passed on Windows; native unverified                             |
 
 Implementation, comparison sources and check results are recorded in
 [the Windows discovery report](2026-11-18-windows-agent-detection.md).
@@ -1061,6 +1100,7 @@ change does not add native credential support. Verification is recorded in
 | `zcode`            | Shared reward panel; separate plan adapter          | Unaffected                                                                                                | Existing regressions; no native retest                                                                                    |
 | `deepseek-harness` | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
 | `t3code`           | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
+
 ## Agent status-line restart feedback and update verification recovery
 
 Updated before implementation on 2026-11-18 after the user identified the exact
@@ -1091,28 +1131,28 @@ encountered sandbox socket restrictions. Its retry and the full `cargo test`
 run stopped with insufficient disk space. Native WebView acceptance remains
 pending on macOS and Windows.
 
-| Agent ID | Entry point and adapter | Runtime and UI | Verification |
-| --- | --- | --- | --- |
-| `claude` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `claude-desktop` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `codex` | macOS/Windows native restart phase mapping; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `gemini` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `grokbuild` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `opencode` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `openclaw` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `hermes` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `pi` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `workbuddy` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `workbuddy-ai` | macOS/Windows native restart phase mapping; desktop version observation only (no update feed) | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `qoder` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `doubaowork` | Dedicated audit launcher on macOS/Windows; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | The launcher retains its own guidance. The row has no generic restart button. | Launcher and active connection UI covered by synthetic tests; native unverified for this change |
-| `trae` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `trae-intl` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `kimi` | macOS/Windows native restart phase mapping; CLI version-only, macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `qwen` | Existing session/service adapter; no desktop restart; CLI version observer | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `zcode` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `deepseek-harness` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
-| `t3code` | Existing adapter; no desktop restart; desktop version observation only (no update feed) | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified |
+| Agent ID           | Entry point and adapter                                                                                                                         | Runtime and UI                                                                      | Verification                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `claude`           | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `claude-desktop`   | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `codex`            | macOS/Windows native restart phase mapping; CLI version observer                                                                                | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `gemini`           | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `grokbuild`        | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `opencode`         | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `openclaw`         | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `hermes`           | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `pi`               | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `workbuddy`        | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `workbuddy-ai`     | macOS/Windows native restart phase mapping; desktop version observation only (no update feed)                                                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `qoder`            | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `doubaowork`       | Dedicated audit launcher on macOS/Windows; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                    | The launcher retains its own guidance. The row has no generic restart button.       | Launcher and active connection UI covered by synthetic tests; native unverified for this change |
+| `trae`             | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `trae-intl`        | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `kimi`             | macOS/Windows native restart phase mapping; CLI version-only, macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `qwen`             | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `zcode`            | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `deepseek-harness` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `t3code`           | Existing adapter; no desktop restart; desktop version observation only (no update feed)                                                         | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
 
 See [status-line feedback verification](2026-11-18-agent-status-line-feedback.md) for the latest placement checks; [feedback and update verification](2026-11-18-agent-feedback-and-updates.md) records the unchanged native and update paths.
 
@@ -1128,28 +1168,28 @@ toast in the main and compact/tray views. Failures of other operations remain er
 All four runtime languages are updated. Native process handling, configuration,
 protocol adapters, requests and responses are unchanged on every platform.
 
-| Agent ID | Entry point and adapter | Runtime and UI | Verification |
-| --- | --- | --- | --- |
-| `claude` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `claude-desktop` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `codex` | Existing Codex desktop/CLI and app-server adapters | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained; CLI/app-server behavior retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `gemini` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `grokbuild` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `opencode` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `openclaw` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `hermes` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `pi` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `workbuddy` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `workbuddy-ai` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `qoder` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `doubaowork` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `trae` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `trae-intl` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `kimi` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `qwen` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
-| `zcode` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `deepseek-harness` | Existing desktop restart/native adapter | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
-| `t3code` | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained | Inventory and existing component suite passed; native unverified |
+| Agent ID           | Entry point and adapter                                                | Runtime and UI                                                                                                                           | Verification                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `claude`           | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `claude-desktop`   | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `codex`            | Existing Codex desktop/CLI and app-server adapters                     | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained; CLI/app-server behavior retained | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `gemini`           | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `grokbuild`        | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `opencode`         | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `openclaw`         | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `hermes`           | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `pi`               | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `workbuddy`        | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `workbuddy-ai`     | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `qoder`            | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `doubaowork`       | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `trae`             | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `trae-intl`        | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `kimi`             | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `qwen`             | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
+| `zcode`            | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `deepseek-harness` | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `t3code`           | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
 
 See [restart guidance verification](2026-11-18-restart-guidance.md) for results
 and native acceptance limits.
@@ -1169,28 +1209,28 @@ model values, native error text, credentials and request content are excluded.
 No protocol conversion or native configuration behavior is changed. Shared Rust
 logic applies on macOS, Windows and Linux where the existing adapter is supported.
 
-| Agent ID | Entry point and adapter | Runtime and UI | Verification |
-| --- | --- | --- | --- |
-| `claude` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `claude-desktop` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `codex` | Codex CLI/desktop connection adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `gemini` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `grokbuild` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `opencode` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `openclaw` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `hermes` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `pi` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `workbuddy` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `workbuddy-ai` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `qoder` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `doubaowork` | Separate Doubao takeover adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `trae` | Separate TRAE edition bridge; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `trae-intl` | Separate TRAE edition bridge; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `kimi` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `qwen` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `zcode` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `deepseek-harness` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
-| `t3code` | Shared connection/native adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| Agent ID           | Entry point and adapter                                 | Runtime and UI                                 | Verification                                                        |
+| ------------------ | ------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------- |
+| `claude`           | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `claude-desktop`   | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `codex`            | Codex CLI/desktop connection adapter; existing controls | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `gemini`           | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `grokbuild`        | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `opencode`         | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `openclaw`         | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `hermes`           | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `pi`               | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `workbuddy`        | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `workbuddy-ai`     | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `qoder`            | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `doubaowork`       | Separate Doubao takeover adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `trae`             | Separate TRAE edition bridge; existing controls         | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `trae-intl`        | Separate TRAE edition bridge; existing controls         | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `kimi`             | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `qwen`             | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `zcode`            | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `deepseek-harness` | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `t3code`           | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
 
 Application export uses the actual device log directory, a blocking worker and a
 private same-directory temporary destination. Publishing happens only after a
@@ -1220,28 +1260,28 @@ validation, restoration, account binding and response semantics remain mandatory
 The matrix distinguishes applicable Responses transports from protocols without
 Responses item references; no native acceptance is implied by shared routing.
 
-| Agent ID | Entry point and adapter | Runtime and UI state | Verification |
-| --- | --- | --- | --- |
-| `claude` | Messages CLI | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `claude-desktop` | Messages desktop | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `codex` | Native and managed Responses; CLI and desktop | Official filtering and named-item recovery; existing picker | Native/managed HTTP and reversible restoration passed (macOS); CLI/desktop self-tests unverified |
-| `gemini` | Gemini CLI | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `grokbuild` | Provider-selected CLI protocol | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
-| `opencode` | Provider-selected Responses/Chat/Messages | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
-| `openclaw` | Provider-selected Responses/Chat/Messages | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
-| `hermes` | Chat CLI | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `pi` | Provider-selected protocol; CLI | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
-| `workbuddy` | Chat/native; China desktop | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `workbuddy-ai` | Chat/native; international desktop | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `qoder` | Native custom Responses and shared connection; desktop | Shared named-item recovery; saved-key authentication unchanged; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified |
-| `doubaowork` | Separate native desktop integration | No Responses routing adapter; native protocol/UI unchanged | Not applicable to named Responses replay; native unverified |
-| `trae` | Native Chat/Responses; China edition | Native/shared Responses recovery; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified |
-| `trae-intl` | Native Chat; international edition | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified |
-| `kimi` | Native provider Responses and shared connection; CLI/desktop | Shared named-item recovery; native projection/UI unchanged | Shared/native-adapter HTTP passed (macOS); native unverified |
-| `qwen` | Native provider Responses/Chat and shared connection; CLI | Shared named-item recovery; native `/v1` suffix and UI preserved | Shared/native-adapter HTTP passed (macOS); native unverified |
-| `zcode` | Native provider Responses and shared connection; desktop | Shared named-item recovery; native projection/UI unchanged | Shared/native-adapter HTTP passed (macOS); native unverified |
-| `deepseek-harness` | Native/shared provider-selected Responses/Chat/Messages | Native/shared Responses recovery; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified |
-| `t3code` | Responses through managed Codex; desktop | Responses refusal recovery where this adapter uses Responses; existing picker | Shared Responses HTTP passed (macOS); native unverified |
+| Agent ID           | Entry point and adapter                                      | Runtime and UI state                                                            | Verification                                                                                     |
+| ------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `claude`           | Messages CLI                                                 | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `claude-desktop`   | Messages desktop                                             | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `codex`            | Native and managed Responses; CLI and desktop                | Official filtering and named-item recovery; existing picker                     | Native/managed HTTP and reversible restoration passed (macOS); CLI/desktop self-tests unverified |
+| `gemini`           | Gemini CLI                                                   | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `grokbuild`        | Provider-selected CLI protocol                               | Responses refusal recovery where this adapter uses Responses; existing picker   | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `opencode`         | Provider-selected Responses/Chat/Messages                    | Responses refusal recovery where this adapter uses Responses; existing picker   | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `openclaw`         | Provider-selected Responses/Chat/Messages                    | Responses refusal recovery where this adapter uses Responses; existing picker   | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `hermes`           | Chat CLI                                                     | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `pi`               | Provider-selected protocol; CLI                              | Responses refusal recovery where this adapter uses Responses; existing picker   | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `workbuddy`        | Chat/native; China desktop                                   | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `workbuddy-ai`     | Chat/native; international desktop                           | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `qoder`            | Native custom Responses and shared connection; desktop       | Shared named-item recovery; saved-key authentication unchanged; existing picker | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `doubaowork`       | Separate native desktop integration                          | No Responses routing adapter; native protocol/UI unchanged                      | Not applicable to named Responses replay; native unverified                                      |
+| `trae`             | Native Chat/Responses; China edition                         | Native/shared Responses recovery; existing picker                               | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `trae-intl`        | Native Chat; international edition                           | No Responses item-reference replay on native wire; preserve existing adapter/UI | Shared Responses HTTP passed (macOS); native unverified                                          |
+| `kimi`             | Native provider Responses and shared connection; CLI/desktop | Shared named-item recovery; native projection/UI unchanged                      | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `qwen`             | Native provider Responses/Chat and shared connection; CLI    | Shared named-item recovery; native `/v1` suffix and UI preserved                | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `zcode`            | Native provider Responses and shared connection; desktop     | Shared named-item recovery; native projection/UI unchanged                      | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `deepseek-harness` | Native/shared provider-selected Responses/Chat/Messages      | Native/shared Responses recovery; existing picker                               | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `t3code`           | Responses through managed Codex; desktop                     | Responses refusal recovery where this adapter uses Responses; existing picker   | Shared Responses HTTP passed (macOS); native unverified                                          |
 
 The independent native HTTP send adapter is also covered: `kimi`, `qwen`,
 `zcode`, `deepseek-harness`, TRAE China and Qoder custom Responses routes use the
@@ -1279,28 +1319,28 @@ redaction), tool verdicts, exact risk levels, and unsupported historical values.
 Queries and returned event records must remain unchanged. Native client self-tests
 and Windows/Linux runtime acceptance remain unverified.
 
-| Agent ID | Entry point | Protocol/native adapters and runtime | UI state | Verification |
-| --- | --- | --- | --- | --- |
-| `claude` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `claude-desktop` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `codex` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `gemini` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `grokbuild` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `opencode` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `openclaw` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `hermes` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `pi` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `workbuddy` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `workbuddy-ai` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `qoder` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `doubaowork` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `trae` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `trae-intl` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `kimi` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `qwen` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `zcode` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| Agent ID           | Entry point                 | Protocol/native adapters and runtime                 | UI state                                                 | Verification                              |
+| ------------------ | --------------------------- | ---------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------- |
+| `claude`           | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `claude-desktop`   | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `codex`            | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `gemini`           | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `grokbuild`        | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `opencode`         | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `openclaw`         | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `hermes`           | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `pi`               | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `workbuddy`        | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `workbuddy-ai`     | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `qoder`            | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `doubaowork`       | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `trae`             | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `trae-intl`        | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `kimi`             | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `qwen`             | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `zcode`            | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
 | `deepseek-harness` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
-| `t3code` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `t3code`           | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
 
 Verification on 2026-11-17 uses the working-tree changes to `TrayPanel.tsx`,
 `tray-panel.css`, `tests/components/TrayPanel.test.tsx` and this ledger over
@@ -1358,28 +1398,28 @@ request logs, manual-sync visibility and the scan toggle callback. Native client
 self-tests and Windows/Linux execution are not exercised by this change and are
 not claimed as accepted.
 
-| Agent ID | Entry point | Protocol/native adapters and runtime | UI state | Verification |
-| --- | --- | --- | --- | --- |
-| `claude` | Statistics; CLI | Unchanged Messages adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `claude-desktop` | Statistics; desktop | Unchanged desktop Messages adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `codex` | Statistics; CLI/desktop | Unchanged Responses, rollout accounting and rebuild API | Remove both panels and rebuild dialog; retain scan controls | Synthetic passed (macOS); native untested |
-| `gemini` | Statistics; CLI | Unchanged Gemini adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `grokbuild` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `opencode` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `openclaw` | Statistics | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `hermes` | Statistics; CLI | Unchanged Chat adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `pi` | Statistics; CLI | Unchanged provider-selected adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `workbuddy` | Statistics; China desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `workbuddy-ai` | Statistics; international desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `qoder` | Statistics; China desktop | Unchanged Chat/native adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `doubaowork` | Statistics; desktop | Unchanged separate native audit/launch integration | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `trae` | Statistics; China edition | Unchanged native Chat bridge and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `trae-intl` | Statistics; international edition | Unchanged native Chat bridge and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `kimi` | Statistics; CLI/desktop | Unchanged native provider projection and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `qwen` | Statistics; CLI | Unchanged Chat adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `zcode` | Statistics; desktop | Unchanged native protocol projection and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `deepseek-harness` | Statistics | Unchanged Chat/Responses/Messages adapters and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
-| `t3code` | Statistics; desktop | Unchanged Responses/managed Codex adapter and accounting | Remove both panels; retain scan controls | Synthetic passed (macOS); native untested |
+| Agent ID           | Entry point                       | Protocol/native adapters and runtime                      | UI state                                                    | Verification                              |
+| ------------------ | --------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| `claude`           | Statistics; CLI                   | Unchanged Messages adapter and accounting                 | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `claude-desktop`   | Statistics; desktop               | Unchanged desktop Messages adapter and accounting         | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `codex`            | Statistics; CLI/desktop           | Unchanged Responses, rollout accounting and rebuild API   | Remove both panels and rebuild dialog; retain scan controls | Synthetic passed (macOS); native untested |
+| `gemini`           | Statistics; CLI                   | Unchanged Gemini adapter and accounting                   | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `grokbuild`        | Statistics; CLI                   | Unchanged provider-selected adapter and accounting        | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `opencode`         | Statistics; CLI                   | Unchanged provider-selected adapter and accounting        | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `openclaw`         | Statistics                        | Unchanged provider-selected adapter and accounting        | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `hermes`           | Statistics; CLI                   | Unchanged Chat adapter and accounting                     | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `pi`               | Statistics; CLI                   | Unchanged provider-selected adapter and accounting        | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `workbuddy`        | Statistics; China desktop         | Unchanged Chat/native adapter and accounting              | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `workbuddy-ai`     | Statistics; international desktop | Unchanged Chat/native adapter and accounting              | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `qoder`            | Statistics; China desktop         | Unchanged Chat/native adapter and accounting              | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `doubaowork`       | Statistics; desktop               | Unchanged separate native audit/launch integration        | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `trae`             | Statistics; China edition         | Unchanged native Chat bridge and accounting               | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `trae-intl`        | Statistics; international edition | Unchanged native Chat bridge and accounting               | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `kimi`             | Statistics; CLI/desktop           | Unchanged native provider projection and accounting       | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `qwen`             | Statistics; CLI                   | Unchanged Chat adapter and accounting                     | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `zcode`            | Statistics; desktop               | Unchanged native protocol projection and accounting       | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `deepseek-harness` | Statistics                        | Unchanged Chat/Responses/Messages adapters and accounting | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `t3code`           | Statistics; desktop               | Unchanged Responses/managed Codex adapter and accounting  | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
 
 Verification on 2026-11-17 used the working-tree changes to `UsageDashboard.tsx`,
 `UsageDashboard.test.tsx`, this ledger and `docs/usage.md` over revision
@@ -1413,28 +1453,28 @@ no new UI action or native configuration format is required. Shared Rust behavio
 applies to macOS, Windows and Linux wherever the existing Agent adapter is
 supported. Native application acceptance is separate from synthetic HTTP tests.
 
-| Agent ID | Entry point and protocol/native adapter | Pre-fix runtime risk and current UI | Verification |
-| --- | --- | --- | --- |
-| `claude` | Shared connection; Messages; CLI | Catalog refresh can invalidate strict ownership; existing picker | HTTP refresh/restart passed; native unverified |
-| `claude-desktop` | Shared connection; Messages; desktop aliases | Observed local 409 after catalog sync; existing picker | HTTP refresh/restart passed; native macOS/Windows unverified |
-| `codex` | Managed and native Responses; CLI/desktop | Replay avoids some 409s, but catalog changes can lose affinity | HTTP refresh/restart passed; native unverified |
-| `gemini` | Shared connection; Gemini CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `pi` | Shared connection; provider-selected protocols; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `workbuddy` | Shared connection; Chat; China desktop | Visible text recovery exists; tool/opaque history remains exposed | HTTP refresh/restart passed; native macOS/Windows unverified |
-| `workbuddy-ai` | Shared connection; Chat; international desktop | Same strict tool/opaque history as China edition | HTTP refresh/restart passed; native macOS/Windows unverified |
-| `qoder` | Shared connection; Chat; China desktop | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native macOS/Windows unverified |
-| `kimi` | Shared connection; native provider projection; CLI/desktop | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `qwen` | Shared connection; Chat; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `opencode` | Shared connection; provider-selected protocols; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `grokbuild` | Shared connection; provider-selected protocols; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `openclaw` | Shared connection; provider-selected protocols | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `hermes` | Shared connection; Chat; CLI | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `zcode` | Shared connection; native protocol projection; desktop | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `deepseek-harness` | Shared connection; Chat/Responses/Messages; native credentials | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `t3code` | Shared connection; Responses; managed Codex instance | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native unverified |
-| `trae` | Native bridge to shared Chat; China edition | Observed call/payload ownership still depends on target identity | HTTP refresh/restart passed; native macOS/Windows unverified |
-| `trae-intl` | Native bridge to shared Chat; international edition | Strict continuation ownership uses shared target identity | HTTP refresh/restart passed; native macOS/Windows unverified |
-| `doubaowork` | Separate native audit/launch adapter | No shared model-catalog forwarding destination; not affected by this identity change | Source assessment; native unverified |
+| Agent ID           | Entry point and protocol/native adapter                        | Pre-fix runtime risk and current UI                                                  | Verification                                                 |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `claude`           | Shared connection; Messages; CLI                               | Catalog refresh can invalidate strict ownership; existing picker                     | HTTP refresh/restart passed; native unverified               |
+| `claude-desktop`   | Shared connection; Messages; desktop aliases                   | Observed local 409 after catalog sync; existing picker                               | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `codex`            | Managed and native Responses; CLI/desktop                      | Replay avoids some 409s, but catalog changes can lose affinity                       | HTTP refresh/restart passed; native unverified               |
+| `gemini`           | Shared connection; Gemini CLI                                  | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `pi`               | Shared connection; provider-selected protocols; CLI            | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `workbuddy`        | Shared connection; Chat; China desktop                         | Visible text recovery exists; tool/opaque history remains exposed                    | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `workbuddy-ai`     | Shared connection; Chat; international desktop                 | Same strict tool/opaque history as China edition                                     | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `qoder`            | Shared connection; Chat; China desktop                         | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `kimi`             | Shared connection; native provider projection; CLI/desktop     | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `qwen`             | Shared connection; Chat; CLI                                   | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `opencode`         | Shared connection; provider-selected protocols; CLI            | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `grokbuild`        | Shared connection; provider-selected protocols; CLI            | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `openclaw`         | Shared connection; provider-selected protocols                 | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `hermes`           | Shared connection; Chat; CLI                                   | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `zcode`            | Shared connection; native protocol projection; desktop         | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `deepseek-harness` | Shared connection; Chat/Responses/Messages; native credentials | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `t3code`           | Shared connection; Responses; managed Codex instance           | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `trae`             | Native bridge to shared Chat; China edition                    | Observed call/payload ownership still depends on target identity                     | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `trae-intl`        | Native bridge to shared Chat; international edition            | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native macOS/Windows unverified |
+| `doubaowork`       | Separate native audit/launch adapter                           | No shared model-catalog forwarding destination; not affected by this identity change | Source assessment; native unverified                         |
 
 Implementation and verification details are recorded in
 [the continuation refresh report](2026-11-17-catalog-continuation.md).
@@ -1450,28 +1490,28 @@ exit rather than cached AppKit termination metadata. Windows automatic desktop
 replacement remains unsupported; shared feedback applies wherever an updater
 returns the recognized deferred outcome.
 
-| Agent ID | Entry point and protocol/native adapter | Runtime and UI assessment | Verification |
-| --- | --- | --- | --- |
-| `claude` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `claude-desktop` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `codex` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `gemini` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `pi` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `workbuddy` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `workbuddy-ai` | Existing version row and native/regional adapter | No existing automatic desktop update path; retain unsupported/absent behavior on every platform | Source assessment and shared update regressions passed; native not rechecked |
-| `qoder` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `kimi` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `qwen` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `opencode` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `grokbuild` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `openclaw` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `hermes` | Tools version row; existing CLI/native adapter | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths | Source assessment and shared update regressions passed; native not rechecked |
-| `zcode` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| Agent ID           | Entry point and protocol/native adapter                                 | Runtime and UI assessment                                                                                         | Verification                                                                               |
+| ------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `claude`           | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `claude-desktop`   | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `codex`            | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `gemini`           | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `pi`               | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `workbuddy`        | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `workbuddy-ai`     | Existing version row and native/regional adapter                        | No existing automatic desktop update path; retain unsupported/absent behavior on every platform                   | Source assessment and shared update regressions passed; native not rechecked               |
+| `qoder`            | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `kimi`             | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `qwen`             | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `opencode`         | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `grokbuild`        | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `openclaw`         | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `hermes`           | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
+| `zcode`            | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
 | `deepseek-harness` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `t3code` | Existing version row and native/regional adapter | No existing automatic desktop update path; retain unsupported/absent behavior on every platform | Source assessment and shared update regressions passed; native not rechecked |
-| `trae` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `trae-intl` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
-| `doubaowork` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `t3code`           | Existing version row and native/regional adapter                        | No existing automatic desktop update path; retain unsupported/absent behavior on every platform                   | Source assessment and shared update regressions passed; native not rechecked               |
+| `trae`             | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `trae-intl`        | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `doubaowork`       | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
 
 See [the update feedback report](2026-11-17-desktop-update-feedback.md).
 
@@ -1483,28 +1523,28 @@ and may retry once after an explicit upstream requirement to enable thinking. Ac
 credential failures and security decisions retain their existing behavior. The
 adapter runs in shared Rust on macOS and Windows; native acceptance is separate.
 
-| Agent ID | Entry point and protocol/native adapter | Runtime and UI assessment | Verification |
-| --- | --- | --- | --- |
-| `claude` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `claude-desktop` | Authenticated native startup probe; Messages to Messages/Chat/Responses/Gemini | Implemented isolated request-local probe state and bounded compatibility retry; native gateway banner clears only on upstream success | 22 shared-ingress/recovery regressions passed on macOS, including stale ownership, four upstream protocols and both policy states; installed old backend returned 409; updated macOS startup check accepted with banner removed; native Windows pending |
-| `codex` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `gemini` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `pi` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `workbuddy` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `workbuddy-ai` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `qoder` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `kimi` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `qwen` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `opencode` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `grokbuild` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `openclaw` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `hermes` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `zcode` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `deepseek-harness` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `t3code` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `trae` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `trae-intl` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
-| `doubaowork` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked |
+| Agent ID           | Entry point and protocol/native adapter                                                  | Runtime and UI assessment                                                                                                             | Verification                                                                                                                                                                                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`           | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `claude-desktop`   | Authenticated native startup probe; Messages to Messages/Chat/Responses/Gemini           | Implemented isolated request-local probe state and bounded compatibility retry; native gateway banner clears only on upstream success | 22 shared-ingress/recovery regressions passed on macOS, including stale ownership, four upstream protocols and both policy states; installed old backend returned 409; updated macOS startup check accepted with banner removed; native Windows pending |
+| `codex`            | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `gemini`           | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `pi`               | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `workbuddy`        | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `workbuddy-ai`     | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `qoder`            | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `kimi`             | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `qwen`             | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `opencode`         | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `grokbuild`        | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `openclaw`         | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `hermes`           | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `zcode`            | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `deepseek-harness` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `t3code`           | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `trae`             | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `trae-intl`        | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `doubaowork`       | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
 
 See [the startup probe report](2026-11-17-desktop-startup-probe.md).
 
@@ -1512,28 +1552,28 @@ See [the startup probe report](2026-11-17-desktop-startup-probe.md).
 
 The full feature remains incomplete. Gateway connectivity and DLP text inspection do not establish tool-call observation. Registered native shell semantics require structured tool calls and a matching enabled risk policy. Warnings and records observe proposed calls; they do not block local execution.
 
-| Agent ID           | Agent                   | Implementation status                                                                                                                      | Native acceptance evidence                                                                                                                                                                                                                                        |
-| ------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude`           | Claude Code             | Registered `Bash` schema and shell semantics                                                                                               | Not rechecked in this follow-up                                                                                                                                                                                                                                   |
-| `claude-desktop`   | Claude Desktop          | Registered `Bash` schema and shell semantics                                                                                               | Not rechecked in this follow-up                                                                                                                                                                                                                                   |
-| `codex`            | Codex                   | Registered `exec_command` and `shell_command`                                                                                              | Not rechecked in this follow-up; keep the user's route off                                                                                                                                                                                                        |
-| `gemini`           | Gemini CLI              | Registered `run_shell_command`                                                                                                             | Not rechecked in this follow-up                                                                                                                                                                                                                                   |
-| `pi`               | Pi                      | Registered `bash`; native session helper delivered                                                                                         | User confirmed warning/session ID and `pi_` display acceptance                                                                                                                                                                                                    |
-| `workbuddy`        | WorkBuddy China         | Registered `Bash`                                                                                                                          | A native risk event with a conversation ID was observed                                                                                                                                                                                                           |
-| `workbuddy-ai`     | WorkBuddy International | Registered `Bash`                                                                                                                          | A native risk event with a conversation ID was observed                                                                                                                                                                                                           |
-| `qoder`            | Qoder CN                | Registered `Bash`                                                                                                                          | Native retest remains pending                                                                                                                                                                                                                                     |
-| `kimi`             | Kimi Code               | Registered native `Shell`; schema, policy and shared-routing regressions passed                                                            | User reported no warning; native retest pending                                                                                                                                                                                                                   |
-| `qwen`             | Qwen Code               | Registered native `run_shell_command`; schema, policy and shared-routing regressions passed                                                | User reported no warning; native retest pending                                                                                                                                                                                                                   |
-| `opencode`         | OpenCode                | Registered native `shell` and legacy `bash` string-command schemas on shared routes                                                        | User confirmed native tool-warning and session-ID acceptance passed on 2026-11-17; nested code-mode calls and other platforms remain unverified                                                                                                                   |
-| `grokbuild`        | Grok Build              | Registered `run_terminal_command`, internal compatibility alias `run_terminal_cmd` and Cursor preset `Shell`                               | User confirmed native tool-risk acceptance passed on 2026-11-17; other platforms and presets remain unverified                                                                                                                                                    |
-| `openclaw`         | OpenClaw                | Registered native `exec` string-command schema on shared routes                                                                            | User requested skipping OpenClaw on 2026-11-17; native acceptance remains unverified; nested code-mode calls remain unverified                                                                                                                                    |
-| `hermes`           | Hermes                  | Registered native `terminal` string-command schema on shared routes                                                                        | User confirmed native tool-warning and session-ID acceptance passed on 2026-11-17; scheduled/delegated scope and other platforms remain unverified                                                                                                                |
-| `zcode`            | ZCode                   | Registered native `Bash` string-command schema on shared routes                                                                            | User confirmed the instructed native tool-risk acceptance passed on 2026-11-17; automated regressions remain unexecuted                                                                                                                                           |
-| `deepseek-harness` | DeepSeek Harness        | Registered native `bash`; added a native request-header extension and validated session-header extraction                                  | User confirmed native warning and session-ID acceptance passed on 2026-11-17; PowerShell/interactive variants remain unverified                                                                                                                                   |
-| `t3code`           | T3 Code                 | Registered `exec_command`/`cmd` and `shell_command`/`command` for the managed Codex driver, including Responses routing                    | User confirmed completion of native tool-warning testing on 2026-11-17; the session-header and prefix repairs are implemented, but final session-ID appearance was not separately confirmed; regressions remain unexecuted and other T3 drivers remain unverified |
-| `trae`             | TRAE CN                 | Native `PreToolUse` / `RunCommand` observer with edition-bound authentication, supplied session identity and asynchronous risk persistence | User confirmed native warning delivery after enabling Configured Hooks on 2026-11-17; `trae_cn_` session-prefix correction is implemented, awaiting new-record retest                                                                                             |
-| `trae-intl`        | TRAE International      | Separate native `PreToolUse` / `RunCommand` observer; existing user hooks and permissions preserved                                        | User reported routing_unknown_continuation / 409 after a tool call on 2026-11-17; edition-parity continuation repair is implemented, awaiting new-build retest; native warning delivery remains unverified                                                        |
-| `doubaowork` | Doubao Work | Legacy `Bash` lifecycle retained; current-runtime shell report collector added with `doubaowork_` session identity and truthful reported stage | **Implemented; new-build native notification acceptance pending.** Previous native failure reproduced; actual report schema confirmed on macOS. Windows native acceptance pending. |
+| Agent ID           | Agent                   | Implementation status                                                                                                                          | Native acceptance evidence                                                                                                                                                                                                                                        |
+| ------------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`           | Claude Code             | Registered `Bash` schema and shell semantics                                                                                                   | Not rechecked in this follow-up                                                                                                                                                                                                                                   |
+| `claude-desktop`   | Claude Desktop          | Registered `Bash` schema and shell semantics                                                                                                   | Not rechecked in this follow-up                                                                                                                                                                                                                                   |
+| `codex`            | Codex                   | Registered `exec_command` and `shell_command`                                                                                                  | Not rechecked in this follow-up; keep the user's route off                                                                                                                                                                                                        |
+| `gemini`           | Gemini CLI              | Registered `run_shell_command`                                                                                                                 | Not rechecked in this follow-up                                                                                                                                                                                                                                   |
+| `pi`               | Pi                      | Registered `bash`; native session helper delivered                                                                                             | User confirmed warning/session ID and `pi_` display acceptance                                                                                                                                                                                                    |
+| `workbuddy`        | WorkBuddy China         | Registered `Bash`                                                                                                                              | A native risk event with a conversation ID was observed                                                                                                                                                                                                           |
+| `workbuddy-ai`     | WorkBuddy International | Registered `Bash`                                                                                                                              | A native risk event with a conversation ID was observed                                                                                                                                                                                                           |
+| `qoder`            | Qoder CN                | Registered `Bash`                                                                                                                              | Native retest remains pending                                                                                                                                                                                                                                     |
+| `kimi`             | Kimi Code               | Registered native `Shell`; schema, policy and shared-routing regressions passed                                                                | User reported no warning; native retest pending                                                                                                                                                                                                                   |
+| `qwen`             | Qwen Code               | Registered native `run_shell_command`; schema, policy and shared-routing regressions passed                                                    | User reported no warning; native retest pending                                                                                                                                                                                                                   |
+| `opencode`         | OpenCode                | Registered native `shell` and legacy `bash` string-command schemas on shared routes                                                            | User confirmed native tool-warning and session-ID acceptance passed on 2026-11-17; nested code-mode calls and other platforms remain unverified                                                                                                                   |
+| `grokbuild`        | Grok Build              | Registered `run_terminal_command`, internal compatibility alias `run_terminal_cmd` and Cursor preset `Shell`                                   | User confirmed native tool-risk acceptance passed on 2026-11-17; other platforms and presets remain unverified                                                                                                                                                    |
+| `openclaw`         | OpenClaw                | Registered native `exec` string-command schema on shared routes                                                                                | User requested skipping OpenClaw on 2026-11-17; native acceptance remains unverified; nested code-mode calls remain unverified                                                                                                                                    |
+| `hermes`           | Hermes                  | Registered native `terminal` string-command schema on shared routes                                                                            | User confirmed native tool-warning and session-ID acceptance passed on 2026-11-17; scheduled/delegated scope and other platforms remain unverified                                                                                                                |
+| `zcode`            | ZCode                   | Registered native `Bash` string-command schema on shared routes                                                                                | User confirmed the instructed native tool-risk acceptance passed on 2026-11-17; automated regressions remain unexecuted                                                                                                                                           |
+| `deepseek-harness` | DeepSeek Harness        | Registered native `bash`; added a native request-header extension and validated session-header extraction                                      | User confirmed native warning and session-ID acceptance passed on 2026-11-17; PowerShell/interactive variants remain unverified                                                                                                                                   |
+| `t3code`           | T3 Code                 | Registered `exec_command`/`cmd` and `shell_command`/`command` for the managed Codex driver, including Responses routing                        | User confirmed completion of native tool-warning testing on 2026-11-17; the session-header and prefix repairs are implemented, but final session-ID appearance was not separately confirmed; regressions remain unexecuted and other T3 drivers remain unverified |
+| `trae`             | TRAE CN                 | Native `PreToolUse` / `RunCommand` observer with edition-bound authentication, supplied session identity and asynchronous risk persistence     | User confirmed native warning delivery after enabling Configured Hooks on 2026-11-17; `trae_cn_` session-prefix correction is implemented, awaiting new-record retest                                                                                             |
+| `trae-intl`        | TRAE International      | Separate native `PreToolUse` / `RunCommand` observer; existing user hooks and permissions preserved                                            | User reported routing_unknown_continuation / 409 after a tool call on 2026-11-17; edition-parity continuation repair is implemented, awaiting new-build retest; native warning delivery remains unverified                                                        |
+| `doubaowork`       | Doubao Work             | Legacy `Bash` lifecycle retained; current-runtime shell report collector added with `doubaowork_` session identity and truthful reported stage | **Implemented; new-build native notification acceptance pending.** Previous native failure reproduced; actual report schema confirmed on macOS. Windows native acceptance pending.                                                                                |
 
 Shared Rust implementation applies across platforms, but native Windows/macOS/Linux acceptance must be recorded for each applicable path. A passed macOS fixture is not Windows acceptance. Do not infer session availability where a client supplies no recognized stable identity, and never substitute request IDs or generated per-request IDs.
 
@@ -1811,29 +1851,28 @@ macOS-only desktop identities remain explicit; this change does not add Windows
 support for them. Synthetic lifecycle tests never inspect or restart installed
 applications. Native per-Agent acceptance remains pending on every platform.
 
-| Agent ID | Provider TLS path and entry | Confirmed restart adapter and UI | Verification and remaining native acceptance |
-| --- | --- | --- | --- |
-| `claude` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `claude-desktop` | Shared API routing; provider discovery | Agents confirmation; macOS and Windows identity adapters; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
-| `codex` | Native Responses/managed API routing; provider discovery | Agents confirmation; macOS and Windows package/bundle identity; Linux unsupported | Synthetic lifecycle/TLS; native pending; keep the user's route off |
-| `gemini` | Shared Gemini/API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `pi` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `workbuddy` | Shared API routing; provider discovery | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
-| `workbuddy-ai` | Shared API routing; provider discovery | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
-| `qoder` | Shared API routing; provider discovery | Agents confirmation; Qoder CN macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending |
-| `kimi` | Shared API routing; provider discovery | macOS desktop bundle; CLI session separate; Windows/Linux restart unsupported | Synthetic macOS orchestration/TLS; native pending |
-| `qwen` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `opencode` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `grokbuild` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `openclaw` | Shared API routing; provider discovery | No native desktop lifecycle adapter | Shared TLS fixtures; native client not rechecked |
-| `hermes` | Shared API routing; provider discovery | CLI session; no desktop restart action | Shared TLS fixtures; native client not rechecked |
-| `zcode` | Shared API routing; provider discovery | macOS desktop bundle; Windows/Linux restart unsupported | Synthetic macOS orchestration/TLS; native pending |
-| `deepseek-harness` | Shared API routing; provider discovery | macOS desktop bundle; Windows/Linux restart unsupported | Synthetic macOS orchestration/TLS; native pending |
-| `t3code` | Shared API routing; provider discovery | No native desktop lifecycle adapter | Shared TLS fixtures; native client not rechecked |
-| `trae` | Existing native integration and shared provider discovery | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked |
-| `trae-intl` | Existing native integration and shared provider discovery | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked |
-| `doubaowork` | Native audit integration has no editable provider projection; native collector unchanged | Agents confirmation on macOS; Windows/Linux restart unsupported | Synthetic macOS orchestration; native integration not rechecked |
-
+| Agent ID           | Provider TLS path and entry                                                              | Confirmed restart adapter and UI                                                     | Verification and remaining native acceptance                       |
+| ------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `claude`           | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `claude-desktop`   | Shared API routing; provider discovery                                                   | Agents confirmation; macOS and Windows identity adapters; Linux unsupported          | Synthetic lifecycle/TLS; native macOS/Windows pending              |
+| `codex`            | Native Responses/managed API routing; provider discovery                                 | Agents confirmation; macOS and Windows package/bundle identity; Linux unsupported    | Synthetic lifecycle/TLS; native pending; keep the user's route off |
+| `gemini`           | Shared Gemini/API routing; provider discovery                                            | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `pi`               | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `workbuddy`        | Shared API routing; provider discovery                                                   | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported      | Synthetic lifecycle/TLS; native macOS/Windows pending              |
+| `workbuddy-ai`     | Shared API routing; provider discovery                                                   | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native macOS/Windows pending              |
+| `qoder`            | Shared API routing; provider discovery                                                   | Agents confirmation; Qoder CN macOS bundle and Windows image; Linux unsupported      | Synthetic lifecycle/TLS; native macOS/Windows pending              |
+| `kimi`             | Shared API routing; provider discovery                                                   | macOS desktop bundle; CLI session separate; Windows/Linux restart unsupported        | Synthetic macOS orchestration/TLS; native pending                  |
+| `qwen`             | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `opencode`         | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `grokbuild`        | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `openclaw`         | Shared API routing; provider discovery                                                   | No native desktop lifecycle adapter                                                  | Shared TLS fixtures; native client not rechecked                   |
+| `hermes`           | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
+| `zcode`            | Shared API routing; provider discovery                                                   | macOS desktop bundle; Windows/Linux restart unsupported                              | Synthetic macOS orchestration/TLS; native pending                  |
+| `deepseek-harness` | Shared API routing; provider discovery                                                   | macOS desktop bundle; Windows/Linux restart unsupported                              | Synthetic macOS orchestration/TLS; native pending                  |
+| `t3code`           | Shared API routing; provider discovery                                                   | No native desktop lifecycle adapter                                                  | Shared TLS fixtures; native client not rechecked                   |
+| `trae`             | Existing native integration and shared provider discovery                                | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported      | Synthetic lifecycle/TLS; native integration not rechecked          |
+| `trae-intl`        | Existing native integration and shared provider discovery                                | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked          |
+| `doubaowork`       | Native audit integration has no editable provider projection; native collector unchanged | Agents confirmation on macOS; Windows/Linux restart unsupported                      | Synthetic macOS orchestration; native integration not rechecked    |
 
 ## Routing list refresh and bounded catalog synchronization
 
@@ -1845,28 +1884,28 @@ and per-client queues. No native protocol, credential, configuration-consent,
 or request forwarding contract changes. The common Rust and React paths apply
 to macOS, Windows and Linux; native integration support remains as recorded above.
 
-| Agent ID | Entry and runtime path | Protocol/native adapter impact | UI and planned verification | Native acceptance |
-| --- | --- | --- | --- | --- |
-| `claude` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `claude-desktop` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `codex` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `gemini` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `pi` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `workbuddy` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `workbuddy-ai` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `qoder` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `opencode` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `grokbuild` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `openclaw` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `hermes` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `kimi` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `qwen` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `zcode` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `deepseek-harness` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `t3code` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `trae` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `trae-intl` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
-| `doubaowork` | Shared cached list and explicit catalog sync; existing publication queue | No editable model projection; existing native audit integration retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| Agent ID           | Entry and runtime path                                                   | Protocol/native adapter impact                                           | UI and planned verification                                                  | Native acceptance            |
+| ------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | ---------------------------- |
+| `claude`           | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `claude-desktop`   | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `codex`            | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `gemini`           | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `pi`               | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `workbuddy`        | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `workbuddy-ai`     | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `qoder`            | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `opencode`         | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `grokbuild`        | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `openclaw`         | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `hermes`           | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `kimi`             | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `qwen`             | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `zcode`            | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `deepseek-harness` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `t3code`           | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `trae`             | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `trae-intl`        | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `doubaowork`       | Shared cached list and explicit catalog sync; existing publication queue | No editable model projection; existing native audit integration retained | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
 
 Shared synthetic regressions passed on macOS. Full host checks are recorded with the verification results; native per-Agent acceptance and remote Windows/Linux/macOS CI remain pending. This assessment does not claim per-Agent native acceptance.
 
@@ -1894,7 +1933,6 @@ Pre-implementation coverage: only `doubaowork` uses the dedicated audit launcher
 
 Implemented the single-action condition and localized running/stopped labels in all four runtime languages. Added compact/full-layout regressions for pending audit with stale restart flags, audit-launch dispatch, and active audit suppressing both launcher and generic restart even with stale flags. `pnpm typecheck`, targeted component/test/locale Prettier and `git diff --check` passed. Regression execution and native UI acceptance remain pending; no commit, push, build or native restart was performed.
 
-
 ## Doubao native tool-risk acceptance failure (2026-11-17)
 
 The user ran the synthetic `kubectl delete pod vary-test-nonexistent --dry-run=client` command in the actual client and confirmed a native tool result. The current background collector installed successfully after audit-mode launch, but a temporary metadata-only lifecycle observer received zero callbacks during this execution; the risk-event database contained no Doubao records. Missing Kubernetes configuration affects the command result, not whether risk observation should occur.
@@ -1917,28 +1955,28 @@ synthetic coverage checks each row after disconnect, the dialog notes, enabled
 restart, recovery, and unsupported or stale status. Native verification is
 pending on all platforms.
 
-| Agent | Entry and adapter | Runtime and UI after disconnect |
-| --- | --- | --- |
-| `claude` | Shared switch or model menu. Claude Code config. | Reopen note in confirmation. No process restart action. |
-| `claude-desktop` | Shared switch or model menu. Desktop profile. | Confirmed status-line restart for a stale instance on macOS and Windows. |
-| `codex` | Shared switch or model menu. Codex config and desktop app-server monitor. | Reopen note in confirmation. Route changes refresh the idle app-server on macOS and Windows. Failure gives manual reopen guidance. |
-| `gemini` | Shared switch or model menu. Gemini CLI config. | Normal disconnected status. No process restart action. |
-| `grokbuild` | Shared switch or model menu. Grok Build config. | Normal disconnected status. No process restart action. |
-| `opencode` | Shared switch or model menu. OpenCode config. | Normal disconnected status. No process restart action. |
-| `openclaw` | Shared switch or model menu. OpenClaw config. | Normal disconnected status. No process restart action. |
-| `hermes` | Shared switch or model menu. Hermes profile. | Normal disconnected status. No process restart action. |
-| `pi` | Shared switch or model menu. Pi config and helper. | Normal disconnected status. No process restart action. |
-| `workbuddy` | Shared switch or model menu. WorkBuddy CN catalog. | Confirmed status-line restart for a stale instance on macOS and Windows. |
-| `workbuddy-ai` | Shared switch or model menu. International catalog. | Confirmed status-line restart on macOS and through Vary's existing verified Windows identity. |
-| `qoder` | Shared switch or model menu. Qoder CN adapter. | Confirmed status-line restart on macOS or Windows when native freshness requires it. |
-| `doubaowork` | Shared switch. Official-session audit adapter. | Dedicated audit launch action. No generic restart action. |
-| `trae` | Shared switch. Domestic native bridge. | Confirmed status-line restart for a stale instance on macOS and Windows. Bridge cleanup status takes precedence. |
-| `trae-intl` | Shared switch. International native bridge. | Confirmed status-line restart for a stale instance on macOS and Windows. Bridge cleanup status takes precedence. |
-| `kimi` | Shared switch or model menu. CLI profile and macOS desktop adapter. | Confirmed status-line restart for a stale macOS desktop instance. |
-| `qwen` | Shared switch or model menu. Qwen Code config. | Normal disconnected status. No process restart action. |
-| `zcode` | Shared switch or model menu. ZCode config. | Confirmed status-line restart for a stale instance on macOS and Windows. Use known Windows install paths for process identity. |
-| `deepseek-harness` | Shared switch or model menu. Harness projection. | Confirmed status-line restart for a stale macOS desktop instance. |
-| `t3code` | Shared switch or model menu. T3 Code projection. | Confirmed status-line restart for a stale instance on macOS and Windows. |
+| Agent              | Entry and adapter                                                         | Runtime and UI after disconnect                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`           | Shared switch or model menu. Claude Code config.                          | Reopen note in confirmation. No process restart action.                                                                            |
+| `claude-desktop`   | Shared switch or model menu. Desktop profile.                             | Confirmed status-line restart for a stale instance on macOS and Windows.                                                           |
+| `codex`            | Shared switch or model menu. Codex config and desktop app-server monitor. | Reopen note in confirmation. Route changes refresh the idle app-server on macOS and Windows. Failure gives manual reopen guidance. |
+| `gemini`           | Shared switch or model menu. Gemini CLI config.                           | Normal disconnected status. No process restart action.                                                                             |
+| `grokbuild`        | Shared switch or model menu. Grok Build config.                           | Normal disconnected status. No process restart action.                                                                             |
+| `opencode`         | Shared switch or model menu. OpenCode config.                             | Normal disconnected status. No process restart action.                                                                             |
+| `openclaw`         | Shared switch or model menu. OpenClaw config.                             | Normal disconnected status. No process restart action.                                                                             |
+| `hermes`           | Shared switch or model menu. Hermes profile.                              | Normal disconnected status. No process restart action.                                                                             |
+| `pi`               | Shared switch or model menu. Pi config and helper.                        | Normal disconnected status. No process restart action.                                                                             |
+| `workbuddy`        | Shared switch or model menu. WorkBuddy CN catalog.                        | Confirmed status-line restart for a stale instance on macOS and Windows.                                                           |
+| `workbuddy-ai`     | Shared switch or model menu. International catalog.                       | Confirmed status-line restart on macOS and through Vary's existing verified Windows identity.                                      |
+| `qoder`            | Shared switch or model menu. Qoder CN adapter.                            | Confirmed status-line restart on macOS or Windows when native freshness requires it.                                               |
+| `doubaowork`       | Shared switch. Official-session audit adapter.                            | Dedicated audit launch action. No generic restart action.                                                                          |
+| `trae`             | Shared switch. Domestic native bridge.                                    | Confirmed status-line restart for a stale instance on macOS and Windows. Bridge cleanup status takes precedence.                   |
+| `trae-intl`        | Shared switch. International native bridge.                               | Confirmed status-line restart for a stale instance on macOS and Windows. Bridge cleanup status takes precedence.                   |
+| `kimi`             | Shared switch or model menu. CLI profile and macOS desktop adapter.       | Confirmed status-line restart for a stale macOS desktop instance.                                                                  |
+| `qwen`             | Shared switch or model menu. Qwen Code config.                            | Normal disconnected status. No process restart action.                                                                             |
+| `zcode`            | Shared switch or model menu. ZCode config.                                | Confirmed status-line restart for a stale instance on macOS and Windows. Use known Windows install paths for process identity.     |
+| `deepseek-harness` | Shared switch or model menu. Harness projection.                          | Confirmed status-line restart for a stale macOS desktop instance.                                                                  |
+| `t3code`           | Shared switch or model menu. T3 Code projection.                          | Confirmed status-line restart for a stale instance on macOS and Windows.                                                           |
 
 Linux and WSL have no native restart path in this change. OpenMausBot exists in
 Magpie's restart registry and has no Vary Agent entry.
@@ -1989,28 +2027,28 @@ catalog and route aliases as its unparameterized model listing. The loopback
 fixture checks query admission and catalog payloads across the shared Agent
 connections. Live native picker validation for the updated backend is pending.
 
-| Agent | Picker entry point and adapter | Policy status entry point and runtime | Verification |
-| --- | --- | --- | --- |
-| `claude` | `/model`, Claude Code settings, Messages | Settings key binding, shared or legacy Messages route | Pending |
-| `claude-desktop` | Native Desktop catalog and Messages | Settings key binding, Desktop connection or legacy route | Pending |
-| `codex` | CLI and Desktop model pickers, managed Responses | Settings key binding, managed or legacy Responses route | Pending |
-| `gemini` | `/model`, Gemini settings and native Gemini requests | Settings key binding, shared or legacy Gemini route | Pending |
-| `grokbuild` | CLI model profiles and provider-selected protocol | Settings key binding, shared or legacy route | Pending |
-| `opencode` | CLI provider catalog and provider-selected protocol | Settings key binding, shared connection | Pending |
-| `openclaw` | Native provider and model registry | Settings displays external key setup | Pending |
-| `hermes` | CLI provider catalog and Chat | Settings key binding, shared connection | Pending |
-| `pi` | CLI model registry and provider-selected protocol | Settings key binding, shared or native Pi routing | Pending |
-| `workbuddy` | China Desktop model registry and Chat | Settings key binding, shared or native route | Pending |
-| `workbuddy-ai` | International Desktop model registry and Chat | Settings key binding, shared connection | Pending |
-| `qoder` | China Desktop provider and Chat | Settings key binding, shared or Qoder gateway | Pending |
-| `doubaowork` | Native model picker and separate audit adapter | Settings key binding, native route readiness | Pending |
-| `trae` | China bridge catalog and Chat | Settings key binding, China bridge readiness | Pending |
-| `trae-intl` | International bridge catalog and Chat | Settings key binding, international bridge readiness | Pending |
-| `kimi` | Native Kimi selection and provider projection | Settings key binding, shared or native route | Pending |
-| `qwen` | CLI model settings and Chat | Settings key binding, shared or native route | Pending |
-| `zcode` | Desktop model registry and native projection | Settings key binding, shared or native route | Pending |
-| `deepseek-harness` | Native model registry and Chat/Responses/Messages | Settings key binding, shared or native route | Pending |
-| `t3code` | Managed Codex instance picker and Responses | Settings key binding, shared connection | Pending |
+| Agent              | Picker entry point and adapter                       | Policy status entry point and runtime                    | Verification |
+| ------------------ | ---------------------------------------------------- | -------------------------------------------------------- | ------------ |
+| `claude`           | `/model`, Claude Code settings, Messages             | Settings key binding, shared or legacy Messages route    | Pending      |
+| `claude-desktop`   | Native Desktop catalog and Messages                  | Settings key binding, Desktop connection or legacy route | Pending      |
+| `codex`            | CLI and Desktop model pickers, managed Responses     | Settings key binding, managed or legacy Responses route  | Pending      |
+| `gemini`           | `/model`, Gemini settings and native Gemini requests | Settings key binding, shared or legacy Gemini route      | Pending      |
+| `grokbuild`        | CLI model profiles and provider-selected protocol    | Settings key binding, shared or legacy route             | Pending      |
+| `opencode`         | CLI provider catalog and provider-selected protocol  | Settings key binding, shared connection                  | Pending      |
+| `openclaw`         | Native provider and model registry                   | Settings displays external key setup                     | Pending      |
+| `hermes`           | CLI provider catalog and Chat                        | Settings key binding, shared connection                  | Pending      |
+| `pi`               | CLI model registry and provider-selected protocol    | Settings key binding, shared or native Pi routing        | Pending      |
+| `workbuddy`        | China Desktop model registry and Chat                | Settings key binding, shared or native route             | Pending      |
+| `workbuddy-ai`     | International Desktop model registry and Chat        | Settings key binding, shared connection                  | Pending      |
+| `qoder`            | China Desktop provider and Chat                      | Settings key binding, shared or Qoder gateway            | Pending      |
+| `doubaowork`       | Native model picker and separate audit adapter       | Settings key binding, native route readiness             | Pending      |
+| `trae`             | China bridge catalog and Chat                        | Settings key binding, China bridge readiness             | Pending      |
+| `trae-intl`        | International bridge catalog and Chat                | Settings key binding, international bridge readiness     | Pending      |
+| `kimi`             | Native Kimi selection and provider projection        | Settings key binding, shared or native route             | Pending      |
+| `qwen`             | CLI model settings and Chat                          | Settings key binding, shared or native route             | Pending      |
+| `zcode`            | Desktop model registry and native projection         | Settings key binding, shared or native route             | Pending      |
+| `deepseek-harness` | Native model registry and Chat/Responses/Messages    | Settings key binding, shared or native route             | Pending      |
+| `t3code`           | Managed Codex instance picker and Responses          | Settings key binding, shared connection                  | Pending      |
 
 ## WorkBuddy subscription upstream 400 handling
 
@@ -2022,28 +2060,28 @@ behavior through its existing routing entry point. Upstream error carriers are
 classified into fixed codes only and surface in the Agent's client error body;
 no application UI state changed.
 
-| Agent | Entry point and adapter | Runtime behavior inherited | Verification |
-| --- | --- | --- | --- |
-| `claude` | Intent/group routing → shared subscription adapter (unchanged) | Bounded `11128`/`11133` classification, tool-name grammar, schema completions, stream name restoration | Shared adapter fixtures; live subscription verification pending |
-| `claude-desktop` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
-| `codex` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `gemini` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
-| `grokbuild` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `opencode` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `openclaw` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
-| `hermes` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `pi` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
-| `workbuddy` | Same shared adapter, China edition (unchanged) | Same, plus shared Chat fingerprint, Kimi, tool-result, and content-filter repairs; fixed carriers for 11140, 11153, 11158, 11159, and 14018 | China and international transport fixtures cover both editions; native pending |
-| `workbuddy-ai` | Same shared adapter, international edition (unchanged) | Same shared Chat repairs, edition-specific User-Agent, growth event, activity reports, and the same fixed numeric carriers | China and international transport fixtures cover both editions; native pending |
-| `qoder` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `doubaowork` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
-| `trae` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `trae-intl` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `kimi` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `qwen` | Same shared adapter (unchanged) | Same | Chat-source fixtures cover its wire shape; live verification pending |
-| `zcode` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
-| `deepseek-harness` | Same shared adapter (unchanged) | Same | Anthropic and Chat source fixtures cover both upstream protocols |
-| `t3code` | Same shared adapter (unchanged) | Same | Shared adapter fixtures; live subscription verification pending |
+| Agent              | Entry point and adapter                                        | Runtime behavior inherited                                                                                                                  | Verification                                                                   |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `claude`           | Intent/group routing → shared subscription adapter (unchanged) | Bounded `11128`/`11133` classification, tool-name grammar, schema completions, stream name restoration                                      | Shared adapter fixtures; live subscription verification pending                |
+| `claude-desktop`   | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
+| `codex`            | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `gemini`           | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
+| `grokbuild`        | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `opencode`         | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `openclaw`         | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
+| `hermes`           | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `pi`               | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
+| `workbuddy`        | Same shared adapter, China edition (unchanged)                 | Same, plus shared Chat fingerprint, Kimi, tool-result, and content-filter repairs; fixed carriers for 11140, 11153, 11158, 11159, and 14018 | China and international transport fixtures cover both editions; native pending |
+| `workbuddy-ai`     | Same shared adapter, international edition (unchanged)         | Same shared Chat repairs, edition-specific User-Agent, growth event, activity reports, and the same fixed numeric carriers                  | China and international transport fixtures cover both editions; native pending |
+| `qoder`            | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `doubaowork`       | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
+| `trae`             | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `trae-intl`        | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `kimi`             | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `qwen`             | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Chat-source fixtures cover its wire shape; live verification pending           |
+| `zcode`            | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
+| `deepseek-harness` | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Anthropic and Chat source fixtures cover both upstream protocols               |
+| `t3code`           | Same shared adapter (unchanged)                                | Same                                                                                                                                        | Shared adapter fixtures; live subscription verification pending                |
 
 The prompt-slicing regression uses the entry point, protocol adapter, and
 model selection UI listed for each Agent in the WorkBuddy subscription matrix
@@ -2078,28 +2116,28 @@ The Codex picker owns the row width and displays the description on hover.
 Names are presentation metadata. Wire IDs, request adapters, default
 selection and historical aliases retain their existing roles.
 
-| Agent ID | Entry point and adapter | Picker behavior and verification scope |
-| --- | --- | --- |
-| `claude` | Claude Code / Messages model list | Separate native projection |
-| `claude-desktop` | Claude Desktop / Messages model list | Separate native projection |
-| `codex` | Desktop and CLI, local and native Responses catalogs, temporary CLI catalog | Full description in published fixtures and the macOS CLI. Desktop tooltip and Windows checks pending |
-| `gemini` | Gemini CLI / Gemini model registry | Separate native projection |
-| `grokbuild` | Grok Build / model profiles | Separate native projection |
-| `opencode` | OpenCode / provider catalog | Separate native projection |
-| `openclaw` | OpenClaw / provider and model registry | Separate native projection |
-| `hermes` | Hermes / CLI provider catalog | Separate native projection |
-| `pi` | Pi / custom provider registry | Separate native projection |
-| `workbuddy` | WorkBuddy China / Desktop registry | Separate native projection |
-| `workbuddy-ai` | WorkBuddy AI / Desktop registry | Separate native projection |
-| `qoder` | Qoder China / Desktop registry | Separate native projection |
-| `doubaowork` | Doubao Work / audit adapter | Native model picker outside this catalog |
-| `trae` | TRAE China / bridge catalog | Separate native projection |
-| `trae-intl` | TRAE International / bridge catalog | Separate native projection |
-| `kimi` | Kimi Code / provider projection | Separate native projection |
-| `qwen` | Qwen Code / CLI model settings | Separate native projection |
-| `zcode` | ZCode / Desktop registry | Separate native projection |
-| `deepseek-harness` | DeepSeek Harness / native registry | Separate native projection |
-| `t3code` | T3 Code / independent Codex instance and Responses | Full description in the instance catalog and full name in custom model settings. Native checks pending |
+| Agent ID           | Entry point and adapter                                                     | Picker behavior and verification scope                                                                 |
+| ------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `claude`           | Claude Code / Messages model list                                           | Separate native projection                                                                             |
+| `claude-desktop`   | Claude Desktop / Messages model list                                        | Separate native projection                                                                             |
+| `codex`            | Desktop and CLI, local and native Responses catalogs, temporary CLI catalog | Full description in published fixtures and the macOS CLI. Desktop tooltip and Windows checks pending   |
+| `gemini`           | Gemini CLI / Gemini model registry                                          | Separate native projection                                                                             |
+| `grokbuild`        | Grok Build / model profiles                                                 | Separate native projection                                                                             |
+| `opencode`         | OpenCode / provider catalog                                                 | Separate native projection                                                                             |
+| `openclaw`         | OpenClaw / provider and model registry                                      | Separate native projection                                                                             |
+| `hermes`           | Hermes / CLI provider catalog                                               | Separate native projection                                                                             |
+| `pi`               | Pi / custom provider registry                                               | Separate native projection                                                                             |
+| `workbuddy`        | WorkBuddy China / Desktop registry                                          | Separate native projection                                                                             |
+| `workbuddy-ai`     | WorkBuddy AI / Desktop registry                                             | Separate native projection                                                                             |
+| `qoder`            | Qoder China / Desktop registry                                              | Separate native projection                                                                             |
+| `doubaowork`       | Doubao Work / audit adapter                                                 | Native model picker outside this catalog                                                               |
+| `trae`             | TRAE China / bridge catalog                                                 | Separate native projection                                                                             |
+| `trae-intl`        | TRAE International / bridge catalog                                         | Separate native projection                                                                             |
+| `kimi`             | Kimi Code / provider projection                                             | Separate native projection                                                                             |
+| `qwen`             | Qwen Code / CLI model settings                                              | Separate native projection                                                                             |
+| `zcode`            | ZCode / Desktop registry                                                    | Separate native projection                                                                             |
+| `deepseek-harness` | DeepSeek Harness / native registry                                          | Separate native projection                                                                             |
+| `t3code`           | T3 Code / independent Codex instance and Responses                          | Full description in the instance catalog and full name in custom model settings. Native checks pending |
 
 On macOS, Codex CLI 0.171.0 ran against a temporary configuration and
 synthetic catalog. Its app-server `model/list` returned the complete
@@ -2127,28 +2165,137 @@ continuation ownership are checked separately from client display. A shared
 renderer regression covers installed Tools rows for all 19 picker-capable
 Agents while the executable catalog lacks the saved group.
 
-| Agent ID | Entry point and native adapter | Verification scope |
-| --- | --- | --- |
-| `claude` | Claude Code CLI, Messages catalog and shared runtime | Shared classifier tests. Native pending |
-| `claude-desktop` | Claude Desktop, Messages catalog and shared runtime | Shared classifier tests. Native pending |
-| `codex` | Codex desktop and CLI, Responses catalogs and shared runtime | Shared classifier tests. Native pending |
-| `gemini` | Gemini CLI, dotenv, JSON model definitions, Gemini URL routing | Alias migration and gateway fixtures passed. macOS CLI footer and synthetic inference passed. Native picker rendering and Windows pending |
-| `grokbuild` | Grok Build CLI, TOML profiles, shared Agent status and picker | Profile adoption, status and refresh passed with fixtures. Installed client pending |
-| `opencode` | OpenCode, provider model registry and shared runtime | Shared classifier tests. Native pending |
-| `openclaw` | OpenClaw, provider model registry and shared runtime | Shared classifier tests. Native pending |
-| `hermes` | Hermes, provider model registry and shared runtime | Shared classifier tests. Native pending |
-| `pi` | Pi, custom provider registry and shared runtime | Shared classifier tests. Native pending |
-| `workbuddy` | WorkBuddy China desktop, native model list and shared runtime | Shared classifier tests. Native pending |
-| `workbuddy-ai` | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests. Native pending |
-| `qoder` | Qoder China desktop, provider registry and shared runtime | Shared classifier tests. Native pending |
-| `doubaowork` | Doubao Work desktop, audit-only integration | No executable model picker or intent route in this integration |
-| `trae` | TRAE China desktop, Chat bridge and shared runtime | Shared classifier tests. Native pending |
-| `trae-intl` | TRAE International desktop, Chat bridge and shared runtime | Shared classifier tests. Native pending |
-| `kimi` | Kimi Code CLI, provider model registry and shared runtime | Shared classifier tests. Native pending |
-| `qwen` | Qwen Code CLI, JSONC model registry and shared runtime | Shared classifier tests. Native pending |
-| `zcode` | ZCode desktop, native model registry and shared runtime | Shared classifier tests. Native pending |
-| `deepseek-harness` | DeepSeek Harness, CLI model and credentials registry | Shared classifier tests. Native pending |
-| `t3code` | T3 Code desktop, independent Codex backend and shared runtime | Shared classifier tests. Native pending |
+The routing group editor also uses the Agent inventory below for saved model
+order. The shared editor opens legacy ranked groups, updates their default
+and fallback IDs, and reapplies catalog ranking when requested. Each
+executable adapter consumes those saved IDs through the existing group
+route. Doubao Work retains its audit-only path. Renderer fixtures cover the
+editor and saved order on the shared macOS and Windows code path. Native
+verification remains separate for the adapters listed below.
+
+The routing group model count uses the shared workspace table for each
+Agent listed below on macOS and Windows. It includes a separately
+configured classifier once per supplier and model. The existing Agent
+adapters continue to receive the same task member order and classifier
+configuration. Renderer fixtures cover the table count.
+
+Verified the count change on the working tree based on `21dceb85`, using
+macOS 26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3. TypeScript, Prettier
+and the renderer build passed. The full renderer suite passed 4,844 tests,
+including the new cases for repeated supplier and model pairs, matched
+members and separate suppliers. Installed-client verification is pending.
+
+For each Agent in the matrix below, the Custom routing group's rule editor
+uses the same renderer on macOS and Windows. The layout groups the match
+conditions, preferred member and ordered fallbacks. The editor continues to
+save the same rule fields, which feed the existing native adapter and runtime
+listed for each Agent. Doubao Work remains audit-only. Editor verification
+covers condition editing, pause rules, disabled rules, keyboard ordering and
+saved targets with synthetic fixtures. Native status remains as listed below.
+
+On the working tree based on `21dceb85`, Chromium on macOS 26.6.2 arm64
+verified the editor at 544 and 900 px in both themes across Simplified Chinese,
+Traditional Chinese, English and Japanese. The fixtures exercise long model
+IDs, conditions covering the full Agent inventory, mouse and keyboard rule
+ordering, and focus on the intent field after adding a rule. The full renderer
+suite passed 4,848 tests with Node 20.20.2 and pnpm 10.12.3 after the concurrent
+classifier changes and before the alignment follow-up. Windows WebView2 and
+installed-client verification remain pending.
+
+The alignment follow-up reproduced the rules starting at the form's left
+edge and the live trial starting in a separate column. At 900 and 544 px,
+Chromium verified a common left edge for rules, live trial, offline plan
+validation and advanced execution settings, with empty and populated rules.
+TypeScript, Prettier, the renderer build and all 136 routing panel tests passed
+after the alignment change.
+
+The rules title now uses the same label styling and column as the other
+advanced settings. Chromium verified the label's position, font and color,
+the adjacent **Add rule** button and the help popover at both widths, for
+empty and populated rules. The popover opens by mouse or keyboard and returns
+focus to the information button on Escape. All 137 routing panel tests,
+TypeScript, Prettier and the renderer build passed after this change.
+
+The Custom rule model picker uses the same renderer as the template picker
+for every Agent in the matrix below. It selects existing group member IDs,
+including effort variants. Primary, fallback and pause selections still feed
+the same saved rule fields and the same native adapters.
+Chromium on macOS verified wheel scrolling within a 44-member list at 900 and
+544 px, along with search, model replacement and saved fallback order.
+The renderer regressions cover retained effort variants and changing the
+member selected by a pause rule. On the working tree based on `21dceb85`,
+macOS 26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3 passed TypeScript, Prettier,
+the renderer build and all 4,849 renderer tests. Windows WebView2 was not
+exercised for this change.
+
+The Fastest and intent-rule regressions use the same inventory. Each
+executable adapter uses the shared exact-upstream measurements, candidate
+pool, continuation ownership and live rule selection. The classifier sees
+the latest supported user text through each adapter's canonical request
+projection. Codex Responses fixtures also exercise replayed reasoning
+summaries. Native acceptance remains pending on both platforms.
+
+The classifier protocol and deadline update applies to each executable Agent
+below through the listed adapter and shared runtime. The editor uses the same
+provider picker, deadline and trial on macOS and Windows. The classifier's
+outbound protocol is independent of the incoming Agent protocol. WorkBuddy
+China and international have a dedicated incoming Chat regression for deadline
+fallback and easy-rule selection. Doubao Work has no executable intent route.
+
+On macOS 26.6.2 arm64, the working tree based on `21dceb85` passed the
+classifier protocol and privacy tests with Rust 1.98.1. Loopback tests used the
+WorkBuddy China and international Chat entry points with the same short task
+and a classifier that returned after 2,300 ms. A 2,000 ms deadline recorded a
+timeout and selected the default model. A 5,000 ms deadline recorded a match
+and selected the easy model. Renderer tests covered the same outcomes and
+verified that changing a saved deadline survives reopening the editor.
+
+TypeScript, Prettier and the renderer build passed with Node 20.20.2 and
+pnpm 10.12.3. The renderer suite passed 4,848 tests. Cargo check, formatting
+and Clippy with warnings denied passed. The full Rust suite passed 7,993
+tests with 21 ignored. Installed clients and Windows remain pending.
+
+The longer opt-in classifier deadline and Gemini 3 classification effort
+apply through the same shared runtime and editor for every executable Agent
+below on macOS and Windows. Conversation ownership stays with each adapter's
+existing continuation path. Doubao Work has no executable intent route.
+
+The follow-up loopback regression verifies `MINIMAL` on the classifier's
+Gemini Native request. In both WorkBuddy editions a synthetic 5,300 ms
+classifier response caused a fallback with a 5,000 ms deadline and selected
+the easy model with a 10,000 ms deadline. Unknown Gemini models in the
+protocol fixture use their upstream thinking default. Renderer fixtures
+cover timeout guidance below and at the new 15,000 ms limit.
+The updated renderer suite passed 4,849 tests on macOS. Cargo check and
+Clippy with warnings denied passed for the follow-up.
+
+New hard/easy drafts use a 10,000 ms classification deadline in the shared
+editor for every executable Agent below. The editor regression checks the
+default in the draft and the saved configuration. Existing groups keep
+their saved deadlines.
+
+| Agent ID           | Entry point and native adapter                                        | Verification scope                                                                                                                        |
+| ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`           | Claude Code CLI, Messages catalog and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |
+| `claude-desktop`   | Claude Desktop, Messages catalog and shared runtime                   | Shared classifier tests. Native pending                                                                                                   |
+| `codex`            | Codex desktop and CLI, Responses catalogs and shared runtime          | Shared classifier tests. Native pending                                                                                                   |
+| `gemini`           | Gemini CLI, dotenv, JSON model definitions, Gemini URL routing        | Alias migration and gateway fixtures passed. macOS CLI footer and synthetic inference passed. Native picker rendering and Windows pending |
+| `grokbuild`        | Grok Build CLI, TOML profiles, shared Agent status and picker         | Profile adoption, status and refresh passed with fixtures. Installed client pending                                                       |
+| `opencode`         | OpenCode, provider model registry and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |
+| `openclaw`         | OpenClaw, provider model registry and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |
+| `hermes`           | Hermes, provider model registry and shared runtime                    | Shared classifier tests. Native pending                                                                                                   |
+| `pi`               | Pi, custom provider registry and shared runtime                       | Shared classifier tests. Native pending                                                                                                   |
+| `workbuddy`        | WorkBuddy China desktop, native model list and shared runtime         | Shared classifier tests and Chat deadline regression passed with loopback fixtures. Native pending                                        |
+| `workbuddy-ai`     | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests and Chat deadline regression passed with loopback fixtures. Native pending                                        |
+| `qoder`            | Qoder China desktop, provider registry and shared runtime             | Shared classifier tests. Native pending                                                                                                   |
+| `doubaowork`       | Doubao Work desktop, audit-only integration                           | No executable model picker or intent route in this integration                                                                            |
+| `trae`             | TRAE China desktop, Chat bridge and shared runtime                    | Shared classifier tests. Native pending                                                                                                   |
+| `trae-intl`        | TRAE International desktop, Chat bridge and shared runtime            | Shared classifier tests. Native pending                                                                                                   |
+| `kimi`             | Kimi Code CLI, provider model registry and shared runtime             | Shared classifier tests. Native pending                                                                                                   |
+| `qwen`             | Qwen Code CLI, JSONC model registry and shared runtime                | Shared classifier tests. Native pending                                                                                                   |
+| `zcode`            | ZCode desktop, native model registry and shared runtime               | Shared classifier tests. Native pending                                                                                                   |
+| `deepseek-harness` | DeepSeek Harness, CLI model and credentials registry                  | Shared classifier tests. Native pending                                                                                                   |
+| `t3code`           | T3 Code desktop, independent Codex backend and shared runtime         | Shared classifier tests. Native pending                                                                                                   |
 
 The projection and classifier paths are shared on macOS and Windows.
 Gemini CLI 0.67.0 on macOS displayed and sent the ASCII alias for a Chinese
@@ -2173,3 +2320,81 @@ and the pending patch were identical across the fast-forward. The remaining
 development checks, `pnpm test:agent-rewards` and
 `python3 -B scripts/tests/recover-shared-v23.test.py`, passed with 13 and 5
 tests respectively.
+
+The ranked editor follow-up was verified on the working tree based on
+`868cf24b` on macOS 26.6.2 arm64 with Rust 1.98.1, Node 20.20.2 and
+pnpm 10.12.3. The legacy capability fixture reopens the saved group, moves
+a member that is missing from the current catalog, checks the default and
+fallback IDs sent on save, and reopens the edited order. The recommendation
+fixture restores the same priority after a manual swap between tied models.
+TypeScript, Prettier, the renderer build and all 4,785 renderer tests passed.
+The Cargo library tests filtered by `intent` passed 588 tests with two
+ignored. The recorded Fastest and custom-rule requests still need live
+reproduction. Native Windows verification remains pending.
+
+The next routing follow-up compared the Fastest report with the saved
+group shown in its recording. The standalone Gemini measurement and the
+selected Gemini member used different upstreams. A synthetic three-member
+loopback fixture checks the saved order before measurements, distinct
+upstreams that share a model ID, and the fifth eligible request rotating
+to a member with first-content timing and no output rate. The original
+single-candidate trace does not show why the other members were absent.
+
+The Codex Responses loopback fixture runs translation and arithmetic in
+one named conversation and verifies different rule targets. The classifier
+receives only the current user text. A request carrying a known prior
+response ID retains the upstream that owns the response. Focused fixtures
+also reject encrypted or incomplete reasoning history, and reject actual
+or malformed tool fields in classifiers' output.
+
+Verified the updated working tree based on `868cf24b` on macOS 26.6.2
+arm64 with Rust 1.98.1. Cargo formatting, check and strict Clippy passed.
+The full Cargo test command passed 7,825 library and 165 integration tests
+with 21 library tests ignored. The Agent coverage inventory test passed.
+The reported upstreams and native Windows clients still need live
+verification.
+
+## First-run sign-in and automatic check-in settings
+
+The first-run wizard receives the confirmed account ID and uses each
+provider's own model catalog. This shared flow also supports ChatGPT API,
+GitHub Copilot, and Antigravity. The daily check-in settings validate the
+selected account and persist its preference. The renderer retains the last
+reward observation until the next refresh. These paths are shared by macOS
+and Windows, with Qoder's native account adapter on macOS and browser
+authorization available on both platforms. The entries with only the shared
+wizard have no automatic check-in adapter.
+
+| Agent ID           | Entry point and adapter                                                                        | Verification scope                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `claude`           | Claude Code CLI, Claude subscription                                                           | Claude first-run fixture passed. Installed client pending                                |
+| `claude-desktop`   | Claude Desktop, shared first-run wizard                                                        | Shared first-run fixtures passed. Installed client pending                               |
+| `codex`            | Codex desktop and CLI, Codex browser and device sign-in                                        | Codex browser, device and first-run fixtures passed. Installed client pending            |
+| `gemini`           | Gemini CLI, Gemini CLI subscription                                                            | Gemini CLI first-run fixture passed. Installed client pending                            |
+| `grokbuild`        | Grok Build CLI, Grok device sign-in                                                            | Grok device and first-run fixtures passed. Installed client pending                      |
+| `opencode`         | OpenCode, shared first-run wizard                                                              | Shared first-run fixtures passed. Installed client pending                               |
+| `openclaw`         | OpenClaw, shared first-run wizard                                                              | Shared first-run fixtures passed. Installed client pending                               |
+| `hermes`           | Hermes, shared first-run wizard                                                                | Shared first-run fixtures passed. Installed client pending                               |
+| `pi`               | Pi, shared first-run wizard                                                                    | Shared first-run fixtures passed. Installed client pending                               |
+| `workbuddy`        | WorkBuddy China desktop, WorkBuddy subscription and existing account-scoped preference command | First-run and check-in renderer fixtures passed. Installed client pending                |
+| `workbuddy-ai`     | WorkBuddy international desktop, WorkBuddy AI subscription                                     | WorkBuddy AI first-run fixture passed. Installed client pending                          |
+| `qoder`            | Qoder China desktop, native macOS and browser reward accounts                                  | Native and browser identity fixtures and renderer tests passed. Installed client pending |
+| `doubaowork`       | Doubao Work desktop, native account list and account-scoped preference                         | Check-in renderer and account preference fixtures passed. Installed client pending       |
+| `trae`             | TRAE China desktop, native account identity through the rewards bridge                         | Identity IPC fixture and check-in renderer tests passed. Installed client pending        |
+| `trae-intl`        | TRAE International desktop, shared first-run wizard                                            | Shared first-run fixtures passed. Installed client pending                               |
+| `kimi`             | Kimi Code CLI, shared first-run wizard                                                         | Shared first-run fixtures passed. Installed client pending                               |
+| `qwen`             | Qwen Code CLI, shared first-run wizard                                                         | Shared first-run fixtures passed. Installed client pending                               |
+| `zcode`            | ZCode desktop, native rewards credentials and account identity                                 | Native identity fixtures and check-in renderer tests passed. Installed client pending    |
+| `deepseek-harness` | DeepSeek Harness CLI, shared first-run wizard                                                  | Shared first-run fixtures passed. Installed client pending                               |
+| `t3code`           | T3 Code desktop, shared first-run wizard                                                       | Shared first-run fixtures passed. Installed client pending                               |
+
+Verified the working tree based on `868cf24b` on macOS 26.6.2 arm64 with
+Rust 1.98.1, Node 20.20.2, and pnpm 10.12.3. `pnpm typecheck`,
+`pnpm build:renderer`, `pnpm format:check`, and `pnpm test:unit` passed.
+The renderer suite passed 4,783 tests. `pnpm test:agent-rewards` and
+`pnpm test:trae-bridge` passed 14 and 73 tests respectively. Cargo
+formatting, check, strict Clippy, and the full Cargo test command passed
+against the `src-tauri` manifest. Cargo reported 7,821 library tests and
+165 integration tests passed with 21 library tests ignored. The original
+reporter's subscription accounts and the installed Windows clients still
+need live verification.

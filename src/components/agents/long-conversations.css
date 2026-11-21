@@ -18,6 +18,9 @@
   gap: 8px;
 }
 .mp-long-heading > span,
+.mp-long-threshold::placeholder {
+  color: var(--mp-muted);
+}
 .mp-long-conversations > p {
   color: var(--mp-muted, hsl(var(--muted-foreground)));
   font-size: 11px;
@@ -59,6 +62,9 @@
   border: 1px solid var(--long-border);
   border-radius: 6px;
   background: var(--mp-card, hsl(var(--background)));
+}
+.mp-long-threshold::placeholder {
+  color: var(--mp-muted);
 }
 .mp-long-conversations > p {
   max-width: 640px;

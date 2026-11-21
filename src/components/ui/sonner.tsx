@@ -44,7 +44,7 @@ export function Toaster() {
           closeButton:
             "absolute right-2 top-2 rounded-full p-1 transition-colors",
           actionButton:
-            "rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-[var(--primary-hover)]",
+            "rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-[var(--primary-action-hover)]",
         },
       }}
     />

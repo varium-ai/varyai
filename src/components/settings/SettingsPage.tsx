@@ -33,7 +33,6 @@ import {
 } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { settingsApi } from "@/lib/api";
 import { LanguageSettings } from "@/components/settings/LanguageSettings";
 import { PrivacySettings } from "@/components/settings/PrivacySettings";
@@ -240,8 +239,9 @@ export function SettingsPage({
           className="flex min-h-0 flex-1 flex-col"
         >
           <header className="settings-header">
-            <WorkspacePageHeading title={t("settings.title")} />
-            <div className="mt-[var(--workspace-section-gap)] flex flex-wrap">
+            <h1 className="vary-page-title">{t("settings.title")}</h1>
+            {activeTab === "general" && <p>{t("settings.statusNotice")}</p>}
+            <div className="mt-4 flex flex-wrap">
               <TabsList
                 aria-label={t("settings.categoryLabel")}
                 slidingIndicator={false}

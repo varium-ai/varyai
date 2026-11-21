@@ -1032,7 +1032,7 @@ export function ProviderEditorDialog({
             <footer className="pv-editor-foot">
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 disabled={disabled}
                 onClick={onClose}
               >

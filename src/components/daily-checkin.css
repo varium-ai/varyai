@@ -92,7 +92,7 @@
   gap: 6px;
   padding: 4px 0;
   list-style: none;
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   cursor: pointer;
   font-weight: 500;
 }
@@ -314,7 +314,7 @@
   border-color: transparent;
   border-radius: 16px;
   background: color-mix(in srgb, var(--mp-accent) 9%, var(--mp-card));
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
   font-weight: 500;
 }
 .mp-agent-start.mp-agent-checkin-trigger[data-inactive="true"] {

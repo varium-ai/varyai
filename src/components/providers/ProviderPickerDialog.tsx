@@ -1,6 +1,6 @@
 import { useEffect, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import {
   globalProviderPresets,
   type GlobalProviderPreset,
@@ -11,8 +11,8 @@ import {
 } from "@/config/subscriptionProviders";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { SearchEmptyState } from "@/components/ui/search-empty-state";
-import { SearchInput } from "@/components/ui/search-input";
 import {
   Dialog,
   DialogBody,
@@ -123,15 +123,22 @@ export function ProviderPickerDialog({
                 : "providerFlow.vendorDescription",
             )}
           </DialogDescription>
-          <SearchInput
-            wrapperClassName="pv-vendor-search"
-            autoFocus
-            aria-label={t("providerFlow.findVendor")}
-            placeholder={t("providerFlow.findVendor")}
-            value={query}
-            disabled={busy}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <div className="pv-vendor-search">
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              type="search"
+              className="pl-9 leading-5"
+              autoFocus
+              aria-label={t("providerFlow.findVendor")}
+              placeholder={t("providerFlow.findVendor")}
+              value={query}
+              disabled={busy}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
         </DialogHeader>
         <DialogBody className="pv-picker-body">
           <div className="pv-vendors pv-directory">

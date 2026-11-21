@@ -108,13 +108,6 @@
   --primary: 219 100% 74%;
   --ring: 219 100% 74%;
 }
-.vary-onboarding button[data-variant="default"] {
-  background: var(--mp-accent);
-  color: var(--mp-card);
-}
-.vary-onboarding button[data-variant="default"]:hover {
-  filter: brightness(1.08);
-}
 .ob-method-icon {
   display: grid;
   place-items: center;
@@ -265,7 +258,7 @@
   background: var(--mp-bg);
 }
 .ob-subscriptions > button.selected {
-  color: hsl(var(--primary));
+  color: var(--mp-action-text);
   border-color: hsl(var(--primary));
   box-shadow: 0 0 0 1px hsl(var(--primary));
 }

@@ -33,6 +33,7 @@ import {
   ChevronDown,
   PackageCheck,
   PackagePlus,
+  Search,
   X,
 } from "lucide-react";
 import {
@@ -72,8 +73,7 @@ import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
-import { SearchInput } from "@/components/ui/search-input";
-import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppDialog } from "@/components/ui/app-dialog";
 import type { AppId } from "@/lib/api";
@@ -1717,7 +1717,9 @@ export function AgentConnectionsPage({
     >
       {!compact && (
         <header className="agent-directory-header">
-          <WorkspacePageHeading title={t("agentConnections.title")} />
+          <h1 className="mp-page-heading vary-page-title">
+            {t("agentConnections.title")}
+          </h1>
           {rescanButton("outline")}
         </header>
       )}
@@ -1778,13 +1780,17 @@ export function AgentConnectionsPage({
                 )}
               </TabsTrigger>
             </TabsList>
-            <SearchInput
-              wrapperClassName="agent-directory-search"
-              aria-label={t("agentConnections.directory.search")}
-              placeholder={t("agentConnections.directory.search")}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
+            <div className="agent-directory-search">
+              <Search size={16} aria-hidden="true" />
+              <Input
+                type="search"
+                className="leading-5"
+                aria-label={t("agentConnections.directory.search")}
+                placeholder={t("agentConnections.directory.search")}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
           </div>
           <TabsContent
             value="installed"
@@ -2007,7 +2013,7 @@ export function AgentConnectionsPage({
           )}
           {(!catalog.data?.length || catalog.isError) && (
             <div>
-              <p role="alert" className="text-sm text-amber-700">
+              <p role="alert" className="text-sm text-[var(--warning)]">
                 {t("agentConnections.noModels")}
               </p>
               {onAddProvider && (
