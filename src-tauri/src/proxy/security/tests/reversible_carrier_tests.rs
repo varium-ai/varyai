@@ -781,9 +781,10 @@ fn decoded_carrier_body(copies: usize) -> Value {
 }
 
 fn decoded_carrier_charges() -> (usize, usize) {
+    // Small document: tiered node/entry charges, one object entry.
     (
-        DECODED_CARRIER_ARGUMENTS.len() + 3 * 512 + 1024,
-        1024 + 4 * DECODED_CARRIER_ARGUMENTS.len() + 512,
+        DECODED_CARRIER_ARGUMENTS.len() + 3 * 384 + 256,
+        1024 + 4 * DECODED_CARRIER_ARGUMENTS.len() + 128,
     )
 }
 
@@ -1122,7 +1123,7 @@ fn carrier_metadata_decoded_document_retention_matches_all_independent_allocatio
     // Independent paths: readonly type, argument outer path, and decoded x.
     let metadata = 3 * 4 * step + (5 + 4) + (5 + 9) + 1 + 4 * leaf + 4 * document;
     let retained =
-        decoded_carrier_original_charge(&body)? + encoded.len() + 3 * 512 + 1024 + metadata;
+        decoded_carrier_original_charge(&body)? + encoded.len() + 3 * 384 + 256 + metadata;
     let budget = PayloadBudget::with_limit(1024 * 1024);
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
     assert_eq!(budget.used(), retained);

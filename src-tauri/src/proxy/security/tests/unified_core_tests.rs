@@ -5173,7 +5173,7 @@ fn ch2_core_json_invalid_index_or_choice_never_proves_completion() -> TestResult
             2 => source["choices"][1]["index"] = json!(-1),
             3 => source["choices"][1]["index"] = json!(1.5),
             4 => source["choices"][1]["index"] = json!(128),
-            5 => source["choices"][1]["finish_reason"] = json!("length"),
+            5 => source["choices"][1]["finish_reason"] = json!("abort"),
             6 => source["choices"][1]["finish_reason"] = Value::Null,
             7 => {
                 source["choices"][1]["message"]["function_call"] =
@@ -5353,7 +5353,7 @@ fn ch2_core_sse_invalid_index_terminal_or_tool_never_proves_completion() -> Test
             1 => chunks[0]["choices"][0]["index"] = json!(-1),
             2 => chunks[0]["choices"][0]["index"] = json!(128),
             3 => chunks[1]["choices"][0]["finish_reason"] = Value::Null,
-            4 => chunks[1]["choices"][0]["finish_reason"] = json!("length"),
+            4 => chunks[1]["choices"][0]["finish_reason"] = json!("abort"),
             5 => chunks[2]["choices"][0]["index"] = json!(2),
             6 => {
                 chunks[2]["choices"][0]["delta"]["tool_calls"][0]["id"] =

@@ -71,6 +71,8 @@ export function rendererChunk(id: string): string | undefined {
     return "provider-presets";
   }
   if (relative === "utils/grokBuildConfig.ts") return "provider-presets";
+  // The version hook imports this shared state; keep it out of the UI chunk.
+  if (relative === "components/agents/updatePrompts.ts") return "app-shared";
   // Provider and routing screens share icons without depending on each other's UI.
   if (relative === "components/providers/UpstreamIcon.tsx") return "app-shared";
   if (

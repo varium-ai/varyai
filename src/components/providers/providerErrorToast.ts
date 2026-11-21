@@ -29,6 +29,21 @@ export function showProviderError(
   // Only recognized codes select localized text; backend details never reach the toast.
   const code =
     typeof cause === "string" ? cause.replace(/^routingUpstreams\./, "") : "";
+  const detailedReasons = [
+    "invalidName",
+    "invalidBaseUrl",
+    "invalidApiKey",
+    "credentialReentryRequired",
+    "endpointSettingsReentryRequired",
+    "invalidProtocol",
+    "invalidModelConfig",
+    "invalidKeyPool",
+    "invalidEndpointSettings",
+    "invalidAuthentication",
+    "keyLimit",
+    "modelLimit",
+    "configTooLarge",
+  ];
   const reason = [
     "conflict",
     "limit",
@@ -37,13 +52,15 @@ export function showProviderError(
     "nameExists",
   ].includes(code)
     ? `modelProviders.${code}`
-    : code === "invalid"
-      ? `modelProviders.errors.${operation === "importAccount" ? "invalidAccountFile" : "invalid"}`
-      : code === "invalidModels"
-        ? "modelProviders.invalidModels"
-        : code === "emptyCatalog"
-          ? "intentRouting.catalogReason.empty"
-          : undefined;
+    : detailedReasons.includes(code)
+      ? `modelProviders.errors.${code}`
+      : code === "invalid"
+        ? `modelProviders.errors.${operation === "importAccount" ? "invalidAccountFile" : "invalid"}`
+        : code === "invalidModels"
+          ? "modelProviders.invalidModels"
+          : code === "emptyCatalog"
+            ? "intentRouting.catalogReason.empty"
+            : undefined;
   toast.error(
     t(
       operation === "copy"

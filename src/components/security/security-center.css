@@ -1,9 +1,10 @@
 .security-center {
   container-type: inline-size;
   width: 100%;
-  max-width: 1232px;
+  max-width: var(--workspace-page-max-width, 1232px);
   margin-inline: auto;
-  padding: calc(var(--workspace-page-top, 24px) + 8px) 24px 32px;
+  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px)
+    32px;
   color: hsl(var(--foreground));
 }
 .sc-header,
@@ -20,7 +21,7 @@
   min-width: 0;
 }
 .sc-tab-bar {
-  margin-top: 16px;
+  margin-top: var(--workspace-section-gap);
 }
 .sc-surface {
   min-width: 0;

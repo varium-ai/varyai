@@ -6,6 +6,20 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 pub(crate) const INVALID: &str = "routingUpstreams.invalid";
+pub(crate) const INVALID_NAME: &str = "routingUpstreams.invalidName";
+pub(crate) const INVALID_BASE_URL: &str = "routingUpstreams.invalidBaseUrl";
+pub(crate) const INVALID_API_KEY: &str = "routingUpstreams.invalidApiKey";
+pub(crate) const CREDENTIAL_REENTRY_REQUIRED: &str = "routingUpstreams.credentialReentryRequired";
+pub(crate) const ENDPOINT_SETTINGS_REENTRY_REQUIRED: &str =
+    "routingUpstreams.endpointSettingsReentryRequired";
+pub(crate) const INVALID_PROTOCOL: &str = "routingUpstreams.invalidProtocol";
+pub(crate) const INVALID_MODEL_CONFIG: &str = "routingUpstreams.invalidModelConfig";
+pub(crate) const INVALID_KEY_POOL: &str = "routingUpstreams.invalidKeyPool";
+pub(crate) const INVALID_ENDPOINT_SETTINGS: &str = "routingUpstreams.invalidEndpointSettings";
+pub(crate) const INVALID_AUTHENTICATION: &str = "routingUpstreams.invalidAuthentication";
+pub(crate) const KEY_LIMIT: &str = "routingUpstreams.keyLimit";
+pub(crate) const MODEL_LIMIT: &str = "routingUpstreams.modelLimit";
+pub(crate) const CONFIG_TOO_LARGE: &str = "routingUpstreams.configTooLarge";
 pub(crate) const UNAVAILABLE: &str = "routingUpstreams.sourceUnavailable";
 pub(crate) const MAX_UPSTREAMS: usize = 256;
 pub(crate) const MAX_CONFIG_BYTES: usize = 512 * 1024;
@@ -297,7 +311,6 @@ impl RoutingUpstream {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.schema_version != 1
             || !valid_identity(&self.id)
-            || !valid_name(&self.name)
             || self
                 .icon
                 .as_deref()
@@ -314,6 +327,9 @@ impl RoutingUpstream {
         {
             return Err(INVALID.into());
         }
+        if !valid_name(&self.name) {
+            return Err(INVALID_NAME.into());
+        }
         if let UpstreamSource::Api {
             base_url,
             api_key,
@@ -325,16 +341,22 @@ impl RoutingUpstream {
         {
             if matches!(&self.source, UpstreamSource::Api { auth_type: Some(auth), .. } if !matches!(auth.as_str(), "api-key" | "bearer" | "both"))
             {
-                return Err(INVALID.into());
+                return Err(INVALID_AUTHENTICATION.into());
             }
-            if !valid_url(base_url)
-                || !api_key.as_deref().is_some_and(valid_key)
-                || !valid_format(api_format)
-                || models.len() > 256
-                || !valid_models(models)
-                || !valid_models(catalog)
-            {
-                return Err(INVALID.into());
+            if !valid_url(base_url) {
+                return Err(INVALID_BASE_URL.into());
+            }
+            if !api_key.as_deref().is_some_and(valid_key) {
+                return Err(INVALID_API_KEY.into());
+            }
+            if !valid_format(api_format) {
+                return Err(INVALID_PROTOCOL.into());
+            }
+            if models.len() > 256 {
+                return Err(MODEL_LIMIT.into());
+            }
+            if !valid_models(models) || !valid_models(catalog) {
+                return Err(INVALID_MODEL_CONFIG.into());
             }
         }
         if let UpstreamSource::Subscription {
@@ -344,36 +366,101 @@ impl RoutingUpstream {
             ..
         } = &self.source
         {
-            if !valid_identity(account_id)
-                || models.len() > 256
-                || !valid_models(models)
-                || !valid_models(catalog)
-            {
+            if !valid_identity(account_id) {
                 return Err(INVALID.into());
+            }
+            if models.len() > 256 {
+                return Err(MODEL_LIMIT.into());
+            }
+            if !valid_models(models) || !valid_models(catalog) {
+                return Err(INVALID_MODEL_CONFIG.into());
             }
         }
         if let Some(transport) = &self.transport {
             let mut ids = std::collections::HashSet::new();
-            if !matches!(self.source, UpstreamSource::Api { .. })
-                || transport.primary_models.as_ref().is_some_and(|models| !valid_key_models(models))
-                || transport.keys.iter().any(|key| key.models.as_ref().is_some_and(|models| !valid_key_models(models)))
-                || transport.endpoints.iter().any(|(format, url)| !valid_format(format) || !valid_url(url))
-                || transport.primary_name.as_ref().is_some_and(|name| name.chars().count() > 120 || name.chars().any(char::is_control))
-                || transport.keys.len() > 64
-                || transport.preferred_key.as_ref().is_some_and(|id| !transport.keys.iter().any(|key| &key.id == id))
-                || transport.keys.iter().any(|key| key.name.chars().count() > 120 || key.name.chars().any(char::is_control))
-                || transport.primary_protocol.as_deref().is_some_and(|f| !valid_format(f) || !matches!(&self.source, UpstreamSource::Api { api_format, .. } if api_format == f))
-                || transport.keys.iter().any(|k| !valid_identity(&k.id) || !ids.insert(&k.id) || !k.key.as_deref().is_some_and(valid_key) || k.api_format.as_deref().is_some_and(|f| !valid_format(f) || !transport.endpoints.contains_key(f)))
-                || transport.headers.as_ref().is_some_and(|headers| headers.len() > 64 || headers.iter().any(|(name, value)| {
-                    http::HeaderName::from_bytes(name.as_bytes()).is_err()
-                        || http::HeaderValue::from_str(value).is_err()
-                        || http::HeaderName::from_bytes(name.as_bytes()).is_ok_and(|name| crate::proxy::is_protected_local_proxy_override_header(&name))
-                        || name.eq_ignore_ascii_case("cookie")
-                        || value.contains("${sessionId}") || value.contains("${threadId}")
-                })) { return Err(INVALID.into()); }
+            if !matches!(self.source, UpstreamSource::Api { .. }) {
+                return Err(INVALID.into());
+            }
+            if transport
+                .primary_models
+                .as_ref()
+                .is_some_and(|models| !valid_key_models(models))
+                || transport.keys.iter().any(|key| {
+                    key.models
+                        .as_ref()
+                        .is_some_and(|models| !valid_key_models(models))
+                })
+            {
+                return Err(INVALID_MODEL_CONFIG.into());
+            }
+            if transport
+                .endpoints
+                .iter()
+                .any(|(format, url)| !valid_format(format) || !valid_url(url))
+            {
+                return Err(INVALID_ENDPOINT_SETTINGS.into());
+            }
+            if transport.primary_name.as_ref().is_some_and(|name| {
+                name.chars().count() > 120 || name.chars().any(char::is_control)
+            }) || transport
+                .keys
+                .iter()
+                .any(|key| key.name.chars().count() > 120 || key.name.chars().any(char::is_control))
+                || transport
+                    .preferred_key
+                    .as_ref()
+                    .is_some_and(|id| !transport.keys.iter().any(|key| &key.id == id))
+            {
+                return Err(INVALID_KEY_POOL.into());
+            }
+            if transport.keys.len() > 64 {
+                return Err(KEY_LIMIT.into());
+            }
+            if transport.primary_protocol.as_deref().is_some_and(|f| {
+                !valid_format(f)
+                    || !matches!(&self.source, UpstreamSource::Api { api_format, .. } if api_format == f)
+            }) {
+                return Err(INVALID_PROTOCOL.into());
+            }
+            if transport
+                .keys
+                .iter()
+                .any(|key| !valid_identity(&key.id) || !ids.insert(&key.id))
+            {
+                return Err(INVALID_KEY_POOL.into());
+            }
+            if transport
+                .keys
+                .iter()
+                .any(|key| !key.key.as_deref().is_some_and(valid_key))
+            {
+                return Err(INVALID_API_KEY.into());
+            }
+            if transport.keys.iter().any(|key| {
+                key.api_format
+                    .as_deref()
+                    .is_some_and(|f| !valid_format(f) || !transport.endpoints.contains_key(f))
+            }) {
+                return Err(INVALID_ENDPOINT_SETTINGS.into());
+            }
+            if transport.headers.as_ref().is_some_and(|headers| {
+                headers.len() > 64
+                    || headers.iter().any(|(name, value)| {
+                        http::HeaderName::from_bytes(name.as_bytes()).is_err()
+                            || http::HeaderValue::from_str(value).is_err()
+                            || http::HeaderName::from_bytes(name.as_bytes()).is_ok_and(|name| {
+                                crate::proxy::is_protected_local_proxy_override_header(&name)
+                            })
+                            || name.eq_ignore_ascii_case("cookie")
+                            || value.contains("${sessionId}")
+                            || value.contains("${threadId}")
+                    })
+            }) {
+                return Err(INVALID_ENDPOINT_SETTINGS.into());
+            }
         }
         if serde_json::to_vec(self).map_err(|_| INVALID)?.len() > MAX_CONFIG_BYTES {
-            return Err(INVALID.into());
+            return Err(CONFIG_TOO_LARGE.into());
         }
         Ok(())
     }
@@ -796,6 +883,15 @@ mod tests {
         persisted.revision = 0;
         let saved = db.save_routing_upstream(persisted)?;
         let mut edited = db.routing_upstream_editor(&saved.id, saved.revision)?;
+        let mut moved_destination = edited.clone();
+        moved_destination.transport = None;
+        if let UpstreamSource::Api { base_url, .. } = &mut moved_destination.source {
+            *base_url = "https://new.example/v1".into();
+        }
+        let error = db
+            .save_routing_upstream(moved_destination)
+            .expect_err("a saved credential cannot move to a new endpoint");
+        assert_eq!(error, CREDENTIAL_REENTRY_REQUIRED);
         let transport = edited.transport.as_mut().ok_or(INVALID)?;
         assert_eq!(transport.primary_models, Some(vec!["chat-a".to_owned()]));
         assert_eq!(transport.keys[0].models, Some(vec!["chat-b".to_owned()]));
@@ -998,6 +1094,6 @@ mod tests {
         if let UpstreamSource::Api { models, .. } = &mut record.source {
             models[0]["modelPreferences"]["images"] = json!("invalid");
         }
-        assert_eq!(record.validate(), Err(INVALID.into()));
+        assert_eq!(record.validate(), Err(INVALID_MODEL_CONFIG.into()));
     }
 }

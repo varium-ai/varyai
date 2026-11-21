@@ -101,7 +101,14 @@ it("places Magpie first and opens it even when another source has selected provi
     "aria-labelledby",
     "import-tab-magpie",
   );
-  expect(screen.getByText("providerImport.empty")).toBeInTheDocument();
+  const emptyTitle = screen.getByRole("heading", {
+    level: 2,
+    name: "providerImport.empty",
+  });
+  const emptyState = emptyTitle.closest(".search-empty-state");
+  expect(emptyState).not.toBeNull();
+  expect(emptyTitle.closest('[role="status"]')).not.toBeNull();
+  expect(emptyState?.querySelector('img[alt=""]')).not.toBeNull();
   expect(screen.getByText("Selected 0")).toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: "providerFlow.import" }),
@@ -203,7 +210,14 @@ it("shows five sources, pickable counts and disabled duplicate/subscription rows
   ).toBeDisabled();
   expect(screen.getByText("providerImport.readOnly")).toBeInTheDocument();
   fireEvent.click(within(tabs).getByRole("tab", { name: /Magpie/ }));
-  expect(screen.getByText("providerImport.empty")).toBeInTheDocument();
+  const emptyTitle = screen.getByRole("heading", {
+    level: 2,
+    name: "providerImport.empty",
+  });
+  const emptyState = emptyTitle.closest(".search-empty-state");
+  expect(emptyState).not.toBeNull();
+  expect(emptyTitle.closest('[role="status"]')).not.toBeNull();
+  expect(emptyState?.querySelector('img[alt=""]')).not.toBeNull();
   fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
   expect(screen.getByRole("checkbox", { name: "New relay" })).toBeChecked();
 });
@@ -388,4 +402,26 @@ it("counts and imports only the active source while preserving choices across ta
       },
     ]),
   );
+});
+
+it("renders unified empty state for missing and unreadable sources", async () => {
+  const next = structuredClone(sources);
+  next[4].found = false;
+  (next[1] as { error?: string }).error = "bad";
+  vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
+  mount();
+
+  const missingHeading = await screen.findByRole("heading", {
+    level: 2,
+    name: "providerImport.missing",
+  });
+  expect(missingHeading.closest(".search-empty-state")).not.toBeNull();
+
+  const tabs = screen.getByRole("tablist");
+  fireEvent.click(within(tabs).getByRole("tab", { name: /Claude Code/ }));
+  const failedHeading = screen.getByRole("heading", {
+    level: 2,
+    name: "providerImport.sourceFailed",
+  });
+  expect(failedHeading.closest(".search-empty-state")).not.toBeNull();
 });

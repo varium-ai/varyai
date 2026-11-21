@@ -1,5 +1,4 @@
 import {
-  Search,
   Info,
   CircleAlert,
   CloudDownload,
@@ -52,6 +51,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -1716,20 +1716,13 @@ export function IntentRoutingPanel({
           <h3>{t("intentRouting.title")}</h3>
         </div>
         <div className="rt-group-tools">
-          <div className="rt-group-search">
-            <Search
-              aria-hidden="true"
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              type="search"
-              aria-label={t("intentRouting.filter")}
-              placeholder={t("intentRouting.filter")}
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              className="h-9 pl-9"
-            />
-          </div>
+          <SearchInput
+            wrapperClassName="rt-group-search"
+            aria-label={t("intentRouting.filter")}
+            placeholder={t("intentRouting.filter")}
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+          />
           <div className="rt-group-status-filter">
             <select
               aria-label={t("routingPage.groupStatus")}

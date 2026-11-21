@@ -1553,7 +1553,11 @@ mod outbound_tail_tests {
 // The scratch charge covers one live parser, escaped-string scratch, duplicate
 // key strings/HashSet tables, and realloc old/new peaks. No parser is concurrent.
 fn decoded_charges(encoded: &str, local_limit: usize) -> Result<(usize, usize), TokenError> {
-    if encoded.len() > 1024 * 1024 {
+    // Keep the single-document ceiling in step with the capture-side entity
+    // limit: the peak check below (retained + scratch against `local_limit`)
+    // is the real memory bound, so the document ceiling only rejects documents
+    // no capture buffer could have delivered anyway.
+    if encoded.len() > 8 * 1024 * 1024 {
         return Err(TokenError::CapacityExceeded);
     }
     let (mut nodes, mut entries, mut depth) = (0usize, 0usize, 0usize);
@@ -1605,10 +1609,10 @@ fn decoded_charges(encoded: &str, local_limit: usize) -> Result<(usize, usize), 
         }
     }
     let retained = nodes
-        .checked_mul(512)
+        .checked_mul(node_charge(encoded.len()))
         .and_then(|n| {
             entries
-                .checked_mul(1024)
+                .checked_mul(entry_charge(encoded.len()))
                 .and_then(|entries| n.checked_add(entries))
         })
         .and_then(|n| n.checked_add(encoded.len()))
@@ -1618,7 +1622,7 @@ fn decoded_charges(encoded: &str, local_limit: usize) -> Result<(usize, usize), 
         .checked_mul(4)
         .and_then(|n| {
             entries
-                .checked_mul(512)
+                .checked_mul(scratch_entry_charge(encoded.len()))
                 .and_then(|entries| n.checked_add(entries))
         })
         .and_then(|n| n.checked_add(1024))
@@ -1628,6 +1632,46 @@ fn decoded_charges(encoded: &str, local_limit: usize) -> Result<(usize, usize), 
         .filter(|peak| *peak <= local_limit && *peak <= isize::MAX as usize)
         .ok_or(TokenError::CapacityExceeded)?;
     Ok((retained, scratch))
+}
+
+/// Per-node charge bounds one `serde_json::Value` node plus its string data with
+/// a safety margin. The wide-document margin assumes large payloads where the
+/// fixed overhead per node is negligible; a streamed answer is thousands of tiny
+/// frames, for which that margin inflated the charge ~100x over real memory and
+/// exhausted the pool on legitimately long replies. The small-document tier
+/// still covers the measured worst case per node (a nested singleton array
+/// reserves `capacity * size_of::<Value>()` bytes, measured at 288B here), with
+/// headroom for Vec growth, but no longer multiplies it by the wide margin.
+const SMALL_DOCUMENT_BYTES: usize = 8 * 1024;
+const WIDE_NODE_CHARGE: usize = 512;
+const WIDE_ENTRY_CHARGE: usize = 1024;
+const WIDE_SCRATCH_ENTRY_CHARGE: usize = 512;
+const SMALL_NODE_CHARGE: usize = 384;
+const SMALL_ENTRY_CHARGE: usize = 256;
+const SMALL_SCRATCH_ENTRY_CHARGE: usize = 128;
+
+fn node_charge(encoded_len: usize) -> usize {
+    if encoded_len <= SMALL_DOCUMENT_BYTES {
+        SMALL_NODE_CHARGE
+    } else {
+        WIDE_NODE_CHARGE
+    }
+}
+
+fn entry_charge(encoded_len: usize) -> usize {
+    if encoded_len <= SMALL_DOCUMENT_BYTES {
+        SMALL_ENTRY_CHARGE
+    } else {
+        WIDE_ENTRY_CHARGE
+    }
+}
+
+fn scratch_entry_charge(encoded_len: usize) -> usize {
+    if encoded_len <= SMALL_DOCUMENT_BYTES {
+        SMALL_SCRATCH_ENTRY_CHARGE
+    } else {
+        WIDE_SCRATCH_ENTRY_CHARGE
+    }
 }
 
 // Decode only ordinary JSON: Value::deserialize recognizes private serde sentinel

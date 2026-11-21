@@ -9,6 +9,8 @@ opens workspace statistics. A saved Routing selection opens Usage. The four
 summary cells show cache-inclusive tokens, requests, effective cost and
 prompt cache hits. The stacked trend and ranked list switch together between
 tokens, cost and requests. Selecting a provider displays its model breakdown.
+Long model names are truncated with an ellipsis so the metric values and bars
+stay inside the card. Hover over a truncated name to read it in full.
 Hover or focus a chart column to see its date or hour, colored breakdown,
 total and request count.
 
@@ -33,6 +35,9 @@ Hover or focus a day for its date and totals. The arrow keys move between days
 and weeks.
 
 The tab refreshes its aggregate ledger view every 10 seconds while visible.
+The toolbar refresh reads both the selected period and the activity heatmap.
+It confirms completion even if totals are unchanged, or reports a read failure
+so the user can retry. Background refreshes do not show these notifications.
 It combines existing gateway and imported session usage, applies ledger
 deduplication and includes older daily rollups. Local policy blocks with the
 recorded block marker are excluded from detail aggregates. Archived rollups

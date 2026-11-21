@@ -1,6 +1,7 @@
 .settings-page {
   container-type: inline-size;
-  padding: var(--workspace-page-top, 24px) 24px 0;
+  max-width: var(--workspace-page-max-width, 1232px);
+  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px) 0;
   color: hsl(var(--foreground));
 }
 .settings-header {

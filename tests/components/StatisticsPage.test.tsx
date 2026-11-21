@@ -59,9 +59,7 @@ describe("StatisticsPage", () => {
   });
 
   it("renders usage statistics outside the settings page", () => {
-    const onOpenSecurity = vi.fn();
-
-    render(<StatisticsPage onOpenSecurity={onOpenSecurity} />);
+    render(<StatisticsPage />);
 
     expect(screen.getByTestId("refresh-interval")).toHaveTextContent("30000");
     expect(screen.getByTestId("session-auto-sync")).toHaveTextContent("true");
@@ -74,10 +72,9 @@ describe("StatisticsPage", () => {
         screen.getByRole("region", { name: "today-summary" }),
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", { name: "securityStats.viewLogs" }),
-    );
-    expect(onOpenSecurity).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "securityStats.viewLogs" }),
+    ).not.toBeInTheDocument();
   });
 
   it("persists statistics preferences through the settings service", async () => {

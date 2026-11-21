@@ -254,6 +254,7 @@ async fn large_tool_catalog_restores_success_and_withholds_unsafe_upstream_error
 
 #[derive(Clone, Copy)]
 enum ReplyMode {
+    FragmentedChat { choices: usize, reasoning: bool },
     Echo,
     EchoSse,
     History,
@@ -369,6 +370,27 @@ async fn scripted_upstream(
         ReplyMode::EchoSse => {
             ([("content-type", "text/event-stream")], tool_sse(text)).into_response()
         }
+        ReplyMode::FragmentedChat {
+            choices: count,
+            reasoning,
+        } => {
+            let mut wire = String::new();
+            for index in 0..count {
+                let mut delta = if index == 0 {
+                    json!({"role":"assistant", "content":text})
+                } else {
+                    json!({"content":"x"})
+                };
+                if reasoning {
+                    delta["reasoning_content"] = json!("r");
+                }
+                let reason = (index + 1 == count).then_some("stop");
+                let chunk = json!({"id":"synthetic-fragments", "choices":[{"index":0,"delta":delta,"finish_reason":reason}]});
+                wire.push_str(&format!("data: {chunk}\n\n"));
+            }
+            wire.push_str("data: [DONE]\n\n");
+            ([("content-type", "text/event-stream")], wire).into_response()
+        }
         ReplyMode::ExactJson => {
             ([("content-type", "application/json")], exact_json_wire()).into_response()
         }
@@ -396,7 +418,8 @@ async fn scripted_upstream(
                 ReplyMode::GzipAtLimit | ReplyMode::GzipOversized => {
                     let mut wire = exact_json_wire().as_bytes().to_vec();
                     wire.resize(
-                        1024 * 1024 + usize::from(matches!(script.mode, ReplyMode::GzipOversized)),
+                        super::http_restoration::ENTITY_LIMIT
+                            + usize::from(matches!(script.mode, ReplyMode::GzipOversized)),
                         b' ',
                     );
                     wire
@@ -1114,6 +1137,53 @@ async fn assert_sse_rejected(mode: ReplyMode) -> TestResult {
 #[serial_test::serial]
 async fn m2_chat_sse_invalid_framing_never_releases_privileged_tools_or_plaintext() -> TestResult {
     assert_sse_rejected(ReplyMode::InvalidFraming).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn m2_chat_fragmented_choice_delivery() -> TestResult {
+    for (count, reasoning) in [
+        (2, false),
+        (129, false),
+        (1231, false),
+        (2049, false),
+        (1299, false),
+        (1299, true),
+        (1431, false),
+        (1431, true),
+    ] {
+        let fixture = HttpFixture::new(
+            ReplyMode::FragmentedChat {
+                choices: count,
+                reasoning,
+            },
+            "chat",
+        )
+        .await?;
+        let response = fixture
+            .send(chat_request(&current_input(true), Some(SESSION))?)
+            .await?;
+        let (status, wire, failed) = collect_wire(response).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!failed, "fragment count: {count}, reasoning: {reasoning}");
+        let data = std::str::from_utf8(&wire)?;
+        assert!(data.ends_with("data: [DONE]\n\n"));
+        let mut content = String::new();
+        for line in data
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter(|data| *data != "[DONE]")
+        {
+            let chunk: Value = serde_json::from_str(line)?;
+            content.push_str(
+                chunk["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .ok_or("missing fragment")?,
+            );
+        }
+        assert!(content == format!("{CONTACT}{}", "x".repeat(count - 1)));
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2870,5 +2940,152 @@ async fn m2_chat_sol_multichoice_upstream_error_preserves_semantics_without_comp
         fixture.budget.used() == 0,
         "m2_multichoice_native_error_retained_budget"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn m2_chat_redacts_assistant_reasoning_and_refusal_history_end_to_end() -> TestResult {
+    struct RuntimeReset(super::SecurityRuntimeConfig);
+    impl Drop for RuntimeReset {
+        fn drop(&mut self) {
+            super::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = RuntimeReset((*super::runtime::get_security_runtime()).clone());
+    let mut policy = super::SecurityRuntimeConfig::default();
+    policy.builtin_action_overrides.insert(
+        "catalog:openrouter-key".into(),
+        super::AuditAction::RedactRestore,
+    );
+    policy.builtin_action_overrides.insert(
+        "catalog:login-url-password".into(),
+        super::AuditAction::RedactRestore,
+    );
+
+    let key_in_reasoning_content = "v1-synthetic-reasoning-content-key";
+    let key_in_reasoning = "v1-synthetic-reasoning-key";
+    let key_in_refusal = "v1-synthetic-refusal-key";
+    let key_in_part_refusal = "v1-synthetic-part-refusal-key";
+    let url_password = "synthetic-url-password";
+    let url_in_tool = format!("https://user:{url_password}@example.invalid/path");
+
+    for stream in [false, true] {
+        let mut fixture = HttpFixture::new(
+            if stream {
+                ReplyMode::EchoSse
+            } else {
+                ReplyMode::Echo
+            },
+            "chat",
+        )
+        .await?;
+        super::runtime::set_security_runtime_for_test(policy.clone());
+        fixture.state.restoration_gateway = RestorationGateway::with_test_store_and_rules(
+            fixture.runtime.store.clone(),
+            &["catalog:openrouter-key", "catalog:login-url-password"],
+            fixture.budget.clone(),
+        );
+        let body = json!({
+            "model": "synthetic-m2-model",
+            "stream": stream,
+            "messages": [
+                {"role": "user", "content": format!("Synthetic prompt {key_in_reasoning_content}")},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Synthetic text"},
+                        {"type": "refusal", "refusal": format!("Refused {key_in_part_refusal}")}
+                    ],
+                    "reasoning_content": format!("Thinking {key_in_reasoning_content}"),
+                    "reasoning": format!("Alt thinking {key_in_reasoning}"),
+                    "refusal": format!("Top refusal {key_in_refusal}"),
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": TOOL_NAME, "arguments": "{}"}
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": url_in_tool
+                },
+                {"role": "user", "content": "Continue"}
+            ]
+        });
+        let (status, wire, failed) =
+            collect_wire(fixture.send(chat_request(&body, Some(SESSION))?).await?).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "stream={stream} wire={}",
+            String::from_utf8_lossy(&wire)
+        );
+        assert!(!failed, "stream={stream} stream failed");
+        let text = std::str::from_utf8(&wire)?;
+        assert!(
+            text.contains(key_in_reasoning_content),
+            "stream={stream} expected restored response text"
+        );
+        assert!(!text.contains("rredact-"));
+
+        let requests = fixture.requests()?;
+        assert_eq!(requests.len(), 1);
+        let sent_wire = requests[0].to_string();
+        for secret in [
+            key_in_reasoning_content,
+            key_in_reasoning,
+            key_in_refusal,
+            key_in_part_refusal,
+            url_password,
+        ] {
+            assert!(
+                !sent_wire.contains(secret),
+                "upstream must never receive plaintext secret from reasoning/refusal/tool: {secret}"
+            );
+        }
+        assert!(sent_wire.contains("rredact-api_token-"));
+        assert!(sent_wire.contains("rredact-password-"));
+        assert_eq!(fixture.budget.used(), 0);
+    }
+
+    let mut fixture = HttpFixture::new(ReplyMode::Echo, "chat").await?;
+    fixture.state.restoration_gateway = RestorationGateway::with_test_store_and_rules(
+        fixture.runtime.store.clone(),
+        &["catalog:openrouter-key", "catalog:login-url-password"],
+        fixture.budget.clone(),
+    );
+    policy
+        .builtin_action_overrides
+        .insert("catalog:openrouter-key".into(), super::AuditAction::Block);
+    super::runtime::set_security_runtime_for_test(policy);
+    let blocked_body = json!({
+        "model": "synthetic-m2-model",
+        "stream": false,
+        "messages": [
+            {"role": "user", "content": "Safe user prompt"},
+            {
+                "role": "assistant",
+                "content": "Safe reply",
+                "reasoning_content": format!("Blocked {key_in_reasoning_content}")
+            },
+            {"role": "user", "content": "Continue"}
+        ]
+    });
+    let (status, wire, _) = collect_wire(
+        fixture
+            .send(chat_request(&blocked_body, Some(SESSION))?)
+            .await?,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let blocked: Value = serde_json::from_slice(&wire)?;
+    assert_eq!(blocked["error"]["code"], "dlp_blocked");
+    assert!(
+        fixture.requests()?.is_empty(),
+        "blocked reasoning_content must never reach upstream"
+    );
+    assert_eq!(fixture.budget.used(), 0);
     Ok(())
 }

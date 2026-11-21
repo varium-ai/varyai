@@ -10,7 +10,13 @@ use std::sync::{
     Arc, LazyLock,
 };
 
-const DEFAULT_LIMIT: usize = 64 * 1024 * 1024;
+/// Conservative accounting ceiling, not an RSS bound: charges are deliberate
+/// safety margins over real allocation sizes (a parsed tree charges several
+/// times its memory, and response staging keeps per-frame copies alongside the
+/// captured entities). A long streamed answer is thousands of tiny frames, so
+/// the charged total runs far ahead of the actual memory; the pool must be
+/// sized for that accounting or legitimate long replies fail as `CapacityExceeded`.
+const DEFAULT_LIMIT: usize = 256 * 1024 * 1024;
 static GLOBAL: LazyLock<Arc<BudgetState>> =
     LazyLock::new(|| Arc::new(BudgetState::new(DEFAULT_LIMIT)));
 
@@ -33,7 +39,13 @@ impl BudgetState {
             used.checked_add(bytes).filter(|next| *next <= self.limit)
         })
         .map(|_| ())
-        .map_err(|_| TokenError::CapacityExceeded)
+        .map_err(|used| {
+            log::debug!(
+                "[DLP] payload budget exhausted used={used} requested={bytes} limit={}",
+                self.limit
+            );
+            TokenError::CapacityExceeded
+        })
     }
 
     fn release(&self, bytes: usize) -> Result<(), TokenError> {

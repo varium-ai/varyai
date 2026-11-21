@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import { ProviderImportSourceIcon } from "./ProviderImportSourceIcon";
 import "./providers.css";
 
@@ -301,13 +302,11 @@ export function ProviderImportDialog({
                 </p>
               )}
               {!current.found ? (
-                <p className="pv-import-empty">{t("providerImport.missing")}</p>
+                <SearchEmptyState title={t("providerImport.missing")} />
               ) : current.error ? (
-                <p className="pv-import-empty">
-                  {t("providerImport.sourceFailed")}
-                </p>
+                <SearchEmptyState title={t("providerImport.sourceFailed")} />
               ) : !current.items.length ? (
-                <p className="pv-import-empty">{t("providerImport.empty")}</p>
+                <SearchEmptyState title={t("providerImport.empty")} />
               ) : (
                 current.items.map((item) => {
                   const id = keyOf(tab, item.reference);

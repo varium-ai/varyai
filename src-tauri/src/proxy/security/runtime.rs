@@ -66,6 +66,31 @@ impl SecurityRuntimeConfig {
                 }))
     }
 
+    /// Same policy with every reversible rule applied as irreversible masking.
+    ///
+    /// A cross-protocol route rewrites the outbound body, so a restoration token
+    /// could never be resolved on the way back. Masking keeps the request usable
+    /// and still keeps plaintext on the machine; only the model's copy differs.
+    pub(crate) fn one_way_only(&self) -> Self {
+        fn downgrade(action: &mut AuditAction) {
+            if *action == AuditAction::RedactRestore {
+                *action = AuditAction::Redact;
+            }
+        }
+        let mut policy = self.clone();
+        policy
+            .builtin_action_overrides
+            .values_mut()
+            .for_each(downgrade);
+        policy
+            .custom_rules
+            .iter_mut()
+            .chain(policy.audit_custom_rules.iter_mut())
+            .map(|rule| &mut rule.action)
+            .for_each(downgrade);
+        policy
+    }
+
     pub(crate) fn risk_epoch(&self, id: &str) -> u64 {
         self.rule_versions
             .get(id)

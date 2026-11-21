@@ -528,7 +528,12 @@ async fn reversible_completion_chat_requires_real_allowed_reason_before_done() {
         Some("content_filter"),
         Some("other"),
     ] {
-        let allowed = matches!(reason, Some("stop" | "tool_calls" | "function_call"));
+        // A budget-truncated or filtered answer is still a framed terminal: the
+        // transport reached `[DONE]`, only the model's own stop is missing.
+        let allowed = matches!(
+            reason,
+            Some("stop" | "tool_calls" | "function_call" | "length" | "content_filter")
+        );
         let finish = reason
             .map(|r| format!(",\"finish_reason\":\"{r}\""))
             .unwrap_or_default();
@@ -2506,7 +2511,7 @@ fn reversible_completion_chat_json_ordinary_failures_are_not_unsupported() {
         chat_carrier_json(json!({"tool_calls":7})).to_string(),
         {
             let mut body = valid.clone();
-            body["choices"][0]["finish_reason"] = json!("length");
+            body["choices"][0]["finish_reason"] = json!("abort");
             body.to_string()
         },
     ] {
@@ -2603,7 +2608,7 @@ fn reversible_completion_chat_sse_ordinary_failures_are_not_unsupported() {
         (json!({"role":"user"}), "stop", false),
         (json!({"tool_calls":7}), "stop", false),
         (json!(null), "stop", false),
-        (json!({}), "length", false),
+        (json!({}), "abort", false),
     ] {
         let mut completion = SseCompletion::chat();
         let chunk =

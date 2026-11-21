@@ -4,11 +4,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: var(--workspace-page-top, 36px) 0 20px;
-}
-
-.agent-directory-header .mp-page-heading {
-  margin: 0;
+  padding: var(--workspace-page-top, 24px) 0 var(--workspace-section-gap);
 }
 
 .agent-directory-toolbar {
@@ -16,12 +12,21 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: var(--workspace-section-gap);
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates {
+  margin-bottom: var(--workspace-section-gap);
+}
+
+.vary-agents .agent-directory-toolbar ~ [role="tabpanel"] {
+  margin-top: 0;
 }
 
 .agent-directory-toolbar .agent-directory-tabs {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
+  height: var(--compact-control-height);
   align-items: center;
   gap: 3px;
   padding: 3px;
@@ -33,7 +38,8 @@
 .agent-directory-tabs [role="tab"] {
   gap: 7px;
   min-width: 0;
-  min-height: 32px;
+  height: 100%;
+  min-height: 0;
   padding: 0 12px;
   border-radius: 7px;
   color: var(--mp-fg-2);
@@ -71,21 +77,9 @@
 }
 
 .agent-directory-search {
-  position: relative;
   flex: 1 1 208px;
   max-width: 264px;
   margin-left: auto;
-}
-
-.agent-directory-search > svg {
-  position: absolute;
-  inset: 12px auto auto 12px;
-  color: var(--mp-muted);
-  pointer-events: none;
-}
-
-.agent-directory-search > input {
-  padding-left: 36px;
 }
 
 .agent-directory-rows,
@@ -97,7 +91,8 @@
 
 .agent-directory-rows > .mp-agent-install-row {
   min-width: 0;
-  padding: 14px 16px;
+  min-height: var(--workspace-row-height);
+  padding: var(--workspace-row-padding);
 }
 
 .mp-agent-row.agent-list-row {
@@ -105,8 +100,8 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
-  min-height: 72px;
-  padding: 12px 16px 12px 38px;
+  min-height: var(--workspace-row-height);
+  padding: var(--workspace-row-padding);
   border-radius: var(--radius);
 }
 
@@ -182,8 +177,8 @@
 }
 
 .agent-list-row .mp-agent-drag-handle {
-  inset: 50% auto auto 6px;
-  width: 26px;
+  inset: 50% auto auto 2px;
+  width: 22px;
   height: 26px;
   transform: translateY(-50%);
 }
@@ -202,8 +197,8 @@
 }
 
 .agent-list-row.mp-agent-placeholder .mp-agent-placeholder-control {
-  width: 100%;
-  margin: auto 0 6px;
+  width: min(28%, 200px);
+  margin: 0 0 0 auto;
 }
 
 .agent-directory-rows > .agent-list-row,

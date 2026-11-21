@@ -225,7 +225,7 @@ export function SettingsPage({
   ];
 
   return (
-    <div className="settings-page mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden">
+    <div className="settings-page mx-auto flex h-full w-full flex-col overflow-hidden">
       {isBusy ? (
         <div className="flex flex-1 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />

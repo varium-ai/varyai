@@ -3,6 +3,10 @@ import type { RoutingTrace } from "@/lib/api/routingTrace";
 
 const MAX_SOURCES = 4;
 const SOURCE_LINGER_MS = 12000;
+// A finished trace keeps replaying its flight when first observed within this
+// window, so opening the routing page right after sending a request from an
+// agent still shows the routing animation.
+export const FINISHED_REPLAY_WINDOW_MS = 60000;
 
 export function routeInProgress(row: RoutingTrace) {
   return row.state === "routing" || row.state === "streaming";
@@ -56,7 +60,8 @@ export function useRoutingFlights(
           if (
             !retained.has(trace.id) &&
             !routeInProgress(trace) &&
-            (trace.startedAt + trace.durationMs < Date.now() - 5000 ||
+            (trace.startedAt + trace.durationMs <
+              Date.now() - FINISHED_REPLAY_WINDOW_MS ||
               (trace.id !== row?.id &&
                 (!previous.observed.length ||
                   previous.observed.includes(trace.id))))
