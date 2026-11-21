@@ -3,14 +3,32 @@ use super::*;
 #[test]
 fn page_context_does_not_claim_a_tool_continuation() {
     let bindings = Bindings::default();
-    let context = json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page"});
+    let open_page = json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page"});
+    let browser_tabs = json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","output":"<in-app-browser-context>Synthetic tabs</in-app-browser-context>"});
     assert_eq!(
-        bindings.resolve(&json!({"input":[context]}), None),
+        bindings.resolve(&json!({"input":[open_page.clone()]}), None),
         Ok(None)
     );
+    assert_eq!(
+        bindings.resolve(&json!({"input":[browser_tabs.clone()]}), None),
+        Ok(None)
+    );
+    assert!(!completed_tool_history(&json!({
+        "input": [open_page.clone(), browser_tabs.clone()]
+    })));
+    assert!(completed_tool_history(&json!({
+        "input": [
+            {"type":"function_call","call_id":"synthetic-call","name":"lookup","arguments":"{}"},
+            {"type":"function_call_output","call_id":"synthetic-call","output":"Synthetic result"},
+            open_page,
+            browser_tabs
+        ]
+    })));
     for item in [
         json!({"type":"function_call_output","output":"Synthetic result"}),
         json!({"type":"function_call_output","namespace":"other","name":"codex_apps_open_page","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"other","name":"browser_tabs","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","call_id":"unknown-call","output":"Synthetic result"}),
         json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"unknown-call","output":"Synthetic result"}),
     ] {
         assert!(bindings.resolve(&json!({"input":[item]}), None).is_err());

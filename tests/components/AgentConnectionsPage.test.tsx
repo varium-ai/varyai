@@ -3498,9 +3498,7 @@ describe("Agent connections", () => {
     await waitFor(() => expect(toggle).toBeEnabled());
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("article", { name: "apps.codex" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "agentConnections.individual" }),
-    );
+    fireEvent.click(screen.getByRole("switch", { name: "apps.codex" }));
     const dialog = screen.getByRole("dialog");
     await act(async () => finish());
     await waitFor(() => expect(toggle).toBeEnabled());
@@ -4079,9 +4077,7 @@ describe("Agent connections", () => {
           name: "agentConnections.restore",
         }),
       ).not.toBeInTheDocument();
-      expect(!!row.querySelector(".mp-agent-detail-actions")).toBe(
-        compact && !recoveryPending,
-      );
+      expect(row.querySelector(".mp-agent-detail-actions")).toBeNull();
       expect(
         within(row).getByRole("switch", { name: "apps.claude-desktop" }),
       ).toBeChecked();
@@ -4092,7 +4088,7 @@ describe("Agent connections", () => {
     },
   );
 
-  it("keeps individual settings in connected tray details without collapsing the row", async () => {
+  it("does not render individual settings in connected tray details", async () => {
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([
       {
         app: "claude",
@@ -4107,18 +4103,11 @@ describe("Agent connections", () => {
     const row = await screen.findByRole("article", { name: "apps.claude" });
     fireEvent.click(row);
     const panel = within(row).getByRole("region");
-    fireEvent.click(
-      within(panel).getByRole("button", {
+    expect(
+      within(panel).queryByRole("button", {
         name: "agentConnections.individual",
       }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("agentConnections.setupHint");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "common.cancel" }),
-    );
-    expect(panel).toBeInTheDocument();
-    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    ).not.toBeInTheDocument();
   });
 
   it("does not toggle a row while its text is being selected", async () => {

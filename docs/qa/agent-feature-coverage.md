@@ -2437,3 +2437,58 @@ against the `src-tauri` manifest. Cargo reported 7,821 library tests and
 165 integration tests passed with 21 library tests ignored. The original
 reporter's subscription accounts and the installed Windows clients still
 need live verification.
+
+## Codex browser ambient context (`browser_tabs`), Chat tool media, and routing diagnostics
+
+2026-11-21
+
+Codex desktop injects unsolicited `agent.browser_tabs` (`function_call_output`
+without `call_id`) notifications alongside `codex_apps_open_page` and
+`codex_apps_selected_page_part_<N>_of_<M>`, and browser/screenshot tools return
+multimodal `function_call_output` arrays (`input_text` + `input_image`, or
+`input_image` / `input_file` alone). Across macOS and Windows,
+`is_unsolicited_page_context`, the IR Responses parser, the legacy Codex-to-Chat
+and Codex-to-Anthropic converters, routed DLP history classification, and Intent
+tool-continuation tracking now recognize `browser_tabs` as user-level context,
+while the IR Chat builder extracts `Part::Image` and `Part::File` from
+`Part::ToolResult` into a trailing `role: "user"` message after contiguous
+`role: "tool"` string replies. Intent conversion/forwarding rejection logs also
+emit safe fixed-label diagnostics (`Conversion rejected`, `Upstream rejected
+converted call`, and `Upstream rejected forwarded call`) that bypass the log
+exporter's `request:` payload redaction regex without logging raw payloads or
+secrets. All changes are platform-independent across macOS and Windows.
+
+| Agent ID           | Entry point and adapter                                                                                        | Verification scope                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `claude`           | Claude Code CLI (Anthropic `/v1/messages` ingress; IR Chat tool-result media extraction and Intent logging)    | Synthetic IR Anthropic-to-Chat media extraction (`tool_result` + mixed text) passed. Native pending   |
+| `claude-desktop`   | Claude Desktop (Anthropic `/v1/messages` ingress; shared IR Chat builder and Intent logging)                   | Covered by shared Anthropic IR builder regressions. Installed client pending                          |
+| `codex`            | Codex desktop and CLI (`browser_tabs` context, Responses-to-Chat tool media, DLP admission, Intent logging)    | Synthetic IR, HTTP proxy edge, legacy Chat/Anthropic, DLP, and Intent fixtures passed. Native pending |
+| `gemini`           | Gemini CLI (Gemini ingress; shared Intent conversion/forwarding diagnostics and IR Chat builder)               | Shared Intent and 12-edge IR routing regressions passed. Installed client pending                     |
+| `grokbuild`        | Grok Build CLI (Responses ingress/classic handlers, IR builder, and Intent rejection hints)                    | Shared IR Responses edge and Intent rejection hint fixtures passed. Installed client pending          |
+| `opencode`         | OpenCode (Chat/Responses/Anthropic IR routing and Intent rejection logging)                                    | Shared IR routing and diagnostics regressions passed. Installed client pending                        |
+| `openclaw`         | OpenClaw (Chat/Anthropic IR routing and Intent rejection logging)                                              | Shared IR routing and diagnostics regressions passed. Installed client pending                        |
+| `hermes`           | Hermes (Chat/Anthropic/Responses IR routing and Intent rejection logging)                                      | Shared IR routing and diagnostics regressions passed. Installed client pending                        |
+| `pi`               | Pi (Responses/Chat/Anthropic IR routing and Intent rejection logging)                                          | Shared IR routing and diagnostics regressions passed. Installed client pending                        |
+| `workbuddy`        | WorkBuddy China desktop (shared IR Chat builder, `completed_tool_history`, and Intent rejection logging)       | Shared IR and Intent unit regressions passed. Installed client pending                                |
+| `workbuddy-ai`     | WorkBuddy international desktop (shared IR Chat builder, `completed_tool_history`, and Intent logging)         | Shared IR and Intent unit regressions passed. Installed client pending                                |
+| `qoder`            | Qoder China desktop (shared Intent routing and diagnostics export redaction)                                   | Shared diagnostics and IR regressions passed. Installed client pending                                |
+| `doubaowork`       | Doubao Work desktop (shared Intent routing and diagnostics export redaction)                                   | Shared diagnostics and IR regressions passed. Installed client pending                                |
+| `trae`             | TRAE China desktop (shared Intent routing and diagnostics export redaction)                                    | Shared diagnostics and IR regressions passed. Installed client pending                                |
+| `trae-intl`        | TRAE International desktop (shared Intent routing and diagnostics export redaction)                            | Shared diagnostics and IR regressions passed. Installed client pending                                |
+| `kimi`             | Kimi Code CLI (shared Chat/Anthropic IR builder and Intent rejection logging)                                  | Shared IR and Intent regressions passed. Installed client pending                                     |
+| `qwen`             | Qwen Code CLI (shared Chat/Responses IR builder and Intent rejection logging)                                  | Shared IR and Intent regressions passed. Installed client pending                                     |
+| `zcode`            | ZCode desktop (shared Intent routing and diagnostics export redaction)                                         | Shared diagnostics and IR regressions passed. Installed client pending                                |
+| `deepseek-harness` | DeepSeek Harness CLI (shared Chat/Responses IR builder and Intent rejection logging)                           | Shared IR and Intent regressions passed. Installed client pending                                     |
+| `t3code`           | T3 Code desktop (shared Intent routing and diagnostics export redaction)                                       | Shared diagnostics and IR regressions passed. Installed client pending                                |
+
+Verified the working tree based on `a8d0e03e` on macOS 15.3.1 (`24D70`)
+`arm64` with `rustc 1.98.1 (48a229cea 2026-09-01)`, Node `v24.11.0`, and pnpm
+`10.12.3`. `cargo fmt --check --manifest-path src-tauri/Cargo.toml`,
+`cargo check --manifest-path src-tauri/Cargo.toml`,
+`cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`,
+`cargo test --no-fail-fast --manifest-path src-tauri/Cargo.toml` (with
+`NO_PROXY=127.0.0.1,localhost` to bypass an inactive host system proxy on
+`127.0.0.1:7897`), and `pnpm format:check` all passed. Cargo reported 7,849
+library tests passed with 21 ignored and 165 integration tests passed. Live
+verification with native Codex desktop, live Chat upstream gateways, and
+Windows clients remains pending.

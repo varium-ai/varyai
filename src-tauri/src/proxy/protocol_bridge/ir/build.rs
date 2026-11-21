@@ -523,10 +523,37 @@ fn openai_parts(
     Ok(out)
 }
 
+fn tool_result_chat_content(
+    call_id: &str,
+    parts: &[Part],
+    pending_media: &mut Vec<Value>,
+) -> Result<String, ProxyError> {
+    let (media_ir, text_ir): (Vec<_>, Vec<_>) = parts
+        .iter()
+        .cloned()
+        .partition(|part| matches!(part, Part::Image { .. } | Part::File { .. }));
+    let mut text_chunks: Vec<String> = text_ir
+        .iter()
+        .filter_map(|part| match part {
+            Part::Text { text, .. } => Some(text.clone()),
+            Part::ToolReference { name } => Some(format!("Tool available: {name}")),
+            Part::Search { query, hits, .. } => Some(format!("{query}\n{}", json!(hits))),
+            _ => None,
+        })
+        .collect();
+    if !media_ir.is_empty() {
+        let media_parts = openai_parts(&media_ir, false, false)?;
+        text_chunks.push(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER.into());
+        crate::proxy::tool_media::queue_chat_tool_output_media(pending_media, call_id, media_parts);
+    }
+    Ok(text_chunks.join("\n"))
+}
+
 fn chat(r: &Request) -> Result<Value, ProxyError> {
     let mut messages = Vec::new();
     let mut system = openai_parts(&r.system, false, false)?;
     let mut replied = false;
+    let mut pending_tool_media: Vec<Value> = Vec::new();
     for m in &r.messages {
         replied |= m.role == "assistant"
             || m.parts.iter().any(|part| {
@@ -540,6 +567,10 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
             if !replied {
                 system.extend(content);
             } else if !content.is_empty() {
+                crate::proxy::tool_media::flush_pending_chat_tool_media(
+                    &mut messages,
+                    &mut pending_tool_media,
+                );
                 // Chat gateways may reject developer roles and later system
                 // messages. Keep updates in place using Magpie's reminder form.
                 let content = if content.iter().all(|part| part["type"] == "text") {
@@ -558,8 +589,8 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         }
         for p in &m.parts {
             if let Part::ToolResult { call_id, parts, .. } = p {
-                let content = openai_parts(parts, false, false)?;
-                messages.push(json!({"role":"tool","tool_call_id":call_id,"content":if parts.iter().all(|p|matches!(p,Part::Text{..})) {json!(text(parts))} else {json!(content)}}));
+                let content = tool_result_chat_content(call_id, parts, &mut pending_tool_media)?;
+                messages.push(json!({"role":"tool","tool_call_id":call_id,"content":content}));
             }
         }
         let content = openai_parts(&m.parts, false, m.role == "assistant")?;
@@ -596,9 +627,14 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
             || !thoughts.is_empty()
             || m.parts.is_empty()
         {
+            crate::proxy::tool_media::flush_pending_chat_tool_media(
+                &mut messages,
+                &mut pending_tool_media,
+            );
             messages.push(message);
         }
     }
+    crate::proxy::tool_media::flush_pending_chat_tool_media(&mut messages, &mut pending_tool_media);
     if !system.is_empty() {
         let content = if system.iter().all(|part| part["type"] == "text") {
             json!(system
@@ -1803,11 +1839,122 @@ mod tests {
             Protocol::Anthropic,
             Protocol::Gemini,
         ] {
-            assert!(request(&parsed, target)
-                .unwrap()
-                .to_string()
-                .contains("c3ludGhldGlj"));
+            let built = request(&parsed, target).unwrap();
+            assert!(built.to_string().contains("c3ludGhldGlj"));
+            if target == Protocol::Chat {
+                let messages = built["messages"].as_array().unwrap();
+                assert_eq!(messages[1]["role"], "tool");
+                let tool_text = messages[1]["content"].as_str().unwrap();
+                assert!(tool_text.contains("Synthetic"));
+                assert!(
+                    tool_text.contains(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER)
+                );
+                assert_eq!(messages[2]["role"], "user");
+                let trailing = messages[2].to_string();
+                assert!(trailing.contains("[cc-switch: media output of tool call call-a]"));
+                assert!(trailing.contains("c3ludGhldGlj"));
+            }
         }
+    }
+
+    #[test]
+    fn chat_builder_moves_tool_result_media_to_trailing_user_message_preserving_tool_contiguity() {
+        let responses_body = json!({
+            "model": "synthetic",
+            "input": [
+                {"type":"function_call","call_id":"call-1","name":"browser_cmd","arguments":"{}"},
+                {"type":"function_call","call_id":"call-2","name":"screenshot","arguments":"{}"},
+                {"type":"function_call","call_id":"call-3","name":"ping","arguments":"{}"},
+                {"type":"function_call_output","call_id":"call-1","output":[
+                    {"type":"input_text","text":"Page summary"},
+                    {"type":"input_image","image_url":"data:image/png;base64,img1"}
+                ]},
+                {"type":"function_call_output","call_id":"call-2","output":[
+                    {"type":"input_image","image_url":"data:image/png;base64,img2"}
+                ]},
+                {"type":"function_call_output","call_id":"call-3","output":"plain text"},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"Continue"}]}
+            ]
+        });
+        let parsed =
+            super::super::parse::request(Protocol::Responses, &responses_body, "/v1/responses")
+                .unwrap();
+        let built = request(&parsed, Protocol::Chat).unwrap();
+        let messages = built["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 8);
+        assert!(messages[0..3].iter().all(|m| m["role"] == "assistant"));
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "call-1");
+        let c1 = messages[3]["content"].as_str().unwrap();
+        assert!(c1.contains("Page summary"));
+        assert!(c1.contains(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER));
+        assert_eq!(messages[4]["role"], "tool");
+        assert_eq!(messages[4]["tool_call_id"], "call-2");
+        assert_eq!(
+            messages[4]["content"].as_str(),
+            Some(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER)
+        );
+        assert_eq!(messages[5]["role"], "tool");
+        assert_eq!(messages[5]["tool_call_id"], "call-3");
+        assert_eq!(messages[5]["content"].as_str(), Some("plain text"));
+        assert_eq!(messages[6]["role"], "user");
+        let media_msg = messages[6].to_string();
+        assert!(media_msg.contains("[cc-switch: media output of tool call call-1]"));
+        assert!(media_msg.contains("data:image/png;base64,img1"));
+        assert!(media_msg.contains("[cc-switch: media output of tool call call-2]"));
+        assert!(media_msg.contains("data:image/png;base64,img2"));
+        assert_eq!(messages[7]["role"], "user");
+        assert!(messages[7].to_string().contains("Continue"));
+
+        // Mixed Anthropic user message: [tool_result(image), text] flushes media before text user msg.
+        let anthropic_mixed = json!({
+            "model": "synthetic",
+            "messages": [
+                {"role":"assistant","content":[{"type":"tool_use","id":"call-mix","name":"shot","input":{}}]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"call-mix","content":[
+                        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"bWl4"}}
+                    ]},
+                    {"type":"text","text":"Follow-up note"}
+                ]}
+            ]
+        });
+        let parsed_mix =
+            super::super::parse::request(Protocol::Anthropic, &anthropic_mixed, "/v1/messages")
+                .unwrap();
+        let built_mix = request(&parsed_mix, Protocol::Chat).unwrap();
+        let mix_msgs = built_mix["messages"].as_array().unwrap();
+        assert_eq!(mix_msgs[1]["role"], "tool");
+        assert_eq!(
+            mix_msgs[1]["content"].as_str(),
+            Some(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER)
+        );
+        assert_eq!(mix_msgs[2]["role"], "user");
+        assert!(mix_msgs[2].to_string().contains("bWl4"));
+        assert_eq!(mix_msgs[3]["role"], "user");
+        assert!(mix_msgs[3].to_string().contains("Follow-up note"));
+
+        // File inside tool result is also moved out of role:tool string content.
+        let file_body = json!({
+            "model": "synthetic",
+            "input": [
+                {"type":"function_call","call_id":"call-f","name":"read_pdf","arguments":"{}"},
+                {"type":"function_call_output","call_id":"call-f","output":[
+                    {"type":"input_file","filename":"doc.pdf","file_data":"data:application/pdf;base64,cGRm"}
+                ]}
+            ]
+        });
+        let parsed_file =
+            super::super::parse::request(Protocol::Responses, &file_body, "/v1/responses").unwrap();
+        let built_file = request(&parsed_file, Protocol::Chat).unwrap();
+        let file_msgs = built_file["messages"].as_array().unwrap();
+        assert_eq!(file_msgs[1]["role"], "tool");
+        assert_eq!(
+            file_msgs[1]["content"].as_str(),
+            Some(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER)
+        );
+        assert_eq!(file_msgs[2]["role"], "user");
+        assert!(file_msgs[2].to_string().contains("cGRm"));
     }
     #[test]
     fn codex_tool_search_preserves_the_client_discovery_contract() -> Result<(), ProxyError> {
