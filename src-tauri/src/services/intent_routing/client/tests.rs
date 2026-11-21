@@ -2099,15 +2099,16 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
     assert_eq!(native_catalog, actual);
     assert_eq!(published_menu.token, menu.token);
     assert_eq!(actual["models"][0]["slug"], "auto/exact-group");
-    assert_eq!(
-        actual["models"][0]["description"],
-        "Routing group description"
-    );
+    assert_eq!(actual["models"][0]["description"], "Exact group label");
     assert_eq!(actual["models"][0]["input_modalities"], json!(["text"]));
     assert_eq!(actual["models"][1]["slug"], "fixture/balanced-model");
     assert_eq!(
         actual["models"][1]["display_name"],
         "Exact direct label · Source"
+    );
+    assert_eq!(
+        actual["models"][1]["description"],
+        actual["models"][1]["display_name"]
     );
     assert_eq!(
         actual["models"][1]["supported_reasoning_levels"]

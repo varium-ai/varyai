@@ -18,7 +18,7 @@ pub(super) fn project(
 }
 
 fn wire_name(label: &str) -> String {
-    let ascii = label
+    let normalized = label
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-') {
@@ -28,7 +28,7 @@ fn wire_name(label: &str) -> String {
             }
         })
         .collect::<String>();
-    let name = ascii
+    let name = normalized
         .split('-')
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
@@ -40,8 +40,19 @@ fn wire_name(label: &str) -> String {
     }
 }
 
-/// Projects an Agent-facing catalog to readable ASCII model IDs while retaining
-/// hidden historical aliases for existing sessions.
+fn describe_picker_name(model: &mut Value) {
+    // Codex can truncate the picker row and shows the description on hover.
+    if let Some(label) = model["display_name"]
+        .as_str()
+        .filter(|label| !label.trim().is_empty())
+    {
+        model["description"] = Value::String(label.to_owned());
+    }
+}
+
+/// Projects readable model IDs and retains hidden historical aliases.
+/// Gemini group IDs transliterate the label because the native footer shows the
+/// wire ID and the client also uses it in HTTP headers.
 pub(crate) fn project_readable(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
@@ -58,23 +69,34 @@ pub(crate) fn project_readable(
                 .as_str()
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or(id);
-            Ok((id.to_owned(), label.to_owned(), index))
+            let group_name = model["gemini_group_name"].as_str();
+            let preferred = match group_name {
+                Some(name) => wire_name(&deunicode::deunicode(name).replace('/', "-")),
+                None => wire_name(label),
+            };
+            Ok((
+                id.to_owned(),
+                label.to_owned(),
+                index,
+                preferred,
+                group_name.is_some(),
+            ))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let reserved = entries
         .iter()
-        .map(|(id, _, _)| id.clone())
+        .map(|(id, _, _, _, _)| id.clone())
         .collect::<BTreeSet<_>>();
     let labels = entries
         .iter()
-        .map(|(_, label, _)| wire_name(label))
+        .map(|(_, _, _, preferred, _)| preferred.clone())
         .collect::<BTreeSet<_>>();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut legacy = Vec::new();
-    for (id, label, index) in entries {
+    for (id, label, index, preferred, gemini_group) in entries {
         let previous = crate::services::agent_connections::model_wire(retained, None, &id);
-        let base = if previous == id {
-            wire_name(&label)
+        let base = if previous == id || gemini_group {
+            preferred
         } else {
             previous.to_owned()
         };
@@ -96,6 +118,7 @@ pub(crate) fn project_readable(
         if number > 2 {
             model["display_name"] = Value::String(format!("{label} ({})", number - 1));
         }
+        describe_picker_name(model);
         let mut previous = retained
             .iter()
             .filter(|(_, owner)| **owner == id)
@@ -359,6 +382,7 @@ pub(super) fn project_menu(
         }
         retained.insert(id.clone(), canonical.clone());
         models[index]["slug"] = Value::String(id.clone());
+        describe_picker_name(&mut models[index]);
         visible.push(id.clone());
         // Preserve historical selectors only as hidden compatibility entries.
         let mut previous = retained
@@ -473,6 +497,12 @@ mod tests {
             "Shared · routing group (2)"
         );
         assert_eq!(value["models"][2]["display_name"], "Unique · Relay");
+        for index in 0..3 {
+            assert_eq!(
+                value["models"][index]["description"],
+                value["models"][index]["display_name"]
+            );
+        }
     }
 
     #[test]
@@ -889,6 +919,31 @@ mod tests {
         project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
         assert_eq!(value["models"][0]["display_name"], "GPT Synthetic · Codex");
         assert!(!value.to_string().contains("synthetic-person"));
+    }
+
+    #[test]
+    fn routing_group_regression_readable_gemini_aliases_transliterate_and_preserve_history() {
+        let canonical = "vary-auto/example";
+        let mut retained = BTreeMap::from([("routing-group".into(), canonical.into())]);
+        let mut value = catalog(&[(canonical, "中文路由组 · routing group")]);
+        value["models"][0]["gemini_group_name"] = "中文路由组".into();
+        assert_eq!(
+            project_readable(&mut value, &mut retained).unwrap(),
+            ["Zhong-Wen-Lu-You-Zu"]
+        );
+        assert_eq!(retained["routing-group"], canonical);
+        assert_eq!(retained["Zhong-Wen-Lu-You-Zu"], canonical);
+        assert_eq!(
+            value["models"][0]["display_name"],
+            "中文路由组 · routing group"
+        );
+        let mut renamed = catalog(&[(canonical, "中文 优先 · routing group")]);
+        renamed["models"][0]["gemini_group_name"] = "中文 优先".into();
+        assert_eq!(
+            project_readable(&mut renamed, &mut retained).unwrap(),
+            ["Zhong-Wen-You-Xian"]
+        );
+        assert_eq!(retained["Zhong-Wen-Lu-You-Zu"], canonical);
     }
 
     #[test]

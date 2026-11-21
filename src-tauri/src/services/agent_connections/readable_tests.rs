@@ -213,5 +213,35 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
             assert_eq!(read(&file.path)?, file.original, "{app} restore");
         }
     }
+    let mut gemini_group = catalog[0].clone();
+    gemini_group.id = "vary-auto/synthetic-group".into();
+    gemini_group.name = "中文路由组 · routing group".into();
+    let mut receipt = Receipt {
+        app: "gemini".into(),
+        token: "synthetic-only".into(),
+        model: gemini_group.id.clone(),
+        model_map: BTreeMap::from([("routing-group".into(), gemini_group.id.clone())]),
+        visible_models: None,
+        files: vec![],
+        suspended: false,
+        applied_at_ms: None,
+    };
+    projections::build(
+        "gemini",
+        std::slice::from_ref(&gemini_group),
+        "http://127.0.0.1:1/connections/gemini",
+        "synthetic-only",
+        &gemini_group.id,
+        &mut receipt,
+        None,
+    )?;
+    let wire = "Zhong-Wen-Lu-You-Zu";
+    assert_eq!(receipt.files[0].installed["GEMINI_MODEL"], wire);
+    assert_eq!(receipt.files[1].installed["model"]["name"], wire);
+    assert_eq!(
+        receipt.files[1].installed["modelConfigs"]["modelDefinitions"][wire]["displayName"],
+        gemini_group.name
+    );
+    assert_eq!(receipt.model_map["routing-group"], gemini_group.id);
     Ok(())
 }

@@ -60,6 +60,20 @@ fn managed(value: &Value, receipt: &Receipt) -> bool {
     }
 }
 
+fn grok_profile_wire<'a>(
+    receipt: &Receipt,
+    file: &'a super::FileEdit,
+    choice: &Value,
+) -> Option<&'a str> {
+    if receipt.app != "grokbuild" {
+        return None;
+    }
+    let profile = file.installed.get("model")?.get(choice.as_str()?)?;
+    (profile["api_key"].as_str() == Some(receipt.token.as_str()))
+        .then(|| profile["model"].as_str())
+        .flatten()
+}
+
 pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
     if receipt.suspended || paths(&receipt.app).is_empty() {
         return Ok(());
@@ -89,10 +103,13 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
             let Some(choice) = at(&live, &path).filter(|choice| valid(choice)) else {
                 continue;
             };
-            let wire = choice
-                .as_str()
-                .or_else(|| choice.get("modelId").and_then(Value::as_str))
-                .or_else(|| choice.pointer("/0/config/model").and_then(Value::as_str));
+            let grok_wire = grok_profile_wire(receipt, file, choice);
+            let wire = grok_wire.or_else(|| {
+                choice
+                    .as_str()
+                    .or_else(|| choice.get("modelId").and_then(Value::as_str))
+                    .or_else(|| choice.pointer("/0/config/model").and_then(Value::as_str))
+            });
             if let Some(wire) = wire {
                 let wire = wire.strip_prefix("varyai/").unwrap_or(wire);
                 let wire = if receipt.app == "claude" {
@@ -128,7 +145,7 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
                 continue;
             }
             put(&mut installed, &path, Some(choice.clone()))?;
-            if !managed(choice, receipt) {
+            if grok_wire.is_none() && !managed(choice, receipt) {
                 put(&mut baseline, &path, Some(choice.clone()))?;
                 changed = true;
             }
@@ -284,6 +301,11 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             let Some(choice) = at(&prior.installed, &path).filter(|choice| valid(choice)) else {
                 continue;
             };
+            // The fresh Grok configuration selects the profile for the adopted
+            // canonical model. The old profile key and wire ID can both differ.
+            if grok_profile_wire(old, prior, choice).is_some() {
+                continue;
+            }
             if old.app == "openclaw" && path.len() == 3 && choice.is_object() {
                 continue;
             }
@@ -457,6 +479,60 @@ mod tests {
             preserve(&old, &mut next)?;
             assert_eq!(next.files[0].installed["model"], expected);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn routing_group_regression_grok_adopts_managed_profile_instead_of_its_stale_wire_name(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = dir.path().join("config.toml");
+        let profile = "中文路由组 · routing group";
+        let wire = "Previous group name";
+        let alias = "vary-auto/fixture";
+        let token = "synthetic-token";
+        let file = FileEdit::prepare_format(path.clone(), super::super::Format::Toml, |config| {
+            *config = json!({
+                "models":{"default":"Native"},
+                "model":{
+                    "Native":{"model":"grok-native"},
+                    profile:{"model":wire,"api_key":token}
+                }
+            });
+            Ok(())
+        })?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        manager.install(Receipt {
+            app: "grokbuild".into(),
+            token: token.into(),
+            model: "vary-provider/previous".into(),
+            model_map: BTreeMap::from([(wire.into(), alias.into())]),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+        FileEdit::prepare_format(path, super::super::Format::Toml, |config| {
+            config["models"]["default"] = json!(profile);
+            Ok(())
+        })?
+        .write()?;
+        let status = manager.status("grokbuild")?;
+        assert!(status.enabled);
+        assert_eq!(status.model.as_deref(), Some(alias));
+        let receipt = manager.load("grokbuild")?.ok_or(FAILED)?;
+        assert_eq!(receipt.files[0].installed["models"]["default"], profile);
+        let original = receipt.files[0]
+            .format
+            .parse(receipt.files[0].original.as_deref())?;
+        assert_ne!(original["models"]["default"], profile);
+        let next_profile = "Renamed group · routing group";
+        let mut next = receipt.clone();
+        next.files[0].installed["models"]["default"] = json!(next_profile);
+        preserve(&receipt, &mut next)?;
+        assert_eq!(next.files[0].installed["models"]["default"], next_profile);
         Ok(())
     }
 

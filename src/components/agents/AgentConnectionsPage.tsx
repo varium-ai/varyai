@@ -53,6 +53,7 @@ import { AgentRewardsPanel } from "@/components/AgentRewardsPanel";
 import { agentRewardsApi, hasAgentRewards } from "@/lib/api/agent-rewards";
 import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
 import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
+import { intentRoutingApi } from "@/lib/api/intentRouting";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { isMac, isWindows } from "@/lib/platform";
@@ -224,6 +225,19 @@ export function AgentConnectionsPage({
   const catalog = useQuery({
     queryKey: ["agent-model-catalog"],
     queryFn: agentConnectionsApi.models,
+  });
+  const savedRoutingGroups = useQuery({
+    queryKey: ["intent-routing-groups"],
+    queryFn: intentRoutingApi.list,
+    enabled:
+      !catalog.isPending &&
+      states.data.some(
+        ({ enabled, model }) =>
+          enabled &&
+          model &&
+          (model.startsWith("vary-auto/") || model.startsWith("auto/")) &&
+          !catalog.data?.some(({ id }) => id === model),
+      ),
   });
   const desktopVisibility = useQuery({
     queryKey: ["agent-model-visibility", "claude-desktop"],
@@ -733,6 +747,10 @@ export function AgentConnectionsPage({
         ? t("agentConnections.nativeDefault")
         : enabled
           ? (catalog.data?.find((model) => model.id === state?.model)?.name ??
+            savedRoutingGroups.data?.groups.find(
+              (group) =>
+                (group.modelAlias ?? `vary-auto/${group.id}`) === state?.model,
+            )?.name ??
             state?.model ??
             t("agentConnections.pickModel"))
           : nativeLabel;

@@ -154,14 +154,19 @@ impl Fixture {
             source_format,
         );
         let mut grok = session(&base, "new-grok-model", "grok-4.5", "openai_responses");
-        if target_count == 2 {
-            let other = session(&base, "other-grok-account", "grok-4.5", "openai_responses");
+        for index in 1..target_count {
+            let other = session(
+                &base,
+                &format!("other-grok-account-{index}"),
+                &format!("grok-synthetic-{index}"),
+                "openai_responses",
+            );
             let group = Arc::make_mut(&mut grok);
             group.group.enabled = true;
             let mut member = other.group.members[0].clone();
-            member.id = "other".into();
+            member.id = format!("other-{index}");
+            group.group.fallback_member_ids.push(member.id.clone());
             group.group.members.push(member);
-            group.group.fallback_member_ids.push("other".into());
             group.targets.push(other.targets[0].clone());
         }
         assert_eq!(grok.targets.len(), target_count);
@@ -237,6 +242,117 @@ impl Fixture {
         self.upstream.abort();
         Ok(())
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn workbuddy_visible_chat_resumes_when_a_group_member_is_removed(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    for agent in ["workbuddy", "workbuddy-ai"] {
+        for (removed, streaming) in [(0, false), (0, true), (2, false), (2, true)] {
+            let mut fixture = Fixture::with_targets("openai_chat", 3).await?;
+            let endpoint = fixture.root.replace("/workbuddy/", &format!("/{agent}/"));
+            fixture
+                .runtime
+                .connections
+                .install(&crate::services::agent_connections::Receipt {
+                    app: agent.into(),
+                    token: TOKEN.into(),
+                    model: fixture.grok_alias.clone(),
+                    model_map: Default::default(),
+                    visible_models: None,
+                    files: vec![],
+                    suspended: false,
+                    applied_at_ms: None,
+                })?;
+            let dir = tempfile::tempdir()?;
+            fixture
+                .runtime
+                .prepare_continuations(dir.path().join("continuations.json"))
+                .await;
+            let mut request = json!({"model":fixture.grok_alias,"stream":streaming,"messages":[
+                {"role":"user","content":"Synthetic opening"}
+            ]});
+            let send = |body: &Value| {
+                fixture
+                    .client
+                    .post(&endpoint)
+                    .bearer_auth(TOKEN)
+                    .header("x-session-id", "synthetic-workbuddy-session")
+                    .json(body)
+                    .send()
+            };
+            let response = send(&request).await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(response.text().await?.contains("Synthetic Grok answer"));
+            assert_eq!(
+                fixture.requests.recv().await.ok_or("missing opening")?["model"],
+                "grok-4.5"
+            );
+            fixture.runtime.flush_continuations().await;
+
+            let mut menu = (*fixture
+                .runtime
+                .global_snapshot()?
+                .ok_or("missing synthetic menu")?)
+            .clone();
+            let group = Arc::make_mut(
+                menu.groups
+                    .get_mut(&fixture.grok_alias)
+                    .ok_or("missing synthetic route")?,
+            );
+            group.bindings = Arc::default();
+            group.targets.remove(removed);
+            group.group.members.remove(removed);
+            // Make the unbound route prefer the fallback even when the old owner survives.
+            group.group.default_member_id = "other-1".into();
+            group.group.fallback_member_ids = group
+                .group
+                .members
+                .iter()
+                .filter(|member| member.id != group.group.default_member_id)
+                .map(|member| member.id.clone())
+                .collect();
+            fixture.runtime.set_global(menu, 0)?;
+
+            request["messages"]
+                .as_array_mut()
+                .ok_or("missing synthetic messages")?
+                .extend([
+                    json!({"role":"assistant","content":"Synthetic Grok answer"}),
+                    json!({"role":"user","content":"Synthetic follow-up"}),
+                ]);
+            let mut sealed = request.clone();
+            sealed["messages"][1]["reasoning_details"] =
+                json!([{"type":"reasoning.encrypted","data":"synthetic-sealed-state"}]);
+            let rejected = send(&sealed).await?;
+            assert_eq!(rejected.status(), StatusCode::CONFLICT);
+            assert_eq!(fixture.sends.load(Ordering::SeqCst), 1);
+
+            let resumed = send(&request).await?;
+            assert_eq!(
+                resumed.status(),
+                StatusCode::OK,
+                "{agent}, removed={removed}, stream={streaming}"
+            );
+            assert!(resumed.text().await?.contains("Synthetic Grok answer"));
+            let forwarded = fixture.requests.recv().await.ok_or("missing follow-up")?;
+            assert_eq!(
+                forwarded["model"],
+                if removed == 0 {
+                    "grok-synthetic-1"
+                } else {
+                    "grok-4.5"
+                }
+            );
+            assert!(forwarded["input"]
+                .as_array()
+                .is_some_and(|items| items.len() == 3));
+            fixture.stop().await?;
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]

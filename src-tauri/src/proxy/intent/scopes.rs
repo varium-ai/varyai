@@ -284,13 +284,33 @@ impl Conversations {
             if (saved != expected || saved.is_empty())
                 && !matches!(policy, HistoryPolicy::ResponsesReplay)
             {
-                // A complete visible Chat transcript does not depend on a
-                // retired target's server-side state. Start a fresh scope for
-                // the explicitly selected single target after configuration edits.
-                if matches!(policy, HistoryPolicy::VisibleChatReplay) && length::portable(body) {
+                if !matches!(policy, HistoryPolicy::VisibleChatReplay) || !length::portable(body) {
+                    return Err("routing_unknown_continuation");
+                }
+                // Keep the existing single-target replay after configuration edits.
+                if targets.len() == 1 {
                     continue;
                 }
-                return Err("routing_unknown_continuation");
+                if !expected.iter().all(|target| saved.contains(target)) {
+                    return Err("routing_unknown_continuation");
+                }
+                // An exact surviving owner can keep its bindings after a member is removed.
+                let all_bindings_survive = [
+                    &snapshot.responses,
+                    &snapshot.calls,
+                    &snapshot.sessions,
+                    &snapshot.opaque,
+                    &snapshot.items,
+                ]
+                .into_iter()
+                .flat_map(|map| map.values().flatten())
+                .all(|target| destination_index(target).is_some());
+                if !all_bindings_survive {
+                    if snapshot.calls.is_empty() && snapshot.opaque.is_empty() {
+                        continue;
+                    }
+                    return Err("routing_unknown_continuation");
+                }
             }
             if entries.len() >= MAX_CONVERSATIONS {
                 return Err("routing_session_capacity");

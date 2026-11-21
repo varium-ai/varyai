@@ -122,7 +122,14 @@ pub(super) fn build(
                 .model_map
                 .insert(wire_id(&model.id), model.id.clone());
         }
-        let mut projection = json!({"models":catalog.iter().map(|model| json!({"slug":model.id,"display_name":model.name})).collect::<Vec<_>>()});
+        let mut projection = json!({"models":catalog.iter().map(|model| {
+            let mut entry = json!({"slug":model.id,"display_name":model.name});
+            if model.id.starts_with("vary-auto/") || model.id.starts_with("auto/") {
+                let name = model.name.strip_suffix(" · routing group").unwrap_or(&model.name);
+                entry["gemini_group_name"] = json!(name);
+            }
+            entry
+        }).collect::<Vec<_>>()});
         let visible = crate::services::intent_routing::client::aliases::project_readable(
             &mut projection,
             &mut receipt.model_map,

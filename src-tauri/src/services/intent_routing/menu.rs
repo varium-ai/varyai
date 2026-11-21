@@ -1601,11 +1601,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("fixture directory");
         let oauth = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let mut provider = provider("fixture-provider");
-        let exact_model = "vendor/Model_1.2-20261029";
+        let exact_model =
+            "synthetic-vendor/Long-context-model-with-a-distinct-final-release-20261029";
         provider.settings_config["modelCatalog"]["models"] = json!([{"model":exact_model}]);
         let mut group = direct_group(&provider, exact_model);
         group.id = "saved-single-member".into();
-        group.name = "Saved single member".into();
+        let group_name = "测试路由组，复杂项目分析优先使用强模型，简单整理任务优先使用经济模型";
+        group.name = group_name.into();
         let group_alias = group.alias();
         let direct_alias = format!("vary-provider/{}", direct_id(&provider.id, exact_model));
         let menu = prepare(
@@ -1652,13 +1654,25 @@ mod tests {
             direct["display_name"],
             format!("{exact_model} · fixture-provider")
         );
-        assert_eq!(direct["description"], "VaryAI direct provider model");
+        assert_eq!(direct["description"], direct["display_name"]);
         let saved = models
             .iter()
             .find(|m| m["slug"] == group_alias)
             .expect("group entry");
-        assert_eq!(saved["display_name"], "Saved single member · routing group");
-        assert_eq!(saved["description"], "VaryAI routing group");
+        assert_eq!(
+            saved["display_name"],
+            format!("{group_name} · routing group")
+        );
+        assert_eq!(saved["description"], saved["display_name"]);
+        for alias in ["fixture-provider", "group"] {
+            assert!(models
+                .iter()
+                .filter(|model| model["visibility"] == "list")
+                .any(|model| model["slug"]
+                    .as_str()
+                    .is_some_and(|slug| slug.starts_with(&format!("{alias}/")))
+                    && model["description"] == model["display_name"]));
+        }
         manager.restore().expect("restore");
         crate::services::intent_routing::client::tests::assert_restored_config(&manager, original);
     }

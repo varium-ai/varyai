@@ -243,7 +243,12 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                     "generateContent" | "streamGenerateContent" | "countTokens"
                 )
         });
-    if !super::protocol_bridge::supported_query(&endpoint, request.uri().query()) {
+    let query = request.uri().query();
+    let claude_discovery = app == "claude"
+        && request.method() == http::Method::GET
+        && endpoint == "/v1/models"
+        && query == Some("limit=1000");
+    if !claude_discovery && !super::protocol_bridge::supported_query(&endpoint, query) {
         return error(StatusCode::BAD_REQUEST, "routing_query_unsupported");
     }
     if request.method() == http::Method::GET
