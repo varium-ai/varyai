@@ -82,6 +82,9 @@ export function RoutingPage({
   });
   const sources = liveRoutingSources(rows, trace.dataUpdatedAt);
   const shown = sources[0];
+  const continuation = shown?.steps.find(
+    ({ kind }) => kind === "pinned" || kind === "affinity",
+  );
   const sourceIds = new Set(sources.map((source) => source.agent));
   const concurrent = rows.filter((row) => sourceIds.has(row.agent));
   const multipleRoutes =
@@ -168,11 +171,13 @@ export function RoutingPage({
                       ? "routingPage.planningCandidates"
                       : "routingPage.noCandidatesRecorded",
                   )
-                : shown?.candidates.length === 1
-                  ? t("routingPage.singleSeat")
-                  : shown
-                    ? t("routingPage.candidateSeats")
-                    : t("routingPage.emptyStage")}
+                : continuation
+                  ? t(`routingPage.step.${continuation.kind}`)
+                  : shown?.candidates.length === 1
+                    ? t("routingPage.singleSeat")
+                    : shown
+                      ? t("routingPage.candidateSeats")
+                      : t("routingPage.emptyStage")}
             </p>
           )}
         </div>

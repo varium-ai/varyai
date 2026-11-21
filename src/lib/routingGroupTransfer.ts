@@ -7,7 +7,10 @@ import type {
   RoutingTemplateKey,
 } from "./api/intentRouting";
 import { routingCapabilityNaming } from "./routingCapabilityNaming";
-import { routingMemberKey } from "./routingMemberSelection";
+import {
+  routingMemberKey,
+  withSmartRuleMembers,
+} from "./routingMemberSelection";
 import { compareVersions } from "./version";
 
 const strategy = z.enum(["ordered", "fastest"]);
@@ -898,14 +901,15 @@ function rankCapabilityCandidates<T extends TemplateCandidate>(
 export function recommendRoutingMemberOrder(
   members: RoutingMember[],
   providers: RoutingProviderOption[],
+  template: "templateCapability" | "templateExpiry" = "templateCapability",
 ): RoutingMember[] {
   const candidates = new Map(
-    templateCandidates(providers).map((candidate) => [
+    templateCandidates(providers).map((candidate, catalogIndex) => [
       routingMemberKey({
         providerId: candidate.provider.id,
         modelId: candidate.model.id,
       }),
-      candidate,
+      { ...candidate, catalogIndex },
     ]),
   );
   const unmatched: RoutingMember[] = [];
@@ -915,10 +919,14 @@ export function recommendRoutingMemberOrder(
     unmatched.push(member);
     return [];
   });
-  return [
-    ...rankCapabilityCandidates(selected).map(({ member }) => member),
-    ...unmatched,
-  ];
+  const ranked =
+    template === "templateExpiry"
+      ? selected.sort(
+          (a, b) =>
+            compareTemplateCandidates(a, b) || a.catalogIndex - b.catalogIndex,
+        )
+      : rankCapabilityCandidates(selected);
+  return [...ranked.map(({ member }) => member), ...unmatched];
 }
 
 function pickTemplateMembers(
@@ -1167,6 +1175,6 @@ export function routingTemplates(
       undefined,
       "An easy task: a straightforward question with enough information, formatting, a lookup, or a small well-defined edit.",
     );
-    return result;
+    return { ...result, group: withSmartRuleMembers(group) };
   });
 }

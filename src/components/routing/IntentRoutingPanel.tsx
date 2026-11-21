@@ -52,7 +52,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
-import { Popover, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectTrigger,
@@ -616,8 +620,9 @@ export function IntentRoutingPanel({
     const submit = async () => {
       try {
         const group =
-          draft.template === "templateSmart" && draft.members.length > 3
-            ? withSmartRuleMembers(draft)
+          draftTemplate === "templateSmart" &&
+          (draft.rules.length > 0 || draft.members.length > 3)
+            ? withSmartRuleMembers({ ...draft, template: draftTemplate })
             : draft;
         await saveGroup({
           ...group,
@@ -927,15 +932,25 @@ export function IntentRoutingPanel({
             )}
           </ModelPickerPopoverContent>
         </Popover>
-        <span
-          className="rt-info"
-          tabIndex={0}
-          role="img"
-          aria-label={t("intentRouting.classifierNotice")}
-          title={t("intentRouting.classifierNotice")}
-        >
-          <Info size={14} />
-        </span>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="rt-info"
+              aria-label={t("intentRouting.classifierHelp")}
+            >
+              <Info size={14} aria-hidden />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="start"
+            className="w-80 max-w-[calc(100vw-2rem)] px-3 py-2 text-xs leading-relaxed"
+            aria-label={t("intentRouting.classifierHelp")}
+          >
+            {t("intentRouting.classifierNotice")}
+          </PopoverContent>
+        </Popover>
       </div>
     );
   const templateRuleHint =
@@ -1034,11 +1049,13 @@ export function IntentRoutingPanel({
                     edit(withDraftMemberOrder(draft, members))
                   }
                   onRecommendOrder={
-                    draftTemplate === "templateCapability"
+                    draftTemplate === "templateCapability" ||
+                    draftTemplate === "templateExpiry"
                       ? () => {
                           const recommended = recommendRoutingMemberOrder(
                             draft.members,
                             providers.data ?? [],
+                            draftTemplate,
                           );
                           if (
                             recommended.some(

@@ -239,10 +239,9 @@ it("prefers different models across suppliers in all four templates", () => {
   ]);
   expect(smart.group.members.map(({ modelId }) => modelId)).toEqual([
     "fixture-pro",
-    "fixture-standard",
     "fixture-mini",
   ]);
-  expect(smart.group.rules[2].targetMemberId).toBe(smart.group.members[2].id);
+  expect(smart.group.rules[2].targetMemberId).toBe(smart.group.members[1].id);
   for (const template of other) {
     expect(template.group.members.map(({ modelId }) => modelId)).toEqual([
       "fixture-pro",
@@ -337,15 +336,19 @@ it("uses configured equivalence before spending a slot on an alias", () => {
     },
   ];
   const templates = routingTemplates(catalog);
-  for (const { group } of templates) {
-    expect(group.members).toHaveLength(3);
+  for (const { key, group } of templates) {
+    const expected =
+      key === "templateSmart"
+        ? ["fixture-1", "fixture-2"]
+        : ["fixture-1", "fixture-2", "fixture-3"];
+    expect(group.members).toHaveLength(expected.length);
     expect(
       new Set(
         group.members.map(({ modelId }) =>
           modelId === "relay-alias" ? "fixture-1" : modelId,
         ),
       ),
-    ).toEqual(new Set(["fixture-1", "fixture-2", "fixture-3"]));
+    ).toEqual(new Set(expected));
   }
   expect(
     templates[2].group.members.map(({ providerId }) => providerId),
@@ -623,17 +626,21 @@ it("draws different models while retaining the constraints of each template", ()
     expect(new Set(ids)).not.toEqual(
       new Set(first[index].group.members.map(({ modelId }) => modelId)),
     );
-    expect(group.members).toHaveLength(3);
+    const expectedCount = key === "templateSmart" ? 2 : 3;
+    expect(group.members).toHaveLength(expectedCount);
     expect(
       new Set(ids.map((id) => (id === "fixture-alias" ? "gpt-6.1-pro" : id)))
         .size,
-    ).toBe(3);
+    ).toBe(expectedCount);
     expect(ids).not.toContain("codex-auto-review");
     if (key === "templateSpeed")
       expect(
         new Set(group.members.map(({ providerId }) => providerId)).size,
       ).toBe(3);
     if (key === "templateSmart") {
+      expect(
+        new Set(group.rules.map(({ targetMemberId }) => targetMemberId)),
+      ).toEqual(new Set(group.members.map(({ id }) => id)));
       const easy = group.members.find(
         ({ id }) => id === group.rules[2].targetMemberId,
       );

@@ -177,8 +177,16 @@ fn decode_result(group: &RoutingGroup, value: Value) -> (Option<String>, &'stati
     }
     match choices[0]["message"]["content"]
         .as_str()
-        .and_then(|s| group.parse_classification(s).ok())
-    {
+        .filter(|content| content.len() <= 4096)
+        .and_then(|content| {
+            let content = content.trim();
+            let json = content
+                .split_once('\n')
+                .filter(|(fence, _)| matches!(fence.trim_end_matches('\r'), "```json" | "```"))
+                .and_then(|(_, body)| body.strip_suffix("\n```"))
+                .unwrap_or(content);
+            group.parse_classification(json).ok()
+        }) {
         Some(Some(id)) => (Some(id), "matched"),
         Some(None) => (None, "no_match"),
         None => (None, "invalid_output"),
@@ -460,6 +468,39 @@ mod tests {
         assert_eq!(payload["stream"], false);
         assert!(payload.get("tools").is_none());
         assert_eq!(payload["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn routing_group_regression_classified_easy_task_uses_cheaper_route_with_json_fences() {
+        let mut group = group();
+        let mut easy = group.rules[0].clone();
+        easy.id = "easy".into();
+        easy.name = "Easy task".into();
+        easy.description = "A short, straightforward text request.".into();
+        easy.target_member_id = group.fallback_member_ids[0].clone();
+        let cheap = group
+            .members
+            .iter()
+            .find(|member| member.id == easy.target_member_id)
+            .unwrap()
+            .model_id
+            .clone();
+        easy.fallback_member_ids.clear();
+        group.rules.push(easy);
+        let content = "```json\n{\"intentId\":\"easy\"}\n```";
+        let (endpoint, task) = server(
+            "200 OK",
+            json!({"choices":[{"finish_reason":"stop","message":{"content":content}}]}).to_string(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+        let result = test_trial(group, provider(&endpoint), "Convert 2 meters to cm.".into())
+            .await
+            .unwrap();
+        assert_eq!(result.outcome, "matched");
+        assert_eq!(result.intent_id.as_deref(), Some("easy"));
+        assert_eq!(result.plan.candidates[0].model_id, cheap);
+        task.await.unwrap();
     }
 
     #[tokio::test]

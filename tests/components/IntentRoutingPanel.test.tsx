@@ -1112,7 +1112,7 @@ describe("IntentRoutingPanel", () => {
         expect(
           screen.getByRole("button", { name: "common.save" }),
         ).toBeEnabled();
-        if (key !== "templateCapability") {
+        if (key !== "templateCapability" && key !== "templateExpiry") {
           expect(
             screen.queryByRole("button", {
               name: "routingPage.applyRecommendedModelOrder",
@@ -1288,7 +1288,7 @@ describe("IntentRoutingPanel", () => {
           Math.min(savedGroup.members.length, 3),
         );
       }
-      if (key === "templateCapability") {
+      if (key === "templateCapability" || key === "templateExpiry") {
         expect(
           within(dialog).getByRole("button", {
             name: "routingPage.applyRecommendedModelOrder",
@@ -1354,6 +1354,55 @@ describe("IntentRoutingPanel", () => {
       ).toBeVisible();
     },
   );
+  it("restores the expiry template's suggested order without replacing selected members", async () => {
+    const providers = ["first", "middle", "last"].map((id) => ({
+      id,
+      name: id,
+      taskEligible: true,
+      classifierEligible: false,
+      models: [{ id: `${id}-model`, name: id }],
+    }));
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+    mount();
+    const user = userEvent.setup();
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    drawTemplateSuggestions(create);
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.templateExpiry" }),
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: "routingPage.templateExpiry",
+    });
+    const rows = () => within(dialog).getAllByRole("listitem");
+    await user.click(
+      within(rows()[1]).getByRole("button", {
+        name: "intentRouting.moveUp middle",
+      }),
+    );
+    expect(rows()[0]).toHaveTextContent("middle");
+    await user.click(
+      within(dialog).getByRole("button", {
+        name: "routingPage.applyRecommendedModelOrder",
+      }),
+    );
+    expect(rows()[0]).toHaveTextContent("first");
+    await user.click(
+      within(dialog).getByRole("button", { name: "common.save" }),
+    );
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(saved.members.map(({ providerId }) => providerId)).toEqual([
+      "first",
+      "middle",
+      "last",
+    ]);
+    expect(saved.defaultMemberId).toBe(saved.members[0].id);
+    expect(saved.fallbackMemberIds).toEqual(
+      saved.members.slice(1).map(({ id }) => id),
+    );
+    expect(saved.quotaOrder).toBe("earliest_expiry");
+  });
   it("chooses smart rule targets independently from the full task catalog", async () => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
       {
@@ -1419,6 +1468,47 @@ describe("IntentRoutingPanel", () => {
     expect(
       saved.rules.slice(1).map(({ targetMemberId }) => targetMemberId),
     ).toEqual([extra.id, extra.id]);
+  });
+  it("opens classifier help by click or keyboard in the smart template editor", async () => {
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "task",
+        name: "Synthetic provider",
+        taskEligible: true,
+        classifierEligible: true,
+        models: [
+          { id: "strong", name: "Strong", maker: true, outputPrice: 12 },
+          { id: "cheap", name: "Cheap", outputPrice: 1 },
+        ],
+      },
+    ]);
+    mount();
+    const user = userEvent.setup();
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    drawTemplateSuggestions(create);
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.templateSmart" }),
+    );
+
+    const help = screen.getByRole("button", {
+      name: "intentRouting.classifierHelp",
+    });
+    await user.click(help);
+    expect(help).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("intentRouting.classifierNotice")).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(help).toHaveFocus();
+    expect(screen.queryByText("intentRouting.classifierNotice")).toBeNull();
+
+    await user.keyboard("{Enter}");
+    expect(screen.getByText("intentRouting.classifierNotice")).toBeVisible();
+    await user.click(
+      screen.getByRole("textbox", { name: "intentRouting.name" }),
+    );
+    expect(screen.queryByText("intentRouting.classifierNotice")).toBeNull();
+    expect(screen.getByRole("form")).toBeVisible();
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
   });
   it("removes hidden preset models when resaving an oversized smart group", async () => {
     const members = [
@@ -1500,10 +1590,77 @@ describe("IntentRoutingPanel", () => {
     ]);
     expect(saved.rules).toEqual([]);
   });
+  it.each([true, false])(
+    "resaves and reopens a smart group without its unselected fallback (template stored: %s)",
+    async (explicit) => {
+      const [unused, strong, easy] = ["unused", "strong", "easy"].map(
+        (modelId) => ({ id: modelId, modelId, providerId: "provider" }),
+      );
+      const savedGroup: RoutingGroup = {
+        ...group,
+        template: explicit ? "templateSmart" : undefined,
+        members: [unused, strong, easy],
+        defaultMemberId: strong.id,
+        fallbackMemberIds: [unused.id, easy.id],
+        rules: [
+          {
+            ...group.rules[0],
+            id: "compact",
+            name: "Compaction",
+            targetMemberId: strong.id,
+            conditions: { compact: true },
+          },
+          {
+            ...group.rules[0],
+            id: "hard",
+            name: "Hard task",
+            targetMemberId: strong.id,
+            fallbackMemberIds: [unused.id],
+          },
+          {
+            ...group.rules[0],
+            id: "easy",
+            name: "Easy task",
+            targetMemberId: easy.id,
+          },
+        ],
+      };
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [savedGroup],
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      mount();
+      const user = userEvent.setup();
+      const open = async () =>
+        user.click(await screen.findByRole("button", { name: "common.edit" }));
+      await open();
+      await user.click(screen.getByRole("button", { name: "common.save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(intentRoutingApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          template: "templateSmart",
+          members: [strong, easy],
+          defaultMemberId: strong.id,
+          fallbackMemberIds: [easy.id],
+          rules: expect.arrayContaining([
+            expect.objectContaining({ id: "hard", fallbackMemberIds: [] }),
+          ]),
+        }),
+      );
+      await open();
+      const editor = screen.getByRole("dialog", { name: savedGroup.name });
+      expect(
+        within(editor).getByText("routingPage.templateSmartRules"),
+      ).toBeVisible();
+      expect(within(editor).queryByText("intentRouting.members")).toBeNull();
+      expect(within(editor).queryByText(/unused/)).toBeNull();
+    },
+  );
   it.each([
     [
       "templateSmart",
-      [".rt-template-rule-model", ".rt-classifier-pick button"],
+      [".rt-template-rule-model", ".rt-classifier-pick .rt-cond"],
     ],
     ["templateCapability", [".rt-template-member", ".rt-template-member-add"]],
     ["templateSpeed", [".rt-template-member", ".rt-template-member-add"]],

@@ -92,17 +92,19 @@ preset settings. The
 task-classification draft has no separate member or model-order controls: choose
 a task model directly for each rule, or choose the default model when there is
 no automatic task split. Choose the classifier separately in **Intent told by**.
-Changing a rule target replaces the preset member list with the targets shown
-in the editor. Reusing the same supplier and model across rules counts as one
-member. The hard-task target becomes the default, and the remaining targets
-can serve as fallbacks. When there is no split, changing the default keeps it
-as the only member. Resaving a smart group with more than three explicit
-members also applies these rules.
+For smart groups with rules, the suggested list and saved group contain the
+rule targets shown in the editor. Reusing the same supplier and model across
+rules counts as one member. The hard-task target becomes the default, and the
+remaining targets can serve as fallbacks. Saving a legacy smart group with
+rules applies the same member selection. When there is no split, changing
+the default keeps it as the only member.
 The classifier and rule targets use the same searchable picker layout. Scroll
 within the picker to browse models. Escape closes it and returns focus to its
 button.
 Rule descriptions wrap in full. On narrow forms the model picker sits under
 its rule description.
+Select the information icon beside the classifier to read about task text and
+potential charges. Press Escape to close the explanation.
 The other three templates prefill up to three model members. The member list
 itself shows the starting order. Drag the grip at the left of a row to move it,
 or focus the grip and press Alt+↑/↓. The move buttons are also available. Escape
@@ -151,7 +153,10 @@ one model per supplier.
   accounts in descending order of weekly allowance percentage left per hour
   until reset. When there is no weekly allowance, a confirmed 5-hour-only
   account uses the same calculation for its short window. A full 5-hour
-  window makes the account unavailable for new selections.
+  window makes the account unavailable for new selections. Select **Apply
+  recommended order** to restore the template's catalog-based fallback
+  order for the models already selected. Live quota still determines
+  request priority.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
@@ -211,6 +216,10 @@ The runtime supports two scheduling modes plus optional expiry sorting:
 
 Both modes retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
 
+The live routing graph explains when a request must continue at the same
+upstream, or when conversation affinity gives the previous upstream priority.
+Its candidate count describes the current request.
+
 Expiry sorting is optional group configuration. It applies when the gateway
 can select a new destination. A fresh, positive Sub2API subscription allowance
 with a confirmed expiry ranks by date. Codex and Claude accounts with known
@@ -266,7 +275,7 @@ Only test text and enabled rule descriptions are sent with the classifier's own 
 
 Independent privacy inspection runs even if business auditing is disabled. Enabled audit/allow rules become redaction rules; block rules remain blocking. Both text and descriptions are inspected. Redaction precedes Unicode-safe truncation to 4,000 scalar values (first 3,000 and last 1,000). Limits: 32 KiB payload, 64 KiB response, 4 KiB classification content, four concurrent trials and the configured 500–5,000 ms deadline including preparation. No redirects or retries. Detection cannot guarantee finding every secret; use synthetic examples.
 
-Only strict `{ "intentId": "enabled-rule-id" }` or `{ "intentId": null }` output is accepted. Unknown IDs, extra fields, tool calls, refusals and truncated responses are rejected. Errors, timeout and privacy rejection return the default candidate order and a fixed reason, never raw responses. VaryAI does not persist trial text or results.
+The network classifier accepts a single `{ "intentId": "enabled-rule-id" }` or `{ "intentId": null }` object, with optional surrounding Markdown code fences. Unknown IDs, extra fields, explanatory prose, tool calls, refusals and truncated responses are rejected. Errors, timeout and privacy rejection return the default candidate order and a fixed reason, never raw responses. VaryAI does not persist trial text or results.
 
 The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
 
@@ -294,8 +303,11 @@ In **Settings → Routing → Local routing → Codex**, enable the single Codex
 
 One dedicated `varyai` provider and one external Codex-native catalog expose both kinds of entries:
 
-- `vary-provider/model-<hash>`: **exact model ID · provider name**, with description **VaryAI direct provider model**. The hash is derived from the exact provider ID and model ID. Each entry has one isolated target and never runs intent classification or another provider's fallback.
-- `auto/<model>` for newly discovered groups, or the existing `vary-auto/<group-id>` alias for older/manual groups: **group name · routing group**, with description **VaryAI routing group**. Selecting it uses that group's strategy, approved candidates and optional intent classification. A saved group remains a routing group even when it has only one member.
+- `vary-provider/model-<hash>`: **exact model ID · provider name**. The hash is derived from the exact provider ID and model ID. Each entry has one isolated target and never runs intent classification or another provider's fallback.
+- `auto/<model>` for newly discovered groups, or the existing `vary-auto/<group-id>` alias for older/manual groups: **group name · routing group**. Selecting it uses that group's strategy, approved candidates and optional intent classification. A saved group remains a routing group even when it has only one member.
+
+Hover over a VaryAI entry in the Codex desktop picker to read its complete
+label, including the provider or routing suffix and any disambiguation number.
 
 The menu combines **available enabled global provider models and executable routing groups**. Direct entries retain each exact upstream identity; selecting one never silently substitutes a different provider. Group-only model unlisting withdraws a direct entry without removing the group target. Unsupported transports, unavailable credentials and non-executable entries are omitted, with a count in the UI; discovery is not evidence of inference permission. At most 256 entries are published, reserving room for the routing groups. Agents with a starting-model control choose their own default from this shared menu; native-picker applications choose the chat model inside the application. Background catalog refresh preserves the starting choice while explicit selection changes it; provider creation and editing do not select an Agent or change another Agent's default. Existing Codex conversations may retain their earlier native configuration.
 
@@ -356,7 +368,14 @@ An observed, successfully completed plain-history turn has soft affinity: as its
 
 ## Continuation recovery after restart
 
-Normal Codex model-menu/native and authenticated external gateway requests persist **observed ownership**, not conversation text. A new runtime or menu reconnect can restore response IDs, tool-call IDs, item references, opaque-content hashes and conversation pins for the same authenticated consumer and alias. Codex Responses follows Magpie's upstream-validation approach: still-available exact destinations retain their ownership when other group members change, and unknown state is forwarded intact for upstream validation. Other clients require the complete destination set to match. Target reordering remaps owners by fingerprint rather than array position. Native ingress scopes recovery by the request workspace, falling back to the authorization header, following Magpie's account-scoping convention. This namespace is separate from upstream authentication; there is no local authentication lease. Temporary editor execution remains memory-only.
+Normal Codex model-menu/native and authenticated external gateway requests persist **observed ownership**, not conversation text. A new runtime or menu reconnect can restore response IDs, tool-call IDs, item references, opaque-content hashes and conversation pins for the same authenticated consumer and alias. Codex Responses follows Magpie's upstream-validation approach: still-available exact destinations retain their ownership when other group members change, and unknown state is forwarded intact for upstream validation. Strict recovery requires the complete destination set to match. Target reordering remaps owners by fingerprint rather than array position. Native ingress scopes recovery by the request workspace, falling back to the authorization header, following Magpie's account-scoping convention. This namespace is separate from upstream authentication; there is no local authentication lease. Temporary editor execution remains memory-only.
+
+WorkBuddy and WorkBuddy AI can continue a self-contained text conversation
+after a member is removed from a saved group. An exact surviving destination
+keeps its recorded bindings. If the previous destination was removed and the
+saved scope has no tool-call or opaque state, the remaining members can be
+considered for a fresh route. Requests carrying sealed or incomplete history
+still require the original continuation checks.
 
 Stable conversation identifiers include `prompt_cache_key`, `session_id`, `session-id`, `thread-id`, `thread_id` and `x-conversation-id`, in that priority order. Without a name, Responses requests can locate a saved conversation from known response/tool/item/opaque references; conflicting matches remain unusable. Destination fingerprints include the exact provider/model, endpoint, static authentication/configuration and verified official account provenance. Static API-key changes invalidate recovery. Ordinary official access-token rotation can preserve durable provenance when the same verified identity is freshly prepared; replacing or reauthenticating a managed account changes its authentication generation. Missing provenance disables durable recovery rather than weakening the checks.
 

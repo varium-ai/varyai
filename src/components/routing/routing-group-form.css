@@ -406,7 +406,6 @@
       .rt-setting-row,
       .rt-edit-rules,
       .rt-edit-classifier,
-      .rt-template-hint,
       .rt-edit-levels > .rt-reference-setting
     )
     > *,
@@ -639,6 +638,9 @@
   white-space: nowrap;
 }
 @container routing-form (max-width: 520px) {
+  .rt-group-form .rt-template-hint {
+    grid-column: 1;
+  }
   .rt-group-form .rt-template-rule-target {
     grid-template-columns: 18px minmax(0, 1fr);
     row-gap: 4px;

@@ -227,6 +227,36 @@ library tests ignored. Strict Clippy reported a variant-naming warning on a
 separate working-tree edit to the Rust `RoutingTemplate` enum. Windows
 WebView and installed Agent verification remain pending.
 
+The November 21 narrow-form follow-up places the template hint in the same
+grid column as the rule editor. At a 520 px viewport the original layout
+collapsed the rules column and wrapped the descriptions almost character by
+character. On the working tree based on `d32c8a68`, Chromium and macOS WebKit
+verified the full hard- and easy-task descriptions and usable model selectors
+when creating or editing a smart group at viewport widths from 380 to 900 px.
+The shared renderer applies this layout to every Agent listed below.
+Windows WebView2 verification remains pending.
+
+The classifier information button and expiry template ordering action use the
+same group editor for each Agent in this matrix. The information button opens
+the existing disclosure and returns keyboard focus when dismissed with Escape.
+The expiry action reorders selected member IDs by the catalog-based template
+ranking and saves the existing default and fallback fields. Each listed Agent
+retains its regular request entry point, and live quota still ranks eligible
+accounts. Renderer regressions verify opening and dismissing the explanation,
+restoring a reordered draft, and saving its member order and quota policy.
+Chromium and macOS WebKit verified the explanation in narrow dialog fixtures.
+macOS WebKit also verified moving an expiry template row and restoring its
+original position with the recommended-order button.
+Windows WebView2 verification remains pending.
+
+The three renderer fixes were checked on the working tree based on
+`d32c8a68` using macOS 26.6.2 arm64, Node 20.20.2, pnpm 10.12.3, and
+Rust 1.98.1. Type checking, the renderer build, Prettier, all 4,766 renderer
+tests, development helpers and the production dependency audit passed.
+Cargo formatting, check, strict Clippy, and the library and full test runs
+passed. The full run passed 7,817 library tests and 165 integration tests,
+with 21 library tests ignored.
+
 Each new template chooser draws fresh model suggestions in the shared editor
 on macOS and Windows. For each Agent in the matrix below, the editor previews
 and saves the same draw through the ordinary routing-group entry point. The
@@ -288,6 +318,36 @@ save repairs oversized explicit smart groups. Each listed adapter continues
 to consume the resulting group via its existing planner. Doubao Work remains
 audit-only. Synthetic coverage exercises creation and saved-group edits at the
 shared save boundary. Native Agent and Windows WebView checks are pending.
+
+The November 21 follow-up covers the same Agent entries and adapters. A smart
+draft with rules publishes only distinct rule targets, including when several
+rules share a model. The save path applies this to explicit template groups
+and legacy groups identified by their smart rules. Two renderer regressions
+resave and reopen these groups with a hidden fallback and verify that the
+editor shows the selected rule targets. The six focused renderer suites
+passed all 199 tests on the working tree based on `d32c8a68` using macOS
+26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3. Type checking and targeted
+formatting passed.
+
+The routing stage uses the same renderer for all Agents in the matrix above.
+It can explain an existing continuation or session affinity from the recorded
+gateway step. A single candidate gives the number of destinations for the
+request. The request entry points, protocol adapters and candidate planner
+supply the existing trace fields. The six focused routing renderer suites
+passed 300 tests, and TypeScript checking passed on macOS arm64 with Node
+20.20.2 and pnpm 10.12.3 on the working tree based on `d32c8a68`. Native
+WebView checks are pending.
+
+- `workbuddy` and `workbuddy-ai` use separate authenticated Chat entries. The
+  gateway keeps a surviving owner and replans a visible-text turn when the
+  owner was removed. The existing native chat displays the response. Synthetic
+  HTTP coverage includes both editions, retained and removed owners, streamed
+  and buffered replies, and opaque history. All eight WorkBuddy history tests
+  passed on macOS arm64 with Rust 1.98.1 on the same working tree. Native
+  verification is pending on macOS and Windows.
+- Each other Agent in the table uses its existing entry, adapter, continuation
+  policy and chat UI. All ten shared continuation tests passed across Chat,
+  Messages, Responses and Gemini policy paths.
 
 The intent classifier uses the same model picker layout as the rule targets
 for every row above on macOS and Windows. The shared editor still filters to
@@ -1904,6 +1964,12 @@ the provider filter, while selection submits the original model route ID.
 Doubao Work uses its native audit path. Per-Agent native picker verification
 for this grouping change remains pending on both platforms.
 
+Claude Code gateway discovery sends an authenticated
+`GET /connections/claude/v1/models?limit=1000`. This read uses the same
+catalog and route aliases as its unparameterized model listing. The loopback
+fixture checks query admission and catalog payloads across the shared Agent
+connections. Live native picker validation for the updated backend is pending.
+
 | Agent | Picker entry point and adapter | Policy status entry point and runtime | Verification |
 | --- | --- | --- | --- |
 | `claude` | `/model`, Claude Code settings, Messages | Settings key binding, shared or legacy Messages route | Pending |
@@ -1984,3 +2050,107 @@ Prettier, the renderer build, all 4,760 renderer tests, the development
 helper tests and the production dependency audit passed. Strict Clippy
 reported a shared `Template` prefix on the `RoutingTemplate` enum in
 concurrent routing changes. Remote platform CI and live Agent checks are pending.
+
+## Full names in the Codex model picker
+
+The change publishes the complete VaryAI model or routing-group label as
+Codex picker description metadata after any source and collision suffixes.
+The Codex picker owns the row width and displays the description on hover.
+Names are presentation metadata. Wire IDs, request adapters, default
+selection and historical aliases retain their existing roles.
+
+| Agent ID | Entry point and adapter | Picker behavior and verification scope |
+| --- | --- | --- |
+| `claude` | Claude Code / Messages model list | Separate native projection |
+| `claude-desktop` | Claude Desktop / Messages model list | Separate native projection |
+| `codex` | Desktop and CLI, local and native Responses catalogs, temporary CLI catalog | Full description in published fixtures and the macOS CLI. Desktop tooltip and Windows checks pending |
+| `gemini` | Gemini CLI / Gemini model registry | Separate native projection |
+| `grokbuild` | Grok Build / model profiles | Separate native projection |
+| `opencode` | OpenCode / provider catalog | Separate native projection |
+| `openclaw` | OpenClaw / provider and model registry | Separate native projection |
+| `hermes` | Hermes / CLI provider catalog | Separate native projection |
+| `pi` | Pi / custom provider registry | Separate native projection |
+| `workbuddy` | WorkBuddy China / Desktop registry | Separate native projection |
+| `workbuddy-ai` | WorkBuddy AI / Desktop registry | Separate native projection |
+| `qoder` | Qoder China / Desktop registry | Separate native projection |
+| `doubaowork` | Doubao Work / audit adapter | Native model picker outside this catalog |
+| `trae` | TRAE China / bridge catalog | Separate native projection |
+| `trae-intl` | TRAE International / bridge catalog | Separate native projection |
+| `kimi` | Kimi Code / provider projection | Separate native projection |
+| `qwen` | Qwen Code / CLI model settings | Separate native projection |
+| `zcode` | ZCode / Desktop registry | Separate native projection |
+| `deepseek-harness` | DeepSeek Harness / native registry | Separate native projection |
+| `t3code` | T3 Code / independent Codex instance and Responses | Full description in the instance catalog and full name in custom model settings. Native checks pending |
+
+On macOS, Codex CLI 0.171.0 ran against a temporary configuration and
+synthetic catalog. Its app-server `model/list` returned the complete
+`displayName` and `description` for long Chinese and English labels, including
+a numbered provider suffix. The native `/model` picker displayed both
+distinguishing suffixes in a 160-column terminal. The running desktop app
+was left out of the smoke test.
+
+On the working tree based on `d32c8a68`, macOS 26.6.2 arm64 with Rust 1.98.1,
+Node 20.20.2 and pnpm 10.12.3 passed Rust formatting, check, strict Clippy
+and 7,817 library tests (21 ignored), along with 4,766 renderer tests, the
+renderer build, type checking, formatting, helper tests and the production
+dependency audit. The full Cargo run first exhausted disk space. During the
+retry the local target directory disappeared and 32 subprocess-dependent
+tests reported missing executables. Full integration and remote CI acceptance
+remain pending.
+
+## Routing group names and intent classifier responses
+
+The shared Agent picker consumes canonical IDs and catalog labels. Gemini's
+native footer reads the configured model ID, and Grok Build's native default
+refers to a profile key. Intent classification is shared across executable
+group routes. Classifier output, classification-disabled fallback, and
+continuation ownership are checked separately from client display. A shared
+renderer regression covers installed Tools rows for all 19 picker-capable
+Agents while the executable catalog lacks the saved group.
+
+| Agent ID | Entry point and native adapter | Verification scope |
+| --- | --- | --- |
+| `claude` | Claude Code CLI, Messages catalog and shared runtime | Shared classifier tests. Native pending |
+| `claude-desktop` | Claude Desktop, Messages catalog and shared runtime | Shared classifier tests. Native pending |
+| `codex` | Codex desktop and CLI, Responses catalogs and shared runtime | Shared classifier tests. Native pending |
+| `gemini` | Gemini CLI, dotenv, JSON model definitions, Gemini URL routing | Alias migration and gateway fixtures passed. macOS CLI footer and synthetic inference passed. Native picker rendering and Windows pending |
+| `grokbuild` | Grok Build CLI, TOML profiles, shared Agent status and picker | Profile adoption, status and refresh passed with fixtures. Installed client pending |
+| `opencode` | OpenCode, provider model registry and shared runtime | Shared classifier tests. Native pending |
+| `openclaw` | OpenClaw, provider model registry and shared runtime | Shared classifier tests. Native pending |
+| `hermes` | Hermes, provider model registry and shared runtime | Shared classifier tests. Native pending |
+| `pi` | Pi, custom provider registry and shared runtime | Shared classifier tests. Native pending |
+| `workbuddy` | WorkBuddy China desktop, native model list and shared runtime | Shared classifier tests. Native pending |
+| `workbuddy-ai` | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests. Native pending |
+| `qoder` | Qoder China desktop, provider registry and shared runtime | Shared classifier tests. Native pending |
+| `doubaowork` | Doubao Work desktop, audit-only integration | No executable model picker or intent route in this integration |
+| `trae` | TRAE China desktop, Chat bridge and shared runtime | Shared classifier tests. Native pending |
+| `trae-intl` | TRAE International desktop, Chat bridge and shared runtime | Shared classifier tests. Native pending |
+| `kimi` | Kimi Code CLI, provider model registry and shared runtime | Shared classifier tests. Native pending |
+| `qwen` | Qwen Code CLI, JSONC model registry and shared runtime | Shared classifier tests. Native pending |
+| `zcode` | ZCode desktop, native model registry and shared runtime | Shared classifier tests. Native pending |
+| `deepseek-harness` | DeepSeek Harness, CLI model and credentials registry | Shared classifier tests. Native pending |
+| `t3code` | T3 Code desktop, independent Codex backend and shared runtime | Shared classifier tests. Native pending |
+
+The projection and classifier paths are shared on macOS and Windows.
+Gemini CLI 0.67.0 on macOS displayed and sent the ASCII alias for a Chinese
+group using temporary configuration and a loopback upstream. The generated
+model definitions retain the original label. Passing a literal Chinese
+model ID directly breaks this CLI version's HTTP User-Agent construction.
+The exact reported Codex upstream rejection, Fastest selection and GLM
+classification request were unavailable in the local routing history.
+The GLM recording shows Codex set to High reasoning and includes a short
+follow-up in an existing conversation. The recording does not expose the
+classifier result or continuation decision.
+
+Verification on the working tree over `d32c8a68`, macOS 26.6.2 arm64,
+Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. The renderer build, TypeScript,
+Prettier, all 4,771 renderer tests, 137 CI helper tests and the production
+pnpm audit passed. Cargo formatting, check, strict Clippy, 7,821 library tests
+and 165 integration tests passed. The Rust suite reported 21 ignored library
+tests. Remote CI and native Windows acceptance are pending.
+
+Before committing, the branch fast-forwarded to `6c2c0e9f`. The base tree
+and the pending patch were identical across the fast-forward. The remaining
+development checks, `pnpm test:agent-rewards` and
+`python3 -B scripts/tests/recover-shared-v23.test.py`, passed with 13 and 5
+tests respectively.
