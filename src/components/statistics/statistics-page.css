@@ -98,10 +98,9 @@
 
 .stats-toolbar {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) repeat(
-      2,
-      minmax(0, 128px)
-    ) 88px 112px;
+  grid-template-columns:
+    minmax(140px, 1fr) repeat(2, minmax(0, 128px))
+    88px 112px;
   align-items: center;
   gap: 6px 8px;
 }
