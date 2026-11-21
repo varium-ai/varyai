@@ -60,12 +60,20 @@ uses the original tool context to restore tool-search and namespaced calls in
 both JSON and SSE replies. Native Responses items retain their original form;
 server-executed discovery is not relabeled as a client function.
 
-Codex desktop also injects page context as `function_call_output` items in the
-`agent` namespace with a `codex_apps_` name and no `call_id`. These are context
-notifications, not replies to model-issued calls. Cross-protocol readers retain
-their source label and content as user-level context without inventing a tool
-call or elevating the content to system instructions. Ordinary tool results
-still require a nonempty call ID. Native Responses forwarding remains unchanged.
+Codex desktop also injects unsolicited ambient context as `function_call_output` items in the
+`agent` namespace with no `call_id` — either a `codex_apps_` name (`codex_apps_open_page`,
+`codex_apps_selected_page_part_<N>_of_<M>`) or `browser_tabs` (`<in-app-browser-context>`).
+These are context notifications, not replies to model-issued calls. Cross-protocol
+readers retain their source label and content as user-level context without
+inventing a tool call or elevating the content to system instructions. Ordinary
+tool results still require a nonempty call ID. Native Responses forwarding remains
+unchanged.
+
+For Chat-format upstreams, the Chat builder keeps `role: "tool"` message `content`
+as a plain string even when a `Part::ToolResult` contains images or files: text
+parts remain in the `role: "tool"` string alongside a moved-media marker, while
+any `Part::Image` and `Part::File` items are queued and emitted in a trailing
+`role: "user"` message immediately after the contiguous tool-result block.
 
 The Chat builder also normalizes instruction roles. Initial `system` and
 `developer` messages join the leading system prompt. After an assistant or tool
@@ -190,10 +198,13 @@ regex/schema validation and tool-history pairing); no upstream text is included.
 Existing sanitized upstream errors retain their safe response path. Transport failures
 remain distinct, and ambiguous sends are not replayed at another account.
 
-Converted-request rejection logs also include bounded, fixed diagnostic hints.
-Only recognized error metadata is inspected; request echoes and arbitrary error
-fields are ignored. Hints name known protocol fields or refusal categories,
-never upstream text, parameter values, credentials or tool inputs. They support
-correlating a real desktop failure with a synthetic reproduction; a successful
-isolated greeting alone does not establish desktop compatibility. This diagnostic
-does not change client errors, request conversion or retry decisions.
+Converted and forwarded call rejection logs, as well as request conversion
+failures (`Conversion rejected: ... reason=<fixed-snake-case-label>`), emit
+bounded, fixed diagnostic hints/labels without matching the log-exporter's
+`request:`/`response:` payload redaction rules. Only recognized error metadata is
+inspected; request echoes and arbitrary error fields are ignored. Hints name
+known protocol fields or refusal categories, never upstream text, parameter
+values, credentials or tool inputs. They support correlating a real desktop
+failure with a synthetic reproduction; a successful isolated greeting alone does
+not establish desktop compatibility. This diagnostic does not change client
+errors, request conversion or retry decisions.

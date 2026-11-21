@@ -33,7 +33,6 @@ import {
   ChevronDown,
   PackageCheck,
   PackagePlus,
-  Search,
   X,
 } from "lucide-react";
 import {
@@ -73,7 +72,7 @@ import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppDialog } from "@/components/ui/app-dialog";
 import type { AppId } from "@/lib/api";
@@ -1393,23 +1392,8 @@ export function AgentConnectionsPage({
                 disabled={rowBusy(app)}
               />
             )}
-            {((app === "doubaowork" && !state?.configured) ||
-              (enabled && !state?.recoveryPending && app !== "doubaowork")) && (
-              <div className="mp-agent-detail-actions">
-                {doubaoLauncher}
-                {enabled && !state?.recoveryPending && app !== "doubaowork" && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={
-                      rowBusy(app) || connection.isPending || connection.isError
-                    }
-                    onClick={() => openSetup(app)}
-                  >
-                    {t("agentConnections.individual")}
-                  </Button>
-                )}
-              </div>
+            {doubaoLauncher && (
+              <div className="mp-agent-detail-actions">{doubaoLauncher}</div>
             )}
             {isTrae(app) && (
               <>
@@ -1780,17 +1764,14 @@ export function AgentConnectionsPage({
                 )}
               </TabsTrigger>
             </TabsList>
-            <div className="agent-directory-search">
-              <Search size={16} aria-hidden="true" />
-              <Input
-                type="search"
-                className="leading-5"
-                aria-label={t("agentConnections.directory.search")}
-                placeholder={t("agentConnections.directory.search")}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
+            <SearchInput
+              wrapperClassName="agent-directory-search"
+              className="leading-5"
+              aria-label={t("agentConnections.directory.search")}
+              placeholder={t("agentConnections.directory.search")}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
           </div>
           <TabsContent
             value="installed"

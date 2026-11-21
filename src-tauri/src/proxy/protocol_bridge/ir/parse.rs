@@ -699,27 +699,16 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
                     parts: vec![part],
                 });
             }
-            "function_call_output"
-                if field(item, "call_id").is_none()
-                    && item["namespace"] == "agent"
-                    && item["name"]
-                        .as_str()
-                        .is_some_and(|name| name.starts_with("codex_apps_")) =>
-            {
-                // Desktop context notifications have no matching model-issued call.
-                // Keep their provenance without promoting tool content to instructions.
-                let name = required_string(item, "name")?;
-                let mut parts = vec![text(&format!("Tool context (agent.{name}):"))];
-                parts.extend(chat_content(&item["output"])?);
-                request.messages.push(Message {
-                    role: "user".into(),
-                    parts,
-                });
-            }
             "function_call_output" => {
                 let name = item["name"].as_str().unwrap_or_default();
-                if crate::proxy::providers::codex_chat_common::is_unsolicited_page_context(item) {
-                    // Desktop page context is unsolicited data, not a tool invocation.
+                let is_unsolicited =
+                    crate::proxy::providers::codex_chat_common::is_unsolicited_page_context(item)
+                        || (field(item, "call_id").is_none()
+                            && item["namespace"] == "agent"
+                            && name.starts_with("codex_apps_"));
+                if is_unsolicited {
+                    // Desktop ambient context notifications have no matching model-issued call.
+                    // Keep their provenance without promoting tool content to instructions.
                     let mut parts = vec![text(&format!("Tool context (agent.{name}):"))];
                     parts.extend(chat_content(&item["output"])?);
                     request.messages.push(Message {
@@ -1255,17 +1244,20 @@ mod tests {
     fn codex_page_context_outputs_do_not_require_a_tool_call() {
         for call_id in [None, Some(Value::Null)] {
             let mut context = json!({"type":"function_call_output","id":"synthetic-context-item","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page context"});
+            let mut tabs = json!({"type":"function_call_output","id":"synthetic-tabs-item","namespace":"agent","name":"browser_tabs","output":"<in-app-browser-context>Synthetic tab list</in-app-browser-context>"});
             if let Some(call_id) = call_id {
-                context["call_id"] = call_id;
+                context["call_id"] = call_id.clone();
+                tabs["call_id"] = call_id;
             }
             let parsed = request(
                 Protocol::Responses,
                 &json!({"model":"synthetic","input":[context,
-                    {"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic selection"}
+                    {"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic selection"},
+                    tabs
                 ]}),
                 "/v1/responses",
             ).unwrap();
-            assert_eq!(parsed.messages.len(), 2);
+            assert_eq!(parsed.messages.len(), 3);
             assert!(parsed.messages.iter().all(|message| message.role == "user"));
             assert!(parsed.messages[0]
                 .parts
@@ -1273,9 +1265,15 @@ mod tests {
             assert!(parsed.messages[1]
                 .parts
                 .contains(&text("Synthetic selection")));
+            assert!(parsed.messages[2].parts.contains(&text(
+                "<in-app-browser-context>Synthetic tab list</in-app-browser-context>"
+            )));
             assert!(parsed.messages[0]
                 .parts
                 .contains(&text("Tool context (agent.codex_apps_open_page):")));
+            assert!(parsed.messages[2]
+                .parts
+                .contains(&text("Tool context (agent.browser_tabs):")));
         }
     }
 
@@ -1284,8 +1282,10 @@ mod tests {
         for item in [
             json!({"type":"function_call_output","output":"Synthetic result"}),
             json!({"type":"function_call_output","namespace":"synthetic","name":"codex_apps_open_page","output":"Synthetic result"}),
+            json!({"type":"function_call_output","namespace":"synthetic","name":"browser_tabs","output":"Synthetic result"}),
             json!({"type":"function_call_output","namespace":"agent","name":"synthetic_tool","output":"Synthetic result"}),
             json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"","output":"Synthetic result"}),
+            json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","call_id":"","output":"Synthetic result"}),
         ] {
             assert!(request(
                 Protocol::Responses,
@@ -1295,10 +1295,14 @@ mod tests {
             .is_err());
         }
         let parsed = request(Protocol::Responses, &json!({"model":"synthetic","input":[
-            {"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"synthetic-call","output":"Synthetic result"}
+            {"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"synthetic-call","output":"Synthetic result"},
+            {"type":"function_call_output","namespace":"agent","name":"browser_tabs","call_id":"synthetic-tabs-call","output":"Synthetic tabs result"}
         ]}), "/v1/responses").unwrap();
         assert!(
             matches!(&parsed.messages[0].parts[0], Part::ToolResult { call_id, .. } if call_id == "synthetic-call")
+        );
+        assert!(
+            matches!(&parsed.messages[1].parts[0], Part::ToolResult { call_id, .. } if call_id == "synthetic-tabs-call")
         );
     }
 
