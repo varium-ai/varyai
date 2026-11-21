@@ -2528,3 +2528,100 @@ fn image_history_classifier_unknown_shapes_have_no_authority() -> Result<(), Tok
     );
     Ok(())
 }
+
+#[test]
+#[serial_test::serial]
+fn codex_browser_tabs_context_is_fresh_readable_and_redacts_under_routed_dlp(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::http_restoration::{
+        admit_routed_http_request, RestorationAdmission, RestorationGateway,
+    };
+    use super::request_preparation::is_fresh_readable_history;
+
+    let budget = PayloadBudget::with_limit(64 * 1024);
+    for call_id in [None, Some(Value::Null)] {
+        let mut tabs = json!({
+            "type": "function_call_output",
+            "id": "synthetic-browser-tabs",
+            "namespace": "agent",
+            "name": "browser_tabs",
+            "output": "<in-app-browser-context>Synthetic open tab</in-app-browser-context>"
+        });
+        if let Some(call_id) = call_id {
+            tabs["call_id"] = call_id;
+        }
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {"type": "function_call", "call_id": "call-tabs-1", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-tabs-1", "output": "ok"},
+                tabs,
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Continue"}]}
+            ]
+        });
+        assert!(
+            matches!(is_fresh_readable_history(&body, &budget), Ok(true)),
+            "unsolicited agent.browser_tabs context must stay readable history"
+        );
+    }
+    for invalid in [
+        json!({"type":"function_call_output","namespace":"other","name":"browser_tabs","output":"Synthetic"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","call_id":"","output":"Synthetic"}),
+    ] {
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {"type": "function_call", "call_id": "call-tabs-1", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-tabs-1", "output": "ok"},
+                invalid
+            ]
+        });
+        assert!(matches!(
+            is_fresh_readable_history(&body, &budget),
+            Ok(false)
+        ));
+    }
+
+    let previous = (*super::runtime::get_security_runtime()).clone();
+    struct Reset(SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            super::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset(previous);
+    let mut runtime = super::runtime::get_security_runtime().as_ref().clone();
+    runtime
+        .builtin_action_overrides
+        .insert("chinese_phone_number".into(), AuditAction::RedactRestore);
+    super::runtime::set_security_runtime_for_test(runtime);
+    let gateway = RestorationGateway::new_default();
+    let mut routed_body = json!({
+        "model": "gpt-5.4",
+        "input": [
+            {
+                "type": "function_call_output",
+                "namespace": "agent",
+                "name": "browser_tabs",
+                "output": "Tab contact 13800138000"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Continue"}]
+            }
+        ]
+    });
+    let headers = axum::http::HeaderMap::new();
+    let admission = admit_routed_http_request(
+        &gateway,
+        &crate::app_config::AppType::Codex,
+        crate::proxy::protocol_bridge::Protocol::Responses,
+        "/v1/responses",
+        &mut routed_body,
+        &headers,
+    )?;
+    assert!(matches!(admission, RestorationAdmission::Admitted(_)));
+    assert!(!routed_body.to_string().contains("13800138000"));
+    Ok(())
+}

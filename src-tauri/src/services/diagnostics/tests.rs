@@ -207,3 +207,30 @@ fn application_log_redacts_raw_structured_tool_values() {
         }
     }
 }
+
+#[test]
+fn application_log_preserves_routing_rejection_hints_while_redacting_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("varyai.log");
+    let output = dir.path().join("exported.log");
+    let lines = concat!(
+        "2026-11-21T10:50:00Z WARN varyai: [Intent] Upstream rejected converted call: status=400, code=routing_upstream_rejected, hints=[\"invalid\", \"unsupported\", \"messages\"]\n",
+        "2026-11-21T10:50:01Z WARN varyai: [Intent] Upstream rejected forwarded call: status=400, official=true, hints=[\"invalid\"]\n",
+        "2026-11-21T10:50:02Z WARN varyai: [Intent] Conversion rejected: agent=codex from=Responses to=Chat official=false specialized=false reason=missing_protocol_string\n",
+        "2026-11-21T10:50:03Z DEBUG varyai: request: {\"messages\":\"synthetic-private-input\"}\n",
+    );
+    fs::write(&source, lines).unwrap();
+
+    export_with_policy(&source, &output, policy()).unwrap();
+    let exported = fs::read_to_string(&output).unwrap();
+    assert!(exported.contains(
+        "[Intent] Upstream rejected converted call: status=400, code=routing_upstream_rejected, hints=[\"invalid\", \"unsupported\", \"messages\"]"
+    ));
+    assert!(exported.contains(
+        "[Intent] Upstream rejected forwarded call: status=400, official=true, hints=[\"invalid\"]"
+    ));
+    assert!(exported.contains(
+        "[Intent] Conversion rejected: agent=codex from=Responses to=Chat official=false specialized=false reason=missing_protocol_string"
+    ));
+    assert!(!exported.contains("synthetic-private-input"));
+}

@@ -614,6 +614,45 @@ fn convert_input_to_messages(
                     }),
                 );
             }
+            Some("function_call_output")
+                if super::codex_chat_common::is_unsolicited_page_context(item) =>
+            {
+                let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
+                let prefix = format!("Tool context (agent.{name}):");
+                let output = tool_result_content_from_responses_item(item);
+                match output.content {
+                    Value::String(text) => {
+                        let text = if text.is_empty() {
+                            prefix
+                        } else {
+                            format!("{prefix}\n{text}")
+                        };
+                        push_block(
+                            &mut messages,
+                            "user",
+                            json!({ "type": "text", "text": text }),
+                        );
+                    }
+                    Value::Array(blocks) => {
+                        push_block(
+                            &mut messages,
+                            "user",
+                            json!({ "type": "text", "text": prefix }),
+                        );
+                        for block in blocks {
+                            push_block(&mut messages, "user", block);
+                        }
+                    }
+                    other => {
+                        let text = format!("{prefix}\n{}", canonical_json_string(&other));
+                        push_block(
+                            &mut messages,
+                            "user",
+                            json!({ "type": "text", "text": text }),
+                        );
+                    }
+                }
+            }
             Some("function_call_output" | "custom_tool_call_output" | "tool_search_output") => {
                 let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
                 let output = tool_result_content_from_responses_item(item);
@@ -3101,5 +3140,51 @@ data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":
             "data: {\"type\":\"message_stop\"}\n\n",
         );
         assert!(anthropic_sse_to_message_value(sse).is_err());
+    }
+
+    #[test]
+    fn responses_to_anthropic_treats_unsolicited_browser_context_as_user_message() {
+        let input = json!({
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "namespace": "agent",
+                    "name": "codex_apps_open_page",
+                    "output": "Synthetic page context"
+                },
+                {
+                    "type": "function_call_output",
+                    "namespace": "agent",
+                    "name": "browser_tabs",
+                    "output": "<in-app-browser-context>Synthetic tabs</in-app-browser-context>"
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Continue"}]
+                }
+            ]
+        });
+
+        let result = responses_request_to_anthropic(input, 4096).expect("should convert context");
+        let serialized = result.to_string();
+        assert!(!serialized.contains("\"tool_use_id\":\"\""));
+        let messages = result["messages"].as_array().expect("messages array");
+        assert!(messages.iter().all(|m| m["role"] == "user"));
+        let text_blocks: Vec<&str> = messages
+            .iter()
+            .flat_map(|m| m["content"].as_array().into_iter().flatten())
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        assert!(text_blocks
+            .iter()
+            .any(|t| t.contains("Tool context (agent.codex_apps_open_page):")
+                && t.contains("Synthetic page context")));
+        assert!(text_blocks
+            .iter()
+            .any(|t| t.contains("Tool context (agent.browser_tabs):")
+                && t.contains("<in-app-browser-context>Synthetic tabs</in-app-browser-context>")));
     }
 }
