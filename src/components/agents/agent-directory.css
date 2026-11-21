@@ -197,8 +197,8 @@
 }
 
 .agent-list-row.mp-agent-placeholder .mp-agent-placeholder-control {
-  width: 100%;
-  margin: auto 0 6px;
+  width: min(28%, 200px);
+  margin: 0 0 0 auto;
 }
 
 .agent-directory-rows > .agent-list-row,

@@ -5626,7 +5626,7 @@ describe("Agent connections", () => {
 
 describe("per-Agent detection", () => {
   it.each([false, true])(
-    "unlocks completed Agents while another is checking (compact=%s)",
+    "shows a loading skeleton while other Agents finish checking (compact=%s)",
     async (compact) => {
       const get = vi.mocked(agentConnectionsApi.get).getMockImplementation()!;
       let finish!: (
@@ -5640,19 +5640,30 @@ describe("per-Agent detection", () => {
           : get(app),
       );
       mount(compact);
-      const codex = await screen.findByRole("article", { name: "apps.codex" });
-      await waitFor(() =>
-        expect(within(codex).getByRole("status")).toHaveTextContent(
-          "agentConnections.states.checking",
-        ),
-      );
+      const codexPlaceholder = await screen.findByRole("status", {
+        name: "apps.codex: agentConnections.states.checking",
+      });
+      expect(codexPlaceholder).toHaveClass("mp-agent-placeholder");
       expect(
-        within(codex).queryByText("agentConnections.states.off"),
+        codexPlaceholder.querySelector(".mp-agent-placeholder-name"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("article", { name: "apps.codex" }),
       ).not.toBeInTheDocument();
       expect(
-        within(codex).getByRole("switch", { hidden: compact }),
-      ).toBeDisabled();
-      const claude = screen.getByRole("article", { name: "apps.claude" });
+        screen.queryByRole("switch", { name: "apps.codex", hidden: compact }),
+      ).not.toBeInTheDocument();
+      expect(
+        codexPlaceholder.querySelector(".mp-agent-placeholder-status"),
+      ).toBeInTheDocument();
+      const claude = await screen.findByRole("article", {
+        name: "apps.claude",
+      });
+      await waitFor(() =>
+        expect(within(claude).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.off",
+        ),
+      );
       await waitFor(() =>
         expect(
           within(claude).getByRole("switch", { hidden: compact }),
@@ -5662,7 +5673,7 @@ describe("per-Agent detection", () => {
       if (compact) {
         const unconfigured = screen.getByText("trayPanel.notConfigured");
         expect(
-          codex.compareDocumentPosition(unconfigured) &
+          codexPlaceholder.compareDocumentPosition(unconfigured) &
             Node.DOCUMENT_POSITION_FOLLOWING,
         ).toBeTruthy();
       }
@@ -5676,6 +5687,7 @@ describe("per-Agent detection", () => {
           restartRequired: false,
         }),
       );
+      const codex = await screen.findByRole("article", { name: "apps.codex" });
       await waitFor(() =>
         expect(within(codex).getByRole("status")).toHaveTextContent(
           "agentConnections.states.off",
@@ -5687,13 +5699,12 @@ describe("per-Agent detection", () => {
     },
   );
 
-  it("keeps native model detection independent for each Agent", async () => {
-    const native = vi
-      .mocked(agentConnectionsApi.nativeModel)
-      .getMockImplementation()!;
-    vi.mocked(agentConnectionsApi.nativeModel).mockImplementation((app) =>
-      app === "codex" ? new Promise(() => {}) : native(app),
-    );
+  it("loads native models in one batch and maps them to their Agents", async () => {
+    vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValueOnce([
+      { app: "claude", model: "native-claude", available: true },
+      { app: "codex", model: "native-codex", available: true },
+      { app: "pi", model: "native-pi", available: true },
+    ]);
     mount();
     const claude = await screen.findByRole("article", { name: "apps.claude" });
     await waitFor(() =>
@@ -5701,16 +5712,20 @@ describe("per-Agent detection", () => {
         within(claude).getByRole("button", {
           name: "agentConnections.model Claude Code",
         }),
-      ).toHaveTextContent("agentConnections.nativeDefault"),
+      ).toHaveTextContent("native-claude"),
     );
     const codex = screen.getByRole("article", { name: "apps.codex" });
-    expect(
-      within(codex).getByRole("button", {
-        name: "agentConnections.model apps.codex",
-      }),
-    ).toHaveTextContent("common.loading");
+    await waitFor(() =>
+      expect(
+        within(codex).getByRole("button", {
+          name: "agentConnections.model apps.codex",
+        }),
+      ).toHaveTextContent("native-codex"),
+    );
     expect(within(claude).getByRole("switch")).toBeEnabled();
     expect(within(codex).getByRole("switch")).toBeEnabled();
+    expect(agentConnectionsApi.nativeModels).toHaveBeenCalledTimes(1);
+    expect(agentConnectionsApi.nativeModel).not.toHaveBeenCalled();
   });
 
   it("isolates detection failures to their Agent", async () => {

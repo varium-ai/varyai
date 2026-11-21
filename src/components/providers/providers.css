@@ -2121,7 +2121,7 @@
   border: 1px solid var(--mp-line, #d7d8df);
   border-radius: 999px;
   padding: 2px 8px;
-  color: var(--mp-text, #242428);
+  color: var(--mp-fg, hsl(var(--foreground)));
   background: var(--mp-card, #fff);
   font-size: 11px;
   white-space: nowrap;

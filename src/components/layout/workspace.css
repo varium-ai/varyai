@@ -591,22 +591,52 @@ html:has(.vary-workspace) .tray-profile-menu {
   cursor: default;
   opacity: 0.7;
 }
-.mp-agent-placeholder > span {
+.mp-agent-placeholder
+  > span:not(.mp-agent-placeholder-icon):not(.mp-agent-placeholder-copy),
+.mp-agent-placeholder-copy > span {
   height: 12px;
   border-radius: 4px;
   background: var(--mp-faint);
-  opacity: 0.2;
+  opacity: 0.32;
+  animation: mp-agent-skeleton 1.4s ease-in-out infinite;
 }
 .mp-agent-placeholder > .mp-agent-placeholder-icon {
   width: 32px;
   height: 32px;
+  border-radius: 8px;
+  background: var(--mp-faint);
+  opacity: 0.32;
+  animation: mp-agent-skeleton 1.4s ease-in-out infinite;
+}
+.mp-agent-placeholder-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
 }
 .mp-agent-placeholder-name {
   width: 112px;
 }
+.mp-agent-placeholder-status {
+  width: min(54%, 280px);
+  height: 8px !important;
+}
 .mp-agent-placeholder-control {
   width: min(28%, 200px);
   margin-left: auto;
+}
+@keyframes mp-agent-skeleton {
+  50% {
+    opacity: 0.58;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mp-agent-placeholder > span,
+  .mp-agent-placeholder-copy > span {
+    animation: none;
+  }
 }
 .mp-agent-status {
   display: flex;
