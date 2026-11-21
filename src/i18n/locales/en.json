@@ -5232,6 +5232,7 @@
     "pickModel": "Pick a model",
     "title": "Tools / Agents",
     "subtitle": "Turn on a tool to connect it to Vary.",
+    "individual": "Individual settings",
     "connect": "Connect",
     "model": "Starting model",
     "setupTitle": "Connect {{app}}",

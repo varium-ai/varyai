@@ -5156,6 +5156,7 @@
     "pickModel": "モデルを選択",
     "title": "ツール/Agent",
     "subtitle": "スイッチをオンにすると、このツールが Vary に接続されます。",
+    "individual": "個別設定",
     "connect": "接続",
     "model": "開始モデル",
     "setupTitle": "{{app}} を接続",

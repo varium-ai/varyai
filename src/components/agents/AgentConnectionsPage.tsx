@@ -1395,7 +1395,21 @@ export function AgentConnectionsPage({
             )}
             {((app === "doubaowork" && !state?.configured) ||
               (enabled && !state?.recoveryPending && app !== "doubaowork")) && (
-              <div className="mp-agent-detail-actions">{doubaoLauncher}</div>
+              <div className="mp-agent-detail-actions">
+                {doubaoLauncher}
+                {enabled && !state?.recoveryPending && app !== "doubaowork" && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={
+                      rowBusy(app) || connection.isPending || connection.isError
+                    }
+                    onClick={() => openSetup(app)}
+                  >
+                    {t("agentConnections.individual")}
+                  </Button>
+                )}
+              </div>
             )}
             {isTrae(app) && (
               <>

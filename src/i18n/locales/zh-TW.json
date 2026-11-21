@@ -5157,6 +5157,7 @@
     "pickModel": "選擇模型",
     "title": "工具/Agent",
     "subtitle": "打開開關，就是讓這個工具使用 Vary。",
+    "individual": "個別設定",
     "connect": "接入",
     "model": "起始模型",
     "setupTitle": "接入 {{app}}",

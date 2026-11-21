@@ -5230,6 +5230,7 @@
     "pickModel": "选择模型",
     "title": "工具/Agent",
     "subtitle": "打开开关，就是让这个工具用 Vary。",
+    "individual": "单独设置",
     "connect": "接入",
     "model": "起始模型",
     "setupTitle": "接入 {{app}}",
