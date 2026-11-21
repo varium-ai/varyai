@@ -527,7 +527,20 @@ export function ProviderEditorDialog({
             </DialogDescription>
           </header>
           <form
-            onInvalidCapture={() => onError("save", "invalid")}
+            onInvalidCapture={(event) => {
+              const target = event.target;
+              let code = "invalid";
+              if (target instanceof HTMLInputElement) {
+                if (target === name.current) {
+                  code = "routingUpstreams.invalidName";
+                } else if (target === key.current) {
+                  code = "routingUpstreams.invalidApiKey";
+                } else if (target.type === "url") {
+                  code = "routingUpstreams.invalidBaseUrl";
+                }
+              }
+              onError("save", code);
+            }}
             onSubmit={(event) => {
               if (disabled || nameError) event.preventDefault();
               else void onSave(event);

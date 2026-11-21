@@ -489,16 +489,30 @@ export function RoutingUpstreamsPanel({
       !!value.trim() &&
       new TextEncoder().encode(value).length <= 16384 &&
       !/[\x00-\x1f\x7f-\x9f]/.test(value);
+    if (apiKey ? !validKey(apiKey) : !draft.hasApiKey) {
+      report("save", "routingUpstreams.invalidApiKey");
+      return;
+    }
+    if ((draft.transport?.keys.length ?? 0) > 64) {
+      report("save", "routingUpstreams.keyLimit");
+      return;
+    }
     if (
-      (apiKey ? !validKey(apiKey) : !draft.hasApiKey) ||
-      (draft.transport?.keys.length ?? 0) > 64 ||
-      draft.transport?.keys.some((key) =>
-        key.key !== undefined
-          ? !validKey(key.key)
-          : !loadedRecord?.transport?.keys.some((saved) => saved.id === key.id),
+      draft.transport?.keys.some(
+        (key) => key.key !== undefined && !validKey(key.key),
       )
     ) {
-      report("save", "invalid");
+      report("save", "routingUpstreams.invalidApiKey");
+      return;
+    }
+    if (
+      draft.transport?.keys.some(
+        (key) =>
+          key.key === undefined &&
+          !loadedRecord?.transport?.keys.some((saved) => saved.id === key.id),
+      )
+    ) {
+      report("save", "routingUpstreams.credentialReentryRequired");
       return;
     }
     let raw: unknown;

@@ -1560,7 +1560,7 @@ describe("global upstream editor", () => {
         expect(toast.error).toHaveBeenCalledWith(
           "modelProviders.errors.save",
           expect.objectContaining({
-            description: "modelProviders.errors.invalid",
+            description: "modelProviders.errors.invalidApiKey",
           }),
         ),
       );
