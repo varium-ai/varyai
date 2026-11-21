@@ -2274,6 +2274,13 @@ editor for every executable Agent below. The editor regression checks the
 default in the draft and the saved configuration. Existing groups keep
 their saved deadlines.
 
+The hard/easy rule descriptions use the same routing group editor for every
+Agent below on macOS and Windows. The editor renders built-in descriptions
+in the selected language and keeps saved rule text available to each existing
+classifier path. Renderer verification exercises the four supported locales
+with saved rules. On macOS, type checking, formatting, the renderer build,
+and all 4,857 renderer tests passed. Installed WebView verification is pending.
+
 | Agent ID           | Entry point and native adapter                                        | Verification scope                                                                                                                        |
 | ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `claude`           | Claude Code CLI, Messages catalog and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |

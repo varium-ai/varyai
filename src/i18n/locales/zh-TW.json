@@ -5592,6 +5592,8 @@
     "templateSmartContext": "壓縮上下文",
     "templateSmartHardRule": "難題規則",
     "templateSmartEasyRule": "簡單問題規則",
+    "templateSmartHardDescription": "難題包括複雜推理、架構設計、根因分析、跨多個檔案的修改，以及難度不明確的任務。",
+    "templateSmartEasyDescription": "簡單任務包括資訊充分的直接提問、格式調整、查找資訊和範圍清楚的小改動。",
     "templateSmartRules": "範本規則",
     "templateHintLabel": "運行規則",
     "templateSmartRuleHint": "依規則分流請求：壓縮上下文請求使用指定模型；意圖分類器將難題或意圖不明的請求交給強模型，將簡單任務交給便宜模型。未命中規則、分類器不可用或目標模型失敗限流時，依序自動回退到群組內其他可用模型。",

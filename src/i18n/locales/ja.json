@@ -5591,6 +5591,8 @@
     "templateSmartContext": "圧縮コンテキスト",
     "templateSmartHardRule": "難しい課題ルール",
     "templateSmartEasyRule": "簡単な課題ルール",
+    "templateSmartHardDescription": "難しいタスクには、複雑な推論、アーキテクチャ設計、根本原因の分析、複数ファイルにまたがる変更、難易度が不明な依頼などが含まれます。",
+    "templateSmartEasyDescription": "簡単なタスクには、情報がそろっている質問、書式の調整、情報の検索、範囲が明確な小さな変更などが含まれます。",
     "templateSmartRules": "テンプレートのルール",
     "templateHintLabel": "動作ルール",
     "templateSmartRuleHint": "ルールに従ってリクエストを振り分けます。コンテキスト圧縮は指定モデルへ、意図分類器は難しいまたは曖昧なタスクを高性能モデルへ、簡単なタスクを安価なモデルへ送ります。ルールに一致しない場合や分類器が利用不可、あるいはモデルが失敗・レート制限に達した場合は、グループ内の他の利用可能なモデルへ順番にフォールバックします。",

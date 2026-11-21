@@ -14,17 +14,28 @@ import type {
   RoutingMember,
   RoutingProviderOption,
 } from "@/lib/api/intentRouting";
+import { SMART_RULE_DESCRIPTIONS } from "@/lib/routingGroupTransfer";
 import {
   routingMemberKey,
   withSmartRuleMembers,
 } from "@/lib/routingMemberSelection";
 
 const templateRules = [
-  ["Compaction", "routingPage.templateSmartCompactRule"],
-  ["Hard task", "routingPage.templateSmartHardRule"],
-  ["Easy task", "routingPage.templateSmartEasyRule"],
+  ["Compaction", "routingPage.templateSmartCompactRule", undefined],
+  [
+    "Hard task",
+    "routingPage.templateSmartHardRule",
+    "routingPage.templateSmartHardDescription",
+  ],
+  [
+    "Easy task",
+    "routingPage.templateSmartEasyRule",
+    "routingPage.templateSmartEasyDescription",
+  ],
 ] as const;
-const defaultTarget = [[undefined, "intentRouting.defaultTarget"]] as const;
+const defaultTarget = [
+  [undefined, "intentRouting.defaultTarget", undefined],
+] as const;
 
 export function RoutingTemplateRuleTargets({
   providers,
@@ -103,7 +114,7 @@ export function RoutingTemplateRuleTargets({
   return (
     <div className="rt-template-rule-targets">
       {(rules.length ? templateRules : defaultTarget).map(
-        ([name, labelKey], index) => {
+        ([name, labelKey, descriptionKey], index) => {
           const rule = rules.find((entry) => entry.name === name);
           if (name && !rule) return null;
           const rowId = rule?.id ?? "default";
@@ -117,7 +128,11 @@ export function RoutingTemplateRuleTargets({
                 <strong>{label}</strong>
                 {rule && (
                   <span>
-                    {rule.description || t("routingPage.templateRuleDefault")}
+                    {descriptionKey &&
+                    rule.description === SMART_RULE_DESCRIPTIONS[name]
+                      ? t(descriptionKey)
+                      : rule.description ||
+                        t("routingPage.templateRuleDefault")}
                   </span>
                 )}
               </span>
