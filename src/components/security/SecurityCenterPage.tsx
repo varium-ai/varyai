@@ -110,10 +110,10 @@ export function SecurityCenterPage({
 
   const getRiskClass = (riskLevel: RiskLevel) => {
     if (riskLevel === "CRITICAL" || riskLevel === "HIGH") {
-      return "text-rose-600 dark:text-rose-400";
+      return "text-destructive";
     }
     if (riskLevel === "MEDIUM") {
-      return "text-amber-600 dark:text-amber-400";
+      return "text-[var(--warning)]";
     }
     return "text-muted-foreground";
   };
@@ -126,11 +126,11 @@ export function SecurityCenterPage({
     return t("security.actionAllow");
   };
   const getActionClass = (action: AuditAction) => {
-    if (action === "block") return "text-rose-600 dark:text-rose-400";
-    if (action === "audit") return "text-amber-600 dark:text-amber-400";
+    if (action === "block") return "text-destructive";
+    if (action === "audit") return "text-[var(--warning)]";
     if (action === "redact" || action === "redact_restore")
-      return "text-blue-600 dark:text-blue-400";
-    return "text-emerald-600 dark:text-emerald-400";
+      return "text-primary";
+    return "text-[var(--success)]";
   };
 
   const getCategoryLabel = (category: string) => {
@@ -267,9 +267,7 @@ export function SecurityCenterPage({
     >
       <header className="sc-header">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold leading-7">
-            {t("primaryNav.security")}
-          </h1>
+          <h1 className="vary-page-title">{t("primaryNav.security")}</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
             {activeTab === "records"
               ? t("security.recordsDescription")
@@ -404,11 +402,11 @@ export function SecurityCenterPage({
                             const selected = effectiveAction === option.value;
                             const selectedClass =
                               option.value === "audit"
-                                ? "bg-amber-600 text-white hover:bg-amber-700"
+                                ? "bg-[#916000] text-white hover:bg-amber-800"
                                 : option.value === "redact" ||
                                     option.value === "redact_restore"
-                                  ? "bg-blue-600 text-white hover:bg-blue-700"
-                                  : "bg-emerald-600 text-white hover:bg-emerald-700";
+                                  ? "bg-primary text-primary-foreground hover:bg-[var(--primary-action-hover)]"
+                                  : "bg-[var(--mcp-action)] text-white hover:bg-[var(--mcp-action-hover)]";
                             return (
                               <button
                                 key={option.value}
@@ -440,7 +438,7 @@ export function SecurityCenterPage({
                                 className={
                                   "rounded-lg border px-3 py-1.5 text-xs font-semibold shadow-sm transition-all " +
                                   (isEnabled
-                                    ? "border-blue-600 bg-card text-blue-600 hover:bg-blue-50/50 dark:text-blue-400"
+                                    ? "border-blue-600 bg-card text-primary hover:bg-accent"
                                     : "border-border bg-card text-muted-foreground hover:bg-muted")
                                 }
                               >
@@ -482,7 +480,7 @@ export function SecurityCenterPage({
           <div className="sc-surface p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
-                <FlaskConical className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <FlaskConical className="h-4 w-4 text-primary" />
                 <h2 className="text-sm font-semibold text-foreground">
                   {t("security.sandboxTitle")}
                 </h2>
@@ -514,13 +512,13 @@ export function SecurityCenterPage({
                     {t("security.testResults")}
                   </span>
                   {sandboxResults.length > 0 ? (
-                    <span className="text-amber-600 dark:text-amber-400">
+                    <span className="text-[var(--warning)]">
                       {t("security.matchedCount", {
                         count: sandboxResults.length,
                       })}
                     </span>
                   ) : (
-                    <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                    <span className="flex items-center gap-1 text-[var(--success)]">
                       <CheckCircle2 className="h-3.5 w-3.5" />
                       {t("security.cleanPass")}
                     </span>

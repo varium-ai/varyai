@@ -106,7 +106,7 @@
 .vary-routing .rt-reference-chips button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--rt-accent) 35%, var(--rt-line));
   background: color-mix(in srgb, var(--rt-accent) 7%, var(--rt-card));
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-execution-settings > label {
   display: grid;
@@ -142,14 +142,6 @@
 }
 .vary-routing .rt-page-head {
   margin-bottom: 14px;
-}
-.vary-routing .rt-page-head > h1 {
-  color: var(--rt-fg);
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 26px;
-  letter-spacing: normal;
-  text-transform: none;
 }
 .vary-routing .label {
   font-size: 11px;
@@ -551,7 +543,7 @@
 }
 .vary-routing .rt-accts li.left {
   border-style: dotted;
-  opacity: 0.65;
+  color: var(--rt-muted);
 }
 .vary-routing .rt-accts li.rest {
   border-style: dashed;
@@ -945,7 +937,7 @@
 .vary-routing .rt-group-by .rt-day.on {
   background: var(--mp-pill);
   border-color: color-mix(in srgb, var(--rt-accent) 30%, var(--rt-line));
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-purpose-tools {
   flex: none;
@@ -1855,7 +1847,7 @@
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:hover,
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-edit:focus-visible {
   background: color-mix(in srgb, var(--rt-accent) 10%, transparent);
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-group-table .rt-group-actions > .rt-group-delete {
   color: var(--rt-red);
@@ -1971,7 +1963,7 @@
   margin-top: auto;
 }
 .vary-routing .rt-template-actions .primary {
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
 }
 .vary-routing .rt-template-cards b {
   font-size: 12.5px;
@@ -1985,7 +1977,7 @@
   color: var(--rt-fg-2);
 }
 .vary-routing .rt-template-cards .off > span {
-  color: var(--mp-faint);
+  color: var(--mp-muted);
   white-space: normal;
 }
 .vary-routing .rt-template-cards small {
@@ -2512,7 +2504,7 @@
   grid-template-columns: 16px fit-content(50%) minmax(0, 1fr) 24px;
 }
 .vary-routing .rt-rule-off {
-  opacity: 0.6;
+  color: var(--rt-muted);
 }
 .vary-routing .rt-classifier-pick {
   display: flex;
@@ -2688,6 +2680,6 @@
 }
 
 .vary-routing .rt-group-table .rt-group-actions > button {
-  color: var(--rt-accent);
+  color: var(--mp-action-text);
   padding-inline: 0;
 }

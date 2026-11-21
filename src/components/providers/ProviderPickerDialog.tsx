@@ -123,9 +123,13 @@ export function ProviderPickerDialog({
             )}
           </DialogDescription>
           <div className="pv-vendor-search">
-            <Search size={14} aria-hidden />
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            />
             <Input
               type="search"
+              className="pl-9 leading-5"
               autoFocus
               aria-label={t("providerFlow.findVendor")}
               placeholder={t("providerFlow.findVendor")}

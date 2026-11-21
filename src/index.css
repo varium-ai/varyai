@@ -7,6 +7,21 @@
 @tailwind components;
 @tailwind utilities;
 
+.vary-task-select {
+  border-radius: 6px;
+}
+
+.vary-task-select[data-state="open"] {
+  border: 2px solid hsl(var(--primary));
+}
+
+.vary-task-select-menu [data-radix-select-viewport] {
+  padding: 6px;
+}
+.vary-task-select-menu [role="option"][data-state="checked"] {
+  background-color: hsl(var(--accent));
+}
+
 .glass {
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(10px);
@@ -104,6 +119,11 @@ body {
     -webkit-user-select: text;
     user-select: text;
   }
+}
+
+html[data-renderer="application"] ::selection {
+  background-color: hsl(var(--accent));
+  color: hsl(var(--foreground));
 }
 
 html.dark {

@@ -316,7 +316,7 @@ function CommandListEditor({
             </>
           )}
           {conflict && pattern && (
-            <p role="alert" className="mt-2 text-amber-600">
+            <p role="alert" className="mt-2 text-[var(--warning)]">
               {t(key("conflictHint"))}
             </p>
           )}

@@ -48,7 +48,7 @@ export function StatisticsPage({ onOpenSecurity }: StatisticsPageProps) {
     <div className="stats-page">
       <header className="stats-header">
         <div>
-          <h1>{t("usage.title")}</h1>
+          <h1 className="vary-page-title">{t("usage.title")}</h1>
           <p>{t("usage.subtitle")}</p>
         </div>
         {onOpenSecurity && (

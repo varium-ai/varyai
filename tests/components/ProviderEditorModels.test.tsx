@@ -100,6 +100,18 @@ function Editor({
   );
 }
 
+it("uses the secondary cancel and primary submit in the custom provider footer", () => {
+  render(<Editor revision={0} />);
+  expect(screen.getByRole("button", { name: "common.cancel" })).toHaveAttribute(
+    "data-variant",
+    "secondary",
+  );
+  expect(screen.getByRole("button", { name: "common.add" })).toHaveAttribute(
+    "data-variant",
+    "default",
+  );
+});
+
 it("omits the extra allowance field from the provider upper form", () => {
   render(<Editor />);
   expect(screen.queryByText("subscriptionProvider.allowance")).toBeNull();

@@ -31,6 +31,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
@@ -376,20 +383,44 @@ export function ProfileSwitcher({
             {!createBundle && (
               <label className="mt-3 flex flex-col gap-2 text-sm">
                 {t("profiles.bundle.singleAgent")}
-                <select
-                  aria-label={t("profiles.bundle.singleAgent")}
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                  value={captureApp}
-                  onChange={(event) =>
-                    setCaptureApp(event.target.value as AppId)
-                  }
-                >
-                  {agents.map(({ app, available }) => (
-                    <option key={app} value={app} disabled={!available}>
-                      {t(`apps.${app}`)}
-                    </option>
-                  ))}
-                </select>
+                {compact ? (
+                  <select
+                    aria-label={t("profiles.bundle.singleAgent")}
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    value={captureApp}
+                    onChange={(event) =>
+                      setCaptureApp(event.target.value as AppId)
+                    }
+                  >
+                    {agents.map(({ app, available }) => (
+                      <option key={app} value={app} disabled={!available}>
+                        {t(`apps.${app}`)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <Select
+                    value={captureApp}
+                    onValueChange={(app) => setCaptureApp(app as AppId)}
+                  >
+                    <SelectTrigger
+                      aria-label={t("profiles.bundle.singleAgent")}
+                      className="vary-task-select"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent
+                      className="vary-task-select-menu"
+                      sideOffset={8}
+                    >
+                      {agents.map(({ app, available }) => (
+                        <SelectItem key={app} value={app} disabled={!available}>
+                          {t(`apps.${app}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </label>
             )}
             {!createBundle && currentAgent?.reason && (

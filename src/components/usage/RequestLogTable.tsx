@@ -225,16 +225,16 @@ export function RequestLogTable({
                   <TableHead className="text-left whitespace-nowrap">
                     {t("usage.billingModel")}
                   </TableHead>
-                  <TableHead className="text-left whitespace-nowrap">
+                  <TableHead className="text-right whitespace-nowrap px-1.5">
                     {t("usage.inputTokens")}
                   </TableHead>
-                  <TableHead className="text-left whitespace-nowrap">
+                  <TableHead className="text-right whitespace-nowrap px-1.5">
                     {t("usage.outputTokens")}
                   </TableHead>
-                  <TableHead className="text-left whitespace-nowrap">
+                  <TableHead className="text-right whitespace-nowrap px-1.5">
                     {t("usage.totalCost")}
                   </TableHead>
-                  <TableHead className="text-left whitespace-nowrap">
+                  <TableHead className="text-right whitespace-nowrap">
                     {t("usage.timingInfo")}
                   </TableHead>
                   <TableHead className="text-left whitespace-nowrap">
@@ -298,7 +298,7 @@ export function RequestLogTable({
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-left px-1.5">
+                        <TableCell className="text-right px-1.5">
                           {(() => {
                             const freshInput = getFreshInputTokens(log);
                             const isCacheInclusive =
@@ -330,7 +330,7 @@ export function RequestLogTable({
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="text-left px-1.5">
+                        <TableCell className="text-right px-1.5">
                           <div className="tabular-nums">
                             {fmtInt(log.outputTokens, locale)}
                             {(() => {
@@ -344,7 +344,7 @@ export function RequestLogTable({
                             })()}
                           </div>
                         </TableCell>
-                        <TableCell className="text-left px-1.5">
+                        <TableCell className="text-right px-1.5">
                           <div
                             className={`font-medium tabular-nums ${
                               unpriced ? "text-muted-foreground" : ""
@@ -364,7 +364,7 @@ export function RequestLogTable({
                               </div>
                             )}
                         </TableCell>
-                        <TableCell className="text-left whitespace-nowrap text-xs tabular-nums">
+                        <TableCell className="text-right whitespace-nowrap text-xs tabular-nums">
                           {(log.latencyMs / 1000).toFixed(1)}s
                           {log.firstTokenMs != null && (
                             <span className="text-muted-foreground">

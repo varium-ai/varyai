@@ -1169,13 +1169,13 @@ export function WebdavSyncSection({
 
             {/* Save status indicator */}
             {dirty && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-amber-500 dark:text-amber-400 animate-in fade-in duration-200">
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--warning)] animate-in fade-in duration-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
                 {t("settings.webdavSync.unsaved")}
               </span>
             )}
             {!dirty && justSaved && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 animate-in fade-in duration-200">
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--success)] animate-in fade-in duration-200">
                 <Check className="h-3 w-3" />
                 {t("settings.webdavSync.saved")}
               </span>
@@ -1482,13 +1482,13 @@ export function WebdavSyncSection({
 
             {/* Save status indicator */}
             {s3Dirty && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-amber-500 dark:text-amber-400 animate-in fade-in duration-200">
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--warning)] animate-in fade-in duration-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
                 {t("settings.s3Sync.unsaved")}
               </span>
             )}
             {!s3Dirty && s3JustSaved && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 animate-in fade-in duration-200">
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--success)] animate-in fade-in duration-200">
                 <Check className="h-3 w-3" />
                 {t("settings.s3Sync.saved")}
               </span>
@@ -1609,7 +1609,7 @@ export function WebdavSyncSection({
                   </p>
                 )}
                 {remoteInfo && remoteIsLegacy && (
-                  <p className="font-medium text-amber-600 dark:text-amber-400">
+                  <p className="font-medium text-[var(--warning)]">
                     {t("settings.webdavSync.confirmUpload.legacyNotice")}
                   </p>
                 )}
@@ -1679,7 +1679,7 @@ export function WebdavSyncSection({
                   </dl>
                 )}
                 {remoteInfo?.layout === "legacy" && (
-                  <p className="font-medium text-amber-600 dark:text-amber-400">
+                  <p className="font-medium text-[var(--warning)]">
                     {t("settings.webdavSync.confirmDownload.legacyNotice")}
                   </p>
                 )}

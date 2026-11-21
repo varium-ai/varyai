@@ -131,6 +131,17 @@ describe("RequestLogTable", () => {
         modelNames={{ [known]: "Synthetic Model · Synthetic supplier" }}
       />,
     );
+
+    const headings = screen.getAllByRole("columnheader");
+    const cells = screen.getAllByRole("cell");
+    for (const column of [3, 4, 5, 6]) {
+      expect(headings[column]).toHaveClass("text-right");
+      expect(cells[column]).toHaveClass("text-right");
+    }
+    for (const column of [0, 1, 2, 7, 8]) {
+      expect(headings[column]).toHaveClass("text-left");
+      expect(cells[column]).toHaveClass("text-left");
+    }
     expect(
       screen.getByText("Synthetic Model · Synthetic supplier"),
     ).toBeVisible();

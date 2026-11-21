@@ -500,7 +500,7 @@ export function UsageDateRangePicker({
                     aria-pressed={isEndpoint}
                     className={cn(
                       "relative h-7 rounded text-xs transition-colors",
-                      !isCurrentMonth && "text-muted-foreground/30",
+                      !isCurrentMonth && "text-muted-foreground",
                       isCurrentMonth && !inRange && "hover:bg-muted",
                       inRange && !isEndpoint && "bg-primary/10 text-primary",
                       isEndpoint &&

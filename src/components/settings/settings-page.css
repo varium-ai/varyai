@@ -6,12 +6,6 @@
 .settings-header {
   padding-bottom: 18px;
 }
-.settings-header h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 30px;
-}
 .settings-header p,
 .setting-copy p {
   margin: 3px 0 0;

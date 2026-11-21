@@ -1,5 +1,45 @@
 # Agent feature coverage
 
+## UI consistency and text contrast
+
+Pre-implementation assessment against `APP_IDS`, `AppType`, and the Agent
+connections registry (including both TRAE bridge variants and Doubao Work's
+separate audit entry). The same application-mode renderer runs on macOS and
+Windows. For each row, the Tools heading and existing text use shared
+presentation. VA-12 applies to the existing profile capture picker when offered.
+The gateway protocol menu only selects a connection example. The existing
+availability metadata, native adapters, and runtime commands own behavior.
+
+| Agent ID | Existing profile picker state | Verification plan |
+| --- | --- | --- |
+| `claude` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `claude-desktop` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `codex` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `gemini` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `grokbuild` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `opencode` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `openclaw` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `hermes` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `pi` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `workbuddy` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `workbuddy-ai` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `qoder` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `doubaowork` | Unavailable with existing reason | Synthetic picker passed; native macOS / Windows pending |
+| `trae` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `trae-intl` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `kimi` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `qwen` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `zcode` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `deepseek-harness` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `t3code` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+
+The application picker fixture verified all 20 displayed entries. Renderer
+regressions exercised capture for each of the 19 available entries and checked
+that Doubao Work was disabled with its existing availability metadata. The
+gateway menu fixture exercised its four protocol examples. See the
+[UI visual consistency verification](ui-visual-consistency.md) for computed
+styles, color measurements and browser coverage.
+
 ## Tray Usage (macOS and Windows)
 
 For every Agent and ledger adapter in the table below, the tray header refresh

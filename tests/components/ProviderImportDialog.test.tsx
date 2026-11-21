@@ -107,6 +107,18 @@ it("places Magpie first and opens it even when another source has selected provi
     screen.getByRole("button", { name: "providerFlow.import" }),
   ).toBeDisabled();
 });
+it("uses an outlined secondary cancel while keeping the import action disabled", async () => {
+  mount();
+  await screen.findByRole("tab", { name: /Magpie/ });
+  expect(screen.getByRole("button", { name: "common.cancel" })).toHaveAttribute(
+    "data-variant",
+    "secondary",
+  );
+  expect(
+    screen.getByRole("button", { name: "providerFlow.import" }),
+  ).toBeDisabled();
+});
+
 it("explains basic Magpie import and lets providers with advanced source settings import", async () => {
   const next = structuredClone(sources);
   next[4].items = [{ ...next[0].items[0], name: "Magpie relay" }] as never;

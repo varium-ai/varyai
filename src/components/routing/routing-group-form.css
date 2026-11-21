@@ -877,7 +877,7 @@
 .rt-group-form .rt-model-chip.is-selected {
   border-color: color-mix(in srgb, var(--mp-accent) 48%, transparent);
   background: color-mix(in srgb, var(--mp-accent) 9%, var(--mp-card-2));
-  color: var(--mp-accent);
+  color: var(--mp-action-text);
 }
 .rt-group-form .rt-model-chip > input {
   position: absolute;

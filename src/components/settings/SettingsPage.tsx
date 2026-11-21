@@ -239,7 +239,7 @@ export function SettingsPage({
           className="flex min-h-0 flex-1 flex-col"
         >
           <header className="settings-header">
-            <h1>{t("settings.title")}</h1>
+            <h1 className="vary-page-title">{t("settings.title")}</h1>
             {activeTab === "general" && <p>{t("settings.statusNotice")}</p>}
             <div className="mt-4 flex flex-wrap">
               <TabsList

@@ -1218,7 +1218,7 @@ export function OmoFormFields({
           })}
         </span>
         {localFilePath && (
-          <span className="ml-1 text-primary/70">
+          <span className="ml-1 text-primary">
             · {t("omo.source", { defaultValue: "from:" })}{" "}
             <span className="font-mono text-[10px]">
               {localFilePath.replace(/^.*\//, "")}

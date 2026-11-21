@@ -647,7 +647,7 @@ export function SecurityEventsPanel({
         </p>
       )}
       {hasUpdates && (
-        <p role="status" className="text-xs text-amber-600">
+        <p role="status" className="text-xs text-[var(--warning)]">
           {t("securityEvents.updatesAvailable")}
         </p>
       )}

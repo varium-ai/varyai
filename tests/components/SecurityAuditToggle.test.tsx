@@ -29,7 +29,7 @@ describe("SecurityAuditToggle", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByRole("switch")).toHaveClass(
-      "data-[state=checked]:bg-primary",
+      "data-[state=checked]:bg-brand",
     );
     expect(screen.queryByText("homeAudit.enabled")).not.toBeInTheDocument();
     expect(
