@@ -26,22 +26,21 @@ const INVALID: &str = "intentRouting.invalid";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RoutingStrategy {
-    Smart,
     #[default]
-    #[serde(alias = "expiring")]
+    #[serde(
+        alias = "expiring",
+        alias = "smart",
+        alias = "round_robin",
+        alias = "least_used",
+        alias = "pace",
+        alias = "free_first",
+        alias = "weighted",
+        alias = "manual"
+    )]
     Ordered,
-    RoundRobin,
-    LeastUsed,
-    Pace,
-    FreeFirst,
     Fastest,
-    Weighted,
-    Manual,
 }
 
-fn default_weight() -> u16 {
-    1
-}
 fn global_scope() -> String {
     "global".into()
 }
@@ -61,8 +60,9 @@ pub(crate) struct Member {
     pub id: String,
     pub provider_id: String,
     pub model_id: String,
-    #[serde(default = "default_weight")]
-    pub weight: u16,
+    // Read legacy member weights without keeping them in saved or exported groups.
+    #[serde(default, rename = "weight", skip_serializing)]
+    pub retired_weight: Option<u16>,
     /// Explicit override; absence uses the provider's model catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free: Option<bool>,
@@ -94,6 +94,18 @@ pub(crate) enum QuotaOrder {
     EarliestExpiry,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RoutingTemplate {
+    #[serde(rename = "templateSmart")]
+    Smart,
+    #[serde(rename = "templateCapability")]
+    Capability,
+    #[serde(rename = "templateSpeed")]
+    Speed,
+    #[serde(rename = "templateExpiry")]
+    Expiry,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RoutingGroup {
@@ -116,14 +128,17 @@ pub(crate) struct RoutingGroup {
     pub(super) retired_policy: Option<serde_json::Value>,
     #[serde(default)]
     pub auto_generated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<RoutingTemplate>,
     #[serde(default)]
     pub routing: RoutingStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_order: Option<QuotaOrder>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_alias: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manual_member_id: Option<String>,
+    // Read legacy manual selections without keeping them in saved or exported groups.
+    #[serde(default, rename = "manualMemberId", skip_serializing)]
+    pub retired_manual_member_id: Option<String>,
     /// None/zero follows the largest member; -1 follows the smallest known member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
@@ -210,17 +225,11 @@ fn matched_id(value: &str) -> bool {
 
 impl RoutingGroup {
     pub(crate) fn uses_classifier(&self) -> bool {
-        self.intent_recognition_enabled && self.routing != RoutingStrategy::Manual
+        self.intent_recognition_enabled
     }
 
     pub(crate) fn includes_in_menu(&self, member: &Member) -> bool {
         !self.off.contains(&member.id)
-            && (self.routing != RoutingStrategy::Manual
-                || &member.id
-                    == self
-                        .manual_member_id
-                        .as_ref()
-                        .unwrap_or(&self.default_member_id))
     }
 
     pub(crate) fn alias(&self) -> String {
@@ -270,7 +279,6 @@ impl RoutingGroup {
                     .effort
                     .as_ref()
                     .is_some_and(|level| !effort::valid_member_level(level))
-                || !(1..=1000).contains(&member.weight)
             {
                 return Err(INVALID);
             }
@@ -284,9 +292,6 @@ impl RoutingGroup {
                 !ids.contains(id.as_str()) && (self.matches.is_empty() || !matched_id(id))
             })
             || self.off.iter().collect::<HashSet<_>>().len() != self.off.len()
-            || self.manual_member_id.as_ref().is_some_and(|id| {
-                !ids.contains(id.as_str()) && (self.matches.is_empty() || !matched_id(id))
-            })
             || self
                 .fallback_member_ids
                 .iter()
@@ -385,24 +390,6 @@ impl RoutingGroup {
         &self,
         intent_id: Option<&str>,
     ) -> Result<PlanPreview, &'static str> {
-        if self.routing == RoutingStrategy::Manual {
-            let selected = self
-                .manual_member_id
-                .as_ref()
-                .unwrap_or(&self.default_member_id);
-            let member = self
-                .members
-                .iter()
-                .find(|m| &m.id == selected && !self.off.contains(&m.id))
-                .ok_or(INVALID)?;
-            return Ok(PlanPreview {
-                group_id: self.id.clone(),
-                revision: self.revision,
-                candidates: vec![member.clone()],
-                reason: "manual",
-                live: false,
-            });
-        }
         let rule = match intent_id {
             Some(id) => Some(
                 self.rules

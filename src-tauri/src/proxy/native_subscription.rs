@@ -38,6 +38,17 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Sen
 fn invalid() -> ProxyError {
     ProxyError::TransformError("Subscription response is unavailable".into())
 }
+
+/// A configured default is sent only when the model lists that level, or lists
+/// none. A level outside the model's list is left off.
+fn catalog_default_effort(row: Option<&Value>) -> Option<&str> {
+    let row = row?;
+    let effort = row["defaultReasoningLevel"].as_str()?;
+    let allowed = row["reasoningLevels"]
+        .as_array()
+        .is_none_or(|levels| levels.iter().any(|level| level.as_str() == Some(effort)));
+    allowed.then_some(effort)
+}
 fn chatgpt_body(mut body: Value) -> Result<Value, ProxyError> {
     for key in [
         "background",
@@ -205,7 +216,7 @@ pub(crate) async fn forward(
             .pointer("/modelCatalog/models")
             .and_then(Value::as_array)
             .and_then(|rows| rows.iter().find(|row| row["model"] == request.model));
-        let default_effort = catalog_row.and_then(|row| row["defaultReasoningLevel"].as_str());
+        let default_effort = catalog_default_effort(catalog_row);
         let model_name = catalog_row
             .and_then(|row| row["displayName"].as_str())
             .filter(|name| !name.is_empty());
@@ -713,6 +724,16 @@ for event in [{'type':'message_start','message':{'id':'fixture-reply','role':'as
             .any(|part| matches!(part,ir::Part::Text{text,..} if text=="synthetic continuation")));
         assert!(std::fs::read_dir(home.join("projects"))?.next().is_none());
         Ok(())
+    }
+    #[test]
+    fn catalog_default_effort_must_be_one_of_the_listed_levels() {
+        let listed = json!({"defaultReasoningLevel":"high","reasoningLevels":["low","high"]});
+        let rejected = json!({"defaultReasoningLevel":"max","reasoningLevels":["low","high"]});
+        let unlisted = json!({"defaultReasoningLevel":"medium"});
+        assert_eq!(catalog_default_effort(Some(&listed)), Some("high"));
+        assert_eq!(catalog_default_effort(Some(&rejected)), None);
+        assert_eq!(catalog_default_effort(Some(&unlisted)), Some("medium"));
+        assert_eq!(catalog_default_effort(None), None);
     }
     #[test]
     fn claude_history_keeps_roles_tool_links_images_and_thinking() {

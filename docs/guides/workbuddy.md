@@ -88,9 +88,13 @@ passes is remembered for that system text or model, so the next matching Chat
 request applies it before the first send. A native Messages rejection whose
 fixed code is `11159` is retried once without thinking blocks. The client still
 receives only the fixed error carrier if that retry fails. The retry reads only the fixed numeric
-code and never echoes upstream text. A Chat request naming `reasoning.effort`
+code and never echoes upstream text. Codes `11140`, `11158`, and `14018` also
+return fixed carriers for a restricted account, a missing model entitlement,
+and exhausted quota. Unknown numeric codes stay unclassified. A Chat request naming `reasoning.effort`
 keeps that effort; only a request naming neither effort field, with more than
-1024 output tokens, receives the selected model's configured default.
+1024 output tokens, receives the selected model's configured default when that
+default is one of the model's listed reasoning levels. A default outside that
+list is left off.
 
 The Chat opener scan uses UTF-8 boundaries. Incomplete openers and surrounding
 text pass through intact, including when a later opener in the same message
@@ -99,8 +103,9 @@ receives the comma.
 Conversation and turn identifiers are 32 hexadecimal characters derived
 with a process-local salt and the account scope. WorkBuddy AI also carries the client's `chat_request_send` growth event in
 `extra_vars`, keyed by the conversation id. WorkBuddy China does not send that
-event. The event contains the model id and the last user input length; it does
-not copy credentials or tool results.
+event. The event contains the model id, the catalog display name when one is
+available, and the last user input length. It does not copy credentials or
+tool results.
 
 A Chat stream whose text is only the upstream content-filter sentence has that
 sentence removed before the Agent sees it. The finish reason, usage, tool calls,

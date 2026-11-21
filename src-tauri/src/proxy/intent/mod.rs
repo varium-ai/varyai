@@ -1284,6 +1284,12 @@ fn error(status: StatusCode, code: &'static str) -> Response {
         "routing_response_conversion_failed" => {
             "VaryAI received an upstream reply it could not convert. Check that the route's API format matches the upstream endpoint."
         }
+        "routing_upstream_channel_restricted" => {
+            "The upstream subscription endpoint rejected this request because its channel policy only accepts approved clients. See the WorkBuddy provider guide for the channel requirements."
+        }
+        "routing_upstream_invalid_parameters_rejected" => {
+            "The upstream subscription endpoint rejected the request parameters. Check that the conversation's tools use names and parameter schemas the provider supports."
+        }
         _ => code,
     };
     let error_type = match code {
@@ -1543,15 +1549,8 @@ async fn execute(
             .unwrap_or_else(|| format!("vary-auto/{}", session.group.id)),
         &session.group.name,
         match session.group.routing {
-            crate::services::intent_routing::RoutingStrategy::Smart => "smart",
             crate::services::intent_routing::RoutingStrategy::Ordered => "ordered",
-            crate::services::intent_routing::RoutingStrategy::RoundRobin => "round_robin",
-            crate::services::intent_routing::RoutingStrategy::LeastUsed => "least_used",
-            crate::services::intent_routing::RoutingStrategy::Pace => "pace",
-            crate::services::intent_routing::RoutingStrategy::FreeFirst => "free_first",
             crate::services::intent_routing::RoutingStrategy::Fastest => "fastest",
-            crate::services::intent_routing::RoutingStrategy::Weighted => "weighted",
-            crate::services::intent_routing::RoutingStrategy::Manual => "manual",
         },
         started,
     );
@@ -1705,7 +1704,6 @@ async fn execute(
         };
         let mut affinity = None;
         if compact.is_none()
-            && session.group.routing != crate::services::intent_routing::RoutingStrategy::Manual
             && length::portable(&projection)
             && !opaque_continuation(protocol, &original)
             && conversation.as_ref().is_some_and(|key| {
@@ -1900,9 +1898,7 @@ async fn execute(
         None
     };
     let matched_rules = match scoped.update(|bindings| {
-        if session.group.routing == crate::services::intent_routing::RoutingStrategy::Manual {
-            Vec::new()
-        } else if pinned.is_some() {
+        if pinned.is_some() {
             bindings.held_rules.clone()
         } else {
             let rules = crate::services::intent_routing::rules::matching(
@@ -1936,26 +1932,12 @@ async fn execute(
     let states = session
         .targets
         .iter()
-        .map(|target| {
-            let mut health = target.scheduling.snapshot();
-            if let Some(member) = session
-                .group
-                .members
-                .iter()
-                .find(|m| target.matches_member(m))
-            {
-                health.weight = member.weight;
-                health.free = member.free.or(target.effort.free).unwrap_or(false);
-            }
-            health
-        })
+        .map(|target| target.scheduling.snapshot())
         .collect::<Vec<_>>();
     let mut pool = session.bindings.lock().await;
     let mut candidates = if count_tokens {
         approved
-    } else if pinned.is_none()
-        || session.group.routing == crate::services::intent_routing::RoutingStrategy::Weighted
-    {
+    } else if pinned.is_none() {
         scheduling::arrange(
             session.group.routing,
             &approved,
@@ -1966,7 +1948,6 @@ async fn execute(
     } else {
         approved
     };
-    let weighted_charge = pool.pool.take_charge();
     drop(pool);
     if pinned.is_none() {
         // An account pool keeps its configured order, but spends another
@@ -2026,12 +2007,7 @@ async fn execute(
         );
     }
     if pinned.is_none() && session.group.sink {
-        scheduling::sink_last(
-            session.group.routing,
-            &mut candidates,
-            &states,
-            chrono::Utc::now().timestamp(),
-        );
+        scheduling::sink_last(&mut candidates, &states, chrono::Utc::now().timestamp());
     }
     if let Some(index) = pinned {
         candidates = vec![index];
@@ -2380,10 +2356,7 @@ async fn execute(
                 Ok(Ok(provider)) => Some(provider),
                 _ => {
                     credentials_unavailable = true;
-                    if pinned.is_none()
-                        && session.group.routing
-                            != crate::services::intent_routing::RoutingStrategy::Manual
-                    {
+                    if pinned.is_none() {
                         trace.step(trace::Kind::Rejected, Some(candidate), Some(401));
                         continue;
                     }
@@ -2409,10 +2382,7 @@ async fn execute(
             Ok(value) => value,
             Err(_) => {
                 credentials_unavailable = true;
-                if pinned.is_none()
-                    && session.group.routing
-                        != crate::services::intent_routing::RoutingStrategy::Manual
-                {
+                if pinned.is_none() {
                     continue;
                 }
                 return fail(StatusCode::UNAUTHORIZED, "routing_account_unavailable");
@@ -2434,10 +2404,7 @@ async fn execute(
                     tokio::time::timeout(Duration::from_secs(30), credentials.token()).await;
                 let Ok(Some(token)) = refreshed else {
                     credentials_unavailable = true;
-                    if pinned.is_none()
-                        && session.group.routing
-                            != crate::services::intent_routing::RoutingStrategy::Manual
-                    {
+                    if pinned.is_none() {
                         continue;
                     }
                     return fail(
@@ -2488,9 +2455,8 @@ async fn execute(
         let first_content_deadline = (streaming
             && session.group.first_token > 0
             && !attempts.is_empty()
-            && pinned.is_none()
-            && session.group.routing != crate::services::intent_routing::RoutingStrategy::Manual)
-            .then(|| attempt_started + Duration::from_secs(u64::from(session.group.first_token)));
+            && pinned.is_none())
+        .then(|| attempt_started + Duration::from_secs(u64::from(session.group.first_token)));
         let attempt_deadline = first_content_deadline
             .into_iter()
             .chain(retry_deadline)
@@ -2596,10 +2562,7 @@ async fn execute(
                     body: error_body,
                 }) if length::overflow(status, error_body.as_deref().unwrap_or("").as_bytes()) => {
                     trace.step(trace::Kind::Context, Some(candidate), Some(status));
-                    if pinned.is_some()
-                        || session.group.routing
-                            == crate::services::intent_routing::RoutingStrategy::Manual
-                    {
+                    if pinned.is_some() {
                         return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
                     }
                     overflowed = true;
@@ -2613,8 +2576,6 @@ async fn execute(
                 }
                 Err(super::ProxyError::UpstreamError { status, .. })
                     if pinned.is_none()
-                        && session.group.routing
-                            != crate::services::intent_routing::RoutingStrategy::Manual
                         && matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504) =>
                 {
                     trace.step(trace::Kind::Rejected, Some(candidate), Some(status));
@@ -2645,12 +2606,10 @@ async fn execute(
                 }
                 Err(super::ProxyError::UpstreamError { status, body }) => {
                     // Classify only into fixed codes. Never log or return the body.
-                    let code = super::protocol_bridge::grok::rejection_code(
-                        body.as_deref().unwrap_or_default().as_bytes(),
-                    );
-                    let hints = super::protocol_bridge::grok::rejection_hints(
-                        body.as_deref().unwrap_or_default().as_bytes(),
-                    );
+                    let bytes = body.as_deref().unwrap_or_default().as_bytes();
+                    let code = super::native_subscription::rejection_code(upstream, status, bytes)
+                        .unwrap_or_else(|| super::protocol_bridge::grok::rejection_code(bytes));
+                    let hints = super::protocol_bridge::grok::rejection_hints(bytes);
                     log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}, hints={hints:?}");
                     return fail(
                         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
@@ -2856,7 +2815,6 @@ async fn execute(
         }
         trace.observe_account(candidate, &target.scheduling);
         if pinned.is_none()
-            && session.group.routing != crate::services::intent_routing::RoutingStrategy::Manual
             && matches!(
                 status.as_u16(),
                 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
@@ -2879,10 +2837,7 @@ async fn execute(
                     .and_then(Result::ok)
                     .is_some_and(|bytes| length::overflow(status.as_u16(), &bytes))
                 {
-                    if pinned.is_some()
-                        || session.group.routing
-                            == crate::services::intent_routing::RoutingStrategy::Manual
-                    {
+                    if pinned.is_some() {
                         return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
                     }
                     overflowed = true;
@@ -3004,11 +2959,7 @@ async fn execute(
         }
         let mut buffered = Vec::new();
         let mut observed_first_content = None;
-        if streaming
-            && !attempts.is_empty()
-            && pinned.is_none()
-            && session.group.routing != crate::services::intent_routing::RoutingStrategy::Manual
-        {
+        if streaming && !attempts.is_empty() && pinned.is_none() {
             let deadline = first_content_deadline
                 .into_iter()
                 .chain(retry_deadline)
@@ -3067,14 +3018,6 @@ async fn execute(
         }
         let mut upstream = futures::stream::iter(buffered.into_iter().map(Ok)).chain(upstream);
         trace.observe_account(candidate, &target.scheduling);
-        if session.group.routing == crate::services::intent_routing::RoutingStrategy::Weighted {
-            session
-                .bindings
-                .lock()
-                .await
-                .pool
-                .reassign(weighted_charge, index);
-        }
         if let Some(key) = conversation.as_ref() {
             if let Err(code) = scoped.update(|bindings| bindings.bind_session(key, index)) {
                 return fail(StatusCode::SERVICE_UNAVAILABLE, code);

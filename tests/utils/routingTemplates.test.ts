@@ -215,6 +215,143 @@ it("keeps unknown prices from qualifying a model as cheaper", () => {
   expect(templates[0].group.classifierTarget).toBeNull();
 });
 
+it("prefers different models across suppliers in all four templates", () => {
+  const [smart, ...other] = routingTemplates([
+    {
+      ...providers[0],
+      models: [
+        { id: "fixture-pro", name: "Primary", outputPrice: 20 },
+        { id: "fixture-mini", name: "Economy", outputPrice: 2 },
+      ],
+    },
+    {
+      ...providers[1],
+      models: [
+        { id: "vendor/FIXTURE-PRO", name: "Mirror", outputPrice: 15 },
+        { id: "fixture-standard", name: "Fallback", outputPrice: 20 },
+      ],
+    },
+    {
+      ...providers[1],
+      id: "c",
+      models: [{ id: "relay-alias", sameAs: "fixture-mini", name: "Alias" }],
+    },
+  ]);
+  expect(smart.group.members.map(({ modelId }) => modelId)).toEqual([
+    "fixture-pro",
+    "fixture-standard",
+    "fixture-mini",
+  ]);
+  expect(smart.group.rules[2].targetMemberId).toBe(smart.group.members[2].id);
+  for (const template of other) {
+    expect(template.group.members.map(({ modelId }) => modelId)).toEqual([
+      "fixture-pro",
+      "fixture-standard",
+      "relay-alias",
+    ]);
+  }
+});
+
+it("revisits a supplier's first choice when needed for three distinct models", () => {
+  const models = [
+    { id: "first", name: "First", outputPrice: 20 },
+    { id: "second", name: "Second", outputPrice: 20 },
+    { id: "third", name: "Third", outputPrice: 20 },
+  ];
+  const [, capability, speed, expiry] = routingTemplates([
+    { ...providers[0], models: models.slice(0, 2) },
+    { ...providers[1], models: [models[0]] },
+    { ...providers[1], id: "c", models: models.slice(1) },
+  ]);
+  for (const template of [capability, speed, expiry]) {
+    expect(
+      template.group.members.map(({ providerId, modelId }) => [
+        providerId,
+        modelId,
+      ]),
+    ).toEqual([
+      ["a", "second"],
+      ["b", "first"],
+      ["c", "third"],
+    ]);
+  }
+});
+
+it("keeps a same-model alternate route when models are scarce", () => {
+  const model = { id: "fixture", name: "Fixture", outputPrice: 15 };
+  for (const { group } of routingTemplates(
+    providers.map((provider) => ({ ...provider, models: [model] })),
+  )) {
+    expect(
+      group.members.map(({ providerId, modelId }) => [providerId, modelId]),
+    ).toEqual([
+      ["a", "fixture"],
+      ["b", "fixture"],
+    ]);
+  }
+});
+
+it("uses a distinct smart fallback when there is no cheaper model", () => {
+  const primary = { id: "fixture-main", name: "Primary", outputPrice: 15 };
+  const [smart] = routingTemplates([
+    {
+      ...providers[0],
+      models: [
+        primary,
+        { id: "fixture-other", name: "Other", outputPrice: 15 },
+      ],
+    },
+    { ...providers[1], models: [primary] },
+  ]);
+  expect(smart.group.members.map(({ modelId }) => modelId)).toEqual([
+    "fixture-main",
+    "fixture-other",
+  ]);
+  expect(smart.group.rules).toEqual([]);
+});
+
+it("uses configured equivalence before spending a slot on an alias", () => {
+  const catalog = [
+    {
+      ...providers[0],
+      models: [
+        { id: "fixture-1", name: "First", outputPrice: 20 },
+        { id: "fixture-3", name: "Third", outputPrice: 20 },
+      ],
+    },
+    {
+      ...providers[1],
+      models: [{ id: "fixture-2", name: "Second", outputPrice: 15 }],
+    },
+    {
+      ...providers[1],
+      id: "c",
+      models: [
+        {
+          id: "relay-alias",
+          sameAs: "fixture-1",
+          name: "Alias",
+          outputPrice: 20,
+        },
+      ],
+    },
+  ];
+  const templates = routingTemplates(catalog);
+  for (const { group } of templates) {
+    expect(group.members).toHaveLength(3);
+    expect(
+      new Set(
+        group.members.map(({ modelId }) =>
+          modelId === "relay-alias" ? "fixture-1" : modelId,
+        ),
+      ),
+    ).toEqual(new Set(["fixture-1", "fixture-2", "fixture-3"]));
+  }
+  expect(
+    templates[2].group.members.map(({ providerId }) => providerId),
+  ).toEqual(["a", "b", "c"]);
+});
+
 it("keeps selected identities and tie order when applying capability recommendations", () => {
   const stale = { id: "stale", providerId: "a", modelId: "missing" };
   const fromB = { id: "from-b", providerId: "b", modelId: "large" };
@@ -455,4 +592,57 @@ it("never silently enables an ineligible classifier", () => {
   expect(smart.group.members.length).toBeGreaterThan(1);
   expect(smart.group.intentRecognitionEnabled).toBe(false);
   expect(capability.need).toBeUndefined();
+});
+
+it("draws different models while retaining the constraints of each template", () => {
+  const catalog = Array.from({ length: 4 }, (_, index) => ({
+    ...providers[0],
+    id: `supplier-${index}`,
+    models: [
+      {
+        id: `gpt-6.${index + 1}-pro`,
+        name: `Strong ${index}`,
+        outputPrice: 20 + index,
+        maker: true,
+        reasoning: true,
+      },
+      {
+        id: `qwen4-mini-${index}`,
+        name: `Economy ${index}`,
+        outputPrice: 2,
+        reasoning: false,
+      },
+      { id: "fixture-alias", sameAs: "gpt-6.1-pro", name: "Mirror" },
+      { id: "codex-auto-review", name: "Automatic review", outputPrice: 0 },
+    ],
+  }));
+  const first = routingTemplates(catalog, () => 0.999);
+  const second = routingTemplates(catalog, () => 0);
+  for (const [index, { key, group }] of second.entries()) {
+    const ids = group.members.map(({ modelId }) => modelId);
+    expect(new Set(ids)).not.toEqual(
+      new Set(first[index].group.members.map(({ modelId }) => modelId)),
+    );
+    expect(group.members).toHaveLength(3);
+    expect(
+      new Set(ids.map((id) => (id === "fixture-alias" ? "gpt-6.1-pro" : id)))
+        .size,
+    ).toBe(3);
+    expect(ids).not.toContain("codex-auto-review");
+    if (key === "templateSpeed")
+      expect(
+        new Set(group.members.map(({ providerId }) => providerId)).size,
+      ).toBe(3);
+    if (key === "templateSmart") {
+      const easy = group.members.find(
+        ({ id }) => id === group.rules[2].targetMemberId,
+      );
+      const prices = new Map(
+        catalog.flatMap(({ models }) =>
+          models.map((model) => [model.id, model.outputPrice]),
+        ),
+      );
+      expect(prices.get(easy!.modelId)).toBeLessThan(prices.get(ids[0])!);
+    }
+  }
 });

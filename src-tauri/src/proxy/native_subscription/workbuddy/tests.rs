@@ -749,6 +749,7 @@ async fn workbuddy_ai_shares_chat_rewrites_and_sends_its_own_client_identity(
     attach_growth_event(
         outbound.as_object_mut().ok_or("Missing chat object")?,
         Some("gpt-5.5"),
+        Some("GPT fixture"),
         conversation
             .get("x-conversation-id")
             .and_then(|value| value.to_str().ok()),
@@ -761,6 +762,7 @@ async fn workbuddy_ai_shares_chat_rewrites_and_sends_its_own_client_identity(
     assert_eq!(events[0]["eventCode"], "chat_request_send");
     assert_eq!(events[0]["id"], conversation["x-conversation-id"].to_str()?);
     assert_eq!(events[0]["extra"]["requestModelId"], "gpt-5.5");
+    assert_eq!(events[0]["extra"]["requestModelName"], "GPT fixture");
     assert_eq!(
         events[0]["extra"]["inputLength"],
         "keep this exact".chars().count()
@@ -856,17 +858,13 @@ fn workbuddy_ai_activity_reports_follow_the_client_batches() {
     let facts = reply_facts(
         br#"data: {"finish_reason":"stop","usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":9,"cached_tokens":1}}"#,
     );
-    let batches = activity_batches(&account, &step, &facts, 10, 25);
+    let batches = activity_batches(&account, &step, &facts, 10, 25, ("Fixture CPU", 4096));
     assert_eq!(batches.len(), 3);
     assert_eq!(batches[0][0]["eventCode"], "chat_message_send");
     assert_eq!(batches[0][0]["requestModelId"], "gpt-5.5");
     assert_eq!(batches[0][0]["requestModelName"], "GPT fixture");
-    assert!(
-        batches[0][0]["cpuModel"]
-            .as_str()
-            .is_some_and(|model| !model.is_empty())
-    );
-    assert!(batches[0][0]["memorySize"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(batches[0][0]["cpuModel"], "Fixture CPU");
+    assert_eq!(batches[0][0]["memorySize"], 4096);
     assert_eq!(batches[1][0]["eventCode"], "chat_request_send");
     assert_eq!(batches[1][0]["inputLength"], "next".chars().count());
     assert!(batches[1][3].get("traceId").is_none());
@@ -884,8 +882,10 @@ fn workbuddy_ai_activity_reports_follow_the_client_batches() {
         .is_empty());
 
     let tool_facts = reply_facts(br#"data: {"finish_reason":"tool_calls"}"#);
-    let tool_batches = activity_batches(&account, &step, &tool_facts, 10, 25);
+    let tool_batches = activity_batches(&account, &step, &tool_facts, 10, 25, ("", 0));
     assert_eq!(tool_batches.len(), 2);
+    assert_eq!(tool_batches[0][0]["cpuModel"], "");
+    assert_eq!(tool_batches[0][0]["memorySize"], 0);
     assert!(tool_batches[1]
         .as_array()
         .unwrap()

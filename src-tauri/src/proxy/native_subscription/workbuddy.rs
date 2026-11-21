@@ -296,6 +296,7 @@ fn pause_opener(text: &str) -> Option<String> {
 fn attach_growth_event(
     object: &mut serde_json::Map<String, Value>,
     model: Option<&str>,
+    model_name: Option<&str>,
     conversation: Option<&str>,
 ) {
     let Some(conversation) = conversation.filter(|id| !id.is_empty()) else {
@@ -305,13 +306,14 @@ fn attach_growth_event(
         return;
     };
     let model = model.unwrap_or_default();
+    let model_name = model_name.filter(|name| !name.is_empty()).unwrap_or(model);
     let event = json!({
         "eventCode": "chat_request_send",
         "id": conversation,
         "extra": {
             "inputLength": last_user_input_length(messages),
             "requestModelId": model,
-            "requestModelName": model,
+            "requestModelName": model_name,
             "mode": "craft",
             "command": ""
         }
@@ -1161,7 +1163,12 @@ pub(super) async fn send(
                 .get("model")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            attach_growth_event(object, model.as_deref(), conversation.as_deref());
+            attach_growth_event(
+                object,
+                model.as_deref(),
+                model_name,
+                conversation.as_deref(),
+            );
         }
     }
     let encoded = encode(body.clone(), protocol).await?;
@@ -1502,7 +1509,9 @@ async fn post_activity(
         .map_err(|_| ())?
         .as_millis() as u64;
     let origin = vendor::account_origin(account);
-    for body in activity_batches(account, step, &facts, start, ended) {
+    let cpu_model = report_cpu_model();
+    let hardware = (cpu_model.as_str(), report_memory_bytes());
+    for body in activity_batches(account, step, &facts, start, ended, hardware) {
         let request = client
             .post(format!("{origin}/v2/report"))
             .headers(vendor::headers(account).map_err(|_| ())?)
@@ -1612,31 +1621,26 @@ fn iana_timezone() -> String {
 
 fn report_cpu_model() -> String {
     static MODEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    MODEL
-        .get_or_init(|| {
-            #[cfg(target_os = "macos")]
-            {
-                return command_line("sysctl", &["-n", "machdep.cpu.brand_string"]);
-            }
-            #[cfg(not(target_os = "macos"))]
-            report_cpu_model_uncached()
-        })
-        .clone()
+    MODEL.get_or_init(report_cpu_model_uncached).clone()
 }
 
 fn report_cpu_model_uncached() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        command_line("sysctl", &["-n", "machdep.cpu.brand_string"])
+    }
     #[cfg(target_os = "windows")]
     {
-        return command_line(
+        command_line(
             "powershell",
             &[
                 "-NoProfile",
                 "-Command",
                 "(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)",
             ],
-        );
+        )
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     String::new()
 }
 
@@ -1648,13 +1652,13 @@ fn report_memory_bytes() -> u64 {
 fn report_memory_bytes_uncached() -> u64 {
     #[cfg(target_os = "macos")]
     {
-        return command_line("sysctl", &["-n", "hw.memsize"])
+        command_line("sysctl", &["-n", "hw.memsize"])
             .parse()
-            .unwrap_or(0);
+            .unwrap_or(0)
     }
     #[cfg(target_os = "windows")]
     {
-        return command_line(
+        command_line(
             "powershell",
             &[
                 "-NoProfile",
@@ -1663,12 +1667,13 @@ fn report_memory_bytes_uncached() -> u64 {
             ],
         )
         .parse()
-        .unwrap_or(0);
+        .unwrap_or(0)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     0
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn command_line(program: &str, args: &[&str]) -> String {
     std::process::Command::new(program)
         .args(args)
@@ -1686,6 +1691,7 @@ fn activity_batches(
     facts: &ReplyFacts,
     start: u64,
     end: u64,
+    (cpu_model, memory_bytes): (&str, u64),
 ) -> Vec<Value> {
     let base = |code: &str| {
         json!({
@@ -1707,12 +1713,12 @@ fn activity_batches(
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "osVersion": report_os_version(),
-            "cpuModel": report_cpu_model(),
+            "cpuModel": cpu_model,
             "timestamp": end,
             "reportDelay": 0,
             "releaseDate": 0,
             "cpuCores": std::thread::available_parallelism().map(|count| count.get()).unwrap_or(0),
-            "memorySize": report_memory_bytes(),
+            "memorySize": memory_bytes,
             "timezone": iana_timezone()
         })
     };
@@ -1820,17 +1826,17 @@ async fn bounded_error_body(response: reqwest::Response) -> Vec<u8> {
 fn workbuddy_code(bytes: &[u8]) -> Option<String> {
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
     let error = value.get("error").unwrap_or(&value);
-    let code = error
-        .get("internal_code")
-        .or_else(|| error.get("code"))
-        .or_else(|| value.get("internal_code"))
-        .or_else(|| value.get("code"))
-        .and_then(numeric_code)
+    let code = value
+        .get("error")
+        .and_then(Value::as_str)
+        .and_then(leading_numeric_code)
         .or_else(|| {
-            value
-                .get("error")
-                .and_then(Value::as_str)
-                .and_then(leading_numeric_code)
+            error
+                .get("internal_code")
+                .or_else(|| error.get("code"))
+                .or_else(|| value.get("internal_code"))
+                .or_else(|| value.get("code"))
+                .and_then(numeric_code)
         })?;
     (!code.is_empty()).then_some(code)
 }
@@ -1862,9 +1868,6 @@ pub(super) fn rejection_code(bytes: &[u8]) -> Option<&'static str> {
         Some("14018") => Some("routing_upstream_quota_exhausted"),
         Some("11153") => Some("routing_upstream_tool_separator_required"),
         Some("11158") => Some("routing_upstream_entitlement_missing"),
-        Some(code) if code.bytes().all(|byte| byte.is_ascii_digit()) && code.len() <= 8 => {
-            Some("routing_upstream_numeric_rejected")
-        }
         _ => None,
     }
 }
@@ -1900,10 +1903,6 @@ fn rejection_from(status: u16, bytes: &[u8]) -> ProxyError {
         ),
         Some("routing_upstream_entitlement_missing") => Some(
             json!({"error":{"type":"upstream_error","code":"11158","message":"Upstream account is not entitled to this model (code 11158)"}})
-                .to_string(),
-        ),
-        Some("routing_upstream_numeric_rejected") => Some(
-            json!({"error":{"type":"upstream_error","code":"routing_upstream_numeric_rejected","message":"Upstream rejected the request with an unclassified numeric code"}})
                 .to_string(),
         ),
         _ => None,

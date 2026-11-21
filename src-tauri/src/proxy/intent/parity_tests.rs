@@ -37,7 +37,7 @@ async fn parity_rejected_and_precontent_failed_attempts_use_backup_without_repla
         let mut session = published.groups.values().next().ok_or("fixture")?.as_ref().clone();
         session.group.enabled=false;
         session.group.patience = -1;
-        session.group.members.push(crate::services::intent_routing::Member { id:"backup".into(),provider_id:"backup".into(),model_id:"exact-model".into(),weight:1,free:None,effort:None });
+        session.group.members.push(crate::services::intent_routing::Member { id:"backup".into(),provider_id:"backup".into(),model_id:"exact-model".into(),retired_weight:None,free:None,effort:None });
         session.group.fallback_member_ids.push("backup".into());
         let mut backup = session.targets[0].clone();
         backup.provider_id="backup".into();
@@ -99,7 +99,7 @@ async fn parity_official_account_rotation_and_unavailable_credentials_keep_appro
         .as_ref()
         .clone();
     session.group.enabled = false;
-    session.group.routing = crate::services::intent_routing::RoutingStrategy::RoundRobin;
+    session.group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
     session.group.patience = -1;
     let mut targets = vec![];
     for account in ["one", "two"] {
@@ -146,7 +146,7 @@ async fn parity_official_account_rotation_and_unavailable_credentials_keep_appro
     .with_intent_runtime(runtime);
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for (index, expected) in ["one", "two", "one", "two"].into_iter().enumerate() {
+    for index in 0..2 {
         let response = client
             .post(format!(
                 "http://127.0.0.1:{}/intent/v1/responses",
@@ -154,7 +154,7 @@ async fn parity_official_account_rotation_and_unavailable_credentials_keep_appro
             ))
             .bearer_auth(&token)
             // These are new conversations, not repeated turns of one opening.
-            .header("session-id", format!("synthetic-rotation-{index}"))
+            .header("session-id", format!("synthetic-ordered-{index}"))
             .json(&json!({"model":alias,"input":"synthetic","stream":true,"store":false}))
             .send()
             .await?;
@@ -165,7 +165,7 @@ async fn parity_official_account_rotation_and_unavailable_credentials_keep_appro
             tokio::time::timeout(Duration::from_secs(3), rx.recv())
                 .await?
                 .ok_or("upstream")?,
-            expected
+            "one"
         );
     }
     manager.remove_account("one").await?;
