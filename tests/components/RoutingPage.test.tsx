@@ -782,6 +782,29 @@ it("keeps one source for an Agent's concurrent requests across models and sessio
   );
 });
 
+it("keeps a background request from becoming the live routing group", async () => {
+  const background = sourceRequest("codex", {
+    id: "title-request",
+    kind: "thread_title",
+    model: "vary-provider/auxiliary",
+    candidates: [{ ...route.candidates[0], model: "synthetic-title-model" }],
+  });
+  const chat = sourceRequest("codex", {
+    model: "vary-auto/synthetic-group",
+    groupName: "Synthetic chat group",
+    candidates: [{ ...route.candidates[0], model: "synthetic-group-model" }],
+  });
+  snapshot([background, chat]);
+  show();
+  await screen.findByText("synthetic-group-model");
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "synthetic-title-model",
+  );
+  expect(document.querySelector(".rt-what")).toHaveTextContent(
+    "Synthetic chat group",
+  );
+});
+
 it("keeps recent completions for twelve seconds and caps the stage at four Agents", async () => {
   const now = Date.now();
   const client = new QueryClient({

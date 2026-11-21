@@ -511,6 +511,24 @@ pub(crate) async fn arrange_routing_groups(
 }
 
 #[tauri::command]
+pub(crate) async fn set_discovered_routing_group_enabled(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<RoutingGroup, String> {
+    let db = state.db.clone();
+    let (providers, _) =
+        prepare_providers(db.clone(), state.codex_oauth_manager.clone(), false).await?;
+    let group = tauri::async_runtime::spawn_blocking(move || {
+        db.set_discovered_routing_group_enabled(&id, enabled, Some(providers))
+    })
+    .await
+    .map_err(|_| "intentRouting.failed")??;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
+    Ok(group)
+}
+
+#[tauri::command]
 pub(crate) async fn save_intent_routing_group(
     state: State<'_, AppState>,
     group: RoutingGroup,

@@ -2274,11 +2274,50 @@ editor for every executable Agent below. The editor regression checks the
 default in the draft and the saved configuration. Existing groups keep
 their saved deadlines.
 
+The routing tracker follow-up covers the shared group editor, publication
+switches and live routing stage for each Agent below on macOS and Windows.
+The publisher retains each existing adapter's catalog and request paths.
+The native Codex HTTP fixtures check the unavailable-group response,
+per-turn priority after a provider returns or the order changes, and
+ownership for explicit response continuations. Installed-client acceptance
+remains pending for these scenarios.
+
+On the working tree based on `53abd075`, macOS 26.6.2 arm64 with Node
+20.20.2, pnpm 10.12.3 and Rust 1.98.1 passed the renderer type check,
+formatting, build and 4,849 unit tests. Cargo check, formatting, strict Clippy,
+and the Rust library and integration suites passed with 7,994 tests passed
+and 21 ignored. The development helper checks and production dependency
+audit also passed. Windows and installed-client verification remain pending.
+
+The next routing reports use the same Agent inventory below. The live stage
+uses the same trace projection on macOS and Windows. The scheduler shares
+cooldown and fallback behavior across Responses, Chat, Messages and Gemini.
+Codex Responses has a separate read-only projection check for empty reasoning
+items. Chat and Gemini terminal-event fixtures check per-turn routing and
+error handling. WorkBuddy and WorkBuddy AI loopback fixtures route a hard
+turn and an easy turn to different configured members in the same streaming
+conversation. The Codex HTTP fixture checks that the configured summary
+member compacts plain history and the original answer member resumes from
+the local checkpoint. Other adapters retain their existing request formats.
+Installed-client verification remains pending for the new scenarios.
+
+The final macOS run on the working tree based on `53abd075` passed 4,851
+renderer tests and 7,995 Rust library and integration tests, with 21 ignored.
+An earlier run and an isolated retry failed the existing Pi Gemini tool
+observation regression. The regression passed in the final full run.
+
+The hard/easy rule descriptions use the same routing group editor for every
+Agent below on macOS and Windows. The editor renders built-in descriptions
+in the selected language and keeps saved rule text available to each existing
+classifier path. Renderer verification exercises the four supported locales
+with saved rules. On macOS, type checking, formatting, the renderer build,
+and all 4,857 renderer tests passed. Installed WebView verification is pending.
+
 | Agent ID           | Entry point and native adapter                                        | Verification scope                                                                                                                        |
 | ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `claude`           | Claude Code CLI, Messages catalog and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |
 | `claude-desktop`   | Claude Desktop, Messages catalog and shared runtime                   | Shared classifier tests. Native pending                                                                                                   |
-| `codex`            | Codex desktop and CLI, Responses catalogs and shared runtime          | Shared classifier tests. Native pending                                                                                                   |
+| `codex`            | Codex desktop and CLI, Responses catalogs and shared runtime          | Shared classifier tests and native HTTP fixtures for availability and per-turn priority. Installed clients pending                        |
 | `gemini`           | Gemini CLI, dotenv, JSON model definitions, Gemini URL routing        | Alias migration and gateway fixtures passed. macOS CLI footer and synthetic inference passed. Native picker rendering and Windows pending |
 | `grokbuild`        | Grok Build CLI, TOML profiles, shared Agent status and picker         | Profile adoption, status and refresh passed with fixtures. Installed client pending                                                       |
 | `opencode`         | OpenCode, provider model registry and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |

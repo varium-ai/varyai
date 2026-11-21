@@ -1540,6 +1540,7 @@ pub fn run() {
             commands::get_routing_context_settings,
             commands::get_routing_auto_group_skip,
             commands::set_routing_auto_group_skip,
+            commands::set_discovered_routing_group_enabled,
             commands::save_intent_routing_group,
             commands::arrange_routing_groups,
             commands::delete_intent_routing_group,

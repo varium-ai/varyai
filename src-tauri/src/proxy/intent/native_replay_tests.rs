@@ -18,6 +18,193 @@ impl Drop for RestorePolicy {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _policy = RestorePolicy((*security::get_security_runtime()).clone());
+    security::runtime::set_security_runtime_for_test(Default::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = tokio::spawn(async move {
+        let app = Router::new().fallback(move |Json(body): Json<Value>| {
+            let model = body["model"].as_str().unwrap_or_default().to_owned();
+            let mut calls = captured.lock().expect("fixture requests");
+            calls.push(model.clone());
+            let reply = json!({
+                "id":format!("response-{}",calls.len()),"object":"response",
+                "model":model,"status":"completed",
+                "output":[{"type":"message","role":"assistant","content":[
+                    {"type":"output_text","text":"Synthetic reply"}
+                ]}]
+            });
+            let summary = body["instructions"]
+                .as_str()
+                .is_some_and(|text| text.contains("continuation summary"));
+            let reply = if body["stream"] == true && !summary {
+                let event = json!({"type":"response.completed","response":reply});
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    format!("event: response.completed\ndata: {event}\n\n"),
+                )
+                    .into_response()
+            } else {
+                Json(reply).into_response()
+            };
+            std::future::ready(reply)
+        });
+        let _ = axum::serve(listener, app).await;
+    });
+    let mut menu = super::global_tests::menu(&format!("http://{address}/responses"));
+    let alias = menu.groups.keys().next().ok_or("fixture alias")?.clone();
+    let session = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("fixture route")?);
+    session.group.levels.clear();
+    session.group.affinity = "turn".into();
+    session.group.template = Some(crate::services::intent_routing::RoutingTemplate::Capability);
+    let first = session.targets[0].clone();
+    let mut second = first.clone();
+    second.provider_id = "backup-provider".into();
+    second.model = "backup-model".into();
+    second.scheduling = Arc::default();
+    let mut backup = session.group.members[0].clone();
+    backup.id = "backup".into();
+    backup.provider_id = second.provider_id.clone();
+    backup.model_id = second.model.clone();
+    session.group.members.push(backup);
+    session.group.fallback_member_ids = vec!["backup".into()];
+    session.group.off = vec![session.group.default_member_id.clone()];
+    session.targets = vec![second.clone()];
+
+    let runtime = Arc::new(Runtime::default());
+    let dir = tempfile::tempdir()?;
+    runtime
+        .prepare_continuations(dir.path().join("continuations.json"))
+        .await;
+    runtime
+        .native
+        .prepare_checkpoints(&dir.path().join("checkpoint.key"))?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let url = format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port);
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let visible = json!({"model":alias,"input":[
+        {"role":"user","content":"Synthetic opening"},
+        {"type":"reasoning","id":"synthetic-empty-reasoning","summary":[],"content":null,"encrypted_content":null},
+        {"role":"assistant","content":"Synthetic previous answer"},
+        {"role":"user","content":"Synthetic next turn"}
+    ]});
+    for (change, expected, mut request) in [
+        (
+            "disabled",
+            second.model.as_str(),
+            json!({"model":alias,"input":"Synthetic opening"}),
+        ),
+        ("reenabled", first.model.as_str(), visible.clone()),
+        ("reordered", second.model.as_str(), visible.clone()),
+        (
+            "reordered with a response reference",
+            second.model.as_str(),
+            json!({"model":alias,"previous_response_id":"response-3","input":"Synthetic continuation"}),
+        ),
+        ("unchanged", first.model.as_str(), visible),
+    ] {
+        request["stream"] = json!(matches!(change, "disabled" | "reordered"));
+        if change != "unchanged" {
+            let current = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("fixture route")?);
+            current.bindings = Arc::default();
+            if change == "reenabled" {
+                current.group.off.clear();
+                current.targets = vec![first.clone(), second.clone()];
+            } else if change.starts_with("reordered") {
+                current.group.members.swap(0, 1);
+                current.group.default_member_id = current.group.members[0].id.clone();
+                current.group.fallback_member_ids = vec![current.group.members[1].id.clone()];
+                current.targets.swap(0, 1);
+            }
+            runtime.native.publish_menu(
+                Arc::new(menu.clone()),
+                json!({"models":[]}),
+                Default::default(),
+            )?;
+        }
+        let reply = client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .header("session_id", "synthetic-routing-session")
+            .json(&request)
+            .send()
+            .await?;
+        let status = reply.status();
+        let body = reply.bytes().await?;
+        assert_eq!(status, StatusCode::OK, "{change}: {body:?}");
+        assert_eq!(
+            seen.lock()
+                .expect("fixture requests")
+                .last()
+                .map(String::as_str),
+            Some(expected),
+            "{change}"
+        );
+    }
+    let current = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("fixture route")?);
+    current.group.template = Some(crate::services::intent_routing::RoutingTemplate::Smart);
+    current.group.rules = serde_json::from_value(json!([
+        {"id":"compact", "name":"Compaction", "enabled":true, "description":"",
+         "targetMemberId":"backup", "conditions":{"compact":true}}
+    ]))?;
+    runtime
+        .native
+        .publish_menu(Arc::new(menu), json!({"models":[]}), Default::default())?;
+    let compact: Value = client
+        .post(format!("{url}/compact"))
+        .bearer_auth("synthetic-native-token")
+        .header("session_id", "synthetic-routing-session")
+        .json(&json!({"model":alias,"input":[{"role":"user","content":"Synthetic opening"}]}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        seen.lock().expect("fixture requests").last(),
+        Some(&second.model)
+    );
+    let checkpoint = compact["output"][0]["encrypted_content"]
+        .as_str()
+        .ok_or("missing synthetic checkpoint")?;
+    assert!(checkpoint.starts_with("varyai1:"));
+    client
+        .post(&url)
+        .bearer_auth("synthetic-native-token")
+        .header("session_id", "synthetic-routing-session")
+        .json(&json!({"model":alias,"input":[
+            {"type":"compaction","encrypted_content":checkpoint},
+            {"type":"message","role":"user","content":"Synthetic resumed question"}
+        ]}))
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(
+        seen.lock().expect("fixture requests").last(),
+        Some(&first.model)
+    );
+    server.stop().await?;
+    upstream.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn native_responses_model_switch_recovers_all_transparent_agent_adapters(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::services::agent_clients::{self, Backup, Route};

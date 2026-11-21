@@ -265,12 +265,16 @@ it("renders each concurrent response's localized title and measured rate on its 
   const [first, second] = view.container.querySelectorAll(
     ".rt-seat-status.has-response",
   );
-  expect(first).toHaveTextContent(/正在回答.*合成测试会话 · 42\.5 tok\/s/);
+  expect(first).toHaveTextContent(
+    /正在回答.*会话名称：合成测试会话 · 42\.5 tok\/s/,
+  );
   expect(first?.closest("li")).toHaveAttribute(
     "title",
     expect.stringContaining("合成测试会话 · 42.5 tok/s"),
   );
-  expect(second).toHaveTextContent(/正在回答.*另一条测试会话 · 17\.1 tok\/s/);
+  expect(second).toHaveTextContent(
+    /正在回答.*会话名称：另一条测试会话 · 17\.1 tok\/s/,
+  );
 });
 
 it.each([0, -3, Infinity, NaN, undefined])(
@@ -724,6 +728,37 @@ it("keeps simultaneous request paths on stage when the latest request changes", 
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
   expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+});
+
+it("clears a completed model from another group while the next request is being planned", () => {
+  const previous = { ...row, state: "completed" as const };
+  const next: RoutingTrace = {
+    ...row,
+    id: "next-group-request",
+    model: "vary-auto/next-group",
+    state: "routing",
+    candidates: [],
+    steps: [],
+  };
+  const view = show({
+    row: previous,
+    sources: [previous],
+    concurrent: [previous],
+    animate: true,
+  });
+  expect(view.container.querySelector(".rt-accts .mdl")).toBeInTheDocument();
+  view.rerender(
+    <RoutingStage
+      row={next}
+      accountName={(candidate) => candidate.providerName}
+      sources={[next]}
+      concurrent={[next, previous]}
+      animate
+      replay={false}
+      speed={1}
+    />,
+  );
+  expect(view.container.querySelector(".rt-accts .mdl")).toBeNull();
 });
 
 it("shows one node per shared destination without duplicating a concurrent branch", () => {

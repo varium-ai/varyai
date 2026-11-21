@@ -74,6 +74,7 @@ impl Durable {
                 responses: map(&bindings.responses),
                 calls: map(&bindings.calls),
                 sessions: map(&bindings.sessions),
+                completed_sessions: bindings.completed_sessions.clone(),
                 opaque: map(&bindings.opaque),
                 items: map(&bindings.items),
             },
@@ -330,10 +331,19 @@ impl Conversations {
                 }
                 Ok(restored)
             };
+            let sessions = remap(snapshot.sessions)?;
+            let mut completed_sessions = snapshot.completed_sessions;
+            if matches!(policy, HistoryPolicy::ResponsesReplay) {
+                completed_sessions
+                    .retain(|key| sessions.get(key).is_some_and(|owner| *owner != usize::MAX));
+            } else {
+                completed_sessions.clear();
+            }
             let bindings = Bindings {
                 responses: remap(snapshot.responses)?,
                 calls: remap(snapshot.calls)?,
-                sessions: remap(snapshot.sessions)?,
+                sessions,
+                completed_sessions,
                 opaque: remap(snapshot.opaque)?,
                 items: remap(snapshot.items)?,
                 durable: Some(Durable {

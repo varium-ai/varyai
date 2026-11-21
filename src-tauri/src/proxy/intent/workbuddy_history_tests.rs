@@ -120,9 +120,19 @@ impl Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (tx, requests) = tokio::sync::mpsc::channel(8);
+        let smart_requests = tx.clone();
         let sends = Arc::new(AtomicUsize::new(0));
         let count = sends.clone();
-        let app = Router::new().route("/*path", post(move |uri: http::Uri, Json(body): Json<Value>| {
+        let app = Router::new().route("/smart-chat-completions", post(move |Json(body): Json<Value>| {
+            let sent = smart_requests.clone();
+            async move {
+                let _ = sent.send(body).await;
+                ([(header::CONTENT_TYPE,"text/event-stream")], concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Synthetic answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                ))
+            }
+        })).route("/*path", post(move |uri: http::Uri, Json(body): Json<Value>| {
             let tx = tx.clone(); let count = count.clone();
             async move {
                 if uri.path().ends_with("responses") {
@@ -136,9 +146,16 @@ impl Fixture {
                 } else if uri.path().ends_with("gemini-3.6-flash:generateContent") {
                     assert_eq!(body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "MINIMAL");
                     let task: Value = serde_json::from_str(body["contents"][0]["parts"][0]["text"].as_str().unwrap()).unwrap();
-                    assert_eq!(task["text"], "回答hello");
-                    tokio::time::sleep(std::time::Duration::from_millis(5300)).await;
-                    Json(json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"intentId\":\"easy\"}"}]}}]}))
+                    let intent = match task["text"].as_str() {
+                        Some("回答hello") => {
+                            tokio::time::sleep(std::time::Duration::from_millis(5300)).await;
+                            "easy"
+                        }
+                        Some("Synthetic hard task") => "hard",
+                        Some("Synthetic easy task") => "easy",
+                        _ => panic!("unexpected synthetic classifier input"),
+                    };
+                    Json(json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"text": json!({"intentId":intent}).to_string()}]}}]}))
                 } else if uri.path().ends_with("chat/completions") {
                     Json(json!({"id":"synthetic-prior-reply","object":"chat.completion","model":"glm-synthetic","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic prior answer","reasoning_content":"Synthetic visible thought","tool_calls":[call(FIRST_ID,1),call(SECOND_ID,2)]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
                 } else {
@@ -346,6 +363,61 @@ async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_befo
                 serde_json::to_value(route)?["classificationOutcome"],
                 outcome
             );
+        }
+    }
+
+    let group = Arc::make_mut(
+        menu.groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing group")?,
+    );
+    for target in &mut group.targets {
+        target.url.set_path("/smart-chat-completions");
+        target
+            .upstream
+            .as_mut()
+            .ok_or("missing provider")?
+            .meta
+            .get_or_insert_with(Default::default)
+            .api_format = Some("openai_chat".into());
+    }
+    fixture.runtime.set_global(menu, 0)?;
+    for agent in ["workbuddy", "workbuddy-ai"] {
+        let mut messages = vec![json!({"role":"user","content":"Synthetic hard task"})];
+        for expected in ["grok-4.5", "glm-synthetic"] {
+            let body = fixture
+                .client
+                .post(fixture.root.replace("/workbuddy/", &format!("/{agent}/")))
+                .bearer_auth(TOKEN)
+                .header("x-session-id", "synthetic-smart-conversation")
+                .json(&json!({"model":fixture.grok_alias,"stream":true,"messages":messages}))
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            assert!(body.contains("Synthetic answer"));
+            assert_eq!(
+                fixture
+                    .requests
+                    .recv()
+                    .await
+                    .ok_or("missing task forward")?["model"],
+                expected
+            );
+            assert_eq!(
+                fixture
+                    .runtime
+                    .traces
+                    .snapshot()
+                    .first()
+                    .and_then(|route| route.classification_outcome.as_deref()),
+                Some("matched")
+            );
+            messages.extend([
+                json!({"role":"assistant","content":"Synthetic answer"}),
+                json!({"role":"user","content":"Synthetic easy task"}),
+            ]);
         }
     }
     fixture.stop().await
