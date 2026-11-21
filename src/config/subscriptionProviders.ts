@@ -42,6 +42,20 @@ export const subscriptionProviders = [
     aliases: "google antigravity",
   },
   {
+    id: "workbuddy",
+    website: "https://www.workbuddy.cn",
+    name: "WorkBuddy",
+    icon: "workbuddy",
+    aliases: "tencent codebuddy workbuddy china 国内版",
+  },
+  {
+    id: "workbuddy-ai",
+    website: "https://www.workbuddy.ai",
+    name: "WorkBuddy AI",
+    icon: "workbuddy",
+    aliases: "tencent workbuddy international 国际版",
+  },
+  {
     id: "xai_oauth",
     website: "https://grok.com",
     name: "Grok",
@@ -51,3 +65,6 @@ export const subscriptionProviders = [
 ] as const;
 export type SubscriptionProviderId =
   (typeof subscriptionProviders)[number]["id"];
+
+export const isWorkBuddySubscription = (provider: SubscriptionProviderId) =>
+  provider === "workbuddy" || provider === "workbuddy-ai";

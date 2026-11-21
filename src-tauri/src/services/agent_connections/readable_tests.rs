@@ -108,7 +108,28 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                 "gemini" if matches!(file.format, Format::Env) => {
                     assert_eq!(file.installed["GEMINI_MODEL"], name)
                 }
-                "gemini" => assert_eq!(file.installed["model"]["name"], name),
+                "gemini" => {
+                    assert_eq!(file.installed["model"]["name"], name);
+                    assert_eq!(
+                        file.installed["experimental"]["dynamicModelConfiguration"],
+                        true
+                    );
+                    for model in &catalog {
+                        let id = model_wire(
+                            &upgraded.model_map,
+                            upgraded.visible_models.as_deref(),
+                            &model.id,
+                        );
+                        assert_eq!(
+                            file.installed["modelConfigs"]["modelDefinitions"][id]["displayName"],
+                            model.name
+                        );
+                        assert_eq!(
+                            file.installed["modelConfigs"]["modelDefinitions"][id]["isVisible"],
+                            true
+                        );
+                    }
+                }
                 "opencode" => assert_eq!(file.installed["model"], format!("varyai/{name}")),
                 "openclaw" => assert_eq!(
                     file.installed["agents"]["defaults"]["model"]["primary"],
@@ -180,6 +201,11 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                 .refresh(app, &renamed, "http://127.0.0.1:1")?
                 .ok_or("missing reduced receipt")?;
             let selected = model_wire(&reduced.model_map, reduced.visible_models.as_deref(), first);
+            if app == "gemini" {
+                let definitions = &reduced.files[1].installed["modelConfigs"]["modelDefinitions"];
+                assert_eq!(definitions.as_object().map(|rows| rows.len()), Some(1));
+                assert_eq!(definitions[selected]["displayName"], "Renamed · 我的模型");
+            }
             assert_eq!(serde_json::to_value(native::get(app)?)?["model"], selected);
         }
         manager.disconnect(app)?;
@@ -187,5 +213,35 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
             assert_eq!(read(&file.path)?, file.original, "{app} restore");
         }
     }
+    let mut gemini_group = catalog[0].clone();
+    gemini_group.id = "vary-auto/synthetic-group".into();
+    gemini_group.name = "中文路由组 · routing group".into();
+    let mut receipt = Receipt {
+        app: "gemini".into(),
+        token: "synthetic-only".into(),
+        model: gemini_group.id.clone(),
+        model_map: BTreeMap::from([("routing-group".into(), gemini_group.id.clone())]),
+        visible_models: None,
+        files: vec![],
+        suspended: false,
+        applied_at_ms: None,
+    };
+    projections::build(
+        "gemini",
+        std::slice::from_ref(&gemini_group),
+        "http://127.0.0.1:1/connections/gemini",
+        "synthetic-only",
+        &gemini_group.id,
+        &mut receipt,
+        None,
+    )?;
+    let wire = "Zhong-Wen-Lu-You-Zu";
+    assert_eq!(receipt.files[0].installed["GEMINI_MODEL"], wire);
+    assert_eq!(receipt.files[1].installed["model"]["name"], wire);
+    assert_eq!(
+        receipt.files[1].installed["modelConfigs"]["modelDefinitions"][wire]["displayName"],
+        gemini_group.name
+    );
+    assert_eq!(receipt.model_map["routing-group"], gemini_group.id);
     Ok(())
 }

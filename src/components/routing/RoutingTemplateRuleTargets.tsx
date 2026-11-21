@@ -14,7 +14,10 @@ import type {
   RoutingMember,
   RoutingProviderOption,
 } from "@/lib/api/intentRouting";
-import { routingMemberKey } from "@/lib/routingMemberSelection";
+import {
+  routingMemberKey,
+  withSmartRuleMembers,
+} from "@/lib/routingMemberSelection";
 
 const templateRules = [
   ["Compaction", "routingPage.templateSmartCompactRule"],
@@ -87,28 +90,14 @@ export function RoutingTemplateRuleTargets({
           }
         : entry,
     );
-    const defaultMemberId = rule ? group.defaultMemberId : target.id;
-    const fallbackMemberIds = group.fallbackMemberIds.filter(
-      (fallback) => fallback !== defaultMemberId,
+    onChange(
+      withSmartRuleMembers({
+        ...group,
+        members: existing ? members : [...members, target],
+        defaultMemberId: rule ? group.defaultMemberId : target.id,
+        rules: nextRules,
+      }),
     );
-    // The saved group needs a member for each selected target, not for abandoned picks.
-    const referenced = new Set([
-      defaultMemberId,
-      ...fallbackMemberIds,
-      ...nextRules.flatMap((entry) => [
-        entry.targetMemberId,
-        ...(entry.fallbackMemberIds ?? []),
-      ]),
-    ]);
-    onChange({
-      ...group,
-      members: (existing ? members : [...members, target]).filter(({ id }) =>
-        referenced.has(id),
-      ),
-      defaultMemberId,
-      fallbackMemberIds,
-      rules: nextRules,
-    });
     setOpen(null);
   };
   return (
@@ -133,6 +122,7 @@ export function RoutingTemplateRuleTargets({
                 )}
               </span>
               <Popover
+                modal
                 open={open === rowId}
                 onOpenChange={(next) => setOpen(next ? rowId : null)}
               >

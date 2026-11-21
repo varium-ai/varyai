@@ -329,13 +329,22 @@ export function AgentRewardsPanel({
           <div>
             <label htmlFor={autoId}>{t("agentRewards.autoLabel")}</label>
             <p className="mp-checkin-muted">{t("agentRewards.autoHint")}</p>
+            {auto.isPending && (
+              <p className="mp-checkin-muted" role="status">
+                {t("common.saving")}
+              </p>
+            )}
           </div>
           <Switch
             id={autoId}
             className="mp-switch"
+            aria-busy={auto.isPending}
             checked={
-              (data?.accountId ? data.autoEnabled : data?.autoConfigured) ??
-              false
+              auto.isPending
+                ? auto.variables.enabled
+                : ((data?.accountId
+                    ? data.autoEnabled
+                    : data?.autoConfigured) ?? false)
             }
             disabled={
               !data?.accountId ||

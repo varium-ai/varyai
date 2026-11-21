@@ -19,6 +19,7 @@ import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { intentRoutingApi } from "@/lib/api/intentRouting";
+import { blankRoutingGroup } from "@/lib/routingGroupTransfer";
 import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { getIcon, getIconUrl, isUrlIcon } from "@/icons/extracted";
 import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
@@ -44,6 +45,11 @@ vi.mock("@/lib/api/agent-rewards", async (importOriginal) => ({
 }));
 vi.mock("@/lib/api/intentRouting", () => ({
   intentRoutingApi: {
+    list: vi.fn(async () => ({
+      groups: [],
+      autoCreate: false,
+      omittedGroups: 0,
+    })),
     contextSettings: vi.fn(async () => ({ fullWindow: false })),
     setContextSettings: vi.fn(async () => {}),
   },
@@ -5457,6 +5463,47 @@ describe("Agent connections", () => {
         expect.objectContaining({ closeButton: true }),
       ),
     );
+  });
+  it("shows the saved routing group name while its executable catalog entry is missing", async () => {
+    const group = { ...blankRoutingGroup(), id: "named", name: "中文路由组" };
+    const model = "vary-auto/named";
+    const apps = APP_IDS.filter((app) => app !== "doubaowork");
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue(
+      Object.fromEntries(apps.map((app) => [app, true])),
+    );
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue(
+      apps.map((app) => ({
+        app,
+        enabled: true,
+        configured: true,
+        model,
+        recoveryPending: false,
+        restartRequired: false,
+      })),
+    );
+    vi.mocked(agentConnectionsApi.modelControl).mockResolvedValue({
+      authorized: true,
+      ready: true,
+      pending: false,
+    });
+    vi.mocked(agentConnectionsApi.models).mockResolvedValue([]);
+    vi.mocked(intentRoutingApi.list).mockResolvedValueOnce({
+      groups: [group],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount(true);
+    for (const app of apps) {
+      const row = await screen.findByRole("article", {
+        name: app === "claude" ? "apps.claude" : `apps.${app}`,
+      });
+      expect(
+        await within(row).findByText(group.name, {
+          selector: ".mp-agent-summary-model",
+        }),
+      ).toHaveAttribute("title", group.name);
+      expect(within(row).queryByText(model)).not.toBeInTheDocument();
+    }
   });
   it("connects an installed Agent directly from its switch without a model or provider dialog", async () => {
     mount();

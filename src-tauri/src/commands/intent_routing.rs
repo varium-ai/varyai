@@ -22,6 +22,7 @@ pub(crate) async fn routing_trace_snapshot(
     let db = state.db.clone();
     let inventory = tokio::task::spawn_blocking(move || {
         recorded_gateway_costs(&db, &mut requests);
+        resolve_trace_suppliers(&db, &mut requests);
         let requests = store.live_requests(requests, crate::session_manager::named_session_titles);
         (requests, store.history_days())
     })
@@ -55,11 +56,28 @@ pub(crate) async fn routing_trace_history(
     tokio::task::spawn_blocking(move || {
         let mut history = store.history(Some(&day))?;
         recorded_gateway_costs(&db, &mut history.requests);
+        resolve_trace_suppliers(&db, &mut history.requests);
         Ok::<_, std::io::Error>(history)
     })
     .await
     .map_err(|_| "Routing history unavailable".to_string())?
     .map_err(|_| "Routing history unavailable".to_string())
+}
+
+fn resolve_trace_suppliers(
+    db: &crate::database::Database,
+    requests: &mut [crate::proxy::intent::trace::Route],
+) {
+    let Ok(suppliers) = db.routing_trace_supplier_ids() else {
+        return;
+    };
+    for row in requests {
+        for candidate in &mut row.candidates {
+            if let Some(source) = suppliers.get(&candidate.provider_id) {
+                candidate.source_provider_id = Some(source.clone());
+            }
+        }
+    }
 }
 
 fn recorded_gateway_costs(
@@ -125,6 +143,8 @@ pub(crate) struct ProviderOption {
 struct ModelOption {
     id: String,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    same_as: Option<String>,
     context_window: Option<u64>,
     reasoning_levels: Vec<String>,
     #[serde(flatten)]
@@ -250,6 +270,8 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
                 ModelOption {
                     id: id.into(),
                     name: name.into(),
+                    same_as: crate::services::intent_routing::model_preferences::same_as(entry)
+                        .map(str::to_owned),
                     reasoning_levels:
                         crate::services::intent_routing::effort::Capability::for_provider(
                             provider, id,
@@ -279,6 +301,7 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
             rows.entry(id.into()).or_insert_with(|| ModelOption {
                 id: id.into(),
                 name: id.into(),
+                same_as: None,
                 reasoning_levels: Vec::new(),
                 facts: model_facts(provider, id),
                 context_window: crate::services::intent_routing::context::Metadata::for_provider(
@@ -333,7 +356,10 @@ mod model_picker_tests {
         let provider = crate::provider::Provider::with_id(
             "fixture".into(),
             "Synthetic".into(),
-            serde_json::json!({"modelCatalog":{"models":[{"model":"a"},{"model":"b"}]}, "routingModelFacts":{
+            serde_json::json!({"modelCatalog":{"models":[
+                {"model":"a","modelPreferences":{"sameAs":"vendor/canonical"}},
+                {"model":"b","modelPreferences":{"sameAs":"invalid\nidentity"}}
+            ]}, "routingModelFacts":{
                 "a":{"outputPrice":15,"maker":true,"released":"2026-01-01","images":true,"reasoning":false,"private":"synthetic-private"},
                 "b":{"outputPrice":-10,"maker":false,"released":"synthetic-private","images":"synthetic-private"}
             }}),
@@ -344,9 +370,12 @@ mod model_picker_tests {
         assert_eq!(value[0]["outputPrice"], 15.0);
         assert_eq!(value[0]["released"], "2026-01-01");
         assert_eq!(value[0]["images"], true);
+        assert_eq!(value[0]["id"], "a");
+        assert_eq!(value[0]["sameAs"], "vendor/canonical");
         assert!(value[1].get("outputPrice").is_none());
         assert_eq!(value[1]["released"], "");
         assert!(value[1].get("images").is_none());
+        assert!(value[1].get("sameAs").is_none());
         assert!(!value.to_string().contains("synthetic-private"));
     }
     #[test]
@@ -552,9 +581,6 @@ pub(crate) async fn preview_intent_routing_plan(
         let group = crate::services::intent_routing::membership::resolve(group, &providers)?;
         group.validate()?;
         db.validate_intent_routing_providers(&group)?;
-        if group.routing == crate::services::intent_routing::RoutingStrategy::Manual {
-            return group.preview(None).map_err(String::from);
-        }
         let intent = group
             .parse_classification(&classification)
             .map_err(|_| "intentRouting.invalidOutput")?;
@@ -621,9 +647,6 @@ pub(crate) async fn trial_intent_routing_classification(
         {
             return Err("intentRouting.providerUnavailable".to_string());
         }
-        if group.routing == crate::services::intent_routing::RoutingStrategy::Manual {
-            return Ok((group, None));
-        }
         let target = group
             .classifier_target
             .as_ref()
@@ -633,20 +656,11 @@ pub(crate) async fn trial_intent_routing_classification(
             .cloned()
             .ok_or("intentRouting.providerUnavailable")?;
         let classifier = crate::services::routing_upstreams::first_enabled(&classifier)?;
-        Ok((group, Some(classifier)))
+        Ok((group, classifier))
     })
     .await
     .map_err(|_| "intentRouting.failed")??;
-    match classifier {
-        Some(classifier) => {
-            crate::services::intent_routing::classifier::trial(group, classifier, text).await
-        }
-        None => Ok(crate::services::intent_routing::classifier::TrialResult {
-            plan: group.preview(None)?,
-            intent_id: None,
-            outcome: "manual",
-        }),
-    }
+    crate::services::intent_routing::classifier::trial(group, classifier, text).await
 }
 
 #[derive(Serialize)]

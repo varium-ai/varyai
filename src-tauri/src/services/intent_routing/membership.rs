@@ -92,7 +92,7 @@ pub(crate) fn resolve(
             id: id.clone(),
             provider_id: provider,
             model_id: model,
-            weight: 1,
+            retired_weight: None,
             free: None,
         });
         group.matched.push(id);
@@ -230,30 +230,5 @@ mod tests {
             .iter()
             .any(|member| member.id == id));
         assert!(resolve(restored, &[]).is_ok());
-    }
-
-    #[test]
-    fn a_manual_pattern_pick_survives_storage_and_returns_only_when_its_model_returns() {
-        let provider = Provider::with_id(
-            "vendor".into(),
-            "Synthetic".into(),
-            json!({"modelCatalog":{"models":["future"]}}),
-            None,
-        );
-        let mut group = super::super::tests::fixture();
-        group.matches = vec!["vendor/*".into()];
-        let mut resolved = resolve(group, std::slice::from_ref(&provider)).expect("resolve");
-        let chosen = resolved.matched[0].clone();
-        resolved.routing = super::super::RoutingStrategy::Manual;
-        resolved.manual_member_id = Some(chosen.clone());
-        let stored = definition(resolved);
-        assert_eq!(stored.manual_member_id.as_deref(), Some(chosen.as_str()));
-        assert!(stored.validate().is_ok());
-        let absent = resolve(stored.clone(), &[]).expect("missing catalog");
-        assert!(absent.preview(None).is_err());
-        let returned = resolve(stored, &[provider]).expect("catalog returns");
-        let plan = returned.preview(None).expect("manual");
-        assert_eq!(plan.candidates.len(), 1);
-        assert_eq!(plan.candidates[0].id, chosen);
     }
 }

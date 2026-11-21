@@ -187,7 +187,7 @@ fn discover(providers: impl IntoIterator<Item = Provider>, minimum: usize) -> Ve
                 id: format!("m-{:x}", Sha256::digest(provider.id.as_bytes())),
                 provider_id: provider.id.clone(),
                 model_id: model.into(),
-                weight: 1,
+                retired_weight: None,
                 free: None,
             });
         }
@@ -214,10 +214,11 @@ fn discover(providers: impl IntoIterator<Item = Provider>, minimum: usize) -> Ve
                 rules: vec![],
                 retired_policy: None,
                 auto_generated: true,
-                routing: RoutingStrategy::Smart,
+                template: None,
+                routing: RoutingStrategy::Ordered,
                 quota_order: None,
                 model_alias: Some(alias),
-                manual_member_id: None,
+                retired_manual_member_id: None,
                 context_window: None,
                 affinity: String::new(),
                 first_token: 0,

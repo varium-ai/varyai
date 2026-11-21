@@ -379,7 +379,7 @@ pub(crate) fn catalog(
             let mut model = template.clone();
             model["slug"] = json!(group.alias());
             model["display_name"] = json!(format!("{} · routing group", group.name));
-            model["description"] = json!("VaryAI routing group");
+            model["description"] = model["display_name"].clone();
             model["priority"] = json!(index);
             // Never infer capability from an alias or a model-family name.
             super::context::Metadata::shared(std::iter::empty()).write(&mut model);

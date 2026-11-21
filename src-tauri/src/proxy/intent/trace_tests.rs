@@ -614,8 +614,8 @@ async fn manual_effort_seats_forward_distinct_levels_without_disabling_the_other
         let group = serde_json::from_value(json!({
             "id":"seats", "name":"Synthetic effort seats", "revision":0, "enabled":true,
             "members":[{"id":"low","providerId":"same","modelId":"same-model","effort":"low"}, {"id":"high","providerId":"same","modelId":"same-model","effort":"max"}],
-            "defaultMemberId":"low", "fallbackMemberIds":[], "intentRecognitionEnabled":false, "classifierTarget":null, "classificationBudgetMs":2000, "rules":[],
-            "routing":"manual", "manualMemberId":picked, "off":off
+            "defaultMemberId":picked, "fallbackMemberIds":[], "intentRecognitionEnabled":false, "classifierTarget":null, "classificationBudgetMs":2000, "rules":[],
+            "routing":"ordered", "off":off
         }))?;
         let mut session = Session {
             group,

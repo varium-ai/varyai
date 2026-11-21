@@ -1633,6 +1633,7 @@ fn build_with_token(
             options.retain(|row| !row["model"].as_str().is_some_and(|id| id.starts_with("vary-provider/") || id.starts_with("vary-auto/") || previous.is_some_and(|old| old.model_map.contains_key(id))));
             options.extend(catalog.iter().map(|model| json!({"model":model.id,"label":model.name,"description":"via VaryAI"})));
             put(value, &["modelPicker".into(), "options".into()], Some(json!(options)))?;
+            put(value, &["modelPicker".into(), "replaceBuiltInOptions".into()], Some(json!(true)))?;
             if let Some(available) = value.get_mut("availableModels") {
                 let available = available.as_array_mut().ok_or(FAILED)?;
                 available.retain(|id| !id.as_str().is_some_and(|id| previous.is_some_and(|old| old.model_map.contains_key(id))));
@@ -1763,7 +1764,15 @@ fn build_with_token(
                 })
                 .collect();
         }
-        _ => projections::build(app, &catalog, &base, &token, selected, &mut receipt)?,
+        _ => projections::build(
+            app,
+            &catalog,
+            &base,
+            &token,
+            selected,
+            &mut receipt,
+            previous,
+        )?,
     }
     Ok(receipt)
 }

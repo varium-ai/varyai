@@ -193,54 +193,57 @@ fn context_preferences_round_trip_independently_of_group_capacity() {
 }
 
 #[test]
-fn all_reference_strategies_round_trip_and_manual_plan_ignores_rules_and_fallbacks() {
-    for strategy in [
-        "smart",
-        "ordered",
-        "round_robin",
-        "least_used",
-        "pace",
-        "free_first",
-        "fastest",
-        "weighted",
-        "manual",
-    ] {
+fn active_strategies_round_trip_and_retired_strategies_deserialize_as_ordered() {
+    for strategy in ["ordered", "fastest"] {
         let mut value = serde_json::to_value(fixture()).expect("fixture");
         value["routing"] = json!(strategy);
-        value["manualMemberId"] = json!("balanced");
-        value["members"][0]["weight"] = json!(3);
         let group: RoutingGroup = serde_json::from_value(value).expect("strategy");
         assert!(group.validate().is_ok());
         let saved = serde_json::to_value(&group).expect("saved");
         assert_eq!(saved["routing"], strategy);
-        assert_eq!(saved["members"][0]["weight"], 3);
-        if strategy == "manual" {
-            let plan = group.preview(Some("debug")).expect("manual");
-            assert_eq!(plan.reason, "manual");
-            assert_eq!(plan.candidates.len(), 1);
-            assert_eq!(plan.candidates[0].id, "balanced");
-        }
+        assert!(saved.get("manualMemberId").is_none());
+        assert!(saved["members"][0].get("weight").is_none());
     }
-}
-
-#[test]
-fn old_groups_default_weight_and_invalid_manual_picks_or_weights_are_rejected() {
-    let mut value = serde_json::to_value(fixture()).expect("fixture");
-    value["manualMemberId"] = json!("balanced");
-    assert_eq!(value["members"][0]["weight"], 1);
-    for (path, invalid) in [
-        ("/members/0/weight", json!(0)),
-        ("/members/0/weight", json!(1001)),
-        ("/manualMemberId", json!("missing")),
+    for retired in [
+        "smart",
+        "round_robin",
+        "least_used",
+        "pace",
+        "free_first",
+        "weighted",
+        "manual",
     ] {
-        let mut value = value.clone();
-        value["routing"] = json!("manual");
-        *value
-            .pointer_mut(path)
-            .unwrap_or_else(|| panic!("missing {path}")) = invalid;
-        let parsed = serde_json::from_value::<RoutingGroup>(value);
-        assert!(parsed.is_err() || parsed.is_ok_and(|g| g.validate().is_err()));
+        let mut value = serde_json::to_value(fixture()).expect("fixture");
+        value["routing"] = json!(retired);
+        value["manualMemberId"] = json!("balanced");
+        value["members"][0]["weight"] = json!(3);
+        let group: RoutingGroup = serde_json::from_value(value).expect("retired strategy");
+        assert_eq!(group.routing, RoutingStrategy::Ordered);
+        assert!(group.validate().is_ok());
+        let saved = serde_json::to_value(&group).expect("saved");
+        assert_eq!(saved["routing"], "ordered");
+        assert!(saved.get("manualMemberId").is_none());
+        assert!(saved["members"][0].get("weight").is_none());
     }
+    for template in [
+        "templateSmart",
+        "templateCapability",
+        "templateSpeed",
+        "templateExpiry",
+    ] {
+        let mut value = serde_json::to_value(fixture()).expect("fixture");
+        value["template"] = json!(template);
+        let group: RoutingGroup = serde_json::from_value(value).expect("template");
+        assert!(group.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&group).expect("saved")["template"],
+            template
+        );
+    }
+    assert!(serde_json::to_value(fixture())
+        .expect("saved")
+        .get("template")
+        .is_none());
 }
 
 #[test]
@@ -271,7 +274,7 @@ fn discovery_normalizes_vendor_spelling_without_changing_upstream_ids() {
         .find(|g| g.name == "GPT-5.6 Sol")
         .expect("friendly name");
     assert_eq!(group.alias(), "auto/gpt-5.6-sol");
-    assert_eq!(group.routing, RoutingStrategy::Smart);
+    assert_eq!(group.routing, RoutingStrategy::Ordered);
     assert_eq!(group.members[0].model_id, "openai/GPT_5.6_Sol");
     assert_eq!(group.members[1].model_id, "gpt-5.6-sol");
     assert_eq!(discover_groups(vec![a, b, c]), groups);

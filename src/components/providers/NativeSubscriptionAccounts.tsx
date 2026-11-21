@@ -1,3 +1,4 @@
+import { isWorkBuddySubscription } from "@/config/subscriptionProviders";
 import { useEffect, useRef, useState } from "react";
 import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -338,7 +339,8 @@ export function NativeSubscriptionAccounts({
                       },
                     ]
                   : []),
-                ...(provider !== "chatgpt_api"
+                ...(provider !== "chatgpt_api" &&
+                !isWorkBuddySubscription(provider)
                   ? [
                       {
                         key: "file",

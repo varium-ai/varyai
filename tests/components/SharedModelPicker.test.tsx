@@ -223,6 +223,38 @@ it.each([
   },
 );
 
+it("filters the Agent catalog by each numbered supplier without changing the selected route", () => {
+  const pick = vi.fn();
+  render(
+    <SharedModelPicker
+      variant="agent"
+      models={[
+        {
+          id: "vary-provider/model-original",
+          reference: "gs/vendor/glm",
+          name: "GLM · gs (1)",
+          group: "gs (1)",
+        },
+        {
+          id: "vary-provider/model-copy",
+          reference: "gs-2/vendor/glm",
+          name: "GLM · gs (2)",
+          group: "gs (2)",
+        },
+      ]}
+      selected={[]}
+      onPick={pick}
+    />,
+  );
+  const rail = screen.getByRole("navigation", {
+    name: "agentConnections.modelProviders",
+  });
+  fireEvent.click(within(rail).getByRole("button", { name: "gs (2)" }));
+  expect(screen.queryByRole("radio", { name: "GLM · gs (1)" })).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "GLM · gs (2)" }));
+  expect(pick).toHaveBeenCalledExactlyOnceWith("vary-provider/model-copy");
+});
+
 it("only adds Magpie identity hints for equal labels within the same provider group", () => {
   const { container } = render(
     <SharedModelPicker

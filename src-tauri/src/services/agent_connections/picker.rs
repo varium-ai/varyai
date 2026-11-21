@@ -1,5 +1,6 @@
 use super::{models, Model};
 use crate::proxy::intent::Menu;
+use crate::services::intent_routing::client::aliases::menu_source_labels;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -10,18 +11,21 @@ pub(crate) struct PickerModel {
 }
 
 pub(crate) fn picker_models(menu: &Menu) -> Vec<PickerModel> {
+    let sources = menu_source_labels(menu);
     models(menu)
         .into_iter()
-        .map(|model| {
+        .map(|mut model| {
             let reference = menu
                 .groups
                 .get(&model.id)
                 .and_then(|session| {
                     if model.id.starts_with("vary-provider/") {
-                        session
-                            .targets
-                            .first()
-                            .map(|target| format!("{}/{}", target.provider_id, target.model))
+                        session.targets.first().map(|target| {
+                            if let Some(source) = sources.get(&target.provider_id) {
+                                model.group.clone_from(source);
+                            }
+                            format!("{}/{}", target.provider_id, target.model)
+                        })
                     } else {
                         Some(format!("group/{}", session.group.id))
                     }
@@ -67,14 +71,15 @@ mod tests {
         for (index, (choice, original)) in choices.iter().zip(&before).enumerate() {
             assert_eq!(choice.model.id, original.id);
             assert_eq!(choice.model.name, original.name);
-            assert_eq!(choice.model.group, "gs");
+            let group = format!("gs ({})", index + 1);
+            assert_eq!(choice.model.group, group);
             let serialized = serde_json::to_value(choice)?;
             assert_eq!(serialized["id"], original.id);
             assert_eq!(
                 serialized["name"],
                 format!("GLM-5.3-Flash · gs ({})", index + 1)
             );
-            assert_eq!(serialized["group"], "gs");
+            assert_eq!(serialized["group"], group);
             assert_eq!(
                 serialized["reference"],
                 format!("{}/vendor/glm-5.3-flash", ["gs", "gs-2"][index])

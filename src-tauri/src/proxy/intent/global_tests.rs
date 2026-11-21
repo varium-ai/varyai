@@ -215,6 +215,102 @@ async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
 
 #[tokio::test]
 #[serial_test::serial]
+async fn claude_code_gateway_discovery_uses_the_authenticated_catalog(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu("http://127.0.0.1:0/responses");
+    let alias = group().alias();
+    let model = "synthetic-claude-model";
+    published.models.insert(
+        alias.clone(),
+        MenuModel {
+            alias: alias.clone(),
+            label: "Synthetic Claude model".into(),
+            description: "Synthetic catalog",
+            order: 0,
+        },
+    );
+    runtime.set_global(published, 0)?;
+    let agents = crate::services::agent_connections::APPS
+        .iter()
+        .copied()
+        .filter(|app| *app != "codex")
+        .chain(["trae", "trae-intl"]);
+    for app in agents.clone() {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: format!("synthetic-{app}"),
+                model: alias.clone(),
+                model_map: std::collections::BTreeMap::from([(model.into(), alias.clone())]),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let origin = format!("http://127.0.0.1:{}", info.port);
+    for app in agents {
+        let url = format!("{origin}/connections/{app}/v1/models");
+        let discovery = client
+            .get(format!("{url}?limit=1000"))
+            .bearer_auth(format!("synthetic-{app}"))
+            .send()
+            .await?;
+        if app != "claude" {
+            assert_eq!(discovery.status(), StatusCode::BAD_REQUEST, "{app}");
+            continue;
+        }
+        assert_eq!(discovery.status(), StatusCode::OK);
+        let regular: Value = client
+            .get(&url)
+            .bearer_auth("synthetic-claude")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(regular["data"][0]["id"], model);
+        assert_eq!(discovery.json::<Value>().await?, regular);
+        for query in ["limit=0", "limit=1000&key=synthetic", "limit=1000&limit=1"] {
+            let response = client
+                .get(format!("{url}?{query}"))
+                .bearer_auth("synthetic-claude")
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response.json::<Value>().await?["error"]["code"],
+                "routing_query_unsupported"
+            );
+        }
+        assert_eq!(
+            client
+                .get(format!("{url}?limit=1000"))
+                .send()
+                .await?
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    server.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn workbuddy_readable_picker_ids_and_legacy_ids_reach_the_same_upstream(
 ) -> Result<(), Box<dyn std::error::Error>> {
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
@@ -2341,6 +2437,17 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
 async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
+    use crate::proxy::security::{
+        get_security_runtime, runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    struct RestoreSecurity(SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = RestoreSecurity((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
@@ -2377,7 +2484,10 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
             app: "gemini".into(),
             token: concat!("synthetic", "-local").into(),
             model: group().alias(),
-            model_map: std::collections::BTreeMap::from([("wire-safe".into(), group().alias())]),
+            model_map: std::collections::BTreeMap::from([
+                ("wire-safe".into(), group().alias()),
+                ("Zhong-Wen-Lu-You-Zu".into(), group().alias()),
+            ]),
             visible_models: None,
             files: vec![],
             suspended: false,
@@ -2395,7 +2505,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     let root = format!(
-        "http://127.0.0.1:{}/connections/gemini/v1beta/models/wire-safe",
+        "http://127.0.0.1:{}/connections/gemini/v1beta/models",
         info.port
     );
     let fixture = json!({"contents":[{"role":"user","parts":[{"text":"synthetic"}]}],"vendor_extension":{"preserve":true}});
@@ -2411,29 +2521,41 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
         .await?;
     // Internally constructed legacy menus have no published display catalog.
     assert!(models["models"].is_array());
-    let count = client
-        .post(format!("{root}:countTokens"))
-        .header("x-goog-api-key", concat!("synthetic", "-local"))
-        .json(&fixture)
-        .send()
-        .await?;
-    assert_eq!(count.status(), StatusCode::OK);
-    let count: Value = count.json().await?;
-    assert!(count["totalTokens"].as_u64().is_some());
+    for wire in ["wire-safe", "Zhong-Wen-Lu-You-Zu"] {
+        let count = client
+            .post(format!("{root}/{wire}:countTokens"))
+            .header("x-goog-api-key", concat!("synthetic", "-local"))
+            .json(&fixture)
+            .send()
+            .await?;
+        assert_eq!(count.status(), StatusCode::OK);
+        let count: Value = count.json().await?;
+        assert!(count["totalTokens"].as_u64().is_some());
+        let response = client
+            .post(format!("{root}/{wire}:generateContent"))
+            .header("x-goog-api-key", "synthetic-local")
+            .json(&fixture)
+            .send()
+            .await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Gemini wire alias: {wire}"
+        );
+        let _: Value = response.json().await?;
+        let (uri, headers, body) = rx.recv().await.ok_or("missing request")?;
+        assert_eq!(uri.path(), "/v1beta/models/exact-model:generateContent");
+        assert_eq!(body, fixture);
+        assert!(headers.get("x-goog-api-key").is_none());
+        assert_ne!(
+            headers.get("authorization").and_then(|h| h.to_str().ok()),
+            Some("Bearer synthetic-local")
+        );
+    }
     let response = client
-        .post(format!("{root}:generateContent"))
-        .header("x-goog-api-key", "synthetic-local")
-        .json(&fixture)
-        .send()
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let _: Value = response.json().await?;
-    let (uri, headers, body) = rx.recv().await.ok_or("missing request")?;
-    assert_eq!(uri.path(), "/v1beta/models/exact-model:generateContent");
-    assert_eq!(body, fixture);
-    assert!(headers.get("x-goog-api-key").is_none());
-    let response = client
-        .post(format!("{root}:streamGenerateContent?alt=sse"))
+        .post(format!(
+            "{root}/Zhong-Wen-Lu-You-Zu:streamGenerateContent?alt=sse"
+        ))
         .header("x-goog-api-key", concat!("synthetic", "-local"))
         .json(&fixture)
         .send()
@@ -2449,7 +2571,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
     for query in ["key=synthetic", "alt=sse", "unknown=true"] {
         assert_eq!(
             client
-                .post(format!("{root}:generateContent?{query}"))
+                .post(format!("{root}/wire-safe:generateContent?{query}"))
                 .header("x-goog-api-key", "synthetic-local")
                 .json(&fixture)
                 .send()
@@ -2460,7 +2582,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
     }
     assert_eq!(
         client
-            .post(format!("{root}:generateContent"))
+            .post(format!("{root}/wire-safe:generateContent"))
             .json(&fixture)
             .send()
             .await?

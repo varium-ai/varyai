@@ -21,6 +21,7 @@ const EXPIRED: &str = "nativeSubscription.expired";
 const PROJECT: &str = "nativeSubscription.projectRequired";
 mod antigravity_quota;
 pub(crate) mod provider_import;
+pub(crate) mod workbuddy;
 
 #[cfg(test)]
 mod google_observation_tests;
@@ -53,6 +54,8 @@ pub(crate) struct Account {
     subject: String,
     #[serde(default)]
     id_token: String,
+    #[serde(default)]
+    workbuddy: workbuddy::Identity,
 }
 
 #[derive(Clone, Serialize)]
@@ -84,6 +87,9 @@ impl Account {
     }
     pub(crate) fn token(&self) -> &str {
         &self.access
+    }
+    pub(crate) fn workbuddy_uid(&self) -> &str {
+        &self.workbuddy.uid
     }
     pub(crate) fn claude_dir(&self) -> PathBuf {
         root()
@@ -141,6 +147,8 @@ fn supported(provider: SubscriptionProvider) -> Result<(), String> {
     matches!(
         provider,
         SubscriptionProvider::Claude
+            | SubscriptionProvider::Workbuddy
+            | SubscriptionProvider::WorkbuddyAi
             | SubscriptionProvider::ChatgptApi
             | SubscriptionProvider::GeminiCli
             | SubscriptionProvider::Antigravity
@@ -407,6 +415,18 @@ fn apply_token(account: &mut Account, value: &Value) -> Result<(), String> {
 }
 
 pub(crate) async fn resolve(provider: SubscriptionProvider, id: &str) -> Result<Account, String> {
+    resolve_account(provider, id, None).await
+}
+
+pub(crate) async fn renew_rejected_workbuddy(account: &Account) -> Result<Account, String> {
+    resolve_account(account.provider, &account.id, Some(account)).await
+}
+
+async fn resolve_account(
+    provider: SubscriptionProvider,
+    id: &str,
+    rejected: Option<&Account>,
+) -> Result<Account, String> {
     supported(provider)?;
     // Only rotations for the same binding share a network wait. Store mutations
     // remain short and compare the original credentials before publishing.
@@ -420,28 +440,49 @@ pub(crate) async fn resolve(provider: SubscriptionProvider, id: &str) -> Result<
     if account.reauth_required {
         return Err(EXPIRED.into());
     }
-    if provider == SubscriptionProvider::Claude
-        || account.expires > chrono::Utc::now().timestamp() + 180
-    {
+    let now = chrono::Utc::now().timestamp();
+    if let Some(rejected) = rejected {
+        if account.generation != rejected.generation {
+            return Err(EXPIRED.into());
+        }
+        if account.access != rejected.access && account.expires > now {
+            return Ok(account);
+        }
+    } else if provider == SubscriptionProvider::Claude || account.expires > now + 180 {
         return Ok(account);
     }
     if account.refresh.is_empty() {
+        if rejected.is_none() && provider.is_workbuddy() && account.expires > now {
+            return Ok(account);
+        }
         observe_rejection(&account).await;
         return Err(EXPIRED.into());
     }
-    let mut form = vec![
-        ("grant_type".into(), "refresh_token".into()),
-        ("refresh_token".into(), account.refresh.clone()),
-        ("client_id".into(), account.client_id.clone()),
-    ];
-    if google(provider) {
-        form.push(("client_secret".into(), refresh_client_secret(&account)?));
+    let token = if provider.is_workbuddy() {
+        workbuddy::refresh(&account).await.map_err(str::to_owned)
     } else {
-        form.push(("resource".into(), provider.endpoint().into()));
-    }
-    let token = match token_request(provider, &form).await {
+        let mut form = vec![
+            ("grant_type".into(), "refresh_token".into()),
+            ("refresh_token".into(), account.refresh.clone()),
+            ("client_id".into(), account.client_id.clone()),
+        ];
+        if google(provider) {
+            form.push(("client_secret".into(), refresh_client_secret(&account)?));
+        } else {
+            form.push(("resource".into(), provider.endpoint().into()));
+        }
+        token_request(provider, &form).await
+    };
+    let token = match token {
         Ok(token) => token,
         Err(error) => {
+            if provider.is_workbuddy()
+                && rejected.is_none()
+                && account.expires > now
+                && error != EXPIRED
+            {
+                return Ok(account);
+            }
             if error == EXPIRED {
                 observe_rejection(&account).await;
             }
@@ -467,7 +508,11 @@ pub(crate) async fn resolve(provider: SubscriptionProvider, id: &str) -> Result<
     if !same_credentials(current, &account) {
         return Err(FAILED.into());
     }
-    apply_token(current, &token)?;
+    if provider.is_workbuddy() {
+        workbuddy::apply_token(current, &token)?;
+    } else {
+        apply_token(current, &token)?;
+    }
     let result = current.clone();
     write(accounts).await?;
     Ok(result)
@@ -631,14 +676,19 @@ pub(crate) async fn start(
     };
     registry.insert(id.clone(), flow);
     drop(registry);
-    let prepared = if provider == SubscriptionProvider::Claude {
-        Ok((None, None))
-    } else {
-        prepare_oauth(provider)
-            .await
-            .map(|pending| (Some(pending.url.clone()), Some(pending)))
-    };
-    let (url, pending) = match prepared {
+    let prepared = async {
+        if provider == SubscriptionProvider::Claude {
+            Ok((None, None, None))
+        } else if provider.is_workbuddy() {
+            let (url, state) = workbuddy::start(provider, &login_client).await?;
+            Ok((Some(url), None, Some(state)))
+        } else {
+            let pending = prepare_oauth(provider).await?;
+            Ok((Some(pending.url.clone()), Some(pending), None))
+        }
+    }
+    .await;
+    let (url, pending, workbuddy_state) = match prepared {
         Ok(value) => value,
         Err(error) => {
             flows().lock().await.remove(&id);
@@ -653,11 +703,15 @@ pub(crate) async fn start(
     let flow_id = id.clone();
     let task = tokio::spawn(async move {
         let result = tokio::time::timeout(Duration::from_secs(300), async {
-            match pending {
-                Some(pending) => {
+            match (pending, workbuddy_state) {
+                (_, Some(state)) => {
+                    workbuddy::finish(provider, &state, &login_client, target.as_ref(), &flow_id)
+                        .await
+                }
+                (Some(pending), None) => {
                     finish_oauth(provider, pending, target.as_ref(), &flow_id, &login_client).await
                 }
-                None => claude_login(&flow_id, target.as_ref(), proxy.as_deref()).await,
+                (None, None) => claude_login(&flow_id, target.as_ref(), proxy.as_deref()).await,
             }
         })
         .await
@@ -923,6 +977,7 @@ async fn finish_oauth_query(
         client_id,
         subject: String::new(),
         id_token: String::new(),
+        workbuddy: workbuddy::Identity::default(),
     };
     apply_token(&mut account, &token)?;
     if account.refresh.is_empty() {
@@ -1154,6 +1209,7 @@ async fn claude_login(
         client_id: String::new(),
         subject: String::new(),
         id_token: String::new(),
+        workbuddy: workbuddy::Identity::default(),
     };
     let dir = account.claude_dir();
     tokio::task::spawn_blocking(move || std::fs::create_dir_all(dir))
@@ -1276,6 +1332,7 @@ pub(crate) async fn import(
         client_id: client(provider)?.0,
         subject: String::new(),
         id_token: String::new(),
+        workbuddy: workbuddy::Identity::default(),
     };
     if provider == SubscriptionProvider::Claude {
         account.plan = super::subscription_plan::claude_plan(&value);
@@ -1560,6 +1617,9 @@ fn subscription_model(row: &Value) -> Option<Value> {
 
 pub(crate) async fn models(provider: SubscriptionProvider, id: &str) -> Result<Vec<Value>, String> {
     let account = resolve(provider, id).await?;
+    if provider.is_workbuddy() {
+        return workbuddy::models(&account).await;
+    }
     if provider == SubscriptionProvider::Claude {
         if let Err(error) = claude_identity(&account).await {
             if error == EXPIRED {
@@ -1782,6 +1842,9 @@ pub(crate) async fn quota(
         Err(_) => return Err(FAILED.into()),
     };
     let result = async {
+        if provider.is_workbuddy() {
+            return workbuddy::quota(&account).await;
+        }
         if google(provider) {
             observe_google_plan(&account).await;
             let project = google_project(&account).await?;
@@ -2465,6 +2528,7 @@ mod tests {
             client_id: "fixture-client".into(),
             subject: "fixture-subject".into(),
             id_token: String::new(),
+            workbuddy: workbuddy::Identity::default(),
         };
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("accounts.json");
@@ -2533,6 +2597,7 @@ mod tests {
             client_id: String::new(),
             subject: String::new(),
             id_token: String::new(),
+            workbuddy: workbuddy::Identity::default(),
         };
         let public = serde_json::to_value(account.summary()).expect("summary");
         assert_eq!(public["plan"], "Claude Pro");

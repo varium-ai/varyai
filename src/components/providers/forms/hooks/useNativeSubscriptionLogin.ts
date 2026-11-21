@@ -90,10 +90,20 @@ export function useNativeSubscriptionLogin(
           await api.cancel(next.id);
           return;
         }
-        active.current = next.id;
+        active.current = next.state === "waiting" ? next.id : undefined;
         setFlow(next);
         setStarting(false);
-        if (next.url) await reopen(next.url);
+        if (next.state === "done" && next.account) {
+          await client.invalidateQueries({
+            queryKey: ["native-subscription-accounts", provider],
+          });
+          if (mounted.current && attempt === generation.current)
+            setCompletion(next.account.id);
+        } else if (next.state === "failed") {
+          setError(safeError(next.error));
+        } else if (next.state === "waiting" && next.url) {
+          await reopen(next.url);
+        }
       } catch (cause) {
         if (mounted.current && attempt === generation.current) {
           setStarting(false);
@@ -101,7 +111,7 @@ export function useNativeSubscriptionLogin(
         }
       }
     },
-    [provider, reopen],
+    [client, provider, reopen],
   );
   useEffect(() => {
     if (!flow || flow.state !== "waiting") return;

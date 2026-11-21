@@ -398,6 +398,15 @@ async fn api_provider_id_rename_moves_references_and_preserves_agent_and_transpo
         .iter()
         .find(|p| p.id == saved.id)
         .ok_or("new owner missing")?;
+    let trace_suppliers = db.routing_trace_supplier_ids()?;
+    assert_eq!(
+        trace_suppliers.get(routing_upstreams::execution_identity(current)),
+        Some(&renamed.id)
+    );
+    assert_eq!(
+        trace_suppliers.get(routing_upstreams::execution_identity(reused)),
+        Some(&saved.id)
+    );
     assert_ne!(
         routing_upstreams::execution_identity(current),
         routing_upstreams::execution_identity(reused)

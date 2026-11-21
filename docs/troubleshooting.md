@@ -399,6 +399,30 @@ Verify both a new conversation and a followup after a tool result. The generic
 `routing_upstream_rejected` code alone cannot distinguish this issue from the
 other upstream refusals above.
 
+## An Agent receives HTTP 400 from a WorkBuddy subscription upstream
+
+HTTP 400 with `routing_upstream_rejected` from the WorkBuddy China or
+WorkBuddy AI subscription endpoints can mean two different upstream refusals.
+Older builds discarded the upstream error body, so both surfaced as the
+generic code. The adapter now reads a bounded error body and classifies the
+upstream's fixed numeric code:
+
+- `400 routing_upstream_channel_restricted` (upstream code `11128`) — the
+  subscription endpoint declined this client channel. Use a supported client
+  for the subscription or select a provider that accepts the Agent.
+- `400 routing_upstream_invalid_parameters_rejected` (upstream code `11133`) —
+  unsupported request parameters, usually a tool name outside the upstream's
+  `^[A-Za-z0-9_-]+$` grammar or a schema it cannot validate. The adapter now
+  maps tool names onto the upstream grammar and completes well-defined schema
+  shapes before forwarding; streamed tool calls restore the original names. A
+  remaining `11133` means an unsupported shape the adapter deliberately does
+  not rewrite — adjust that tool's definition.
+
+Source edits do not change an already running VaryAI backend; rebuild and
+restart it before retesting. See the
+[WorkBuddy provider guide](guides/workbuddy.md#subscription-upstream-rejection-codes)
+for the adapted compatibility rules and what stays untouched.
+
 ## Kimi Code desktop update leaves the installed version unchanged
 
 The official Kimi Code desktop download endpoint on `code.kimi.com` redirects to `cdn.kimi.com`. Builds whose updater trusts only the first host can discover a newer version but reject the redirected download before installation. Use a VaryAI build that explicitly trusts both official HTTPS hosts. Archive checksums, application identity, signing team and code-signature verification remain required; do not disable these checks or allow arbitrary redirect hosts.

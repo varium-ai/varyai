@@ -173,7 +173,7 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
     let mut menu = super::global_tests::menu(&format!("http://{address}/v1/chat/completions"));
     let session = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing session")?);
     session.group.levels.clear();
-    session.group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
+    session.group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
     session.targets[0].model = "grok-4.5".into();
     session.group.members[0].model_id = "grok-4.5".into();
     let mut upstream = crate::provider::Provider::with_id(

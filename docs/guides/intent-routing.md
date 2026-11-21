@@ -71,9 +71,7 @@ Routing groups use a table with a full group name that wraps when needed, a comp
 
 Group readiness is based on whether at least one participating member is locally
 available, including members resolved from model patterns. Switched-off members
-do not count. Manual groups count only their selected member (or the default
-member if no manual selection is stored), without silently switching to another
-member. Once the provider catalog has loaded, a group with no ready member shows
+do not count. Once the provider catalog has loaded, a group with no ready member shows
 **No member ready** in the list. A partially available group has no group-level
 warning. In the editor, unavailable members remain selected and removable, with
 separate explanations for a provider missing from configuration, a provider not
@@ -87,21 +85,46 @@ Click the group name, member summary, blank row space or **Edit** to open its ed
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
 
-Choose one of four templates or **Custom** in **Create group**. Template drafts
-hide **Advanced settings** and save with the template's preset settings. The
+Choose one of four templates or **Custom** in **Create group**. Template-created
+groups hide **Advanced settings** during both creation and editing, display the
+template's **Running rules** directly on the dialog, and keep the template's
+preset settings. The
 task-classification draft has no separate member or model-order controls: choose
 a task model directly for each rule, or choose the default model when there is
 no automatic task split. Choose the classifier separately in **Intent told by**.
+For smart groups with rules, the suggested list and saved group contain the
+rule targets shown in the editor. Reusing the same supplier and model across
+rules counts as one member. The hard-task target becomes the default, and the
+remaining targets can serve as fallbacks. Saving a legacy smart group with
+rules applies the same member selection. When there is no split, changing
+the default keeps it as the only member.
+The classifier and rule targets use the same searchable picker layout. Scroll
+within the picker to browse models. Escape closes it and returns focus to its
+button.
+Rule descriptions wrap in full. On narrow forms the model picker sits under
+its rule description.
+Select the information icon beside the classifier to read about task text and
+potential charges. Press Escape to close the explanation.
 The other three templates prefill up to three model members. The member list
 itself shows the starting order. Drag the grip at the left of a row to move it,
 or focus the grip and press Alt+↑/↓. The move buttons are also available. Escape
 cancels an active drag without closing the editor. **Add model** appends another
 eligible model, including another model from the same provider, without
 rearranging existing members. The three-model
-limit applies only to the initial suggestions. Use **Custom** or reopen a saved
-group to edit advanced settings or run a classification trial. Cancel discards
+limit applies only to the initial suggestions. Use **Custom** to edit advanced
+settings or run a classification trial. Cancel discards
 the draft. The chooser waits for the initial model catalog load before opening
 an editor.
+
+Each opening of the template chooser draws new suggestions. Choosing a
+template copies the displayed models into the draft. Its default and fallback
+order follows the template's ranking. All four templates prefer different
+model identities across suppliers.
+The comparison normalizes the configured equivalent model ID or, when no
+equivalent is configured, the catalog model ID. Each selected route keeps its
+exact supplier and model ID. When distinct choices are scarce, another
+supplier can serve the same model as a fallback. The speed template still uses
+one model per supplier.
 
 - **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
   the suggested primary, fallback and cheaper model. Image requests with
@@ -130,16 +153,19 @@ an editor.
   accounts in descending order of weekly allowance percentage left per hour
   until reset. When there is no weekly allowance, a confirmed 5-hour-only
   account uses the same calculation for its short window. A full 5-hour
-  window makes the account unavailable for new selections.
+  window makes the account unavailable for new selections. Select **Apply
+  recommended order** to restore the template's catalog-based fallback
+  order for the models already selected. Live quota still determines
+  request priority.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
-The editor and tray no longer expose a scheduling selector. Existing group
-settings and legacy imports remain readable and retain their saved behavior.
+The editor and tray no longer expose a scheduling selector. Previously stored
+retired strategy values remain readable and normalize to **In order**.
 The request graph shows candidates without strategy labels. Sharing an expiry
 group uses the VaryAI format so the expiry preference survives import.
 
-Row operations track pending state by group ID. Publishing, changing a manual target or deleting a group disables only that group's conflicting controls. Other rows, templates and the toolbar remain available during background synchronization. Saving closes the editor after persistence and keeps only the saved row busy until synchronization finishes. Completion or failure of one operation never releases another operation's controls. Membership and ordering writes are serialized against the latest catalog so concurrent removals and reordering retain all current group IDs. Sorting temporarily disables drag handles while other row actions remain available.
+Row operations track pending state by group ID. Publishing or deleting a group disables only that group's conflicting controls. Other rows, templates and the toolbar remain available during background synchronization. Saving closes the editor after persistence and keeps only the saved row busy until synchronization finishes. Completion or failure of one operation never releases another operation's controls. Membership and ordering writes are serialized against the latest catalog so concurrent removals and reordering retain all current group IDs. Sorting temporarily disables drag handles while other row actions remain available.
 
 Reload only shows a spinning icon on its own button and prevents repeated clicks
 until catalog and list refreshes finish. Management, filtering and group
@@ -173,24 +199,26 @@ The combined list shows at most 32 groups, with saved groups taking priority. Gr
 
 ## Group scheduling
 
-The experimental four-policy UI has been withdrawn. Previously saved experimental
-`policy` metadata is accepted only for reading and omitted from saved/exported
-configuration; it no longer changes planning. The retired `expiring` value is
-read as **In order**. Original rules, members and execution settings remain intact.
+The experimental four-policy UI and the seven retired legacy schedulers (`smart`,
+`round_robin`, `least_used`, `pace`, `free_first`, `weighted`, `manual`) have
+been removed. Previously saved experimental `policy`, member `weight`, and
+`manualMemberId` metadata are accepted only for reading and omitted from saved
+or exported configuration; retired strategy values (`expiring`, `smart`,
+`round_robin`, `least_used`, `pace`, `free_first`, `weighted`, `manual`) are
+read as **In order**. Original rules, members and execution settings remain
+intact.
 
-Automatic groups use the existing Smart scheduler. Saved groups without a scheduler value use their configured model order. The following execution modes also remain supported for older groups and compatible imports:
+Automatic groups and saved groups without a scheduler value use **In order**.
+The runtime supports two scheduling modes plus optional expiry sorting:
 
-- **Smart:** defer quota windows at 90% and 98% utilization. Among accounts with room, prefer the largest window's earliest hourly reset, then smaller windows. Spent accounts with usable credits precede those without. Unknown/stale quota stays stable behind known healthy accounts.
-- **In order:** try the configured default and approved fallbacks in order.
-- **In turn:** rotate the first candidate for each unbound selection.
-- **Least used:** compare reported quota utilization, then recently routed tokens with a one-hour half-life. Usable credits break ties among spent accounts.
-- **Use before reset:** compare remaining allowance per hour until reset, using day-or-longer windows when present and the tightest budget. Healthy rates within ten percent share a band and prefer lower recent token use. Low/spent tiers follow Smart. Unknown official allowance assumes a full week; an API key without windows has no allowance pace.
-- **Free first:** explicitly free models first, then paid/unknown models, each in configured order. Use the model catalog's boolean `free`/`is_free`/`isFree` metadata, a complete explicit zero-price table (`pricing`/`price` with input, output, cache-read and cache-write prices), or a nullable member override. A member override takes precedence; incomplete prices stay unknown. Never infer free usage from names or subscription tiers.
-- **Speed first:** compare streamed first-content latency plus the estimated time to write 200 tokens. Output rate excludes hidden reasoning; buffered bursts and non-streaming replies do not manufacture a speed. Ten-percent bands retain configured order. Every fifth selection with both measured and unmeasured awake routes puts an unmeasured route first, rotating probes. These are ordinary user requests, not extra inference calls.
-- **By weight:** smooth weighted rotation with member weights from 1 to 1000 (default 1). Cooling-down members sit out. Charge the route that actually answered, including affinity, rule preference and failover.
-- **Manual:** select a member directly in the compact row or editor. Pause intent classification and rule selection and disable cross-member fallback, even for 429/5xx responses. Only the chosen member must be executable; unavailable inactive members or a paused classifier do not block the group. Menu reasoning/image capabilities describe the chosen member. Keep existing continuations on their original account rather than moving opaque state to a new member. Previously stored rules remain in the group.
+- **In order:** try the configured default and approved fallbacks in order (used by **Strong models for hard tasks, cheaper models for easy tasks**, **Most capable first**, **Expiring allowance first**, and **Custom**).
+- **Speed first (`fastest`):** compare streamed first-content latency plus the estimated time to write 200 tokens (used by **Fastest first**). Output rate excludes hidden reasoning; buffered bursts and non-streaming replies do not manufacture a speed. Ten-percent bands retain configured order. Every fifth selection with both measured and unmeasured awake routes puts an unmeasured route first, rotating probes. These are ordinary user requests, not extra inference calls.
 
-All strategies retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first except in Manual mode. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
+Both modes retain the final ready/resting partition. Only approved candidates participate, and an intent rule's selected member remains first. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
+
+The live routing graph explains when a request must continue at the same
+upstream, or when conversation affinity gives the previous upstream priority.
+Its candidate count describes the current request.
 
 Expiry sorting is optional group configuration. It applies when the gateway
 can select a new destination. A fresh, positive Sub2API subscription allowance
@@ -211,9 +239,7 @@ without a reset time cannot become a pace score. Sub2API observations are
 scoped by relay origin and API key. Wallet balances and credential expiry
 carry no priority. [Sub2API usage implementation](https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/handler/gateway_handler.go)
 
-Other quota and credit data comes from the official fixed `/backend-api/wham/usage` endpoint, response headers and supported rate-limit events. Samples expire after five minutes or their reset. Recent token counts and exact-account/model speed averages are in-memory, bounded by published sessions, and reset on restart. Speed samples use a twenty-minute half-life and expire after an hour. Preparation and telemetry failures never interrupt forwarding; no database access or usage-history scan is added to selection. Direct entries and groups share telemetry. Compatible refreshes preserve bindings and telemetry across strategy, weight, cost and manual-pick changes; destination/account changes do not inherit them.
-
-This aligns the nine strategy algorithms for the supported Codex transport with the reference implementation revision `508911e431f752052d1c8374f89de7ec75f291ac` (`internal/routes/strategies.go`, `fastest.go`, `round.go`, and `internal/gateway/speed.go`). It does not add the reference implementation's other-client allowance adapters, reset-card redemption, nested groups or per-turn affinity modes.
+Other quota data comes from the official fixed `/backend-api/wham/usage` endpoint, response headers and supported rate-limit events. Samples expire after five minutes or their reset. Exact-account/model speed averages are in-memory, bounded by published sessions, and reset on restart. Speed samples use a twenty-minute half-life and expire after an hour. Preparation and telemetry failures never interrupt forwarding; no database access or usage-history scan is added to selection. Direct entries and groups share telemetry. Compatible refreshes preserve bindings and telemetry across strategy and cost changes; destination/account changes do not inherit them.
 
 ## Official account discovery and cache
 
@@ -249,7 +275,7 @@ Only test text and enabled rule descriptions are sent with the classifier's own 
 
 Independent privacy inspection runs even if business auditing is disabled. Enabled audit/allow rules become redaction rules; block rules remain blocking. Both text and descriptions are inspected. Redaction precedes Unicode-safe truncation to 4,000 scalar values (first 3,000 and last 1,000). Limits: 32 KiB payload, 64 KiB response, 4 KiB classification content, four concurrent trials and the configured 500–5,000 ms deadline including preparation. No redirects or retries. Detection cannot guarantee finding every secret; use synthetic examples.
 
-Only strict `{ "intentId": "enabled-rule-id" }` or `{ "intentId": null }` output is accepted. Unknown IDs, extra fields, tool calls, refusals and truncated responses are rejected. Errors, timeout and privacy rejection return the default candidate order and a fixed reason, never raw responses. VaryAI does not persist trial text or results.
+The network classifier accepts a single `{ "intentId": "enabled-rule-id" }` or `{ "intentId": null }` object, with optional surrounding Markdown code fences. Unknown IDs, extra fields, explanatory prose, tool calls, refusals and truncated responses are rejected. Errors, timeout and privacy rejection return the default candidate order and a fixed reason, never raw responses. VaryAI does not persist trial text or results.
 
 The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
 
@@ -277,8 +303,11 @@ In **Settings → Routing → Local routing → Codex**, enable the single Codex
 
 One dedicated `varyai` provider and one external Codex-native catalog expose both kinds of entries:
 
-- `vary-provider/model-<hash>`: **exact model ID · provider name**, with description **VaryAI direct provider model**. The hash is derived from the exact provider ID and model ID. Each entry has one isolated target and never runs intent classification or another provider's fallback.
-- `auto/<model>` for newly discovered groups, or the existing `vary-auto/<group-id>` alias for older/manual groups: **group name · routing group**, with description **VaryAI routing group**. Selecting it uses that group's strategy, approved candidates and optional intent classification. A saved group remains a routing group even when it has only one member.
+- `vary-provider/model-<hash>`: **exact model ID · provider name**. The hash is derived from the exact provider ID and model ID. Each entry has one isolated target and never runs intent classification or another provider's fallback.
+- `auto/<model>` for newly discovered groups, or the existing `vary-auto/<group-id>` alias for older/manual groups: **group name · routing group**. Selecting it uses that group's strategy, approved candidates and optional intent classification. A saved group remains a routing group even when it has only one member.
+
+Hover over a VaryAI entry in the Codex desktop picker to read its complete
+label, including the provider or routing suffix and any disambiguation number.
 
 The menu combines **available enabled global provider models and executable routing groups**. Direct entries retain each exact upstream identity; selecting one never silently substitutes a different provider. Group-only model unlisting withdraws a direct entry without removing the group target. Unsupported transports, unavailable credentials and non-executable entries are omitted, with a count in the UI; discovery is not evidence of inference permission. At most 256 entries are published, reserving room for the routing groups. Agents with a starting-model control choose their own default from this shared menu; native-picker applications choose the chat model inside the application. Background catalog refresh preserves the starting choice while explicit selection changes it; provider creation and editing do not select an Agent or change another Agent's default. Existing Codex conversations may retain their earlier native configuration.
 
@@ -339,7 +368,14 @@ An observed, successfully completed plain-history turn has soft affinity: as its
 
 ## Continuation recovery after restart
 
-Normal Codex model-menu/native and authenticated external gateway requests persist **observed ownership**, not conversation text. A new runtime or menu reconnect can restore response IDs, tool-call IDs, item references, opaque-content hashes and conversation pins for the same authenticated consumer and alias. Codex Responses follows Magpie's upstream-validation approach: still-available exact destinations retain their ownership when other group members change, and unknown state is forwarded intact for upstream validation. Other clients require the complete destination set to match. Target reordering remaps owners by fingerprint rather than array position. Native ingress scopes recovery by the request workspace, falling back to the authorization header, following Magpie's account-scoping convention. This namespace is separate from upstream authentication; there is no local authentication lease. Temporary editor execution remains memory-only.
+Normal Codex model-menu/native and authenticated external gateway requests persist **observed ownership**, not conversation text. A new runtime or menu reconnect can restore response IDs, tool-call IDs, item references, opaque-content hashes and conversation pins for the same authenticated consumer and alias. Codex Responses follows Magpie's upstream-validation approach: still-available exact destinations retain their ownership when other group members change, and unknown state is forwarded intact for upstream validation. Strict recovery requires the complete destination set to match. Target reordering remaps owners by fingerprint rather than array position. Native ingress scopes recovery by the request workspace, falling back to the authorization header, following Magpie's account-scoping convention. This namespace is separate from upstream authentication; there is no local authentication lease. Temporary editor execution remains memory-only.
+
+WorkBuddy and WorkBuddy AI can continue a self-contained text conversation
+after a member is removed from a saved group. An exact surviving destination
+keeps its recorded bindings. If the previous destination was removed and the
+saved scope has no tool-call or opaque state, the remaining members can be
+considered for a fresh route. Requests carrying sealed or incomplete history
+still require the original continuation checks.
 
 Stable conversation identifiers include `prompt_cache_key`, `session_id`, `session-id`, `thread-id`, `thread_id` and `x-conversation-id`, in that priority order. Without a name, Responses requests can locate a saved conversation from known response/tool/item/opaque references; conflicting matches remain unusable. Destination fingerprints include the exact provider/model, endpoint, static authentication/configuration and verified official account provenance. Static API-key changes invalidate recovery. Ordinary official access-token rotation can preserve durable provenance when the same verified identity is freshly prepared; replacing or reauthenticating a managed account changes its authentication generation. Missing provenance disables durable recovery rather than weakening the checks.
 

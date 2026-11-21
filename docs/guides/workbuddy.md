@@ -48,6 +48,91 @@ Use a disposable profile and explicitly synthetic message content when testing. 
 
 New suppliers are saved as inactive alternatives. Creating a supplier does not apply it to WorkBuddy; select it explicitly to replace the managed catalog.
 
+## Use WorkBuddy as a model supplier
+
+In **Providers → Add → Subscription**, select **WorkBuddy** for China or
+**WorkBuddy AI** for the international edition. Complete the browser sign-in,
+choose the available models, then save the provider. Use the models through a
+connected Agent or assign them to a routing group. See the
+[subscription provider guide](subscription-providers.md#account-setup).
+
+## Subscription upstream rejection codes
+
+The WorkBuddy China and WorkBuddy AI subscription endpoints validate each
+request before inference. Two documented upstream refusals reach an Agent as
+precise local codes instead of the generic `routing_upstream_rejected`:
+
+- `400 routing_upstream_channel_restricted` (upstream code `11128`) — the
+  subscription endpoint declined this client channel. Use a client supported
+  by the subscription, or select a provider that authorizes the Agent. For
+  example, Tencent Cloud documents Claude Code access with a separate Token
+  Plan API key in its [Claude Code setup guide](https://cloud.tencent.com/document/product/1823/130070).
+- `400 routing_upstream_invalid_parameters_rejected` (upstream code `11133`) —
+  unsupported request parameters, typically a tool name outside the upstream's
+  `^[A-Za-z0-9_-]+$` grammar or a parameter schema it cannot validate.
+
+The proxy maps unsupported tool names to ASCII letters, digits, underscores
+and dashes. When two names collide, a numeric suffix keeps them distinct.
+The same mapping applies to named choices and conversation history. Before
+the Agent receives a reply, the proxy restores its original tool names.
+
+Both editions share the same request adapter. Chat requests also receive the
+WorkBuddy CLI client identity, including the edition name in the User-Agent
+and the bundled OpenAI SDK headers. Known channel lines are rewritten before
+the first send, and a generic `You are <agent|assistant> powered by ...` opener
+in a system or assistant message receives the measured comma. A documented `11128` refusal is retried first with the measured opener comma,
+then once by wrapping leading system text in `<instructions>` tags and merging it into the first user turn. The default system message stays first. A
+documented `11153` refusal is retried once after inserting an empty assistant
+separator between a tool result and the following user message. A repair that
+passes is remembered for that system text or model, so the next matching Chat
+request applies it before the first send. A native Messages rejection whose
+fixed code is `11159` is retried once without thinking blocks. The client still
+receives only the fixed error carrier if that retry fails. The retry reads only the fixed numeric
+code and never echoes upstream text. Codes `11140`, `11158`, and `14018` also
+return fixed carriers for a restricted account, a missing model entitlement,
+and exhausted quota. Unknown numeric codes stay unclassified. A Chat request naming `reasoning.effort`
+keeps that effort; only a request naming neither effort field, with more than
+1024 output tokens, receives the selected model's configured default when that
+default is one of the model's listed reasoning levels. A default outside that
+list is left off.
+
+The Chat opener scan uses UTF-8 boundaries. Incomplete openers and surrounding
+text pass through intact, including when a later opener in the same message
+receives the comma.
+
+Conversation and turn identifiers are 32 hexadecimal characters derived
+with a process-local salt and the account scope. WorkBuddy AI also carries the client's `chat_request_send` growth event in
+`extra_vars`, keyed by the conversation id. WorkBuddy China does not send that
+event. The event contains the model id, the catalog display name when one is
+available, and the last user input length. It does not copy credentials or
+tool results.
+
+A Chat stream whose text is only the upstream content-filter sentence has that
+sentence removed before the Agent sees it. The finish reason, usage, tool calls,
+and any other reply text stay intact. Anthropic Messages replies are not
+rewritten this way.
+
+After a WorkBuddy AI Chat stream ends, VaryAI posts the client's activity
+batches to `/v2/report`. The machine id is a stable hash; the hostname and
+username are not sent. CPU model and total memory are included when the local
+system reports them, and left empty when it does not. `requestModelName` uses the catalog display name when
+the routed model has one, and otherwise the model ID. A step that ends in tool
+calls reports the message only; request completion events wait for the step
+that ends the turn. A failed report is dropped and never delays or changes the
+Chat reply. WorkBuddy China does not send these reports.
+
+For the outbound tool schema, the adapter converts tuple items to alternatives,
+infers enum types, and normalizes NUL regex escapes. When it combines simple
+object alternatives at the root, only fields required in every alternative
+remain required. Branches with additional constraints or unresolved references
+retain their combinator. Tool implementations should validate arguments against
+their original schemas. The compatibility cases come from the
+[Magpie WorkBuddy tool tests](https://github.com/magpie-community/plugins/blob/2ecc2b6754562cea4c855d3b3a01153bb96c98de/packages/workbuddy/tools.test.mjs).
+
+Upstream error bodies are classified from fixed numeric metadata only and are
+never echoed, logged or forwarded. The client carrier contains a fixed phrase
+and the numeric code, and never a substring of the upstream response.
+
 ## Daily check-in
 
 The WorkBuddy page offers an account selector and **Check in now** for WorkBuddy China. **Add account** opens WorkBuddy's official browser sign-in; repeat it to authorize independent accounts. Choose an account before claiming its reward or changing its automatic check-in switch. Adding an API supplier does not authorize a check-in account. WorkBuddy AI's international campaign is outside this integration.

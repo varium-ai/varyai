@@ -15,9 +15,39 @@ use serde_json::{json, Value};
 use std::{pin::Pin, sync::Arc, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+mod workbuddy;
+
+/// Classify a subscription upstream rejection from fixed numeric metadata
+/// only. Upstream message text is never read, echoed, or logged.
+pub(in crate::proxy) fn rejection_code(
+    provider: &Provider,
+    status: u16,
+    bytes: &[u8],
+) -> Option<&'static str> {
+    if status != 400
+        || !crate::services::subscription_provider::binding(provider)?
+            .provider
+            .is_workbuddy()
+    {
+        return None;
+    }
+    workbuddy::rejection_code(bytes)
+}
+
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 fn invalid() -> ProxyError {
     ProxyError::TransformError("Subscription response is unavailable".into())
+}
+
+/// A configured default is sent only when the model lists that level, or lists
+/// none. A level outside the model's list is left off.
+fn catalog_default_effort(row: Option<&Value>) -> Option<&str> {
+    let row = row?;
+    let effort = row["defaultReasoningLevel"].as_str()?;
+    let allowed = row["reasoningLevels"]
+        .as_array()
+        .is_none_or(|levels| levels.iter().any(|level| level.as_str() == Some(effort)));
+    allowed.then_some(effort)
 }
 fn chatgpt_body(mut body: Value) -> Result<Value, ProxyError> {
     for key in [
@@ -83,7 +113,7 @@ pub(crate) fn specialized(provider: &Provider) -> bool {
                 | SubscriptionProvider::ChatgptApi
                 | SubscriptionProvider::GeminiCli
                 | SubscriptionProvider::Antigravity
-        )
+        ) || binding.provider.is_workbuddy()
     })
 }
 fn envelope(
@@ -117,6 +147,7 @@ pub(crate) async fn forward(
     protocol: Protocol,
     payload: &Value,
     endpoint: &str,
+    caller_headers: &HeaderMap,
     session: Option<&str>,
     shadow: Arc<super::providers::gemini_shadow::GeminiShadowStore>,
     history: Arc<super::providers::codex_chat_history::CodexChatHistoryStore>,
@@ -168,11 +199,60 @@ pub(crate) async fn forward(
     let source_protocol = match binding.provider {
         SubscriptionProvider::Claude => Protocol::Anthropic,
         SubscriptionProvider::ChatgptApi | SubscriptionProvider::XaiOauth => Protocol::Responses,
+        service if service.workbuddy_messages(&request.model) => Protocol::Anthropic,
+        service if service.is_workbuddy() => Protocol::Chat,
         _ => Protocol::Gemini,
     };
     let context =
         super::providers::transform_codex_chat::build_codex_tool_context_from_request(&payload);
-    let source = if binding.provider == SubscriptionProvider::XaiOauth {
+    let source = if binding.provider.is_workbuddy() {
+        let body = if protocol == source_protocol {
+            payload.clone()
+        } else {
+            ir::build::request(&request, source_protocol)?
+        };
+        let catalog_row = provider
+            .settings_config
+            .pointer("/modelCatalog/models")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.iter().find(|row| row["model"] == request.model));
+        let default_effort = catalog_default_effort(catalog_row);
+        let model_name = catalog_row
+            .and_then(|row| row["displayName"].as_str())
+            .filter(|name| !name.is_empty());
+        let (response, names) = workbuddy::send(
+            &client,
+            account.as_ref().ok_or_else(invalid)?,
+            source_protocol,
+            body,
+            session,
+            caller_headers,
+            protocol == Protocol::Anthropic && endpoint.ends_with("?beta=true"),
+            default_effort,
+            model_name,
+        )
+        .await?;
+        if streaming && protocol == source_protocol && names.is_empty() {
+            return Ok(ProxyResponse::Reqwest(response));
+        }
+        let status = response.status();
+        let headers = response.headers().clone();
+        let mapped = response.bytes_stream().map(|chunk| {
+            chunk.map_err(|_| std::io::Error::other("Subscription stream interrupted"))
+        });
+        if streaming && protocol == source_protocol {
+            return Ok(ProxyResponse::streamed(
+                status,
+                headers,
+                workbuddy::restore_tool_names(Box::pin(mapped), names, source_protocol),
+            ));
+        }
+        if names.is_empty() {
+            Box::pin(mapped) as ByteStream
+        } else {
+            workbuddy::restore_tool_names(Box::pin(mapped), names, source_protocol)
+        }
+    } else if binding.provider == SubscriptionProvider::XaiOauth {
         let body = if protocol == Protocol::Responses {
             payload.clone()
         } else {
@@ -644,6 +724,16 @@ for event in [{'type':'message_start','message':{'id':'fixture-reply','role':'as
             .any(|part| matches!(part,ir::Part::Text{text,..} if text=="synthetic continuation")));
         assert!(std::fs::read_dir(home.join("projects"))?.next().is_none());
         Ok(())
+    }
+    #[test]
+    fn catalog_default_effort_must_be_one_of_the_listed_levels() {
+        let listed = json!({"defaultReasoningLevel":"high","reasoningLevels":["low","high"]});
+        let rejected = json!({"defaultReasoningLevel":"max","reasoningLevels":["low","high"]});
+        let unlisted = json!({"defaultReasoningLevel":"medium"});
+        assert_eq!(catalog_default_effort(Some(&listed)), Some("high"));
+        assert_eq!(catalog_default_effort(Some(&rejected)), None);
+        assert_eq!(catalog_default_effort(Some(&unlisted)), Some("medium"));
+        assert_eq!(catalog_default_effort(None), None);
     }
     #[test]
     fn claude_history_keeps_roles_tool_links_images_and_thinking() {

@@ -94,6 +94,16 @@ impl Database {
         model: &str,
         now: i64,
     ) -> Result<Option<Grant>, GatewayError> {
+        self.authorize_gateway_agent_model(app, model, None, now)
+    }
+
+    fn authorize_gateway_agent_model(
+        &self,
+        app: &str,
+        model: &str,
+        alias: Option<&str>,
+        now: i64,
+    ) -> Result<Option<Grant>, GatewayError> {
         let conn = self
             .extension_connection()
             .lock()
@@ -124,7 +134,7 @@ impl Database {
         let policy: KeyPolicy = serde_json::from_str(&raw).map_err(|_| GatewayError::Storage)?;
         if model.is_empty()
             || model.len() > 200
-            || (!policy.all_models && !policy.models.iter().any(|m| m == model))
+            || (!policy.all_models && !policy.models.iter().any(|m| m == model || alias == Some(m)))
         {
             return Err(GatewayError::Forbidden);
         }
@@ -145,7 +155,7 @@ impl Database {
             id,
             window,
             agent: app.into(),
-            model: model.into(),
+            model: alias.unwrap_or(model).into(),
             upstream_model: GatewayUpstreamModel::default(),
         }))
     }
@@ -270,6 +280,15 @@ fn route_agent(path: &str) -> Option<&str> {
     None
 }
 
+#[derive(Clone)]
+struct AuthorizedCodexModel(String);
+
+pub(crate) fn codex_model_changed(extensions: &http::Extensions, body: &serde_json::Value) -> bool {
+    extensions
+        .get::<AuthorizedCodexModel>()
+        .is_some_and(|expected| body["model"].as_str() != Some(expected.0.as_str()))
+}
+
 pub async fn enforce_agent(
     State(state): State<ProxyState>,
     request: Request,
@@ -317,10 +336,33 @@ pub async fn enforce_agent(
                 .and_then(|v| v["model"].as_str().map(str::to_owned))
         })
         .unwrap_or_default();
+    let managed_codex = match path.as_str() {
+        "/backend-api/codex/responses" | "/backend-api/codex/responses/compact" => true,
+        "/intent/v1/responses" => {
+            let token = parts
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "));
+            match state.intent_runtime.menu_publication() {
+                Ok(menu) => menu.is_some_and(|menu| token == Some(menu.token.as_str())),
+                Err(_) => return super::ingress::error(GatewayError::Storage),
+            }
+        }
+        _ => false,
+    };
+    let (alias, expected) = if managed_codex {
+        match state.intent_runtime.native.policy_model(&model) {
+            Ok((alias, resolved)) => (alias, Some(AuthorizedCodexModel(resolved))),
+            Err(_) => return super::ingress::error(GatewayError::Storage),
+        }
+    } else {
+        (None, None)
+    };
     let db = state.db.clone();
     let lookup = app.clone();
     let grant = match tokio::task::spawn_blocking(move || {
-        db.authorize_gateway_agent(&lookup, &model, Utc::now().timestamp())
+        db.authorize_gateway_agent_model(&lookup, &model, alias.as_deref(), Utc::now().timestamp())
     })
     .await
     {
@@ -330,6 +372,9 @@ pub async fn enforce_agent(
     };
     if let Some(grant) = &grant {
         parts.extensions.insert(grant.upstream_model.clone());
+        if let Some(expected) = expected {
+            parts.extensions.insert(expected);
+        }
     }
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
@@ -353,6 +398,7 @@ pub struct GatewayModel {
     pub agent: String,
     pub provider: String,
     pub model: String,
+    pub name: String,
 }
 #[derive(Serialize)]
 pub struct GatewayCatalog {
@@ -432,6 +478,7 @@ pub fn catalog(db: &Database) -> Result<GatewayCatalog, AppError> {
             models.extend(ids.into_iter().map(|model| GatewayModel {
                 agent: id.into(),
                 provider: provider.name.clone(),
+                name: model.clone(),
                 model,
             }));
         }
@@ -444,6 +491,7 @@ pub fn catalog(db: &Database) -> Result<GatewayCatalog, AppError> {
             .map(|group| GatewayModel {
                 agent: "global".into(),
                 provider: group.name.clone(),
+                name: group.name.clone(),
                 model: group.alias(),
             }),
     );

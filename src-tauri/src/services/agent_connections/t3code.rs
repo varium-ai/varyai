@@ -190,6 +190,7 @@ mod tests {
         assert_eq!(config["model"].as_str(), Some("Example"));
         let catalog: Value = serde_json::from_str(&read(&home.join("models.json"))?.ok_or(FAILED)?)
             .map_err(|_| FAILED)?;
+        assert_eq!(catalog["models"][0]["description"], "Example");
         assert!(
             catalog["models"]
                 .as_array()

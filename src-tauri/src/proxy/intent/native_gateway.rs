@@ -785,12 +785,12 @@ mod tests {
     #[test]
     fn merge_preserves_official_entries_and_adds_vary_aliases() {
         let official = json!({
-            "models": [{"slug": "gpt-5", "display_name": "Official"}],
+            "models": [{"slug": "gpt-5", "display_name": "Official", "description": "Official summary"}],
             "account": "synthetic"
         });
         let vary = json!({
             "models": [
-                {"slug": "vary-auto/development", "display_name": "Vary"},
+                {"slug": "vary-auto/development", "display_name": "Vary", "description": "Vary"},
                 {"slug": "gpt-5", "display_name": "duplicate"}
             ]
         });
@@ -798,7 +798,9 @@ mod tests {
             merge_catalogs(official, &vary, &CatalogPolicy::default()).expect("valid catalogs");
         assert_eq!(merged["account"], "synthetic");
         assert_eq!(merged["models"].as_array().map(Vec::len), Some(2));
+        assert_eq!(merged["models"][0]["description"], "Official summary");
         assert_eq!(merged["models"][1]["slug"], "vary-auto/development");
+        assert_eq!(merged["models"][1]["description"], "Vary");
     }
 
     #[test]

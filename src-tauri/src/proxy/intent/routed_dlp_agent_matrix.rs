@@ -119,7 +119,7 @@ async fn matrix(protocol: Protocol) -> Result<(), Box<dyn std::error::Error>> {
     let mut menu = super::global_tests::menu(&format!("http://{address}{endpoint}"));
     let session = Arc::make_mut(menu.groups.values_mut().next().ok_or("session")?);
     session.group.levels.clear();
-    session.group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
+    session.group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
     let base = if protocol == Protocol::Gemini {
         format!("http://{address}")
     } else {

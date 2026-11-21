@@ -28,10 +28,7 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
-    async fn new(
-        windows: [Option<u64>; 2],
-        manual: bool,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    async fn new(windows: [Option<u64>; 2]) -> Result<Self, Box<dyn std::error::Error>> {
         let security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
         crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -75,10 +72,6 @@ impl Fixture {
         }))?;
         group.rules.clear();
         group.fallback_member_ids = vec!["strong".into()];
-        if manual {
-            group.routing = crate::services::intent_routing::RoutingStrategy::Manual;
-            group.manual_member_id = Some("balanced".into());
-        }
         let targets = group
             .members
             .iter()
@@ -153,7 +146,7 @@ impl Fixture {
 #[serial_test::serial]
 async fn growing_plain_history_reselects_but_response_references_remain_bound(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = Fixture::new([Some(2048), Some(16000)], false).await?;
+    let fixture = Fixture::new([Some(2048), Some(16000)]).await?;
     let first = fixture
         .send(json!({"input":"short"}), "growing")
         .await
@@ -207,7 +200,7 @@ async fn growing_plain_history_reselects_but_response_references_remain_bound(
 #[serial_test::serial]
 async fn overflow_advances_only_to_members_with_room_and_rate_errors_are_not_overflow(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = Fixture::new([Some(2048), Some(16000)], false).await?;
+    let fixture = Fixture::new([Some(2048), Some(16000)]).await?;
     let value = fixture
         .send(json!({"input":"short","instructions":"overflow"}), "retry")
         .await
@@ -267,31 +260,15 @@ async fn overflow_advances_only_to_members_with_room_and_rate_errors_are_not_ove
 
 #[tokio::test]
 #[serial_test::serial]
-async fn unknown_capacity_stays_eligible_and_manual_selection_never_moves(
-) -> Result<(), Box<dyn std::error::Error>> {
-    for manual in [false, true] {
-        let fixture = Fixture::new(
-            [if manual { Some(2048) } else { None }, Some(16000)],
-            manual,
-        )
+async fn unknown_capacity_stays_eligible() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new([None, Some(16000)]).await?;
+    let value = fixture
+        .send(json!({"input":"x".repeat(12000)}), "synthetic")
+        .await
+        .json::<Value>()
         .await?;
-        let value = fixture
-            .send(json!({"input":"x".repeat(12000)}), "synthetic")
-            .await
-            .json::<Value>()
-            .await?;
-        assert_eq!(value["model"], "balanced-model");
-        if manual {
-            let before = fixture.models().len();
-            let response = fixture
-                .send(json!({"input":"short","instructions":"overflow"}), "manual")
-                .await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            let _ = response.bytes().await?;
-            assert_eq!(fixture.models().len(), before + 1);
-        }
-        fixture.server.stop().await?;
-    }
+    assert_eq!(value["model"], "balanced-model");
+    fixture.server.stop().await?;
     Ok(())
 }
 
@@ -299,7 +276,7 @@ async fn unknown_capacity_stays_eligible_and_manual_selection_never_moves(
 #[serial_test::serial]
 async fn pending_tools_do_not_become_soft_affinity_after_json_completion(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = Fixture::new([Some(2048), Some(16000)], false).await?;
+    let fixture = Fixture::new([Some(2048), Some(16000)]).await?;
     let first = fixture
         .send(json!({"input":"short","instructions":"tool"}), "tool-turn")
         .await;

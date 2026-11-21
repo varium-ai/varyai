@@ -97,13 +97,7 @@ fn request_spec(
     stream: bool,
 ) -> Result<(url::Url, Value, HeaderMap), ProbeOutcome> {
     let mut url = base.clone();
-    let prefix = base.path().trim_end_matches('/');
-    let prefix = prefix
-        .strip_suffix("/v1beta")
-        .or_else(|| prefix.strip_suffix("/v1"))
-        .unwrap_or(prefix)
-        .to_owned();
-    url.set_path(&prefix);
+    let base_path = base.path().trim_end_matches('/');
     let prompt = format!("Reply with exactly {MARKER}.");
     let mut headers = HeaderMap::new();
     let auth = if format == "anthropic"
@@ -121,15 +115,23 @@ fn request_spec(
     headers.insert(auth.0, value);
     let body = match format {
         "openai_chat" => {
-            url.set_path(&format!("{prefix}/v1/chat/completions"));
+            url.set_path(&openai_probe_path(base_path, "/chat/completions"));
             json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":OUTPUT_TOKEN_LIMIT})
         }
         "openai_responses" => {
-            url.set_path(&format!("{prefix}/v1/responses"));
+            url.set_path(&openai_probe_path(base_path, "/responses"));
             json!({"model":config.model,"input":[{"role":"user","content":prompt}],"stream":stream,"max_output_tokens":OUTPUT_TOKEN_LIMIT})
         }
         "anthropic" => {
-            url.set_path(&format!("{prefix}/v1/messages"));
+            if !base_path.ends_with("/v1/messages") {
+                let prefix = base_path
+                    .strip_suffix("/v1beta")
+                    .or_else(|| base_path.strip_suffix("/v1"))
+                    .unwrap_or(base_path);
+                url.set_path(&format!("{prefix}/v1/messages"));
+            } else {
+                url.set_path(base_path);
+            }
             headers.insert(
                 "anthropic-version",
                 reqwest::header::HeaderValue::from_static("2023-06-01"),
@@ -137,25 +139,43 @@ fn request_spec(
             json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":OUTPUT_TOKEN_LIMIT})
         }
         _ => {
-            url.set_path(&format!("{prefix}/v1beta/models"));
-            url.path_segments_mut()
+            let mut endpoint = base.clone();
+            endpoint.set_path("/v1beta/models");
+            endpoint
+                .path_segments_mut()
                 .map_err(|_| ProbeOutcome::new("invalid_config"))?
                 .push(&format!(
                     "{}:{}",
-                    config.model.trim_start_matches("models/"),
+                    crate::proxy::gemini_url::normalize_gemini_model_id(&config.model),
                     if stream {
                         "streamGenerateContent"
                     } else {
                         "generateContent"
                     }
                 ));
-            if stream {
-                url.set_query(Some("alt=sse"));
-            }
+            let endpoint = if stream {
+                format!("{}?alt=sse", endpoint.path())
+            } else {
+                endpoint.path().to_owned()
+            };
+            url = url::Url::parse(&crate::proxy::gemini_url::build_gemini_native_url(
+                base.as_str(),
+                &endpoint,
+            ))
+            .map_err(|_| ProbeOutcome::new("invalid_config"))?;
             json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":OUTPUT_TOKEN_LIMIT}})
         }
     };
     Ok((url, body, headers))
+}
+
+fn openai_probe_path(base: &str, endpoint: &str) -> String {
+    if base.ends_with(endpoint) {
+        base.to_owned()
+    } else {
+        let base = if base.is_empty() { "/v1" } else { base };
+        format!("{base}{endpoint}")
+    }
 }
 
 fn network_error(error: reqwest::Error) -> ProbeOutcome {
@@ -465,6 +485,40 @@ mod tests {
             "/gateway/v1beta/models/fixture%20model:streamGenerateContent"
         );
         assert_eq!(url.query(), Some("alt=sse"));
+    }
+
+    #[test]
+    fn probes_preserve_compatibility_prefixes_and_recognize_native_endpoints() {
+        let config = DetectionConfig {
+            base_url: String::new(),
+            api_key: "synthetic-key".into(),
+            model: "fixture".into(),
+            anthropic_auth_field: None,
+        };
+        for prefix in ["/api/paas/v4", "/v1beta/openai", "/gateway/v1"] {
+            let base = url::Url::parse(&format!("https://fixture.test{prefix}")).unwrap();
+            let (url, _, _) = request_spec(&config, &base, "openai_chat", false).unwrap();
+            assert_eq!(url.path(), format!("{prefix}/chat/completions"));
+            let (url, _, _) = request_spec(&config, &base, "openai_responses", false).unwrap();
+            assert_eq!(url.path(), format!("{prefix}/responses"));
+        }
+        for (format, path) in [
+            ("openai_chat", "/gateway/v1/chat/completions"),
+            ("openai_responses", "/gateway/v1/responses"),
+            ("anthropic", "/gateway/v1/messages"),
+        ] {
+            let base = url::Url::parse(&format!("https://fixture.test{path}")).unwrap();
+            let (url, _, _) = request_spec(&config, &base, format, false).unwrap();
+            assert_eq!(url.path(), path);
+        }
+        for path in [
+            "/gateway/v1beta/openai",
+            "/gateway/v1beta/models/old:generateContent",
+        ] {
+            let base = url::Url::parse(&format!("https://fixture.test{path}")).unwrap();
+            let (url, _, _) = request_spec(&config, &base, "gemini_native", false).unwrap();
+            assert_eq!(url.path(), "/gateway/v1beta/models/fixture:generateContent");
+        }
     }
 
     #[tokio::test]

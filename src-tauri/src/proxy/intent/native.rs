@@ -108,6 +108,26 @@ impl Native {
                 .is_some_and(|published| &published.catalog == catalog)
         })
     }
+    pub(crate) fn policy_model(
+        &self,
+        model: &str,
+    ) -> Result<(Option<String>, String), &'static str> {
+        let projection = self.projection.read().map_err(|_| FAILED)?;
+        let Some((projection, mapped)) = projection
+            .as_ref()
+            .and_then(|p| p.model_map.get(model).map(|mapped| (p, mapped)))
+        else {
+            return Ok((None, model.to_owned()));
+        };
+        Ok((
+            projection
+                .menu
+                .groups
+                .contains_key(mapped)
+                .then(|| mapped.clone()),
+            mapped.clone(),
+        ))
+    }
     pub fn clear_menu(&self) {
         if let Ok(mut projection) = self.projection.write() {
             *projection = None;
@@ -638,6 +658,9 @@ pub(crate) async fn handle(
         Ok(bytes) => bytes,
         Err(code) => return super::error(StatusCode::BAD_REQUEST, code),
     };
+    if super::super::gateway::codex_model_changed(&parts.extensions, &original) {
+        return super::catalog_stale();
+    }
     let Some(model) = original["model"].as_str() else {
         return super::error(
             StatusCode::NOT_FOUND,
@@ -1423,6 +1446,14 @@ mod tests {
             StatusCode::FORBIDDEN
         );
         assert_eq!(seen.lock().expect("fixture").len(), 3);
+        let mut policy = key.key.policy;
+        policy.models = vec![alias.clone()];
+        db.update_gateway_key(&key.key.id, policy)?;
+        let allowed =
+            post(serde_json::json!({"model":"Readable synthetic model","input":"synthetic"}))
+                .await?;
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let _ = allowed.bytes().await?;
         db.bind_gateway_agent("codex", None)?;
         let trigger = post(serde_json::json!({"model":alias,"input":[{"type":"message","role":"user","content":"synthetic history"},{"type":"compaction_trigger"}]})).await?;
         assert_eq!(trigger.status(), StatusCode::OK);
@@ -1434,7 +1465,7 @@ mod tests {
         )
         .await?;
         let _ = axum::body::to_bytes(validated.into_body(), BODY_LIMIT).await?;
-        assert_eq!(seen.lock().expect("fixture").len(), 4);
+        assert_eq!(seen.lock().expect("fixture").len(), 5);
         for model in [
             &alias,
             "Readable synthetic model",
@@ -1452,7 +1483,7 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
             let _ = response.bytes().await?;
         }
-        assert_eq!(seen.lock().expect("fixture").len(), 7);
+        assert_eq!(seen.lock().expect("fixture").len(), 8);
         for named in [false, true] {
             let input = serde_json::json!([
                 {"type":"reasoning","id":"synthetic-prior-model-item",
@@ -1478,7 +1509,7 @@ mod tests {
                 input
             );
         }
-        assert_eq!(seen.lock().expect("fixture").len(), 9);
+        assert_eq!(seen.lock().expect("fixture").len(), 10);
         server.stop().await?;
         task.abort();
         Ok(())

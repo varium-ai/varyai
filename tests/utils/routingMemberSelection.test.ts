@@ -13,7 +13,6 @@ const a = {
   providerId: "one",
   modelId: "same",
   effort: "high",
-  weight: 7,
 };
 const b = { id: "b", providerId: "one", modelId: "other" };
 const c = { id: "c", providerId: "two", modelId: "same" };
@@ -24,7 +23,6 @@ describe("routing member selection", () => {
       ...blankRoutingGroup(),
       members: [a, b, c],
       defaultMemberId: a.id,
-      manualMemberId: a.id,
       fallbackMemberIds: [b.id, c.id],
       off: [a.id],
       rules: [
@@ -48,7 +46,6 @@ describe("routing member selection", () => {
     const result = selectRoutingMembers(group, [a, b], false);
     expect(result.members).toEqual([c]);
     expect(result.defaultMemberId).toBe(c.id);
-    expect(result.manualMemberId).toBe(c.id);
     expect(result.fallbackMemberIds).toEqual([]);
     expect(result.off).toEqual([]);
     expect(result.rules).toEqual([
@@ -62,7 +59,6 @@ describe("routing member selection", () => {
       members: [a],
       match: ["one/*"],
       defaultMemberId: "dynamic",
-      manualMemberId: "dynamic",
       off: ["dynamic"],
       fallbackMemberIds: [a.id],
       rules: [
@@ -77,7 +73,6 @@ describe("routing member selection", () => {
     };
     const result = selectRoutingMembers(group, [b], true);
     expect(result.defaultMemberId).toBe("dynamic");
-    expect(result.manualMemberId).toBe("dynamic");
     expect(result.off).toEqual(["dynamic"]);
     expect(result.rules).toEqual(group.rules);
     const removed = selectRoutingMembers(result, [a], false);
@@ -165,21 +160,5 @@ describe("routing readiness", () => {
     expect(
       routingGroupHasReadyMember([provider], { ...group, off: [] }, [a]),
     ).toBe(true);
-  });
-
-  it("uses the default target only when a manual selection is absent", () => {
-    const group = {
-      ...blankRoutingGroup(),
-      routing: "manual" as const,
-      members: [a, c],
-      defaultMemberId: a.id,
-    };
-    expect(routingGroupHasReadyMember([provider], group)).toBe(true);
-    expect(
-      routingGroupHasReadyMember([provider], {
-        ...group,
-        manualMemberId: c.id,
-      }),
-    ).toBe(false);
   });
 });

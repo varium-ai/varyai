@@ -50,7 +50,7 @@ vi.mock("@/lib/api/usage", () => ({
   },
 }));
 
-const route = {
+const route: RoutingTrace = {
   id: "request-a",
   startedAt: Date.now(),
   agent: "codex",
@@ -305,6 +305,32 @@ it("shows only the recorded destination for a direct request", async () => {
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
 });
+
+it.each([
+  ["pinned", true],
+  ["affinity", false],
+] as const)(
+  "explains a fastest route selected by %s using the recorded reason",
+  async (kind, singleCandidate) => {
+    snapshot([
+      {
+        ...route,
+        strategy: "fastest",
+        candidates: singleCandidate ? [route.candidates[1]] : route.candidates,
+        steps: [
+          { kind, atMs: 1 },
+          { kind: "attempt", candidate: 0, atMs: 2 },
+          { kind: "completed", candidate: 0, atMs: 20 },
+        ],
+      },
+    ]);
+    show(configuredCatalog());
+    expect(await screen.findByText(`routingPage.step.${kind}`)).toHaveClass(
+      "rt-mode",
+    );
+    expect(screen.queryByText("routingPage.singleSeat")).toBeNull();
+  },
+);
 
 it("shows only the attempted model for a group with unused candidates", async () => {
   snapshot([
