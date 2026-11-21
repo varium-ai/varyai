@@ -56,7 +56,7 @@ export default function App() {
       .then((next) => {
         if (next) navigation.current(next);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
   useTauriEvent("workspace-navigation", async () => {
     const next = await trayPanelApi.navigation();
@@ -140,9 +140,7 @@ export default function App() {
               onAddProvider={addProvider}
             />
           )}
-          {view === "stats" && (
-            <StatisticsPage onOpenSecurity={() => setView("security")} />
-          )}
+          {view === "stats" && <StatisticsPage />}
           {view === "security" && (
             <SecurityCenterPage headerAction={<GlobalSecurityToggle />} />
           )}

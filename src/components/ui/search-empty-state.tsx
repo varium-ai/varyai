@@ -3,7 +3,7 @@ import "./search-empty-state.css";
 
 interface SearchEmptyStateProps {
   title: string;
-  hint: string;
+  hint?: string;
 }
 
 export function SearchEmptyState({ title, hint }: SearchEmptyStateProps) {
@@ -12,7 +12,7 @@ export function SearchEmptyState({ title, hint }: SearchEmptyStateProps) {
       <img src={illustration} alt="" width={340} height={260} />
       <div role="status">
         <h2>{title}</h2>
-        <p>{hint}</p>
+        {hint && <p>{hint}</p>}
       </div>
     </div>
   );

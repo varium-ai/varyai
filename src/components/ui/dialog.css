@@ -44,9 +44,9 @@
   overflow-wrap: anywhere;
 }
 .vary-dialog-footer > button {
-  min-height: 36px;
+  min-height: var(--compact-control-height);
   height: auto;
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 13px;
   line-height: 1.5;
 }
@@ -64,10 +64,10 @@
   box-shadow: none;
 }
 .vary-app-dialog input:not([type="checkbox"], [type="radio"], [type="range"]) {
-  height: 40px;
+  height: var(--compact-control-height);
 }
 .vary-app-dialog select {
-  height: 36px;
+  height: var(--compact-control-height);
 }
 .vary-app-dialog :is(input, select, textarea):focus-visible {
   border-color: var(--mp-accent);

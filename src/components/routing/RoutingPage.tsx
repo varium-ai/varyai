@@ -11,6 +11,7 @@ import { liveRoutingSources, routeInProgress } from "./useRoutingFlights";
 import { routingModelLabel } from "@/lib/routingModelLabel";
 import { AccountMask } from "@/components/AccountLabel";
 import { Button } from "@/components/ui/button";
+import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import * as authApi from "@/lib/api/auth";
@@ -112,7 +113,7 @@ export function RoutingPage({
       data-testid="routing-page"
     >
       <header className="row-head rt-page-head">
-        <h1 className="label">{t("workspaceNav.routing")}</h1>
+        <WorkspacePageHeading title={t("workspaceNav.routing")} />
         <span
           className={`rt-livedot ${!running || trace.isError ? "off" : ""}`}
           aria-hidden
@@ -129,14 +130,17 @@ export function RoutingPage({
           <Plus size={13} />
           {t("intentRouting.create")}
         </Button>
-        <button
-          className="text rt-mask"
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="rt-mask"
           aria-pressed={masked}
           onClick={() => setMasked(!masked)}
         >
           {masked ? <Eye size={14} /> : <EyeOff size={14} />}
           {t(masked ? "routingPage.showAccounts" : "routingPage.hideAccounts")}
-        </button>
+        </Button>
       </header>
       {trace.isError && (
         <p role="alert" className="rt-error">

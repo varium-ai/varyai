@@ -664,6 +664,101 @@ async fn authenticated_global_models_and_generation_use_alias_policy_and_externa
     Ok(())
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn unrouted_gateway_model_records_a_failed_trace() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = Arc::new(Runtime::default());
+    runtime.set_global(menu("http://127.0.0.1:9/responses"), 0)?;
+    let db = Arc::new(Database::memory()?);
+    let key = db.create_gateway_key(KeyPolicy {
+        name: "Synthetic unrouted".into(),
+        models: vec!["vary-provider/unrouted-model".into()],
+        all_models: false,
+        token_limit: None,
+        period: Period::Never,
+    })?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db,
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/gateway/v1/responses",
+            info.port
+        ))
+        .bearer_auth(&key.secret)
+        .json(&json!({"model":"vary-provider/unrouted-model","input":"synthetic"}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let error: Value = response.json().await?;
+    assert_eq!(error["error"]["code"], "routing_model_unavailable");
+    let rows = runtime.traces.snapshot();
+    assert_eq!(rows.len(), 1, "unrouted requests must still be traced");
+    assert_eq!(rows[0].agent, "external");
+    assert_eq!(rows[0].model, "vary-provider/unrouted-model");
+    assert_eq!(rows[0].state, trace::State::Failed);
+    assert_eq!(rows[0].status, Some(404));
+    assert!(rows[0].candidates.is_empty());
+    assert!(rows[0]
+        .steps
+        .iter()
+        .any(|step| step.kind == trace::Kind::Rejected));
+    server.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn unrouted_intent_menu_model_records_a_failed_trace(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = Arc::new(Runtime::default());
+    runtime.set_menu(Arc::new(menu("http://127.0.0.1:9/responses")))?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/intent/v1/responses",
+            info.port
+        ))
+        .bearer_auth("synthetic-local-token")
+        .json(&json!({"model":"deepseek-ai/DeepSeek-V4.1-Flash","input":"synthetic"}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let error: Value = response.json().await?;
+    assert_eq!(error["error"]["code"], "routing_model_unavailable");
+    let rows = runtime.traces.snapshot();
+    assert_eq!(rows.len(), 1, "unrouted requests must still be traced");
+    assert_eq!(rows[0].agent, "codex");
+    assert_eq!(rows[0].model, "deepseek-ai/DeepSeek-V4.1-Flash");
+    assert_eq!(rows[0].state, trace::State::Failed);
+    assert_eq!(rows[0].status, Some(404));
+    assert!(rows[0].candidates.is_empty());
+    assert!(rows[0]
+        .steps
+        .iter()
+        .any(|step| step.kind == trace::Kind::Rejected));
+    server.stop().await?;
+    Ok(())
+}
+
 #[test]
 fn conversation_scopes_isolate_consumers_lanes_and_active_leases() {
     let conversations = scopes::Conversations::default();

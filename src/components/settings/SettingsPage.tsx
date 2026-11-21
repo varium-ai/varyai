@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { settingsApi } from "@/lib/api";
 import { LanguageSettings } from "@/components/settings/LanguageSettings";
 import { PrivacySettings } from "@/components/settings/PrivacySettings";
@@ -225,7 +226,7 @@ export function SettingsPage({
   ];
 
   return (
-    <div className="settings-page mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden">
+    <div className="settings-page mx-auto flex h-full w-full flex-col overflow-hidden">
       {isBusy ? (
         <div className="flex flex-1 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -239,9 +240,8 @@ export function SettingsPage({
           className="flex min-h-0 flex-1 flex-col"
         >
           <header className="settings-header">
-            <h1>{t("settings.title")}</h1>
-            {activeTab === "general" && <p>{t("settings.statusNotice")}</p>}
-            <div className="mt-4 flex flex-wrap">
+            <WorkspacePageHeading title={t("settings.title")} />
+            <div className="mt-[var(--workspace-section-gap)] flex flex-wrap">
               <TabsList
                 aria-label={t("settings.categoryLabel")}
                 slidingIndicator={false}

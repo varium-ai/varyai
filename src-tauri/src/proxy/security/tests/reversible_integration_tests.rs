@@ -1578,8 +1578,8 @@ async fn reversible_http_guarded_history_owner_releases_when_send_is_cancelled()
     assert_eq!(request_budget.used(), 0);
     let cache_charge = used();
     assert!(
-        cache_charge > before_copy,
-        "the guarded cache must retain its own copy charge"
+        cache_charge > 0 && cache_charge < before_copy,
+        "the guarded cache must retain its own copy charge without pinning the guarded workspace"
     );
     let (_probe_guard, candidate_state) = super::chat_enrichment::test_support::install();
     let (_transform_guard, transform_probe) = transform_input_test_support::install();

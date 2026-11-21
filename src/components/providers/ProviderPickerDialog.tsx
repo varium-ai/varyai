@@ -1,6 +1,6 @@
 import { useEffect, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { Search, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
   globalProviderPresets,
   type GlobalProviderPreset,
@@ -11,7 +11,8 @@ import {
 } from "@/config/subscriptionProviders";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SearchEmptyState } from "@/components/ui/search-empty-state";
+import { SearchInput } from "@/components/ui/search-input";
 import {
   Dialog,
   DialogBody,
@@ -122,75 +123,74 @@ export function ProviderPickerDialog({
                 : "providerFlow.vendorDescription",
             )}
           </DialogDescription>
-          <div className="pv-vendor-search">
-            <Search size={14} aria-hidden />
-            <Input
-              type="search"
-              autoFocus
-              aria-label={t("providerFlow.findVendor")}
-              placeholder={t("providerFlow.findVendor")}
-              value={query}
-              disabled={busy}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </div>
+          <SearchInput
+            wrapperClassName="pv-vendor-search"
+            autoFocus
+            aria-label={t("providerFlow.findVendor")}
+            placeholder={t("providerFlow.findVendor")}
+            value={query}
+            disabled={busy}
+            onChange={(event) => setQuery(event.target.value)}
+          />
         </DialogHeader>
         <DialogBody className="pv-picker-body">
           <div className="pv-vendors pv-directory">
             <div className="pv-vendor-options">
-              <div className="pv-tiles">
-                {subscriptions.map((provider) => (
-                  <button
-                    key={provider.id}
-                    type="button"
-                    className={`pv-tile${signing?.provider === provider.id ? " on" : ""}`}
-                    aria-label={provider.name}
-                    aria-pressed={signing?.provider === provider.id}
-                    disabled={busy}
-                    onClick={() =>
-                      setSigning((old) => ({
-                        provider: provider.id,
-                        attempt: (old?.attempt ?? 0) + 1,
-                      }))
-                    }
-                  >
-                    <ProviderIcon
-                      icon={provider.icon}
-                      name={provider.name}
-                      size={22}
-                    />
-                    <span>{provider.name}</span>
-                    {addedSubscriptions.includes(provider.id) && (
-                      <span
-                        className="pv-signed-in-dot"
-                        aria-label={t("subscriptionLogin.signedIn")}
+              {(subscriptions.length > 0 || vendors.length > 0) && (
+                <div className="pv-tiles">
+                  {subscriptions.map((provider) => (
+                    <button
+                      key={provider.id}
+                      type="button"
+                      className={`pv-tile${signing?.provider === provider.id ? " on" : ""}`}
+                      aria-label={provider.name}
+                      aria-pressed={signing?.provider === provider.id}
+                      disabled={busy}
+                      onClick={() =>
+                        setSigning((old) => ({
+                          provider: provider.id,
+                          attempt: (old?.attempt ?? 0) + 1,
+                        }))
+                      }
+                    >
+                      <ProviderIcon
+                        icon={provider.icon}
+                        name={provider.name}
+                        size={22}
                       />
-                    )}
-                  </button>
-                ))}
-                {vendors.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className="pv-tile"
-                    aria-label={preset.name}
-                    disabled={busy}
-                    onClick={() => {
-                      close();
-                      onChoose(preset);
-                    }}
-                  >
-                    <ProviderIcon
-                      icon={preset.icon}
-                      name={preset.name}
-                      size={22}
-                    />
-                    <span>{preset.name}</span>
-                  </button>
-                ))}
-              </div>
+                      <span>{provider.name}</span>
+                      {addedSubscriptions.includes(provider.id) && (
+                        <span
+                          className="pv-signed-in-dot"
+                          aria-label={t("subscriptionLogin.signedIn")}
+                        />
+                      )}
+                    </button>
+                  ))}
+                  {vendors.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className="pv-tile"
+                      aria-label={preset.name}
+                      disabled={busy}
+                      onClick={() => {
+                        close();
+                        onChoose(preset);
+                      }}
+                    >
+                      <ProviderIcon
+                        icon={preset.icon}
+                        name={preset.name}
+                        size={22}
+                      />
+                      <span>{preset.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {!subscriptions.length && !vendors.length && (
-                <p className="pv-empty">{t("providerFlow.noVendor")}</p>
+                <SearchEmptyState title={t("providerFlow.noVendor")} />
               )}
               {open && signing && (
                 <SubscriptionSignIn

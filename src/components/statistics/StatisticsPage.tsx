@@ -1,17 +1,14 @@
 import "./statistics-page.css";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { toast } from "sonner";
 import { SecurityActivitySummary } from "@/components/security/SecurityActivitySummary";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { useSettings } from "@/hooks/useSettings";
 import type { SettingsFormState } from "@/hooks/useSettings";
 
-interface StatisticsPageProps {
-  onOpenSecurity?: () => void;
-}
-
-export function StatisticsPage({ onOpenSecurity }: StatisticsPageProps) {
+export function StatisticsPage() {
   const { t } = useTranslation();
   const { settings, updateSettings, autoSaveSettings } = useSettings();
 
@@ -47,19 +44,10 @@ export function StatisticsPage({ onOpenSecurity }: StatisticsPageProps) {
   return (
     <div className="stats-page">
       <header className="stats-header">
-        <div>
-          <h1>{t("usage.title")}</h1>
-          <p>{t("usage.subtitle")}</p>
-        </div>
-        {onOpenSecurity && (
-          <button
-            className="stats-security-link"
-            onClick={onOpenSecurity}
-            type="button"
-          >
-            {t("securityStats.viewLogs")}
-          </button>
-        )}
+        <WorkspacePageHeading
+          title={t("usage.title")}
+          description={t("usage.subtitle")}
+        />
       </header>
       <SecurityActivitySummary />
       <UsageDashboard

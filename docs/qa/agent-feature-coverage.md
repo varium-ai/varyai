@@ -1,5 +1,24 @@
 # Agent feature coverage
 
+## Routed security errors (macOS and Windows)
+
+| Agent entries | Runtime and UI | Verification |
+| --- | --- | --- |
+| DeepSeek Harness, Pi, Grok Build, OpenCode, OpenClaw, Hermes, Kimi, Qwen, ZCode, Qoder, T3 Code, TRAE, TRAE Intl, WorkBuddy, WorkBuddy AI | Authenticated routing-group requests only; error envelope follows the wire protocol. Routing history records the returned status. | Synthetic protocol projections; individual native clients pending |
+| Codex, Claude, Claude Desktop, Gemini | Same contract on routing-group requests; direct routes unchanged | Synthetic protocol projections; native acceptance pending |
+| Doubao Work | Audit-only, no model error projection | Not applicable |
+
+## Fragmented native Chat restoration (macOS and Windows)
+
+| Agent entry points | Applicable runtime path | Verification |
+| --- | --- | --- |
+| DeepSeek Harness, Pi | Shared native Chat restoration when selected | Pre-fix failures observed on macOS; post-fix native acceptance pending |
+| Codex, Grok Build, OpenCode, OpenClaw, Hermes, Kimi, Qwen, ZCode, Qoder, TRAE, TRAE Intl, WorkBuddy, WorkBuddy AI, T3 Code | Only requests admitted to the native Chat finalizer; no change to other routes | Shared synthetic regression, not individual native acceptance |
+| Claude, Claude Desktop, Gemini | Other native protocols retain existing limits | No new route or UI behavior |
+| Doubao Work | Audit-only | Not a model restoration path |
+
+Native Chat has no cumulative fragment-count cutoff. Shared HTTP fixtures cover an answer with 2,049 choice records and interleaved reasoning and content exceeding the old text-site cutoff. The rule UI, disabled policy, and platform adapters are unchanged. No Agent gains restoration authority from this change.
+
 ## Tray Usage (macOS and Windows)
 
 For every Agent and ledger adapter in the table below, the tray header refresh

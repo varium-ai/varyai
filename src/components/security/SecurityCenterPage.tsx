@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, FlaskConical, Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { SlidingSegmentedControl } from "@/components/ui/sliding-segmented-control";
 import {
   Dialog,
@@ -266,18 +267,16 @@ export function SecurityCenterPage({
       className="security-center"
     >
       <header className="sc-header">
-        <div className="space-y-1">
-          <h1 className="text-lg font-semibold leading-7">
-            {t("primaryNav.security")}
-          </h1>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {activeTab === "records"
+        <WorkspacePageHeading
+          title={t("primaryNav.security")}
+          description={
+            activeTab === "records"
               ? t("security.recordsDescription")
               : activeTab === "rules"
                 ? t("security.rulesDescription")
-                : t("toolRisk.enableDescription")}
-          </p>
-        </div>
+                : t("toolRisk.enableDescription")
+          }
+        />
 
         {headerAction}
       </header>

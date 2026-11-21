@@ -49,6 +49,8 @@ mod completion_verifier;
 mod native_chat;
 #[cfg(test)]
 pub(in crate::proxy::security) use native_chat::capture_test_support;
+#[cfg(test)]
+pub(in crate::proxy::security) use native_chat::ENTITY_LIMIT;
 mod native_driver;
 #[cfg(test)]
 pub(in crate::proxy::security) mod test_transport;
@@ -395,6 +397,12 @@ pub(crate) enum RestoreUnsupportedCause {
     UnsupportedEndpoint,
     /// Signed or otherwise immutable content that a mandatory patch would have to edit.
     ImmutableSignedUnit,
+    /// The selected upstream is a subscription account (Antigravity, Claude/XAI
+    /// subscription, ChatGPT, Gemini CLI). Those transports wrap every request in
+    /// a provider envelope whose stream this proxy cannot verify, so no local
+    /// restoration round trip exists for them even when the client protocol is
+    /// fully supported.
+    SubscriptionTransport,
 }
 
 impl RestoreUnsupportedCause {
@@ -405,6 +413,9 @@ impl RestoreUnsupportedCause {
             }
             Self::ImmutableSignedUnit => {
                 "This request contains signed or otherwise immutable content that reversible DLP cannot modify. Remove that content, or disable reversible DLP for this provider."
+            }
+            Self::SubscriptionTransport => {
+                "This request is routed to a subscription upstream, whose provider envelope cannot be restored locally. Point this Agent at an API-key upstream for this model, or turn off restore-after-response for that subscription."
             }
         }
     }
@@ -596,13 +607,28 @@ impl DlpForwardError {
     }
 
     pub(crate) fn into_routed_app_response(self, app_type: &AppType) -> Response {
-        match self {
-            Self::RestoreUnsupported => {
-                Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint)
-            }
-            other => other,
+        if self == Self::RestoreUnsupported {
+            // The refusal is user-facing, so the log carries the fixed category only.
+            log::warn!("[DLP] routed_restore_unsupported app={}", app_type.as_str());
         }
-        .into_app_response(app_type)
+        let (code, message) = match self {
+            Self::ContextUnavailable => (self.code(), "Local redaction context is no longer available. Start a new conversation without copying redacted references from the old one."),
+            Self::PolicyConflict => (self.code(), "Local security rules conflict for this request. Review the rules in Security Center before resending."),
+            Self::RedactionFailed => (self.code(), "The local proxy could not safely redact the request. Review Security Center and remove sensitive text from the message or tool results before resending."),
+            Self::CapacityExceeded => (self.code(), "Local security processing reached its capacity limit. Shorten the conversation or tool output before retrying."),
+            Self::Unavailable | Self::TokenCollision => ("dlp_unavailable", "Local security processing is temporarily unavailable. Retry later."),
+            Self::Blocked => (self.code(), "A local security rule blocked this request. Review Security Center and remove the sensitive content before resending."),
+            Self::RestoreUnsupported => return Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint).into_app_response(app_type),
+            other => return other.into_app_response(app_type),
+        };
+        Self::render_app_error(
+            app_type,
+            self.status_code(),
+            code,
+            message,
+            self.error_type(),
+            false,
+        )
     }
 
     pub(crate) fn into_app_response(self, app_type: &AppType) -> Response {
@@ -618,11 +644,25 @@ impl DlpForwardError {
         let code = self.client_code();
         let message = self.client_message();
         let error_type = self.client_error_type();
-        let native_message = if matches!(self, Self::UpstreamStatus(_)) {
-            code
-        } else {
-            message
-        };
+        Self::render_app_error(
+            app_type,
+            status,
+            code,
+            message,
+            error_type,
+            matches!(self, Self::UpstreamStatus(_)),
+        )
+    }
+
+    fn render_app_error(
+        app_type: &AppType,
+        status: StatusCode,
+        code: &'static str,
+        message: &'static str,
+        error_type: &'static str,
+        upstream: bool,
+    ) -> Response {
+        let native_message = if upstream { code } else { message };
         let payload = match app_type {
             AppType::Claude | AppType::ClaudeDesktop => json!({
                 "type": "error",
@@ -1189,6 +1229,26 @@ pub(crate) fn admit_routed_http_request(
         return Ok(RestorationAdmission::Passthrough);
     }
     let path = endpoint.split('?').next().unwrap_or(endpoint);
+    // Counting endpoints answer with a token total only: no model content is ever
+    // delivered, so nothing can carry a restoration token back. They keep ordinary
+    // one-way redaction instead of being refused as an unsupported route, which is
+    // what every Claude-protocol agent hits on its first sensitive turn.
+    if is_token_count_endpoint(protocol, path) {
+        if matched || references {
+            // Nothing comes back that could be restored, so mask here and forward.
+            if let Err(error) = redact_one_way(body, &snapshot.runtime) {
+                return Ok(RestorationAdmission::Intercepted(
+                    error.into_routed_app_response(app),
+                ));
+            }
+            log::warn!(
+                "[DLP] token_count_one_way app={} protocol={:?} reason=no_restorable_content",
+                app.as_str(),
+                protocol
+            );
+        }
+        return Ok(RestorationAdmission::Passthrough);
+    }
     match protocol {
         Protocol::Responses if path.ends_with("/responses") => {
             let namespace = format!("shared:{}", app.as_str());
@@ -1234,14 +1294,59 @@ pub(crate) fn admit_routed_http_request(
             }) {
                 admit_routed_native_request(gateway, app, body, headers, protocol)
             } else {
-                Ok(RestorationAdmission::Intercepted(
-                    DlpForwardError::RestoreUnsupported.into_routed_app_response(app),
-                ))
+                Ok(unmodelled_route_admission(app, protocol, references))
             }
         }
-        _ => Ok(RestorationAdmission::Intercepted(
-            DlpForwardError::RestoreUnsupported.into_routed_app_response(app),
-        )),
+        _ => Ok(unmodelled_route_admission(app, protocol, references)),
+    }
+}
+
+/// Mask every match of a reversible rule without minting a restoration token.
+///
+/// Used on routes that cannot carry a round trip: a token count that returns no
+/// model content, and cross-protocol bridges that rewrite the outbound body. The
+/// text still leaves masked, so the request stays usable instead of failing.
+pub(crate) fn redact_one_way(
+    body: &mut Value,
+    runtime: &super::SecurityRuntimeConfig,
+) -> Result<(), DlpForwardError> {
+    let policy = runtime.one_way_only();
+    let result = super::engine::SecurityAuditEngine::inspect_and_redact_with_runtime(body, &policy);
+    if result.blocked {
+        return Err(DlpForwardError::Blocked);
+    }
+    Ok(())
+}
+
+/// A route reversible DLP does not model must not become a client-visible failure
+/// when the body carries no restoration reference: one-way redaction still keeps
+/// plaintext from leaving the machine. Only an unresolvable reference contradicts
+/// what the client already holds, so only that case stays refused.
+fn unmodelled_route_admission(
+    app: &AppType,
+    protocol: crate::proxy::protocol_bridge::Protocol,
+    references: bool,
+) -> RestorationAdmission {
+    if !references {
+        log::warn!(
+            "[DLP] routed_dlp_one_way protocol={:?} reason=route_not_modelled",
+            protocol
+        );
+        return RestorationAdmission::Passthrough;
+    }
+    RestorationAdmission::Intercepted(
+        DlpForwardError::RestoreUnsupported.into_routed_app_response(app),
+    )
+}
+
+/// Endpoints that only report a token total: no model content comes back, so a
+/// reversible round trip is impossible there and the route must stay usable.
+fn is_token_count_endpoint(protocol: crate::proxy::protocol_bridge::Protocol, path: &str) -> bool {
+    use crate::proxy::protocol_bridge::Protocol;
+    match protocol {
+        Protocol::Anthropic => path.ends_with("/messages/count_tokens"),
+        Protocol::Gemini => path.ends_with(":countTokens"),
+        _ => false,
     }
 }
 
@@ -1871,6 +1976,13 @@ impl DlpResponseNamespaceTable {
 }
 
 impl DlpHttpRequest {
+    /// This request's policy with reversible rules applied as plain masking.
+    ///
+    /// Only for callers that proved the route cannot return a restoration token.
+    pub(crate) fn one_way_runtime(&self) -> super::SecurityRuntimeConfig {
+        self.runtime.one_way_only()
+    }
+
     /// Canonical classifier input has no response-restoration channel. Hide it independently
     /// while retaining the untouched request for the actual-send owner below.
     pub(crate) fn routing_projection(
@@ -3284,6 +3396,7 @@ fn audit_final_refusal(
     carriers: &FinalInspectionCarriers,
     policy: &impl Fn(super::history_provenance::DlpHistoryTarget) -> HistoryLeafPolicy,
     runtime: &SecurityRuntimeConfig,
+    lease: &DlpRequestLease,
     budget: &PayloadBudget,
     audit_state: &RequestAuditState,
     provider_id: &str,
@@ -3320,8 +3433,12 @@ fn audit_final_refusal(
             } else {
                 final_inspection_json(&FinalInspectionBody { input: &leaf.text }, budget)?
             };
-            let pending =
-                PendingRequestAudit::capture_refusal(body.as_value(), runtime, budget.clone())?;
+            let pending = PendingRequestAudit::capture_refusal_for_lease(
+                body.as_value(),
+                runtime,
+                lease,
+                budget.clone(),
+            )?;
             audit_state.record_refusal(&pending, provider_id, None);
             Ok(())
         },
@@ -3365,6 +3482,10 @@ fn validate_final_outbound_body(
     {
         Ok(carriers) => carriers,
         Err(error) => {
+            log::warn!(
+                "[DLP] stage=final_validation protocol={protocol} code={}",
+                error.code()
+            );
             // Collect valid siblings for refusal evidence only; this path never authorizes a send.
             let audit = final_inspection_carriers(bounded_body.as_value(), protocol, budget, true)
                 .and_then(|carriers| {
@@ -3372,6 +3493,7 @@ fn validate_final_outbound_body(
                         &carriers,
                         &policy,
                         runtime,
+                        lease,
                         budget,
                         audit_state,
                         provider_id,
@@ -3463,12 +3585,17 @@ fn validate_final_outbound_body(
             .map_err(DlpForwardError::from_token_error)?;
         refusal.map_or(Ok(()), Err)
     })();
-    if result.is_err() {
+    if let Err(error) = result {
+        log::warn!(
+            "[DLP] stage=final_validation protocol={protocol} code={}",
+            error.code()
+        );
         // Auditing is auxiliary: an audit failure cannot turn a refusal into forwarding.
         if audit_final_refusal(
             &carriers,
             &policy,
             runtime,
+            lease,
             budget,
             audit_state,
             provider_id,
@@ -5921,7 +6048,7 @@ mod private_correctness_tests {
     #[test]
     fn private_json_failed_original_cannot_be_replaced_by_completed_conversion() {
         let attempt = prepared_attempt("openai_chat", Some("fixture-session"));
-        let invalid = r#"{"id":"chat_fixture","choices":[{"finish_reason":"length","message":{"content":"partial"}}]}"#;
+        let invalid = r#"{"id":"chat_fixture","choices":[{"finish_reason":"abort","message":{"content":"partial"}}]}"#;
         assert!(attempt
             .verify_upstream_json_completion(JsonCompletionProtocol::ChatCompletions, invalid)
             .is_err());
@@ -6274,6 +6401,48 @@ mod private_correctness_tests {
 #[cfg(test)]
 mod private_http_exit_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn routed_security_errors_describe_the_actual_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for app in [AppType::DeepSeekHarness, AppType::Claude, AppType::Gemini] {
+            for (cause, status, code) in [
+                (
+                    DlpForwardError::RedactionFailed,
+                    400,
+                    "dlp_redaction_failed",
+                ),
+                (DlpForwardError::PolicyConflict, 400, "dlp_policy_conflict"),
+                (
+                    DlpForwardError::ContextUnavailable,
+                    400,
+                    "dlp_context_unavailable",
+                ),
+                (DlpForwardError::Blocked, 400, "dlp_blocked"),
+                (
+                    DlpForwardError::CapacityExceeded,
+                    503,
+                    "dlp_capacity_exceeded",
+                ),
+                (DlpForwardError::Unavailable, 503, "dlp_unavailable"),
+                (DlpForwardError::TokenCollision, 503, "dlp_unavailable"),
+            ] {
+                let response = cause.into_routed_app_response(&app);
+                assert_eq!(response.status().as_u16(), status);
+                let body: Value = serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), 4096).await?,
+                )?;
+                let message = body["error"]["message"].as_str().ok_or("missing message")?;
+                assert!(!message.is_empty() && message != CLIENT_PROCESSING_ERROR_MESSAGE);
+                if matches!(app, AppType::Gemini) {
+                    assert_eq!(body["error"]["code"], status);
+                } else {
+                    assert_eq!(body["error"]["code"], code);
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn private_http_exit_retains_output_charge_and_removes_entity_validators() {

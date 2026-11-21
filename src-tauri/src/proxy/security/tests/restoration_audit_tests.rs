@@ -481,3 +481,116 @@ fn resent_responses_history_is_inspected_but_only_current_findings_are_reported(
     assert_eq!(events[0].log.rule_id, "current");
     Ok(())
 }
+
+#[test]
+#[serial_test::serial]
+fn capture_refusal_for_lease_skips_authorized_tokens_without_suppressing_sibling_plaintext(
+) -> TestResult {
+    use crate::proxy::{
+        protocol_bridge::Protocol,
+        security::{
+            request_preparation::prepare_observed_request,
+            restoration_contract::{
+                ClientProtocol, ContinuityScope, EditConstraint, IngressNamespace,
+                RequestObservation, SourceClass,
+            },
+            unified_test_support::ResponsesFixture,
+        },
+    };
+    let _runtime_fixture = ResponsesFixture::new();
+    let admission = runtime::admit_security_runtime()?;
+    let mut cfg = policy(&[("fixture", "private-a", AuditAction::RedactRestore)]);
+    cfg.builtin_action_overrides.insert(
+        "catalog:login-url-password".into(),
+        AuditAction::RedactRestore,
+    );
+    let store = _runtime_fixture.store.clone();
+    let mut lease = store.admit_scoped_published_policy(
+        ContinuityScope::Native {
+            client: ClientProtocol::new(Protocol::Chat),
+            ingress: IngressNamespace::Direct,
+        },
+        "codex",
+        Some("audit-lease-session"),
+        admission.restoration_policy_revision,
+    )?;
+    let _binding = lease.bind_actual_attempt(
+        "fixture-provider",
+        "openai_chat",
+        "https://synthetic.invalid/v1/chat/completions",
+        Some("synthetic-account"),
+    )?;
+    let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+    let seed = json!({"messages":[{"role":"user","content":"https://user:synthetic-url-pwd@example.invalid"}]});
+    let mut obs =
+        RequestObservation::new(&seed, ClientProtocol::new(Protocol::Chat), budget.clone())?;
+    obs.observe_text(
+        &seed["messages"][0]["content"],
+        SourceClass::CurrentInput,
+        EditConstraint::Editable,
+    )?;
+    let prepared = prepare_observed_request(
+        &mut lease,
+        &obs,
+        &cfg,
+        &["catalog:login-url-password"],
+        &[],
+        |_, _, _| Ok(()),
+    )
+    .map_err(|_| std::io::Error::other("seed redaction failed"))?;
+    let redacted_url = prepared.body.as_value()["messages"][0]["content"]
+        .as_str()
+        .ok_or("missing redacted url")?
+        .to_owned();
+    assert!(redacted_url.contains("rredact-password-"));
+    assert!(!redacted_url.contains("synthetic-url-pwd"));
+    drop(prepared);
+    drop(obs);
+
+    let pending_token_only = PendingRequestAudit::capture_refusal_for_lease(
+        &json!({"input": redacted_url}),
+        &cfg,
+        &lease,
+        budget.clone(),
+    )?;
+    let state = RequestAuditState::new(&AppType::Codex, None, budget.clone())?;
+    let mut events = Vec::new();
+    state.record_with(&pending_token_only, "provider", None, true, |e| {
+        events.push(e)
+    });
+    assert!(
+        events.is_empty(),
+        "authorized password reference inside login URL must not trigger false block audit"
+    );
+
+    let pending_with_malformed_and_plaintext = PendingRequestAudit::capture_refusal_for_lease(
+        &json!({"input": format!("{redacted_url} rredact-incomplete private-a")}),
+        &cfg,
+        &lease,
+        budget.clone(),
+    )?;
+    state.record_with(
+        &pending_with_malformed_and_plaintext,
+        "provider",
+        None,
+        true,
+        |e| events.push(e),
+    );
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].log.rule_id, "fixture");
+    assert_eq!(events[0].log.action_taken, "block");
+
+    let pending_without_lease =
+        PendingRequestAudit::capture_refusal(&json!({"input": redacted_url}), &cfg, budget)?;
+    let mut legacy_events = Vec::new();
+    state.record_with(&pending_without_lease, "provider", None, true, |e| {
+        legacy_events.push(e)
+    });
+    assert!(
+        legacy_events
+            .iter()
+            .any(|event| event.log.rule_id == "catalog:login-url-password"),
+        "lease-less capture_refusal preserves historical behavior"
+    );
+    Ok(())
+}

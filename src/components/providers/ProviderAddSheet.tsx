@@ -13,6 +13,7 @@ import {
   type GlobalProviderPreset,
 } from "@/config/globalProviderPresets";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { Button } from "@/components/ui/button";
 import {
   subscriptionProviders,
@@ -116,10 +117,10 @@ export function ProviderAddSheet({
         >
           <ArrowLeft size={20} aria-hidden />
         </Button>
-        <div className="pv-add-copy">
-          <h1>{t("providerFlow.sheet")}</h1>
-          <p>{t("providerFlow.chooseMethod")}</p>
-        </div>
+        <WorkspacePageHeading
+          title={t("providerFlow.sheet")}
+          description={t("providerFlow.chooseMethod")}
+        />
       </header>
       <div className="pv-add-methods">
         {methods.map(({ id, title, description, icon: Icon, action }) => (

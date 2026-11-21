@@ -882,9 +882,7 @@ function App() {
         case "security":
           return <SecurityCenterPage activeApp={activeApp} />;
         case "stats":
-          return (
-            <StatisticsPage onOpenSecurity={() => setCurrentView("security")} />
-          );
+          return <StatisticsPage />;
         case "settings":
           return (
             <SettingsPage

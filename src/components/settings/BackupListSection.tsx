@@ -310,7 +310,7 @@ export function BackupListSection({
                           if (e.key === "Enter") handleConfirmRename();
                           if (e.key === "Escape") handleCancelRename();
                         }}
-                        className="h-7 text-xs"
+                        className="text-xs"
                         placeholder={t(
                           "settings.backupManager.namePlaceholder",
                           { defaultValue: "Enter new name" },

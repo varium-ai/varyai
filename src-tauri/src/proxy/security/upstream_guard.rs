@@ -120,8 +120,32 @@ impl UpstreamPayloadOwner {
     }
 
     fn new(budget: &PayloadBudget) -> Result<Self, DlpForwardError> {
+        Self::with_base(budget, WORKSPACE_BASE_BYTES)
+    }
+
+    /// Owner for payloads a cross-request cache retains after the producing request ends.
+    ///
+    /// The copy is charged to the same budget, so the accounting contract is unchanged,
+    /// but this owner carries its own zero-base workspace instead of sharing the
+    /// producing request's. Sharing it pinned `base + 4 x input` per cached response
+    /// until eviction, which drained the process pool in long sessions. A cache entry
+    /// never processes a payload, so it needs no scratch headroom.
+    pub(crate) fn retain(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<(serde_json::Value, Self), DlpForwardError> {
+        let budget = self
+            .workspace
+            .lock()
+            .map_err(|_| DlpForwardError::Unavailable)?
+            .budget
+            .clone();
+        Self::with_base(&budget, 0)?.try_clone_json(value)
+    }
+
+    fn with_base(budget: &PayloadBudget, base: usize) -> Result<Self, DlpForwardError> {
         let reservation = budget
-            .reserve(WORKSPACE_BASE_BYTES)
+            .reserve(base)
             .map_err(DlpForwardError::from_token_error)?;
         Ok(Self {
             copy_charge: None,
@@ -826,8 +850,8 @@ mod tests {
 
     #[test]
     fn upstream_workspace_exact_capacity_boundary() -> TestResult {
-        // Default 64 MiB budget must admit a full 8 MiB response workspace.
-        let default_limit = 64 * 1024 * 1024;
+        // Default 256 MiB budget must admit a full 8 MiB response workspace.
+        let default_limit = 256 * 1024 * 1024;
         assert_eq!(PayloadBudget::default().limit(), default_limit);
         let default_budget = PayloadBudget::with_limit(default_limit);
         let max_owner = UpstreamPayloadOwner::new(&default_budget)
@@ -886,7 +910,10 @@ mod tests {
         Ok(())
     }
 
+    // Asserts the process-global budget drains to zero, so it must not overlap
+    // any other test that charges the shared pool.
     #[tokio::test]
+    #[serial_test::serial]
     async fn upstream_workspace_sse_cumulative_capacity_boundary() -> TestResult {
         // Complete SSE comments exercise transport admission without completion semantics.
         let mut comment = vec![b'x'; 1024];

@@ -1231,6 +1231,119 @@ fn ch1_boundary_shared_prepare_depth_fails_closed_despite_successful_observation
     Ok(())
 }
 
+#[test]
+#[serial_test::serial]
+fn ch1_observes_and_redacts_assistant_reasoning_and_refusal_preserving_opaque_siblings(
+) -> TestResult {
+    let mut fixture = RequestFixture::new()?;
+    let before = fixture.store.stats()?;
+    let baseline = fixture.budget.used();
+    let body = json!({
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "refusal", "refusal": TEXT}],
+                "reasoning_content": TEXT,
+                "reasoning": TEXT,
+                "refusal": TEXT
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": TEXT},
+                    {"type": "refusal", "refusal": TEXT}
+                ],
+                "reasoning_content": TEXT,
+                "reasoning": TEXT,
+                "refusal": TEXT
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "refusal", "refusal": null}],
+                "reasoning_content": null,
+                "reasoning": 7,
+                "refusal": {"text": TEXT}
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "synthetic-call",
+                "content": null,
+                "reasoning_content": TEXT,
+                "reasoning": TEXT,
+                "refusal": TEXT
+            }
+        ]
+    });
+    let original = body.clone();
+    let expected_paths = [
+        "/messages/1/content/0/text",
+        "/messages/1/content/1/refusal",
+        "/messages/1/reasoning_content",
+        "/messages/1/reasoning",
+        "/messages/1/refusal",
+    ];
+    let observation = observed(&body, &fixture.budget)?;
+    let observation_charge = fixture.budget.used();
+    assert!(
+        observation_charge > baseline,
+        "chat_ch1_reasoning_refusal_observation_not_charged"
+    );
+    assert_eq!(
+        observation.sites().len(),
+        expected_paths.len(),
+        "chat_ch1_reasoning_refusal_site_count_invalid"
+    );
+    for path in expected_paths {
+        let node = body.pointer(path).ok_or("chat_ch1_expected_node_missing")?;
+        assert!(
+            (0..observation.sites().len()).any(|index| {
+                observation.sites().site(index).is_some_and(|site| {
+                    std::ptr::eq(site.native(), node)
+                        && site.source() == SourceClass::HistoricalText
+                        && site.constraint() == EditConstraint::Editable
+                })
+            }),
+            "chat_ch1_assistant_reasoning_or_refusal_site_missing: {path}"
+        );
+    }
+    let prepared = prepare_observed_request(
+        &mut fixture.lease,
+        &observation,
+        &SecurityRuntimeConfig::default(),
+        RESTORE_RULES,
+        &[],
+        |candidate, encoded, proof| {
+            let decoded: Value =
+                serde_json::from_slice(encoded).map_err(|_| TokenError::RedactionFailed)?;
+            assert!(&decoded == candidate && proof.len() == 1);
+            let mut restored_shape = candidate.clone();
+            for path in expected_paths {
+                let candidate_node = candidate.pointer(path).ok_or(TokenError::RedactionFailed)?;
+                assert_eq!(candidate_node.as_str(), Some(proof[0]));
+                let target = restored_shape
+                    .pointer_mut(path)
+                    .ok_or(TokenError::RedactionFailed)?;
+                *target = original
+                    .pointer(path)
+                    .ok_or(TokenError::RedactionFailed)?
+                    .clone();
+            }
+            assert!(
+                restored_shape == original,
+                "chat_ch1_reasoning_refusal_opaque_siblings_mutated"
+            );
+            Ok(())
+        },
+    )
+    .map_err(|_| "chat_ch1_reasoning_refusal_prepare_failed")?;
+    assert_eq!(prepared.reversible_occurrences, expected_paths.len());
+    assert!(fixture.store.stats()?.entries == before.entries + 1);
+    drop(prepared);
+    drop(observation);
+    assert_eq!(fixture.budget.used(), baseline);
+    Ok(())
+}
+
 // CH2 JSON state table: Parsed -> exact native observation -> staged, never published.
 // Native choices use unique indices below 128, independent of array position. Complete
 // content strings/known text parts, refusal and readable reasoning are inspected with
@@ -1514,7 +1627,7 @@ fn ch2_lane_json_invalid_shape_reason_arguments_and_budget_reject_atomically() -
     for mode in 0..11 {
         let mut source = ch2_lane_source(&fixture.reference, 4);
         match mode {
-            0 => source["choices"][0]["finish_reason"] = json!("length"),
+            0 => source["choices"][0]["finish_reason"] = json!("abort"),
             1 => source["choices"][0]["finish_reason"] = Value::Null,
             2 => {
                 source["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] =
@@ -1918,8 +2031,6 @@ fn ch2_lane_sse_partial_references_never_join_across_choice_or_field() -> TestRe
 fn ch2_lane_sse_strict_original_and_final_controls_reject_without_publication() -> TestResult {
     use crate::proxy::security::native_test_support::NativeFixture;
     let bad = [
-        json!({"choices":[{"index":7,"delta":{"role":"assistant","content":"synthetic"},"finish_reason":"length"}]}),
-        json!({"choices":[{"index":7,"delta":{"role":"assistant","content":"synthetic"},"finish_reason":"content_filter"}]}),
         json!({"choices":[{"index":7,"delta":{"role":"assistant","content":"synthetic"},"finish_reason":"unknown"}]}),
         json!({"choices":[{"index":7,"delta":{"role":"assistant","content":"synthetic"},"finish_reason":null}]}),
         json!({"choices":[{"index":7,"delta":{"role":"assistant","content":[{"type":"text","text":"synthetic"}]},"finish_reason":"stop"}]}),

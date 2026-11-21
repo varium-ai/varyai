@@ -191,6 +191,7 @@ impl Drop for ActiveConnectionGuard {
     }
 }
 
+#[derive(Clone)]
 pub struct RequestForwarder {
     /// 共享的 ProviderRouter（持有熔断器状态）
     router: Arc<ProviderRouter>,
@@ -1317,9 +1318,15 @@ impl RequestForwarder {
         if let Some(bridge) = super::protocol_bridge::Bridge::route(app_type, endpoint, provider)
             .filter(|_| !prepared_codex_conversion)
         {
-            // New bridge edges lack owned preparation and completion evidence.
-            // Refuse active restoration before cloning or enriching any payload.
-            if self.dlp_request.is_some() {
+            // New bridge edges lack owned preparation and completion evidence for the
+            // client shape. A routed agent request can still restore: `forward_bridged`
+            // re-admits the converted body so both sides of the round trip speak the
+            // wire protocol. Callers without that context keep the refusal.
+            if self.dlp_request.is_some()
+                && extensions
+                    .get::<super::group_forward::RoutedRestoration>()
+                    .is_none()
+            {
                 return Err(ProxyError::DlpForward(
                     super::security::http_restoration::DlpForwardError::RestoreUnsupported,
                 ));
@@ -1383,7 +1390,13 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardResponse, ProxyError> {
-        if self.dlp_request.is_some() {
+        // A routed agent request restores on the wire protocol below; every other
+        // caller has no re-admission context and keeps the refusal.
+        if self.dlp_request.is_some()
+            && extensions
+                .get::<super::group_forward::RoutedRestoration>()
+                .is_none()
+        {
             return Err(ProxyError::DlpForward(
                 super::security::http_restoration::DlpForwardError::RestoreUnsupported,
             ));
@@ -1519,7 +1532,84 @@ impl RequestForwarder {
             output: bridge.output,
         };
         let bridge_endpoint = bridge.endpoint(endpoint);
-        let (response, _format, model, upstream_tool_schemas, dlp_attempt) = self
+        // Reversible DLP runs on the wire protocol, not on the client's.
+        //
+        // The client body cannot carry restoration evidence once it is rebuilt into
+        // another protocol, so a token minted for the client shape could never be
+        // resolved. Admitting the *converted* body instead keeps one protocol on
+        // both sides of the round trip: tokens are minted in wire text, restored in
+        // the wire response, and only then transcoded back for the client.
+        let mut wire_forwarder = self.clone();
+        wire_forwarder.dlp_request = match self.dlp_request.as_ref() {
+            None => None,
+            Some(_) => {
+                let Some(routed) = extensions
+                    .get::<super::group_forward::RoutedRestoration>()
+                    .cloned()
+                else {
+                    // Non-routed callers keep the conservative refusal.
+                    return Err(ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                    ));
+                };
+                let mut wire_body = body.clone();
+                // Admission matches on the wire path, not the client's.
+                let wire_path = match bridge.output {
+                    super::protocol_bridge::Protocol::Chat => "/v1/chat/completions",
+                    super::protocol_bridge::Protocol::Anthropic => "/v1/messages",
+                    super::protocol_bridge::Protocol::Responses => "/v1/responses",
+                    // No cross-protocol restoration cell exists for Gemini here.
+                    super::protocol_bridge::Protocol::Gemini => {
+                        return Err(ProxyError::DlpForward(
+                            super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                        ))
+                    }
+                };
+                let admission = super::security::http_restoration::admit_routed_http_request(
+                    &routed.gateway,
+                    app_type,
+                    bridge.output,
+                    wire_path,
+                    &mut wire_body,
+                    headers,
+                )?;
+                match admission {
+                    super::security::http_restoration::RestorationAdmission::Admitted(request) => {
+                        log::info!(
+                            "[DLP] bridge_wire_restoration input={:?} output={:?} app={:?}",
+                            bridge.input,
+                            bridge.output,
+                            app_type
+                        );
+                        body = wire_body;
+                        Some(Arc::from(request))
+                    }
+                    super::security::http_restoration::RestorationAdmission::Passthrough => {
+                        // The client body matched a restore rule, so the converted body
+                        // must never leave as written. Mask it instead of trusting the
+                        // wire matcher's silence.
+                        super::security::http_restoration::redact_one_way(
+                            &mut wire_body,
+                            &routed.request.one_way_runtime(),
+                        )
+                        .map_err(ProxyError::DlpForward)?;
+                        log::warn!(
+                            "[DLP] bridge_wire_passthrough input={:?} output={:?} masked=one_way",
+                            bridge.input,
+                            bridge.output
+                        );
+                        body = wire_body;
+                        None
+                    }
+                    super::security::http_restoration::RestorationAdmission::Intercepted(_) => {
+                        return Err(ProxyError::DlpForward(
+                            super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                        ))
+                    }
+                }
+            }
+        };
+        let (response, _format, model, upstream_tool_schemas, dlp_attempt) = wire_forwarder
             .forward_native(
                 app_type,
                 method,
@@ -1531,6 +1621,35 @@ impl RequestForwarder {
                 &bridged_adapter,
             )
             .await?;
+        // Restore in the wire protocol, before the reply is transcoded: the tokens
+        // live in that shape, and the transcode then carries plaintext through.
+        let response = match dlp_attempt {
+            Some(attempt) => {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let mut restored = axum::response::Response::builder().status(status);
+                for (name, value) in headers.iter() {
+                    restored = restored.header(name, value);
+                }
+                let Ok(restored) =
+                    restored.body(axum::body::Body::from_stream(response.bytes_stream()))
+                else {
+                    return Err(ProxyError::Internal(
+                        "Failed to rebuild the restored response".into(),
+                    ));
+                };
+                let restored = attempt.restore_native_chat_http_response(restored).await;
+                let (parts, body) = restored.into_parts();
+                ProxyResponse::streamed(
+                    parts.status,
+                    parts.headers,
+                    body.into_data_stream().map(|chunk| {
+                        chunk.map_err(|_| std::io::Error::other("restored_response_failed"))
+                    }),
+                )
+            }
+            None => response,
+        };
         if let (Some(client), Some(original)) = (observation_client, original_tool_schemas) {
             let definitions = original
                 .iter()
@@ -1592,7 +1711,8 @@ impl RequestForwarder {
             } else {
                 upstream_tool_schemas
             },
-            dlp_attempt,
+            // Restoration already happened in the wire protocol above.
+            None,
         ))
     }
 

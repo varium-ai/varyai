@@ -1345,7 +1345,7 @@ fn decoded_preparation_fixture() -> Result<DecodedPreparationFixture, TokenError
             .peak
             .max(initial_profile.retained + owner_charge + candidate_charge + final_profile.peak)
             .max(rewrite_peak),
-        first_retained: initial.len() + 3 * 512 + 1024,
+        first_retained: initial.len() + 3 * 384 + 256,
         candidate_charge,
     })
 }

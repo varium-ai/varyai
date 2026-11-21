@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "i18next";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
+import { updatePromptState } from "@/components/agents/updatePrompts";
 import { settingsApi } from "@/lib/api/settings";
 import { proxyApi } from "@/lib/api/proxy";
 import type { AppId } from "@/lib/api";
@@ -122,6 +123,7 @@ function mount(
   );
 }
 beforeEach(() => {
+  updatePromptState.visible = true;
   vi.resetAllMocks();
   vi.mocked(settingsApi.getToolVersions).mockImplementation(async (tools) =>
     versions(tools![0]),

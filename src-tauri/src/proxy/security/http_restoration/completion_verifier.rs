@@ -608,7 +608,9 @@ pub(super) fn json_digest(source: &Value) -> Result<[u8; 32], RestoreError> {
     Ok(writer.0.finalize().into())
 }
 
-const NATIVE_ENTITY_LIMIT: usize = 1024 * 1024;
+/// Same headroom contract as `ENTITY_LIMIT` in the native finalizer: charged
+/// bytes only, sized so a long streamed answer is never truncated by the guard.
+const NATIVE_ENTITY_LIMIT: usize = 8 * 1024 * 1024;
 
 struct NativeVerifierContext {
     pair: ProtocolPair,
@@ -1201,7 +1203,7 @@ impl VerifiedNativeSse {
                     let encoded = std::str::from_utf8(data.as_slice())
                         .map_err(|_| RestoreError::RestoreFailed)?;
                     if encoded.trim() != "[DONE]" {
-                        if sources.len() >= 1024 {
+                        if client.protocol() != Protocol::Chat && sources.len() >= 1024 {
                             return Err(RestoreError::RestoreFailed);
                         }
                         sources
@@ -1240,9 +1242,6 @@ impl VerifiedNativeSse {
                         .and_then(Value::as_array)
                         .ok_or(RestoreError::RestoreFailed)?
                     {
-                        if nodes.len() >= 128 {
-                            return Err(RestoreError::RestoreFailed);
-                        }
                         nodes.push(choice).map_err(RestoreError::capacity)?;
                     }
                 }
@@ -1566,11 +1565,7 @@ mod c5_native_completion_tests {
     fn c5_native_completion_json_rejects_incomplete_original_and_client() -> TestResult {
         let fixture = Fixture::new()?;
         let valid = chat_json();
-        for reason in [
-            Value::Null,
-            Value::from("length"),
-            Value::from("content_filter"),
-        ] {
+        for reason in [Value::Null, Value::from("abort"), Value::from("error")] {
             let mut incomplete = valid.clone();
             incomplete["choices"][0]["finish_reason"] = reason;
             let mut upstream = fixture.json();
@@ -1591,6 +1586,26 @@ mod c5_native_completion_tests {
                 .observe_client_json(&incomplete, &fixture.attempt)
                 .is_err());
             assert!(client.finish().is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn c5_native_completion_json_accepts_budget_truncation() -> TestResult {
+        let fixture = Fixture::new()?;
+        let valid = chat_json();
+        // A provider that hits the token budget still frames a complete entity and
+        // still reached EOF, so the answer must be delivered rather than refused.
+        for reason in ["length", "content_filter"] {
+            let mut truncated = valid.clone();
+            truncated["choices"][0]["finish_reason"] = Value::from(reason);
+            let mut upstream = fixture.json();
+            require(upstream.consume_upstream_json(
+                Cursor::new(serde_json::to_vec(&truncated)?),
+                &fixture.attempt,
+            ))?;
+            require(upstream.observe_client_json(&truncated, &fixture.attempt))?;
+            require(upstream.finish())?;
         }
         Ok(())
     }

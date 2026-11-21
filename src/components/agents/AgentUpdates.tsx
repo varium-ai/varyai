@@ -4,6 +4,7 @@ import type { AppId } from "@/lib/api";
 import type { useAgentUpdates } from "@/hooks/useAgentUpdates";
 import { Button } from "@/components/ui/button";
 import { AppDialog } from "@/components/ui/app-dialog";
+import { updatePromptState } from "@/components/agents/updatePrompts";
 
 type Updates = ReturnType<typeof useAgentUpdates>;
 export function AgentInstallButton({
@@ -63,14 +64,20 @@ export function AgentVersionTag({
   const appVersion =
     app !== "codex" && desktop?.source === "desktop" ? desktop.version : null;
   const waitingForExit = updates.deferred.includes(app);
-  if (!cliVersion && !appVersion && !waitingForExit) return null;
   const updating = updates.active.includes(app);
+  const showVersions = updatePromptState.visible;
+  if (
+    (!showVersions || (!cliVersion && !appVersion)) &&
+    !waitingForExit &&
+    !updating
+  )
+    return null;
   const cliLabel =
     app === "codex" || appVersion || desktop?.source === "cli"
       ? `CLI ${cliVersion}`
       : cliVersion;
   const appHint = appVersion ? t("agentUpdates.appHint") : undefined;
-  const appTag = appVersion && (
+  const appTag = showVersions && appVersion && (
     <span className="mp-agent-version" title={appHint}>
       App {appVersion}
     </span>
@@ -81,8 +88,11 @@ export function AgentVersionTag({
   );
   return (
     <div className="mp-agent-cli">
-      {cliVersion && <span className="mp-agent-version">{cliLabel}</span>}
-      {(updates.updatable.includes(app) || updating) && (
+      {showVersions && cliVersion && (
+        <span className="mp-agent-version">{cliLabel}</span>
+      )}
+      {((updatePromptState.visible && updates.updatable.includes(app)) ||
+        updating) && (
         <button
           type="button"
           className="mp-agent-update"

@@ -1606,6 +1606,13 @@ describe("global upstream editor", () => {
         name: "modelProviders.find",
       });
       expect(search).toHaveAccessibleDescription("modelProviders.searchScope");
+      expect(search.closest(".pv-head")?.firstElementChild).toContainElement(
+        search,
+      );
+      expect(search.previousElementSibling).toHaveAttribute(
+        "aria-hidden",
+        "true",
+      );
       fireEvent.change(search, { target: { value: "3" } });
       expect(
         screen.getByRole("article", { name: primary.name }),

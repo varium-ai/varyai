@@ -14,6 +14,7 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
+import { updatePromptState } from "@/components/agents/updatePrompts";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
@@ -790,6 +791,7 @@ it("keeps version updates inside tray details instead of the quick summary", asy
   expect(within(details).getByText("1.0.0")).toBeInTheDocument();
 });
 beforeEach(() => {
+  updatePromptState.visible = true;
   vi.clearAllMocks();
   vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
     accounts: [],

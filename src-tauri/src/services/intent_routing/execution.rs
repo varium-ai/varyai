@@ -293,7 +293,10 @@ fn normalized_static_provider(
     if !preserve_key_scope {
         crate::services::routing_upstreams::strip_key_model_scope(&mut provider);
     }
-    provider.id = crate::services::routing_upstreams::execution_identity(&provider).into();
+    // Routing keys stay on `Target::provider_id` (the immutable execution
+    // identity). The configured supplier's public id must survive here so
+    // trace candidates can record it and the UI never falls back to the
+    // opaque `provider-…` identity.
     if let Some(settings) = provider.settings_config.as_object_mut() {
         settings.remove(crate::services::routing_upstreams::EXECUTION_IDENTITY);
     }
@@ -559,6 +562,50 @@ mod tests {
             .await
             .is_err());
         Ok(())
+    }
+
+    #[test]
+    fn traces_record_the_configured_supplier_id_after_public_id_reuse() {
+        use crate::proxy::intent::trace::Store;
+        // A reused public id mints an execution identity that differs from it.
+        let mut provider = crate::provider::Provider::with_id(
+            "synthetic-supplier".into(),
+            "Synthetic".into(),
+            json!({
+                "apiFormat":"openai_chat",
+                "base_url":"https://synthetic.invalid/v1"
+            }),
+            None,
+        );
+        provider.settings_config[crate::services::routing_upstreams::EXECUTION_IDENTITY] =
+            json!("provider-syntheticexecutionidentity");
+        let normalized = normalized_static_provider(&provider, false).expect("normalized");
+        assert_eq!(normalized.id, "synthetic-supplier");
+        assert!(normalized
+            .settings_config
+            .get(crate::services::routing_upstreams::EXECUTION_IDENTITY)
+            .is_none());
+        let target = Target {
+            fixed_effort: None,
+            provider_id: "provider-syntheticexecutionidentity".into(),
+            model: "synthetic-model".into(),
+            upstream: Some(normalized),
+            effort: Default::default(),
+            url: "https://synthetic.invalid/v1/responses"
+                .parse()
+                .expect("url"),
+            headers: Default::default(),
+            official: false,
+            credentials: None,
+            scheduling: Arc::default(),
+        };
+        let candidate = Store::default().candidate(&target);
+        assert_eq!(
+            candidate.source_provider_id.as_deref(),
+            Some("synthetic-supplier")
+        );
+        let encoded = serde_json::to_value(&candidate).expect("wire");
+        assert_eq!(encoded["sourceProviderId"], "synthetic-supplier");
     }
 
     #[test]

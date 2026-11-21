@@ -1,18 +1,12 @@
 .settings-page {
   container-type: inline-size;
-  padding: var(--workspace-page-top, 24px) 24px 0;
+  max-width: var(--workspace-page-max-width, 1232px);
+  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px) 0;
   color: hsl(var(--foreground));
 }
 .settings-header {
   padding-bottom: 18px;
 }
-.settings-header h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 30px;
-}
-.settings-header p,
 .setting-copy p {
   margin: 3px 0 0;
   font-size: 12px;

@@ -539,6 +539,74 @@ fn final_validation_password_context_is_preserved_in_refusal_audit() -> TestResu
 }
 
 #[test]
+fn final_validation_chat_refusal_audit_skips_authorized_login_url_password_token() -> TestResult {
+    let store = DlpTokenStore::new();
+    let mut source = json!({
+        "input": [
+            {"role": "user", "content": "https://user:syntheticpass@example.invalid"},
+            {"role": "user", "content": "safe"}
+        ]
+    });
+    let mut request = request_in_store(&source, &store)?;
+    request.runtime.builtin_action_overrides.insert(
+        "catalog:login-url-password".into(),
+        AuditAction::RedactRestore,
+    );
+    let ledger = store.allocation_ledger()?;
+    let mut rules = StoreVec::with_capacity(1, ledger.clone(), 4096)?;
+    rules.push_without_growth(StoreText::try_from_str(
+        "catalog:login-url-password",
+        ledger,
+        256,
+    )?)?;
+    request.restore_rules = rules;
+    let observe = request.audit_observer_for_test();
+    let result = request.prepare_attempt_for_proxy(
+        "final-fixture-provider",
+        "openai_chat",
+        "https://synthetic.invalid/v1/chat/completions",
+        Some("synthetic-account"),
+        &mut source,
+        |prepared| {
+            let redacted_url = prepared["input"][0]["content"].as_str().ok_or(
+                crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed),
+            )?;
+            if !redacted_url.contains("rredact-password-") || redacted_url.contains("syntheticpass")
+            {
+                return Err(crate::proxy::error::ProxyError::DlpForward(
+                    DlpForwardError::RedactionFailed,
+                ));
+            }
+            Ok(json!({
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "name": "private-a",
+                        "content": "safe"
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_safe",
+                        "content": redacted_url
+                    }
+                ]
+            }))
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(crate::proxy::error::ProxyError::DlpForward(
+            DlpForwardError::RedactionFailed
+        ))
+    ));
+    let events = observe();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].log.rule_id, "final-fixture");
+    assert_eq!(events[0].log.action_taken, "block");
+    Ok(())
+}
+
+#[test]
 fn final_validation_exhausted_budget_is_propagated_without_publication() -> TestResult {
     let mut source = json!({"input":"safe"});
     let request = request(&source)?;

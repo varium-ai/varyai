@@ -211,15 +211,15 @@ pub(in crate::proxy::security) fn finalize_sse(
     lease
         .require_native_attempt_binding(client(), binding)
         .map_err(RestoreError::scan_error)?;
-    if entity.len() > max.min(1024 * 1024) {
+    // Honor the capture-side entity limit (`max`) without a tighter hidden
+    // clamp, and rely on payload budgeting instead of a frame-count cap: a
+    // long native answer legitimately streams one Part per delta.
+    if entity.len() > max {
         return Err(RestoreError::capacity(TokenError::CapacityExceeded));
     }
     let mut remaining = std::str::from_utf8(entity).map_err(|_| RestoreError::RestoreFailed)?;
     let mut parsed = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     while !remaining.is_empty() {
-        if parsed.len() >= 1024 {
-            return Err(RestoreError::capacity(TokenError::CapacityExceeded));
-        }
         let end = remaining
             .bytes()
             .enumerate()

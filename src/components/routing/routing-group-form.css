@@ -189,7 +189,7 @@
   .rt-group-form
   :is(input:not([type="checkbox"], [type="radio"]), select, textarea) {
   min-width: 0;
-  height: 27px;
+  height: var(--compact-control-height);
   margin: 0;
   padding: 0 9px;
   border: 1px solid var(--mp-line);
@@ -204,6 +204,7 @@
   width: 100%;
 }
 .vary-routing .rt-group-form textarea {
+  height: 27px;
   min-height: 64px;
   padding: 6px 9px;
 }

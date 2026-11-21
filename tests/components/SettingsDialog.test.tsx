@@ -330,6 +330,7 @@ describe("SettingsPage Component", () => {
       "common.about",
     ]);
     expect(screen.queryByText("settings.codexAuth")).not.toBeInTheDocument();
+    expect(screen.queryByText("settings.statusNotice")).not.toBeInTheDocument();
     expect(screen.getByText("window-settings")).toBeInTheDocument();
   });
 

@@ -200,7 +200,7 @@
 }
 .ob-key-form input,
 .ob-key-form select {
-  height: 42px;
+  height: var(--compact-control-height);
   border: 1px solid var(--mp-line);
   border-radius: 9px;
   background: var(--mp-card);
@@ -221,10 +221,11 @@
 }
 .ob-key-visibility {
   position: absolute;
-  top: 5px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 5px;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   color: var(--mp-fg-2);
 }
 .ob-hint {

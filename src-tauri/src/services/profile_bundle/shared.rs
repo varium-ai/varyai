@@ -115,6 +115,67 @@ pub(super) fn codex_model(state: &AppState) -> Result<Option<String>, AppError> 
     Ok(Some(model_label(&catalog, &model)))
 }
 
+/// Resolve a retained routing slug to a readable label. `None` leaves ordinary
+/// native selectors untouched, so only recognized routing state is rewritten.
+pub(super) fn codex_slug_label(state: &AppState, wire: &str) -> Option<String> {
+    let client = &state.proxy_service.intent_client;
+    let menu = menu(state).ok();
+    if let Some(selector) = client.profile_model(wire).ok().flatten() {
+        return Some(match menu.as_ref() {
+            Some(menu) => model_label(&agent_connections::models(menu), &selector),
+            None => selector,
+        });
+    }
+    if let Some(menu) = &menu {
+        if menu.listed_aliases().any(|alias| alias == wire) {
+            return Some(model_label(&agent_connections::models(menu), wire));
+        }
+    }
+    // Retired execution identities survive only in remembered usage labels.
+    let (provider, model) = wire.split_once('/')?;
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    let id = crate::services::intent_routing::menu::direct_id(provider, model);
+    let labels = state
+        .db
+        .get_usage_model_labels(std::slice::from_ref(&id))
+        .ok()?;
+    let label = labels.first()?;
+    let display = label.display_name.trim();
+    if display.is_empty() {
+        return None;
+    }
+    let provider_name = label.provider_name.trim();
+    Some(
+        if display
+            .to_lowercase()
+            .contains(&provider_name.to_lowercase())
+        {
+            display.to_owned()
+        } else {
+            format!("{display} · {provider_name}")
+        },
+    )
+}
+
+/// Codex configs can keep routing selectors after ownership metadata is lost
+/// (recovery, manual restore). Preview must then keep the shared view instead
+/// of presenting the residue as an unrelated provider's native model.
+pub(super) fn codex_residue_model(state: &AppState) -> Result<Option<String>, AppError> {
+    let text = match std::fs::read_to_string(crate::codex_config::get_codex_config_path()) {
+        Ok(text) => text,
+        Err(_) => return Ok(None),
+    };
+    let Ok(doc) = text.parse::<toml::Value>() else {
+        return Ok(None);
+    };
+    Ok(doc
+        .get("model")
+        .and_then(toml::Value::as_str)
+        .and_then(|wire| codex_slug_label(state, wire)))
+}
+
 pub(super) fn capture(state: &AppState, app: &AppType) -> Result<Option<Connection>, AppError> {
     if !available(state, app)? {
         return Ok(None);
@@ -416,4 +477,39 @@ pub(super) fn restore(state: &AppState, app: &AppType) -> Result<(), AppError> {
             .map_err(|_| error("restoreFailed"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod codex_slug_tests {
+    use super::*;
+    use crate::services::usage_model_labels::UsageModelLabel;
+
+    #[test]
+    fn retained_routing_slugs_resolve_without_exposing_the_execution_identity() {
+        let state = AppState::new(std::sync::Arc::new(
+            crate::database::Database::memory().unwrap(),
+        ));
+        let id = crate::services::intent_routing::menu::direct_id(
+            "provider-syntheticidentity",
+            "zai-org/synthetic-model",
+        );
+        state
+            .db
+            .remember_usage_model_labels(&[UsageModelLabel {
+                id,
+                model: "zai-org/synthetic-model".into(),
+                display_name: "Synthetic".into(),
+                provider_name: "公司".into(),
+            }])
+            .unwrap();
+
+        assert_eq!(
+            codex_slug_label(&state, "provider-syntheticidentity/zai-org/synthetic-model"),
+            Some("Synthetic · 公司".into())
+        );
+        // A native selector without a routing prefix stays untouched.
+        assert_eq!(codex_slug_label(&state, "synthetic-native-model"), None);
+        // An unrecognized prefix must not be guessed away.
+        assert_eq!(codex_slug_label(&state, "other/synthetic-model"), None);
+    }
 }

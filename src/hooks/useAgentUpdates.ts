@@ -9,6 +9,7 @@ import { settingsApi, type AgentVersion } from "@/lib/api/settings";
 import { compareVersions, isUpdateAvailable } from "@/lib/version";
 import type { AppId } from "@/lib/api";
 import { proxyApi } from "@/lib/api/proxy";
+import { updatePromptState } from "@/components/agents/updatePrompts";
 
 const cliTools: Partial<Record<AppId, string>> = {
   claude: "claude",
@@ -516,7 +517,9 @@ export function useAgentUpdates(installed: AppId[]) {
     pending,
     results,
     deferred,
-    showBar: barShown || updatable.length >= 2,
+    // Update availability is not surfaced in the UI while the prompts stay
+    // hidden; the bar only reports progress and results for update runs.
+    showBar: barShown || (updatePromptState.visible && updatable.length >= 2),
     start,
     recheck,
     installTarget,

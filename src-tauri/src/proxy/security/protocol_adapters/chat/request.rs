@@ -47,11 +47,19 @@ pub(in crate::proxy::security) fn observe_request<'native>(
                 observation.observe_text(content, source, EditConstraint::Editable)?;
             } else if let Some(parts) = content.as_array() {
                 for part in parts {
-                    if part.get("type").and_then(Value::as_str) != Some("text") {
-                        continue;
-                    }
-                    if let Some(text) = part.get("text").filter(|text| text.is_string()) {
-                        observation.observe_text(text, source, EditConstraint::Editable)?;
+                    match part.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = part.get("text").filter(|text| text.is_string()) {
+                                observation.observe_text(text, source, EditConstraint::Editable)?;
+                            }
+                        }
+                        Some("refusal") if role == "assistant" => {
+                            if let Some(text) = part.get("refusal").filter(|text| text.is_string())
+                            {
+                                observation.observe_text(text, source, EditConstraint::Editable)?;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -59,6 +67,11 @@ pub(in crate::proxy::security) fn observe_request<'native>(
         match role {
             "assistant" => {
                 observation.claim_history(HistoryClaim::AssistantItem { native: message })?;
+                for key in ["reasoning_content", "reasoning", "refusal"] {
+                    if let Some(text) = message.get(key).filter(|text| text.is_string()) {
+                        observation.observe_text(text, source, EditConstraint::Editable)?;
+                    }
+                }
                 if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                     for call in calls {
                         if call.get("type").and_then(Value::as_str) != Some("function") {

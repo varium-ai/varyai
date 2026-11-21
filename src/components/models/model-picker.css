@@ -150,7 +150,7 @@
   min-width: 0;
   align-items: center;
   gap: 6px;
-  height: 28px;
+  height: var(--compact-control-height);
   padding: 0 9px;
   border-radius: 8px;
   color: var(--mp-faint);
@@ -160,7 +160,7 @@
   flex: 1;
   min-width: 0;
   width: 100%;
-  height: 28px;
+  height: 100%;
   border: 0;
   outline: none;
   background: none;
@@ -558,7 +558,6 @@ button.mp-am-row:hover,
   border-bottom: 1px solid var(--mp-line-2);
 }
 .mp-agent-model-picker .mp-am-search {
-  height: 39px;
   gap: 8px;
   padding: 0 12px;
   border-radius: 0;
@@ -570,7 +569,6 @@ button.mp-am-row:hover,
   flex: none;
 }
 .mp-agent-model-picker .mp-am-search input {
-  height: 38px;
   font-size: 13px;
 }
 .mp-agent-model-picker .mp-am-search:focus-within {

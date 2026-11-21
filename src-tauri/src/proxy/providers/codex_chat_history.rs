@@ -824,8 +824,12 @@ fn cached_call_item(
     let call_id = response_item_call_id(item)?;
     let (item, owner) = match owner {
         // Admission failure skips this optional entry; never retain an uncharged copy.
+        //
+        // The copy is still charged to the producing request's budget, but through an
+        // owner with its own zero-base workspace: keeping a handle to the request's
+        // workspace pinned `base + 4 x input` for as long as this entry lived.
         Some(owner) => {
-            let (copy, copy_owner) = owner.try_clone_json(item).ok()?;
+            let (copy, copy_owner) = owner.retain(item).ok()?;
             (copy, Some(copy_owner))
         }
         None => (item.clone(), None),
@@ -1403,14 +1407,18 @@ mod tests {
         let response = tokenized_response("resp_owned", "call_owned");
         let probe_history = CodexChatHistoryStore::default();
         let (probe, probe_used) = payload_owner_fixture()?;
+        let workspace = probe_used();
         probe_history
             .record_response_with_payload_owner(&response, Some(probe))
             .await;
+        // The producing workspace is released with its owner: only the copy is retained.
         let retained = probe_used();
         drop(probe_history);
+        assert_eq!(probe_used(), 0);
         let history = CodexChatHistoryStore::default();
-        let (source, source_used) = UpstreamPayloadOwner::test_fixture_with_limit(retained)
-            .map_err(|error| std::io::Error::other(error.code()))?;
+        let (source, source_used) =
+            UpstreamPayloadOwner::test_fixture_with_limit(workspace + retained)
+                .map_err(|error| std::io::Error::other(error.code()))?;
         assert_eq!(
             history
                 .record_response_with_payload_owner(&response, Some(source))
@@ -1585,12 +1593,14 @@ mod tests {
             .record_response_with_payload_owner(&response, Some(probe))
             .await;
         let retained = probe_used();
-        let copy_charge = retained - workspace;
+        // Only the copy is retained; the producing workspace is released with its owner.
+        let copy_charge = retained;
         drop(probe_history);
         assert_eq!(probe_used(), 0);
         let history = CodexChatHistoryStore::default();
-        let (owner, used) = UpstreamPayloadOwner::test_fixture_with_limit(retained + copy_charge)
-            .map_err(|error| std::io::Error::other(error.code()))?;
+        let (owner, used) =
+            UpstreamPayloadOwner::test_fixture_with_limit(workspace + retained + copy_charge)
+                .map_err(|error| std::io::Error::other(error.code()))?;
         assert_eq!(
             history
                 .record_response_with_payload_owner(&response, Some(owner))
@@ -1700,7 +1710,8 @@ mod tests {
         history
             .record_response_with_payload_owner(&response, Some(probe))
             .await;
-        let cache_copy_charge = probe_used() - workspace_charge;
+        // The producing workspace is released with its owner: this is the copy charge alone.
+        let cache_copy_charge = probe_used();
         drop(history);
         assert_eq!(probe_used(), 0);
 
@@ -1726,8 +1737,8 @@ mod tests {
             1
         );
         for input in [
-            json!([{"type": "function_call_output", "call_id": "call_owned", "output": "ok"}]),
-            json!({"type": "function_call", "call_id": "call_owned"}),
+            json!([{"type": "function_call_output", "call_id": "call_owned", "output": "ok".repeat(96 * 1024)}]),
+            json!({"type": "function_call", "call_id": "call_owned", "arguments": "ok".repeat(96 * 1024)}),
         ] {
             let mut request = json!({"previous_response_id": "resp_owned", "input": input});
             let original = request.clone();
@@ -1762,13 +1773,15 @@ mod tests {
             .record_response_with_payload_owner(&response, Some(probe))
             .await;
         let retained_charge = probe_used();
-        let copy_charge = (retained_charge - workspace_charge) / 2;
+        // Two calls were cached; the producing workspace is already gone.
+        let copy_charge = retained_charge / 2;
         drop(probe_history);
         assert_eq!(probe_used(), 0);
         let history = CodexChatHistoryStore::default();
-        let (owner, used) =
-            UpstreamPayloadOwner::test_fixture_with_limit(retained_charge + copy_charge)
-                .map_err(|error| std::io::Error::other(error.code()))?;
+        let (owner, used) = UpstreamPayloadOwner::test_fixture_with_limit(
+            workspace_charge + retained_charge + copy_charge,
+        )
+        .map_err(|error| std::io::Error::other(error.code()))?;
         assert_eq!(
             history
                 .record_response_with_payload_owner(&response, Some(owner))
@@ -1779,7 +1792,7 @@ mod tests {
             "previous_response_id": "resp_owned",
             "input": [
                 {"type": "function_call", "call_id": "call_first"},
-                {"type": "function_call_output", "call_id": "call_other", "output": "ok"}
+                {"type": "function_call_output", "call_id": "call_other", "output": "ok".repeat(96 * 1024)}
             ]
         });
         let original = request.clone();
@@ -1877,10 +1890,7 @@ mod tests {
         assert_eq!(second_changed, 1);
         let second_charge = used();
         assert_eq!(second_charge - first_charge, first_charge - cached_charge);
-        assert!(
-            cached_charge > upstream_charge,
-            "the cache copy must be charged too"
-        );
+        assert!(cached_charge > 0, "the cache copy must be charged too");
         assert_eq!(first["input"][0]["reasoning_content"], SYNTHETIC_TOKEN);
         assert_eq!(second["input"][0]["reasoning_content"], SYNTHETIC_TOKEN);
         drop(first);
@@ -2117,8 +2127,8 @@ mod tests {
             1
         );
         assert!(
-            used() > charge,
-            "cache admission must charge its independent copy"
+            used() > 0 && used() < charge,
+            "cache admission charges its independent copy and releases the producing workspace"
         );
         let cached_charge = used();
 
@@ -2247,8 +2257,8 @@ mod tests {
         }
         drop(owner);
         assert!(
-            used() > charge,
-            "only the workspace and current cache copy remain"
+            used() > 0 && used() < charge,
+            "only the retained cache copy survives its producing workspace"
         );
         for index in 0..MAX_CACHED_RESPONSES {
             history
@@ -2311,8 +2321,8 @@ mod tests {
                 assert_eq!(actual?, expected);
             }
             assert!(
-                used() > charge,
-                "SSE history retains workspace and cache copy charge"
+                used() > 0 && used() < charge,
+                "SSE history retains the cache copy without pinning the producing workspace"
             );
             let mut request = json!({
                 "previous_response_id": "resp_sse",

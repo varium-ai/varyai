@@ -12,8 +12,9 @@ import {
 } from "@/lib/api/routingUpstreams";
 import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { Button } from "@/components/ui/button";
+import { WorkspacePageHeading } from "@/components/layout/WorkspacePageHeading";
 import { CopyAgentSetupButton } from "@/components/CopyAgentSetupButton";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -1111,10 +1112,10 @@ export function RoutingUpstreamsPanel({
     >
       {!adding && (
         <header className="pv-page-head">
-          <div className="pv-page-copy">
-            <h1 className="mp-page-heading">{t("modelProviders.title")}</h1>
-            <p className="mp-lead">{t("modelProviders.description")}</p>
-          </div>
+          <WorkspacePageHeading
+            title={t("modelProviders.title")}
+            description={t("modelProviders.description")}
+          />
           <div className="pv-page-actions">
             <CopyAgentSetupButton
               labelKey="onboarding.copyForAgent"
@@ -1137,29 +1138,8 @@ export function RoutingUpstreamsPanel({
       )}
       {!adding && !!records.data?.length && (
         <div className="pv-head">
-          {selected && (
-            <label className="pv-select-all">
-              <input
-                type="checkbox"
-                disabled={busy || !visible.length}
-                checked={
-                  !!visible.length &&
-                  visible.every((record) => selected.has(record.id))
-                }
-                onChange={(event) =>
-                  setSelected(
-                    event.target.checked
-                      ? new Set(visible.map((record) => record.id))
-                      : new Set(),
-                  )
-                }
-              />
-              <span>{t("modelProviders.selectAll")}</span>
-            </label>
-          )}
-          <Input
-            className="pv-query"
-            type="search"
+          <SearchInput
+            wrapperClassName="pv-query"
             aria-label={t("modelProviders.find")}
             aria-describedby="provider-search-scope"
             title={t("modelProviders.searchScope")}
@@ -1171,25 +1151,47 @@ export function RoutingUpstreamsPanel({
           <span id="provider-search-scope" className="pv-search-scope">
             {t("modelProviders.searchScope")}
           </span>
-          {selected && (
+          <div className="pv-list-actions">
+            {selected && (
+              <label className="pv-select-all">
+                <input
+                  type="checkbox"
+                  disabled={busy || !visible.length}
+                  checked={
+                    !!visible.length &&
+                    visible.every((record) => selected.has(record.id))
+                  }
+                  onChange={(event) =>
+                    setSelected(
+                      event.target.checked
+                        ? new Set(visible.map((record) => record.id))
+                        : new Set(),
+                    )
+                  }
+                />
+                <span>{t("modelProviders.selectAll")}</span>
+              </label>
+            )}
+            {selected && (
+              <button
+                type="button"
+                className="pv-batch-delete"
+                disabled={!selected.size || busy}
+                onClick={() => setConfirmBulk(true)}
+              >
+                {t("modelProviders.removeSelected", { count: selected.size })}
+              </button>
+            )}
             <button
               type="button"
-              className="pv-batch-delete"
-              disabled={!selected.size || busy}
-              onClick={() => setConfirmBulk(true)}
+              className="pv-manage"
+              aria-pressed={!!selected}
+              disabled={busy || !!draft}
+              onClick={() => setSelected(selected ? null : new Set())}
             >
-              {t("modelProviders.removeSelected", { count: selected.size })}
+              {t(selected ? "common.cancel" : "modelProviders.manage")}
             </button>
-          )}
-          <button
-            type="button"
-            className="pv-manage"
-            aria-pressed={!!selected}
-            disabled={busy || !!draft}
-            onClick={() => setSelected(selected ? null : new Set())}
-          >
-            {t(selected ? "common.cancel" : "modelProviders.manage")}
-          </button>
+          </div>
         </div>
       )}
       {!adding && records.isError && (
@@ -1214,9 +1216,7 @@ export function RoutingUpstreamsPanel({
         ) : (
           <>
             {!records.isError && records.data?.length === 0 && (
-              <div className="pv-empty" role="status">
-                <p>{t("modelProviders.empty")}</p>
-              </div>
+              <SearchEmptyState title={t("modelProviders.empty")} />
             )}
             {!!on.length && (
               <SortableProviderList records={on} onReorder={reorder}>

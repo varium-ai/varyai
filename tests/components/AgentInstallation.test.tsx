@@ -8,6 +8,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
+import { updatePromptState } from "@/components/agents/updatePrompts";
 import { settingsApi } from "@/lib/api/settings";
 import { proxyApi } from "@/lib/api/proxy";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -98,6 +99,7 @@ async function row(app: string) {
   return screen.findByRole("group", { name: `apps.${app}` });
 }
 beforeEach(() => {
+  updatePromptState.visible = true;
   vi.clearAllMocks();
   vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
   detected = Object.fromEntries(APP_IDS.map((app) => [app, false]));

@@ -91,6 +91,23 @@ body {
 }
 
 @layer base {
+  :where(
+    input:not([type]),
+    input:is(
+      [type="text"],
+      [type="search"],
+      [type="password"],
+      [type="url"],
+      [type="email"],
+      [type="number"],
+      [type="tel"],
+      [type="date"],
+      [type="time"]
+    )
+  ) {
+    height: var(--compact-control-height);
+  }
+
   /* Keep editing and copyable content selectable in WebKit and WebView2. */
   input,
   textarea,

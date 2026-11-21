@@ -1144,7 +1144,15 @@ impl ProfileBundleService {
                     .collect::<Vec<_>>()
             });
             let shared_codex = if snapshot.app == AppType::Codex {
-                shared::codex_model(state).map_err(|e| agent_error(&snapshot.app, e))?
+                match shared::codex_model(state).map_err(|e| agent_error(&snapshot.app, e))? {
+                    Some(model) => Some(model),
+                    // Ownership metadata can be lost while the Codex config
+                    // still routes through the shared menu. Keep the shared
+                    // view for that residue instead of exposing internal
+                    // routing identities through the provider branch.
+                    None => shared::codex_residue_model(state)
+                        .map_err(|e| agent_error(&snapshot.app, e))?,
+                }
             } else {
                 None
             };
@@ -1226,6 +1234,17 @@ impl ProfileBundleService {
                         .unwrap_or_else(|| native::model_labels(&selection.models));
                     if let Some(native) = &selection.native_models {
                         values.extend(native::model_labels(native));
+                    }
+                    if snapshot.app == AppType::Codex {
+                        // Retained routing slugs must never surface internal
+                        // execution identities in the preview.
+                        values = values
+                            .iter()
+                            .map(|value| {
+                                shared::codex_slug_label(state, value)
+                                    .unwrap_or_else(|| value.clone())
+                            })
+                            .collect();
                     }
                     values.sort();
                     values.dedup();
