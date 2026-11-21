@@ -368,6 +368,10 @@ fn validates_bounds_and_group_local_references() {
     assert!(invalid.validate().is_err());
     invalid = fixture();
     invalid.classification_budget_ms = 5001;
+    assert!(invalid.validate().is_ok());
+    invalid.classification_budget_ms = 15000;
+    assert!(invalid.validate().is_ok());
+    invalid.classification_budget_ms = 15001;
     assert!(invalid.validate().is_err());
     invalid = fixture();
     invalid.rules[0].description = "x".repeat(501);
@@ -543,15 +547,18 @@ fn global_group_aliases_cannot_collide_or_reference_another_group() {
 }
 
 #[test]
-fn static_targets_accept_explicit_protocols_but_classifiers_require_chat_credentials() {
+fn static_targets_and_classifiers_accept_each_supported_api_protocol() {
     let mut p = provider();
-    assert!(eligible_provider(&p, false));
-    p.settings_config["apiFormat"] = json!("openai_chat");
-    assert!(eligible_provider(&p, false));
-    assert!(eligible_provider(&p, true));
-    p.settings_config["apiFormat"] = json!("gemini_native");
-    assert!(eligible_provider(&p, false));
-    assert!(!eligible_provider(&p, true));
+    for protocol in [
+        "openai_chat",
+        "openai_responses",
+        "anthropic",
+        "gemini_native",
+    ] {
+        p.settings_config["apiFormat"] = json!(protocol);
+        assert!(eligible_provider(&p, false), "{protocol}");
+        assert!(eligible_provider(&p, true), "{protocol}");
+    }
     p.category = Some("official".into());
     assert!(!eligible_provider(&p, true));
 }

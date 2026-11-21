@@ -2156,12 +2156,106 @@ route. Doubao Work retains its audit-only path. Renderer fixtures cover the
 editor and saved order on the shared macOS and Windows code path. Native
 verification remains separate for the adapters listed below.
 
+The routing group model count uses the shared workspace table for each
+Agent listed below on macOS and Windows. It includes a separately
+configured classifier once per supplier and model. The existing Agent
+adapters continue to receive the same task member order and classifier
+configuration. Renderer fixtures cover the table count.
+
+Verified the count change on the working tree based on `21dceb85`, using
+macOS 26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3. TypeScript, Prettier
+and the renderer build passed. The full renderer suite passed 4,844 tests,
+including the new cases for repeated supplier and model pairs, matched
+members and separate suppliers. Installed-client verification is pending.
+
+For each Agent in the matrix below, the Custom routing group's rule editor
+uses the same renderer on macOS and Windows. The layout groups the match
+conditions, preferred member and ordered fallbacks. The editor continues to
+save the same rule fields, which feed the existing native adapter and runtime
+listed for each Agent. Doubao Work remains audit-only. Editor verification
+covers condition editing, pause rules, disabled rules, keyboard ordering and
+saved targets with synthetic fixtures. Native status remains as listed below.
+
+On the working tree based on `21dceb85`, Chromium on macOS 26.6.2 arm64
+verified the editor at 544 and 900 px in both themes across Simplified Chinese,
+Traditional Chinese, English and Japanese. The fixtures exercise long model
+IDs, conditions covering the full Agent inventory, mouse and keyboard rule
+ordering, and focus on the intent field after adding a rule. The full renderer
+suite passed 4,848 tests with Node 20.20.2 and pnpm 10.12.3 after the concurrent
+classifier changes and before the alignment follow-up. Windows WebView2 and
+installed-client verification remain pending.
+
+The alignment follow-up reproduced the rules starting at the form's left
+edge and the live trial starting in a separate column. At 900 and 544 px,
+Chromium verified a common left edge for rules, live trial, offline plan
+validation and advanced execution settings, with empty and populated rules.
+TypeScript, Prettier, the renderer build and all 136 routing panel tests passed
+after the alignment change.
+
+The rules title now uses the same label styling and column as the other
+advanced settings. Chromium verified the label's position, font and color,
+the adjacent **Add rule** button and the help popover at both widths, for
+empty and populated rules. The popover opens by mouse or keyboard and returns
+focus to the information button on Escape. All 137 routing panel tests,
+TypeScript, Prettier and the renderer build passed after this change.
+
+The Custom rule model picker uses the same renderer as the template picker
+for every Agent in the matrix below. It selects existing group member IDs,
+including effort variants. Primary, fallback and pause selections still feed
+the same saved rule fields and the same native adapters.
+Chromium on macOS verified wheel scrolling within a 44-member list at 900 and
+544 px, along with search, model replacement and saved fallback order.
+The renderer regressions cover retained effort variants and changing the
+member selected by a pause rule. On the working tree based on `21dceb85`,
+macOS 26.6.2 arm64, Node 20.20.2 and pnpm 10.12.3 passed TypeScript, Prettier,
+the renderer build and all 4,849 renderer tests. Windows WebView2 was not
+exercised for this change.
+
 The Fastest and intent-rule regressions use the same inventory. Each
 executable adapter uses the shared exact-upstream measurements, candidate
 pool, continuation ownership and live rule selection. The classifier sees
 the latest supported user text through each adapter's canonical request
 projection. Codex Responses fixtures also exercise replayed reasoning
 summaries. Native acceptance remains pending on both platforms.
+
+The classifier protocol and deadline update applies to each executable Agent
+below through the listed adapter and shared runtime. The editor uses the same
+provider picker, deadline and trial on macOS and Windows. The classifier's
+outbound protocol is independent of the incoming Agent protocol. WorkBuddy
+China and international have a dedicated incoming Chat regression for deadline
+fallback and easy-rule selection. Doubao Work has no executable intent route.
+
+On macOS 26.6.2 arm64, the working tree based on `21dceb85` passed the
+classifier protocol and privacy tests with Rust 1.98.1. Loopback tests used the
+WorkBuddy China and international Chat entry points with the same short task
+and a classifier that returned after 2,300 ms. A 2,000 ms deadline recorded a
+timeout and selected the default model. A 5,000 ms deadline recorded a match
+and selected the easy model. Renderer tests covered the same outcomes and
+verified that changing a saved deadline survives reopening the editor.
+
+TypeScript, Prettier and the renderer build passed with Node 20.20.2 and
+pnpm 10.12.3. The renderer suite passed 4,848 tests. Cargo check, formatting
+and Clippy with warnings denied passed. The full Rust suite passed 7,993
+tests with 21 ignored. Installed clients and Windows remain pending.
+
+The longer opt-in classifier deadline and Gemini 3 classification effort
+apply through the same shared runtime and editor for every executable Agent
+below on macOS and Windows. Conversation ownership stays with each adapter's
+existing continuation path. Doubao Work has no executable intent route.
+
+The follow-up loopback regression verifies `MINIMAL` on the classifier's
+Gemini Native request. In both WorkBuddy editions a synthetic 5,300 ms
+classifier response caused a fallback with a 5,000 ms deadline and selected
+the easy model with a 10,000 ms deadline. Unknown Gemini models in the
+protocol fixture use their upstream thinking default. Renderer fixtures
+cover timeout guidance below and at the new 15,000 ms limit.
+The updated renderer suite passed 4,849 tests on macOS. Cargo check and
+Clippy with warnings denied passed for the follow-up.
+
+New hard/easy drafts use a 10,000 ms classification deadline in the shared
+editor for every executable Agent below. The editor regression checks the
+default in the draft and the saved configuration. Existing groups keep
+their saved deadlines.
 
 | Agent ID | Entry point and native adapter | Verification scope |
 | --- | --- | --- |
@@ -2174,8 +2268,8 @@ summaries. Native acceptance remains pending on both platforms.
 | `openclaw` | OpenClaw, provider model registry and shared runtime | Shared classifier tests. Native pending |
 | `hermes` | Hermes, provider model registry and shared runtime | Shared classifier tests. Native pending |
 | `pi` | Pi, custom provider registry and shared runtime | Shared classifier tests. Native pending |
-| `workbuddy` | WorkBuddy China desktop, native model list and shared runtime | Shared classifier tests. Native pending |
-| `workbuddy-ai` | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests. Native pending |
+| `workbuddy` | WorkBuddy China desktop, native model list and shared runtime | Shared classifier tests and Chat deadline regression passed with loopback fixtures. Native pending |
+| `workbuddy-ai` | WorkBuddy international desktop, native model list and shared runtime | Shared classifier tests and Chat deadline regression passed with loopback fixtures. Native pending |
 | `qoder` | Qoder China desktop, provider registry and shared runtime | Shared classifier tests. Native pending |
 | `doubaowork` | Doubao Work desktop, audit-only integration | No executable model picker or intent route in this integration |
 | `trae` | TRAE China desktop, Chat bridge and shared runtime | Shared classifier tests. Native pending |

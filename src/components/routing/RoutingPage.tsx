@@ -199,6 +199,8 @@ export function RoutingPage({
           {shown && !multipleRoutes && (
             <p className="rt-cap" aria-live="polite">
               {t(`routingPage.state.${shown.state}`)}
+              {shown.classificationOutcome &&
+                ` · ${t(`routingPage.classificationOutcome.${shown.classificationOutcome}`)}`}
             </p>
           )}
           <div className="rt-stats">

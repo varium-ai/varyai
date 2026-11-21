@@ -127,11 +127,18 @@ impl Fixture {
             async move {
                 if uri.path().ends_with("responses") {
                     let attempt = count.fetch_add(1, Ordering::SeqCst);
+                    let model = body["model"].clone();
                     let _ = tx.send(body).await;
                     if reply_with_call && attempt == 0 {
                         return Json(json!({"id":"synthetic-grok-tool-reply","object":"response","status":"completed","model":"grok-4.5","output":[{"type":"function_call","id":"synthetic-third-item","call_id":THIRD_ID,"name":"synthetic_tool_3","arguments":arguments(3).to_string(),"status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1}}));
                     }
-                    Json(json!({"id":"synthetic-grok-reply","object":"response","status":"completed","model":"grok-4.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic Grok answer"}]}],"usage":{"input_tokens":1,"output_tokens":1}}))
+                    Json(json!({"id":"synthetic-grok-reply","object":"response","status":"completed","model":model,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic Grok answer"}]}],"usage":{"input_tokens":1,"output_tokens":1}}))
+                } else if uri.path().ends_with("gemini-3.6-flash:generateContent") {
+                    assert_eq!(body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "MINIMAL");
+                    let task: Value = serde_json::from_str(body["contents"][0]["parts"][0]["text"].as_str().unwrap()).unwrap();
+                    assert_eq!(task["text"], "回答hello");
+                    tokio::time::sleep(std::time::Duration::from_millis(5300)).await;
+                    Json(json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"intentId\":\"easy\"}"}]}}]}))
                 } else if uri.path().ends_with("chat/completions") {
                     Json(json!({"id":"synthetic-prior-reply","object":"chat.completion","model":"glm-synthetic","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic prior answer","reasoning_content":"Synthetic visible thought","tool_calls":[call(FIRST_ID,1),call(SECOND_ID,2)]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
                 } else {
@@ -242,6 +249,106 @@ impl Fixture {
         self.upstream.abort();
         Ok(())
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_before_deadline(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    let mut fixture = Fixture::with_targets("openai_chat", 2).await?;
+    let mut menu = (*fixture.runtime.global_snapshot()?.ok_or("missing menu")?).clone();
+    let group = Arc::make_mut(
+        menu.groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing group")?,
+    );
+    let mut base = group.targets[0].url.clone();
+    base.set_path("/v1");
+    group.classifier = Some(crate::provider::Provider::with_id(
+        "classifier".into(),
+        "Synthetic classifier".into(),
+        json!({"apiFormat":"gemini_native","auth":{"OPENAI_API_KEY":"synthetic-key"},
+            "config":format!("model_provider = \"fixture\"\n[model_providers.fixture]\nbase_url = \"{base}\"\nwire_api = \"gemini\""),
+            "modelCatalog":{"models":[{"model":"gemini-3.6-flash","reasoningLevels":["minimal","low","high"]}]}}),
+        None,
+    ));
+    group.group.intent_recognition_enabled = true;
+    group.group.members[1].model_id = "glm-synthetic".into();
+    group.targets[1].model = "glm-synthetic".into();
+    group.group.classifier_target = Some(crate::services::intent_routing::Target {
+        provider_id: "classifier".into(),
+        model_id: "gemini-3.6-flash".into(),
+    });
+    group.group.affinity = "turn".into();
+    group.group.template = Some(crate::services::intent_routing::RoutingTemplate::Smart);
+    group.group.rules = serde_json::from_value(json!([
+        {"id":"compaction","name":"Compaction","description":"","enabled":true,"targetMemberId":"direct","conditions":{"compact":true}},
+        {"id":"hard","name":"Hard","description":"Complex tasks","enabled":true,"targetMemberId":"direct"},
+        {"id":"easy","name":"Easy","description":"Short direct replies","enabled":true,"targetMemberId":"other-1"}
+    ]))?;
+    fixture
+        .runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "workbuddy-ai".into(),
+            token: TOKEN.into(),
+            model: fixture.grok_alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let body =
+        json!({"model":fixture.grok_alias,"messages":[{"role":"user","content":"回答hello"}]});
+    for (budget, selected, outcome) in [
+        (5000, "grok-4.5", "timeout"),
+        (10000, "glm-synthetic", "matched"),
+    ] {
+        Arc::make_mut(
+            menu.groups
+                .get_mut(&fixture.grok_alias)
+                .ok_or("missing group")?,
+        )
+        .group
+        .classification_budget_ms = budget;
+        fixture.runtime.set_global(menu.clone(), 0)?;
+        for agent in ["workbuddy", "workbuddy-ai"] {
+            fixture
+                .client
+                .post(fixture.root.replace("/workbuddy/", &format!("/{agent}/")))
+                .bearer_auth(TOKEN)
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            assert_eq!(
+                fixture
+                    .requests
+                    .recv()
+                    .await
+                    .ok_or("missing task forward")?["model"],
+                selected
+            );
+            let traces = fixture.runtime.traces.snapshot();
+            let route = traces.first().ok_or("missing trace")?;
+            assert_eq!(
+                route
+                    .steps
+                    .iter()
+                    .any(|step| step.kind == trace::Kind::Rule),
+                outcome == "matched"
+            );
+            assert_eq!(
+                serde_json::to_value(route)?["classificationOutcome"],
+                outcome
+            );
+        }
+    }
+    fixture.stop().await
 }
 
 #[tokio::test]
