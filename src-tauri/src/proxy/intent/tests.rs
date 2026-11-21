@@ -478,6 +478,51 @@ fn visible_reasoning_ids_do_not_claim_opaque_continuation_ownership() {
 }
 
 #[test]
+fn complete_stream_without_done_allows_a_new_plain_turn_but_keeps_tool_and_error_state() {
+    for (wire, complete, pending, failed) in [
+        (
+            json!({"choices":[{"finish_reason":"stop"}]}),
+            true,
+            false,
+            false,
+        ),
+        (
+            json!({"choices":[{"finish_reason":"tool_calls"}]}),
+            false,
+            true,
+            false,
+        ),
+        (
+            json!({"choices":[{"finish_reason":"error"}]}),
+            false,
+            false,
+            true,
+        ),
+        (
+            json!({"candidates":[{"finishReason":"STOP"}]}),
+            true,
+            false,
+            false,
+        ),
+        (
+            json!({"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}),
+            false,
+            false,
+            true,
+        ),
+    ] {
+        let mut observer = Observer::default();
+        let mut bindings = Bindings::default();
+        observer.push(format!("data: {wire}\n\n").as_bytes(), &mut bindings, 0);
+        observer.finish(&mut bindings, 0);
+        assert_eq!(
+            (observer.completed, observer.pending_tools, observer.failed),
+            (complete, pending, failed)
+        );
+    }
+}
+
+#[test]
 fn codex_visible_reasoning_with_null_fields_and_metadata_is_portable() {
     let summary = json!({
         "type":"reasoning","id":"synthetic-prior-model-item",

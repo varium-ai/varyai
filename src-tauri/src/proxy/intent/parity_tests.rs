@@ -18,11 +18,13 @@ async fn parity_rejected_and_precontent_failed_attempts_use_backup_without_repla
     }
     let _security = Security((*crate::proxy::security::get_security_runtime()).clone());
     crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
-    for (status,primary,expected_backup) in [
-        (401,"synthetic rejected",true),(402,"synthetic rejected",true),(500,"synthetic rejected",true),
-        (200,"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\"}}}\n\n",true),
-        (200,"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"synthetic partial\"}\n\nevent: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n",false),
-        (200,"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n",false),
+    for (status,primary,expected_backup,expected_success,cooling) in [
+        (401,"synthetic rejected",true,true,false),(402,"synthetic rejected",true,true,false),(429,"synthetic rejected",true,true,false),(500,"synthetic rejected",true,true,false),
+        (200,"{\"status\":\"failed\",\"error\":{\"code\":\"server_error\"}}",true,true,false),
+        (200,"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\"}}}\n\n",true,true,false),
+        (200,"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"synthetic partial\"}\n\nevent: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n",false,false,false),
+        (200,"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n",false,true,false),
+        (200,"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n",true,true,true),
     ] {
         let hits = Arc::new(AtomicUsize::new(0));
         let observed = hits.clone();
@@ -30,7 +32,7 @@ async fn parity_rejected_and_precontent_failed_attempts_use_backup_without_repla
         let address = listener.local_addr()?;
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener,Router::new()
-                .route("/primary",post(move || async move {(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),[("content-type","text/event-stream")],primary).into_response()}))
+                .route("/primary",post(move || async move {(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),[("content-type",if primary.starts_with('{') { "application/json" } else { "text/event-stream" })],primary).into_response()}))
                 .route("/backup",post(move || {let hits=observed.clone();async move {hits.fetch_add(1,Ordering::SeqCst);(StatusCode::OK,[("content-type","text/event-stream")],"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")}}))).await;
         });
         let published = global_tests::menu(&format!("http://{address}/primary"));
@@ -42,17 +44,27 @@ async fn parity_rejected_and_precontent_failed_attempts_use_backup_without_repla
         let mut backup = session.targets[0].clone();
         backup.provider_id="backup".into();
         backup.url=format!("http://{address}/backup").parse()?;
+        backup.scheduling = Arc::default();
         session.targets.push(backup);
+        if cooling {
+            session.targets[0].scheduling.failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
+            session.group.rules.push(serde_json::from_value(json!({
+              "id":"preferred-rule", "name":"Synthetic priority", "enabled":true, "description":"",
+              "targetMemberId":session.group.default_member_id, "fallbackMemberIds":["backup"]
+            }))?);
+        }
         let runtime=Arc::new(Runtime::default());
         let alias=session.group.alias();
         let token=runtime.install(session,None)?;
-        let server=ProxyServer::new(ProxyConfig {listen_port:0,..Default::default()},Arc::new(Database::memory()?),None).with_intent_runtime(runtime);
+        let server=ProxyServer::new(ProxyConfig {listen_port:0,..Default::default()},Arc::new(Database::memory()?),None).with_intent_runtime(runtime.clone());
         let info=server.start().await?;
         let response=reqwest::Client::builder().no_proxy().build()?.post(format!("http://127.0.0.1:{}/intent/v1/responses",info.port)).bearer_auth(token).json(&json!({"model":alias,"input":"synthetic","stream":true})).send().await?;
         let actual_status=response.status();
         let body = response.text().await?;
         assert_eq!(actual_status,StatusCode::OK,"status case {status}: {body}");
         assert_eq!(hits.load(Ordering::SeqCst),usize::from(expected_backup),"status case {status}");
+        let terminal = runtime.traces.rows.read().map_err(|_| "synthetic trace lock")?.front().map(|route| route.state);
+        assert_eq!(terminal, Some(if expected_success {trace::State::Completed} else {trace::State::Failed}));
         server.stop().await?;
         task.abort();
     }

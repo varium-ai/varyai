@@ -140,6 +140,11 @@ export const intentRoutingApi = {
   autoGroupSkip: () => invoke<string[]>("get_routing_auto_group_skip"),
   setAutoGroupSkip: (ids: string[]) =>
     invoke<void>("set_routing_auto_group_skip", { ids }),
+  setDiscoveredEnabled: (id: string, enabled: boolean) =>
+    invoke<RoutingGroup>("set_discovered_routing_group_enabled", {
+      id,
+      enabled,
+    }),
   restore: (id: string) =>
     invoke<void>("restore_discovered_routing_group", { id }),
   setContextSettings: (settings: RoutingContextSettings) =>
