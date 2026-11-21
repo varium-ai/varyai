@@ -113,9 +113,16 @@ export function RoutingStage({
     concurrent,
     animate && !replay,
   );
-  const sourceIds = sources && new Set(sources.map((source) => source.agent));
-  const visibleFlights = sourceIds
-    ? flights.filter((trace) => sourceIds.has(trace.agent))
+  const sourceModels =
+    sources && new Map(sources.map((source) => [source.agent, source.model]));
+  const activeIds = new Set(concurrent.filter(live).map((trace) => trace.id));
+  const visibleFlights = sourceModels
+    ? flights.filter((trace) => {
+        const model = sourceModels.get(trace.agent);
+        return (
+          model != null && (model === trace.model || activeIds.has(trace.id))
+        );
+      })
     : flights;
   const traces = [
     ...new Map(
@@ -559,7 +566,10 @@ export function RoutingStage({
             ? trace.sessionTitle?.trim()
             : undefined;
           const sessionLabel = sessionTitle
-            ? accountText(sessionTitle)
+            ? t("routingPage.sessionTitleLabel", {
+                title: accountText(sessionTitle),
+                defaultValue: "Conversation title: {{title}}",
+              })
             : showResponse &&
                 trace.session &&
                 /^[a-f0-9]{64}$/.test(trace.session)

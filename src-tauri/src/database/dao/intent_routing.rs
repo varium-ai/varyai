@@ -128,7 +128,7 @@ impl Database {
         providers: Option<Vec<crate::provider::Provider>>,
     ) -> Result<RoutingCatalog, String> {
         let mut groups = self.list_intent_routing_groups()?;
-        let (auto_create, hidden) = {
+        let (auto_create, preferences) = {
             let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
             let enabled: Option<String> = conn
                 .query_row(
@@ -140,15 +140,16 @@ impl Database {
                 .map_err(|_| FAILED)?;
             let mut stmt = conn
                 .prepare(
-                    "SELECT key,value FROM intent_routing_preferences WHERE key LIKE 'hidden:%'",
+                    "SELECT key,value FROM intent_routing_preferences
+                     WHERE key LIKE 'hidden:%' OR key LIKE 'auto-disabled:%'",
                 )
                 .map_err(|_| FAILED)?;
-            let hidden = stmt
+            let preferences = stmt
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .map_err(|_| FAILED)?
                 .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
                 .map_err(|_| FAILED)?;
-            (enabled.as_deref() == Some("true"), hidden)
+            (enabled.as_deref() == Some("true"), preferences)
         };
         let mut omitted_groups = 0;
         let providers = match providers {
@@ -170,7 +171,7 @@ impl Database {
         let skipped = self.routing_auto_group_skip()?;
         let stand_in_sources = discovery.clone();
         discovery.retain(|provider| !skipped.contains(&provider.id));
-        let mut removed_groups = hidden
+        let mut removed_groups = preferences
             .iter()
             .filter_map(|(key, value)| {
                 let id = key.strip_prefix("hidden:")?;
@@ -203,10 +204,10 @@ impl Database {
                     continue;
                 }
                 if auto_create
-                    && (hidden.contains_key(&format!("hidden:{}", group.id))
+                    && (preferences.contains_key(&format!("hidden:{}", group.id))
                         || legacy
                             .iter()
-                            .any(|id| hidden.contains_key(&format!("hidden:{id}"))))
+                            .any(|id| preferences.contains_key(&format!("hidden:{id}"))))
                 {
                     removed_groups.retain(|record| !legacy.contains(&record.id));
                     if !removed_groups.iter().any(|record| record.id == group.id) {
@@ -247,13 +248,14 @@ impl Database {
                     omitted_groups += 1;
                     continue;
                 }
+                group.enabled = !preferences.contains_key(&format!("auto-disabled:{}", group.id));
                 groups.push(group);
             }
         }
         if auto_create && !skipped.is_empty() {
             for mut group in crate::services::intent_routing::discover_stand_ins(stand_in_sources) {
                 if groups.iter().any(|current| current.id == group.id)
-                    || hidden.contains_key(&format!("hidden:{}", group.id))
+                    || preferences.contains_key(&format!("hidden:{}", group.id))
                 {
                     continue;
                 }
@@ -309,6 +311,50 @@ impl Database {
             omitted_groups,
             context_settings: self.routing_context_settings()?,
         })
+    }
+
+    pub(crate) fn set_discovered_routing_group_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+        providers: Option<Vec<crate::provider::Provider>>,
+    ) -> Result<RoutingGroup, String> {
+        if !valid_id(id) || !id.starts_with("auto-") {
+            return Err("intentRouting.invalid".into());
+        }
+        let mut group = self
+            .intent_routing_catalog_with_providers(providers)?
+            .groups
+            .into_iter()
+            .find(|group| group.id == id && group.auto_generated)
+            .ok_or("intentRouting.conflict")?;
+        let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let tx = conn.transaction().map_err(|_| FAILED)?;
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM intent_routing_preferences WHERE key='auto_create' AND value='true')
+             AND NOT EXISTS(SELECT 1 FROM intent_routing_groups WHERE id=?1)
+             AND NOT EXISTS(SELECT 1 FROM intent_routing_preferences WHERE key=?2)",
+            params![id, format!("hidden:{id}")],
+            |row| row.get(0),
+        ).map_err(|_| FAILED)?;
+        if !current {
+            return Err("intentRouting.conflict".into());
+        }
+        let key = format!("auto-disabled:{id}");
+        if enabled {
+            tx.execute("DELETE FROM intent_routing_preferences WHERE key=?1", [key])
+        } else {
+            tx.execute(
+                "INSERT OR IGNORE INTO intent_routing_preferences(key,value) VALUES (?1,'true')",
+                [key],
+            )
+        }
+        .map_err(|_| FAILED)?;
+        tx.commit().map_err(|_| FAILED)?;
+        drop(conn);
+        self.invalidate_routing_resources();
+        group.enabled = enabled;
+        Ok(group)
     }
 
     pub(crate) fn restore_discovered_routing_group(&self, id: &str) -> Result<(), String> {

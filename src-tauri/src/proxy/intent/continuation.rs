@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, Metadata, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -29,6 +29,9 @@ pub(super) struct Snapshot {
     pub responses: BTreeMap<String, Option<String>>,
     pub calls: BTreeMap<String, Option<String>>,
     pub sessions: BTreeMap<String, Option<String>>,
+    // A live catalog refresh can reuse this evidence. Restart recovery stays strict.
+    #[serde(skip)]
+    pub completed_sessions: HashSet<String>,
     pub opaque: BTreeMap<String, Option<String>>,
     pub items: BTreeMap<String, Option<String>>,
 }
@@ -536,6 +539,7 @@ mod tests {
             responses: [(hash("response", "synthetic-response"), Some(target.clone()))].into(),
             calls: [(hash("call", "synthetic-call"), None)].into(),
             sessions: [(hash("session", "synthetic-session"), Some(target.clone()))].into(),
+            completed_sessions: [hash("session", "synthetic-session")].into(),
             opaque: [(hash("opaque", "synthetic-opaque"), Some(target.clone()))].into(),
             items: [(hash("item", "synthetic-item"), Some(target))].into(),
         }
@@ -560,6 +564,10 @@ mod tests {
         for id in &ids {
             store.record(&scope, id, snapshot());
         }
+        assert!(store
+            .scope(&scope)
+            .iter()
+            .all(|(_, saved)| saved.completed_sessions == snapshot().completed_sessions));
         store.flush().await?;
         let bytes = fs::read_to_string(&path)?;
         for private in [
@@ -577,6 +585,7 @@ mod tests {
         assert_eq!(records.len(), ids.len());
         for (id, restored) in records {
             assert!(ids.contains(&id));
+            assert!(restored.completed_sessions.is_empty());
             assert_eq!(
                 restored.calls.get(&hash("call", "synthetic-call")),
                 Some(&None)

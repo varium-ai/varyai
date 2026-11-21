@@ -9,6 +9,7 @@ import { IntentRoutingPanel } from "./IntentRoutingPanel";
 import { RoutingStage } from "./RoutingStage";
 import { liveRoutingSources, routeInProgress } from "./useRoutingFlights";
 import { routingModelLabel } from "@/lib/routingModelLabel";
+import { routingPurpose } from "@/lib/routingPurposes";
 import { AccountMask } from "@/components/AccountLabel";
 import { Button } from "@/components/ui/button";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -19,6 +20,13 @@ import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import "./routing.css";
 
 type Row = RoutingTrace;
+const backgroundPurposes = new Set([
+  "kind:thread_title",
+  "kind:thread_description",
+  "kind:provider_test",
+  "kind:api_detect",
+  "kind:model_list",
+]);
 function rerouted(row: Row) {
   return row.steps.filter((step) => step.kind === "attempt").length > 1;
 }
@@ -80,13 +88,16 @@ export function RoutingPage({
     enabled: masked || rows.some((row) => row.candidates.length > 0),
     staleTime: 30000,
   });
-  const sources = liveRoutingSources(rows, trace.dataUpdatedAt);
+  const stageRows = rows.filter(
+    (row) => !backgroundPurposes.has(routingPurpose(row.kind)),
+  );
+  const sources = liveRoutingSources(stageRows, trace.dataUpdatedAt);
   const shown = sources[0];
   const continuation = shown?.steps.find(
     ({ kind }) => kind === "pinned" || kind === "affinity",
   );
   const sourceIds = new Set(sources.map((source) => source.agent));
-  const concurrent = rows.filter((row) => sourceIds.has(row.agent));
+  const concurrent = stageRows.filter((row) => sourceIds.has(row.agent));
   const multipleRoutes =
     sources.length > 1 ||
     concurrent.some(

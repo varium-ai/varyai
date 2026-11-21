@@ -1,9 +1,8 @@
 //! Read-only size hints; never rewrite a request or move opaque continuation state.
 use serde_json::Value;
 
-/// A completed visible summary carries text, not a server-owned item reference.
-pub(crate) fn visible_reasoning(item: &Value) -> bool {
-    item["type"] == "reasoning"
+fn reasoning_summary(item: &Value) -> Option<&[Value]> {
+    if item["type"] == "reasoning"
         && item.as_object().is_some_and(|fields| {
             fields.iter().all(|(key, value)| match key.as_str() {
                 "type" | "id" | "status" | "summary" => true,
@@ -19,19 +18,33 @@ pub(crate) fn visible_reasoning(item: &Value) -> bool {
         && item
             .get("status")
             .is_none_or(|status| status == "completed")
-        && item["summary"].as_array().is_some_and(|parts| {
-            parts.iter().all(|part| {
-                part["type"] == "summary_text"
-                    && part["text"].is_string()
-                    && part.as_object().is_some_and(|fields| {
-                        fields
-                            .keys()
-                            .all(|key| ["type", "text"].contains(&key.as_str()))
-                    })
-            }) && parts
-                .iter()
-                .any(|part| part["text"].as_str().is_some_and(|text| !text.is_empty()))
-        })
+    {
+        item["summary"].as_array().map(Vec::as_slice)
+    } else {
+        None
+    }
+}
+
+// Codex can replay a reasoning item with neither a summary nor opaque state.
+pub(super) fn empty_reasoning(item: &Value) -> bool {
+    reasoning_summary(item).is_some_and(|parts| parts.is_empty())
+}
+
+/// A completed visible summary carries text, not a server-owned item reference.
+pub(crate) fn visible_reasoning(item: &Value) -> bool {
+    reasoning_summary(item).is_some_and(|parts| {
+        parts.iter().all(|part| {
+            part["type"] == "summary_text"
+                && part["text"].is_string()
+                && part.as_object().is_some_and(|fields| {
+                    fields
+                        .keys()
+                        .all(|key| ["type", "text"].contains(&key.as_str()))
+                })
+        }) && parts
+            .iter()
+            .any(|part| part["text"].as_str().is_some_and(|text| !text.is_empty()))
+    })
 }
 
 pub(super) fn portable(body: &Value) -> bool {
