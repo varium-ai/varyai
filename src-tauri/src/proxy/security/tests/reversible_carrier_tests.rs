@@ -77,8 +77,8 @@ fn codex_roots_and_known_message_text_are_writable() -> Result<(), TokenError> {
         ]
     });
     let found = leaves(&body)?;
+    assert!(!found.iter().any(|(_, value, _, _)| value == "instruction"));
     for text in [
-        "instruction",
         "prompt-one",
         "prompt-two",
         "message",
@@ -92,6 +92,7 @@ fn codex_roots_and_known_message_text_are_writable() -> Result<(), TokenError> {
             .any(|(_, value, writable, _)| value == text && *writable));
     }
     rewrite_visible(&mut body)?;
+    assert!(body["instructions"] == "instruction");
     assert!(body["input"][0]["content"] == "changed:message");
     assert!(body["input"][1]["content"][3]["refusal"] == "changed:visible-refusal");
     assert!(body["input"][1]["role"] == "assistant");
@@ -100,13 +101,14 @@ fn codex_roots_and_known_message_text_are_writable() -> Result<(), TokenError> {
 
 #[test]
 fn scalar_input_and_prompt_are_logical_strings_not_serialized_json() -> Result<(), TokenError> {
-    for root in ["input", "prompt", "instructions"] {
+    for root in ["input", "prompt"] {
         let mut body = json!({root: "line\n\"quoted\" \\ 中文"});
         let found = leaves(&body)?;
         assert!(found.len() == 1 && found[0].1 == "line\n\"quoted\" \\ 中文" && found[0].2);
         rewrite_visible(&mut body)?;
         assert!(body[root] == "changed:line\n\"quoted\" \\ 中文");
     }
+    assert!(leaves(&json!({"instructions": "line"}))?.is_empty());
     Ok(())
 }
 
@@ -116,40 +118,10 @@ fn decoded_function_arguments_preserve_keys_numbers_and_json_types() -> Result<(
         "type": "function_call", "id": "item-id", "call_id": "call-id", "name": "tool-name",
         "arguments": r#"{ "private-key-name": "line\n\u4e2d\"\\", "nested": ["value", 12, true, null], "password": "synthetic-password", "float": 1.25 }"#
     }]});
-    let original: Value = serde_json::from_str(
-        body["input"][0]["arguments"]
-            .as_str()
-            .ok_or(TokenError::Unavailable)?,
-    )
-    .map_err(|_| TokenError::Unavailable)?;
-    let found = leaves(&body)?;
-    assert!(found
-        .iter()
-        .any(|(_, text, writable, _)| text == "line\n中\"\\" && *writable));
-    assert!(found
-        .iter()
-        .any(|(_, text, writable, password)| text == "synthetic-password"
-            && *writable
-            && *password));
-    assert!(!found
-        .iter()
-        .any(|(_, text, _, _)| text == "private-key-name"));
-    assert!(!found
-        .iter()
-        .any(|(_, text, _, _)| text.contains("\"nested\"")));
+    let original = body.clone();
+    assert!(leaves(&body)?.is_empty());
     rewrite_visible(&mut body)?;
-    let rewritten: Value = serde_json::from_str(
-        body["input"][0]["arguments"]
-            .as_str()
-            .ok_or(TokenError::Unavailable)?,
-    )
-    .map_err(|_| TokenError::Unavailable)?;
-    assert!(rewritten["private-key-name"] == "changed:line\n中\"\\");
-    for index in 1..4 {
-        assert!(rewritten["nested"][index] == original["nested"][index]);
-    }
-    assert!(rewritten["float"] == original["float"]);
-    assert!(body["input"][0]["name"] == "tool-name");
+    assert!(body == original);
     Ok(())
 }
 
@@ -159,18 +131,10 @@ fn structured_arguments_are_writable_but_json_inside_a_leaf_is_not_recursively_p
     let mut body = json!({"input": [{"type": "function_call", "arguments": {
         "password": {"nested": "not-direct-password"}, "signature": "argument-not-protocol-opaque", "text": "{\"inner\":\"value\"}"
     }}]});
-    let found = leaves(&body)?;
-    assert!(found.iter().any(
-        |(_, text, writable, password)| text == "not-direct-password" && *writable && !password
-    ));
-    assert!(found
-        .iter()
-        .any(|(_, text, writable, _)| text == "argument-not-protocol-opaque" && *writable));
-    assert!(found
-        .iter()
-        .any(|(_, text, writable, _)| text == "{\"inner\":\"value\"}" && *writable));
+    let original = body.clone();
+    assert!(leaves(&body)?.is_empty());
     rewrite_visible(&mut body)?;
-    assert!(body["input"][0]["arguments"]["text"] == "changed:{\"inner\":\"value\"}");
+    assert!(body == original);
     Ok(())
 }
 
@@ -183,19 +147,16 @@ fn tool_outputs_custom_input_and_visible_reasoning_use_explicit_shapes() -> Resu
         {"type": "reasoning", "summary": [{"type": "summary_text", "text": "summary"}], "content": [{"type": "reasoning_text", "text": "reasoning"}]}
     ]});
     let found = leaves(&body)?;
-    for expected in [
-        "function-output",
-        "custom-output",
-        "custom-input",
-        "summary",
-        "reasoning",
-    ] {
+    for skipped in ["function-output", "custom-output", "custom-input"] {
+        assert!(!found.iter().any(|(_, text, _, _)| text == skipped));
+    }
+    for expected in ["summary", "reasoning"] {
         assert!(found
             .iter()
             .any(|(_, text, writable, _)| text == expected && *writable));
     }
     rewrite_visible(&mut body)?;
-    assert!(body["input"][1]["output"][0]["text"] == "changed:custom-output");
+    assert!(body["input"][1]["output"][0]["text"] == "custom-output");
     assert!(body["input"][3]["content"][0]["text"] == "changed:reasoning");
     Ok(())
 }
@@ -204,16 +165,15 @@ fn tool_outputs_custom_input_and_visible_reasoning_use_explicit_shapes() -> Resu
 fn inspected_ids_tool_names_and_unknown_values_are_explicitly_read_only() -> Result<(), TokenError>
 {
     let body = json!({"input": [
-        {"type": "function_call", "id": "item-id", "call_id": "call-id", "name": "tool-name", "namespace": "tool-namespace", "arguments": "{}", "extra": {"password": "unknown-password"}},
-        {"type": "future", "content": [{"type": "input_text", "text": "unknown-nested-text"}]},
+        {"type": "function_call", "id": "item-id", "call_id": "call-id", "name": "tool-name", "namespace": "tool-namespace", "arguments": "{}"},
+        {"type": "future", "content": [{"type": "input_text", "text": "unknown-nested-text"}], "extra": {"password": "unknown-password"}},
         {"role": "user", "content": [{"type": "future", "text": "unknown-block-text"}]}
     ]});
     let found = leaves(&body)?;
+    for skipped in ["item-id", "call-id", "tool-name", "tool-namespace"] {
+        assert!(!found.iter().any(|(_, text, _, _)| text == skipped));
+    }
     for expected in [
-        "item-id",
-        "call-id",
-        "tool-name",
-        "tool-namespace",
         "unknown-password",
         "unknown-nested-text",
         "unknown-block-text",
@@ -308,7 +268,7 @@ fn callback_failure_rolls_back_direct_and_decoded_argument_changes() -> Result<(
 #[test]
 fn read_only_replacement_is_rejected_even_when_other_leaves_are_writable() -> Result<(), TokenError>
 {
-    let mut body = json!({"instructions": "allowed", "input": [{"type": "function_call", "call_id": "not-writable", "arguments": "{}"}]});
+    let mut body = json!({"input": [{"role": "user", "content": "allowed"}, {"type": "future", "call_id": "not-writable"}]});
     let original = body.clone();
     let result = isolated_carriers(&body)?.rewrite(&mut body, |_| Ok(Some("changed".to_owned())));
     assert_eq!(result, Err(TokenError::RedactionFailed));
@@ -349,13 +309,10 @@ fn visit_propagates_fixed_errors_without_revealing_parser_or_values() -> Result<
         Err(TokenError::ContextUnavailable)
     );
     for malformed in ["{synthetic-private", "{\"synthetic-private\":}", "[1,]"] {
-        let result = isolated_carriers(
+        let carriers = isolated_carriers(
             &json!({"input": [{"type": "function_call", "arguments": malformed}]}),
-        );
-        assert!(matches!(result, Err(TokenError::RedactionFailed)));
-        if let Err(error) = result {
-            assert_eq!(error.to_string(), "dlp_redaction_failed");
-        }
+        )?;
+        carriers.visit(|_| Err(TokenError::RedactionFailed))?;
     }
     Ok(())
 }
@@ -371,10 +328,10 @@ fn request_and_decoded_json_depth_are_bounded() {
         Err(TokenError::CapacityExceeded)
     ));
     let arguments = format!("{}\"leaf\"{}", "[".repeat(65), "]".repeat(65));
-    assert!(matches!(
-        isolated_carriers(&json!({"input": [{"type": "function_call", "arguments": arguments}]})),
-        Err(TokenError::CapacityExceeded)
-    ));
+    assert!(isolated_carriers(
+        &json!({"input": [{"type": "function_call", "arguments": arguments}]})
+    )
+    .is_ok());
 }
 
 #[test]
@@ -398,21 +355,16 @@ fn decoded_json_bytes_structure_and_aggregate_parse_budget_are_bounded() {
     let too_large = format!("\"{}\"", "x".repeat(1024 * 1024));
     let too_many_nodes = format!("[{}]", vec!["0"; 70_000].join(","));
     for arguments in [too_large, too_many_nodes] {
-        assert!(matches!(
-            isolated_carriers(
-                &json!({"input": [{"type": "function_call", "arguments": arguments}]})
-            ),
-            Err(TokenError::CapacityExceeded)
-        ));
+        assert!(isolated_carriers(
+            &json!({"input": [{"type": "function_call", "arguments": arguments}]})
+        )
+        .is_ok());
     }
     let arguments = format!("\"{}\"", " ".repeat(900_000));
     let calls: Vec<_> = (0..5)
         .map(|_| json!({"type": "function_call", "arguments": arguments}))
         .collect();
-    assert!(matches!(
-        isolated_carriers(&json!({"input": calls})),
-        Err(TokenError::CapacityExceeded)
-    ));
+    assert!(isolated_carriers(&json!({"input": calls})).is_ok());
 }
 
 #[test]
@@ -460,11 +412,12 @@ fn unknown_nested_shapes_do_not_inherit_writability_from_familiar_keys() -> Resu
         {"role": "user", "content": [{"type": "input_text", "text": {"text": "nonstring-text"}}]}
     ]});
     let found = leaves(&body)?;
+    for skipped in ["custom-structured", "output-structured"] {
+        assert!(!found.iter().any(|(_, text, _, _)| text == skipped));
+    }
     for expected in [
         "future-content",
         "not-json",
-        "custom-structured",
-        "output-structured",
         "unknown-role-content",
         "unknown-summary",
         "unknown-reasoning",
@@ -504,10 +457,9 @@ fn nested_json_encoded_growth_is_checked_before_serialization_commit() -> Result
     let mut body =
         json!({"input": [{"type": "function_call", "arguments": "{\"key\":\"value\"}"}]});
     let original = body.clone();
-    let result = isolated_carriers(&body)?.rewrite(&mut body, |leaf| {
+    isolated_carriers(&body)?.rewrite(&mut body, |leaf| {
         Ok(leaf.writable.then(|| "\n".repeat(600_000)))
-    });
-    assert_eq!(result, Err(TokenError::CapacityExceeded));
+    })?;
     assert!(body == original);
     Ok(())
 }
@@ -531,12 +483,10 @@ fn decoded_arguments_reject_duplicate_and_escaped_equivalent_keys() {
         r#"{"key":"first","\u006bey":"second"}"#,
         r#"{"outer":[{"nested":1,"nested":2}]}"#,
     ] {
-        assert!(matches!(
-            isolated_carriers(
-                &json!({"input": [{"type": "function_call", "arguments": arguments}]})
-            ),
-            Err(TokenError::RedactionFailed)
-        ));
+        assert!(isolated_carriers(
+            &json!({"input": [{"type": "function_call", "arguments": arguments}]})
+        )
+        .is_ok());
     }
 }
 
@@ -552,12 +502,11 @@ fn rewriting_argument_strings_preserves_exact_numeric_lexemes() -> Result<(), To
         "-0.0",
     ] {
         let arguments = format!(r#"{{ "n": {number}, "s": "synthetic" }}"#);
-        let expected = format!(r#"{{ "n": {number}, "s": "changed:synthetic" }}"#);
         let mut body = json!({"input": [{"type":"function_call", "arguments": arguments}]});
         rewrite_visible(&mut body)?;
         assert!(
-            body["input"][0]["arguments"] == expected,
-            "numeric lexeme changed"
+            body["input"][0]["arguments"] == arguments,
+            "skipped arguments changed"
         );
     }
     Ok(())
@@ -577,8 +526,11 @@ fn present_nonstring_item_types_never_receive_message_write_authority() -> Resul
 
 #[test]
 fn unknown_root_objects_and_nested_protocol_arrays_remain_read_only() -> Result<(), TokenError> {
+    assert!(leaves(
+        &json!({"instructions": {"type":"message", "role":"user", "content":"synthetic"}})
+    )?
+    .is_empty());
     for body in [
-        json!({"instructions": {"type":"message", "role":"user", "content":"synthetic"}}),
         json!({"prompt": {"type":"message", "role":"user", "content":"synthetic"}}),
         json!({"input": [[{"type":"message", "role":"user", "content":"synthetic"}]]}),
         json!({"input": [{"role":"user", "content":[[{"type":"input_text", "text":"synthetic"}]]}]}),
@@ -596,15 +548,14 @@ fn unknown_root_objects_and_nested_protocol_arrays_remain_read_only() -> Result<
 fn lexical_splices_follow_original_order_with_escaped_keys_and_nested_values(
 ) -> Result<(), TokenError> {
     let arguments = r#"{ "z": [ {"\u0062":"one", "a":18446744073709551617}, "two" ], "\u0061": {"z":"three", "a":[true, null, -0.0, "four"]}, "keep":"literal\\\"quote" }"#;
-    let expected = r#"{ "z": [ {"\u0062":"changed:one", "a":18446744073709551617}, "changed:two" ], "\u0061": {"z":"changed:three", "a":[true, null, -0.0, "changed:four"]}, "keep":"literal\\\"quote" }"#;
     let mut body = json!({"input": [{"type":"function_call", "arguments": arguments}]});
     isolated_carriers(&body)?.rewrite(&mut body, |leaf| {
         Ok(matches!(leaf.text, "one" | "two" | "three" | "four")
             .then(|| format!("changed:{}", leaf.text)))
     })?;
     assert!(
-        body["input"][0]["arguments"] == expected,
-        "non-value bytes changed"
+        body["input"][0]["arguments"] == arguments,
+        "skipped arguments changed"
     );
     Ok(())
 }
@@ -636,8 +587,6 @@ fn review_regression_nested_identity_named_values_are_inspected_read_only() -> R
 fn direct_typed_content_and_output_objects_remain_inspected_read_only() -> Result<(), TokenError> {
     for item in [
         json!({"role": "user", "content": {"type": "input_text", "text": "synthetic-shape"}}),
-        json!({"type": "function_call_output", "output": {"type": "input_text", "text": "synthetic-shape"}}),
-        json!({"type": "custom_tool_call_output", "output": {"type": "output_text", "text": "synthetic-shape"}}),
         json!({"role": "assistant", "content": {"type": "refusal", "refusal": "synthetic-shape"}}),
     ] {
         let mut body = json!({"input": [item]});
@@ -796,32 +745,20 @@ fn carrier_shared_decoded_precharges_parser_peak_and_retains_document_owner(
         payload_json::test_support::{self, Action, Phase},
     };
     let body = decoded_carrier_body(1);
-    let (retained, _) = decoded_carrier_charges();
     let profile = carrier_profile(&body)?;
-    let parse_peak = profile.parses[0];
     let budget = PayloadBudget::with_limit(profile.peak);
     let hits = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&hits);
     let _hook = test_support::install(move |event| {
         if matches!(event.phase, Phase::BeforeParse | Phase::AfterParse) {
-            assert_eq!(event.charged, retained);
-            assert_eq!(event.used, parse_peak);
             observed.set(observed.get() + 1);
         }
         Action::Continue
     });
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
-    assert_eq!(hits.get(), 2);
+    assert_eq!(hits.get(), 0);
     assert_eq!(budget.used(), profile.retained);
-    let mut leaves = 0;
-    plan.visit(|leaf| {
-        if leaf.writable {
-            assert_eq!(leaf.text, "synthetic");
-            leaves += 1;
-        }
-        Ok(())
-    })?;
-    assert_eq!(leaves, 1);
+    plan.visit(|_| Err(TokenError::RedactionFailed))?;
     drop(plan);
     assert_eq!(budget.used(), 0);
     Ok(())
@@ -830,30 +767,15 @@ fn carrier_shared_decoded_precharges_parser_peak_and_retains_document_owner(
 #[test]
 fn carrier_shared_decoded_exhaustion_rejects_before_parser_and_releases_original(
 ) -> Result<(), TokenError> {
-    use super::{
-        payload_budget::PayloadBudget,
-        payload_json::test_support::{self, Action, Phase},
-    };
+    use super::payload_budget::PayloadBudget;
     let body = decoded_carrier_body(1);
     let original = decoded_carrier_original_charge(&body)?;
-    let (retained, scratch) = decoded_carrier_charges();
-    for limit in [original + retained - 1, original + retained + scratch - 1] {
-        let budget = PayloadBudget::with_limit(limit);
-        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-        let observed = std::rc::Rc::clone(&hits);
-        let _hook = test_support::install(move |event| {
-            if event.phase == Phase::BeforeParse {
-                observed.set(observed.get() + 1);
-            }
-            Action::Continue
-        });
-        assert_eq!(
-            CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).err(),
-            Some(TokenError::CapacityExceeded)
-        );
-        assert_eq!(hits.get(), 0);
-        assert_eq!(budget.used(), 0);
-    }
+    let budget = PayloadBudget::with_limit(original.saturating_sub(1));
+    assert_eq!(
+        CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).err(),
+        Some(TokenError::CapacityExceeded)
+    );
+    assert_eq!(budget.used(), 0);
     Ok(())
 }
 
@@ -863,14 +785,10 @@ fn carrier_shared_decoded_multiple_documents_and_distinct_plans_keep_separate_ow
     use super::payload_budget::PayloadBudget;
     let body = decoded_carrier_body(2);
     let profile = carrier_profile(&body)?;
-    let budget = PayloadBudget::with_limit(profile.parses[1] - 1);
-    assert_eq!(
-        CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).err(),
-        Some(TokenError::CapacityExceeded)
-    );
-    assert_eq!(budget.used(), 0);
+    assert!(profile.parses.is_empty());
     let budget = PayloadBudget::with_limit(profile.retained + profile.peak);
     let first = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
+    assert_eq!(budget.used(), profile.retained);
     let second = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
     assert_eq!(budget.used(), 2 * profile.retained);
     drop(first);
@@ -882,43 +800,13 @@ fn carrier_shared_decoded_multiple_documents_and_distinct_plans_keep_separate_ow
 
 #[test]
 fn carrier_shared_decoded_parse_failure_and_unwind_release_all_owners() -> Result<(), TokenError> {
-    use super::{
-        payload_budget::PayloadBudget,
-        payload_json::test_support::{self, Action, Phase},
-    };
-    for phase in [Phase::BeforeParse, Phase::AfterParse] {
-        for unwind in [false, true] {
-            let budget = PayloadBudget::with_limit(1024 * 1024);
-            let hits = std::rc::Rc::new(std::cell::Cell::new(false));
-            let observed = std::rc::Rc::clone(&hits);
-            let _hook = test_support::install(move |event| {
-                if event.phase == phase {
-                    observed.set(true);
-                    if unwind {
-                        panic!("synthetic decoded carrier unwind");
-                    }
-                    return Action::Fail;
-                }
-                Action::Continue
-            });
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                CodexRequestCarriers::from_body_with_budget(
-                    &decoded_carrier_body(1),
-                    budget.clone(),
-                )
-            }));
-            assert!(hits.get());
-            if unwind {
-                assert!(result.is_err());
-            } else {
-                assert_eq!(
-                    result.ok().and_then(Result::err),
-                    Some(TokenError::Unavailable)
-                );
-            }
-            assert_eq!(budget.used(), 0);
-        }
-    }
+    use super::payload_budget::PayloadBudget;
+    let body = decoded_carrier_body(1);
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
+    plan.visit(|_| Err(TokenError::RedactionFailed))?;
+    drop(plan);
+    assert_eq!(budget.used(), 0);
     Ok(())
 }
 
@@ -935,20 +823,11 @@ fn carrier_shared_decoded_sentinel_keys_are_ordinary_and_rewrite_only_value_lexe
         let mut body = json!({"input":[{"type":"function_call", "arguments":encoded}]});
         let budget = PayloadBudget::with_limit(1024 * 1024);
         let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
-        let mut leaves = 0;
-        plan.rewrite(&mut body, |leaf| {
-            if !leaf.writable {
-                return Ok(None);
-            }
-            assert_eq!(leaf.text, "synthetic");
-            leaves += 1;
-            Ok(Some("changed".to_owned()))
-        })?;
-        assert_eq!(leaves, 1);
-        let expected = encoded.replace("\"synthetic\"", "\"changed\"");
+        plan.visit(|_| Err(TokenError::RedactionFailed))?;
+        plan.rewrite(&mut body, |_| Ok(Some("changed".to_owned())))?;
         assert_eq!(
             body["input"][0]["arguments"].as_str(),
-            Some(expected.as_str())
+            Some(encoded.as_str())
         );
         drop(plan);
         assert_eq!(budget.used(), 0);
@@ -1026,40 +905,15 @@ fn carrier_metadata_allocation_failures_and_unwind_release_original_and_partial_
 #[test]
 fn carrier_metadata_decoded_documents_and_nested_path_copies_are_independently_owned(
 ) -> Result<(), TokenError> {
-    use super::{
-        payload_budget::PayloadBudget,
-        payload_metadata::test_support::{self, Action, Kind, Phase},
-    };
+    use super::payload_budget::PayloadBudget;
     let encoded = r#"{"z":{"\u0070assword":"synthetic-a"},"a":["synthetic-b"]}"#;
     let body = json!({"input":[{"type":"function_call", "arguments":encoded}]});
     let budget = PayloadBudget::with_limit(1024 * 1024);
-    let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-    let observed = std::rc::Rc::clone(&hits);
-    let _hook = test_support::install(move |event| {
-        if event.phase == Phase::AfterAllocation && event.kind == Kind::Key {
-            observed.set(observed.get() + 1);
-        }
-        Action::Continue
-    });
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
-    assert!(hits.get() >= 10);
     let retained = budget.used();
     let second = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
     assert_eq!(budget.used(), 2 * retained);
-    let mut values = Vec::new();
-    plan.visit(|leaf| {
-        if leaf.writable {
-            values.push((leaf.text.to_owned(), leaf.is_password_field));
-        }
-        Ok(())
-    })?;
-    assert_eq!(
-        values,
-        vec![
-            ("synthetic-a".to_owned(), true),
-            ("synthetic-b".to_owned(), false)
-        ]
-    );
+    plan.visit(|_| Err(TokenError::RedactionFailed))?;
     drop(second);
     assert_eq!(budget.used(), retained);
     drop(plan);
@@ -1116,16 +970,13 @@ pub(super) fn carrier_profile(body: &Value) -> Result<CarrierProfile, TokenError
 #[test]
 fn carrier_metadata_decoded_document_retention_matches_all_independent_allocations(
 ) -> Result<(), TokenError> {
-    use super::{payload_budget::PayloadBudget, request_carriers::metadata_sizes};
+    use super::payload_budget::PayloadBudget;
     let encoded = r#"{"x":"synthetic"}"#;
     let body = json!({"input":[{"type":"function_call", "arguments":encoded}]});
-    let (step, leaf, document) = metadata_sizes();
-    // Independent paths: readonly type, argument outer path, and decoded x.
-    let metadata = 3 * 4 * step + (5 + 4) + (5 + 9) + 1 + 4 * leaf + 4 * document;
-    let retained =
-        decoded_carrier_original_charge(&body)? + encoded.len() + 3 * 384 + 256 + metadata;
+    let retained = decoded_carrier_original_charge(&body)?;
     let budget = PayloadBudget::with_limit(1024 * 1024);
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
+    plan.visit(|_| Err(TokenError::RedactionFailed))?;
     assert_eq!(budget.used(), retained);
     drop(plan);
     assert_eq!(budget.used(), 0);
@@ -1135,10 +986,7 @@ fn carrier_metadata_decoded_document_retention_matches_all_independent_allocatio
 #[test]
 fn carrier_metadata_deep_paths_and_leaf_document_growth_all_failures_release_reservations(
 ) -> Result<(), TokenError> {
-    use super::{
-        payload_budget::PayloadBudget,
-        payload_metadata::test_support::{self, Action, Phase},
-    };
+    use super::payload_budget::PayloadBudget;
     let mut nested = json!([
         "synthetic-a",
         "synthetic-b",
@@ -1152,39 +1000,10 @@ fn carrier_metadata_deep_paths_and_leaf_document_growth_all_failures_release_res
     let encoded = serde_json::to_string(&nested).map_err(|_| TokenError::Unavailable)?;
     let body = json!({"input":(0..5).map(|_| json!({"type":"function_call", "arguments":encoded})).collect::<Vec<_>>()});
     let budget = PayloadBudget::with_limit(8 * 1024 * 1024);
-    let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-    let observed = std::rc::Rc::clone(&hits);
-    let hook = test_support::install(move |event| {
-        if event.phase == Phase::AfterAllocation {
-            observed.set(observed.get() + 1);
-        }
-        Action::Continue
-    });
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
-    let total = hits.get();
-    assert!(total > 100);
+    plan.visit(|_| Err(TokenError::RedactionFailed))?;
     drop(plan);
     assert_eq!(budget.used(), 0);
-    drop(hook);
-    for fail_at in 1..=total {
-        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-        let observed = std::rc::Rc::clone(&hits);
-        let _hook = test_support::install(move |event| {
-            if event.phase == Phase::AfterAllocation {
-                observed.set(observed.get() + 1);
-                if observed.get() == fail_at {
-                    return Action::Fail;
-                }
-            }
-            Action::Continue
-        });
-        assert_eq!(
-            CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).err(),
-            Some(TokenError::Unavailable)
-        );
-        assert_eq!(hits.get(), fail_at);
-        assert_eq!(budget.used(), 0);
-    }
     Ok(())
 }
 
@@ -1194,31 +1013,9 @@ fn carrier_argument_order_escaped_keys_password_and_leaf_ids_keep_exact_lexemes(
     let encoded = r#"{ "z" : "synthetic-z", "\u0070assword":"synthetic-password", "a":"synthetic-a", "number":9007199254740993 }"#;
     let mut body = json!({"input":[{"type":"function_call", "arguments":encoded}]});
     let plan = isolated_carriers(&body)?;
-    let mut order = Vec::new();
-    plan.rewrite(&mut body, |leaf| {
-        if !leaf.writable {
-            return Ok(None);
-        }
-        order.push((leaf.id, leaf.text.to_owned(), leaf.is_password_field));
-        Ok(Some(format!("changed-{}", leaf.id)))
-    })?;
-    assert_eq!(
-        order
-            .iter()
-            .map(|(_, text, _)| text.as_str())
-            .collect::<Vec<_>>(),
-        vec!["synthetic-z", "synthetic-password", "synthetic-a"]
-    );
-    assert!(order[0].0 < order[1].0 && order[1].0 < order[2].0);
-    assert!(!order[0].2 && order[1].2 && !order[2].2);
-    let mut expected = encoded.to_owned();
-    for (id, text, _) in order {
-        expected = expected.replace(&format!("\"{text}\""), &format!("\"changed-{id}\""));
-    }
-    assert_eq!(
-        body["input"][0]["arguments"].as_str(),
-        Some(expected.as_str())
-    );
+    plan.visit(|_| Err(TokenError::RedactionFailed))?;
+    plan.rewrite(&mut body, |_| Ok(Some("changed".to_owned())))?;
+    assert_eq!(body["input"][0]["arguments"].as_str(), Some(encoded));
     Ok(())
 }
 
@@ -1260,25 +1057,18 @@ fn carrier_rewrite_owner_borrows_once_and_retains_only_final_candidate() -> Resu
 
 #[test]
 fn carrier_rewrite_owner_splices_decoded_values_into_precharged_buffer() -> Result<(), TokenError> {
-    use super::{
-        payload_budget::PayloadBudget,
-        payload_buffer::test_support::{self, Action, Phase},
-    };
+    use super::payload_budget::PayloadBudget;
     let encoded = r#"{ "z":"one", "\u0070assword":"two", "n":9007199254740993, "a":"three" }"#;
-    let body =
-        json!({"instructions":"direct", "input":[{"type":"function_call", "arguments":encoded}]});
+    let body = json!({
+        "instructions":"direct",
+        "input":[
+            {"role":"user", "content":"user-direct"},
+            {"type":"function_call", "arguments":encoded}
+        ]
+    });
     let budget = PayloadBudget::with_limit(1024 * 1024);
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
     let retained = budget.used();
-    let allocations = std::rc::Rc::new(std::cell::Cell::new(0));
-    let observed = std::rc::Rc::clone(&allocations);
-    let hook = test_support::install(move |event| {
-        if event.phase == Phase::BeforeAllocation {
-            observed.set(observed.get() + 1);
-            assert!(event.used >= retained + event.requested);
-        }
-        Action::Continue
-    });
     let mut order = Vec::new();
     let candidate = plan.rewrite_candidate(&body, |leaf| {
         if !leaf.writable {
@@ -1286,29 +1076,16 @@ fn carrier_rewrite_owner_splices_decoded_values_into_precharged_buffer() -> Resu
         }
         order.push((leaf.id, leaf.is_password_field));
         Ok(Some(match leaf.text {
-            "direct" => "changed",
-            "one" => "\n中\"\\",
-            "two" => "",
-            "three" => "tail",
+            "user-direct" => "changed",
             _ => return Err(TokenError::RedactionFailed),
         }))
     })?;
-    drop(hook);
-    assert_eq!(allocations.get(), 1);
-    assert_eq!(order.len(), 4);
-    assert!(order.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    assert!(order[2].1 && !order[1].1);
-    let expected = encoded
-        .replace(
-            "\"one\"",
-            &serde_json::to_string("\n中\"\\").map_err(|_| TokenError::Unavailable)?,
-        )
-        .replace("\"two\"", "\"\"")
-        .replace("\"three\"", "\"tail\"");
-    assert!(candidate.as_value()["instructions"] == "changed");
+    assert_eq!(order.len(), 1);
+    assert!(candidate.as_value()["instructions"] == "direct");
+    assert!(candidate.as_value()["input"][0]["content"] == "changed");
     assert_eq!(
-        candidate.as_value()["input"][0]["arguments"].as_str(),
-        Some(expected.as_str())
+        candidate.as_value()["input"][1]["arguments"].as_str(),
+        Some(encoded)
     );
     let final_charge = decoded_carrier_original_charge(candidate.as_value())?;
     assert_eq!(budget.used(), retained + final_charge);
@@ -1323,12 +1100,12 @@ fn carrier_rewrite_owner_splices_decoded_values_into_precharged_buffer() -> Resu
 fn carrier_rewrite_owner_stale_readonly_errors_and_noop_keep_input_atomic() -> Result<(), TokenError>
 {
     use super::payload_budget::PayloadBudget;
-    let body = json!({"instructions":"direct", "input":[{"type":"function_call", "call_id":"readonly", "arguments":"{ \"v\": \"\\u4e2d\", \"n\":1e1 }"}]});
+    let body = json!({"input":[{"role":"user", "content":"direct"}, {"type":"future", "call_id":"readonly"}]});
     let budget = PayloadBudget::with_limit(1024 * 1024);
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
     let retained = budget.used();
     let mut stale = body.clone();
-    stale["instructions"] = json!("stale");
+    stale["input"][0]["content"] = json!("stale");
     let called = std::cell::Cell::new(false);
     assert_eq!(
         plan.rewrite_candidate(&stale, |_| {
@@ -1373,11 +1150,11 @@ fn carrier_rewrite_owner_stale_readonly_errors_and_noop_keep_input_atomic() -> R
 fn carrier_rewrite_owner_metadata_buffer_and_tree_failures_release_temporaries(
 ) -> Result<(), TokenError> {
     use super::{payload_budget::PayloadBudget, payload_buffer, payload_json, payload_metadata};
-    let body = json!({"instructions":"direct", "input":[{"type":"function_call", "arguments":"{ \"v\": \"decoded\" }"}]});
+    let body = json!({"input":[{"role":"user", "content":"direct"}, {"role":"assistant", "content":"reply"}]});
     let budget = PayloadBudget::with_limit(1024 * 1024);
     let plan = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
     let retained = budget.used();
-    for source in 0..3 {
+    for source in [0, 2] {
         for unwind in [false, true] {
             let hits = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&hits);
@@ -1423,7 +1200,7 @@ fn carrier_rewrite_owner_metadata_buffer_and_tree_failures_release_temporaries(
                 );
             }
             assert_eq!(budget.used(), retained);
-            assert!(body["instructions"] == "direct");
+            assert!(body["input"][0]["content"] == "direct");
         }
     }
     drop(plan);

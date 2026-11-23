@@ -51,55 +51,47 @@ fn preparation_new_authority_cannot_collide_with_immutable_keys() -> Result<(), 
     let key = [7; 32];
     let raw = "13800138000";
     let token = super::tokenization::make_token(&key, raw, TokenCategory::Phone)?;
-    for decoded in [false, true] {
-        let store = DlpTokenStore::with_test_key(key);
-        let mut lease = store.admit("codex", Some("synthetic-key-collision"), 1)?;
-        let budget = PayloadBudget::with_limit(1024 * 1024);
-        let body = if decoded {
-            let arguments = serde_json::to_string(&json!({&token:1,"value":raw}))
-                .map_err(|_| TokenError::RedactionFailed)?;
-            json!({"input":[{"type":"function_call","call_id":"call_collision","name":"fixture","arguments":arguments}]})
-        } else {
-            json!({"input":raw,"metadata":{&token:1}})
-        };
-        let mut called = false;
-        let result = prepare_codex_request_with_budget(
-            &mut lease,
-            &body,
-            &SecurityRuntimeConfig::default(),
-            &["chinese_phone_number"],
-            &[],
-            budget.clone(),
-            |_, _, _| {
-                called = true;
-                Ok(())
-            },
-        );
-        assert!(
-            matches!(
-                result,
-                Err(PlanError::Token(TokenError::ContextUnavailable))
-            ),
-            "new authority in immutable keys must refuse before commit"
-        );
-        assert!(
-            !called,
-            "refused immutable references cannot reach the validator"
-        );
-        assert!(
-            store.stats()?.entries == 0,
-            "refusal cannot commit token mappings"
-        );
-        assert!(
-            lease.resolve_if_authorized(&token)?.is_none(),
-            "refusal cannot grant authority"
-        );
-        drop(result);
-        assert!(
-            budget.used() == 0,
-            "refusal must release every candidate charge"
-        );
-    }
+    let store = DlpTokenStore::with_test_key(key);
+    let mut lease = store.admit("codex", Some("synthetic-key-collision"), 1)?;
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    let body = json!({"input":raw,"metadata":{&token:1}});
+    let mut called = false;
+    let result = prepare_codex_request_with_budget(
+        &mut lease,
+        &body,
+        &SecurityRuntimeConfig::default(),
+        &["chinese_phone_number"],
+        &[],
+        budget.clone(),
+        |_, _, _| {
+            called = true;
+            Ok(())
+        },
+    );
+    assert!(
+        matches!(
+            result,
+            Err(PlanError::Token(TokenError::ContextUnavailable))
+        ),
+        "new authority in immutable keys must refuse before commit"
+    );
+    assert!(
+        !called,
+        "refused immutable references cannot reach the validator"
+    );
+    assert!(
+        store.stats()?.entries == 0,
+        "refusal cannot commit token mappings"
+    );
+    assert!(
+        lease.resolve_if_authorized(&token)?.is_none(),
+        "refusal cannot grant authority"
+    );
+    drop(result);
+    assert!(
+        budget.used() == 0,
+        "refusal must release every candidate charge"
+    );
     Ok(())
 }
 
@@ -108,7 +100,7 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
 ) -> Result<(), PlanError> {
     let store = DlpTokenStore::with_test_key(std::array::from_fn(|index| index as u8));
     let mut lease = store.admit("codex", Some("synthetic-session"), 1)?;
-    let body = json!({"instructions": "13800138000", "input": [{"type": "function_call", "name": "synthetic", "arguments": r#"{ "value": "13800138000", "number": 18446744073709551617 }"#}]});
+    let body = json!({"input": [{"role": "user", "content": "13800138000"}, {"role": "assistant", "content": "13800138000"}]});
     let prepared = prepare_codex_request(
         &mut lease,
         &body,
@@ -122,10 +114,13 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
             Ok(42usize)
         },
     )?;
-    assert!(prepared.body.as_value()["instructions"] == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai");
     assert!(
-        prepared.body.as_value()["input"][0]["arguments"]
-            == r#"{ "value": "rredact-cn_phone-413ff0a68f6f0d574cb5-ai", "number": 18446744073709551617 }"#
+        prepared.body.as_value()["input"][0]["content"]
+            == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai"
+    );
+    assert!(
+        prepared.body.as_value()["input"][1]["content"]
+            == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai"
     );
     assert_eq!(
         (
@@ -137,7 +132,7 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
     assert_eq!(prepared.validated, 42);
     assert!(!prepared.encoded.as_slice().is_empty());
     assert_eq!(store.stats()?.entries, 1);
-    assert!(body["instructions"] == "13800138000");
+    assert!(body["input"][0]["content"] == "13800138000");
     Ok(())
 }
 
@@ -172,7 +167,8 @@ fn preparation_keeps_unselected_redaction_irreversible() -> Result<(), PlanError
 fn preparation_rejects_sensitive_read_only_values_before_mapping_commit() -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let body = json!({"instructions": "13800138000", "input": [{"type": "function_call", "name": "13800138000", "arguments": "{}"}]});
+    let body =
+        json!({"input": [{"role": "user", "content": "13800138000", "name": "13800138000"}]});
     let result = prepare_codex_request(
         &mut lease,
         &body,
@@ -435,29 +431,28 @@ fn preparation_password_context_and_cross_field_irreversibility_are_preserved(
 ) -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let body = json!({"instructions": "synthetic-secret", "input": [{"type": "function_call", "arguments": {"password": "synthetic-secret"}}]});
+    let body = json!({
+        "instructions": "synthetic-secret",
+        "input": [
+            {"role": "user", "content": "synthetic-secret"},
+            {"role": "assistant", "content": "synthetic-secret"},
+            {"type": "function_call", "arguments": {"password": "synthetic-secret"}}
+        ]
+    });
     let mut runtime = SecurityRuntimeConfig::default();
     runtime.custom_rules.push(rule(
         "synthetic-exact",
         "synthetic-secret",
         AuditAction::Redact,
     ));
-    runtime
-        .builtin_action_overrides
-        .insert("catalog:password-field".into(), AuditAction::Redact);
-    let prepared = prepare_codex_request(
-        &mut lease,
-        &body,
-        &runtime,
-        &["synthetic-exact"],
-        &[],
-        |_, _, proof| {
-            assert!(proof.is_empty());
-            Ok(())
-        },
-    )?;
-    assert!(prepared.body.as_value()["instructions"] == "[REDACTED]");
-    assert!(prepared.body.as_value()["input"][0]["arguments"]["password"] == "[REDACTED]");
+    let prepared = prepare_codex_request(&mut lease, &body, &runtime, &[], &[], |_, _, proof| {
+        assert!(proof.is_empty());
+        Ok(())
+    })?;
+    assert!(prepared.body.as_value()["instructions"] == "synthetic-secret");
+    assert!(prepared.body.as_value()["input"][0]["content"] == "[REDACTED]");
+    assert!(prepared.body.as_value()["input"][1]["content"] == "[REDACTED]");
+    assert!(prepared.body.as_value()["input"][2]["arguments"]["password"] == "synthetic-secret");
     assert_eq!(prepared.irreversible_occurrences, 2);
     assert_eq!(store.stats()?.entries, 0);
     Ok(())
@@ -1354,8 +1349,8 @@ fn decoded_preparation_fixture() -> Result<DecodedPreparationFixture, TokenError
 fn preparation_decoded_peak_exhaustion_precedes_validation_and_mapping_commit(
 ) -> Result<(), PlanError> {
     use super::payload_json::test_support::{self, Action, Phase};
-    let fixture = decoded_preparation_fixture()?;
-    let limit = fixture.parse_peaks[1] - 1;
+    let body =
+        json!({"input":[{"type":"function_call", "arguments":r#"{"value":"13800138000"}"#}]});
     let parses = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&parses);
     let _hook = test_support::install(move |event| {
@@ -1366,29 +1361,22 @@ fn preparation_decoded_peak_exhaustion_precedes_validation_and_mapping_commit(
     });
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let budget = PayloadBudget::with_limit(limit);
-    let mut validated = false;
-    let result = prepare_codex_request_with_budget(
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    let prepared = prepare_codex_request_with_budget(
         &mut lease,
-        &fixture.body,
+        &body,
         &SecurityRuntimeConfig::default(),
         &["chinese_phone_number"],
         &[],
         budget.clone(),
-        |_, _, _| {
-            validated = true;
-            Ok(())
-        },
-    );
-    assert_eq!(
-        result.err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
-    assert_eq!(parses.get(), 1);
-    assert!(!validated);
-    assert_eq!(budget.used(), 0);
+        |_, _, _| Ok(()),
+    )?;
+    assert_eq!(parses.get(), 0);
+    assert_eq!(prepared.reversible_occurrences, 0);
     assert_eq!(store.stats()?.entries, 0);
     assert!(lease.authorized_tokens()?.is_empty());
+    drop(prepared);
+    assert_eq!(budget.used(), 0);
     Ok(())
 }
 
@@ -1396,46 +1384,34 @@ fn preparation_decoded_peak_exhaustion_precedes_validation_and_mapping_commit(
 fn preparation_decoded_initial_and_residual_owners_share_bytes_budget_until_validation(
 ) -> Result<(), PlanError> {
     use super::payload_json::test_support::{self, Action, Phase};
-    let fixture = decoded_preparation_fixture()?;
-    let parse_peaks = fixture.parse_peaks;
-    let first_retained = fixture.first_retained;
+    let body =
+        json!({"input":[{"type":"function_call", "arguments":r#"{"value":"13800138000"}"#}]});
     let parses = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&parses);
     let _hook = test_support::install(move |event| {
         if event.phase == Phase::AfterParse {
             observed.set(observed.get() + 1);
-            if observed.get() == 1 {
-                assert_eq!(event.charged, first_retained);
-                assert_eq!(event.used, parse_peaks[0]);
-            } else {
-                assert_eq!(event.used, parse_peaks[1]);
-            }
         }
         Action::Continue
     });
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let budget = PayloadBudget::with_limit(fixture.peak);
+    let budget = PayloadBudget::with_limit(1024 * 1024);
     let prepared = prepare_codex_request_with_budget(
         &mut lease,
-        &fixture.body,
+        &body,
         &SecurityRuntimeConfig::default(),
         &["chinese_phone_number"],
         &[],
         budget.clone(),
-        |_, bytes, proof| {
-            assert_eq!(proof.len(), 1);
-            assert_eq!(budget.used(), fixture.retained + bytes.len());
+        |_, _, proof| {
+            assert!(proof.is_empty());
             Ok(())
         },
     )?;
-    assert_eq!(parses.get(), 2);
-    assert_eq!(prepared.reversible_occurrences, 1);
-    assert_eq!(
-        budget.used(),
-        fixture.candidate_charge + prepared.encoded.capacity()
-    );
-    assert_eq!(store.stats()?.entries, 1);
+    assert_eq!(parses.get(), 0);
+    assert_eq!(prepared.reversible_occurrences, 0);
+    assert_eq!(store.stats()?.entries, 0);
     drop(prepared);
     assert_eq!(budget.used(), 0);
     Ok(())

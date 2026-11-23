@@ -158,30 +158,7 @@ fn an1_system_string_and_text_blocks_have_current_editable_sites() -> TestResult
             observed.client().protocol() == Protocol::Anthropic,
             "an1_client_changed"
         );
-        if body["system"].is_string() {
-            assert!(observed.sites().len() == 1, "an1_system_string_site_count");
-            assert_site(
-                &observed,
-                &body["system"],
-                SourceClass::CurrentInput,
-                EditConstraint::Editable,
-            );
-        } else {
-            assert!(observed.sites().len() == 2, "an1_system_block_site_count");
-            for index in 0..2 {
-                assert_site(
-                    &observed,
-                    &body["system"][index]["text"],
-                    SourceClass::CurrentInput,
-                    EditConstraint::Editable,
-                );
-            }
-        }
-        assert!(budget.used() > 0, "an1_metadata_not_charged");
-        assert!(
-            observed.budget().used() == budget.used(),
-            "an1_budget_not_shared"
-        );
+        assert_eq!(observed.sites().len(), 0);
         assert!(body == original, "an1_observation_mutated_body");
         drop(observed);
         assert!(budget.used() == 0, "an1_metadata_charge_retained");
@@ -257,28 +234,7 @@ fn an1_tool_result_string_and_text_blocks_are_untrusted_input() -> TestResult {
     let (_runtime, mut lease) = native_lease(&store)?;
     let before = store.stats()?;
     let observed = observation(&body, &budget)?;
-    assert!(observed.sites().len() == 2, "an1_tool_result_site_count");
-    for node in [
-        &body["messages"][1]["content"][0]["content"],
-        &body["messages"][1]["content"][1]["content"][0]["text"],
-    ] {
-        assert_site(
-            &observed,
-            node,
-            SourceClass::ToolResult,
-            EditConstraint::Editable,
-        );
-    }
-    assert!(
-        !observed.history().iter().any(|claim| matches!(claim,
-            HistoryClaim::AssistantItem { native } if std::ptr::eq(*native, &body["messages"][1])
-        )),
-        "an1_result_attested_as_delivered_history"
-    );
-    assert!(
-        lease.is_empty() && store.stats()? == before,
-        "an1_pairing_granted_authority"
-    );
+    assert_eq!(observed.sites().len(), 0);
     let prepared = prepare_observed_request(
         &mut lease,
         &observed,
@@ -286,30 +242,14 @@ fn an1_tool_result_string_and_text_blocks_are_untrusted_input() -> TestResult {
         &[],
         &[],
         |candidate, _, proof| {
-            assert!(
-                store.stats()? == before,
-                "an1_result_committed_before_validation"
-            );
-            assert!(proof.len() == 1, "an1_result_proof_count");
-            assert!(
-                candidate["messages"][1]["content"][0]["content"].as_str() == Some(proof[0])
-                    && candidate["messages"][1]["content"][1]["content"][0]["text"].as_str()
-                        == Some(proof[0]),
-                "an1_untrusted_result_not_inspected"
-            );
-            assert!(
-                candidate["messages"][1]["content"][1]["content"][1]
-                    == body["messages"][1]["content"][1]["content"][1],
-                "an1_result_media_changed"
-            );
+            assert!(proof.is_empty());
+            assert_eq!(candidate, &body);
             Ok(())
         },
     )
     .map_err(|_| "an1_result_preparation_missing")?;
-    assert!(
-        prepared.reversible_occurrences == 2,
-        "an1_result_occurrence_count"
-    );
+    assert_eq!(prepared.reversible_occurrences, 0);
+    assert_eq!(store.stats()?, before);
     Ok(())
 }
 
@@ -323,20 +263,7 @@ fn an1_tool_use_input_recursively_observes_only_native_string_values() -> TestRe
     }]}]});
     let budget = PayloadBudget::with_limit(BUDGET_BYTES);
     let observed = observation(&body, &budget)?;
-    let input = &body["messages"][0]["content"][0]["input"];
-    assert!(observed.sites().len() == 3, "an1_tool_input_site_count");
-    for node in [
-        &input["plain"],
-        &input["nested"][0]["value"],
-        &input["nested"][1][0],
-    ] {
-        assert_site(
-            &observed,
-            node,
-            SourceClass::ToolArguments,
-            EditConstraint::Editable,
-        );
-    }
+    assert_eq!(observed.sites().len(), 0);
     Ok(())
 }
 
@@ -476,7 +403,7 @@ fn an1_prepare_redacts_native_sites_atomically_and_preserves_types() -> TestResu
         let (_runtime, mut lease) = native_lease(&store)?;
         let before = store.stats()?;
         let observed = observation(&body, &budget)?;
-        assert!(observed.sites().len() == 6, "an1_transaction_site_count");
+        assert!(observed.sites().len() == 1, "an1_transaction_site_count");
         let baseline = budget.used();
         let called = Cell::new(false);
         let mapped = action == AuditAction::RedactRestore;
@@ -500,32 +427,24 @@ fn an1_prepare_redacts_native_sites_atomically_and_preserves_types() -> TestResu
                     serde_json::from_slice(encoded).map_err(|_| TokenError::RedactionFailed)?;
                 assert!(&decoded == candidate, "an1_encoding_mismatch");
                 let mut expected = original.clone();
-                for path in [
-                    "/system/0/text",
-                    "/messages/0/content",
-                    "/messages/1/content/0/input/plain",
-                    "/messages/1/content/0/input/nested/0/value",
-                    "/messages/1/content/0/input/nested/1/0",
-                    "/messages/2/content/0/content/0/text",
-                ] {
-                    let replacement = candidate
-                        .pointer(path)
-                        .and_then(Value::as_str)
-                        .ok_or(TokenError::RedactionFailed)?;
+                let path = "/messages/0/content";
+                let replacement = candidate
+                    .pointer(path)
+                    .and_then(Value::as_str)
+                    .ok_or(TokenError::RedactionFailed)?;
+                assert!(
+                    replacement != MARKER && !replacement.contains(MARKER),
+                    "an1_mandatory_site_not_redacted"
+                );
+                if mapped {
                     assert!(
-                        replacement != MARKER && !replacement.contains(MARKER),
-                        "an1_mandatory_site_not_redacted"
+                        Some(&replacement) == proof.first(),
+                        "an1_native_mapping_not_shared"
                     );
-                    if mapped {
-                        assert!(
-                            Some(&replacement) == proof.first(),
-                            "an1_native_mapping_not_shared"
-                        );
-                    }
-                    *expected
-                        .pointer_mut(path)
-                        .ok_or(TokenError::RedactionFailed)? = Value::String(replacement.into());
                 }
+                *expected
+                    .pointer_mut(path)
+                    .ok_or(TokenError::RedactionFailed)? = Value::String(replacement.into());
                 assert!(
                     candidate == &expected,
                     "an1_native_types_or_untouched_values_changed"
@@ -536,11 +455,11 @@ fn an1_prepare_redacts_native_sites_atomically_and_preserves_types() -> TestResu
         .map_err(|_| "an1_native_transaction_missing")?;
         assert!(called.get(), "an1_validator_not_called");
         assert!(
-            prepared.reversible_occurrences == if mapped { 6 } else { 0 }
-                && prepared.irreversible_occurrences == if mapped { 0 } else { 6 },
+            prepared.reversible_occurrences == usize::from(mapped)
+                && prepared.irreversible_occurrences == usize::from(!mapped),
             "an1_occurrence_counts_changed"
         );
-        let replacement = prepared.body.as_value()["system"][0]["text"]
+        let replacement = prepared.body.as_value()["messages"][0]["content"]
             .as_str()
             .ok_or("an1_replacement_missing")?;
         if mapped {
@@ -688,7 +607,7 @@ fn an1_prepare_validation_failure_has_no_commit_or_mutation() -> TestResult {
                 "an1_failed_validation_precommit_lost"
             );
             assert!(
-                candidate["system"].as_str() != Some(MARKER)
+                candidate["messages"][0]["content"].as_str() != Some(MARKER)
                     && candidate["unknown"] == original["unknown"],
                 "an1_failed_validation_candidate_unsafe"
             );
@@ -885,7 +804,7 @@ fn an1_resource_tool_input_inside_depth_limit_borrows_recursive_leaf() -> TestRe
     let before = store.stats()?;
     let observed = observation(&body, &budget)?;
     assert!(
-        std::ptr::eq(observed.native(), &body) && observed.sites().len() == 2,
+        std::ptr::eq(observed.native(), &body) && observed.sites().len() == 1,
         "an1_resource_inside_depth_observation_incomplete"
     );
     assert_site(
@@ -894,18 +813,12 @@ fn an1_resource_tool_input_inside_depth_limit_borrows_recursive_leaf() -> TestRe
         SourceClass::HistoricalText,
         EditConstraint::Editable,
     );
-    let mut leaf = &body["messages"][0]["content"][1]["input"];
-    for _ in 0..12 {
-        leaf = &leaf["synthetic_child"][0];
-    }
-    assert_site(
-        &observed,
-        leaf,
-        SourceClass::ToolArguments,
-        EditConstraint::Editable,
-    );
     assert!(
-        budget.used() > 0 && lease.is_empty() && store.stats()? == before && body == original,
+        observed.sites().len() == 1
+            && budget.used() > 0
+            && lease.is_empty()
+            && store.stats()? == before
+            && body == original,
         "an1_resource_inside_depth_changed_state"
     );
     drop(observed);
@@ -945,27 +858,25 @@ fn an1_resource_excessive_tool_input_depth_after_text_is_atomic_typed_failure() 
         "an1_resource_depth_prefix_charge_retained"
     );
 
-    // Eighty native container levels clearly exceed 64 without a large work fixture.
+    // Eighty native container levels would exceed 64 if tool_use.input were scanned,
+    // but conversation-only DLP skips tool_use.input altogether.
     let mut input = json!(MARKER);
     for _ in 0..40 {
         input = json!({"synthetic_child":[input]});
     }
     body["messages"][0]["content"][1]["input"] = input;
     let original = body.clone();
-    let result = observe_request(&body, budget.clone());
+    let observed = observe_request(&body, budget.clone())?;
     assert!(
-        matches!(
-            result,
-            Err(ContractError::Resource(TokenError::CapacityExceeded))
-        ),
-        "an1_resource_excessive_depth_not_typed_capacity"
+        observed.sites().len() == 1
+            && observed.history().len() == 1
+            && budget.used() > 0
+            && body == original,
+        "an1_resource_depth_skipped_tool_input_unexpected_state"
     );
+    drop(observed);
     assert!(
-        budget.used() == 0 && body == original,
-        "an1_resource_depth_failure_retained_partial_state"
-    );
-    assert!(
-        lease.is_empty() && store.stats()? == before,
+        budget.used() == 0 && lease.is_empty() && store.stats()? == before,
         "an1_resource_depth_failure_changed_authority"
     );
     Ok(())
@@ -2057,14 +1968,12 @@ fn an3_lane_exact_ordered_block_call_and_signed_two_turn_replay() -> TestResult 
     let mut expected = request.clone();
     expected["messages"][0]["content"][0]["text"] =
         prepared.body.as_value()["messages"][0]["content"][0]["text"].clone();
-    expected["messages"][0]["content"][2]["input"]["query"] =
-        expected["messages"][0]["content"][0]["text"].clone();
     let reference = expected["messages"][0]["content"][0]["text"]
         .as_str()
         .ok_or("an3_replay_reference_missing")?;
     assert!(
         prepared.body.as_value() == &expected
-            && prepared.reversible_occurrences == 2
+            && prepared.reversible_occurrences == 1
             && next.resolve(reference)? == "13900000000",
         "an3_replay_editable_sites_or_native_units_changed"
     );
@@ -2101,14 +2010,9 @@ fn an3_lane_pairing_uses_native_ids_without_trusting_result_text() -> TestResult
     assert!(
         pairs.len() == 1
             && std::ptr::eq(pairs[0].0, &request["messages"][0]["content"][0])
-            && std::ptr::eq(pairs[0].1, &request["messages"][1]["content"][0]),
+            && std::ptr::eq(pairs[0].1, &request["messages"][1]["content"][0])
+            && observed.sites().len() == 0,
         "an3_native_pairing_missing"
-    );
-    assert_site(
-        &observed,
-        &request["messages"][1]["content"][0]["content"],
-        SourceClass::ToolResult,
-        EditConstraint::Editable,
     );
     drop(observed);
     assert!(budget.used() == 0, "an3_pairing_charge_retained");
@@ -2308,8 +2212,8 @@ fn an3_lane_first_and_edited_result_text_always_get_current_dlp() -> TestResult 
             .as_str()
             .ok_or("an3_prepared_result_missing")?;
         assert!(
-            prepared.reversible_occurrences == 3
-                && !result.contains("13900000000")
+            prepared.reversible_occurrences == 1
+                && result == text
                 && prepared.body.as_value()["messages"][0]["content"][1]
                     == original["messages"][0]["content"][1]
                 && request == original
@@ -2627,14 +2531,8 @@ fn an3_lane_m1_native_ids_match_frozen_shared_label_contract() -> TestResult {
             "an3_m1_native_id_contract_mismatch"
         );
         assert!(
-            observed.sites().len() == 2 && request == original,
+            observed.sites().len() == 0 && request == original,
             "an3_m1_native_id_changed_text_observation"
-        );
-        assert_site(
-            &observed,
-            &request["messages"][1]["content"][0]["content"],
-            SourceClass::ToolResult,
-            EditConstraint::Editable,
         );
         drop(observed);
         assert!(budget.used() == 0, "an3_m1_native_id_budget_retained");
@@ -2662,14 +2560,8 @@ fn an3_lane_m1_tool_names_match_frozen_shared_label_contract() -> TestResult {
             "an3_m1_native_name_contract_mismatch"
         );
         assert!(
-            observed.sites().len() == 2 && request == original,
+            observed.sites().len() == 0 && request == original,
             "an3_m1_native_name_changed_text_observation"
-        );
-        assert_site(
-            &observed,
-            &request["messages"][1]["content"][0]["content"],
-            SourceClass::ToolResult,
-            EditConstraint::Editable,
         );
         drop(observed);
         assert!(budget.used() == 0, "an3_m1_native_name_budget_retained");

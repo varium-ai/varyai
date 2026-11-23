@@ -2398,3 +2398,25 @@ against the `src-tauri` manifest. Cargo reported 7,821 library tests and
 165 integration tests passed with 21 library tests ignored. The original
 reporter's subscription accounts and the installed Windows clients still
 need live verification.
+
+## Conversation-only DLP scope and password-assignment regex (macOS and Windows)
+
+Request-side DLP scanning, redaction, tokenization, and final-payload validation
+inspect conversational `user` and `assistant` text only (plus Responses
+`prompt` and `reasoning` summary/content) by default across Chat, Anthropic,
+Gemini, and Responses protocols. System/developer instructions
+(`system`, `developer`, `instructions`, `systemInstruction` /
+`system_instruction`), tool-call arguments (`tool_calls`, `tool_use`,
+`functionCall`, `function_call`, `custom_tool_call`), and tool results
+(`tool`, `tool_result`, `functionResponse`, `function_call_output`,
+`custom_tool_call_output`) are excluded from request DLP inspection while
+retaining structural history-pairing checks.
+
+The `catalog:password-assignment` built-in rule excludes `>` as the first
+character of a matched secret (`[^\s>,\[\]"'}][^\s,\[\]"'}]*`) so `=>`
+assignments (for example `Password => "[REDACTED]"`) do not backtrack to `=`
+and fail final validation with `400 dlp_redaction_failed`.
+
+| Agent IDs                                                                                                                                                                                                    | Entry point and adapter                                                | Verification scope                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `deepseek-harness`, `t3code` | Shared Chat, Anthropic, Gemini, and Responses DLP adapters and `extractor` | Shared macOS synthetic HTTP and adapter regressions; native macOS/Windows pending |

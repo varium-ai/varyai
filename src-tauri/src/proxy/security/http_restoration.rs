@@ -3117,21 +3117,7 @@ fn collect_final_content<'a>(
                     items.push(FinalInspectionItem::Text(text))?;
                 }
             }
-            Some("tool_use") if anthropic => {
-                collect_final_metadata(content, &["id", "name"], items)?;
-                if let Some(arguments) = content.get("input") {
-                    items.push(FinalInspectionItem::Arguments {
-                        kind: "function_call",
-                        arguments,
-                    })?;
-                }
-            }
-            Some("tool_result") if anthropic => {
-                collect_final_metadata(content, &["tool_use_id"], items)?;
-                if let Some(result) = content.get("content") {
-                    collect_final_content(result, anthropic, items)?;
-                }
-            }
+            Some("tool_use" | "tool_result") if anthropic => {}
             Some("thinking") if anthropic => {
                 if let Some(text) = content.get("thinking").and_then(Value::as_str) {
                     items.push(FinalInspectionItem::Text(text))?;
@@ -3225,14 +3211,14 @@ fn final_inspection_carriers(
         _ => return Err(DlpForwardError::RestoreUnsupported),
     };
     let mut items = PayloadVec::new(budget.clone()).map_err(DlpForwardError::from_token_error)?;
-    if anthropic {
-        if let Some(system) = body.get("system") {
-            collect_final_content(system, anthropic, &mut items)
-                .map_err(DlpForwardError::from_token_error)?;
-        }
-    }
     if let Some(messages) = body.get("messages").and_then(Value::as_array) {
         for (message_index, message) in messages.iter().enumerate() {
+            if matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("system" | "developer" | "tool")
+            ) {
+                continue;
+            }
             if let Some(content) = message.get("content") {
                 if !anthropic && content.is_string() {
                     targets
@@ -3248,8 +3234,6 @@ fn final_inspection_carriers(
                     .map_err(DlpForwardError::from_token_error)?;
             }
             if !anthropic {
-                collect_final_metadata(message, &["name", "tool_call_id"], &mut items)
-                    .map_err(DlpForwardError::from_token_error)?;
                 for key in ["reasoning_content", "reasoning", "refusal"] {
                     if let Some(text) = message.get(key).and_then(Value::as_str) {
                         if key == "reasoning_content" {
@@ -3266,36 +3250,6 @@ fn final_inspection_carriers(
                             .push(FinalInspectionItem::Text(text))
                             .map_err(DlpForwardError::from_token_error)?;
                     }
-                }
-                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-                    for call in calls {
-                        collect_final_metadata(call, &["id"], &mut items)
-                            .map_err(DlpForwardError::from_token_error)?;
-                        if let Some(function) = call.get("function") {
-                            collect_final_metadata(function, &["name"], &mut items)
-                                .map_err(DlpForwardError::from_token_error)?;
-                        }
-                        if let Some(arguments) = call.pointer("/function/arguments") {
-                            items
-                                .push(FinalInspectionItem::Arguments {
-                                    kind: "function_call",
-                                    arguments,
-                                })
-                                .map_err(DlpForwardError::from_token_error)?;
-                        }
-                    }
-                }
-                if let Some(function) = message.get("function_call") {
-                    collect_final_metadata(function, &["name"], &mut items)
-                        .map_err(DlpForwardError::from_token_error)?;
-                }
-                if let Some(arguments) = message.pointer("/function_call/arguments") {
-                    items
-                        .push(FinalInspectionItem::Arguments {
-                            kind: "function_call",
-                            arguments,
-                        })
-                        .map_err(DlpForwardError::from_token_error)?;
                 }
             }
         }
@@ -3320,11 +3274,6 @@ fn collect_final_gemini<'a>(
     body: &'a Value,
     items: &mut PayloadVec<FinalInspectionItem<'a>>,
 ) -> Result<(), TokenError> {
-    for field in ["systemInstruction", "system_instruction"] {
-        if let Some(instruction) = body.get(field) {
-            collect_final_gemini_content(instruction, items)?;
-        }
-    }
     if let Some(contents) = body.get("contents").and_then(Value::as_array) {
         for content in contents {
             collect_final_gemini_content(content, items)?;
@@ -3343,18 +3292,6 @@ fn collect_final_gemini_content<'a>(
     for part in parts {
         if let Some(text) = part.get("text").and_then(Value::as_str) {
             items.push(FinalInspectionItem::Text(text))?;
-        }
-        for (carrier, field) in [("functionCall", "args"), ("functionResponse", "response")] {
-            if let Some(value) = part
-                .get(carrier)
-                .and_then(|function| function.get(field))
-                .filter(|value| value.is_object())
-            {
-                items.push(FinalInspectionItem::Arguments {
-                    kind: "function_call",
-                    arguments: value,
-                })?;
-            }
         }
     }
     Ok(())
@@ -3413,20 +3350,15 @@ fn audit_final_refusal(
                 password: &'a str,
             }
             #[derive(serde::Serialize)]
-            struct PasswordItem<'a> {
-                #[serde(rename = "type")]
-                kind: &'static str,
-                arguments: PasswordArguments<'a>,
+            struct PasswordBody<'a> {
+                input: PasswordArguments<'a>,
             }
             let body = if leaf.is_password_field {
                 final_inspection_json(
-                    &FinalInspectionBody {
-                        input: &[PasswordItem {
-                            kind: "function_call",
-                            arguments: PasswordArguments {
-                                password: leaf.text,
-                            },
-                        }],
+                    &PasswordBody {
+                        input: PasswordArguments {
+                            password: leaf.text,
+                        },
                     },
                     budget,
                 )?

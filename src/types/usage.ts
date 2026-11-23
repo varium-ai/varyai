@@ -1,6 +1,14 @@
-/** Only generated direct-model IDs share the VaryAI provider namespace. */
+/** Only generated direct-model IDs and routing group UUIDs share the VaryAI routing namespace. */
 export function getUsageRoutingModelId(model: string): string | undefined {
-  return /^(?:vary-provider\/)?(model-[0-9a-f]{64})$/.exec(model)?.[1];
+  const direct = /^(?:vary-(?:provider|auto)\/)?(model-[0-9a-f]{64})$/i.exec(
+    model,
+  )?.[1];
+  if (direct) return direct.toLowerCase();
+  const groupUuid =
+    /^(?:vary-(?:provider|auto)\/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+      model,
+    )?.[1];
+  return groupUuid?.toLowerCase();
 }
 
 /** Analytics-only aliases. Keep wire IDs, billing records and custom namespaces intact. */

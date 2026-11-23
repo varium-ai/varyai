@@ -33,13 +33,12 @@ pub(in crate::proxy::security) fn observe_request<'native>(
             continue;
         };
         let source = match role {
-            "system" | "developer" => SourceClass::CurrentInput,
+            "system" | "developer" | "tool" => continue,
             "user" if latest_user.is_some_and(|latest| index < latest) => {
                 SourceClass::HistoricalText
             }
             "user" => SourceClass::CurrentInput,
             "assistant" => SourceClass::HistoricalText,
-            "tool" => SourceClass::ToolResult,
             _ => continue,
         };
         if let Some(content) = message.get("content") {
@@ -64,38 +63,13 @@ pub(in crate::proxy::security) fn observe_request<'native>(
                 }
             }
         }
-        match role {
-            "assistant" => {
-                observation.claim_history(HistoryClaim::AssistantItem { native: message })?;
-                for key in ["reasoning_content", "reasoning", "refusal"] {
-                    if let Some(text) = message.get(key).filter(|text| text.is_string()) {
-                        observation.observe_text(text, source, EditConstraint::Editable)?;
-                    }
-                }
-                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-                    for call in calls {
-                        if call.get("type").and_then(Value::as_str) != Some("function") {
-                            continue;
-                        }
-                        if let Some(arguments) = call
-                            .get("function")
-                            .and_then(|function| function.get("arguments"))
-                            .filter(|arguments| arguments.is_string())
-                        {
-                            observation.observe_text(
-                                arguments,
-                                SourceClass::ToolArguments,
-                                EditConstraint::Editable,
-                            )?;
-                        }
-                    }
+        if role == "assistant" {
+            observation.claim_history(HistoryClaim::AssistantItem { native: message })?;
+            for key in ["reasoning_content", "reasoning", "refusal"] {
+                if let Some(text) = message.get(key).filter(|text| text.is_string()) {
+                    observation.observe_text(text, source, EditConstraint::Editable)?;
                 }
             }
-            "tool" => observation.claim_history(HistoryClaim::OpaqueItem {
-                native: message,
-                source: SourceClass::ToolResult,
-            })?,
-            _ => {}
         }
     }
     Ok(observation)

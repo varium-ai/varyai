@@ -349,7 +349,7 @@ pub static BUILTIN_RULES: LazyLock<Vec<BuiltinRule>> = LazyLock::new(|| {
             RuleCategory::Password,
             RiskLevel::High,
             AuditAction::Allow,
-            r#"(?i)["']?(?:password|passwd|pwd|passphrase|passcode)["']?\s*(?:=>|=|:)\s*["']?([^\s,\[\]"'}]+)"#,
+            r#"(?i)["']?(?:password|passwd|pwd|passphrase|passcode)["']?\s*(?:=>|=|:)\s*["']?([^\s>,\[\]"'}][^\s,\[\]"'}]*)"#,
             &["password", "passwd", "pwd", "passphrase", "passcode"],
         )
         .with_capture_group(1),

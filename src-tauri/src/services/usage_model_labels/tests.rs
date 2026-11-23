@@ -190,3 +190,33 @@ async fn corrupt_optional_history_cannot_interrupt_catalog_preparation(
     assert_eq!(providers.len(), 1);
     Ok(())
 }
+
+#[test]
+fn lookup_resolves_routing_group_uuids() -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let group_id = "e44ea5a8-b978-42de-b350-0427d58dfe82";
+    let group: crate::services::intent_routing::RoutingGroup = serde_json::from_value(json!({
+        "id": group_id,
+        "name": "Synthetic Routing Group",
+        "revision": 0,
+        "members": []
+    }))?;
+    {
+        let conn = db
+            .extension_connection()
+            .lock()
+            .map_err(|_| "synthetic lock")?;
+        conn.execute(
+            "INSERT INTO intent_routing_groups(id, name, position, config) VALUES (?1, ?2, 0, ?3)",
+            rusqlite::params![group_id, group.name, serde_json::to_string(&group)?],
+        )?;
+    }
+
+    let labels =
+        db.get_usage_model_labels(&[group_id.to_string(), format!("vary-auto/{group_id}")])?;
+    assert_eq!(labels.len(), 1);
+    assert_eq!(labels[0].id, group_id);
+    assert_eq!(labels[0].display_name, "Synthetic Routing Group");
+    assert_eq!(labels[0].provider_name, "");
+    Ok(())
+}

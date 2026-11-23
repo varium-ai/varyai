@@ -91,12 +91,6 @@ pub(in crate::proxy::security) fn observe_admitted_request<'native>(
         remaining_work: MAX_NATIVE_WORK,
     };
     walker.visit(0)?;
-    // Preserve both evidenced ProtoJSON spellings without renaming or copying either field.
-    for field in ["systemInstruction", "system_instruction"] {
-        if let Some(instruction) = native.get(field) {
-            walker.content(instruction, 1, SourceClass::CurrentInput, false)?;
-        }
-    }
     if let Some(contents) = native.get("contents") {
         walker.visit(1)?;
         if let Some(contents) = contents.as_array() {
@@ -106,7 +100,7 @@ pub(in crate::proxy::security) fn observe_admitted_request<'native>(
                 } else {
                     SourceClass::CurrentInput
                 };
-                walker.content(content, 2, source, true)?;
+                walker.content(content, 2, source, false)?;
             }
         }
     }

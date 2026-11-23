@@ -143,9 +143,13 @@ export function ProfileSwitcher({
       ? null
       : scopedCurrentId);
   const currentProfile = profiles.find((p) => p.id === currentId);
-  const duplicateName = (data?.profiles ?? []).some(
-    (profile) => profile.name.trim() === newName.trim(),
-  );
+  const duplicateName =
+    !createMutation.isPending &&
+    !createMutation.isSuccess &&
+    Boolean(newName.trim()) &&
+    (data?.profiles ?? []).some(
+      (profile) => profile.name.trim() === newName.trim(),
+    );
 
   const undoLast = async () => {
     if (!pendingUndo || undoing) return;
@@ -284,6 +288,8 @@ export function ProfileSwitcher({
                   value="__create__"
                   keywords={[t("profiles.createFromCurrent")]}
                   onSelect={() => {
+                    createMutation.reset();
+                    setNewName("");
                     setOpen(false);
                     setCreateBundle(false);
                     setBundleApps(selectedAvailableApps);
