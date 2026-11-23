@@ -64,6 +64,7 @@ const formats: Array<[Format, string, string]> = [
   ["anthropic", "anthropic", "Anthropic"],
   ["gemini_native", "gemini", "Gemini"],
 ];
+const MODEL_PAGE_SIZE = 120;
 
 export function ProviderEditorDialog({
   open = true,
@@ -148,8 +149,9 @@ export function ProviderEditorDialog({
       name.current?.focus({ preventScroll: true });
     wasLoading.current = loading;
   }, [loading]);
-  const [showAll, setShowAll] = useState(false);
+  const [modelPage, setModelPage] = useState(0);
   const [modelSearch, setModelSearch] = useState("");
+  const modelList = useRef<HTMLDivElement>(null);
   const source = draft.source.kind === "api" ? draft.source : null;
   const preset = globalProviderPresets.find(
     (value) => value.id === draft.presetId,
@@ -366,6 +368,13 @@ export function ProviderEditorDialog({
       .toLocaleLowerCase()
       .includes(modelTerm),
   );
+  const pageCount = Math.ceil(rows.length / MODEL_PAGE_SIZE);
+  const currentPage = Math.min(modelPage, Math.max(0, pageCount - 1));
+  const pageStart = currentPage * MODEL_PAGE_SIZE;
+  const pageRows = rows.slice(pageStart, pageStart + MODEL_PAGE_SIZE);
+  useEffect(() => {
+    if (modelList.current) modelList.current.scrollTop = 0;
+  }, [currentPage, modelTerm]);
   const effectiveSelection =
     draft.revision && source?.mode === "vendor"
       ? [...selected.filter(isImageGenerationModel), ...chatModels.slice(0, 24)]
@@ -464,6 +473,7 @@ export function ProviderEditorDialog({
           if (modelSearch && event.target === modelSearchInput.current) {
             event.preventDefault();
             setModelSearch("");
+            setModelPage(0);
           }
         }}
         onInteractOutside={(event) => {
@@ -920,73 +930,80 @@ export function ProviderEditorDialog({
                                 })}
                                 disabled={disabled}
                                 value={modelSearch}
-                                onChange={(event) =>
-                                  setModelSearch(event.target.value)
-                                }
+                                onChange={(event) => {
+                                  setModelSearch(event.target.value);
+                                  setModelPage(0);
+                                }}
                               />
                             )}
                           </div>
+                          {pageCount > 1 && (
+                            <div className="pv-model-actions">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                disabled={currentPage === 0}
+                                onClick={() => setModelPage(currentPage - 1)}
+                              >
+                                {t("providerEditor.previousModels")}
+                              </Button>
+                              <span aria-live="polite">
+                                {currentPage + 1} / {pageCount}
+                              </span>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                disabled={currentPage === pageCount - 1}
+                                onClick={() => setModelPage(currentPage + 1)}
+                              >
+                                {t("providerEditor.nextModels")}
+                              </Button>
+                            </div>
+                          )}
                           <div
+                            ref={modelList}
                             className="pv-model-chips"
                             role="group"
                             aria-label={t("modelPicker.models")}
                           >
-                            {rows
-                              .filter(
-                                (row, index) =>
-                                  showAll ||
-                                  !!modelTerm ||
-                                  index < 120 ||
-                                  selectedIds.has(providerModelId(row)),
-                              )
-                              .map((value) => {
-                                const model = providerModelId(value);
-                                const checked = selectedIds.has(model);
-                                return (
-                                  <button
-                                    key={model}
-                                    type="button"
-                                    className={`pv-model-chip ${checked ? "selected" : ""}`}
-                                    aria-pressed={checked}
-                                    aria-label={model}
-                                    title={model}
-                                    disabled={
-                                      disabled ||
-                                      (!checked &&
-                                        effectiveSelection.length >= 256)
-                                    }
-                                    onClick={() => toggle(model)}
-                                  >
-                                    <Check
-                                      size={11}
-                                      aria-hidden
-                                      className="pv-model-check"
-                                    />
-                                    <span>{modelLabel(value)}</span>
-                                    {contextLabel(value) && (
-                                      <small
-                                        title={t("providerEditor.holdsTokens", {
-                                          n: contextWindow(
-                                            value,
-                                          )?.toLocaleString(i18n.language),
-                                        })}
-                                      >
-                                        {contextLabel(value)}
-                                      </small>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            {!showAll && !modelTerm && rows.length > 120 && (
-                              <button
-                                type="button"
-                                onClick={() => setShowAll(true)}
-                              >
-                                {t("providerParity.showOther", {
-                                  count: rows.length - 120,
-                                })}
-                              </button>
-                            )}
+                            {pageRows.map((value) => {
+                              const model = providerModelId(value);
+                              const checked = selectedIds.has(model);
+                              return (
+                                <button
+                                  key={model}
+                                  type="button"
+                                  className={`pv-model-chip ${checked ? "selected" : ""}`}
+                                  aria-pressed={checked}
+                                  aria-label={model}
+                                  title={model}
+                                  disabled={
+                                    disabled ||
+                                    (!checked &&
+                                      effectiveSelection.length >= 256)
+                                  }
+                                  onClick={() => toggle(model)}
+                                >
+                                  <Check
+                                    size={11}
+                                    aria-hidden
+                                    className="pv-model-check"
+                                  />
+                                  <span>{modelLabel(value)}</span>
+                                  {contextLabel(value) && (
+                                    <small
+                                      title={t("providerEditor.holdsTokens", {
+                                        n: contextWindow(value)?.toLocaleString(
+                                          i18n.language,
+                                        ),
+                                      })}
+                                    >
+                                      {contextLabel(value)}
+                                    </small>
+                                  )}
+                                </button>
+                              );
+                            })}
                           </div>
                           {!!draft.revision && !rows.length && (
                             <p className="pv-hint">

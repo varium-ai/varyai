@@ -2,6 +2,153 @@ use super::*;
 
 #[tokio::test]
 #[serial_test::serial]
+async fn withdrawing_gateway_publication_removes_the_group_from_both_gateway_catalogs(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        database::Database,
+        proxy::{
+            gateway::{KeyPolicy, Period},
+            security::{
+                get_security_runtime, runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
+            },
+            server::ProxyServer,
+            ProxyConfig,
+        },
+    };
+    use axum::{routing::post, Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RestoreSecurity(SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = RestoreSecurity((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let fixture = tokio::spawn(async move {
+        let _ = axum::serve(listener, Router::new().route("/responses", post(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Json(json!({"id":"synthetic-response","object":"response","status":"completed","output":[]})))
+        }))).await;
+    });
+    let db = Arc::new(Database::memory()?);
+    let key = db.create_gateway_key(KeyPolicy {
+        name: "Synthetic publication".into(),
+        models: vec![],
+        all_models: true,
+        token_limit: None,
+        period: Period::Never,
+    })?;
+    let runtime = Arc::new(Runtime::default());
+    let mut menu = global_tests::menu(&format!("http://{address}/responses"));
+    let alias = global_tests::group().alias();
+    runtime.set_global(menu.clone(), db.routing_generation())?;
+    runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "grokbuild".into(),
+            token: "synthetic-agent-token".into(),
+            model: alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let origin = format!("http://127.0.0.1:{}", info.port);
+    let generation = json!({"model":alias,"input":"Synthetic request"});
+    client
+        .post(format!("{origin}/gateway/v1/responses"))
+        .bearer_auth(&key.secret)
+        .json(&generation)
+        .send()
+        .await?
+        .error_for_status()?;
+    for (path, key_name) in [
+        ("/gateway/v1/models", "data"),
+        ("/gateway/v1beta/models", "models"),
+    ] {
+        let catalog = client
+            .get(format!("{origin}{path}"))
+            .bearer_auth(&key.secret)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        assert_eq!(catalog[key_name].as_array().map(Vec::len), Some(1));
+    }
+    let session = menu
+        .groups
+        .get_mut(&alias)
+        .ok_or("synthetic group missing")?;
+    Arc::make_mut(session).group.enabled = false;
+    db.invalidate_routing_resources();
+    runtime.set_global(menu, db.routing_generation())?;
+    for (path, key_name) in [
+        ("/gateway/v1/models", "data"),
+        ("/gateway/v1beta/models", "models"),
+    ] {
+        let catalog = client
+            .get(format!("{origin}{path}"))
+            .bearer_auth(&key.secret)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        assert_eq!(catalog[key_name], json!([]));
+    }
+    for path in [
+        "/gateway/v1/responses".into(),
+        "/gateway/v1/chat/completions".into(),
+        "/gateway/v1/messages".into(),
+        format!("/gateway/v1beta/models/{alias}:generateContent"),
+    ] {
+        let response = client
+            .post(format!("{origin}{path}"))
+            .bearer_auth(&key.secret)
+            .json(&generation)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.json::<Value>().await?["error"]["code"],
+            "routing_model_unavailable"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    client
+        .post(format!("{origin}/connections/grokbuild/v1/responses"))
+        .bearer_auth("synthetic-agent-token")
+        .json(&generation)
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    server.stop().await?;
+    fixture.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn stale_codex_publications_reject_before_forwarding_and_recover_with_the_current_version(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::{

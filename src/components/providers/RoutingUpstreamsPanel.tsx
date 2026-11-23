@@ -21,6 +21,7 @@ import { ProviderAddSheet } from "./ProviderAddSheet";
 import { ProviderImportDialog } from "./ProviderImportDialog";
 import { ProviderEditorDialog, providerIdSlug } from "./ProviderEditorDialog";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+import { intentRoutingApi } from "@/lib/api/intentRouting";
 import {
   globalProviderPresets,
   type GlobalProviderPreset,
@@ -43,6 +44,16 @@ import { subscriptionProviders } from "@/config/subscriptionProviders";
 import { randomBuiltinIcon } from "@/icons/builtin";
 
 const orderStorageKey = "vary-provider-order";
+
+function needsPreparedCatalog({ source }: RoutingUpstream) {
+  return (
+    source.kind === "api" &&
+    source.mode === "vendor" &&
+    !source.catalog.length &&
+    !source.models.length
+  );
+}
+
 function readProviderOrder(): string[] {
   try {
     const value: unknown = JSON.parse(
@@ -86,6 +97,17 @@ export function RoutingUpstreamsPanel({
     queryFn: routingUpstreamsApi.list,
     refetchInterval: 15_000,
   });
+  const prepared = useQuery({
+    queryKey: ["intent-routing-providers"],
+    queryFn: intentRoutingApi.providers,
+    enabled: records.data?.some(needsPreparedCatalog) ?? false,
+  });
+  const preparedModels = new Map(
+    prepared.data?.map(({ id, models }) => [
+      id,
+      models?.map(({ id, name }) => ({ model: id, displayName: name })),
+    ]),
+  );
   const [draft, setDraft] = useState<RoutingUpstream | null>(null);
   const [rejectedName, setRejectedName] = useState<{
     editor: string;
@@ -834,6 +856,8 @@ export function RoutingUpstreamsPanel({
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   function searchableModels(record: RoutingUpstream) {
     if (record.source.kind === "codex") return [];
+    if (needsPreparedCatalog(record))
+      return preparedModels.get(record.id) ?? [];
     return record.source.mode === "picked" || !record.source.catalog.length
       ? record.source.models
       : record.source.catalog;

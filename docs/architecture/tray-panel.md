@@ -146,6 +146,8 @@ and update actions in expanded Agent details; leave setup instructions and
 long-conversation settings in the main workspace. On opening, focus the panel
 container; keyboard navigation must still expose a visible focus indicator on
 tabs and controls.
+An expanded daily check-in card spans the compact Agent row and uses the
+card's narrow layout at the available width.
 
 Use the shared `--mp-hover` surface for neutral buttons and clickable rows,
 including header and footer
@@ -166,6 +168,8 @@ Read recent security events from page 1 with a page size of 8; the backend rejec
 page 0. Distinguish loading, an empty history and event-query failures. A failed
 history read must not imply that protection is disabled. The header's refresh
 action retries the event query as well as the protection and gateway status.
+Render event timestamps from Unix milliseconds in the user's local time and
+the current application language.
 
 Keep the panel at a fixed 520-point height, reduced only to fit the screen's
 available work area. Header, tabs and footer stay in place while `.tray-body`

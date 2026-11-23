@@ -6,13 +6,17 @@ Open **Settings → Routing → Local routing → Gateway keys**. The four tabs 
 
 The Keys tab lists existing keys. Select **Create key** to open its form. Give the credential a name such as “Desktop testing” or “Project A”. This is a label, not an agent or a running model.
 
-New keys explicitly allow all models by default. To restrict a key, turn that option off and select request model IDs from the configured provider catalog, or enter exact case-sensitive IDs separated by commas. A restricted policy needs at least one ID. Older keys retain their original allowlists; they are never silently widened. Model policy checks the client request before provider model mappings, so Claude Desktop uses its Claude-safe route IDs rather than the mapped upstream model name.
+New keys explicitly allow all models by default. To restrict a key, turn that option off and choose models from **Models / Providers** or groups published from **Plans / Routing**. A shared provider model appears once for its provider, and selecting it saves the same route ID used by managed Agent connections. Providers that serve the same model have distinct route IDs. Choose the Agents that use the key separately under **Local agents**.
+
+A restricted policy needs at least one ID. You can enter exact case-sensitive IDs separated by commas for legacy routes and external protocol namespaces. When you edit an older key, its original IDs remain in the field, including IDs absent from the picker. To authorize a shared model for an older key, select the shared provider model explicitly. The policy checks the route identity before upstream provider mapping. Legacy Desktop routes continue to use their Claude-safe client route IDs.
 
 Set an optional token budget and reset period. An empty budget is unlimited; zero blocks immediately. The generated secret can be copied, hidden and revealed again with **View secret** on its key card, including after restarting VaryAI. Lists do not return secrets; revealing one is a separate local action. Only its SHA-256 hash is stored in `varyai-ext.db`. New secrets have a separate device-local copy in the application configuration directory's `gateway-secrets/` folder, written atomically with Unix permissions `0600`. This is a private local file, not encryption or an OS keychain. Database exports, database backups and cloud database sync do not include this folder. Keep it private if backing up the entire configuration directory. Older hash-only keys and keys restored on a device without the local copy cannot be revealed; the UI explains this without changing existing bindings or usage. Create another key when an external client needs a lost secret.
 
 Editing a policy does not replace its credential or clear consumption. Revocation permanently blocks that credential, including agents still bound to it, and prevents revealing its saved secret. Unbind the agent or select another key to restore its routed access. Already admitted requests can finish. Deleting an eligible key also removes its device-local secret copy.
 
 Each key card shows its allowlist, usage in the current period, remaining tokens, reset time, bound agents and availability. **View usage** opens the filtered Usage tab.
+
+In the Agents tab, each bound Agent reports its own route readiness. A failed status check displays an unavailable status on that Agent's row. Both TRAE editions can have a live route while their native chat window applies the starting model.
 
 To permanently remove a key, revoke it first and remove all of its bindings in **Local agents**. Its card then offers **Delete**. The confirmation identifies the key and explains that deletion permanently removes the credential, period counters and all per-model usage records. Other keys are unaffected. Bound keys cannot be deleted, so removing a credential cannot silently remove an agent's policy. Usage arriving from an already admitted request after deletion does not recreate its history.
 
@@ -42,7 +46,7 @@ Codex group and direct model-menu requests use their published alias as the poli
 
 ## External client connection
 
-The **Connect** tab generates a request example using the chosen key's model policy and selected client protocol. Replace `YOUR_GATEWAY_KEY` with the saved secret and `MODEL_ID` with a permitted request model. It does not change a provider or agent configuration.
+The **Connect** tab generates a request example using the chosen key's model policy and selected client protocol. Direct shared provider routes are for managed local Agents and are skipped when selecting an example model. Replace `YOUR_GATEWAY_KEY` with the saved secret and `MODEL_ID` with a permitted request model. It does not change a provider or agent configuration.
 
 The default local origin is `http://127.0.0.1:15722` (use the configured port). First add a global provider in **Models / Providers**, or manually import a supported existing Agent configuration. Saved Agent configurations are never imported automatically. In **Plans / Routing**, create a group using these global providers, explicitly enable **Publish to gateway** on the group and save it. Add its public alias to a restricted key's request-model allowlist. An authenticated `GET /gateway/v1/models` returns only executable published group aliases permitted by that key, without charging a generation. This catalog is independent of Codex's routing switch; it does not enumerate every ordinary provider model.
 
@@ -63,6 +67,8 @@ Use `Authorization: Bearer <key>`, `x-api-key: <key>` or `x-goog-api-key: <key>`
 ## Usage and budget semantics
 
 The **Usage** tab filters by key and shows up to 200 recent aggregate rows by key, admission period, agent, client request model and forwarded model: completed request count, reported tokens, requests without usable usage, and last observation time. For a Desktop mapping such as `claude-sonnet-fixture → synthetic-upstream`, the forwarded model is `synthetic-upstream`; the client request model remains the ID checked by the allowlist. Forwarding records the resolved outbound model after mapping and successful provider selection, independently of a supplier's echoed model name. Changing a mapping later creates a separate aggregate rather than relabeling past usage.
+
+The client request model shows its catalog name when one is available. Hover over the name to see the exact request ID. The forwarded model shows the value recorded for the request.
 
 Updates poll every five seconds. Missing usage is visible but cannot be charged an accurate token amount. Older totals and detail rows remain intact after migration. Records that did not capture a forwarded model display **Not recorded**; the current configuration is never used to guess a historical model. Only identities, model IDs, counters and timestamps are persisted, not prompts, responses or secrets.
 

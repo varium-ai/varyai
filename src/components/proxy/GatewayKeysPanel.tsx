@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -43,12 +43,6 @@ export function GatewayKeysPanel({
   const { t } = useTranslation();
   const client = useQueryClient();
   const [view, setView] = useState<View>("keys");
-  const { data: connections } = useQuery({
-    queryKey: ["agent-connections"],
-    queryFn: agentConnectionsApi.list,
-    enabled: view === "agents" && running,
-    refetchInterval: view === "agents" && running ? 5000 : false,
-  });
   const { data: keys = [], isError } = useQuery({
     queryKey: ["gateway-keys"],
     queryFn: gatewayApi.list,
@@ -59,10 +53,31 @@ export function GatewayKeysPanel({
     queryFn: gatewayApi.catalog,
     refetchInterval: 10000,
   });
+  const supportedApps = new Set(
+    catalog?.agents
+      .filter((agent) => agent.localRouting)
+      .map((agent) => agent.id),
+  );
+  const boundKeys = new Map(
+    keys.flatMap((key) => (key.agents ?? []).map((app) => [app, key] as const)),
+  );
+  const connections = useQueries({
+    queries: APP_IDS.map((app) => {
+      const enabled =
+        view === "agents" &&
+        running &&
+        supportedApps.has(app) &&
+        boundKeys.has(app);
+      return {
+        queryKey: ["agent-connections", app],
+        queryFn: () => agentConnectionsApi.get(app),
+        enabled,
+        refetchInterval: enabled ? 5000 : false,
+      };
+    }),
+  });
   const modelNames = new Map(
-    catalog?.models
-      .filter((model) => model.name)
-      .map((row) => [row.model, row.name]),
+    catalog?.models.map((row) => [row.model, row.name]),
   );
   const { data: usage = [], isError: usageError } = useQuery({
     queryKey: ["gateway-usage"],
@@ -161,7 +176,9 @@ export function GatewayKeysPanel({
     setFormOpen(true);
   }
   const connect = keys.find((key) => key.id === connectKey);
-  const exampleModel = connect?.policy.models[0] ?? "MODEL_ID";
+  const exampleModel =
+    connect?.policy.models.find((id) => !id.startsWith("vary-provider/")) ??
+    "MODEL_ID";
   const base = `http://127.0.0.1:${port}/gateway`;
   const endpoint =
     format === "anthropic"
@@ -274,13 +291,13 @@ export function GatewayKeysPanel({
           <div className="max-h-48 overflow-y-auto rounded border p-2 space-y-2">
             {(catalog?.models ?? [])
               .filter((m) =>
-                `${m.name ?? ""} ${m.model} ${m.provider} ${label(m.agent)}`
+                `${m.name} ${m.model}`
                   .toLowerCase()
                   .includes(search.toLowerCase()),
               )
-              .map((m, i) => (
+              .map((m) => (
                 <label
-                  key={`${m.agent}:${m.provider}:${m.model}:${i}`}
+                  key={m.model}
                   className="flex min-w-0 items-center gap-2 text-xs"
                 >
                   <input
@@ -296,14 +313,7 @@ export function GatewayKeysPanel({
                     }
                   />
                   <span className="min-w-0 break-words" title={m.model}>
-                    {m.name || m.model}
-                    <span className="text-muted-foreground">
-                      {" "}
-                      ·{" "}
-                      {m.agent === "global"
-                        ? m.provider
-                        : `${label(m.agent)} / ${m.provider}`}
-                    </span>
+                    {m.name}
                   </span>
                 </label>
               ))}
@@ -642,21 +652,19 @@ export function GatewayKeysPanel({
           </p>
           {catalogError && <p role="alert">{t("gatewayKeys.catalogFailed")}</p>}
           <div className="grid gap-3 md:grid-cols-2">
-            {APP_IDS.map((app) => {
-              const supported =
-                catalog?.agents.find((a) => a.id === app)?.localRouting ??
-                false;
-              const bound = keys.find((key) => key.agents?.includes(app));
+            {APP_IDS.map((app, index) => {
+              const supported = supportedApps.has(app);
+              const bound = boundKeys.get(app);
+              const status = connections[index];
+              const connection = status.data;
               const enabled =
                 running &&
                 (takeoverStatus?.[app] ||
-                  connections?.some(
-                    (connection) =>
-                      connection.app === app &&
-                      connection.enabled &&
-                      connection.configured &&
-                      !connection.recoveryPending,
-                  ));
+                  (connection?.enabled &&
+                    connection.configured &&
+                    (!connection.recoveryPending ||
+                      connection.recoveryReason ===
+                        "bridge_selection_pending")));
               return (
                 <div key={app} className="rounded-lg border p-3 space-y-2">
                   <Label htmlFor={`gateway-agent-${app}`}>{label(app)}</Label>
@@ -696,11 +704,15 @@ export function GatewayKeysPanel({
                       {t(
                         !bound
                           ? "gatewayKeys.notBound"
-                          : !enabled
-                            ? "gatewayKeys.routeRequired"
-                            : bound.revoked
+                          : enabled
+                            ? bound.revoked
                               ? "gatewayKeys.boundRevoked"
-                              : "gatewayKeys.bindingActive",
+                              : "gatewayKeys.bindingActive"
+                            : running && !connection
+                              ? status.isError
+                                ? "gatewayKeys.routeStatusUnavailable"
+                                : "common.loading"
+                              : "gatewayKeys.routeRequired",
                       )}
                     </p>
                   )}
@@ -767,7 +779,9 @@ export function GatewayKeysPanel({
                 </p>
                 <div className="break-all text-muted-foreground">
                   <span>{t("gatewayKeys.requestModel")}</span>:{" "}
-                  <span>{u.model}</span>
+                  <span title={u.model}>
+                    {modelNames.get(u.model) || u.model}
+                  </span>
                 </div>
                 <p>
                   {t("gatewayKeys.usagePeriod", {

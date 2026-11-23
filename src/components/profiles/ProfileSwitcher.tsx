@@ -475,13 +475,14 @@ export function ProfileSwitcher({
                 </p>
               </fieldset>
             )}
-            {createMutation.isError && (
-              <p role="alert" className="mt-3 text-sm text-destructive">
-                {t("profiles.createFailed", {
-                  detail: profileErrorMessage(createMutation.error, t),
-                })}
-              </p>
-            )}
+            {createMutation.isError &&
+              createMutation.variables.name === newName.trim() && (
+                <p role="alert" className="mt-3 text-sm text-destructive">
+                  {t("profiles.createFailed", {
+                    detail: profileErrorMessage(createMutation.error, t),
+                  })}
+                </p>
+              )}
           </div>
           <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">
             <Button variant="outline" onClick={closeCreateDialog}>

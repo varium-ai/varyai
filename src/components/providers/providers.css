@@ -805,7 +805,6 @@
   gap: 6px;
   max-height: min(240px, 40vh);
   overflow-y: auto;
-  overscroll-behavior: contain;
   padding: 2px 1px;
 }
 .pv-editor button.pv-model-chip {

@@ -515,6 +515,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         Request::from_parts(parts, Body::from(bytes)),
         format!("agent:{app}"),
         &alias,
+        super::handler_context::RequestIngress::Direct,
     )
     .await;
     match grant {

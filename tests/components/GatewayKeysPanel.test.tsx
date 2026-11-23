@@ -15,7 +15,7 @@ import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 vi.mock("@/lib/api/agentConnections", () => ({
-  agentConnectionsApi: { list: vi.fn() },
+  agentConnectionsApi: { list: vi.fn(), get: vi.fn() },
 }));
 vi.mock("@/lib/api/proxy", () => ({
   proxyApi: { startProxyServer: vi.fn(), setProxyTakeoverForApp: vi.fn() },
@@ -125,15 +125,21 @@ function mount(
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
+  vi.mocked(agentConnectionsApi.get).mockImplementation(async (app) => ({
+    app,
+    enabled: false,
+    configured: false,
+    recoveryPending: false,
+    model: null,
+    restartRequired: false,
+  }));
   vi.mocked(gatewayApi.list).mockResolvedValue([]);
   vi.mocked(gatewayApi.catalog).mockResolvedValue({
     agents: APP_IDS.map((id) => ({
       id,
       localRouting: id !== "openclaw",
     })),
-    models: [
-      { agent: "claude-desktop", provider: "Synthetic", model: "allowed" },
-    ],
+    models: [],
   });
   vi.mocked(gatewayApi.usage).mockResolvedValue([]);
   vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
@@ -192,6 +198,61 @@ it("creates an exact allowlist without opening the secret dialog", async () => {
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.queryByText("synthetic-secret")).not.toBeInTheDocument();
 });
+
+it("selects one shared route by supplier and preserves a legacy exact ID", async () => {
+  const upstreamId = "vendor/shared-model";
+  const firstId = "vary-provider/first-route";
+  const secondId = "vary-provider/second-route";
+  const groupId = "vary-auto/team-route";
+  vi.mocked(gatewayApi.catalog).mockResolvedValue({
+    agents: [],
+    models: [
+      { model: firstId, name: `${upstreamId} · Supplier A` },
+      { model: secondId, name: `${upstreamId} · Supplier B` },
+      { model: groupId, name: "Team route" },
+    ],
+  });
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "fixture",
+      policy: { ...policy, models: [upstreamId] },
+      agents: ["gemini", "qoder"],
+      revoked: false,
+      usedTokens: 0,
+      resetsAt: null,
+    },
+  ]);
+  mount();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "gatewayKeys.edit" }),
+  );
+  const first = await screen.findByRole("checkbox", {
+    name: `${upstreamId} · Supplier A`,
+  });
+  expect(first).not.toBeChecked();
+  fireEvent.change(screen.getByLabelText("gatewayKeys.searchModels"), {
+    target: { value: "supplier a" },
+  });
+  expect(screen.queryByRole("checkbox", { name: /Supplier B/ })).toBeNull();
+  fireEvent.click(first);
+  fireEvent.change(screen.getByLabelText("gatewayKeys.searchModels"), {
+    target: { value: "Team route" },
+  });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Team route" }));
+  expect(screen.getByLabelText("gatewayKeys.models")).toHaveValue(
+    `${upstreamId}, ${firstId}, ${groupId}`,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(gatewayApi.update).toHaveBeenCalledWith("fixture", {
+      ...policy,
+      allModels: false,
+      models: [upstreamId, firstId, groupId],
+    }),
+  );
+  expect(gatewayApi.bind).not.toHaveBeenCalled();
+});
+
 it("updates budgets without replacing a credential and revokes by ID", async () => {
   vi.mocked(gatewayApi.list).mockResolvedValue([
     { id: "fixture", policy, revoked: false, usedTokens: 42, resetsAt: null },
@@ -414,6 +475,29 @@ it("switches all connection examples through the protocol menu", async () => {
   expect(gatewayApi.bind).not.toHaveBeenCalled();
 });
 
+it("uses an externally callable alias in connection examples for a shared key", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "shared",
+      policy: {
+        ...policy,
+        models: ["vary-provider/local-only", "vary-auto/published"],
+      },
+      revoked: false,
+      usedTokens: 0,
+      resetsAt: null,
+    },
+  ]);
+  const { container } = mount();
+  fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.connect" }));
+  await screen.findByRole("option", { name: policy.name });
+  fireEvent.change(screen.getByLabelText("gatewayKeys.filterKey"), {
+    target: { value: "shared" },
+  });
+  expect(container.querySelector("pre")).toHaveTextContent("vary-auto/published");
+  expect(container.querySelector("pre")).not.toHaveTextContent("vary-provider/local-only");
+});
+
 it("offers every agent, binds routed agents and explains direct-only agents", async () => {
   vi.mocked(gatewayApi.list).mockResolvedValue([
     {
@@ -498,6 +582,33 @@ it("does not infer historical upstream models from the current catalog", async (
     await screen.findByText("gatewayKeys.upstreamMissing"),
   ).toBeInTheDocument();
   expect(screen.getByText("allowed")).toBeInTheDocument();
+});
+
+it("shows the catalog label for an opaque request ID on the usage tab", async () => {
+  const model = "vary-provider/model-synthetic";
+  const name = "Synthetic model · Synthetic supplier";
+  vi.mocked(gatewayApi.catalog).mockResolvedValue({
+    agents: [],
+    models: [{ model, name }],
+  });
+  vi.mocked(gatewayApi.usage).mockResolvedValue([
+    {
+      keyId: "key",
+      window: 0,
+      agent: "codex",
+      model,
+      upstreamModel: "actual-upstream-model",
+      tokens: 25,
+      requests: 1,
+      unmetered: 0,
+      lastUsed: 100,
+    },
+  ]);
+  mount();
+  fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.usage" }));
+  expect(await screen.findByText(name)).toHaveAttribute("title", model);
+  expect(screen.queryByText(model)).not.toBeInTheDocument();
+  expect(screen.getByText("actual-upstream-model")).toBeInTheDocument();
 });
 
 it("does not claim Desktop policy activation when its profile points elsewhere", async () => {
@@ -588,16 +699,14 @@ it("reports shared connection readiness for every policy-capable Agent", async (
       resetsAt: null,
     },
   ]);
-  vi.mocked(agentConnectionsApi.list).mockResolvedValue(
-    routed.map((app) => ({
-      app,
-      enabled: true,
-      configured: app !== "claude-desktop",
-      recoveryPending: app === "claude-desktop",
-      model: null,
-      restartRequired: false,
-    })),
-  );
+  vi.mocked(agentConnectionsApi.get).mockImplementation(async (app) => ({
+    app,
+    enabled: true,
+    configured: app !== "claude-desktop",
+    recoveryPending: app === "claude-desktop",
+    model: null,
+    restartRequired: false,
+  }));
   mount({ running: true });
   fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.agents" }));
   await waitFor(() => {
@@ -615,12 +724,53 @@ it("reports shared connection readiness for every policy-capable Agent", async (
   );
 });
 
+it("keeps bound routes visible when a separate Agent status fails", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "key",
+      policy,
+      agents: ["gemini", "codex", "trae", "trae-intl", "qoder"],
+      revoked: false,
+      usedTokens: 0,
+      resetsAt: null,
+    },
+  ]);
+  vi.mocked(agentConnectionsApi.list).mockRejectedValue(
+    new Error("synthetic-status-failure"),
+  );
+  vi.mocked(agentConnectionsApi.get).mockImplementation(async (app) => {
+    if (app === "qoder") throw new Error("synthetic-status-failure");
+    const selectingStartModel = app === "trae" || app === "trae-intl";
+    return {
+      app,
+      enabled: true,
+      configured: true,
+      recoveryPending: selectingStartModel,
+      recoveryReason: selectingStartModel ? "bridge_selection_pending" : null,
+      model: null,
+      restartRequired: false,
+    };
+  });
+  mount({ running: true });
+  fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.agents" }));
+  await waitFor(() => {
+    for (const app of ["gemini", "codex", "trae", "trae-intl"] as const) {
+      expect(
+        screen.getByLabelText(getAppLabel(app)).parentElement,
+      ).toHaveTextContent("gatewayKeys.bindingActive");
+    }
+    expect(
+      screen.getByLabelText(getAppLabel("qoder")).parentElement,
+    ).toHaveTextContent("gatewayKeys.routeStatusUnavailable");
+  });
+  expect(agentConnectionsApi.get).toHaveBeenCalledTimes(5);
+  expect(screen.queryByText("synthetic-status-failure")).toBeNull();
+});
+
 it("shows readable catalog names while storing exact route IDs", async () => {
   const model = {
-    agent: "global",
-    provider: "Synthetic supplier",
     model: "vary-provider/opaque-fixture",
-    name: "Example Model",
+    name: "Example Model · Synthetic supplier",
   };
   vi.mocked(gatewayApi.catalog).mockResolvedValue({
     agents: [],

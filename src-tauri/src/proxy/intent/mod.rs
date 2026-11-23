@@ -40,7 +40,7 @@ mod trae_tests;
 mod workbuddy_history_tests;
 #[cfg(test)]
 mod workbuddy_official_tests;
-use super::protocol_bridge::Protocol;
+use super::{handler_context::RequestIngress, protocol_bridge::Protocol};
 use crate::services::intent_routing::{classifier, RoutingGroup};
 use axum::{
     body::Body,
@@ -1473,13 +1473,18 @@ pub(crate) async fn handle_global(
     request: Request,
     consumer: String,
     alias: &str,
+    ingress: RequestIngress,
 ) -> Response {
     let generation = state.db.routing_generation();
     if !state.intent_runtime.global_current(generation) {
         return error(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
     }
     let session = match state.intent_runtime.global_snapshot() {
-        Ok(Some(menu)) => menu.groups.get(alias).cloned(),
+        Ok(Some(menu)) => menu
+            .groups
+            .get(alias)
+            .filter(|session| ingress == RequestIngress::Direct || session.group.enabled)
+            .cloned(),
         Ok(None) => None,
         Err(_) => {
             return error(

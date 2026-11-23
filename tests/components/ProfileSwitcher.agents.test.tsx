@@ -233,6 +233,40 @@ it("rejects a duplicate trimmed profile name before capturing", async () => {
   expect(profilesApi.create).not.toHaveBeenCalled();
 });
 
+it.each([false, true])(
+  "clears a stale duplicate warning when the profile name changes (compact=%s)",
+  async (compact) => {
+    vi.mocked(profilesApi.captureBundle)
+      .mockReset()
+      .mockRejectedValueOnce(new Error("profiles.nameExists"))
+      .mockResolvedValueOnce({ id: "created" } as Awaited<
+        ReturnType<typeof profilesApi.captureBundle>
+      >);
+    mount("kimi", ["kimi"], compact);
+    fireEvent.click(await screen.findByRole("combobox"));
+    fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+    const name = screen.getByPlaceholderText(zh.profiles.namePlaceholder);
+    const submit = screen.getByRole("button", { name: zh.common.confirm });
+    fireEvent.change(name, { target: { value: "Newly taken name" } });
+    fireEvent.click(submit);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      zh.profiles.nameExists,
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+
+    fireEvent.change(name, { target: { value: "Available name" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(profilesApi.captureBundle).toHaveBeenLastCalledWith(
+        "Available name",
+        ["kimi"],
+      ),
+    );
+    await waitFor(() => expect(name).not.toBeInTheDocument());
+  },
+);
+
 it("opens an uncaptured client preview and closes without applying", async () => {
   const data = await profilesApi.list();
   const empty = { claude: null, "claude-desktop": null, codex: null };

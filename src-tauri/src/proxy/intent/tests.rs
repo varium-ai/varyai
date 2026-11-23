@@ -224,6 +224,15 @@ async fn codex_account_pool_falls_back_within_one_member_and_pins_the_answering_
 #[serial_test::serial]
 async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for SecurityRuntimeRestore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security =
+        SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     use crate::{
         database::Database,
         proxy::{

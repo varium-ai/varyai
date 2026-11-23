@@ -488,6 +488,7 @@ pub(crate) async fn prepare_with_stand_ins(
         if let Some(source) = menu.groups.get(&direct) {
             let mut session = source.as_ref().clone();
             let mut group = group;
+            group.enabled = false;
             for member in &mut group.members {
                 if let Some(id) = identities.get(&member.provider_id) {
                     member.provider_id = id.clone();
@@ -827,9 +828,20 @@ mod tests {
             credentials.token().await.is_none(),
             "removed identities must remain unusable"
         );
-        // Exercise the same authenticated global ingress used by connected Agents.
+        // Catalog publication and the connected Agent's direct model use different ingress.
         let runtime = Arc::new(crate::proxy::intent::Runtime::default());
         runtime.set_global(menu, db.routing_generation())?;
+        let agent_token = "synthetic-agent-token";
+        runtime.connections.install(&agent_connections::Receipt {
+            app: "grokbuild".into(),
+            token: agent_token.into(),
+            model: official_alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
         let key = db.create_gateway_key(crate::proxy::gateway::KeyPolicy {
             name: "Synthetic key".into(),
             models: vec![],
@@ -848,9 +860,9 @@ mod tests {
         .with_intent_runtime(runtime);
         let info = server.start().await?;
         let client = reqwest::Client::builder().no_proxy().build()?;
-        let root = format!("http://127.0.0.1:{}/gateway/v1", info.port);
+        let root = format!("http://127.0.0.1:{}", info.port);
         let listed: serde_json::Value = client
-            .get(format!("{root}/models"))
+            .get(format!("{root}/gateway/v1/models"))
             .bearer_auth(&key.secret)
             .send()
             .await?
@@ -858,11 +870,11 @@ mod tests {
             .await?;
         assert_eq!(
             listed["data"].as_array().ok_or("missing model list")?.len(),
-            33
+            8
         );
         let response = client
-            .post(format!("{root}/responses"))
-            .bearer_auth(&key.secret)
+            .post(format!("{root}/connections/grokbuild/v1/responses"))
+            .bearer_auth(agent_token)
             .json(&json!({"model":official_alias,"input":"synthetic","stream":true,"store":false}))
             .send()
             .await?;
@@ -926,6 +938,7 @@ mod tests {
         stand_in.fallback_member_ids.clear();
         let menu = prepare_with_stand_ins(manager, sources, vec![], None, vec![stand_in]).await?;
         assert_eq!(menu.groups[&alias].targets.len(), 1);
+        assert!(!menu.groups[&alias].group.enabled);
         assert!(!menu.listed_aliases().any(|model| model == &alias));
         let direct = menu
             .stand_in_direct(&alias)

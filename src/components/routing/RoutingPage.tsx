@@ -7,7 +7,11 @@ import { useTranslation } from "react-i18next";
 import type { EditingState } from "@/hooks/useWorkspaceEditing";
 import { IntentRoutingPanel } from "./IntentRoutingPanel";
 import { RoutingStage } from "./RoutingStage";
-import { liveRoutingSources, routeInProgress } from "./useRoutingFlights";
+import {
+  liveRoutingSources,
+  routeInProgress,
+  routingSourceKey,
+} from "./useRoutingFlights";
 import { routingModelLabel } from "@/lib/routingModelLabel";
 import { routingPurpose } from "@/lib/routingPurposes";
 import { AccountMask } from "@/components/AccountLabel";
@@ -96,8 +100,10 @@ export function RoutingPage({
   const continuation = shown?.steps.find(
     ({ kind }) => kind === "pinned" || kind === "affinity",
   );
-  const sourceIds = new Set(sources.map((source) => source.agent));
-  const concurrent = stageRows.filter((row) => sourceIds.has(row.agent));
+  const sourceIds = new Set(sources.map(routingSourceKey));
+  const concurrent = stageRows.filter((row) =>
+    sourceIds.has(routingSourceKey(row)),
+  );
   const multipleRoutes =
     sources.length > 1 ||
     concurrent.some(

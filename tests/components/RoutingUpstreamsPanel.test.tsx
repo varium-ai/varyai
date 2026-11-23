@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
+import { intentRoutingApi } from "@/lib/api/intentRouting";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 import i18n from "i18next";
 import { copyText } from "@/lib/clipboard";
@@ -26,6 +27,9 @@ import {
 vi.mock("@/lib/api/model-fetch", () => ({ fetchModelsForConfig: vi.fn() }));
 vi.mock("@/lib/api/provider-protocol-detection", () => ({
   detectProviderProtocols: vi.fn(),
+}));
+vi.mock("@/lib/api/intentRouting", () => ({
+  intentRoutingApi: { providers: vi.fn(async () => []) },
 }));
 
 vi.mock("@/lib/api/routingUpstreams", () => ({
@@ -1626,6 +1630,60 @@ describe("global upstream editor", () => {
       ).toHaveTextContent("modelProviders.matchedModels");
     },
   );
+  it("shows prepared models for automatic providers without saved model rows", async () => {
+    const vendor = {
+      ...primary,
+      source: { ...primary.source, mode: "vendor" as const, models: [] },
+    };
+    const picked = {
+      ...vendor,
+      id: "empty-selection",
+      name: "Synthetic empty selection",
+      source: { ...vendor.source, mode: "picked" as const },
+    };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([vendor, picked]);
+    vi.mocked(intentRoutingApi.providers).mockResolvedValueOnce(
+      [vendor, picked].map(({ id, name }) => ({
+        id,
+        name,
+        taskEligible: true,
+        classifierEligible: false,
+        models: [{ id: "cached-vision-v3", name: "Cached vision" }],
+      })),
+    );
+    const translations = structuredClone(
+      i18n.getResourceBundle("zh", "translation"),
+    );
+    i18n.addResourceBundle(
+      "zh",
+      "translation",
+      {
+        modelProviders: { modelCount_other: "Models: {{count}}" },
+      },
+      true,
+      true,
+    );
+    try {
+      mount();
+      const row = await screen.findByRole("article", { name: vendor.name });
+      expect(await within(row).findByText(/Models: 1/)).toBeVisible();
+      expect(
+        screen.getByRole("article", { name: picked.name }),
+      ).toHaveTextContent("Models: 0");
+      fireEvent.change(
+        screen.getByRole("searchbox", { name: "modelProviders.find" }),
+        {
+          target: { value: "Cached vision" },
+        },
+      );
+      expect(row).toHaveTextContent("cached-vision-v3");
+      expect(screen.queryByRole("article", { name: picked.name })).toBeNull();
+      expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    } finally {
+      i18n.removeResourceBundle("zh", "translation");
+      i18n.addResourceBundle("zh", "translation", translations);
+    }
+  });
   it("distinguishes a saved single key from a provider that still needs a key", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       primary,

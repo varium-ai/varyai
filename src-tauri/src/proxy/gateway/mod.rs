@@ -12,8 +12,8 @@ pub use ingress::handle;
 pub(crate) use ingress::{error as policy_error, meter as meter_response};
 mod bindings;
 mod secrets;
-pub(crate) use bindings::codex_model_changed;
-pub use bindings::{catalog, enforce_agent, GatewayCatalog, GatewayModel, GatewayUsage};
+pub(crate) use bindings::{catalog, codex_model_changed};
+pub use bindings::{enforce_agent, GatewayCatalog, GatewayUsage};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

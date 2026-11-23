@@ -46,6 +46,8 @@ Start the loopback gateway explicitly and configure a gateway key under **Settin
 
 Protocol selection belongs to the request and chosen upstream, not to the consuming agent. Same-protocol requests preserve native fields and JSON lexemes except supported model/redaction/effort edits. Cross-protocol requests use the explicit bridge; unsupported semantics fail before forwarding instead of being silently discarded. Opaque state is never moved to a different account merely because another member is healthy. Official Codex destinations retain their native Responses constraints.
 
+The stream bridge can reconcile a Responses reasoning item's streamed text with its final `summary` or typed `content`. It checks consistency with text already streamed and requires a valid upstream terminal event before reporting successful completion to the client.
+
 The executable global catalog exists independently of Codex activation and per-agent current-provider selection. Resource changes invalidate its generation immediately; control-plane refresh rebuilds snapshots off the forwarding path. Database restore/import invalidates old snapshots and resets imported publication flags; explicitly publish the intended groups again after reviewing imported resources. A failed refresh revokes stale targets. Group aliases are not passed to ordinary upstream routing when the group is unpublished, unavailable or stale. Account health is shared, while continuation state is scoped by authenticated gateway key and conversation. Native Chat, Messages and Gemini tool/opaque continuations require an observed pinned destination within the same consumer and conversation. The authenticated TRAE Chat adapter also accepts unnamed tool history when every call resolves to one previously observed destination in its Agent and alias scope. When TRAE rewrites a call ID, the assistant function name and JSON arguments must match a complete observed payload by hash; tool results alone cannot establish this mapping. TRAE rewritten-call ownership is never inferred from message text. Responses continuations can locate their consumer-scoped conversation by known response or call IDs without a separate session header. Unknown/conflicting response or tool IDs fail closed. At most 1024 consumer/conversation scopes are retained, with a one-hour inactive lifetime; active streams retain their lease. In-flight requests may finish after an edit or revocation. Eligible normal gateway and Codex-menu conversations can restore exact ownership after restart from the private continuation store described below; this does not reconstruct upstream history or decrypt foreign opaque state.
 
 ## Compact list
@@ -87,6 +89,10 @@ Custom drafts start with an editable, distinct group name. The publication
 switch also works for automatically discovered groups and retains discovery
 as their membership source. The live stage labels the session's name as the
 conversation title.
+
+When an Agent sends requests to different routes at the same time, each
+route has its own source and attempted upstream cards. The cards show the
+requested route during concurrent activity.
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
 
