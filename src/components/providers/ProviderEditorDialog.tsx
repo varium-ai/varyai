@@ -65,6 +65,7 @@ const formats: Array<[Format, string, string]> = [
   ["gemini_native", "gemini", "Gemini"],
 ];
 const MODEL_PAGE_SIZE = 120;
+export const MAX_PROVIDER_MODEL_SELECTION = 256;
 
 export function ProviderEditorDialog({
   open = true,
@@ -299,7 +300,7 @@ export function ProviderEditorDialog({
     choose(
       selectedIds.has(model)
         ? effectiveSelection.filter((value) => providerModelId(value) !== model)
-        : effectiveSelection.length < 256
+        : effectiveSelection.length < MAX_PROVIDER_MODEL_SELECTION
           ? [...effectiveSelection, available.get(model)]
           : effectiveSelection,
     );
@@ -900,7 +901,7 @@ export function ProviderEditorDialog({
                                               row,
                                             ]),
                                           ).values(),
-                                        ].slice(0, 256)
+                                        ].slice(0, MAX_PROVIDER_MODEL_SELECTION)
                                       : effectiveSelection.filter(
                                           (row) =>
                                             !visibleIds.has(
@@ -989,7 +990,8 @@ export function ProviderEditorDialog({
                                   disabled={
                                     disabled ||
                                     (!checked &&
-                                      effectiveSelection.length >= 256)
+                                      effectiveSelection.length >=
+                                        MAX_PROVIDER_MODEL_SELECTION)
                                   }
                                   onClick={() => toggle(model)}
                                 >
@@ -1020,16 +1022,15 @@ export function ProviderEditorDialog({
                             </p>
                           )}
                         </>
-                        {!draft.revision && (
-                          <p className="pv-hint">
-                            {t("providerParity.optionalHint")}
-                          </p>
-                        )}
-                        {!!draft.revision && (
-                          <p className="pv-hint">
-                            {t(`providerParity.hint_${source.mode}`)}
-                          </p>
-                        )}
+                        <p className="pv-hint">
+                          {draft.revision ||
+                          copySourceName ||
+                          source.mode === "picked"
+                            ? t(`providerParity.hint_${source.mode}`)
+                            : t("providerParity.optionalHint", {
+                                max: MAX_PROVIDER_MODEL_SELECTION,
+                              })}
+                        </p>
                       </div>
                     </div>
                   )}

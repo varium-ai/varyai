@@ -45,6 +45,11 @@ the model chips. The checkbox is checked when all currently filtered chat
 models are selected and shows a mixed state for a partial selection. Checking
 it selects those models within the existing 256-model limit; unchecking it
 clears those models while preserving hidden selections and image models.
+The first successful **Fetch models** action for a new custom supplier
+preselects the returned models, up to the existing 256-model limit. Saving
+uses the selection shown in the editor. Clearing it saves an empty model list,
+and fetching again preserves the selection. Adding without fetching still
+uses the supplier's automatic catalog.
 For saved providers that follow the supplier catalog, the first 24 chat models
 start checked. Editing a selection starts with those checked models, including
 when a search hides some of them.

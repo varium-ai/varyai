@@ -5866,7 +5866,7 @@
     "hint_best": "每個模型系列只提供最新的模型。",
     "hint_usage": "僅保留用量查詢，不向 Agent 提供模型。",
     "optionalModels": "模型 ID，逗號分隔 · 例如 gpt-5.5, claude-sonnet-5",
-    "optionalHint": "選填：取得供應商模型清單後勾選。未選擇時，儲存後取得清單。",
+    "optionalHint": "取得模型清單後會自動勾選最多 {{max}} 個模型。直接新增時使用供應商清單中的前 24 個聊天模型。",
     "pickedCount": "已選 {{count}} / {{total}}",
     "showOther": "顯示其餘 {{count}} 個",
     "more": "進階"

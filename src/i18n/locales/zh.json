@@ -5939,7 +5939,7 @@
     "hint_best": "每个模型系列只提供最新的模型。",
     "hint_usage": "仅保留用量查询，不向 Agent 提供模型。",
     "optionalModels": "模型 ID，逗号分隔 · 例如 gpt-5.5, claude-sonnet-5",
-    "optionalHint": "可选：获取供应商模型列表后勾选。未选择时，保存后获取列表。",
+    "optionalHint": "获取模型列表后会自动勾选最多 {{max}} 个模型。直接添加时使用供应商目录中的前 24 个聊天模型。",
     "pickedCount": "已选 {{count}} / {{total}}",
     "showOther": "显示其余 {{count}} 个",
     "more": "高级"

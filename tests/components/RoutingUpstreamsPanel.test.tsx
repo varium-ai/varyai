@@ -870,6 +870,95 @@ describe("global upstream editor", () => {
     expect(fetch).toBeDisabled();
   });
 
+  it.each(["all", "partial", "empty", "limited"] as const)(
+    "preselects a new provider's fetched models and saves the %s selection",
+    async (selection) => {
+      const catalog = [
+        { id: "first-chat", ownedBy: null },
+        { id: "second-chat", ownedBy: null },
+        { id: "image-fixture", ownedBy: null, kind: "image" as const },
+        ...(selection === "limited"
+          ? Array.from({ length: 254 }, (_, index) => ({
+              id: `extra-chat-${index}`,
+              ownedBy: null,
+            }))
+          : []),
+      ];
+      vi.mocked(fetchModelsForConfig).mockResolvedValueOnce(catalog);
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+        target: { value: "Synthetic new provider" },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.baseUrl"), {
+        target: { value: "https://fixture.example/v1" },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
+        target: { value: "synthetic-key" },
+      });
+
+      const fetch = screen.getByRole("button", {
+        name: "providerForm.fetchModels",
+      });
+      const selectAll = screen.getByRole("checkbox", {
+        name: "providerEditor.selectAll",
+      });
+      fireEvent.click(fetch);
+      const second = await screen.findByRole("button", { name: "second-chat" });
+      const image = screen.getByRole("button", { name: "image-fixture" });
+      if (selection === "limited") expect(selectAll).toBePartiallyChecked();
+      else expect(selectAll).toBeChecked();
+      expect(second).toHaveAttribute("aria-pressed", "true");
+      expect(image).toHaveAttribute("aria-pressed", "true");
+
+      if (selection === "partial") fireEvent.click(second);
+      if (selection === "empty") {
+        fireEvent.click(selectAll);
+        fireEvent.click(image);
+        vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+          ...catalog,
+          { id: "refresh-chat", ownedBy: null },
+        ]);
+        fireEvent.click(fetch);
+        expect(
+          await screen.findByRole("button", { name: "refresh-chat" }),
+        ).toHaveAttribute("aria-pressed", "false");
+        expect(selectAll).not.toBeChecked();
+      }
+
+      const savedModels =
+        selection === "empty"
+          ? []
+          : catalog
+              .slice(0, 256)
+              .filter(
+                ({ id }) => selection !== "partial" || id !== "second-chat",
+              )
+              .map((row) => ({
+                model: row.id,
+                ...("kind" in row ? { kind: row.kind } : {}),
+              }));
+      fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+      await waitFor(() =>
+        expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: expect.objectContaining({
+              mode: "picked",
+              models: savedModels,
+            }),
+          }),
+        ),
+      );
+    },
+  );
+
   it("shows subscription allowance beneath the provider name without opening the form", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       {

@@ -1,12 +1,22 @@
 # Agent feature coverage
 
-## Gemini-compatible model catalog discovery (macOS and Windows)
+## Shared API provider catalog discovery and selection (macOS and Windows)
 
 Assessment against `APP_IDS`, `AppType`, the shared connection inventory and
 the provider forms. Both the draft and saved shared-provider commands use the
 same model-catalog service. Agent editors that call that service with either
 Gemini format use the same fallback. Discovery supplies model metadata to the
 existing picker. Runtime routing, selection, and status use the saved protocol.
+
+For initial selection, the shared Add Provider editor is the entry point for
+every row that can consume shared supplier models. Fetching a catalog in that
+form sets the same explicit model selection already consumed by the Agent
+menus and routing groups. Agent-specific editors, protocol adapters, connection
+status, and route execution keep their existing contracts. Doubao Work's
+official audit-only connection has no shared supplier picker. Renderer
+verification covers default selection, manual removal, saving an empty
+selection, and the existing catalog refresh path on the common UI. Native
+Agent and Windows acceptance remain pending for this editor change.
 
 | Agent ID           | Discovery entry point in scope                           |
 | ------------------ | -------------------------------------------------------- |

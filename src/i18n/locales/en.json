@@ -5943,7 +5943,7 @@
     "hint_best": "Serve the newest model in each family.",
     "hint_usage": "Keep this provider for usage checks; offer no models to agents.",
     "optionalModels": "Model IDs, comma separated · e.g. gpt-5.5, claude-sonnet-5",
-    "optionalHint": "Optional: fetch models to pick from the vendor list. With none picked, the list is fetched after saving.",
+    "optionalHint": "Fetching the model list selects up to {{max}} models. Adding without fetching uses the first 24 chat models from the provider's list.",
     "pickedCount": "{{count}} of {{total}} picked",
     "showOther": "Show {{count}} others",
     "more": "Advanced"

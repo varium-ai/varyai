@@ -19,7 +19,11 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderAddSheet } from "./ProviderAddSheet";
 import { ProviderImportDialog } from "./ProviderImportDialog";
-import { ProviderEditorDialog, providerIdSlug } from "./ProviderEditorDialog";
+import {
+  MAX_PROVIDER_MODEL_SELECTION,
+  ProviderEditorDialog,
+  providerIdSlug,
+} from "./ProviderEditorDialog";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 import { intentRoutingApi } from "@/lib/api/intentRouting";
 import {
@@ -584,7 +588,9 @@ export function RoutingUpstreamsPanel({
           mode: !draft.revision
             ? parsed.some((row) => !isImageGenerationModel(row))
               ? "picked"
-              : "vendor"
+              : copyFrom
+                ? "vendor"
+                : source.mode
             : stagedModels?.some((row) => !isImageGenerationModel(row))
               ? "picked"
               : source.mode,
@@ -753,12 +759,33 @@ export function RoutingUpstreamsPanel({
     try {
       const found = await fetchDraftModels();
       if (!isCurrent()) return [];
+      const catalog = found.map(modelRow);
+      const currentSource = latestEditorInput.current.draft?.source;
+      const selectFetchedModels =
+        !draft.revision &&
+        !copyFrom &&
+        currentSource?.kind === "api" &&
+        currentSource.mode === "vendor" &&
+        catalog.length > 0;
       setDiscovered(found);
+      if (selectFetchedModels) {
+        setModels(
+          JSON.stringify(
+            catalog.slice(0, MAX_PROVIDER_MODEL_SELECTION),
+            null,
+            2,
+          ),
+        );
+      }
       setDraft((current) =>
         current?.source.kind === "api"
           ? {
               ...current,
-              source: { ...current.source, catalog: found.map(modelRow) },
+              source: {
+                ...current.source,
+                catalog,
+                mode: selectFetchedModels ? "picked" : current.source.mode,
+              },
             }
           : current,
       );

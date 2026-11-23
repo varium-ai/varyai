@@ -5865,7 +5865,7 @@
     "hint_best": "各モデル系列の最新モデルを提供します。",
     "hint_usage": "使用量の確認のみ。Agentにはモデルを提供しません。",
     "optionalModels": "モデル ID、カンマ区切り · 例：gpt-5.5, claude-sonnet-5",
-    "optionalHint": "任意：一覧を取得して選択します。未選択の場合は保存後に一覧を取得します。",
+    "optionalHint": "モデル一覧を取得すると、最大 {{max}} 個のモデルが自動で選択されます。一覧を取得せずに追加すると、提供元の一覧の先頭 24 件のチャットモデルが使われます。",
     "pickedCount": "{{total}}件中{{count}}件を選択",
     "showOther": "残り{{count}}件を表示",
     "more": "詳細"
