@@ -144,3 +144,14 @@ strip = "symbols"
 tauri = { version = "2.8.2", features = ["test"] }
 serial_test = "3"
 tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tao = { version = "0.34.6", default-features = false }
+
+[[test]]
+name = "macos_window_backing_properties"
+harness = false
+
+[patch.crates-io]
+# AppKit can send scale and resize notifications without a content view.
+tao = { path = "vendor/tao-0.34.6" }
