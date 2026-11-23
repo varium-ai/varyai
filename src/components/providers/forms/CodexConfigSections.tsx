@@ -320,7 +320,7 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
             defaultValue={toggleStates.compactLimit}
             disabled={!toggleStates.contextWindow1M}
             onChange={(e) => handleCompactLimitChange(e.target.value)}
-            className="w-28 px-2 text-sm"
+            className="w-28 h-[var(--control-height)] px-2 text-[13px]"
           />
         </label>
       </div>

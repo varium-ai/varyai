@@ -68,7 +68,11 @@ import {
   AgentUpdatesBar,
   AgentVersionTag,
 } from "./AgentUpdates";
-import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
+import {
+  APP_ICON_NAME,
+  APP_IDS,
+  getWorkspaceAgentLabel,
+} from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -145,8 +149,7 @@ export function AgentConnectionsPage({
   const [search, setSearch] = useState("");
   const missingTab = useRef<HTMLButtonElement>(null);
   const [installationTab, setInstallationTab] = useState("installed");
-  const name = (app: AppId) =>
-    app === "claude" ? "Claude Code" : t(`apps.${app}`);
+  const name = (app: AppId) => getWorkspaceAgentLabel(t, app);
   const client = useQueryClient();
   const connections = useQueries({
     queries: APP_IDS.map((app) => ({
@@ -1708,7 +1711,10 @@ export function AgentConnectionsPage({
         </header>
       )}
       {(states.isError || installations.isError) && (
-        <p role="alert" className="mb-4 text-sm text-destructive">
+        <p
+          role="alert"
+          className={`text-sm text-destructive${compact ? " mb-4" : ""}`}
+        >
           {t("agentConnections.failed")}
         </p>
       )}
@@ -1741,7 +1747,7 @@ export function AgentConnectionsPage({
         </>
       ) : (
         <Tabs
-          className="flex min-h-0 flex-1 flex-col"
+          className="flex min-h-0 flex-1 flex-col gap-[var(--workspace-module-gap)]"
           value={installationTab}
           onValueChange={setInstallationTab}
         >
@@ -1775,7 +1781,7 @@ export function AgentConnectionsPage({
           </div>
           <TabsContent
             value="installed"
-            className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain focus-visible:ring-inset focus-visible:ring-offset-0"
+            className="mt-0 min-h-0 flex-1 overflow-y-auto overscroll-y-contain focus-visible:ring-inset focus-visible:ring-offset-0"
           >
             {filtered && shown.length > 0 && visible.length === 0
               ? noMatches
@@ -1783,7 +1789,7 @@ export function AgentConnectionsPage({
           </TabsContent>
           <TabsContent
             value="notInstalled"
-            className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain focus-visible:ring-inset focus-visible:ring-offset-0"
+            className="mt-0 min-h-0 flex-1 overflow-y-auto overscroll-y-contain focus-visible:ring-inset focus-visible:ring-offset-0"
           >
             {installations.isPending ? (
               <p role="status">{t("agentConnections.states.checking")}</p>

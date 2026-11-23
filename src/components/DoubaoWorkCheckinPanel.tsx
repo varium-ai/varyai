@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useId, useState } from "react";
 import { CheckCircle2, ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -135,13 +136,13 @@ export function DoubaoWorkCheckinPanel({
         <div className="mp-checkin-accounts">
           <div className="mp-checkin-field">
             <label htmlFor={accountId}>{t("doubaowork.checkin.account")}</label>
-            <select
+            <OptionSelect
               id={accountId}
               value={selected?.id ?? ""}
               disabled={busy || !query.data?.accounts.length}
-              onChange={(event) => {
-                setSelectedId(event.target.value);
-                onSelectedAccountChange?.(event.target.value);
+              onValueChange={(value) => {
+                setSelectedId(value);
+                onSelectedAccountChange?.(value);
                 claim.reset();
                 auto.reset();
               }}
@@ -159,7 +160,7 @@ export function DoubaoWorkCheckinPanel({
                     : ""}
                 </option>
               ))}
-            </select>
+            </OptionSelect>
           </div>
           <CheckinAccountTools>
             <p>{t("doubaowork.checkin.description")}</p>

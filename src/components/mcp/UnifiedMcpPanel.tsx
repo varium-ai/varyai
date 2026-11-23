@@ -421,7 +421,7 @@ const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
             <button
               type="button"
               onClick={openDocs}
-              className="text-muted-foreground/60 hover:text-foreground flex-shrink-0"
+              className="text-muted-foreground hover:text-foreground flex-shrink-0"
               title={t("mcp.presets.docs")}
             >
               <ExternalLink size={12} />
@@ -437,7 +437,7 @@ const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
           </p>
         )}
         {!description && tags && tags.length > 0 && (
-          <p className="text-xs text-muted-foreground/60 truncate">
+          <p className="text-xs text-muted-foreground truncate">
             {tags.join(", ")}
           </p>
         )}

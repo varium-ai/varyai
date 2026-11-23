@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { CodexLoginPanel } from "@/components/providers/CodexLoginPanel";
@@ -66,14 +67,14 @@ it("supports direct and custom proxies without changing global settings", () => 
     onSubmit: vi.fn(),
   };
   render(<CodexLoginPanel {...props} />);
-  fireEvent.change(
+  selectAppOption(
     screen.getByRole("combobox", { name: "codexBrowser.proxy" }),
-    { target: { value: "direct" } },
+    "direct",
   );
   expect(props.onProxy).toHaveBeenCalledWith("direct");
-  fireEvent.change(
+  selectAppOption(
     screen.getByRole("combobox", { name: "codexBrowser.proxy" }),
-    { target: { value: "custom" } },
+    "custom",
   );
   fireEvent.change(
     screen.getByRole("textbox", { name: "codexBrowser.proxyUrl" }),

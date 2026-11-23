@@ -243,10 +243,13 @@ export function UsageTrendChart({
       const point = payload[0]?.payload as UsageTrendChartPoint | undefined;
       const heading = point?.tooltipLabel ?? point?.label ?? "";
       return (
-        <div className="rounded-lg border bg-background/95 p-3 shadow-lg backdrop-blur-md">
+        <div className="vary-floating-surface rounded-lg border border-border p-3">
           <p className="mb-2 font-medium">{heading}</p>
           {payload.map((entry: any, index: number) => (
-            <div key={index} className="flex items-center gap-2 text-sm">
+            <div
+              key={index}
+              className="flex items-center gap-2 text-sm text-foreground"
+            >
               <div
                 className="h-2 w-2 rounded-full"
                 style={{ backgroundColor: entry.color }}
@@ -278,7 +281,7 @@ export function UsageTrendChart({
           {usageTrendLegendItems.map((item) => (
             <span
               key={item.dataKey}
-              className="inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 whitespace-nowrap text-secondary-foreground"
             >
               <svg
                 aria-hidden="true"

@@ -367,7 +367,7 @@ export function AddProviderDialog({
         <Button
           variant="outline"
           onClick={closeDialog}
-          className="border-border/20 hover:bg-accent hover:text-accent-foreground"
+          className="border-border hover:bg-accent hover:text-accent-foreground"
         >
           {t("common.cancel")}
         </Button>
@@ -390,7 +390,7 @@ export function AddProviderDialog({
         <Button
           variant="outline"
           onClick={closeDialog}
-          className="border-border/20 hover:bg-accent hover:text-accent-foreground"
+          className="border-border hover:bg-accent hover:text-accent-foreground"
         >
           {t("common.cancel")}
         </Button>

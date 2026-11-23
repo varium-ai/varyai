@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -203,7 +204,7 @@ describe("WorkBuddy daily check-in", () => {
       name: "workbuddy.checkin.account",
     });
     await waitFor(() => expect(select).toBeEnabled());
-    fireEvent.change(select, { target: { value: "account-b" } });
+    selectAppOption(select, "account-b");
     const disclosure = screen.getByRole("button", {
       name: "workbuddy.checkin.title",
     });

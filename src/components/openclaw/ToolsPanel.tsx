@@ -199,7 +199,7 @@ const ToolsPanel: React.FC = () => {
                   updateListItem(setAllowList, index, e.target.value)
                 }
                 placeholder={t("openclaw.tools.patternPlaceholder")}
-                className="font-mono text-xs"
+                className="font-mono text-[13px]"
               />
               <Button
                 variant="ghost"
@@ -238,7 +238,7 @@ const ToolsPanel: React.FC = () => {
                   updateListItem(setDenyList, index, e.target.value)
                 }
                 placeholder={t("openclaw.tools.patternPlaceholder")}
-                className="font-mono text-xs"
+                className="font-mono text-[13px]"
               />
               <Button
                 variant="ghost"

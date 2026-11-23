@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -201,15 +202,13 @@ export function ConnectionPresetPicker({
     <div className="space-y-2 rounded-lg border border-border-default p-3">
       <Label htmlFor={`${id}-select`}>{t("connectionPresets.label")}</Label>
       <div className="flex gap-2">
-        <select
+        <OptionSelect
           id={`${id}-select`}
           value=""
           disabled={disabled || loading}
-          className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50"
-          onChange={(event) => {
-            const preset = presets.find(
-              (item) => item.id === event.target.value,
-            );
+          className="h-[var(--select-height)] min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-[13px] disabled:opacity-50"
+          onValueChange={(value) => {
+            const preset = presets.find((item) => item.id === value);
             if (preset && canApply(preset)) onApply({ ...preset });
           }}
         >
@@ -234,7 +233,7 @@ export function ConnectionPresetPicker({
                   : ""}
               </option>
             ))}
-        </select>
+        </OptionSelect>
         <Button
           ref={manageButtonRef}
           type="button"
@@ -426,19 +425,19 @@ export function ConnectionPresetPicker({
                 <Label htmlFor={`${id}-format`}>
                   {t("providerForm.apiFormat")}
                 </Label>
-                <select
+                <OptionSelect
                   id={`${id}-format`}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  className="h-[var(--select-height)] w-full rounded-md border border-input bg-background px-3 text-[13px]"
                   value={draft.apiFormat ?? ""}
                   disabled={pending}
-                  onChange={(event) => {
+                  onValueChange={(value) => {
                     setProtocolManuallySelected(true);
                     const { apiFormat: _previous, ...rest } = draft;
                     setDraft(
-                      event.target.value
+                      value
                         ? {
                             ...rest,
-                            apiFormat: event.target.value as ClaudeApiFormat,
+                            apiFormat: value as ClaudeApiFormat,
                           }
                         : rest,
                     );
@@ -450,7 +449,7 @@ export function ConnectionPresetPicker({
                       {t(label)}
                     </option>
                   ))}
-                </select>
+                </OptionSelect>
                 <p className="text-xs text-muted-foreground">
                   {t("connectionPresets.formatHint")}
                 </p>

@@ -12,6 +12,7 @@ export function SortableWorkspaceRow({
   handleRole,
   handleHint,
   handleClassName = "",
+  handlePlacement = "start",
   children,
   className = "",
   style,
@@ -24,6 +25,7 @@ export function SortableWorkspaceRow({
   handleRole: string;
   handleHint: string;
   handleClassName?: string;
+  handlePlacement?: "start" | "end";
 }) {
   const {
     attributes,
@@ -35,6 +37,24 @@ export function SortableWorkspaceRow({
     isDragging,
     isSorting,
   } = useSortable({ id, disabled: !sortable || disabled });
+
+  const handle = sortable && (
+    <button
+      {...attributes}
+      {...listeners}
+      ref={setActivatorNodeRef}
+      type="button"
+      disabled={disabled}
+      className={`mp-sortable-handle ${handleClassName}`}
+      aria-label={handleLabel}
+      aria-roledescription={handleRole}
+      title={handleHint}
+      onClick={(event) => event.stopPropagation()}
+      onDragStart={(event) => event.preventDefault()}
+    >
+      <GripVertical size={14} aria-hidden="true" />
+    </button>
+  );
 
   return (
     <article
@@ -49,24 +69,9 @@ export function SortableWorkspaceRow({
         transition,
       }}
     >
-      {sortable && (
-        <button
-          {...attributes}
-          {...listeners}
-          ref={setActivatorNodeRef}
-          type="button"
-          disabled={disabled}
-          className={`mp-sortable-handle ${handleClassName}`}
-          aria-label={handleLabel}
-          aria-roledescription={handleRole}
-          title={handleHint}
-          onClick={(event) => event.stopPropagation()}
-          onDragStart={(event) => event.preventDefault()}
-        >
-          <GripVertical size={14} aria-hidden="true" />
-        </button>
-      )}
+      {handlePlacement === "start" && handle}
       {children}
+      {handlePlacement === "end" && handle}
     </article>
   );
 }

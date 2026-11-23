@@ -18,7 +18,8 @@ import { AppUpdateDialog } from "@/components/AppUpdateDialog";
 import { UpdateProvider } from "@/contexts/UpdateContext";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "@tauri-apps/plugin-dialog";
+import { showAppMessage } from "@/lib/appMessage";
+import { LegacyTitleTooltips } from "@/components/ui/legacy-title-tooltips";
 import { exit } from "@tauri-apps/plugin-process";
 import { FrontendErrorBoundary } from "./components/FrontendErrorBoundary";
 import {
@@ -54,20 +55,18 @@ async function handleConfigLoadError(
   const path = payload?.path ?? "~/.varyai/varyai.db";
   const detail = payload?.error ?? "Unknown error";
 
-  await message(
-    i18n.t("errors.configLoadFailedMessage", {
+  await showAppMessage({
+    description: i18n.t("errors.configLoadFailedMessage", {
       path,
       detail,
       defaultValue:
         "无法读取配置文件：\n{{path}}\n\n错误详情：\n{{detail}}\n\n请手动检查 JSON 是否有效，或从同目录的备份文件（如 config.json.bak）恢复。\n\n应用将退出以便您进行修复。",
     }),
-    {
-      title: i18n.t("errors.configLoadFailedTitle", {
-        defaultValue: "配置加载失败",
-      }),
-      kind: "error",
-    },
-  );
+    title: i18n.t("errors.configLoadFailedTitle", {
+      defaultValue: "配置加载失败",
+    }),
+    confirmLabel: i18n.t("common.confirm"),
+  });
 
   await exit(1);
 }
@@ -104,6 +103,7 @@ async function bootstrap() {
                 <DatabaseUpgrade payload={initError} />
               )}
               <Toaster />
+              <LegacyTitleTooltips />
             </ThemeProvider>
           </FrontendErrorBoundary>
         </React.StrictMode>,
@@ -136,6 +136,7 @@ async function bootstrap() {
               {!panel && <SecuritySystemNotifier />}
               {!panel && <ToolRiskNotifier />}
               <Toaster />
+              <LegacyTitleTooltips />
             </UpdateProvider>
           </ThemeProvider>
         </QueryClientProvider>

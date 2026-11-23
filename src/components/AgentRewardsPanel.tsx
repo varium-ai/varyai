@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useEffect, useId, useState } from "react";
 import { CheckCircle2, ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -186,7 +187,7 @@ export function AgentRewardsPanel({
         <div className="mp-checkin-accounts">
           <div className="mp-checkin-field">
             <label htmlFor={accountId}>{t("agentRewards.account")}</label>
-            <select
+            <OptionSelect
               id={accountId}
               value={data?.accountId ?? ""}
               disabled={
@@ -201,7 +202,7 @@ export function AgentRewardsPanel({
                       : "agentRewards.outcomes.sign_in_required",
                   )}
               </option>
-            </select>
+            </OptionSelect>
           </div>
           <CheckinAccountTools>
             <p>{t(`agentRewards.descriptions.${app}`)}</p>

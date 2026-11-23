@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   act,
   fireEvent,
@@ -318,7 +319,7 @@ describe("IntentRoutingPanel", () => {
     ).toHaveLength(1);
   });
 
-  it("keeps publication and editing in Actions without a strategy selector or IDs", async () => {
+  it("separates publication from row actions and keeps ordering at the trailing edge", async () => {
     mount();
     const heading = await screen.findByRole("heading", {
       name: "Fixture group",
@@ -330,13 +331,13 @@ describe("IntentRoutingPanel", () => {
       within(row).queryByText("vary-auto/fixture"),
     ).not.toBeInTheDocument();
     expect(within(cells[0]).queryByRole("combobox")).not.toBeInTheDocument();
-    expect(within(cells[0]).queryByRole("switch")).not.toBeInTheDocument();
+    expect(within(cells[3]).queryByRole("switch")).not.toBeInTheDocument();
     expect(
       within(cells[3]).queryByRole("combobox", {
         name: "intentRouting.routingStrategy",
       }),
     ).not.toBeInTheDocument();
-    const publication = within(cells[3]).getByRole("switch", {
+    const publication = within(cells[0]).getByRole("switch", {
       name: "intentRouting.publishGateway Fixture group",
     });
     expect(publication).not.toBeChecked();
@@ -345,6 +346,16 @@ describe("IntentRoutingPanel", () => {
     const edit = within(cells[3]).getByRole("button", { name: "common.edit" });
     expect(edit).toHaveTextContent(/^$/);
     expect(edit).toHaveAttribute("title", "common.edit");
+    const reorder = within(cells[3]).getByRole("button", {
+      name: "routingPage.arrangeGroup Fixture group",
+    });
+    expect(
+      within(cells[0]).queryByRole("button", {
+        name: "routingPage.arrangeGroup Fixture group",
+      }),
+    ).not.toBeInTheDocument();
+    expect(reorder.parentElement?.lastElementChild).toBe(reorder);
+    expect(within(reorder).queryByRole("img")).not.toBeInTheDocument();
     fireEvent.click(publication);
     await waitFor(() =>
       expect(intentRoutingApi.save).toHaveBeenCalledWith(
@@ -461,7 +472,7 @@ describe("IntentRoutingPanel", () => {
     const status = screen.getByRole("combobox", {
       name: "routingPage.groupStatus",
     });
-    fireEvent.change(status, { target: { value: "enabled" } });
+    selectAppOption(status, "enabled");
     expect(screen.queryByText("Fixture group")).not.toBeInTheDocument();
     expect(screen.getByText("Enabled group")).toBeInTheDocument();
     fireEvent.change(
@@ -470,7 +481,7 @@ describe("IntentRoutingPanel", () => {
     );
     expect(screen.getByText("intentRouting.noMatches")).toBeInTheDocument();
     expect(screen.queryByTestId("routing-group-count")).not.toBeInTheDocument();
-    fireEvent.change(status, { target: { value: "disabled" } });
+    selectAppOption(status, "disabled");
     fireEvent.change(
       screen.getByRole("searchbox", { name: "intentRouting.filter" }),
       { target: { value: "fixture-model" } },
@@ -4686,7 +4697,7 @@ describe("IntentRoutingPanel", () => {
         name: `intentRouting.${name}`,
       });
       expect(trigger.tagName).toBe("BUTTON");
-      expect(trigger).toHaveClass("rounded-md");
+      expect(trigger).toHaveClass("rounded-sm");
     }
     const classifier = screen.getByRole("combobox", {
       name: "intentRouting.classifierProvider",

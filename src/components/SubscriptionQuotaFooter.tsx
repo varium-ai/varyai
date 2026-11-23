@@ -224,7 +224,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
       <div className="flex flex-col items-end gap-1 text-xs whitespace-nowrap flex-shrink-0">
         {/* 第一行：查询时间 + 刷新 */}
         <div className="flex items-center gap-2 justify-end">
-          <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
             <Clock size={10} />
             {quota.queriedAt
               ? formatRelativeTime(quota.queriedAt, now, t)
@@ -264,7 +264,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         </span>
         <div className="flex items-center gap-2">
           {quota.queriedAt && (
-            <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               <Clock size={10} />
               {formatRelativeTime(quota.queriedAt, now, t)}
             </span>
@@ -328,12 +328,12 @@ export const TierBadge: React.FC<{
         {t("subscription.utilization", { value: Math.round(tier.utilization) })}
       </span>
       {hasUsd && (
-        <span className="text-muted-foreground/60">
+        <span className="text-muted-foreground">
           (${tier.usedValueUsd!.toFixed(2)}/${tier.maxValueUsd!.toFixed(2)})
         </span>
       )}
       {countdown && (
-        <span className="text-muted-foreground/60 ml-0.5 flex items-center gap-px">
+        <span className="text-muted-foreground ml-0.5 flex items-center gap-px">
           <Clock size={10} />
           {countdown}
         </span>
@@ -386,7 +386,7 @@ const TierBar: React.FC<{
         </span>
         {resetText && (
           <span
-            className="text-[10px] text-muted-foreground/70 truncate"
+            className="text-[10px] text-muted-foreground truncate"
             title={resetText}
           >
             {resetText}

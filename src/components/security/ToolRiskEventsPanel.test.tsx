@@ -239,6 +239,9 @@ describe("ToolRiskEventsPanel", () => {
   it("shows an empty state when there are no events", () => {
     render(<ToolRiskEventsPanel />);
     expect(screen.getByText(en.toolRisk.noEvents)).toBeTruthy();
+    expect(screen.getByTestId("tool-risk-events-table")).not.toHaveClass(
+      "min-w-[1544px]",
+    );
   });
 
   it("clears events when the clear button is clicked", async () => {

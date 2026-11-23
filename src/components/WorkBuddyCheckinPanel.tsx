@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useEffect, useId, useState } from "react";
 import { CheckCircle2, ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -172,12 +173,12 @@ export function WorkBuddyCheckinPanel({
             <label htmlFor={accountSelectId}>
               {t("workbuddy.checkin.account")}
             </label>
-            <select
+            <OptionSelect
               id={accountSelectId}
               value={selected?.id ?? ""}
               disabled={busy || !status.data?.accounts.length}
-              onChange={(event) => {
-                setSelectedId(event.target.value);
+              onValueChange={(value) => {
+                setSelectedId(value);
                 claim.reset();
                 auto.reset();
               }}
@@ -199,7 +200,7 @@ export function WorkBuddyCheckinPanel({
                     : ""}
                 </option>
               ))}
-            </select>
+            </OptionSelect>
           </div>
           <CheckinAccountTools>
             <p>{t("workbuddy.checkin.description")}</p>

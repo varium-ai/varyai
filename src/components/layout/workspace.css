@@ -2,12 +2,12 @@
    MIT attribution: third_party/routing-reference/LICENSE. */
 :root {
   --mp-bg: hsl(var(--background));
-  --mp-workspace-bg: var(--mp-bg);
-  --mp-sidebar: var(--mp-card);
+  --workspace-sidebar-fill: rgb(225 237 253 / 82%);
+  --workspace-content-fill: rgb(243 246 250 / 94%);
   --mp-card: hsl(var(--card));
-  --mp-list-bg: rgb(255 255 255 / 65%);
-  --mp-list-line: rgb(215 225 236 / 65%);
-  --mp-list-divider: rgb(215 225 236 / 70%);
+  --mp-list-bg: var(--mp-card);
+  --mp-list-line: var(--mp-line);
+  --mp-list-divider: var(--mp-line-2);
   --mp-card-2: hsl(var(--muted));
   --mp-pill: hsl(var(--accent));
   --mp-pill-hover: hsl(var(--accent));
@@ -17,18 +17,20 @@
   --mp-fg: hsl(var(--foreground));
   --mp-fg-2: hsl(var(--secondary-foreground));
   --mp-muted: hsl(var(--muted-foreground));
-  --mp-faint: var(--disabled-foreground);
+  --mp-faint: hsl(var(--muted-foreground));
   --mp-control: hsl(var(--secondary-foreground));
   --mp-accent: hsl(var(--primary));
   --mp-action-text: hsl(var(--primary-text));
+  --mp-link: hsl(var(--link-foreground));
+  --mp-action: hsl(var(--primary-fill));
   --mp-green: var(--success);
   --mp-red: hsl(var(--destructive));
   --mp-amber: var(--warning);
   --mp-edge: 0 1px 2px rgb(39 52 67 / 8%);
 }
 .dark {
-  --mp-workspace-bg: var(--mp-bg);
-  --mp-sidebar: rgb(255 255 255 / 2%);
+  --workspace-sidebar-fill: rgb(32 44 63 / 88%);
+  --workspace-content-fill: hsl(var(--background) / 94%);
   --mp-list-bg: var(--mp-card);
   --mp-list-line: var(--mp-line);
   --mp-list-divider: var(--mp-line-2);
@@ -49,7 +51,9 @@
   background: var(--mp-card);
 }
 .mp-dialog h2 {
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
 }
 .mp-dialog p {
   color: var(--mp-fg-2);
@@ -57,15 +61,20 @@
 }
 .mp-dialog button:not([role="radio"], [role="checkbox"], [role="switch"]) {
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
 }
 .mp-dialog input:not([type="checkbox"], [type="radio"]) {
   border: 1px solid var(--mp-line);
-  border-radius: 6px;
+
   background: var(--mp-card);
   color: var(--mp-fg);
   box-shadow: none;
-  font-size: 12px;
+
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 20px;
 }
 .mp-row-menu {
   min-width: 172px;
@@ -91,7 +100,14 @@
   --workspace-page-inline: 24px;
   --workspace-page-top: 24px;
   --workspace-brand-top: 24px;
-  background: var(--mp-workspace-bg);
+  background: linear-gradient(
+    to right,
+    var(--workspace-sidebar-fill),
+    var(--workspace-content-fill) calc(var(--workspace-sidebar-width) + 24px)
+  );
+}
+html[data-platform="macos"] body:has(.vary-workspace) {
+  background: transparent;
 }
 @media (min-width: 641px) {
   .vary-workspace:lang(en) {
@@ -109,17 +125,6 @@
   height: 24px;
   flex: none;
 }
-.workspace-drag-region::before {
-  content: "";
-  display: block;
-  width: var(--workspace-sidebar-width);
-  height: 100%;
-  background: var(--mp-sidebar);
-}
-.workspace-drag-region::before,
-.workspace-sidebar {
-  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
 .workspace-sidebar {
   position: relative;
   isolation: isolate;
@@ -127,8 +132,9 @@
   flex: none;
   flex-direction: column;
   width: var(--workspace-sidebar-width);
-  padding: var(--workspace-brand-top, 16px) 12px 24px;
-  background: var(--mp-sidebar);
+  padding: var(--workspace-brand-top, 16px) 12px 16px;
+  border-right: 1px solid hsl(var(--border) / 38%);
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .workspace-nav-selection {
   position: absolute;
@@ -206,27 +212,50 @@
 }
 .workspace-nav-item[aria-current="page"] {
   background: transparent;
-  color: var(--mp-action-text);
+  color: var(--mp-link);
   font-weight: 500;
 }
 .workspace-nav-item[aria-current="page"] svg {
   color: inherit;
 }
-.workspace-settings {
+.workspace-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-nav-row .workspace-nav-item {
   flex: 1;
   min-width: 0;
-  width: auto;
-  margin-top: 0;
-}
-.workspace-settings-row {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  margin-top: auto;
 }
 .workspace-update-badge {
   flex: none;
+}
+.workspace-sidebar-bottom {
+  display: flex;
+  margin-top: auto;
+  padding-top: 12px;
+}
+.workspace-profile-trigger {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  justify-content: flex-start;
+  gap: 10px;
+  color: var(--mp-fg-2);
+}
+.workspace-profile-trigger > span {
+  flex: 1;
+  text-align: left;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .vary-workspace {
+    --workspace-sidebar-fill: #e7f0fc;
+    --workspace-content-fill: #f3f6fa;
+  }
+  .dark .vary-workspace {
+    --workspace-sidebar-fill: #252f3e;
+    --workspace-content-fill: var(--mp-bg);
+  }
 }
 .workspace-footer {
   display: flex;
@@ -237,9 +266,28 @@
   gap: 8px;
   min-height: 28px;
   padding: 4px 16px;
-  border-top: 0.5px solid var(--mp-line);
+  border-top: 1px solid hsl(var(--border) / 45%);
   color: var(--mp-muted);
   font-size: 11px;
+}
+.gateway-runtime-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+}
+.gateway-runtime-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground));
+}
+.gateway-runtime-status[data-status="running"] .gateway-runtime-dot {
+  background: var(--success);
+}
+.gateway-runtime-status[data-status="unavailable"] .gateway-runtime-dot {
+  background: var(--warning);
 }
 html:has(.vary-workspace) .tray-profile-menu {
   --tray-menu-bg: hsl(var(--popover));
@@ -252,10 +300,10 @@ html:has(.vary-workspace) .tray-profile-menu {
 .vary-routing,
 .vary-providers {
   width: 100%;
-  max-width: var(--workspace-page-max-width, 1232px);
+  max-width: var(--workspace-page-max-width);
   margin: 0 auto;
-  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px)
-    32px;
+  padding: calc(var(--workspace-page-top, 24px) + 8px)
+    var(--workspace-page-gutter) 32px;
 }
 .workspace-page-heading {
   display: grid;
@@ -266,20 +314,18 @@ html:has(.vary-workspace) .tray-profile-menu {
 .workspace-page-heading > h1 {
   display: flex;
   align-items: center;
-  min-height: var(--compact-control-height);
-  margin: 0;
-  color: hsl(var(--foreground));
-  font-family: var(--mp-font);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 26px;
-  letter-spacing: normal;
+  min-height: 26px;
+  margin: 0 0 12px;
+  font-size: var(--page-title-size);
+  font-weight: var(--page-title-weight);
+  line-height: var(--page-title-line-height);
+  font-family: var(--page-title-font);
 }
 .vary-page-title {
-  font-family: Inter, "Noto Sans SC", var(--mp-font);
-  font-size: 18px;
-  font-weight: 500;
-  line-height: 28px;
+  font-family: var(--page-title-font);
+  font-size: var(--page-title-size);
+  font-weight: var(--page-title-weight);
+  line-height: var(--page-title-line-height);
 }
 .vary-agents:not(.tray-agents) {
   padding-top: 0;
@@ -294,7 +340,7 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-list {
   overflow: hidden;
   border: 1px solid var(--mp-list-line);
-  border-radius: var(--radius);
+  border-radius: var(--panel-radius);
   background: var(--mp-list-bg);
 }
 .vary-agents > .mp-list {
@@ -326,13 +372,16 @@ html:has(.vary-workspace) .tray-profile-menu {
   gap: 8px;
   flex: none;
   width: 196px;
-  height: 30px;
+
   padding: 0 10px;
   border: 1px solid var(--mp-line);
-  border-radius: 7px;
-  background: var(--mp-card-2);
+
+  background: var(--mp-card);
   color: var(--mp-fg-2);
-  font-size: 12px;
+  font-size: var(--control-font-size);
+  line-height: var(--control-line-height);
+  height: var(--select-height);
+  border-radius: var(--select-radius);
 }
 .mp-agent-start > span {
   flex: 1;
@@ -429,6 +478,11 @@ html:has(.vary-workspace) .tray-profile-menu {
 @media (max-width: 700px) {
   .mp-agent-start {
     width: 156px;
+
+    font-size: var(--control-font-size);
+    line-height: var(--control-line-height);
+    height: var(--select-height);
+    border-radius: var(--select-radius);
   }
 }
 @media (max-width: 480px) {
@@ -436,6 +490,11 @@ html:has(.vary-workspace) .tray-profile-menu {
     width: 140px;
     order: 5;
     margin: 6px 0 1px 40px;
+
+    font-size: var(--control-font-size);
+    line-height: var(--control-line-height);
+    height: var(--select-height);
+    border-radius: var(--select-radius);
   }
   .mp-agent-row .mp-agent-who {
     min-width: 120px;
@@ -908,19 +967,22 @@ html:has(.vary-workspace) .tray-profile-menu {
   .workspace-nav-item > span {
     display: none;
   }
-  .workspace-settings-row {
+  .workspace-profile-trigger {
     justify-content: center;
+    padding-inline: 0;
   }
-  .workspace-settings-row .workspace-settings {
-    flex: none;
-    width: 28px;
+  .workspace-profile-trigger > span,
+  .workspace-profile-trigger > svg:last-child {
+    display: none;
   }
   .workspace-update-badge {
-    position: absolute;
-    right: -4px;
-    bottom: 20px;
-    width: 26px;
-    height: 26px;
+    position: relative;
+    z-index: 2;
+    align-self: flex-start;
+    margin-inline-start: -24px;
+    transform: translate(7px, -4px);
+    width: 20px;
+    height: 20px;
   }
   .mp-agent-row {
     --mp-sortable-divider-left: 20px;
@@ -948,7 +1010,6 @@ html:has(.vary-workspace) .tray-profile-menu {
 }
 @media (prefers-reduced-motion: reduce) {
   .mp-agent-next svg,
-  .workspace-drag-region::before,
   .workspace-sidebar,
   .workspace-nav-selection,
   .mp-agent-more > summary svg,

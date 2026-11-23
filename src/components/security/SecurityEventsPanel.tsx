@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, FileText, RefreshCw, Trash2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +45,7 @@ import {
 import type { UsageRangeSelection, UsageRangePreset } from "@/types/usage";
 import { SecurityEventDetailsDialog } from "./SecurityEventDetailsDialog";
 import { SecurityEventsLoading } from "./SecurityEventsLoading";
+import { SecurityMetric, securityMetricOrder } from "./SecurityMetric";
 import { ToolRiskEventsPanel } from "./ToolRiskEventsPanel";
 import {
   securityEventName,
@@ -49,21 +56,25 @@ import {
 } from "./securityEventLabels";
 
 const overviewColumns = [
-  ["security.firstSeenAt", "w-56"],
-  ["security.aiService", "w-32"],
-  ["security.recordType", "w-48"],
-  ["security.riskLevel", "w-28"],
-  ["security.recordResult", "w-32"],
+  ["security.firstSeenAt", 176],
+  ["security.aiService", 110],
+  ["security.recordType", 148],
+  ["security.riskLevel", 104],
+  ["security.recordResult", 120],
 ] as const;
 const auditColumns = [
   ...overviewColumns,
-  ["security.lastSeenAt", "w-56"],
-  ["security.triggerCount", "w-32"],
-  ["security.sessionId", "w-56"],
-  ["security.outboundStatus", "w-64"],
-  ["securityEvents.source", "w-32"],
-  ["", "w-12"],
+  ["security.lastSeenAt", 176],
+  ["security.triggerCount", 112],
+  ["security.sessionId", 150],
+  ["security.outboundStatus", 148],
+  ["securityEvents.source", 104],
+  ["", 48],
 ] as const;
+const auditTableMinWidth = auditColumns.reduce(
+  (total, [, width]) => total + width,
+  0,
+);
 
 type Option = { value: string; label: string };
 
@@ -80,10 +91,7 @@ function FilterSelect({
 }) {
   return (
     <Select value={value || "all"} onValueChange={onChange}>
-      <SelectTrigger
-        aria-label={label}
-        className="h-8 w-full min-w-0 rounded-md bg-card text-xs"
-      >
+      <SelectTrigger aria-label={label} className="min-w-0">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -334,76 +342,131 @@ export function SecurityEventsPanel({
   const status = !hasEventRows;
   return (
     <section
-      className="mt-5 space-y-4"
+      className="sc-events-panel"
       role="tabpanel"
       aria-label={t("security.tabRecords")}
     >
-      <div className="grid grid-cols-3 gap-2.5">
-        {(["redacted", "warnings", "protectiveBlocked"] as const).map(
-          (metric) => (
-            <div key={metric} className="sc-surface sc-metric">
-              <div className="text-2xl font-semibold tabular-nums">
-                {summaryCount(summary.data?.[metric])}
-              </div>
-              <div className="mt-1.5 text-xs text-muted-foreground">
-                {t(`securityStats.${metric}`)}
-              </div>
-            </div>
-          ),
-        )}
-      </div>
-      <div className="sc-summary">
-        <p className="text-xs text-muted-foreground">
-          {t("securityEvents.summaryScope")}
-        </p>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          <span data-testid="security-events-summary-total">
-            {t("securityEvents.totalRecords")}:{" "}
-            {count(
-              totalRecordCount,
-              summary.isLoading || toolCallsCount.isLoading,
-              summary.isError || toolCallsCount.isError,
-            )}
-          </span>
-          <span data-testid="security-events-summary-dlp">
-            {t("securityEvents.dlpCount")}:{" "}
-            {summaryCount(summary.data?.dlpCount)}
-          </span>
-          <span data-testid="security-events-summary-tool-risk">
-            {t("securityEvents.toolRiskCount")}:{" "}
-            {count(
-              toolCallsCount.eventsResult?.total,
-              toolCallsCount.isLoading,
-              toolCallsCount.isError,
-            )}
-          </span>
+      <div className="sc-surface sc-overview">
+        <dl className="sc-metrics">
+          {securityMetricOrder.map((metric) => (
+            <SecurityMetric
+              key={metric}
+              metric={metric}
+              value={summaryCount(summary.data?.[metric])}
+            />
+          ))}
+        </dl>
+        <div className="sc-summary">
+          <p className="text-xs text-muted-foreground">
+            {t("securityEvents.summaryScope")}
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span data-testid="security-events-summary-total">
+              {t("securityEvents.totalRecords")}:{" "}
+              {count(
+                totalRecordCount,
+                summary.isLoading || toolCallsCount.isLoading,
+                summary.isError || toolCallsCount.isError,
+              )}
+            </span>
+            <span data-testid="security-events-summary-dlp">
+              {t("securityEvents.dlpCount")}:{" "}
+              {summaryCount(summary.data?.dlpCount)}
+            </span>
+            <span data-testid="security-events-summary-tool-risk">
+              {t("securityEvents.toolRiskCount")}:{" "}
+              {count(
+                toolCallsCount.eventsResult?.total,
+                toolCallsCount.isLoading,
+                toolCallsCount.isError,
+              )}
+            </span>
+          </div>
         </div>
       </div>
-      <div
-        className="sc-view-picker"
-        role="tablist"
-        aria-label={t("security.tabRecords")}
-      >
-        {(["security_events", "tool_calls"] as const).map((view) => (
-          <Button
-            key={view}
-            role="tab"
-            aria-selected={filter.view === view}
-            size="sm"
-            className="aria-selected:bg-card aria-selected:text-primary aria-selected:shadow-sm"
-            variant={filter.view === view ? "secondary" : "ghost"}
-            onClick={() => switchView(view)}
-          >
-            {t(
-              view === "security_events"
-                ? "securityEvents.detailsView"
-                : "securityEvents.toolCallsView",
-            )}
-          </Button>
-        ))}
-      </div>
-      <div className="flex min-w-0 items-center gap-1">
-        <div className="min-w-0 flex-1 overflow-x-auto p-1">
+      <div className="sc-surface sc-events-directory">
+        <div className="sc-record-controls">
+          <div className="sc-record-toolbar">
+            <div
+              className="sc-view-picker"
+              role="tablist"
+              aria-label={t("security.tabRecords")}
+            >
+              {(["security_events", "tool_calls"] as const).map((view) => (
+                <Button
+                  key={view}
+                  role="tab"
+                  aria-selected={filter.view === view}
+                  size="sm"
+                  className="aria-selected:bg-card aria-selected:text-primary"
+                  variant={filter.view === view ? "secondary" : "ghost"}
+                  onClick={() => switchView(view)}
+                >
+                  {t(
+                    view === "security_events"
+                      ? "securityEvents.detailsView"
+                      : "securityEvents.toolCallsView",
+                  )}
+                </Button>
+              ))}
+            </div>
+            <div className="sc-filter-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onFilterChange({
+                    view: filter.view,
+                    eventType:
+                      filter.view === "tool_calls" ? "tool_risk" : undefined,
+                  });
+                  onPageChange(1);
+                }}
+              >
+                {t("security.resetFilters")}
+              </Button>
+              <span className="inline-flex" title={t("security.refreshLogs")}>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label={t("security.refreshLogs")}
+                  title={t("security.refreshLogs")}
+                  aria-busy={tableLoading}
+                  onClick={refresh}
+                  disabled={isLoading || isRefreshing}
+                >
+                  <RefreshCw
+                    className={
+                      "h-4 w-4 " +
+                      (isLoading || isRefreshing ? "animate-spin" : "")
+                    }
+                  />
+                </Button>
+              </span>
+              <span
+                className="inline-flex"
+                title={t("securityEvents.clearFiltered")}
+              >
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label={t("securityEvents.clearFiltered")}
+                  className="text-destructive"
+                  title={t("securityEvents.clearFiltered")}
+                  disabled={clearDisabled}
+                  onClick={() => {
+                    setClearFailed(false);
+                    setClearPreview({
+                      filter: { ...queryFilter },
+                      total: eventsResult?.total,
+                    });
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </span>
+            </div>
+          </div>
           <div className="sc-filters">
             <UsageDateRangePicker
               selection={range}
@@ -413,7 +476,7 @@ export function SecurityEventsPanel({
               }
               presets={["today", "7d", "30d"]}
               presetLabels={rangeLabels}
-              triggerClassName="h-8 w-full min-w-0 text-xs"
+              triggerClassName="w-full min-w-0"
               popoverAlign="start"
               onApply={(next) => {
                 onRangeChange(next);
@@ -427,7 +490,10 @@ export function SecurityEventsPanel({
                 options={[
                   all("securityEvents.allSources"),
                   { value: "dlp", label: t("securityEvents.dlp") },
-                  { value: "tool_risk", label: t("securityEvents.toolRisk") },
+                  {
+                    value: "tool_risk",
+                    label: t("securityEvents.toolRisk"),
+                  },
                 ]}
                 onChange={(value) =>
                   changeFilter({
@@ -493,7 +559,9 @@ export function SecurityEventsPanel({
                 })),
               ]}
               onChange={(value) =>
-                changeFilter({ appType: value === "all" ? undefined : value })
+                changeFilter({
+                  appType: value === "all" ? undefined : value,
+                })
               }
             />
             <FilterSelect
@@ -570,7 +638,7 @@ export function SecurityEventsPanel({
                       changeFilter({ sessionId: event.target.value })
                     }
                     placeholder={t("security.sessionFilterPlaceholder")}
-                    className="h-8 w-full min-w-0 text-xs"
+                    className="h-[var(--filter-height)] w-full min-w-0 text-[13px] focus:ring-0"
                   />
                   <Input
                     aria-label={t("securityEvents.keywordHint")}
@@ -580,278 +648,225 @@ export function SecurityEventsPanel({
                       changeFilter({ keyword: event.target.value })
                     }
                     placeholder={t("security.searchPlaceholder")}
-                    className="h-8 w-full min-w-0 text-xs"
+                    className="h-[var(--filter-height)] w-full min-w-0 text-[13px] focus:ring-0"
                   />
                 </>
               )}
           </div>
+          {filter.view === "security_events" && filter.eventType === "dlp" && (
+            <p className="text-xs text-muted-foreground">
+              {t("securityEvents.keywordHint")}
+            </p>
+          )}
+          {hasUpdates && (
+            <p role="status" className="text-xs text-[var(--warning)]">
+              {t("securityEvents.updatesAvailable")}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {t(
+              filter.view === "tool_calls"
+                ? "securityEvents.toolCallsTotal"
+                : "securityEvents.listTotal",
+            )}
+            : {count(eventsResult?.total, isLoading, isError)}
+          </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1 pr-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              onFilterChange({
-                view: filter.view,
-                eventType:
-                  filter.view === "tool_calls" ? "tool_risk" : undefined,
-              });
-              onPageChange(1);
-            }}
-          >
-            {t("security.resetFilters")}
-          </Button>
-          <span className="inline-flex" title={t("security.refreshLogs")}>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={t("security.refreshLogs")}
-              title={t("security.refreshLogs")}
-              aria-busy={tableLoading}
-              onClick={refresh}
-              disabled={isLoading || isRefreshing}
-            >
-              <RefreshCw
-                className={
-                  "h-4 w-4 " + (isLoading || isRefreshing ? "animate-spin" : "")
-                }
-              />
-            </Button>
-          </span>
-          <span
-            className="inline-flex"
-            title={t("securityEvents.clearFiltered")}
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={t("securityEvents.clearFiltered")}
-              title={t("securityEvents.clearFiltered")}
-              disabled={clearDisabled}
-              onClick={() => {
-                setClearFailed(false);
-                setClearPreview({
-                  filter: { ...queryFilter },
-                  total: eventsResult?.total,
-                });
+        <div aria-busy={tableLoading}>
+          {filter.view === "tool_calls" ? (
+            <ToolRiskEventsPanel
+              controlled={{
+                events:
+                  tableLoading || isError
+                    ? []
+                    : (eventsResult?.items
+                        .filter(
+                          (
+                            event,
+                          ): event is SecurityEvent & {
+                            eventType: "tool_risk";
+                            record: ToolRiskEventRecord;
+                          } => event.eventType === "tool_risk",
+                        )
+                        .map((event) => event.record) ?? []),
+                isLoading: tableLoading,
+                isError: !tableLoading && isError,
+                onSelectEvent: selectTool,
               }}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </span>
-        </div>
-      </div>
-      {filter.view === "security_events" && filter.eventType === "dlp" && (
-        <p className="text-xs text-muted-foreground">
-          {t("securityEvents.keywordHint")}
-        </p>
-      )}
-      {hasUpdates && (
-        <p role="status" className="text-xs text-[var(--warning)]">
-          {t("securityEvents.updatesAvailable")}
-        </p>
-      )}
-      <p className="text-xs text-muted-foreground">
-        {t(
-          filter.view === "tool_calls"
-            ? "securityEvents.toolCallsTotal"
-            : "securityEvents.listTotal",
-        )}
-        : {count(eventsResult?.total, isLoading, isError)}
-      </p>
-      <div aria-busy={tableLoading}>
-        {filter.view === "tool_calls" ? (
-          <ToolRiskEventsPanel
-            controlled={{
-              events:
-                tableLoading || isError
-                  ? []
-                  : (eventsResult?.items
-                      .filter(
-                        (
-                          event,
-                        ): event is SecurityEvent & {
-                          eventType: "tool_risk";
-                          record: ToolRiskEventRecord;
-                        } => event.eventType === "tool_risk",
-                      )
-                      .map((event) => event.record) ?? []),
-              isLoading: tableLoading,
-              isError: !tableLoading && isError,
-              onSelectEvent: selectTool,
-            }}
-            onCreateRule={createRule}
-          />
-        ) : (
-          <div className="sc-surface overflow-hidden">
-            <div className="overflow-x-auto">
-              <table
-                aria-busy={tableLoading}
-                className={
-                  hasEventRows
-                    ? "w-full min-w-[1900px] table-fixed border-collapse text-left"
-                    : "w-full table-fixed border-collapse text-left"
-                }
-              >
-                {hasEventRows && (
-                  <colgroup>
-                    {columns.map(([key, width]) => (
-                      <col key={key} className={width} />
-                    ))}
-                  </colgroup>
-                )}
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    {columns.map(([key], index) => (
-                      <th
-                        key={key || index}
-                        className={
-                          hasEventRows
-                            ? "whitespace-nowrap px-3 py-3 font-medium"
-                            : "px-3 py-3 font-medium"
-                        }
-                      >
-                        {key ? t(key) : null}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60 text-sm">
-                  {!tableLoading &&
-                    !isError &&
-                    eventsResult?.items.map((event) => (
-                      <tr
-                        key={event.key}
-                        data-testid={`security-event-${event.key}`}
-                        tabIndex={0}
-                        className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => setSelected(event)}
-                        onKeyDown={(key) => {
-                          if (key.key === "Enter" || key.key === " ") {
-                            key.preventDefault();
-                            setSelected(event);
+              onCreateRule={createRule}
+            />
+          ) : (
+            <div>
+              <div className="overflow-x-auto">
+                <table
+                  aria-busy={tableLoading}
+                  className="w-full table-fixed border-collapse text-left"
+                  style={
+                    hasEventRows ? { minWidth: auditTableMinWidth } : undefined
+                  }
+                >
+                  {hasEventRows && (
+                    <colgroup>
+                      {columns.map(([key, width]) => (
+                        <col key={key} style={{ width }} />
+                      ))}
+                    </colgroup>
+                  )}
+                  <thead>
+                    <tr className="border-b border-border text-xs text-muted-foreground">
+                      {columns.map(([key], index) => (
+                        <th
+                          key={key || index}
+                          className={
+                            hasEventRows ? "whitespace-nowrap" : undefined
                           }
-                        }}
-                      >
-                        <td className="whitespace-nowrap px-3 py-3 font-mono text-xs">
-                          {new Date(event.timestamp).toLocaleString(
-                            i18n.language,
-                          )}
-                        </td>
-                        <td className="px-3 py-3">
-                          <span className="block truncate">
-                            {event.appType
-                              ? getAppLabel(event.appType)
-                              : t("securityEvents.notRecorded")}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3">
-                          <span
-                            className="block truncate"
-                            title={securityEventName(t, event)}
-                          >
-                            {securityEventName(t, event)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3">
-                          {securityEventRiskLabel(t, event.riskLevel)}
-                        </td>
-                        <td className="px-3 py-3">
-                          {securityEventResultLabel(t, event)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3 font-mono text-xs">
-                          {new Date(event.lastSeenAt).toLocaleString(
-                            i18n.language,
-                          )}
-                        </td>
-                        <td className="truncate px-3 py-3 font-mono">
-                          {event.triggerCount.toLocaleString(i18n.language)}
-                        </td>
-                        <td className="px-3 py-3 font-mono text-xs">
-                          <span
-                            className="block truncate"
-                            title={securityEventSessionId(event) || undefined}
-                          >
-                            {securityEventSessionId(event) ||
-                              t(
-                                event.eventType === "dlp"
-                                  ? "security.sessionUnknown"
-                                  : "securityEvents.notRecorded",
-                              )}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-xs">
-                          {securityEventOutboundLabel(t, event)}
-                        </td>
-                        <td className="px-3 py-3">
-                          {t(
-                            event.eventType === "dlp"
-                              ? "securityEvents.dlp"
-                              : "securityEvents.toolRisk",
-                          )}
-                        </td>
-                        <td>
-                          <ChevronRight className="h-4 w-4" />
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-            {tableLoading ? (
-              <SecurityEventsLoading />
-            ) : status ? (
-              <div
-                role="status"
-                className="flex flex-col items-center justify-center px-4 py-16 text-center text-sm"
-              >
-                {isError ? (
-                  t("securityEvents.queryError")
-                ) : (
-                  <>
-                    <FileText className="mb-2 h-6 w-6 text-muted-foreground" />
-                    {t("security.noFilteredRecords")}
-                  </>
-                )}
+                        >
+                          {key ? t(key) : null}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60 text-sm">
+                    {!tableLoading &&
+                      !isError &&
+                      eventsResult?.items.map((event) => (
+                        <tr
+                          key={event.key}
+                          data-testid={`security-event-${event.key}`}
+                          tabIndex={0}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => setSelected(event)}
+                          onKeyDown={(key) => {
+                            if (key.key === "Enter" || key.key === " ") {
+                              key.preventDefault();
+                              setSelected(event);
+                            }
+                          }}
+                        >
+                          <td className="sc-event-time">
+                            {new Date(event.timestamp).toLocaleString(
+                              i18n.language,
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="block truncate">
+                              {event.appType
+                                ? getAppLabel(event.appType)
+                                : t("securityEvents.notRecorded")}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span
+                              className="block truncate"
+                              title={securityEventName(t, event)}
+                            >
+                              {securityEventName(t, event)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            {securityEventRiskLabel(t, event.riskLevel)}
+                          </td>
+                          <td className="px-3 py-3">
+                            {securityEventResultLabel(t, event)}
+                          </td>
+                          <td className="sc-event-time">
+                            {new Date(event.lastSeenAt).toLocaleString(
+                              i18n.language,
+                            )}
+                          </td>
+                          <td className="truncate px-3 py-3 font-mono">
+                            {event.triggerCount.toLocaleString(i18n.language)}
+                          </td>
+                          <td className="px-3 py-3 font-mono text-xs">
+                            <span
+                              className="block truncate"
+                              title={securityEventSessionId(event) || undefined}
+                            >
+                              {securityEventSessionId(event) ||
+                                t(
+                                  event.eventType === "dlp"
+                                    ? "security.sessionUnknown"
+                                    : "securityEvents.notRecorded",
+                                )}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-xs">
+                            {securityEventOutboundLabel(t, event)}
+                          </td>
+                          <td className="px-3 py-3">
+                            {t(
+                              event.eventType === "dlp"
+                                ? "securityEvents.dlp"
+                                : "securityEvents.toolRisk",
+                            )}
+                          </td>
+                          <td>
+                            <ChevronRight className="h-4 w-4" />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
               </div>
-            ) : null}
+              {tableLoading ? (
+                <SecurityEventsLoading />
+              ) : status ? (
+                <div
+                  role="status"
+                  className="flex flex-col items-center justify-center px-4 py-16 text-center text-sm"
+                >
+                  {isError ? (
+                    t("securityEvents.queryError")
+                  ) : (
+                    <>
+                      <FileText className="mb-2 h-6 w-6 text-muted-foreground" />
+                      {t("security.noFilteredRecords")}
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+        {(isError || summary.isError || toolCallsCount.isError) && (
+          <Button variant="outline" disabled={tableLoading} onClick={refresh}>
+            {t("securityEvents.retry")}
+          </Button>
+        )}
+        {!isLoading && !isError && eventsResult && eventsResult.total > 0 && (
+          <div className="sc-pagination">
+            <span>
+              {t("security.logPagination", {
+                total: eventsResult.total,
+                page,
+                pages: Math.max(1, Math.ceil(eventsResult.total / pageSize)),
+              })}
+            </span>
+            <div className="sc-event-page-buttons">
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={t("security.prevPage")}
+                title={t("security.prevPage")}
+                disabled={isRefreshing || page <= 1}
+                onClick={() => onPageChange(page - 1)}
+              >
+                <ChevronLeft aria-hidden="true" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={t("security.nextPage")}
+                title={t("security.nextPage")}
+                disabled={isRefreshing || page * pageSize >= eventsResult.total}
+                onClick={() => onPageChange(page + 1)}
+              >
+                <ChevronRight aria-hidden="true" />
+              </Button>
+            </div>
           </div>
         )}
       </div>
-      {(isError || summary.isError || toolCallsCount.isError) && (
-        <Button variant="outline" disabled={tableLoading} onClick={refresh}>
-          {t("securityEvents.retry")}
-        </Button>
-      )}
-      {!isLoading && !isError && eventsResult && eventsResult.total > 0 && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            {t("security.logPagination", {
-              total: eventsResult.total,
-              page,
-              pages: Math.max(1, Math.ceil(eventsResult.total / pageSize)),
-            })}
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isRefreshing || page <= 1}
-              onClick={() => onPageChange(page - 1)}
-            >
-              {t("security.prevPage")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isRefreshing || page * pageSize >= eventsResult.total}
-              onClick={() => onPageChange(page + 1)}
-            >
-              {t("security.nextPage")}
-            </Button>
-          </div>
-        </div>
-      )}
       <SecurityEventDetailsDialog
         event={selected}
         onClose={() => setSelected(null)}

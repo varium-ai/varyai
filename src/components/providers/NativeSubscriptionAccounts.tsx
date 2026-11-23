@@ -375,7 +375,7 @@ export function NativeSubscriptionAccounts({
                   readOnly
                   value={flow.url}
                   aria-label={t("nativeSubscription.authorizationUrl")}
-                  className="w-full font-mono text-xs"
+                  className="w-full font-mono text-[13px]"
                   onFocus={(event) => event.target.select()}
                 />
                 <Button

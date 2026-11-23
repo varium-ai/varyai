@@ -245,7 +245,7 @@ const AgentsDefaultsPanel: React.FC = () => {
                   setPrimaryModel(v === UNSET_SENTINEL ? "" : v)
                 }
               >
-                <SelectTrigger className="font-mono text-xs">
+                <SelectTrigger className="font-mono text-[13px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -291,7 +291,7 @@ const AgentsDefaultsPanel: React.FC = () => {
                         )
                       }
                     >
-                      <SelectTrigger className="font-mono text-xs flex-1">
+                      <SelectTrigger className="font-mono text-[13px] flex-1">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -350,7 +350,7 @@ const AgentsDefaultsPanel: React.FC = () => {
               value={workspace}
               onChange={(e) => setWorkspace(e.target.value)}
               placeholder="~/projects"
-              className="font-mono text-xs"
+              className="font-mono text-[13px]"
             />
           </div>
 
@@ -363,7 +363,7 @@ const AgentsDefaultsPanel: React.FC = () => {
               value={timeout}
               onChange={(e) => setTimeout_(e.target.value)}
               placeholder="300"
-              className="font-mono text-xs"
+              className="font-mono text-[13px]"
             />
           </div>
 
@@ -376,7 +376,7 @@ const AgentsDefaultsPanel: React.FC = () => {
               value={contextTokens}
               onChange={(e) => setContextTokens(e.target.value)}
               placeholder="200000"
-              className="font-mono text-xs"
+              className="font-mono text-[13px]"
             />
           </div>
 
@@ -389,7 +389,7 @@ const AgentsDefaultsPanel: React.FC = () => {
               value={maxConcurrent}
               onChange={(e) => setMaxConcurrent(e.target.value)}
               placeholder="4"
-              className="font-mono text-xs"
+              className="font-mono text-[13px]"
             />
           </div>
         </div>

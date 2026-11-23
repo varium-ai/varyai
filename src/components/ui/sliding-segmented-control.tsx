@@ -58,7 +58,7 @@ export function SlidingSegmentedControl<Value extends string>({
         aria-hidden="true"
         data-testid={indicatorTestId}
         className={cn(
-          "pointer-events-none absolute z-0 rounded-md shadow-sm transition-transform duration-300 ease-out motion-reduce:transition-none",
+          "pointer-events-none absolute z-0 rounded-sm transition-transform duration-300 ease-out motion-reduce:transition-none",
           indicatorInset === "padded" ? "inset-y-1 left-1" : "inset-0",
           indicatorVariant === "primary"
             ? "bg-blue-500 dark:bg-blue-600 [:root[data-renderer=application]_&]:bg-primary"

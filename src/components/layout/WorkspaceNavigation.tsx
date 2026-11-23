@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Command,
@@ -23,13 +23,16 @@ const items = [
   ["providers", Component],
   ["stats", ChartColumn],
   ["security", ScanEye],
+  ["settings", Settings],
 ] as const;
 export function WorkspaceNavigation({
   view,
   onSelect,
+  footer,
 }: {
   view: WorkspaceView;
   onSelect: (view: WorkspaceView) => void;
+  footer?: ReactNode;
 }) {
   const { t, i18n } = useTranslation();
   const sidebar = useRef<HTMLElement>(null);
@@ -111,32 +114,24 @@ export function WorkspaceNavigation({
       </button>
       <nav>
         {items.map(([id, Icon]) => (
-          <button
-            key={id}
-            aria-label={t(`workspaceNav.${id}`)}
-            aria-current={view === id ? "page" : undefined}
-            title={t(`workspaceNav.${id}`)}
-            onClick={() => onSelect(id)}
-            className="workspace-nav-item"
-          >
-            <Icon aria-hidden="true" strokeWidth={1.75} />
-            <span>{t(`workspaceNav.${id}`)}</span>
-          </button>
+          <div className="workspace-nav-row" key={id}>
+            <button
+              aria-label={t(`workspaceNav.${id}`)}
+              aria-current={view === id ? "page" : undefined}
+              title={t(`workspaceNav.${id}`)}
+              onClick={() => onSelect(id)}
+              className="workspace-nav-item"
+            >
+              <Icon aria-hidden="true" strokeWidth={1.75} />
+              <span>{t(`workspaceNav.${id}`)}</span>
+            </button>
+            {id === "settings" && (
+              <UpdateBadge className="workspace-update-badge" />
+            )}
+          </div>
         ))}
       </nav>
-      <div className="workspace-settings-row">
-        <button
-          aria-label={t("workspaceNav.settings")}
-          aria-current={view === "settings" ? "page" : undefined}
-          title={t("workspaceNav.settings")}
-          className="workspace-nav-item workspace-settings"
-          onClick={() => onSelect("settings")}
-        >
-          <Settings aria-hidden="true" strokeWidth={1.75} />
-          <span>{t("workspaceNav.settings")}</span>
-        </button>
-        <UpdateBadge className="workspace-update-badge" />
-      </div>
+      {footer && <div className="workspace-sidebar-bottom">{footer}</div>}
     </aside>
   );
 }

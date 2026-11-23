@@ -111,7 +111,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
               {t("sessionManager.expandContent", {
                 defaultValue: "展开完整内容",
               })}
-              <span className="text-muted-foreground/60">
+              <span className="text-muted-foreground">
                 ({Math.round(message.content.length / 1000)}k)
               </span>
             </>

@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   act,
   fireEvent,
@@ -168,11 +169,11 @@ describe("tool list sorting", () => {
     localStorage.removeItem(storageKey);
   });
 
-  it("reorders from the left handle, saves the order and restores it on remount", async () => {
+  it("reorders from the trailing handle, saves the order and restores it on remount", async () => {
     const { unmount } = mount();
     await screen.findByRole("article", { name: "apps.codex" });
     const codex = screen.getByRole("article", { name: "apps.codex" });
-    expect(codex.firstElementChild).toBe(handle("codex"));
+    expect(codex.lastElementChild).toBe(handle("codex"));
     drag("codex", 144, 48);
     fireEvent.pointerUp(document, { clientX: 12, clientY: 48 });
     await waitFor(() =>
@@ -430,7 +431,7 @@ describe("desktop Agent directory", () => {
         const update = harness.getByRole("button", {
           name: "agentUpdates.update",
         });
-        expect(update.compareDocumentPosition(version)).toBe(
+        expect(version.compareDocumentPosition(update)).toBe(
           Node.DOCUMENT_POSITION_FOLLOWING,
         );
         for (const [index, app] of APP_IDS.entries()) {
@@ -1679,14 +1680,14 @@ describe("Agent connections", () => {
       const select = within(row).getByRole("combobox", {
         name: "doubaowork.checkin.account",
       });
-      fireEvent.change(select, { target: { value: "second" } });
+      selectAppOption(select, "second");
       expect(trigger).toHaveAttribute("data-complete", "false");
       expect(trigger).toHaveTextContent("agentRewards.manualLabel");
       expect(trigger).not.toHaveTextContent("dailyCheckin.todayReward");
       fireEvent.click(trigger);
       fireEvent.click(trigger);
       expect(select).toHaveValue("second");
-      fireEvent.change(select, { target: { value: "first" } });
+      selectAppOption(select, "first");
       expect(trigger).toHaveAttribute("data-complete", "true");
       expect(trigger).toHaveTextContent("dailyCheckin.todayReward");
       expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
@@ -2118,9 +2119,7 @@ describe("Agent connections", () => {
               : "agentRewards.title",
       });
       if (app === "workbuddy")
-        fireEvent.change(within(panel).getByRole("combobox"), {
-          target: { value: "auto" },
-        });
+        selectAppOption(within(panel).getByRole("combobox"), "auto");
       fireEvent.click(within(panel).getByRole("switch"));
       await waitFor(() =>
         expect(trigger).toHaveAccessibleName(

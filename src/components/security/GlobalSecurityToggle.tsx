@@ -14,8 +14,8 @@ export function GlobalSecurityToggle() {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   return (
-    <div className="space-y-2">
-      <label className="flex items-center gap-3 text-sm">
+    <div className="sc-audit-control">
+      <label className="sc-audit-label">
         {t("homeAudit.label")}
         <Switch
           checked={state.data?.enabled ?? false}
