@@ -77,7 +77,7 @@ export function DirectorySettings({
           <Input
             value={appConfigDir ?? resolvedDirs.appConfig ?? ""}
             placeholder={t("settings.browsePlaceholderApp")}
-            className="text-xs"
+            className="text-[13px]"
             onChange={(event) => onAppConfigChange(event.target.value)}
           />
           <Button
@@ -253,7 +253,7 @@ function DirectoryInput({
         <Input
           value={displayValue}
           placeholder={placeholder}
-          className="text-xs"
+          className="text-[13px]"
           onChange={(event) => onChange(event.target.value)}
         />
         <Button

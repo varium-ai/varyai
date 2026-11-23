@@ -87,6 +87,7 @@ export function rendererChunk(id: string): string | undefined {
   if (
     [
       "components/proxy/GatewayKeysPanel.tsx",
+      "components/proxy/gateway-keys.css",
       "components/proxy/ProxyPanel.tsx",
       "components/proxy/ClaudeDesktopRouteToggle.tsx",
       "components/providers/ProviderHealthBadge.tsx",

@@ -10,8 +10,8 @@
   --mp-line-2: #ececf0;
   --mp-fg: #1c1c21;
   --mp-fg-2: #4b4b53;
-  --mp-muted: #85858d;
-  --mp-faint: #b9b9c2;
+  --mp-muted: hsl(var(--secondary-foreground));
+  --mp-faint: hsl(var(--secondary-foreground));
   --mp-control: #63636b;
   --mp-edge: 0 1px 2px rgb(0 0 0 / 12%), 0 0 0 0.5px rgb(0 0 0 / 6%);
   --rt-card: var(--mp-card);
@@ -24,7 +24,6 @@
   --primary: 219 100% 60%;
   --ring: 219 100% 60%;
   --border: 240 10% 90%;
-  --muted-foreground: 240 3% 54%;
   color: var(--mp-fg);
   font: 400 13px/1.4 var(--mp-font);
   -webkit-font-smoothing: antialiased;
@@ -39,13 +38,12 @@
   --mp-line-2: #2c2c32;
   --mp-fg: #ededf1;
   --mp-fg-2: #b9b9c1;
-  --mp-muted: #8b8b94;
-  --mp-faint: #56565f;
+  --mp-muted: hsl(var(--muted-foreground));
+  --mp-faint: hsl(var(--muted-foreground));
   --mp-control: #a1a1aa;
   --primary: 219 100% 74%;
   --ring: 219 100% 74%;
   --border: 240 6% 21%;
-  --muted-foreground: 240 4% 56%;
 }
 .rt-create-dialog.rt-form-theme[role="dialog"] {
   width: min(880px, calc(100vw - 48px));
@@ -186,15 +184,15 @@
   .rt-group-form
   :is(input:not([type="checkbox"], [type="radio"]), select, textarea) {
   min-width: 0;
-  height: var(--compact-control-height);
+  height: var(--control-height);
   margin: 0;
-  padding: 0 9px;
+  padding: 0 12px;
   border: 1px solid var(--mp-line);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   outline: none;
   background: var(--mp-card);
   color: var(--mp-fg);
-  font: 400 12.5px/1.4 var(--mp-font);
+  font: 400 var(--control-font-size) / var(--control-line-height) var(--mp-font);
   box-shadow: none;
 }
 .rt-group-form input.rg-input {
@@ -287,17 +285,16 @@
   background: var(--mp-pill);
 }
 .rt-form-theme button.rg-primary {
-  background: var(--mp-accent);
+  background: var(--mp-action);
   color: #fff;
   font-weight: 500;
 }
 .rt-form-theme button.rg-primary:hover:not(:disabled) {
-  background: var(--mp-accent);
+  background: var(--primary-fill-hover);
   color: #fff;
-  filter: brightness(1.08);
 }
 .dark .rt-form-theme button.rg-primary {
-  color: #14142a;
+  color: #fff;
 }
 .rt-form-theme button:disabled {
   opacity: 0.45;
@@ -856,7 +853,7 @@
 .rt-group-form .rt-model-chip.is-selected {
   border-color: color-mix(in srgb, var(--mp-accent) 48%, transparent);
   background: color-mix(in srgb, var(--mp-accent) 9%, var(--mp-card-2));
-  color: var(--mp-action-text);
+  color: var(--mp-link);
 }
 .rt-group-form .rt-model-chip > input {
   position: absolute;

@@ -413,7 +413,7 @@ export function ProviderCard({
               type="button"
               className={cn(
                 "-ml-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing p-1.5",
-                "text-muted-foreground/50 hover:text-muted-foreground transition-colors",
+                "text-muted-foreground hover:text-muted-foreground transition-colors",
                 dragHandleProps.isDragging && "cursor-grabbing",
               )}
               aria-label={t("provider.dragHandle")}

@@ -1,10 +1,10 @@
 .security-center {
   container-type: inline-size;
   width: 100%;
-  max-width: var(--workspace-page-max-width, 1232px);
+  max-width: var(--workspace-page-max-width);
   margin-inline: auto;
-  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px)
-    32px;
+  padding: calc(var(--workspace-page-top, 24px) + 8px)
+    var(--workspace-page-gutter) 32px;
   color: hsl(var(--foreground));
 }
 .sc-header,
@@ -20,26 +20,33 @@
   flex: 1 1 290px;
   min-width: 0;
 }
-.sc-tab-bar {
-  margin-top: var(--workspace-section-gap);
-}
 .sc-surface {
   min-width: 0;
   border: 1px solid hsl(var(--border));
-  border-radius: 10px;
+  border-radius: var(--panel-radius);
   background: hsl(var(--card));
 }
-.sc-metric {
-  padding: 14px 16px;
-  background: var(--mp-list-bg, hsl(var(--card)));
+.sc-events-panel {
+  display: grid;
+  gap: var(--workspace-module-gap);
+}
+.sc-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.sc-metrics > * + * {
+  border-left: 1px solid hsl(var(--border));
 }
 .sc-summary {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 4px 16px;
+  font-size: var(--supporting-text-size);
+  line-height: var(--supporting-text-line-height);
   color: hsl(var(--muted-foreground));
-  font-size: 12px;
+  padding: 8px 16px;
+  border-top: 1px solid hsl(var(--border));
 }
 .sc-view-picker {
   display: inline-flex;
@@ -49,13 +56,29 @@
   border-radius: 8px;
   background: hsl(var(--muted));
   padding: 3px;
+  border: 1px solid hsl(var(--border));
+}
+.sc-record-controls {
+  display: grid;
+  gap: 12px;
+  padding: 12px var(--list-padding-inline);
+  border-bottom: 1px solid hsl(var(--border));
+}
+.sc-record-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.sc-view-picker button {
+  height: 32px;
 }
 .sc-filters {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(110px, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 .sc-rule-actions {
   display: flex;
@@ -89,10 +112,10 @@
 }
 .sc-panel-header {
   border-bottom: 1px solid hsl(var(--border));
-  padding: 14px 18px;
+  padding: 16px var(--list-padding-inline);
 }
 .security-center .sc-surface th {
-  height: 38px;
+  height: var(--table-header-height);
   font-size: 12px;
   font-weight: 500;
   color: hsl(var(--secondary-foreground));
@@ -114,7 +137,201 @@
     white-space: normal;
     padding-inline: 6px;
   }
-  .sc-metric {
-    padding: 10px;
+  .sc-metrics > .security-metric {
+    padding: 8px 10px;
   }
+  .sc-record-controls {
+    padding-inline: 12px;
+  }
+}
+
+.security-center .sc-page-title {
+  font-family: var(--page-title-font);
+  font-size: var(--page-title-size);
+  font-weight: var(--page-title-weight);
+  line-height: var(--page-title-line-height);
+}
+
+.sc-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.sc-filters > * {
+  min-width: 0;
+}
+.sc-tab-bar {
+  margin-block: var(--workspace-module-gap);
+}
+.sc-header {
+  align-items: flex-start;
+}
+.sc-header > div > p {
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 20px;
+}
+.sc-header-action {
+  flex: none;
+}
+.sc-audit-control {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--control-radius);
+  background: hsl(var(--card));
+}
+.sc-audit-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 40px;
+  padding: 0 12px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.sc-audit-control:hover {
+  border-color: var(--border-strong);
+}
+.sc-audit-control:has(button[data-state="checked"]) {
+  border-color: color-mix(in srgb, hsl(var(--primary)) 30%, hsl(var(--border)));
+  background: var(--row-hover);
+}
+.sc-audit-control > [role="alert"] {
+  padding: 0 12px 8px;
+}
+.security-center .sc-surface th,
+.security-center .sc-surface td {
+  padding-inline: var(--list-padding-inline);
+}
+.security-center .sc-surface th {
+  background: hsl(var(--card));
+}
+.sc-rule-actions {
+  gap: var(--list-action-gap);
+}
+.security-center .sc-surface td {
+  height: var(--table-row-height);
+}
+
+.sc-events-directory {
+  overflow: hidden;
+}
+.sc-events-directory > [aria-busy] > .sc-surface {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+:is(.security-center .sc-surface, .sc-policy-table) table th {
+  height: var(--table-header-height);
+  padding: 0 16px;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: left;
+  vertical-align: middle;
+}
+:is(.security-center .sc-surface, .sc-policy-table) table td {
+  height: var(--table-row-height);
+  padding: 10px 16px;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  vertical-align: middle;
+}
+:is(.security-center .sc-surface, .sc-policy-table) table thead tr {
+  border-bottom: 1px solid hsl(var(--border));
+}
+:is(.security-center .sc-surface, .sc-policy-table) table tbody tr {
+  border-bottom-width: 0;
+}
+:is(.security-center .sc-surface, .sc-policy-table) table tbody tr + tr {
+  border-top: 1px solid hsl(var(--border));
+}
+:is(.security-center .sc-surface, .sc-policy-table)
+  table
+  td
+  :is(.text-xs, .text-sm) {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+}
+:is(.security-center .sc-surface, .sc-policy-table)
+  table
+  td
+  .text-muted-foreground {
+  font-size: 12px;
+  line-height: 18px;
+}
+.security-center table .sc-event-time {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.security-center table .sc-table-status {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+}
+.security-center table td:last-child > .flex {
+  gap: var(--list-action-gap);
+}
+.sc-rule-copy > div:first-child {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+}
+.sc-pagination {
+  display: flex;
+  min-height: 64px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding: 16px;
+  border-top: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.sc-pagination > .flex {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sc-event-page-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sc-pagination button {
+  height: 32px;
+  border-radius: 6px;
+  padding-inline: 12px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.sc-pagination .sc-event-page-buttons button {
+  padding-inline: 0;
+}
+.sc-pagination-end {
+  justify-content: flex-end;
+}
+@container (max-width: 620px) {
+  .sc-pagination {
+    align-items: flex-start;
+  }
+}
+
+:is(.security-center .sc-surface, .sc-policy-table) table td[colspan] {
+  text-align: center;
 }

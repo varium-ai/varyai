@@ -2059,6 +2059,17 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         {
             match event {
+                RunEvent::Ready => {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        use tauri::window::{Effect, EffectsBuilder};
+
+                        if let Err(error) = window.set_effects(
+                            EffectsBuilder::new().effect(Effect::Sidebar).build(),
+                        ) {
+                            log::warn!("Unable to apply the workspace sidebar material: {error}");
+                        }
+                    }
+                }
                 // macOS 在 Dock 图标被点击并重新激活应用时会触发 Reopen 事件，这里手动恢复主窗口
                 RunEvent::Reopen { .. } => {
                     if let Some(window) = app_handle.get_webview_window("main") {

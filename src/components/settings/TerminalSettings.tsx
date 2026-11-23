@@ -96,7 +96,7 @@ export function TerminalSettings({ value, onChange }: TerminalSettingsProps) {
       <Select value={currentValue} onValueChange={onChange}>
         <SelectTrigger
           aria-label={t("settings.terminal.title")}
-          className="h-8 w-auto min-w-32 gap-3"
+          className="h-[var(--select-height)] w-auto min-w-32 gap-3"
         >
           <SelectValue />
         </SelectTrigger>

@@ -9,14 +9,16 @@
 .vary-dialog-surface[role="dialog"] {
   width: calc(100% - 32px);
   max-height: min(90dvh, calc(100dvh - 48px));
-  border: 1px solid var(--mp-line);
-  border-radius: var(--radius);
+  border: 1px solid hsl(var(--border));
+
   background: var(--mp-card);
   color: var(--mp-fg);
-  box-shadow: 0 8px 32px rgb(15 23 42 / 4%);
+
   font-family: var(--mp-font);
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgb(39 52 67 / 8%);
 }
 .vary-dialog-surface:focus {
   outline: none;
@@ -31,17 +33,20 @@
 }
 .vary-dialog-surface .vary-dialog-title {
   color: var(--mp-fg);
-  font-size: 15px;
-  line-height: 1.5;
+
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
 }
 .vary-dialog-surface .vary-dialog-description {
   max-height: 45dvh;
   overflow-y: auto;
   color: var(--mp-fg-2);
-  font-size: 13px;
-  line-height: 1.7;
+
   white-space: pre-line;
   overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 20px;
 }
 .vary-dialog-footer > button {
   min-height: var(--compact-control-height);
@@ -64,10 +69,10 @@
   box-shadow: none;
 }
 .vary-app-dialog input:not([type="checkbox"], [type="radio"], [type="range"]) {
-  height: var(--compact-control-height);
+  height: var(--control-height);
 }
 .vary-app-dialog select {
-  height: var(--compact-control-height);
+  height: var(--control-height);
 }
 .vary-app-dialog :is(input, select, textarea):focus-visible {
   border-color: var(--mp-accent);
@@ -99,9 +104,15 @@
 @media (max-width: 480px) {
   .vary-dialog-surface[role="dialog"] {
     max-height: calc(100dvh - 32px);
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgb(39 52 67 / 8%);
   }
   .vary-dialog-footer > button {
     white-space: normal;
     overflow-wrap: anywhere;
   }
+}
+
+.dark .vary-dialog-surface[role="dialog"] {
+  box-shadow: var(--floating-shadow);
 }

@@ -84,8 +84,8 @@ export function ToolRiskPolicyChangesPanel({
     <section
       className={
         onClose
-          ? "flex min-h-0 flex-1 flex-col bg-card"
-          : "rounded-2xl border border-border/90 bg-card shadow-sm"
+          ? "sc-policy-table flex min-h-0 flex-1 flex-col bg-card"
+          : "sc-policy-table rounded-2xl border border-border/90 bg-card shadow-sm"
       }
       aria-label={t(key("title"))}
     >
@@ -226,7 +226,7 @@ export function ToolRiskPolicyChangesPanel({
           </Table>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-between border-t border-border/80 px-5 py-3">
+      <div className="sc-pagination shrink-0">
         <span className="text-xs text-muted-foreground">
           {t(key("page"), { page: offset / PAGE_SIZE + 1 })}
         </span>

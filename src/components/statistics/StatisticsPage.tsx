@@ -2,6 +2,7 @@ import "./statistics-page.css";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { SecurityActivitySummary } from "@/components/security/SecurityActivitySummary";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { useSettings } from "@/hooks/useSettings";
@@ -52,13 +53,9 @@ export function StatisticsPage({ onOpenSecurity }: StatisticsPageProps) {
           <p>{t("usage.subtitle")}</p>
         </div>
         {onOpenSecurity && (
-          <button
-            className="stats-security-link"
-            onClick={onOpenSecurity}
-            type="button"
-          >
+          <Button variant="outline" onClick={onOpenSecurity} type="button">
             {t("securityStats.viewLogs")}
-          </button>
+          </Button>
         )}
       </header>
       <SecurityActivitySummary />

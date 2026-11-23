@@ -1,3 +1,4 @@
+import { selectAppOption, inspectAppOption } from "../utils/appSelect";
 import {
   act,
   fireEvent,
@@ -51,7 +52,10 @@ describe("reusable connection presets", () => {
     ]);
     const apply = vi.fn();
     render(<ConnectionPresetPicker onApply={apply} current={fixture} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -92,7 +96,10 @@ describe("reusable connection presets", () => {
         current={{ ...fixture, name: ` ${fixture.name.toUpperCase()} ` }}
       />,
     );
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -121,7 +128,10 @@ describe("reusable connection presets", () => {
       })),
     );
     render(<ConnectionPresetPicker onApply={vi.fn()} />);
-    await screen.findByRole("option", { name: "Fixture 6" });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      "Fixture 6",
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -134,7 +144,10 @@ describe("reusable connection presets", () => {
   });
   it("starts a visibly empty draft and focuses its name when adding a preset", async () => {
     render(<ConnectionPresetPicker onApply={vi.fn()} current={fixture} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -172,7 +185,10 @@ describe("reusable connection presets", () => {
       { ...fixture, apiFormat: "openai_responses" },
     ]);
     render(<ConnectionPresetPicker onApply={vi.fn()} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -194,7 +210,7 @@ describe("reusable connection presets", () => {
     );
     const protocol = screen.getByLabelText("providerForm.apiFormat");
     expect(protocol).toHaveValue("openai_responses");
-    fireEvent.change(protocol, { target: { value: "openai_chat" } });
+    selectAppOption(protocol, "openai_chat");
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.save" }),
     );
@@ -221,7 +237,10 @@ describe("reusable connection presets", () => {
     ]);
     const apply = vi.fn();
     render(<ConnectionPresetPicker onApply={apply} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -272,11 +291,14 @@ describe("reusable connection presets", () => {
       />,
     );
     expect(
-      await screen.findByRole("option", { name: new RegExp(fixture.name) }),
-    ).toBeDisabled();
-    fireEvent.change(
+      await inspectAppOption(
+        screen.getByRole("combobox", { name: "connectionPresets.label" }),
+        new RegExp(fixture.name),
+      ),
+    ).toHaveAttribute("data-disabled");
+    selectAppOption(
       screen.getByRole("combobox", { name: "connectionPresets.label" }),
-      { target: { value: fixture.id } },
+      fixture.id,
     );
     expect(apply).not.toHaveBeenCalled();
   });
@@ -296,7 +318,10 @@ describe("reusable connection presets", () => {
     const draft = screen.getByRole("textbox", { name: "Provider draft" });
     await user.clear(draft);
     await user.type(draft, "Unsaved provider name");
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     const manage = screen.getByRole("button", {
       name: "connectionPresets.manage",
     });
@@ -330,12 +355,15 @@ describe("reusable connection presets", () => {
   it("only fills credentials when explicitly selected and does not expose keys in the menu", async () => {
     const apply = vi.fn();
     render(<ConnectionPresetPicker onApply={apply} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     expect(apply).not.toHaveBeenCalled();
     expect(screen.queryByText(fixture.apiKey)).not.toBeInTheDocument();
-    fireEvent.change(
+    selectAppOption(
       screen.getByRole("combobox", { name: "connectionPresets.label" }),
-      { target: { value: fixture.id } },
+      fixture.id,
     );
     expect(apply).toHaveBeenCalledWith(fixture);
   });
@@ -348,7 +376,10 @@ describe("reusable connection presets", () => {
         <ConnectionPresetPicker onApply={apply} />
       </form>,
     );
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -391,10 +422,13 @@ describe("reusable connection presets", () => {
   it("edits and deletes a preset without updating previously applied fields", async () => {
     const apply = vi.fn();
     render(<ConnectionPresetPicker onApply={apply} />);
-    await screen.findByRole("option", { name: fixture.name });
-    fireEvent.change(
+    await inspectAppOption(
       screen.getByRole("combobox", { name: "connectionPresets.label" }),
-      { target: { value: fixture.id } },
+      fixture.name,
+    );
+    selectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.id,
     );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
@@ -447,7 +481,10 @@ describe("reusable connection presets", () => {
   it("cancels deletion without changing the preset or the unsaved draft", async () => {
     const user = userEvent.setup();
     render(<ConnectionPresetPicker onApply={vi.fn()} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     await user.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -493,7 +530,10 @@ describe("reusable connection presets", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionPresetPicker onApply={vi.fn()} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     await user.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -545,7 +585,10 @@ describe("reusable connection presets", () => {
       new Error("private delete detail"),
     );
     render(<ConnectionPresetPicker onApply={vi.fn()} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -582,7 +625,10 @@ describe("reusable connection presets", () => {
       new Error("private error detail"),
     );
     render(<ConnectionPresetPicker onApply={vi.fn()} />);
-    await screen.findByRole("option", { name: fixture.name });
+    await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.manage" }),
     );
@@ -600,8 +646,11 @@ describe("reusable connection presets", () => {
     expect(screen.queryByText("private error detail")).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("option", { name: fixture.name, hidden: true }),
-    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "common.close" }));
+    const retained = await inspectAppOption(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      fixture.name,
+    );
+    expect(retained).toHaveTextContent(fixture.name);
   });
 });

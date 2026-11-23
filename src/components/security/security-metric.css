@@ -1,0 +1,27 @@
+.security-metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 12px var(--list-padding-inline);
+}
+.security-metric dt {
+  flex: 1;
+  color: hsl(var(--muted-foreground));
+  font-size: var(--supporting-text-size);
+  font-weight: 500;
+  line-height: var(--supporting-text-line-height);
+}
+.security-metric dd {
+  margin-top: 6px;
+  color: hsl(var(--link-foreground));
+  font-size: 24px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 32px;
+}
+.security-metric[data-metric="protectiveBlocked"] dd {
+  color: hsl(var(--destructive));
+}
+.security-metric[data-metric="warnings"] dd {
+  color: var(--warning);
+}

@@ -1169,7 +1169,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "Show profile switcher",
-      "showProfileSwitcherDescription": "Show the profile switcher in the main window bottom bar"
+      "showProfileSwitcherDescription": "Show the profile switcher at the bottom of the main sidebar"
     },
     "skillStorage": {
       "title": "Skill Storage Location",
@@ -2852,6 +2852,7 @@
     "manage": "Manage profiles…",
     "manageTitle": "Manage Profiles",
     "manageDescription": "New profiles do not save automatically. “Refresh snapshot from current configuration” replaces the profile with all currently selected, configured agents and their current configuration. Legacy single-tool profiles still save automatically when switching.",
+    "name": "Profile name",
     "namePlaceholder": "e.g. Work, Personal",
     "rename": "Rename",
     "noSnapshotForScope": "Not saved for this app yet",

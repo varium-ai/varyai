@@ -158,7 +158,7 @@ function ModelCombobox({
           type="button"
           role="combobox"
           aria-expanded={open}
-          className="flex flex-1 h-8 items-center justify-between whitespace-nowrap rounded-md border border-border-default bg-background px-3 py-1 text-sm shadow-sm ring-offset-background focus:outline-none focus-visible:outline-none focus:border-border-default focus-visible:border-border-default focus:ring-0 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex flex-1 h-[var(--select-height)] items-center justify-between whitespace-nowrap rounded-sm border border-border-default bg-background px-3 py-1 text-[13px] leading-5 shadow-sm ring-offset-background focus:outline-none focus-visible:outline-none focus:border-border-default focus-visible:border-border-default focus:ring-0 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className={cn("truncate", !value && "text-muted-foreground")}>
             {selectedLabel || placeholderText}
@@ -496,7 +496,7 @@ export function OmoFormFields({
         }
       >
         <SelectTrigger
-          className="w-28 min-w-0 h-8 overflow-hidden text-xs shrink-0"
+          className="w-28 min-w-0 h-[var(--select-height)] overflow-hidden text-[13px] shrink-0"
           title={selectedVariantLabel}
         >
           <span className="min-w-0 flex-1 truncate text-left">

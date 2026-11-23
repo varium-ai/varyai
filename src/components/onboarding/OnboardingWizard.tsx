@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
@@ -552,19 +553,17 @@ export function OnboardingWizard({
                 <label htmlFor="onboarding-protocol">
                   {t("onboarding.protocol")}
                 </label>
-                <select
+                <OptionSelect
                   id="onboarding-protocol"
                   value={format}
                   disabled={locked}
-                  onChange={(event) =>
-                    setFormat(event.target.value as ApiFormat)
-                  }
+                  onValueChange={(value) => setFormat(value as ApiFormat)}
                 >
                   <option value="openai_chat">OpenAI Chat Completions</option>
                   <option value="openai_responses">OpenAI Responses</option>
                   <option value="anthropic">Anthropic Messages</option>
                   <option value="gemini_native">Gemini API</option>
-                </select>
+                </OptionSelect>
                 <Button
                   type="submit"
                   className="ob-connect"

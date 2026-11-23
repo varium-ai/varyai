@@ -251,7 +251,7 @@ export function UniversalProviderPanel() {
               defaultValue: "还没有统一供应商",
             })}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground/70">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t("universalProvider.emptyHint", {
               defaultValue: "点击下方「添加统一供应商」按钮创建一个",
             })}

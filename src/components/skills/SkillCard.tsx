@@ -110,7 +110,7 @@ export function SkillCard({
       </CardHeader>
       {skill.description ? (
         <CardContent className="flex-1 pt-0">
-          <p className="text-sm text-muted-foreground/90 line-clamp-4 leading-relaxed">
+          <p className="text-sm text-muted-foreground line-clamp-4 leading-relaxed">
             {skill.description}
           </p>
         </CardContent>

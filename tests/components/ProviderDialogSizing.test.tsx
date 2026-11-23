@@ -21,7 +21,10 @@ it.each([true, false])(
   (sharedLast) => {
     render(
       <Dialog open>
-        <DialogContent className="mp-dialog pv-provider-dialog">
+        <DialogContent
+          id="fixture-provider-dialog"
+          className="mp-dialog pv-provider-dialog"
+        >
           <DialogTitle>Synthetic provider</DialogTitle>
           <DialogDescription>Provider form sizing fixture</DialogDescription>
         </DialogContent>

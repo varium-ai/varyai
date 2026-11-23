@@ -414,7 +414,7 @@ describe("SettingsPage Component", () => {
     const routing = screen.getByTestId("tab-routing");
     const content = screen.getByTestId("local-proxy-settings").parentElement;
     expect(content?.parentElement).toBe(routing);
-    expect(content).toHaveClass("space-y-4");
+    expect(content).toHaveClass("space-y-[var(--workspace-module-gap)]");
     expect(content).not.toHaveClass("p-5", "sm:p-6", "border", "rounded-2xl");
     expect(content).toContainElement(
       screen.getByTestId("intent-routing-panel"),

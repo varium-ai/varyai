@@ -1095,7 +1095,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "設定プロファイル切り替えを表示",
-      "showProfileSwitcherDescription": "メイン画面の下部に設定プロファイル切り替えを表示します"
+      "showProfileSwitcherDescription": "メイン画面のサイドバー下部に設定プロファイル切り替えを表示します"
     },
     "skillStorage": {
       "title": "スキル保存場所",
@@ -2778,6 +2778,7 @@
     "manage": "設定プロファイルを管理…",
     "manageTitle": "設定プロファイル管理",
     "manageDescription": "新しいプロファイルは自動保存されません。「現在の設定からスナップショットを更新」を押すと、現在管理対象として選択され、設定済みのすべての Agent と現在の設定でプロファイル全体を置き換えます。従来の単一ツールの設定プロファイルは切り替え時に自動保存されます。",
+    "name": "設定プロファイルの名前",
     "namePlaceholder": "例：仕事用、個人用",
     "rename": "名前を変更",
     "noSnapshotForScope": "このアプリ側は未保存",
