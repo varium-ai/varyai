@@ -5323,6 +5323,7 @@
     "groupDisabled": "未發佈至閘道",
     "refresh": "重新整理",
     "refreshHint": "從已儲存的模型目錄重新讀取路由群組。",
+    "refreshSuccess": "路由群組已重新整理",
     "syncModels": "同步模型",
     "syncModelsHint": "從已啟用的上游更新模型目錄；慢速上游逾時後沿用快取。",
     "syncModelsResult": "上游：已更新 {{updated}} 個，沿用快取 {{cached}} 個，暫時無法使用 {{unavailable}} 個。",

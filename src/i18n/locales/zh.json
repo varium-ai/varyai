@@ -5396,6 +5396,7 @@
     "groupDisabled": "未发布到网关",
     "refresh": "刷新",
     "refreshHint": "从已保存的模型目录重新读取路由组。",
+    "refreshSuccess": "路由组已刷新",
     "syncModels": "同步模型",
     "syncModelsHint": "从已启用的上游更新模型目录；慢上游超时后沿用缓存。",
     "syncModelsResult": "上游：已更新 {{updated}} 个，沿用缓存 {{cached}} 个，暂不可用 {{unavailable}} 个。",

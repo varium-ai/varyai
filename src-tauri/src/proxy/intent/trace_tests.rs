@@ -44,6 +44,29 @@ fn live_session_titles_are_exact_cached_and_excluded_from_history(
     Ok(())
 }
 
+#[test]
+fn live_session_titles_retry_a_missing_native_title_on_the_short_interval(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(Store::default());
+    let request = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
+    request.native_session("synthetic-native-session");
+    let initial = store.live_requests(store.snapshot(), |_| Vec::new());
+    assert!(serde_json::to_value(initial)?[0]
+        .get("sessionTitle")
+        .is_none());
+
+    // The native client may publish its title after the first snapshot.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let live = store.live_requests(store.snapshot(), |_| {
+        vec![("synthetic-native-session".into(), "Synthetic title".into())]
+    });
+    assert_eq!(
+        serde_json::to_value(live)?[0]["sessionTitle"],
+        "Synthetic title"
+    );
+    Ok(())
+}
+
 fn candidate() -> Candidate {
     Candidate {
         key_id: None,

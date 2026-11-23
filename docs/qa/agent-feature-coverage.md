@@ -2028,6 +2028,21 @@ applications. Native per-Agent acceptance remains pending on every platform.
 
 ## Routing list refresh and bounded catalog synchronization
 
+The November 23 renderer follow-up applies to the common Routing workspace
+used by every Agent listed below. Cached refresh confirms completion, and the
+classification deadline can remain empty while editing. Saving and trialing
+require a deadline in the existing supported range. The native adapters and
+stored deadline format stay on their existing paths on macOS and Windows.
+
+The same observation path rechecks missing native session titles on its
+two-second interval for every Agent with a native title reader. It still
+requires an exact Agent-scoped session match and excludes titles from history.
+The shared group executor applies model-entitlement fallback to requests from
+every Agent that can select an explicitly bound WorkBuddy China or WorkBuddy
+AI subscription. The regression covers both subscription types, a non-WorkBuddy
+provider, pinned continuations, a missing fallback and unrelated refusals.
+Native Agent and paid-account acceptance remain pending.
+
 Implementation assessment before the 2026-11-17 change: the Routing page has one
 shared entry for all Agents. A local list refresh must use cached catalogs;
 explicit model synchronization may fetch catalogs, with bounded concurrency and

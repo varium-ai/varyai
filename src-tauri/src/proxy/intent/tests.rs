@@ -1525,3 +1525,49 @@ fn colliding_upstream_ids_and_unknown_tool_types_are_not_rerouted() {
         )
         .is_err());
 }
+
+#[test]
+fn missing_workbuddy_model_entitlement_allows_only_an_unpinned_fallback() {
+    let entitlement = br#"{"error":{"code":"11158"}}"#;
+    for service in ["workbuddy", "workbuddy-ai", "github_copilot"] {
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            json!({"routingSubscription":{"provider":service,"accountId":"fixture"}}),
+            None,
+        );
+        assert_eq!(
+            retry_converted_rejection(&provider, 400, entitlement, None, true),
+            service != "github_copilot"
+        );
+        assert!(!retry_converted_rejection(
+            &provider,
+            400,
+            entitlement,
+            Some(0),
+            true
+        ));
+        assert!(!retry_converted_rejection(
+            &provider,
+            400,
+            entitlement,
+            None,
+            false
+        ));
+        assert!(!retry_converted_rejection(
+            &provider,
+            400,
+            br#"{"code":11133}"#,
+            None,
+            true
+        ));
+        assert!(!retry_converted_rejection(
+            &provider,
+            404,
+            entitlement,
+            None,
+            true
+        ));
+        assert!(retry_converted_rejection(&provider, 429, b"", None, false));
+    }
+}

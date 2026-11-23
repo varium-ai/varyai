@@ -5400,6 +5400,7 @@
     "groupDisabled": "Unpublished from gateway",
     "refresh": "Refresh",
     "refreshHint": "Reload routing groups from saved model catalogs.",
+    "refreshSuccess": "Routing groups refreshed",
     "syncModels": "Sync models",
     "syncModelsHint": "Fetch model catalogs from enabled upstreams. Slow upstreams retain their cached catalogs.",
     "syncModelsResult": "Upstreams: {{updated}} updated, {{cached}} using cache, {{unavailable}} unavailable.",

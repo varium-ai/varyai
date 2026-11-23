@@ -180,6 +180,10 @@ one model per supplier.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
+When a WorkBuddy subscription account explicitly reports that it lacks access
+to a selected model, an unpinned request can try the next eligible group
+member. Requests pinned to a destination retain the subscription error.
+
 In **Advanced settings → Rules**, select the information icon to see how match
 conditions work. Select **Add rule** beside it to start editing a rule. Each
 rule shows its preferred member and the fallback models in the order they will
@@ -214,7 +218,7 @@ Save closes the dialog after persistence succeeds. Failed saves retain the draft
 
 The provider-exclusion control opens a compact checklist below the discovery description. Select multiple providers without reopening it; changes save immediately. The panel scrolls when needed and stays within the window. Long provider names are truncated with the full name available on hover. Escape closes the panel and returns focus to the control.
 
-The automatic-discovery switch and provider-exclusion controls are temporarily hidden from the routing page. Their saved preferences remain independent of proxy activation and default to off when no preference exists. Opening or managing the list does not change an explicitly saved on or off preference. When enabled, the list derives enabled groups from explicitly registered global providers using their saved `modelCatalog.models[].model` entries and account-scoped official Codex model discovery caches. Selecting **Refresh** fetches official catalogs; refresh operations remain available with automatic creation off. Ordinary list reads never perform network discovery. No inference requests are made.
+The automatic-discovery switch and provider-exclusion controls are temporarily hidden from the routing page. Their saved preferences remain independent of proxy activation and default to off when no preference exists. Opening or managing the list does not change an explicitly saved on or off preference. When enabled, the list derives enabled groups from explicitly registered global providers using their saved `modelCatalog.models[].model` entries and account-scoped official Codex model discovery caches. **Refresh** reloads the saved list and confirms completion. **Sync models** fetches upstream catalogs and remains available with automatic creation off. Neither action runs inference.
 
 Registered executable upstreams participate, including available official and OAuth Codex accounts. Imported static Codex connections also contribute their explicitly selected TOML model without rewriting provider storage. An empty API model selection follows its cached vendor list; a nonempty saved selection remains authoritative. With automatic discovery on, entering Routing loads missing model lists off the forwarding path, with four concurrent catalog preparations and a five-minute UI freshness interval. Official accounts fetch their own visible models from the fixed ChatGPT Codex models endpoint, never from a public model list or another account. Opening a signed-in official provider with no cached models also loads the selected account's catalog. Missing login, fetch failure, and successful empty results have separate safe messages. These are model-list reads, not inference probes or automatic logins.
 

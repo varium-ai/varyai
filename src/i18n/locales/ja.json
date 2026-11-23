@@ -5322,6 +5322,7 @@
     "groupDisabled": "ゲートウェイに未公開",
     "refresh": "更新",
     "refreshHint": "保存済みのモデル一覧からルーティンググループを再読み込みします。",
+    "refreshSuccess": "ルーティンググループを更新しました",
     "syncModels": "モデルを同期",
     "syncModelsHint": "有効な接続先のモデル一覧を更新します。時間切れの場合はキャッシュを維持します。",
     "syncModelsResult": "接続先：更新 {{updated}} 件、キャッシュ使用 {{cached}} 件、利用不可 {{unavailable}} 件。",

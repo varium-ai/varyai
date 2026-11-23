@@ -239,7 +239,9 @@ is a directory. A regular-file ancestor remains unavailable on every platform,
 including Windows where that filesystem failure is reported as `NotFound`.
 Live request cards display the conversation title when a local client supplies
 an explicit identifier that matches a native title. The snapshot command reads
-title metadata on a blocking worker and caches matches briefly. Unmatched
+title metadata on a blocking worker and caches matches for 15 seconds.
+Missing titles are checked again after two seconds so new sessions can appear
+soon after the native client publishes their titles. Unmatched
 requests display the first eight characters of the scoped session digest.
 The matching key is scoped to the Agent and proxy runtime.
 

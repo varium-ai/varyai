@@ -2737,9 +2737,14 @@ async fn execute(
                     refused_models.insert((target.provider_id.clone(), target.model.clone()));
                     continue;
                 }
-                Err(super::ProxyError::UpstreamError { status, .. })
-                    if pinned.is_none()
-                        && matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504) =>
+                Err(super::ProxyError::UpstreamError { status, ref body })
+                    if retry_converted_rejection(
+                        upstream,
+                        status,
+                        body.as_deref().unwrap_or_default().as_bytes(),
+                        pinned,
+                        !attempts.is_empty(),
+                    ) =>
                 {
                     trace.step(trace::Kind::Rejected, Some(candidate), Some(status));
                     if status == 429 {
@@ -2747,9 +2752,11 @@ async fn execute(
                             .scheduling
                             .rate_limited(chrono::Utc::now().timestamp());
                     }
-                    target
-                        .scheduling
-                        .failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
+                    if status != 400 {
+                        target
+                            .scheduling
+                            .failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
+                    }
                     if matches!(status, 429 | 500 | 502 | 503 | 504) {
                         transient.push((candidate, index));
                     }
@@ -3352,6 +3359,22 @@ async fn execute(
     }
     fail(StatusCode::BAD_GATEWAY, "routing_candidates_unavailable")
 }
+
+fn retry_converted_rejection(
+    upstream: &crate::provider::Provider,
+    status: u16,
+    body: &[u8],
+    pinned: Option<usize>,
+    has_fallback: bool,
+) -> bool {
+    pinned.is_none()
+        && (matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
+            || (status == 400
+                && has_fallback
+                && super::native_subscription::rejection_code(upstream, status, body)
+                    == Some("routing_upstream_entitlement_missing")))
+}
+
 enum AttemptWait {
     Deadline,
 }
