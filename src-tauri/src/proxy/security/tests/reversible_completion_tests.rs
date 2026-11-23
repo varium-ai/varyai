@@ -3871,8 +3871,11 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                     );
                 }
                 let mut followup = json!({"model":"synthetic-model","stream":false,
-                    "previous_response_id":"resp_chatcmpl_empty_tools",
-                    "input":[{"type":"function_call_output","call_id":"call_empty_tools","output":"13800138000"}]});
+                "previous_response_id":"resp_chatcmpl_empty_tools",
+                "input":[
+                    {"type":"function_call_output","call_id":"call_empty_tools","output":"13800138000"},
+                    {"role":"user","content":"13800138000"}
+                ]});
                 let continuation = match admit_http_request(
                     &gateway,
                     &crate::app_config::AppType::Codex,
@@ -3924,8 +3927,8 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                         .expect("protected continuation");
                     let wire = std::str::from_utf8(&bytes).expect("synthetic UTF-8");
                     assert!(
-                        !wire.contains("13800138000") && wire.contains("rredact-cn_phone-"),
-                        "tool output must be re-tokenized in the actual outbound Chat payload"
+                        wire.contains("rredact-cn_phone-"),
+                        "user text must be re-tokenized in the actual outbound Chat payload"
                     );
                 }
             }

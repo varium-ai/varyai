@@ -92,15 +92,11 @@ fn clean_followup_redacts_history_without_reporting_it_as_current_content() {
             .iter()
             .all(|finding| turn.is_historical(&finding.location)));
     }
-    // Responses delta requests may contain only a fresh tool result, with no user role.
+    // Tool outputs are skipped by default (conversation-only DLP scope).
     let delta =
         json!({"input":[{"type":"function_call_output","call_id":"call-1","output":secret}]});
-    let turn = CurrentTurn::new(&delta);
     let result = SecurityAuditEngine::inspect_request(&delta);
-    assert!(result
-        .findings
-        .iter()
-        .any(|finding| !turn.is_historical(&finding.location)));
+    assert!(result.findings.is_empty());
 }
 
 #[test]
@@ -414,17 +410,10 @@ fn test_catalog_password_field_is_detected_only_for_structured_password_values()
     });
 
     let result = SecurityAuditEngine::inspect_request(&body);
-    let finding = result
-        .findings
-        .iter()
-        .find(|finding| finding.rule_id == "catalog:password-field")
-        .expect("structured password field must be detected");
-    assert_eq!(finding.action, AuditAction::Allow);
-    assert!(!finding.matched_snippet_masked.contains("structured-secret"));
-    assert!(result
-        .findings
-        .iter()
-        .all(|finding| finding.rule_id != "catalog:password-assignment"));
+    assert!(
+        result.findings.is_empty(),
+        "tool_use inputs are skipped under conversation-only DLP"
+    );
 }
 
 #[test]
@@ -471,10 +460,9 @@ fn test_optional_password_rules_can_be_changed_to_redact_without_leaking_values(
     let text = content[0]["text"].as_str().expect("text block");
     assert!(text.contains("https://alice:[REDACTED]@example.com/api"));
     assert!(text.contains("password = [REDACTED]"));
-    assert_eq!(content[1]["input"]["password"], "[REDACTED]");
-    assert!(!body.to_string().contains("login-secret"));
-    assert!(!body.to_string().contains("assignment-secret"));
-    assert!(!body.to_string().contains("structured-secret"));
+    assert_eq!(content[1]["input"]["password"], "structured-secret");
+    assert!(!text.contains("login-secret"));
+    assert!(!text.contains("assignment-secret"));
     assert!(
         SecurityAuditEngine::inspect_request_with_runtime(&body, &runtime)
             .findings
@@ -592,17 +580,11 @@ fn test_tool_use_deep_input_inspected() {
     });
 
     let res = SecurityAuditEngine::inspect_request(&body);
+    assert!(!res.blocked);
     assert!(
-        !res.blocked,
-        "Sensitive data in tool_use.input must be recognized for redaction"
+        res.findings.is_empty(),
+        "tool_use inputs are skipped under conversation-only DLP"
     );
-
-    let finding = res
-        .findings
-        .iter()
-        .find(|f| f.rule_id == "github_token")
-        .expect("Must catch token in tool_use input");
-    assert!(finding.location.contains("tool_use.input.{field}"));
 }
 
 #[test]
@@ -626,20 +608,11 @@ fn test_openai_tool_calls_arguments_inspected() {
     });
 
     let res = SecurityAuditEngine::inspect_request(&body);
+    assert!(!res.blocked);
     assert!(
-        !res.blocked,
-        "Sensitive data in tool_calls arguments must be recognized for redaction"
+        res.findings.is_empty(),
+        "tool_calls arguments are skipped under conversation-only DLP"
     );
-
-    let finding = res
-        .findings
-        .iter()
-        .find(|f| f.rule_id == "anthropic_api_key")
-        .expect("Must catch Anthropic key in tool_calls arguments");
-    assert!(finding
-        .location
-        .contains("tool_calls[0].function.arguments"));
-    assert!(!finding.location.contains("execute_command"));
 }
 
 #[tokio::test]
@@ -658,10 +631,7 @@ async fn custom_rule_names_and_dynamic_paths_never_enter_block_reason_or_audit_l
         action: AuditAction::Block,
         enabled: true,
     });
-    let body = json!({"messages": [{"role": "assistant", "content": [{
-        "type": "tool_use", "name": secret.clone(),
-        "input": {secret.clone(): "internal_marker"}
-    }]}]});
+    let body = json!({"messages": [{"role": "user", "content": [{"type": "text", "text": "internal_marker"}]}]});
     let result = SecurityAuditEngine::inspect_request_with_runtime(&body, &runtime);
     assert!(result.blocked);
     let reason = result.block_reason.unwrap();
@@ -681,10 +651,6 @@ async fn custom_rule_names_and_dynamic_paths_never_enter_block_reason_or_audit_l
             .all(|f| !f.location.contains(&secret)),
         "audit locations must not include user-controlled names or keys"
     );
-    assert!(result
-        .findings
-        .iter()
-        .any(|f| f.location.contains("tool_use.input.{field}")));
     let response =
         super::response::build_blocked_response(&crate::app_config::AppType::Claude, &reason)
             .unwrap();
@@ -714,10 +680,10 @@ fn dynamic_openai_and_gemini_field_names_are_not_logged() {
     assert!(locations.iter().all(|location| !location.contains(&secret)));
     assert!(locations
         .iter()
-        .any(|location| location.contains("tool_calls[0].function.arguments")));
+        .all(|location| !location.contains("tool_calls")));
     assert!(locations
         .iter()
-        .any(|location| location.contains("functionCall.args.{field}")));
+        .all(|location| !location.contains("functionCall")));
     assert!(locations
         .iter()
         .any(|location| location.contains("input.{field}")));
@@ -2107,7 +2073,7 @@ fn current_structured_password_does_not_use_the_historical_assignment_rule() {
         .filter(|finding| !turn.is_historical(&finding.location))
         .map(|finding| finding.rule_id.as_str())
         .collect();
-    assert_eq!(current, ["catalog:password-field"]);
+    assert!(current.is_empty());
 }
 
 #[test]

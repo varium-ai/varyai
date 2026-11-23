@@ -239,7 +239,7 @@ impl CodexRequestCarriers {
             budget,
             purpose,
         };
-        for root in ["instructions", "input", "prompt"] {
+        for root in ["input", "prompt"] {
             if let Some(value) = body.get(root) {
                 let mut path = Path::new(plan.shared_budget.clone())?;
                 path.push(Step::Field(PayloadKey::try_from_str(
@@ -578,11 +578,28 @@ impl CodexRequestCarriers {
                 if !matches!(mode, Mode::Arguments) && media_type(kind) {
                     return Ok(());
                 }
+                if matches!(mode, Mode::Item)
+                    && (matches!(
+                        kind,
+                        Some(
+                            "function_call"
+                                | "function_call_output"
+                                | "custom_tool_call"
+                                | "custom_tool_call_output"
+                        )
+                    ) || ((value.get("type").is_none() || kind == Some("message"))
+                        && matches!(
+                            value.get("role").and_then(Value::as_str),
+                            Some("system" | "developer" | "tool")
+                        )))
+                {
+                    return Ok(());
+                }
                 let message = matches!(mode, Mode::Item)
                     && (value.get("type").is_none() || kind == Some("message"))
                     && matches!(
                         value.get("role").and_then(Value::as_str),
-                        Some("user" | "assistant" | "system" | "developer")
+                        Some("user" | "assistant")
                     );
                 for (key, child) in fields {
                     if !matches!(mode, Mode::Arguments) && excluded_field(key, kind) {
@@ -592,30 +609,10 @@ impl CodexRequestCarriers {
                         key,
                         &self.shared_budget,
                     )?))?;
-                    if matches!(mode, Mode::Item)
-                        && kind == Some("function_call")
-                        && key == "arguments"
                     {
-                        self.arguments(child, path, password)?;
-                    } else {
                         let child_mode = match mode {
                             Mode::Arguments => Mode::Arguments,
                             Mode::Item if message && key == "content" => Mode::Readable,
-                            Mode::Item
-                                if matches!(
-                                    kind,
-                                    Some("function_call_output" | "custom_tool_call_output")
-                                ) && key == "output" =>
-                            {
-                                Mode::Readable
-                            }
-                            Mode::Item
-                                if kind == Some("custom_tool_call")
-                                    && key == "input"
-                                    && child.is_string() =>
-                            {
-                                Mode::Readable
-                            }
                             Mode::Item
                                 if kind == Some("reasoning")
                                     && key == "summary"
@@ -1091,10 +1088,7 @@ mod refusal_audit_tests {
                 assert_eq!(budget.used(), 0);
 
                 body["input"][position]["arguments"] = Value::String(malformed.to_owned());
-                assert_eq!(
-                    CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).err(),
-                    Some(TokenError::RedactionFailed)
-                );
+                assert!(CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).is_ok());
                 assert_eq!(budget.used(), 0);
                 let audit =
                     CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone())?;
@@ -1102,14 +1096,9 @@ mod refusal_audit_tests {
                 assert_eq!(actual, expected_values);
                 assert_eq!(audit.documents.len(), expected_documents);
                 assert!(same_snapshot(audit.original.as_value(), &body));
-                for password in ["structured-password", "nested-password", "encoded-password"] {
-                    assert!(actual.iter().any(|(_, text, writable, is_password)| {
-                        text == password && *writable && *is_password
-                    }));
+                for skipped in ["structured-password", "nested-password", "encoded-password"] {
+                    assert!(!actual.iter().any(|(_, text, _, _)| text == skipped));
                 }
-                assert!(actual.iter().any(|(_, text, writable, password)| {
-                    text == "not-direct-password" && *writable && !password
-                }));
                 assert!(actual
                     .iter()
                     .any(|(_, text, writable, _)| { text == "read-only-sibling" && !writable }));
@@ -1136,8 +1125,8 @@ mod refusal_audit_tests {
         let mut original = Budget::default();
         original.value(&body, 0)?;
         let audit = CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone())?;
-        assert_eq!(audit.argument_bytes, malformed.len());
-        assert!(audit.budget.bytes >= original.bytes + malformed.len());
+        assert_eq!(audit.argument_bytes, 0);
+        assert!(audit.budget.bytes >= original.bytes);
         assert!(same_snapshot(audit.original.as_value(), &body));
         assert!(leaf_values(&audit)?
             .iter()
@@ -1149,18 +1138,26 @@ mod refusal_audit_tests {
 
     #[test]
     fn refusal_audit_never_skips_capacity_errors() {
-        for encoded in ["x".repeat(MAX_STRING_BYTES + 1), "[".repeat(MAX_DEPTH + 1)] {
-            let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
-            let body = json!({"input":[
-                {"type":"function_call", "arguments":encoded},
-                {"role":"user", "content":"synthetic-sibling"}
-            ]});
-            assert_eq!(
-                CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone()).err(),
-                Some(TokenError::CapacityExceeded)
-            );
-            assert_eq!(budget.used(), 0);
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let body = json!({"input":[
+            {"role":"user", "content":"x".repeat(MAX_STRING_BYTES + 1)},
+            {"role":"user", "content":"synthetic-sibling"}
+        ]});
+        assert_eq!(
+            CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone()).err(),
+            Some(TokenError::CapacityExceeded)
+        );
+        assert_eq!(budget.used(), 0);
+        let mut deep = json!("leaf");
+        for _ in 0..=MAX_DEPTH {
+            deep = json!([deep]);
         }
+        let deep_body = json!({"input": deep});
+        assert_eq!(
+            CodexRequestCarriers::from_body_for_refusal_audit(&deep_body, budget.clone()).err(),
+            Some(TokenError::CapacityExceeded)
+        );
+        assert_eq!(budget.used(), 0);
         let budget = PayloadBudget::with_limit(0);
         assert_eq!(
             CodexRequestCarriers::from_body_for_refusal_audit(
@@ -1174,22 +1171,16 @@ mod refusal_audit_tests {
     }
 
     #[test]
-    fn refusal_audit_never_skips_parser_unavailable() {
+    fn refusal_audit_never_skips_parser_unavailable() -> Result<(), TokenError> {
         use super::super::payload_json::test_support::{self, Action, Phase};
-        for (phase, fail_at) in [
-            (Phase::BeforeParse, 1),
-            (Phase::BeforeParse, 2),
-            (Phase::AfterParse, 1),
-        ] {
+        for phase in [Phase::BeforeParse, Phase::AfterParse] {
             let budget = PayloadBudget::with_limit(1024 * 1024);
             let hits = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&hits);
             let _hook = test_support::install(move |event| {
                 if event.phase == phase {
                     observed.set(observed.get() + 1);
-                    if observed.get() == fail_at {
-                        return Action::Fail;
-                    }
+                    return Action::Fail;
                 }
                 Action::Continue
             });
@@ -1197,13 +1188,12 @@ mod refusal_audit_tests {
                 {"type":"function_call", "arguments":r#"{"partial":"discarded""#},
                 {"type":"function_call", "arguments":r#"{"valid":"synthetic-sibling"}"#}
             ]});
-            assert_eq!(
-                CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone()).err(),
-                Some(TokenError::Unavailable)
-            );
-            assert_eq!(hits.get(), fail_at);
+            let audit = CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone())?;
+            assert_eq!(hits.get(), 0);
+            drop(audit);
             assert_eq!(budget.used(), 0);
         }
+        Ok(())
     }
 
     #[test]

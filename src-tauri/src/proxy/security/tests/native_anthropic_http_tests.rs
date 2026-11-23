@@ -348,7 +348,7 @@ async fn scripted_upstream(State(script): State<Script>, Json(body): Json<Value>
         ReplyMode::History|ReplyMode::HistoryBatches|ReplyMode::HistoryClose|ReplyMode::HistoryWithExtension=>{
             let selected=if round==1 {Some(text)} else if round==2 && matches!(script.mode,ReplyMode::HistoryBatches) {
                 Some("Synthetic public second batch.")
-            } else {first["system"].as_str()};
+            } else {first["messages"].as_array().and_then(|m| m.get(1)).and_then(|m| m["content"].as_str()).or_else(|| first["system"].as_str())};
             let Some(selected)=selected else {return StatusCode::BAD_REQUEST.into_response();};
             let mut blocks = native_blocks(selected);
             if matches!(script.mode, ReplyMode::HistoryWithExtension) {
@@ -494,7 +494,7 @@ async fn assert_history_roundtrip(stream: bool) -> TestResult {
     let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
     let fixture = HttpFixture::new(ReplyMode::History).await?;
     let first = json!({"model":"synthetic-m3-model","max_tokens":64,"stream":stream,
-        "system":HIDDEN_CONTACT,"messages":[{"role":"user","content":CONTACT}]});
+        "messages":[{"role":"user","content":CONTACT},{"role":"user","content":HIDDEN_CONTACT}]});
     let (status, wire, failed) = collect_wire(fixture.send(&first).await?).await?;
     assert!(
         status == StatusCode::OK && !failed,
@@ -720,7 +720,7 @@ async fn m3_anthropic_messages_aliases_and_queries_keep_native_json_sse() -> Tes
             fixture.configure_desktop()?;
             let desktop = uri.starts_with("/claude-desktop/");
             let body = json!({"model":if desktop {DESKTOP_MODEL} else {"synthetic-m3-model"},"max_tokens":64,
-                "stream":stream,"system":HIDDEN_CONTACT,"messages":[{"role":"user","content":CONTACT}]});
+                "stream":stream,"messages":[{"role":"user","content":CONTACT},{"role":"user","content":HIDDEN_CONTACT}]});
             let (status, wire, failed) = collect_wire(
                 fixture
                     .send_route(&body, uri, desktop.then_some(DESKTOP_AUTH))
@@ -827,7 +827,7 @@ async fn m3_anthropic_desktop_mapping_owner_precharged_through_send_and_refunded
                 *slot = Some(send_probe.snapshot());
             }
         });
-    let body = json!({"model":DESKTOP_MODEL,"max_tokens":64,"system":HIDDEN_CONTACT,"messages":[{"role":"user","content":CONTACT}]});
+    let body = json!({"model":DESKTOP_MODEL,"max_tokens":64,"messages":[{"role":"user","content":CONTACT},{"role":"user","content":HIDDEN_CONTACT}]});
     let (status, wire, failed) = collect_wire(
         fixture
             .send_route(&body, "/claude-desktop/v1/messages", Some(DESKTOP_AUTH))
@@ -865,7 +865,7 @@ async fn m3_anthropic_history_never_crosses_claude_desktop_namespace() -> TestRe
         let fixture = HttpFixture::new(ReplyMode::History).await?;
         fixture.configure_desktop()?;
         let first = json!({"model":if source_desktop {DESKTOP_MODEL} else {"synthetic-m3-model"},"max_tokens":64,
-            "system":HIDDEN_CONTACT,"messages":[{"role":"user","content":CONTACT}]});
+            "messages":[{"role":"user","content":CONTACT},{"role":"user","content":HIDDEN_CONTACT}]});
         let route = |desktop| {
             if desktop {
                 "/claude-desktop/v1/messages"
@@ -912,7 +912,7 @@ async fn m3_anthropic_history_never_crosses_claude_desktop_namespace() -> TestRe
                 .0
                 .lock()
                 .map_err(|_| "m3_namespace_capture_poisoned")?;
-            let reference = records[0]["system"]
+            let reference = records[0]["messages"][1]["content"]
                 .as_str()
                 .ok_or("m3_namespace_reference_missing")?;
             assert!(
@@ -1159,7 +1159,7 @@ async fn history_matrix(
     let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
     let fixture = HttpFixture::new(ReplyMode::HistoryBatches).await?;
     let first = json!({"model":"synthetic-m3-model","max_tokens":64,"stream":first_sse,
-        "system":HIDDEN_CONTACT,"messages":[{"role":"user","content":CONTACT}]});
+        "messages":[{"role":"user","content":CONTACT},{"role":"user","content":HIDDEN_CONTACT}]});
     let (status, _, failed) = collect_wire(fixture.send(&first).await?).await?;
     assert!(
         status == StatusCode::OK && !failed,
@@ -1237,7 +1237,7 @@ async fn history_matrix(
                 .0
                 .lock()
                 .map_err(|_| "m3_history_capture_poisoned")?;
-            records[0]["system"].clone()
+            records[0]["messages"][1]["content"].clone()
         };
         assert!(
             hidden_reference
@@ -1344,8 +1344,8 @@ async fn m3_history_first_and_edited_tool_results_never_grant_hidden_dependency(
     let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
     for edited in [false, true] {
         let fixture = HttpFixture::new(ReplyMode::History).await?;
-        let first = json!({"model":"synthetic-m3-model","max_tokens":64,"system":HIDDEN_CONTACT,
-            "messages":[{"role":"user","content":CONTACT}]});
+        let first = json!({"model":"synthetic-m3-model","max_tokens":64,
+            "messages":[{"role":"user","content":CONTACT},{"role":"user","content":HIDDEN_CONTACT}]});
         let (status, _, failed) = collect_wire(fixture.send(&first).await?).await?;
         assert!(
             status == StatusCode::OK && !failed,
@@ -1357,7 +1357,7 @@ async fn m3_history_first_and_edited_tool_results_never_grant_hidden_dependency(
                 .0
                 .lock()
                 .map_err(|_| "m3_history_capture_poisoned")?;
-            records[0]["system"]
+            records[0]["messages"][1]["content"]
                 .as_str()
                 .ok_or("m3_hidden_reference_missing")?
                 .to_string()
@@ -2298,7 +2298,10 @@ async fn m3_anthropic_hidden_history_isolated_by_actual_session_provider_target_
                     "/v1/messages"
                 };
                 let mut input = lifecycle_input(streaming);
-                input["system"] = json!(HIDDEN_CONTACT);
+                input["messages"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"role":"user","content":HIDDEN_CONTACT}));
                 if desktop {
                     input["model"] = json!(DESKTOP_MODEL);
                 }
@@ -2320,7 +2323,7 @@ async fn m3_anthropic_hidden_history_isolated_by_actual_session_provider_target_
                     .capture
                     .0
                     .lock()
-                    .map_err(|_| "m3_isolation_capture_poisoned")?[0]["system"]
+                    .map_err(|_| "m3_isolation_capture_poisoned")?[0]["messages"][1]["content"]
                     .as_str()
                     .ok_or("m3_isolation_reference_missing")?
                     .to_owned();
@@ -2409,7 +2412,10 @@ async fn assert_anthropic_current_only_identity(case: usize) -> TestResult {
                 fixture.configure_desktop()?;
             }
             let mut input = lifecycle_input(streaming);
-            input["system"] = json!(HIDDEN_CONTACT);
+            input["messages"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"role":"user","content":HIDDEN_CONTACT}));
             if desktop {
                 input["model"] = json!(DESKTOP_MODEL);
             }
@@ -2459,7 +2465,7 @@ async fn assert_anthropic_current_only_identity(case: usize) -> TestResult {
                 .capture
                 .0
                 .lock()
-                .map_err(|_| "m3_identity_capture_poisoned")?[0]["system"]
+                .map_err(|_| "m3_identity_capture_poisoned")?[0]["messages"][1]["content"]
                 .as_str()
                 .ok_or("m3_identity_reference_missing")?
                 .to_owned();
@@ -2828,7 +2834,10 @@ async fn m3_anthropic_immutable_sensitive_request_rejected_before_send() -> Test
 
 async fn seed_outbound_history(fixture: &HttpFixture) -> TestResult<Value> {
     let mut input = lifecycle_input(false);
-    input["system"] = json!(HIDDEN_CONTACT);
+    input["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"role":"user","content":HIDDEN_CONTACT}));
     let (status, wire, failed) = collect_wire(fixture.send(&input).await?).await?;
     assert!(
         status == StatusCode::OK && !failed,

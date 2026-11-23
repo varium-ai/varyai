@@ -308,6 +308,50 @@ fn usage_model_filter_aliases(model: &str) -> Option<[String; 2]> {
 
 /// Match provider display names and any observed request, response or billing ID.
 /// Callers filtering providers must include [`providers_join`] in the query.
+fn resolve_routing_provider_name(
+    routing_names: &HashMap<String, String>,
+    provider_id: &str,
+    provider_name: &mut String,
+) {
+    if provider_name == provider_id {
+        if let Some(name) = routing_names.get(provider_id) {
+            provider_name.clone_from(name);
+        }
+    }
+}
+
+fn push_provider_name_filter(
+    conditions: &mut Vec<String>,
+    params: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    log_alias: &str,
+    provider_alias: &str,
+    data_source: Option<&str>,
+    provider_name: Option<&str>,
+    routing_names: &HashMap<String, String>,
+) {
+    let Some(name) = provider_name else {
+        return;
+    };
+    let coalesce = provider_name_coalesce(log_alias, provider_alias, data_source);
+    let matching_ids: Vec<&String> = routing_names
+        .iter()
+        .filter_map(|(id, resolved)| (resolved == name).then_some(id))
+        .collect();
+    if matching_ids.is_empty() {
+        conditions.push(format!("{coalesce} = ?"));
+        params.push(Box::new(name.to_string()));
+        return;
+    }
+    let placeholders = vec!["?"; matching_ids.len()].join(", ");
+    conditions.push(format!(
+        "({coalesce} = ? OR ({provider_alias}.name IS NULL AND {coalesce} = {log_alias}.provider_id AND {log_alias}.provider_id IN ({placeholders})))"
+    ));
+    params.push(Box::new(name.to_string()));
+    for id in matching_ids {
+        params.push(Box::new(id.clone()));
+    }
+}
+
 fn push_provider_model_filters(
     conditions: &mut Vec<String>,
     params: &mut Vec<Box<dyn rusqlite::ToSql>>,
@@ -357,11 +401,21 @@ fn push_provider_model_filters(
     }
 }
 
+fn opaque_routing_model_sql(expr: &str) -> String {
+    format!(
+        "(LOWER({expr}) LIKE 'vary-auto/%' \
+         OR LOWER({expr}) LIKE 'vary-provider/%' \
+         OR (LENGTH({expr}) = 70 AND LOWER({expr}) LIKE 'model-%' AND LOWER(SUBSTR({expr}, 7)) NOT GLOB '*[^0-9a-f]*') \
+         OR (LENGTH({expr}) = 36 AND LOWER({expr}) GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'))"
+    )
+}
+
 pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
     let data_source = data_source_expr(log_alias);
     let proxy_data_source = data_source_expr("proxy_dedup");
     let app_type_match =
         dedup_app_type_match_sql("proxy_dedup.app_type", &format!("{log_alias}.app_type"));
+    let opaque_session_model = opaque_routing_model_sql(&format!("{log_alias}.model"));
     format!(
         "NOT (
             {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
@@ -387,8 +441,10 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
                       AND {log_alias}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
                   AND (
                       LOWER(proxy_dedup.model) = LOWER({log_alias}.model)
+                      OR LOWER(COALESCE(proxy_dedup.request_model, '')) = LOWER({log_alias}.model)
                       OR LOWER(proxy_dedup.model) = 'unknown'
                       OR LOWER({log_alias}.model) = 'unknown'
+                      OR {opaque_session_model}
                   )
             )
         )"
@@ -436,6 +492,7 @@ fn proxy_request_id_exists(conn: &Connection, request_id: &str) -> Result<bool, 
 static MATCHING_PROXY_USAGE_LOG_SQL: LazyLock<String> = LazyLock::new(|| {
     let l_data_source = data_source_expr("l");
     let app_type_match = dedup_app_type_match_sql("l.app_type", "?1");
+    let opaque_session_model = opaque_routing_model_sql("?2");
     format!(
         "SELECT EXISTS (
             SELECT 1
@@ -451,8 +508,10 @@ static MATCHING_PROXY_USAGE_LOG_SQL: LazyLock<String> = LazyLock::new(|| {
               AND l.created_at BETWEEN ?7 - ?8 AND ?7 + ?8
               AND (
                   LOWER(l.model) = LOWER(?2)
+                  OR LOWER(COALESCE(l.request_model, '')) = LOWER(?2)
                   OR LOWER(l.model) = 'unknown'
                   OR LOWER(?2) = 'unknown'
+                  OR {opaque_session_model}
               )
         )"
     )
@@ -1331,6 +1390,7 @@ impl Database {
         provider_name: Option<&str>,
         model: Option<&str>,
     ) -> Result<Vec<ProviderStats>, AppError> {
+        let routing_names = self.routing_usage_names().unwrap_or_default();
         let conn = lock_conn!(self.conn);
 
         let mut detail_conditions = vec![effective_usage_log_filter("l")];
@@ -1347,13 +1407,22 @@ impl Database {
             detail_conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
             detail_params.push(Box::new(at.to_string()));
         }
-        push_provider_model_filters(
+        push_provider_name_filter(
             &mut detail_conditions,
             &mut detail_params,
             "l",
             "p",
             Some("l.data_source"),
             provider_name,
+            &routing_names,
+        );
+        push_provider_model_filters(
+            &mut detail_conditions,
+            &mut detail_params,
+            "l",
+            "p",
+            Some("l.data_source"),
+            None,
             model,
         );
         let detail_where = if detail_conditions.is_empty() {
@@ -1375,13 +1444,22 @@ impl Database {
             rollup_conditions.push(format!("{} = ?", folded_app_type_sql("r.app_type")));
             rollup_params.push(Box::new(at.to_string()));
         }
-        push_provider_model_filters(
+        push_provider_name_filter(
             &mut rollup_conditions,
             &mut rollup_params,
             "r",
             "p2",
             None,
             provider_name,
+            &routing_names,
+        );
+        push_provider_model_filters(
+            &mut rollup_conditions,
+            &mut rollup_params,
+            "r",
+            "p2",
+            None,
+            None,
             model,
         );
         let rollup_where = if rollup_conditions.is_empty() {
@@ -1462,7 +1540,13 @@ impl Database {
 
         let mut stats = Vec::new();
         for row in rows {
-            stats.push(row?);
+            let mut stat = row?;
+            resolve_routing_provider_name(
+                &routing_names,
+                &stat.provider_id,
+                &mut stat.provider_name,
+            );
+            stats.push(stat);
         }
 
         Ok(stats)
@@ -1640,6 +1724,7 @@ impl Database {
         page: u32,
         page_size: u32,
     ) -> Result<PaginatedLogs, AppError> {
+        let routing_names = self.routing_usage_names().unwrap_or_default();
         let conn = lock_conn!(self.conn);
 
         let mut conditions = vec![effective_usage_log_filter("l")];
@@ -1653,13 +1738,22 @@ impl Database {
         }
         // 与 Dashboard 顶部下拉筛选同口径：Provider 按展示名精确匹配（会话占位
         // 行如 "Claude (Session)" 也能命中），模型按有效计价模型匹配。
-        push_provider_model_filters(
+        push_provider_name_filter(
             &mut conditions,
             &mut params,
             "l",
             "p",
             Some("l.data_source"),
             filters.provider_name.as_deref(),
+            &routing_names,
+        );
+        push_provider_model_filters(
+            &mut conditions,
+            &mut params,
+            "l",
+            "p",
+            Some("l.data_source"),
+            None,
             filters.model.as_deref(),
         );
         if let Some(status) = filters.status_code {
@@ -1722,6 +1816,9 @@ impl Database {
 
         for row in rows {
             let mut log = row?;
+            if let Some(provider_name) = log.provider_name.as_mut() {
+                resolve_routing_provider_name(&routing_names, &log.provider_id, provider_name);
+            }
             Self::maybe_backfill_log_costs(&conn, &mut log, &mut pricing_cache)?;
             logs.push(log);
         }
@@ -1739,6 +1836,7 @@ impl Database {
         &self,
         request_id: &str,
     ) -> Result<Option<RequestLogDetail>, AppError> {
+        let routing_names = self.routing_usage_names().unwrap_or_default();
         let conn = lock_conn!(self.conn);
 
         let detail_pname = provider_name_coalesce("l", "p", Some("l.data_source"));
@@ -1748,7 +1846,7 @@ impl Database {
                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                     input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                     is_streaming, latency_ms, first_token_ms, duration_ms,
-                    status_code, error_message, created_at, l.data_source, l.pricing_model,
+                    status_code, error_message, l.created_at, l.data_source, l.pricing_model,
                     l.input_token_semantics
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
@@ -1758,6 +1856,13 @@ impl Database {
 
         match result {
             Ok(mut detail) => {
+                if let Some(provider_name) = detail.provider_name.as_mut() {
+                    resolve_routing_provider_name(
+                        &routing_names,
+                        &detail.provider_id,
+                        provider_name,
+                    );
+                }
                 let mut pricing_cache = HashMap::new();
                 Self::maybe_backfill_log_costs(&conn, &mut detail, &mut pricing_cache)?;
                 Ok(Some(detail))
@@ -2698,6 +2803,7 @@ mod tests {
                 request_id TEXT PRIMARY KEY,
                 app_type TEXT NOT NULL,
                 model TEXT NOT NULL,
+                request_model TEXT,
                 input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
                 cache_read_tokens INTEGER NOT NULL,
@@ -2822,6 +2928,67 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(request_ids, vec!["desktop-proxy"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_session_opaque_routing_model_and_request_model_dedup() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        create_legacy_nullable_logs_table(&conn)?;
+        conn.execute_batch(
+            "INSERT INTO proxy_request_logs (
+                request_id, app_type, model, request_model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, status_code, created_at, data_source
+            ) VALUES
+                ('codex-proxy-1', 'codex', 'zai-org/GLM-5.3-Flash', 'zai-org/GLM-5-FP8', 797, 118, 19584, 0, 200, 1000, 'proxy'),
+                ('codex-session-uuid', 'codex', 'e44ea5a8-b978-42de-b350-0427d58dfe82', 'e44ea5a8-b978-42de-b350-0427d58dfe82', 797, 118, 19584, 0, 200, 1005, 'codex_session'),
+                ('codex-session-mapped', 'codex', 'zai-org/GLM-5-FP8', 'zai-org/GLM-5-FP8', 797, 118, 19584, 0, 200, 1006, 'codex_session'),
+                ('codex-session-unmatched', 'codex', 'gpt-5.4', 'gpt-5.4', 797, 118, 19584, 0, 200, 1007, 'codex_session');",
+        )?;
+
+        let uuid_key = DedupKey {
+            app_type: "codex",
+            model: "e44ea5a8-b978-42de-b350-0427d58dfe82",
+            input_tokens: 797,
+            output_tokens: 118,
+            cache_read_tokens: 19584,
+            cache_creation_tokens: 0,
+            created_at: 1005,
+        };
+        assert!(has_matching_proxy_usage_log(&conn, &uuid_key)?);
+
+        let direct_id = format!("model-{}", "a".repeat(64));
+        let direct_key = DedupKey {
+            model: &direct_id,
+            ..uuid_key
+        };
+        assert!(has_matching_proxy_usage_log(&conn, &direct_key)?);
+
+        let mapped_key = DedupKey {
+            model: "zai-org/GLM-5-FP8",
+            ..uuid_key
+        };
+        assert!(has_matching_proxy_usage_log(&conn, &mapped_key)?);
+
+        let unmatched_key = DedupKey {
+            model: "gpt-5.4",
+            ..uuid_key
+        };
+        assert!(!has_matching_proxy_usage_log(&conn, &unmatched_key)?);
+
+        let filter = effective_usage_log_filter("l");
+        let sql = format!(
+            "SELECT request_id FROM proxy_request_logs l WHERE {filter} ORDER BY request_id"
+        );
+        let request_ids = conn
+            .prepare(&sql)?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            request_ids,
+            vec!["codex-proxy-1", "codex-session-unmatched"]
+        );
 
         Ok(())
     }
@@ -4948,6 +5115,98 @@ mod tests {
         // 测试不存在的模型
         let result = find_model_pricing_row(&conn, "unknown-model-123")?;
         assert!(result.is_none(), "不应该匹配不存在的模型");
+
+        Ok(())
+    }
+
+    #[test]
+    fn routing_upstream_provider_names_resolve_in_logs_detail_and_provider_stats(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let execution_identity = "provider-b791eeb05b3f48d79040259382855a79";
+        let now = chrono::Utc::now().timestamp();
+
+        {
+            let ext = db
+                .extension_connection()
+                .lock()
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let config = serde_json::json!({
+                "id": "zhipu-routing",
+                "name": "Zhipu Routing",
+                "enabled": true,
+                "source": {
+                    "kind": "api",
+                    "protocol": "openai_chat",
+                    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                    "keys": []
+                },
+                "models": [],
+                "created_at": now,
+                "updated_at": now,
+            })
+            .to_string();
+            ext.execute(
+                "INSERT INTO routing_upstreams (id, revision, config) VALUES (?1, 1, ?2)",
+                params!["zhipu-routing", config],
+            )?;
+            let identities = serde_json::json!({
+                "zhipu-routing": execution_identity
+            })
+            .to_string();
+            ext.execute(
+                "INSERT INTO intent_routing_preferences (key, value) VALUES (?1, ?2)",
+                params!["provider_identities", identities],
+            )?;
+        }
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "routing-req-1",
+                "codex",
+                execution_identity,
+                "zai-org/GLM-5.3-Flash",
+                "proxy",
+                now,
+                100,
+                50,
+                0,
+                0,
+                200,
+                "0.0025",
+            )?;
+        }
+
+        let logs = db.get_request_logs(&LogFilters::default(), 0, 10)?;
+        assert_eq!(logs.total, 1);
+        assert_eq!(logs.data[0].provider_id, execution_identity);
+        assert_eq!(logs.data[0].provider_name.as_deref(), Some("Zhipu Routing"));
+
+        let filtered = db.get_request_logs(
+            &LogFilters {
+                provider_name: Some("Zhipu Routing".to_string()),
+                ..Default::default()
+            },
+            0,
+            10,
+        )?;
+        assert_eq!(filtered.total, 1);
+        assert_eq!(
+            filtered.data[0].provider_name.as_deref(),
+            Some("Zhipu Routing")
+        );
+
+        let detail = db
+            .get_request_detail("routing-req-1")?
+            .expect("routing request detail");
+        assert_eq!(detail.provider_name.as_deref(), Some("Zhipu Routing"));
+
+        let stats = db.get_provider_stats(None, None, None, Some("Zhipu Routing"), None)?;
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].provider_id, execution_identity);
+        assert_eq!(stats[0].provider_name, "Zhipu Routing");
 
         Ok(())
     }

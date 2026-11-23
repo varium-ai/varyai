@@ -1,221 +1,166 @@
-<p align="center">
-  <a href="https://www.varyai.net/" title="Vary AI official website">
-    <img src="docs/assets/readme-banner.png" width="1200" alt="Vary AI — Local AI Gateway. Questions pass, Secrets stay.">
-  </a>
-</p>
+<div align="center">
+  <img src="docs/assets/readme-banner.png" alt="VaryAI Banner" width="100%" />
 
-<p align="center">
-  <a href="https://www.varyai.net/"><strong>中文官网</strong></a> &nbsp;·&nbsp;
-  <a href="https://www.varyai.net/download"><strong>下载安装</strong></a> &nbsp;·&nbsp;
-  <a href="https://www.varyai.net/docs?section=getting-started&amp;item=quickstart"><strong>快速接入</strong></a> &nbsp;·&nbsp;
-  <a href="https://github.com/varium-ai/varyai/releases/latest">最新版本</a> &nbsp;·&nbsp;
-  <a href="https://github.com/varium-ai/varyai/issues">问题反馈</a>
-</p>
+  <h1>VaryAI</h1>
 
-<p align="center">
-  A local AI gateway for your coding workflow.<br>
-  Connect providers. Inspect outbound text. Understand model usage.
-</p>
+  <p><strong>The Local Control Plane & Security Gateway for All Your AI Coding Agents.</strong></p>
+  <p>
+    Route any model to 16+ AI agents via a 4-protocol local gateway—with built-in DLP redaction, tool risk auditing, gateway budgets, and one-click profile switching.
+  </p>
 
-<p align="center">
-  <code>Tauri + Rust</code> &nbsp; <code>React + TypeScript</code> &nbsp; <a href="LICENSE"><strong>MIT licensed</strong></a>
-</p>
+  <p>
+    <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+  </p>
 
-<p align="center">
-  <a href="https://www.varyai.net/"><strong>Official Website</strong></a> &nbsp;·&nbsp;
-  <a href="#quick-start"><strong>Get started</strong></a> &nbsp;·&nbsp;
-  <a href="#screenshots">Screenshots</a> &nbsp;·&nbsp;
-  <a href="#documentation">Documentation</a> &nbsp;·&nbsp;
-  <a href="#contributing">Contribute</a> &nbsp;·&nbsp;
-  <a href="#upstream-origin-and-attribution">Upstream</a> &nbsp;·&nbsp;
-  <a href="#license">License</a>
-</p>
+  <p>
+    <a href="https://github.com/varium-ai/varyai/releases"><img src="https://img.shields.io/github/v/release/varium-ai/varyai?style=flat-square" alt="Latest Release" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/varium-ai/varyai?style=flat-square" alt="License" /></a>
+    <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-blue?style=flat-square" alt="Platforms" />
+    <img src="https://img.shields.io/badge/Local--First-127.0.0.1-green?style=flat-square" alt="Local First" />
+  </p>
 
-Vary AI brings provider management, local routing, and request inspection into one desktop application. It is an independent derivative of [CC Switch](https://github.com/farion1231/cc-switch), with its original license and contributor attribution preserved.
+  <p>
+    <a href="#-quick-start">Quick Start</a> •
+    <a href="#-key-features">Features</a> •
+    <a href="#-supported-agents">Supported Agents</a> •
+    <a href="#-local-first--privacy">Security</a> •
+    <a href="#-develop-from-source">Development</a> •
+    <a href="docs/README.md">Docs</a>
+  </p>
+</div>
 
-## Screenshots
+---
 
-### Your workflow, in view
+## ⚡ Why VaryAI?
 
-Review model usage, cache reuse, estimated costs, and security event groups in one dashboard.
+If you work with **Claude Code, Codex, Gemini CLI, OpenCode, TRAE**, or other AI coding tools, you probably run into the same friction every day:
 
-![Vary AI usage statistics](docs/screenshots/usage-demo.jpg)
+- **Config sprawl**: Editing JSON/TOML files and pasting API keys across half a dozen tools.
+- **Protocol lock-in**: Wanting to run an OpenAI, Gemini, or third-party model inside Claude Code or Codex, only to hit wire-protocol errors.
+- **Data leakage & tool risk**: Worrying about `.env` secrets, private keys, or customer PII slipping into prompts—or an agent proposing a destructive shell command.
 
-<p align="center"><sub>Sample data and example policy settings are shown throughout.</sub></p>
+**VaryAI solves this with a single, lightweight native desktop app (Rust + Tauri) running 100% locally on your machine.**
 
-<details>
-<summary><strong>Explore the Security Center</strong> — events, detection rules, and tool-risk settings</summary>
+<!-- Recommended: Add a 10–15s GIF here showing the Quick Panel (Tray) switching models & DLP in action -->
 
-### Review security events
+---
 
-Inspect grouped detections, repeat occurrences, session identifiers, and handling results.
+## ✨ Key Features
 
-![Vary AI security events](docs/screenshots/security-events-demo.jpg)
+### 1. 🔀 4-Protocol Local Gateway (16-Way Translation)
 
-### Configure detection rules
+Use **any provider with any agent**. VaryAI runs a local loopback gateway that transparently translates between all four major LLM protocols:
 
-Choose how supported sensitive-information rules handle matches.
+| Client \ Upstream           | Anthropic Messages | OpenAI Chat Completions | OpenAI Responses API | Gemini Native (`generateContent`) |
+| :-------------------------- | :----------------: | :---------------------: | :------------------: | :-------------------------------: |
+| **Anthropic Messages**      |       Native       |           ✅            |          ✅          |                ✅                 |
+| **OpenAI Chat Completions** |         ✅         |         Native          |          ✅          |                ✅                 |
+| **OpenAI Responses API**    |         ✅         |           ✅            |        Native        |                ✅                 |
+| **Gemini Native**           |         ✅         |           ✅            |          ✅          |              Native               |
 
-![Vary AI detection rules](docs/screenshots/detection-rules.jpg)
+- Supports streaming SSE, images, parallel tool calls, and reasoning/thinking controls.
+- **One-Click Configuration Detection**: Automatically fetches model catalogs and probes upstream protocol compatibility so you don't have to guess endpoints.
 
-### Observe tool-call risk
+### 2. 🛡️ Local DLP & Tool Risk Guard
 
-Configure tool-risk warnings and command lists for supported tool calls.
+Protect your codebase and machine before traffic ever leaves `127.0.0.1`:
 
-![Vary AI tool-risk settings](docs/screenshots/tool-risk-policies.jpg)
+- **Outbound DLP Inspection**: Detects and redacts/audits API keys, private keys, database connection strings, passwords, phone numbers, ID cards, and custom patterns in prompts and tool results.
+- **Tool Risk Observation**: Monitors agent tool calls and shell commands in real time, surfacing high-risk operations in the **Security Center**.
 
-</details>
+<div align="center">
+  <img src="docs/screenshots/security-events-demo.jpg" width="48%" alt="Security Events" />
+  <img src="docs/screenshots/tool-risk-policies.jpg" width="48%" alt="Tool Risk Policies" />
+</div>
 
-## Built around your coding workflow
+### 3. 🧠 Smart Routing, Failover & Budgets
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <strong>Connect your tools</strong>
-      <p>Manage provider endpoints, model routes, MCP resources, Skills, and prompts from one desktop app.</p>
-    </td>
-    <td width="33%" valign="top">
-      <strong>Inspect before forwarding</strong>
-      <p>Apply configured redaction and audit rules to supported outbound text. Review detections in the Security Center.</p>
-    </td>
-    <td width="33%" valign="top">
-      <strong>Understand your usage</strong>
-      <p>See token categories, cache reuse, estimated costs, and provider and model breakdowns.</p>
-    </td>
-  </tr>
-</table>
+- **Routing Groups & 9 Strategies**: Group providers and models with automatic failover, circuit breakers, and multi-account pools.
+- **Gateway Keys & Quotas**: Issue local gateway keys with strict **token budgets** and **model allowlists** per agent.
+- **Usage & Cost Analytics**: Track token consumption, request logs, and estimated costs across all agents in one unified dashboard.
 
-Local proxy routing supports Claude Code, Codex, Gemini CLI, Grok Build, and Pi. Client bridges provide additional integration-specific capabilities. See the [routing guide](docs/guides/provider-routing.md), [configuration profiles](docs/guides/profiles.md), and [Doubao Work guide](docs/guides/doubao-work.md) for scope and setup.
+<div align="center">
+  <img src="docs/screenshots/usage-demo.jpg" width="48%" alt="Usage Dashboard" />
+  <img src="docs/screenshots/detection-rules.jpg" width="48%" alt="Detection Rules" />
+</div>
 
-Inspection covers traffic and fields handled by the enabled integration. Tool-risk observations provide warnings and records; they do not authorize, pause, or sandbox tool execution.
+### 4. 🎛️ Multi-Agent Hub & Native Quick Panel
 
-<details>
-<summary>Explore all capabilities</summary>
+- **Cross-Agent Profiles (Bundles)**: Switch your entire workspace (e.g., _Work_ vs. _Personal_, or _Deep Reasoning_ vs. _Fast & Cheap_) across multiple agents at once, with diff previews and one-click undo.
+- **Unified MCP, Skills & Prompts**: Manage MCP servers, Skills, system prompts, and session histories from a single interface.
+- **System Tray Quick Panel**: Switch models, inspect live routing traffic, and check security alerts directly from your menu bar / system tray without opening the main window.
+- **Multi-Language UI**: Built-in support for English, 简体中文, 日本語, and 繁體中文.
 
-| Feature                   | Description                                                                                                                                                          |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider management       | Manage endpoints, credentials, and model settings for supported coding tools.                                                                                        |
-| Local gateway             | Route supported clients through a local HTTP proxy with streaming, protocol adaptation, retries, and configured failover. The default listener is `127.0.0.1:15722`. |
-| Protocol adaptation       | Adapters for Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Gemini. Available routes and conversion behavior depend on the client and provider.  |
-| Protocol matrix           | [Four-protocol routing and verification](docs/design/protocol-bridge.md)                                                                                             |
-| Sensitive-data inspection | Inspect supported outbound text fields with built-in and custom rules. Configure redaction, audit logging, or forwarding without inspection for each rule.           |
-| Security center           | Review detected events by time, session, information type, risk level, and handling result.                                                                          |
-| Tool-risk observations    | Record and flag supported tool calls covered by enabled risk rules.                                                                                                  |
-| Usage statistics          | Review requests, token categories, cache reuse, estimated costs, and provider and model breakdowns.                                                                  |
-| Client resources          | Manage MCP configuration, Skills, and prompts for clients that support those integrations.                                                                           |
+---
 
-</details>
+## 🤖 Supported Agents (16+ Integrations)
 
-## Quick start
+| Category                  | Supported Tools                                                                                         |
+| :------------------------ | :------------------------------------------------------------------------------------------------------ |
+| **CLI & Terminal Agents** | Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw, Grok Build, Hermes, Pi, Kimi Code, Qwen Code, ZCode |
+| **Desktop & IDE Agents**  | Claude Desktop (macOS / Windows), TRAE CN, Qoder CN, WorkBuddy, DoubaoWork (Audit-only), T3Code         |
+
+> **30-Second Zero-Friction Migration**: Already using **Claude Code, Codex, OpenCode, CC Switch, or Magpie**? Import your existing providers and keys in one click during onboarding—without overwriting your unmanaged native configs.
+
+---
+
+## 🚀 Quick Start
+
+1. **Download** the latest installer for **macOS**, **Windows**, or **Linux** from [GitHub Releases](https://github.com/varium-ai/varyai/releases).
+2. **Import** your existing providers and API keys automatically via the Onboarding Wizard.
+3. **Toggle On** local routing for any detected agent—VaryAI applies the configuration safely and lets you disconnect and restore your original settings at any time.
+
+For detailed walkthroughs, see the [Onboarding Guide](docs/guides/onboarding.md), [Provider Routing Guide](docs/guides/provider-routing.md), [Cross-Agent Profiles](docs/guides/profiles.md), and [Gateway Keys](docs/guides/gateway-keys.md).
+
+---
+
+## 🔒 Local-First & Privacy
+
+- **Loopback-Only Gateway**: Binds strictly to `127.0.0.1`. Your prompts, source code, and API keys never pass through any VaryAI cloud server.
+- **Local Storage & Optional Sync**: Configurations, usage statistics, and security events stay in local SQLite databases, with optional user-controlled WebDAV or S3 backup/sync.
+- **Safe Recovery**: VaryAI preserves unmanaged native configurations and supports one-click disconnect and rollback.
+
+For technical details on our security model, read [Security Architecture](docs/architecture/security-audit.md) and [SECURITY.md](SECURITY.md).
+
+---
+
+## 🗺️ Roadmap & Experimental
+
+We are actively building and validating the next wave of local gateway capabilities:
+
+- **Intent-Based Routing**: Automatically route turns to the right model based on task intent while preserving tool-call continuity.
+- **Reversible Local DLP Tokenization**: Exploring safe local placeholder restoration for supported Codex workflows.
+
+---
+
+## 🛠️ Develop from Source
 
 ### Prerequisites
 
-- **Node.js:** the version in [`.node-version`](.node-version).
-- **pnpm:** the version in [`package.json`](package.json), managed through its `packageManager` field.
-- **Rust:** the stable toolchain in [`rust-toolchain.toml`](rust-toolchain.toml), including `rustfmt` and `clippy`. The crate declares Rust `1.85.0` as its minimum version.
-- **Native dependencies:** Xcode Command Line Tools on macOS; MSVC C++ build tools and WebView2 on Windows; GTK and WebKitGTK development packages on Linux. See the [platform build guides](docs/guides/release-distribution.md#development-builds).
+- **Node.js** & **pnpm**
+- **Rust** toolchain (see `rust-toolchain.toml`)
+- Platform-specific Tauri build dependencies (see [Development Guide](docs/development.md))
 
-### Run from source
-
-Clone the repository and install its dependencies:
+### Run & Verify
 
 ```bash
-git clone https://github.com/varium-ai/varyai.git
-cd varyai
-pnpm install --frozen-lockfile
+# Install dependencies
+pnpm install
+
+# Start desktop app in development mode
 pnpm dev
-```
 
-`pnpm dev` starts the Vite renderer and the native Tauri application. It automatically selects an available renderer port starting at 3001 and passes the actual URL to Tauri. Closing the command or a failed Tauri startup also shuts down its renderer. Exit an existing Vary AI instance before starting a separate development instance; the single-instance handler can bring an existing window to the foreground.
-
-For frontend work, use `pnpm dev:renderer`. It serves the renderer at `http://localhost:3001`; native commands and the Rust gateway require the desktop runtime.
-
-### Configure a client
-
-1. Install the coding client separately, then select it in Vary AI.
-2. Add a provider with your endpoint, credentials, and model settings.
-3. Select the provider. Enable local routing for a supported client when you need protocol adaptation or request inspection.
-4. Restart or reload the client so it reads its updated configuration, then make a small test request.
-5. Review usage and security events, and configure the rules appropriate to your workflow.
-
-Client routing changes the client's active endpoint configuration. Back up existing settings before first use. Requests are forwarded to the provider you configure; see [Local routing](docs/guides/provider-routing.md) for client-specific behavior.
-
-## Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and validation requirements.
-
-<details>
-<summary>Checks and local builds</summary>
-
-Run the contributor checks from the repository root:
-
-```bash
+# Run frontend & backend checks
 pnpm typecheck
-pnpm build:renderer
 pnpm test:unit
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-The [contributing guide](CONTRIBUTING.md) describes formatting, Clippy, and integration-test requirements.
+See [docs/development.md](docs/development.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for platform build instructions and contribution guidelines.
 
-To compile the desktop application without generating installer bundles or updater artifacts:
+---
 
-```bash
-pnpm tauri build --no-bundle --config src-tauri/tauri.no-updater.conf.json
-```
+## 📄 License
 
-See the [macOS](docs/guides/local-macos-build.md), [Windows](docs/guides/local-windows-build.md), and [Linux](docs/guides/local-linux-build.md) guides for local packaging. The no-updater build configuration controls artifact generation; it does not disable runtime update checks.
-
-</details>
-
-## Data and network behavior
-
-Vary AI stores independent configuration under `~/.varyai/`, using `varyai.db` and `varyai-ext.db`. Native backup/restore and cloud synchronization use VaryAI storage; old VaryAI installation upgrades are outside this flow. Client-native configuration can still be shared with other managers. See the [storage documentation](docs/architecture/storage.md) for ownership and backup boundaries.
-
-Installation statistics are enabled by default and use Google Analytics directly, with public Measurement ID `G-2R2MZ76G1E`. A separate hidden WebView sends installation-observation, daily-activity and version-change events; the main app view does not load the remote tag. The random installation ID is saved outside configuration export and synchronization. Google also receives connection and WebView device metadata; prompts, conversations, provider credentials and tool content are excluded. Settings → General → Privacy lets users disable reporting, delete the local statistics ID and preserve that choice across restarts. No Vary AI statistics backend or API secret is required. See [Data and network behavior](docs/data-and-network.md) for scope and reporting limits.
-
-## Documentation
-
-| Topic                     | Guide                                                                     |
-| ------------------------- | ------------------------------------------------------------------------- |
-| Usage                     | [User guide](docs/usage.md)                                               |
-| Providers and routing     | [Provider setup and protocol conversion](docs/guides/provider-routing.md) |
-| Sensitive-data inspection | [DLP architecture](docs/architecture/security-audit.md)                   |
-| Tool-risk observations    | [Coverage and behavior](docs/architecture/tool-risk.md)                   |
-| Local storage             | [Shared and extension databases](docs/architecture/storage.md)            |
-| Troubleshooting           | [Troubleshooting guide](docs/troubleshooting.md)                          |
-| Contributions             | [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md)   |
-| Vulnerability reporting   | [Security policy](SECURITY.md)                                            |
-
-See the [documentation index](docs/README.md) for additional integration, architecture, and build references.
-
-## Contributing
-
-Bug reports, focused pull requests, documentation improvements, and translations are welcome. Include reproduction steps and relevant validation, and update documentation when behavior changes. Follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
-
-Use this project's issue tracker for Vary AI-specific reports. Follow [SECURITY.md](SECURITY.md) for sensitive reports; do not include credentials, private configuration, or customer data in public examples.
-
-## Upstream origin and attribution
-
-Vary AI is an independent derivative of [CC Switch](https://github.com/farion1231/cc-switch), created by Jason Young and its contributors. CC Switch provides the foundation for provider configuration, client integrations, and other inherited functionality. Vary AI adapts and extends this foundation for local routing, sensitive-data inspection, security event review, and tool-risk observations.
-
-The retained CC Switch baseline is **[`bd247a4adb92adfee0f065f0bdaac9580cfc276a`](https://github.com/farion1231/cc-switch/commit/bd247a4adb92adfee0f065f0bdaac9580cfc276a)** — `fix(proxy): omit missing tool descriptions instead of serializing null (#7319)`.
-
-This commit and its 2,438 ancestors remain unchanged, preserving 2,439 original CC Switch commits. Vary AI development was consolidated into a source snapshot after this baseline, with upstream notices and contributor credit retained.
-
-Later CC Switch changes were also adapted; this baseline is the retained history boundary, not a claim that all reused code comes from that revision. See [Upstream provenance](docs/upstream-provenance.md#subsequent-upstream-contributions) for seven verified examples with original commit links and file-level evidence, and [Contributors](CONTRIBUTORS.md) for contributor credit. The examples are not an exhaustive inventory of upstream reuse.
-
-Vary AI-specific changes and support are maintained in this repository. Please direct Vary AI reports here rather than to CC Switch maintainers. Vary AI is not an official CC Switch release.
-
-## License
-
-Vary AI is distributed under the **[MIT License](LICENSE)**. It permits use, modification, distribution, sublicensing, and commercial use, subject to retaining the copyright and permission notices in copies or substantial portions of the software. The software is provided without warranty; see [LICENSE](LICENSE) for the complete terms.
-
-The original CC Switch copyright notice is preserved:
-
-```text
-Copyright (c) 2025 Jason Young
-```
-
-CC Switch's [license at the recorded baseline](https://github.com/farion1231/cc-switch/blob/bd247a4adb92adfee0f065f0bdaac9580cfc276a/LICENSE) is MIT. Retaining that notice credits the upstream work; it does not attribute all Vary AI changes to the upstream author. Dependencies and other third-party materials retain their respective licenses and notices.
+VaryAI is open-source software. See [LICENSE](LICENSE) for details.

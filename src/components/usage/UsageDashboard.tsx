@@ -2,7 +2,11 @@ import { APP_ICON_NAME } from "@/config/appConfig";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageHero } from "./UsageHero";
-import { getUsageModelOptions, isReadableUsageModelName } from "./modelOptions";
+import {
+  formatShortRoutingId,
+  getUsageModelOptions,
+  isReadableUsageModelName,
+} from "./modelOptions";
 import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
@@ -257,24 +261,30 @@ export function UsageDashboard({
       modelLabels,
     ).map((option) => ({
       value: option.value,
-      routingId: option.routingId?.slice(6, 18),
+      routingId: option.routingId
+        ? formatShortRoutingId(option.routingId)
+        : undefined,
       hidden: option.resolvedLabel
         ? !isReadableUsageModelName(option.resolvedLabel.model)
         : option.routingModels
           ? option.routingModels.length === 0
           : !isReadableUsageModelName(option.value),
       label: option.resolvedLabel
-        ? t("usage.providerModelOption", {
-            model: option.resolvedLabel.displayName,
-            provider: option.resolvedLabel.providerName,
-          })
+        ? option.resolvedLabel.providerName
+          ? t("usage.providerModelOption", {
+              model: option.resolvedLabel.displayName,
+              provider: option.resolvedLabel.providerName,
+            })
+          : option.resolvedLabel.displayName
         : option.routingModels
           ? option.routingModels.length > 0
             ? t("usage.routingModelOption", {
                 models: option.routingModels.join(", "),
               })
             : t("usage.unknownRoutingModelOption", {
-                id: option.routingId?.slice(6, 18),
+                id: option.routingId
+                  ? formatShortRoutingId(option.routingId)
+                  : "",
               })
           : option.value,
     }));

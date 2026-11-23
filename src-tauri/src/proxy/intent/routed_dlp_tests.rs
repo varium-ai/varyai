@@ -503,7 +503,8 @@ async fn shared_chat_route_redacts_assistant_reasoning_only_history_without_400(
         json!({
             "base_url": format!("http://{address}/v1"),
             "auth": {"OPENAI_API_KEY": "synthetic-upstream"},
-            "apiFormat": "openai_chat"
+            "apiFormat": "openai_chat",
+            "config": format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='http://{address}/v1'\nwire_api='chat'\n")
         }),
         None,
     );
@@ -789,7 +790,8 @@ async fn claude_agent_restores_through_a_chat_upstream() -> Result<(), Box<dyn s
         json!({
             "base_url": format!("http://{address}/v1"),
             "auth": {"OPENAI_API_KEY": "synthetic-upstream"},
-            "apiFormat": "openai_chat"
+            "apiFormat": "openai_chat",
+            "config": format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='http://{address}/v1'\nwire_api='chat'\n")
         }),
         None,
     );
@@ -893,6 +895,214 @@ async fn claude_agent_restores_through_a_chat_upstream() -> Result<(), Box<dyn s
         );
         assert_eq!(sent["model"], "grok-4.5");
     }
+
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn dsh_skips_tool_results_and_handles_password_assignment_in_user_message(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct Reset(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset((*crate::proxy::security::get_security_runtime()).clone());
+    let mut policy = crate::proxy::security::SecurityRuntimeConfig::default();
+    for rule_id in [
+        "chinese_phone_number",
+        "chinese_id_card",
+        "catalog:password-assignment",
+    ] {
+        policy.builtin_action_overrides.insert(
+            rule_id.into(),
+            crate::proxy::security::AuditAction::RedactRestore,
+        );
+    }
+    crate::proxy::security::runtime::set_security_runtime_for_test(policy);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let task =
+        tokio::spawn(async move {
+            axum::serve(
+            listener,
+            Router::new().route(
+                "/*path",
+                post(move |Json(body): Json<Value>| {
+                    let tx = tx.clone();
+                    async move {
+                        let _ = tx.send(body.clone()).await;
+                        let msgs = body["messages"].as_array().map(|v| v.as_slice()).unwrap_or(&[]);
+                        let msg = if msgs.len() == 2 {
+                            json!({
+                                "role": "assistant",
+                                "content": "Check DLP rules"
+                            })
+                        } else {
+                            let reply = msgs
+                                .last()
+                                .and_then(|m| m["content"].as_str())
+                                .unwrap_or("ok");
+                            json!({"role": "assistant", "content": reply})
+                        };
+                        Json(json!({
+                            "id": "chatcmpl-dsh-test",
+                            "object": "chat.completion",
+                            "model": "exact-model",
+                            "choices": [{
+                                "index": 0,
+                                "message": msg,
+                                "finish_reason": "stop"
+                            }],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                        }))
+                    }
+                }),
+            ),
+        )
+        .await
+        });
+
+    let runtime = Arc::new(Runtime::default());
+    let mut menu = super::global_tests::menu(&format!("http://{address}/v1/chat/completions"));
+    let session = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing session")?);
+    session.group.levels.clear();
+    session.group.routing = crate::services::intent_routing::RoutingStrategy::Ordered;
+    session.targets[0].model = "exact-model".into();
+    session.group.members[0].model_id = "exact-model".into();
+    let mut upstream = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({
+            "base_url": format!("http://{address}/v1"),
+            "auth": {"OPENAI_API_KEY": "synthetic-upstream"},
+            "apiFormat": "openai_chat",
+            "config": format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='http://{address}/v1'\nwire_api='chat'\n")
+        }),
+        None,
+    );
+    upstream.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(upstream);
+    let alias = session.group.alias();
+    menu.models.insert(
+        "fixture".into(),
+        MenuModel {
+            alias: alias.clone(),
+            label: "Synthetic model".into(),
+            description: "VaryAI routing group",
+            order: 0,
+        },
+    );
+    runtime.set_menu(Arc::new(menu.clone()))?;
+    runtime.set_global(menu, 0)?;
+    runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "deepseek-harness".into(),
+            token: "synthetic-dsh".into(),
+            model: alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let phone = ["138", "0013", "8000"].concat();
+    let id_card = ["110105", "19491231", "002X"].concat();
+
+    // 1. Tool result + tool_calls + system containing test phone, valid test ID card, and
+    // Password => "rredact-password-" must be skipped by routed DLP admission (Passthrough).
+    let mut tool_body = json!({
+        "model": alias,
+        "messages": [
+            {"role": "system", "content": format!("System phone {phone}")},
+            {"role": "user", "content": "Check DLP rules"},
+            {
+                "role": "assistant",
+                "content": "Searching workspace",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "grep", "arguments": format!("{{\"q\":\"{phone}\"}}")}
+                }]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": format!("Self::Password => \"rredact-password-\", {phone}, {id_card}")
+            }
+        ]
+    });
+    let extracted = crate::proxy::security::extractor::extract_payload_texts(&tool_body);
+    assert_eq!(extracted.len(), 2, "extracted={extracted:?}");
+    let admission = crate::proxy::security::http_restoration::admit_routed_http_request(
+        &crate::proxy::security::http_restoration::RestorationGateway::default(),
+        &crate::app_config::AppType::DeepSeekHarness,
+        crate::proxy::protocol_bridge::Protocol::Chat,
+        "/v1/chat/completions",
+        &mut tool_body,
+        &HeaderMap::new(),
+    )?;
+    match admission {
+        crate::proxy::security::http_restoration::RestorationAdmission::Passthrough => {}
+        crate::proxy::security::http_restoration::RestorationAdmission::Admitted(_) => {
+            panic!("expected Passthrough, got Admitted");
+        }
+        crate::proxy::security::http_restoration::RestorationAdmission::Intercepted(resp) => {
+            panic!(
+                "expected Passthrough, got Intercepted status={}",
+                resp.status()
+            );
+        }
+    }
+
+    // 2. User message containing Password => "rredact-password-" + phone + id_card must redact & restore without 400.
+    let user_res = client
+        .post(format!(
+            "http://127.0.0.1:{}/connections/deepseek-harness/v1/chat/completions",
+            info.port
+        ))
+        .bearer_auth("synthetic-dsh")
+        .json(&json!({
+            "model": alias,
+            "messages": [{
+                "role": "user",
+                "content": format!("Self::Password => \"rredact-password-\", {phone}, {id_card}")
+            }]
+        }))
+        .send()
+        .await?;
+    let user_status = user_res.status();
+    let user_wire = user_res.text().await?;
+    assert_eq!(user_status, StatusCode::OK, "body={user_wire}");
+    assert!(user_wire.contains(&phone));
+    assert!(user_wire.contains(&id_card));
+    let sent_user = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await?
+        .ok_or("missing upstream request for user turn")?;
+    let sent_text = sent_user["messages"][0]["content"].as_str().unwrap();
+    assert!(!sent_text.contains(&phone));
+    assert!(!sent_text.contains(&id_card));
 
     server.stop().await?;
     task.abort();

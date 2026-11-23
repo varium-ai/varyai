@@ -317,7 +317,7 @@ fn restoration_audit_http_pretokenized_and_history_wait_for_actual_attempt() -> 
         _source_owner = owner;
         value
     };
-    enriched["instructions"] = json!("private-b");
+    enriched["prompt"] = json!("private-b");
     let attempt = request
         .prepare_attempt(
             "first-provider",
@@ -345,7 +345,7 @@ fn restoration_audit_http_pretokenized_and_history_wait_for_actual_attempt() -> 
         _retry_source_owner = owner;
         value
     };
-    retry_body["instructions"] = json!("private-b");
+    retry_body["prompt"] = json!("private-b");
     let retry = request
         .prepare_attempt(
             "fallback-provider",

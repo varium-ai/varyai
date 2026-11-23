@@ -115,19 +115,11 @@ impl RequestFixture {
 }
 
 // These are expected fixture locations, not an alternative observation traversal.
-const TEXT_PATHS: [&str; 12] = [
-    "/messages/0/content",
-    "/messages/1/content/0/text",
-    "/messages/2/content",
-    "/messages/3/content/0/text",
+const TEXT_PATHS: [&str; 4] = [
     "/messages/4/content",
     "/messages/5/content/0/text",
     "/messages/6/content",
     "/messages/7/content/0/text",
-    "/messages/8/tool_calls/0/function/arguments",
-    "/messages/8/tool_calls/1/function/arguments",
-    "/messages/9/content",
-    "/messages/10/content/0/text",
 ];
 
 fn native_request() -> Value {
@@ -186,6 +178,12 @@ fn ch1_observes_role_strings_and_content_arrays_at_exact_native_nodes() -> TestR
                 json!({"messages":[{"role":role,"content":content}],"extension":{"text":TEXT}});
             let budget = PayloadBudget::with_limit(LIMIT);
             let observation = observed(&body, &budget)?;
+            if matches!(role, "system" | "developer") {
+                assert_eq!(observation.sites().len(), 0);
+                drop(observation);
+                assert!(budget.used() == 0, "chat_ch1_observation_charge_retained");
+                continue;
+            }
             let node = if array {
                 &body["messages"][0]["content"][0]["text"]
             } else {
@@ -244,9 +242,7 @@ fn ch1_observes_tool_argument_strings_and_untrusted_result_text_without_authorit
     for (index, path) in TEXT_PATHS.iter().enumerate() {
         let node = body.pointer(path).ok_or("chat_ch1_fixture_node_missing")?;
         let source = match index {
-            4 | 6 | 7 => SourceClass::HistoricalText,
-            8 | 9 => SourceClass::ToolArguments,
-            10 | 11 => SourceClass::ToolResult,
+            0 | 2 | 3 => SourceClass::HistoricalText,
             _ => SourceClass::CurrentInput,
         };
         assert!(
@@ -258,14 +254,6 @@ fn ch1_observes_tool_argument_strings_and_untrusted_result_text_without_authorit
                 })
             }),
             "chat_ch1_expected_native_site_missing"
-        );
-    }
-    for index in [9, 10] {
-        assert!(
-            observation.history().iter().any(|claim| matches!(claim,
-                HistoryClaim::OpaqueItem { native, source: SourceClass::ToolResult }
-                    if std::ptr::eq(*native, &body["messages"][index]))),
-            "chat_ch1_result_not_classified_as_untrusted_input"
         );
     }
     assert!(
@@ -316,22 +304,12 @@ fn ch1_real_preparation_redacts_all_carriers_preserving_opaque_media_unknown_fie
             // Revert only approved fixture leaves, then compare the entire native tree.
             // Equal text in extensions, tool schemas, media and diagnostic-like keys stays opaque.
             let mut restored_shape = candidate.clone();
-            for (index, path) in TEXT_PATHS.iter().enumerate() {
+            for path in TEXT_PATHS.iter() {
                 let node = candidate.pointer(path).ok_or(TokenError::RedactionFailed)?;
-                if matches!(index, 8 | 9) {
-                    let arguments: Value =
-                        serde_json::from_str(node.as_str().ok_or(TokenError::RedactionFailed)?)
-                            .map_err(|_| TokenError::RedactionFailed)?;
-                    assert!(
-                        arguments["contact"].as_str() == Some(proof[0]) && arguments["count"] == 7,
-                        "chat_ch1_argument_json_string_not_patched"
-                    );
-                } else {
-                    assert!(
-                        node.as_str() == Some(proof[0]),
-                        "chat_ch1_text_site_not_patched"
-                    );
-                }
+                assert!(
+                    node.as_str() == Some(proof[0]),
+                    "chat_ch1_text_site_not_patched"
+                );
                 *restored_shape
                     .pointer_mut(path)
                     .ok_or(TokenError::RedactionFailed)? = original
@@ -360,7 +338,7 @@ fn ch1_real_preparation_redacts_all_carriers_preserving_opaque_media_unknown_fie
             && prepared.irreversible_occurrences == 0,
         "chat_ch1_request_occurrences_invalid"
     );
-    let reference = prepared.body.as_value()["messages"][0]["content"]
+    let reference = prepared.body.as_value()["messages"][4]["content"]
         .as_str()
         .ok_or("chat_ch1_reference_missing")?;
     assert!(
@@ -404,6 +382,7 @@ fn ch1_first_tool_results_need_no_delivered_result_snapshot_but_receive_current_
         let body = json!({"messages":[{"role":"tool","tool_call_id":"synthetic-unproven-call","content":content}]});
         let original = body.clone();
         let observation = observed(&body, &fixture.budget)?;
+        assert_eq!(observation.sites().len(), 0);
         let prepared = prepare_observed_request(
             &mut fixture.lease,
             &observation,
@@ -411,28 +390,17 @@ fn ch1_first_tool_results_need_no_delivered_result_snapshot_but_receive_current_
             RESTORE_RULES,
             &[],
             |_, _, proof| {
-                assert!(proof.len() == 1, "chat_ch1_result_current_proof_missing");
+                assert!(proof.is_empty(), "tool_result must be skipped");
                 Ok(())
             },
         )
         .map_err(|_| "chat_ch1_first_tool_result_rejected")?;
-        let path = if array {
-            "/messages/0/content/0/text"
-        } else {
-            "/messages/0/content"
-        };
-        let reference = prepared
-            .body
-            .as_value()
-            .pointer(path)
-            .and_then(Value::as_str)
-            .ok_or("chat_ch1_result_reference_missing")?;
         assert!(
-            fixture.lease.resolve(reference)? == TEXT
-                && prepared.reversible_occurrences == 1
+            prepared.body.as_value() == &original
+                && prepared.reversible_occurrences == 0
                 && fixture.counts()? == (0, 0, 0)
                 && body == original,
-            "chat_ch1_first_result_not_current_input"
+            "tool_result must remain untouched"
         );
         drop(prepared);
         drop(observation);
@@ -640,8 +608,8 @@ fn ch1_mandatory_validation_failure_rolls_back_all_native_patches_and_provisiona
                 "chat_ch1_failed_validation_committed_early"
             );
             assert!(
-                candidate["messages"][0]["content"].as_str() == Some(proof[0])
-                    && candidate["messages"][10]["content"][0]["text"].as_str() == Some(proof[0]),
+                candidate["messages"][4]["content"].as_str() == Some(proof[0])
+                    && candidate["messages"][6]["content"].as_str() == Some(proof[0]),
                 "chat_ch1_validation_did_not_receive_atomic_candidate"
             );
             Err::<(), _>(TokenError::RedactionFailed)
@@ -804,32 +772,22 @@ fn ch1_role_and_native_position_classification_never_skips_mandatory_scanning() 
             );
         }
         let body = json!({"messages":messages});
-        // Explicit expected classes for two fixtures, not a test-local classifier.
-        let classes: &[SourceClass] = if with_user {
+        let expected_sites: &[(usize, SourceClass)] = if with_user {
             &[
-                SourceClass::CurrentInput,
-                SourceClass::CurrentInput,
-                SourceClass::HistoricalText,
-                SourceClass::HistoricalText,
-                SourceClass::ToolResult,
-                SourceClass::CurrentInput,
-                SourceClass::HistoricalText,
-                SourceClass::ToolResult,
+                (2, SourceClass::HistoricalText),
+                (3, SourceClass::HistoricalText),
+                (5, SourceClass::CurrentInput),
+                (6, SourceClass::HistoricalText),
             ]
         } else {
-            &[
-                SourceClass::CurrentInput,
-                SourceClass::CurrentInput,
-                SourceClass::HistoricalText,
-                SourceClass::ToolResult,
-            ]
+            &[(2, SourceClass::HistoricalText)]
         };
         let observation = observed(&body, &fixture.budget)?;
         assert!(
-            observation.sites().len() == classes.len(),
+            observation.sites().len() == expected_sites.len(),
             "chat_ch1_position_site_count_invalid"
         );
-        for (index, source) in classes.iter().enumerate() {
+        for &(index, source) in expected_sites {
             let content = &body["messages"][index]["content"];
             let node = if content.is_array() {
                 &content[0]["text"]
@@ -839,7 +797,7 @@ fn ch1_role_and_native_position_classification_never_skips_mandatory_scanning() 
             assert!(
                 (0..observation.sites().len()).any(|site_index| {
                     observation.sites().site(site_index).is_some_and(|site| {
-                        std::ptr::eq(site.native(), node) && site.source() == *source
+                        std::ptr::eq(site.native(), node) && site.source() == source
                     })
                 }),
                 "chat_ch1_role_or_position_source_invalid"
@@ -858,7 +816,8 @@ fn ch1_role_and_native_position_classification_never_skips_mandatory_scanning() 
         )
         .map_err(|_| "chat_ch1_classified_text_not_prepared")?;
         assert!(
-            prepared.reversible_occurrences == classes.len() && fixture.counts()? == (0, 0, 0),
+            prepared.reversible_occurrences == expected_sites.len()
+                && fixture.counts()? == (0, 0, 0),
             "chat_ch1_classification_skipped_scanning_or_granted_history"
         );
         drop(prepared);
@@ -956,17 +915,10 @@ fn ch1_boundary_wrong_shaped_text_and_unsupported_tools_are_opaque() -> TestResu
     // Only the final well-shaped carrier in each mixed array is observable.
     // Successful observation does not certify this request's native schema.
     assert!(
-        observation.sites().len() == 2 && observation.history().len() == 3,
+        observation.sites().len() == 1 && observation.history().len() == 2,
         "chat_ch1_boundary_wrong_shape_carrier_set_changed"
     );
-    for (index, path, source) in [
-        (0, "/messages/5/content/14/text", SourceClass::CurrentInput),
-        (
-            1,
-            "/messages/6/tool_calls/17/function/arguments",
-            SourceClass::ToolArguments,
-        ),
-    ] {
+    for (index, path, source) in [(0, "/messages/5/content/14/text", SourceClass::CurrentInput)] {
         let node = body
             .pointer(path)
             .ok_or("chat_ch1_boundary_control_missing")?;
@@ -987,10 +939,6 @@ fn ch1_boundary_wrong_shaped_text_and_unsupported_tools_are_opaque() -> TestResu
             HistoryClaim::AssistantItem { native } =>
                 std::ptr::eq(*native, &body["messages"][3])
                     || std::ptr::eq(*native, &body["messages"][6]),
-            HistoryClaim::OpaqueItem {
-                native,
-                source: SourceClass::ToolResult,
-            } => std::ptr::eq(*native, &body["messages"][4]),
             _ => false,
         }) && fixture.budget.used() > baseline,
         "chat_ch1_boundary_wrong_shape_claim_or_charge_invalid"
@@ -2441,8 +2389,8 @@ fn ch3_lane_native_pairing_is_exact_local_metadata_without_result_authority() ->
         "chat_ch3_pairing_missing_or_fabricated"
     );
     assert!(
-        observation.sites().len() == 6,
-        "chat_ch3_pairing_skipped_untrusted_or_current_sites"
+        observation.sites().len() == 1,
+        "chat_ch3_pairing_should_only_observe_user_or_assistant_text"
     );
     drop(observation);
     assert!(
@@ -2479,13 +2427,13 @@ fn ch3_lane_first_and_edited_result_bodies_are_always_untrusted_current_dlp() ->
         )
         .map_err(|_| "chat_ch3_current_result_preparation_rejected")?;
         assert!(
-            prepared.reversible_occurrences == 1
-                && !prepared.body.as_value()["messages"][1]["content"]
+            prepared.reversible_occurrences == 0
+                && prepared.body.as_value()["messages"][1]["content"]
                     .as_str()
                     .ok_or("chat_ch3_result_text_missing")?
-                    .contains(TEXT)
+                    == text
                 && fixture.counts()? == (0, 0, 0),
-            "chat_ch3_result_body_trusted_or_published"
+            "chat_ch3_result_body_must_be_skipped"
         );
     }
     Ok(())
@@ -2588,7 +2536,7 @@ fn ch3_lane_pairing_ambiguous_ids_and_capacity_controls_do_not_grant_authority()
             .history()
             .iter()
             .any(|claim| matches!(claim, HistoryClaim::CallResultPair { .. }))
-            && observed.sites().len() == 3,
+            && observed.sites().len() == 0,
         "chat_ch3_ambiguous_pair_trusted_or_skipped"
     );
     drop(observed);

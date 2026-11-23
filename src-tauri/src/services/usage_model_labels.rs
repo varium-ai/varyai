@@ -30,6 +30,16 @@ pub(crate) fn canonical_id(value: &str) -> Option<&str> {
     .then_some(bare)
 }
 
+/// Normalize a routing group UUID alias (bare or prefixed with `vary-auto/` / `vary-provider/`).
+fn routing_group_id(value: &str) -> Option<String> {
+    let bare = value
+        .strip_prefix("vary-auto/")
+        .or_else(|| value.strip_prefix("vary-provider/"))
+        .unwrap_or(value);
+    let parsed = uuid::Uuid::parse_str(bare).ok()?;
+    Some(parsed.hyphenated().to_string())
+}
+
 fn valid_text(text: &str, max: usize) -> bool {
     !text.trim().is_empty() && text.chars().count() <= max && !text.chars().any(char::is_control)
 }
@@ -157,28 +167,53 @@ impl Database {
             .iter()
             .filter_map(|id| canonical_id(id))
             .collect::<BTreeSet<_>>();
-        if requested.is_empty() {
+        let requested_groups = ids
+            .iter()
+            .filter_map(|id| routing_group_id(id))
+            .collect::<BTreeSet<_>>();
+        if requested.is_empty() && requested_groups.is_empty() {
             return Ok(Vec::new());
         }
-        let history = {
-            let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
-            read_history(&conn).unwrap_or_default()
-        };
-        let mut labels = history
-            .into_iter()
-            .map(|label| (label.id.clone(), label))
-            .collect::<BTreeMap<_, _>>();
-        // Local names take precedence over retained names after a provider rename.
-        // Disabled/deleted models can still occur in historical usage records.
-        if let Ok(providers) = self.routing_catalog_providers(true) {
-            for label in labels_for_providers(&providers) {
-                labels.insert(label.id.clone(), label);
+        let mut resolved = Vec::new();
+        if !requested.is_empty() {
+            let history = {
+                let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+                read_history(&conn).unwrap_or_default()
+            };
+            let mut labels = history
+                .into_iter()
+                .map(|label| (label.id.clone(), label))
+                .collect::<BTreeMap<_, _>>();
+            // Local names take precedence over retained names after a provider rename.
+            // Disabled/deleted models can still occur in historical usage records.
+            if let Ok(providers) = self.routing_catalog_providers(true) {
+                for label in labels_for_providers(&providers) {
+                    labels.insert(label.id.clone(), label);
+                }
+            }
+            resolved.extend(
+                labels
+                    .into_values()
+                    .filter(|label| requested.contains(label.id.as_str())),
+            );
+        }
+        if !requested_groups.is_empty() {
+            if let Ok(groups) = self.list_intent_routing_groups() {
+                for group in groups {
+                    let group_id = group.id.to_ascii_lowercase();
+                    if requested_groups.contains(group_id.as_str()) && valid_text(&group.name, 200)
+                    {
+                        resolved.push(UsageModelLabel {
+                            id: group_id,
+                            model: group.name.clone(),
+                            display_name: group.name,
+                            provider_name: String::new(),
+                        });
+                    }
+                }
             }
         }
-        Ok(labels
-            .into_values()
-            .filter(|label| requested.contains(label.id.as_str()))
-            .collect())
+        Ok(resolved)
     }
 }
 

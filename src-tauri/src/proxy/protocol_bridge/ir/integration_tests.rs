@@ -56,9 +56,10 @@ fn request(protocol: Protocol, streaming: bool, history: bool) -> Value {
     }
     if protocol == Protocol::Responses {
         value["input"].as_array_mut().unwrap().extend([
-            json!({"type":"function_call_output","id":"synthetic-page-context","namespace":"agent","name":"codex_apps_open_page","output":format!("Synthetic page context {SENSITIVE}")}),
+            json!({"type":"function_call_output","id":"synthetic-page-context","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page context"}),
             json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic page selection"}),
             json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","output":"<in-app-browser-context>Synthetic browser tabs</in-app-browser-context>"}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":SENSITIVE}]}),
         ]);
     }
     if history {

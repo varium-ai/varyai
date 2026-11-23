@@ -956,6 +956,12 @@ body:has(.tray-panel),
   animation: none;
 }
 
+.tray-panel .tray-agents .mp-agent-checkin {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-left: 0;
+}
+
 .tray-agents .mp-agent-expanded .mp-agent-cli {
   margin: 0 0 10px;
 }

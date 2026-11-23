@@ -59,11 +59,15 @@ export function getUsageModelOptions(
   }));
 }
 
+export function formatShortRoutingId(id: string): string {
+  return id.startsWith("model-") ? id.slice(6, 18) : id.slice(0, 13);
+}
+
 export function getUsageModelDisplayName(
   value: string,
   names: Readonly<Record<string, string>>,
   unknown: (id: string) => string,
 ): string {
   const id = getUsageRoutingModelId(value);
-  return id ? (names[id] ?? unknown(id.slice(6, 18))) : value;
+  return id ? (names[id] ?? unknown(formatShortRoutingId(id))) : value;
 }
