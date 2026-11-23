@@ -383,6 +383,45 @@ fn report_events(state: &TelemetryState, today: &str, version: &str) -> Vec<&'st
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptOutcome {
+    Dispatched,
+    Failed,
+    ConsentChanged,
+}
+
+async fn run_report_attempt<Show, Destroy>(
+    changes: &mut tokio::sync::watch::Receiver<u64>,
+    completion: tokio::sync::oneshot::Receiver<bool>,
+    timeout: Duration,
+    show: Show,
+    destroy: Destroy,
+) -> AttemptOutcome
+where
+    Show: FnOnce() -> Result<(), String>,
+    Destroy: FnOnce(),
+{
+    let outcome = if show().is_ok() {
+        tokio::select! {
+            biased;
+            _ = changes.changed() => AttemptOutcome::ConsentChanged,
+            result = tokio::time::timeout(timeout, completion) => {
+                if result.ok().and_then(Result::ok).unwrap_or(false) {
+                    AttemptOutcome::Dispatched
+                } else {
+                    AttemptOutcome::Failed
+                }
+            }
+        }
+    } else {
+        AttemptOutcome::Failed
+    };
+    // Destroy the hidden analytics WebView after every dispatch attempt so it never
+    // stays resident in the background across display/sleep cycles on macOS.
+    destroy();
+    outcome
+}
+
 async fn telemetry_worker(manager: Weak<TelemetryManager>, app: tauri::AppHandle) {
     let Some(owner) = manager.upgrade() else {
         return;
@@ -419,26 +458,28 @@ async fn telemetry_worker(manager: Weak<TelemetryManager>, app: tauri::AppHandle
                     break;
                 };
                 drop(owner);
-                let dispatched = if window::show_report(&app, manager.clone(), &report).is_ok() {
-                    tokio::select! {
-                        biased;
-                        _ = changes.changed() => {
-                            if let Some(owner) = manager.upgrade() { owner.cancel_pending(); }
-                            window::destroy(&app);
-                            continue 'worker;
-                        },
-                        result = tokio::time::timeout(REQUEST_TIMEOUT, completion) => result.ok().and_then(Result::ok).unwrap_or(false),
+                match run_report_attempt(
+                    &mut changes,
+                    completion,
+                    REQUEST_TIMEOUT,
+                    || window::show_report(&app, manager.clone(), &report),
+                    || window::destroy(&app),
+                )
+                .await
+                {
+                    AttemptOutcome::Dispatched => break,
+                    AttemptOutcome::ConsentChanged => {
+                        if let Some(owner) = manager.upgrade() {
+                            owner.cancel_pending();
+                        }
+                        continue 'worker;
                     }
-                } else {
-                    false
-                };
-                if dispatched {
-                    break;
+                    AttemptOutcome::Failed => {
+                        if let Some(owner) = manager.upgrade() {
+                            owner.cancel_pending();
+                        }
+                    }
                 }
-                if let Some(owner) = manager.upgrade() {
-                    owner.cancel_pending();
-                }
-                window::destroy(&app);
                 if attempt + 1 < MAX_ATTEMPTS {
                     tokio::select! {
                         _ = changes.changed() => continue 'worker,

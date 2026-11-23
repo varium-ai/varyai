@@ -279,3 +279,75 @@ fn a_dispatch_crossing_midnight_rechecks_the_current_statistics_day() {
         std::time::Duration::from_secs(86399)
     );
 }
+
+#[tokio::test]
+async fn analytics_window_is_destroyed_after_every_dispatch_attempt() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let (consent_tx, mut consent_rx) = tokio::sync::watch::channel(0u64);
+    let destroy_count = AtomicUsize::new(0);
+
+    // Successful dispatch must destroy the hidden analytics window.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tx.send(true).expect("send success");
+    let outcome = super::run_report_attempt(
+        &mut consent_rx,
+        rx,
+        Duration::from_secs(1),
+        || Ok(()),
+        || {
+            destroy_count.fetch_add(1, Ordering::SeqCst);
+        },
+    )
+    .await;
+    assert_eq!(outcome, super::AttemptOutcome::Dispatched);
+    assert_eq!(destroy_count.load(Ordering::SeqCst), 1);
+
+    // Failed dispatch must also destroy the hidden analytics window.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tx.send(false).expect("send failure");
+    let outcome = super::run_report_attempt(
+        &mut consent_rx,
+        rx,
+        Duration::from_secs(1),
+        || Ok(()),
+        || {
+            destroy_count.fetch_add(1, Ordering::SeqCst);
+        },
+    )
+    .await;
+    assert_eq!(outcome, super::AttemptOutcome::Failed);
+    assert_eq!(destroy_count.load(Ordering::SeqCst), 2);
+
+    // Show error must still invoke destroy cleanup.
+    let (_tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    let outcome = super::run_report_attempt(
+        &mut consent_rx,
+        rx,
+        Duration::from_secs(1),
+        || Err("unavailable".into()),
+        || {
+            destroy_count.fetch_add(1, Ordering::SeqCst);
+        },
+    )
+    .await;
+    assert_eq!(outcome, super::AttemptOutcome::Failed);
+    assert_eq!(destroy_count.load(Ordering::SeqCst), 3);
+
+    // Consent change during wait must destroy the hidden analytics window.
+    let (_tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    consent_tx.send(1).expect("notify consent change");
+    let outcome = super::run_report_attempt(
+        &mut consent_rx,
+        rx,
+        Duration::from_secs(1),
+        || Ok(()),
+        || {
+            destroy_count.fetch_add(1, Ordering::SeqCst);
+        },
+    )
+    .await;
+    assert_eq!(outcome, super::AttemptOutcome::ConsentChanged);
+    assert_eq!(destroy_count.load(Ordering::SeqCst), 4);
+}
