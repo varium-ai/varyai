@@ -21,7 +21,9 @@ export type ProviderErrorHandler = (
   cause?: unknown,
 ) => void;
 
-export function showProviderError(
+export const PROVIDER_ERROR_DURATION_MS = 6000;
+
+export function providerErrorMessage(
   t: TFunction,
   operation: ProviderOperation,
   cause?: unknown,
@@ -61,17 +63,26 @@ export function showProviderError(
           : code === "emptyCatalog"
             ? "intentRouting.catalogReason.empty"
             : undefined;
-  toast.error(
-    t(
+  return {
+    title: t(
       operation === "copy"
         ? "onboarding.copyFailed"
         : `modelProviders.errors.${operation}`,
     ),
-    {
-      id: `provider-error-${operation}`,
-      description: reason ? t(reason) : undefined,
-      duration: 6000,
-      closeButton: true,
-    },
-  );
+    description: reason ? t(reason) : undefined,
+  };
+}
+
+export function showProviderError(
+  t: TFunction,
+  operation: ProviderOperation,
+  cause?: unknown,
+) {
+  const { title, description } = providerErrorMessage(t, operation, cause);
+  toast.error(title, {
+    id: `provider-error-${operation}`,
+    description,
+    duration: PROVIDER_ERROR_DURATION_MS,
+    closeButton: true,
+  });
 }

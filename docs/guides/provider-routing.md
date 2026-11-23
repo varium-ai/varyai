@@ -75,6 +75,10 @@ model. The alternate catalog only supplies a model for the probe. Changing the
 URL, protocol or credential, or closing the editor, invalidates the pending
 result and any pending model-discovery step.
 
+Errors from **Detect protocol** and **Fetch models** appear in red beside their
+controls. The message closes after six seconds or when you click **Close**.
+Closing the message keeps the editor and its draft open.
+
 Account selection and model select-all use the same 18px checkbox, including
 checked, mixed, disabled and keyboard-focus states. Color and checkmark
 transitions run in both directions and respect the system reduced-motion setting.

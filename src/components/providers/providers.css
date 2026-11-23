@@ -1602,6 +1602,9 @@
 .pv-provider-dialog .pv-probe-results .ok {
   color: var(--mp-green);
 }
+.pv-provider-dialog .pv-inline-provider-error p {
+  color: var(--mp-red);
+}
 .pv-provider-dialog .pv-account-list {
   overflow: hidden;
   border: 1px solid var(--mp-line);

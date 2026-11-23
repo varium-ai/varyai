@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getModelContextWindows } from "@/lib/api/model-fetch";
 import {
@@ -31,7 +31,11 @@ import {
   type GlobalProviderPreset,
 } from "@/config/globalProviderPresets";
 import { ProviderImageModels } from "./ProviderImageModels";
-import type { ProviderErrorHandler } from "./providerErrorToast";
+import {
+  PROVIDER_ERROR_DURATION_MS,
+  providerErrorMessage,
+  type ProviderErrorHandler,
+} from "./providerErrorToast";
 import { CodexProviderFields } from "./CodexProviderFields";
 import { ProviderKeysField } from "./ProviderKeysField";
 import { SubscriptionProviderFields } from "./SubscriptionProviderFields";
@@ -67,6 +71,36 @@ const formats: Array<[Format, string, string]> = [
 const MODEL_PAGE_SIZE = 120;
 export const MAX_PROVIDER_MODEL_SELECTION = 256;
 
+function InlineProviderError({
+  title,
+  description,
+  onClose,
+}: {
+  title: string;
+  description?: string;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  useEffect(() => {
+    const timer = window.setTimeout(onClose, PROVIDER_ERROR_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [onClose]);
+
+  return (
+    <div className="pv-probe-results pv-inline-provider-error" role="alert">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p>{title}</p>
+          {description && <p>{description}</p>}
+        </div>
+        <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+          {t("common.close")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ProviderEditorDialog({
   open = true,
   draft,
@@ -90,7 +124,7 @@ export function ProviderEditorDialog({
   onKeyChange,
   onProtocolChange,
   onRegionChange,
-  onDiscover: _onDiscover,
+  onDiscover,
   onFetchProbeModels,
   onProbe,
   onSave,
@@ -172,6 +206,11 @@ export function ProviderEditorDialog({
       : null;
   const [probing, setProbing] = useState(false);
   const [probeFailed, setProbeFailed] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<ReturnType<
+    typeof providerErrorMessage
+  > | null>(null);
+  const closeProbeError = useCallback(() => setProbeFailed(false), []);
+  const closeDiscoveryError = useCallback(() => setDiscoveryError(null), []);
   const probeRequest = useRef<object | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [iconBusy, setIconBusy] = useState(false);
@@ -186,6 +225,7 @@ export function ProviderEditorDialog({
     probeRequest.current = null;
     setProbing(false);
     setProbeFailed(false);
+    setDiscoveryError(null);
     setResults([]);
     return () => {
       probeRequest.current = null;
@@ -441,7 +481,14 @@ export function ProviderEditorDialog({
         !source.baseUrl ||
         (!apiKey && !draft.hasApiKey)
       }
-      onClick={() => void _onDiscover()}
+      onClick={async () => {
+        setDiscoveryError(null);
+        try {
+          await onDiscover();
+        } catch (cause) {
+          setDiscoveryError(providerErrorMessage(t, "fetchModels", cause));
+        }
+      }}
     >
       {discovering && (
         <Loader2
@@ -750,25 +797,22 @@ export function ProviderEditorDialog({
                             {t("providerEditor.detect")}
                           </Button>
                         </div>
-                        {(probeFailed || !!results.length) && (
-                          <div
-                            className="pv-probe-results"
-                            role={probeFailed ? "alert" : "status"}
-                          >
+                        {probeFailed && (
+                          <InlineProviderError
+                            title={t("modelProviders.errors.testModels")}
+                            onClose={closeProbeError}
+                          />
+                        )}
+                        {!!results.length && (
+                          <div className="pv-probe-results" role="status">
                             <div className="flex items-center justify-between gap-2">
-                              {probeFailed && (
-                                <p>{t("modelProviders.errors.testModels")}</p>
-                              )}
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="icon"
                                 className="ml-auto shrink-0"
                                 aria-label={t("common.close")}
-                                onClick={() => {
-                                  setProbeFailed(false);
-                                  setResults([]);
-                                }}
+                                onClick={() => setResults([])}
                               >
                                 <X size={14} aria-hidden="true" />
                               </Button>
@@ -947,6 +991,12 @@ export function ProviderEditorDialog({
                               />
                             )}
                           </div>
+                          {discoveryError && (
+                            <InlineProviderError
+                              {...discoveryError}
+                              onClose={closeDiscoveryError}
+                            />
+                          )}
                           {pageCount > 1 && (
                             <div className="pv-model-actions">
                               <Button

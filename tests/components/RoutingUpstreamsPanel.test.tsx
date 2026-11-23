@@ -717,7 +717,7 @@ describe("global upstream editor", () => {
     expect(fetch).toBeEnabled();
   });
 
-  it("clears only the discovery loading state after failure and allows retry", async () => {
+  it("shows a saved supplier's discovery error inline and clears it on retry", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     vi.mocked(routingUpstreamsApi.discover)
       .mockRejectedValueOnce(new Error("Synthetic discovery failure"))
@@ -732,6 +732,9 @@ describe("global upstream editor", () => {
       name: "providerForm.fetchModels",
     });
     fireEvent.click(fetch);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "modelProviders.errors.fetchModels",
+    );
     await waitFor(() => expect(fetch).toHaveAttribute("aria-busy", "false"));
     expect(fetch).toBeEnabled();
     expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
@@ -739,8 +742,68 @@ describe("global upstream editor", () => {
     expect(
       await screen.findByRole("button", { name: "retry-model" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(routingUpstreamsApi.discover).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["close", "timeout"] as const)(
+    "dismisses a new supplier's model discovery error via %s without leaving the draft",
+    async (dismissal) => {
+      vi.mocked(fetchModelsForConfig).mockRejectedValueOnce(
+        new Error("synthetic-private-detail"),
+      );
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      const editor = screen.getByRole("dialog", {
+        name: "providerFlow.custom",
+      });
+      const name = within(editor).getByLabelText("modelProviders.name");
+      const endpoint = within(editor).getByLabelText("modelProviders.baseUrl");
+      fireEvent.change(name, { target: { value: "Unsaved supplier" } });
+      fireEvent.change(endpoint, {
+        target: { value: "https://fixture.example/v1" },
+      });
+      fireEvent.change(within(editor).getByLabelText("modelProviders.apiKey"), {
+        target: { value: "synthetic-key" },
+      });
+      const fetch = within(editor).getByRole("button", {
+        name: "providerForm.fetchModels",
+      });
+      vi.useFakeTimers();
+      try {
+        await act(async () => fireEvent.click(fetch));
+        const error = within(editor).getByRole("alert");
+        expect(error).toHaveClass("pv-inline-provider-error");
+        expect(error).toHaveTextContent("modelProviders.errors.fetchModels");
+        expect(error).not.toHaveTextContent("synthetic-private-detail");
+        expect(toast.error).not.toHaveBeenCalled();
+
+        if (dismissal === "close") {
+          fireEvent.click(
+            within(error).getByRole("button", { name: "common.close" }),
+          );
+        } else {
+          act(() => vi.advanceTimersByTime(5999));
+          expect(error).toBeVisible();
+          act(() => vi.advanceTimersByTime(1));
+        }
+        expect(within(editor).queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.getAllByRole("dialog")).toEqual([editor]);
+        expect(name).toHaveValue("Unsaved supplier");
+        expect(endpoint).toHaveValue("https://fixture.example/v1");
+        expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("uses a tri-state select-all checkbox beside model discovery", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
@@ -2110,6 +2173,7 @@ describe("global upstream editor", () => {
       screen.getByRole("button", { name: "providerEditor.detect" }),
     );
     const result = await screen.findByRole("alert");
+    expect(result).toHaveClass("pv-inline-provider-error");
     expect(result).toHaveTextContent("modelProviders.errors.testModels");
     fireEvent.click(
       within(result).getByRole("button", { name: "common.close" }),

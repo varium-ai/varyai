@@ -791,7 +791,7 @@ export function RoutingUpstreamsPanel({
       );
       return found;
     } catch (cause) {
-      if (isCurrent()) report("fetchModels", cause);
+      if (isCurrent()) throw cause;
       return [];
     } finally {
       if (discoveryRequest.current === request) {

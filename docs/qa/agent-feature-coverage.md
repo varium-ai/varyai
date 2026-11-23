@@ -18,6 +18,10 @@ verification covers default selection, manual removal, saving an empty
 selection, and the existing catalog refresh path on the common UI. Native
 Agent and Windows acceptance remain pending for this editor change.
 
+Manual catalog discovery errors are handled in the same shared provider editor
+for all applicable Agents below. The renderer regression verifies dismissal in
+a new draft and retry in a saved provider. This is the form's error state.
+
 | Agent ID           | Discovery entry point in scope                           |
 | ------------------ | -------------------------------------------------------- |
 | `claude`           | Shared supplier or Gemini-compatible provider editor     |
