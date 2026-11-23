@@ -1,6 +1,7 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Copy, LoaderCircle } from "lucide-react";
+import { Copy, LoaderCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
 type Props = {
@@ -110,7 +111,7 @@ export function CodexLoginPanel(props: Props) {
             <label className="cx-signing-proxy">
               <span>{t("codexBrowser.proxy")}:</span>
               <span className="cx-signing-proxy-control">
-                <select
+                <OptionSelect
                   aria-label={t("codexBrowser.proxy")}
                   value={
                     custom
@@ -123,13 +124,12 @@ export function CodexLoginPanel(props: Props) {
                             ? "inherit"
                             : ""
                   }
-                  onChange={(event) => {
-                    if (event.target.value === "custom") setCustom(true);
+                  onValueChange={(value) => {
+                    if (value === "custom") setCustom(true);
                     else {
                       setCustom(false);
-                      if (event.target.value === "inherit")
-                        props.onInheritProxy?.();
-                      else props.onProxy?.(event.target.value);
+                      if (value === "inherit") props.onInheritProxy?.();
+                      else props.onProxy?.(value);
                     }
                   }}
                 >
@@ -143,8 +143,7 @@ export function CodexLoginPanel(props: Props) {
                   <option value="custom">
                     {t("codexBrowser.customProxy")}
                   </option>
-                </select>
-                <ChevronDown size={12} aria-hidden />
+                </OptionSelect>
               </span>
             </label>
           )}

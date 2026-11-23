@@ -174,7 +174,7 @@ export function BackupListSection({
               onSettingsChange({ backupIntervalHours: Number(v) })
             }
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger className="h-[var(--select-height)]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -229,7 +229,7 @@ export function BackupListSection({
               onSettingsChange({ backupRetainCount: Number(v) })
             }
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger className="h-[var(--select-height)]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -310,7 +310,7 @@ export function BackupListSection({
                           if (e.key === "Enter") handleConfirmRename();
                           if (e.key === "Escape") handleCancelRename();
                         }}
-                        className="text-xs"
+                        className="h-[var(--control-height)] text-[13px]"
                         placeholder={t(
                           "settings.backupManager.namePlaceholder",
                           { defaultValue: "Enter new name" },

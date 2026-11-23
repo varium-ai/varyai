@@ -4,6 +4,7 @@ module.exports = {
   darkMode: ["selector", ".dark"],
   theme: {
     extend: {
+      borderColor: { DEFAULT: "hsl(var(--border))" },
       textColor: {
         primary: {
           DEFAULT: "hsl(var(--primary-text))",
@@ -95,15 +96,7 @@ module.exports = {
       },
       fontFamily: {
         sans: ["var(--mp-font)"],
-        mono: [
-          "ui-monospace",
-          "SFMono-Regular",
-          '"SF Mono"',
-          "Consolas",
-          '"Liberation Mono"',
-          "Menlo",
-          "monospace",
-        ],
+        mono: ["var(--code-font)"],
       },
       animation: {
         "fade-in": "fadeIn 0.5s ease-out",

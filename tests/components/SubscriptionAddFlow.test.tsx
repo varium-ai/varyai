@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   act,
   fireEvent,
@@ -319,9 +320,9 @@ it("wires the native browser link, proxy selection and manual callback in the in
     name: "codexBrowser.authorizationUrl",
   });
   expect(link).toHaveValue(url);
-  fireEvent.change(
+  selectAppOption(
     screen.getByRole("combobox", { name: "codexBrowser.proxy" }),
-    { target: { value: "direct" } },
+    "direct",
   );
   await waitFor(() =>
     expect(native.start).toHaveBeenLastCalledWith(

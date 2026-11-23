@@ -979,7 +979,7 @@ export function WebdavSyncSection({
           onValueChange={handleSyncTypeChange}
           disabled={isLoading || isS3Loading}
         >
-          <SelectTrigger className="text-xs flex-1">
+          <SelectTrigger className="text-[13px] flex-1">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1006,7 +1006,7 @@ export function WebdavSyncSection({
                 onValueChange={handlePresetChange}
                 disabled={isLoading}
               >
-                <SelectTrigger className="text-xs flex-1">
+                <SelectTrigger className="text-[13px] flex-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1029,7 +1029,7 @@ export function WebdavSyncSection({
                 onChange={(e) => updateField("baseUrl", e.target.value)}
                 onBlur={handleBaseUrlBlur}
                 placeholder={t("settings.webdavSync.baseUrlPlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isLoading}
               />
             </div>
@@ -1043,7 +1043,7 @@ export function WebdavSyncSection({
                 value={form.username}
                 onChange={(e) => updateField("username", e.target.value)}
                 placeholder={t("settings.webdavSync.usernamePlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isLoading}
               />
             </div>
@@ -1058,7 +1058,7 @@ export function WebdavSyncSection({
                 value={form.password}
                 onChange={(e) => updateField("password", e.target.value)}
                 placeholder={t("settings.webdavSync.passwordPlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 autoComplete="off"
                 disabled={isLoading}
               />
@@ -1084,7 +1084,7 @@ export function WebdavSyncSection({
                 value={form.remoteRoot}
                 onChange={(e) => updateField("remoteRoot", e.target.value)}
                 placeholder="varyai-sync"
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isLoading}
               />
             </div>
@@ -1101,7 +1101,7 @@ export function WebdavSyncSection({
                 value={form.profile}
                 onChange={(e) => updateField("profile", e.target.value)}
                 placeholder="default"
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isLoading}
               />
             </div>
@@ -1240,7 +1240,7 @@ export function WebdavSyncSection({
                 onValueChange={handleS3PresetChange}
                 disabled={isS3Loading}
               >
-                <SelectTrigger className="text-xs flex-1">
+                <SelectTrigger className="text-[13px] flex-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1273,7 +1273,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder={activeS3Preset?.regionPlaceholder ?? "us-east-1"}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isS3Loading}
               />
             </div>
@@ -1290,7 +1290,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder={t("settings.s3Sync.bucketPlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isS3Loading}
               />
             </div>
@@ -1307,7 +1307,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder={t("settings.s3Sync.accessKeyIdPlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isS3Loading}
               />
             </div>
@@ -1326,7 +1326,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder={t("settings.s3Sync.secretAccessKeyPlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 autoComplete="off"
                 disabled={isS3Loading}
               />
@@ -1347,7 +1347,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder={t("settings.s3Sync.endpointPlaceholder")}
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isS3Loading}
               />
             </div>
@@ -1367,7 +1367,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder="varyai-sync"
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isS3Loading}
               />
             </div>
@@ -1387,7 +1387,7 @@ export function WebdavSyncSection({
                   markS3Dirty();
                 }}
                 placeholder="default"
-                className="text-xs flex-1"
+                className="text-[13px] flex-1"
                 disabled={isS3Loading}
               />
             </div>

@@ -400,7 +400,7 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
                       value={searchTerm}
                       onChange={(e) => handleSearchChange(e.target.value)}
                       placeholder={t("workspace.dailyMemory.searchPlaceholder")}
-                      className="pl-8 pr-8 h-8 text-sm"
+                      className="pl-8 pr-8 h-[var(--filter-height)] text-[13px]"
                     />
                     {searchTerm && (
                       <button

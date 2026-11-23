@@ -289,7 +289,7 @@ function ReasoningLevelsEditor({
           type="button"
           role="combobox"
           aria-expanded={open}
-          className="flex h-9 w-full items-center justify-between gap-1 rounded-md border border-border-default bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus-visible:outline-none focus:border-border-default focus-visible:border-border-default focus:ring-0 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-[var(--select-height)] w-full items-center justify-between gap-1 rounded-sm border border-border-default bg-background px-3 py-1 text-[13px] leading-5 shadow-sm focus:outline-none focus-visible:outline-none focus:border-border-default focus-visible:border-border-default focus:ring-0 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span
             className={cn(
@@ -356,7 +356,7 @@ function ReasoningLevelsEditor({
                 )
               }
             >
-              <SelectTrigger className="mt-1 h-8 w-full">
+              <SelectTrigger className="mt-1 h-[var(--select-height)] w-full">
                 <SelectValue
                   placeholder={t(
                     "codexConfig.defaultReasoningLevelPlaceholder",

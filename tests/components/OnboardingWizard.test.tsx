@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   act,
   cleanup,
@@ -351,9 +352,7 @@ it.each(["openai_chat", "openai_responses", "anthropic", "gemini_native"])(
   async (apiFormat) => {
     const finish = mount();
     enterKey();
-    fireEvent.change(screen.getByLabelText("onboarding.protocol"), {
-      target: { value: apiFormat },
-    });
+    selectAppOption(screen.getByLabelText("onboarding.protocol"), apiFormat);
     vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
       {
         id: "fixture-model",
@@ -753,9 +752,7 @@ it.each([
 ])("uses the correct credential header for %s", async (format, header) => {
   const finish = mount();
   enterKey();
-  fireEvent.change(screen.getByLabelText("onboarding.protocol"), {
-    target: { value: format },
-  });
+  selectAppOption(screen.getByLabelText("onboarding.protocol"), format);
   fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
   await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(fetchModelsForConfig).toHaveBeenCalledWith(

@@ -39,7 +39,7 @@ export function UpstreamProtocolSelect({
       >
         <SelectTrigger
           id="upstream-api-format"
-          className="h-11 rounded-xl px-4 text-sm"
+          className="h-[var(--select-height)] rounded-sm px-3 text-[13px]"
         >
           <SelectValue />
         </SelectTrigger>

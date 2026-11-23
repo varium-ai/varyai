@@ -852,7 +852,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         value={search}
                         onChange={(event) => setSearch(event.target.value)}
                         placeholder={t("sessionManager.searchPlaceholder")}
-                        className="h-8 pl-8 pr-8 text-sm"
+                        className="h-[var(--filter-height)] pl-8 pr-8 text-[13px]"
                         autoFocus
                         onKeyDown={(e) => {
                           if (e.key === "Escape") {

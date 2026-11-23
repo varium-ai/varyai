@@ -41,7 +41,7 @@ it.each([true, false])(
   (sharedLast) => {
     render(
       <Dialog open>
-        <DialogContent className="pv-import-dialog">
+        <DialogContent id="fixture-import-dialog" className="pv-import-dialog">
           <DialogTitle>Import providers</DialogTitle>
           <DialogDescription>Synthetic import sizing fixture</DialogDescription>
         </DialogContent>
@@ -100,7 +100,7 @@ it("keeps a fixed viewport-clamped height for import and picker dialogs", () => 
   expect(importFooter.get("margin-top")).toBe("auto");
 
   const importFooterBtn = topLevelDecls(".pv-import-footer button");
-  expect(importFooterBtn.get("height")).toBe("var(--compact-control-height)");
+  expect(importFooterBtn.get("height")).toBe("var(--button-height)");
 
   const pickerDialog = topLevelDecls(
     '.pv-picker-dialog.vary-dialog-surface[role="dialog"]',

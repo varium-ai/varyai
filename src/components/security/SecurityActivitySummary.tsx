@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { resolveUsageRange } from "@/lib/usageRange";
 import { useSecurityEventsSummary } from "@/hooks/useSecurityEvents";
+import { SecurityMetric, securityMetricOrder } from "./SecurityMetric";
 
 export function SecurityActivitySummary() {
   const { t, i18n } = useTranslation();
@@ -18,22 +19,20 @@ export function SecurityActivitySummary() {
         ? "—"
         : value.toLocaleString(i18n.language);
 
-  const cards = [
-    ["events", data?.total, "text-primary"],
-    ["protectiveBlocked", data?.protectiveBlocked, "text-destructive"],
-    ["redacted", data?.redacted, "text-primary"],
-    ["audited", data?.warnings, "text-[var(--warning)]"],
-  ] as const;
-
   return (
     <section aria-label={t("securityStats.today")}>
       <h2 className="stats-eyebrow">{t("securityStats.today")}</h2>
       <dl className="stats-security-grid">
-        {cards.map(([key, value, color]) => (
-          <div key={key} className="stats-surface stats-event">
-            <dt>{t(`securityStats.${key}`)}</dt>
-            <dd className={color}>{display(value, summary.isLoading)}</dd>
-          </div>
+        {(["events", ...securityMetricOrder] as const).map((metric) => (
+          <SecurityMetric
+            key={metric}
+            metric={metric}
+            value={display(
+              metric === "events" ? data?.total : data?.[metric],
+              summary.isLoading,
+            )}
+            className="stats-surface"
+          />
         ))}
       </dl>
     </section>

@@ -59,7 +59,7 @@
 .ob-steps li.active > span {
   color: white;
   border-color: transparent;
-  background: hsl(var(--primary));
+  background: var(--mp-action);
 }
 .ob-scroll {
   flex: 1;
@@ -107,6 +107,13 @@
 .dark .vary-onboarding[role="dialog"] {
   --primary: 219 100% 74%;
   --ring: 219 100% 74%;
+}
+.vary-onboarding button[data-variant="default"] {
+  background: var(--mp-action);
+  color: white;
+}
+.vary-onboarding button[data-variant="default"]:hover {
+  background: var(--primary-fill-hover);
 }
 .ob-method-icon {
   display: grid;
@@ -193,7 +200,7 @@
 }
 .ob-key-form input,
 .ob-key-form select {
-  height: var(--compact-control-height);
+  height: var(--control-height);
   border: 1px solid var(--mp-line);
   border-radius: 9px;
   background: var(--mp-card);

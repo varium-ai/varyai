@@ -118,7 +118,13 @@ afterEach(async () => {
 
 it("reorders providers from their handles, persists on remount, and never changes configuration", async () => {
   const { unmount } = mount();
-  await screen.findByRole("article", { name: "beta" });
+  const row = await screen.findByRole("article", { name: "beta" });
+  expect(row.lastElementChild).toBe(handle("beta"));
+  const state = within(row).getByRole("switch").closest(".pv-row-state");
+  expect(state).not.toBeNull();
+  expect(state).not.toContainElement(
+    within(row).getByRole("button", { name: "providerEditor.duplicate beta" }),
+  );
   drag("beta", 108, 36);
   fireEvent.pointerUp(document, { clientX: 12, clientY: 36 });
   await waitFor(() => expect(order()).toEqual(["beta", "alpha", "gamma"]));

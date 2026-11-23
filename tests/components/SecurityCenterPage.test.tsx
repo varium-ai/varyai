@@ -398,17 +398,17 @@ describe("SecurityCenterPage", () => {
     expect(screen.getByText("security.addRule")).toBeInTheDocument();
   });
 
-  it("shows redacted, warned and protectively blocked event totals in order", () => {
+  it("shows protection, redaction and warning totals in the Statistics order", () => {
     auditRows.total = 0;
     render(<SecurityCenterPage />);
-    const labels = ["redacted", "warnings", "protectiveBlocked"];
+    const labels = ["protectiveBlocked", "redacted", "warnings"];
     const cards = labels.map(
       (label) => screen.getByText(`securityStats.${label}`).parentElement!,
     );
-    expect(cards.map((card) => card.firstElementChild?.textContent)).toEqual([
+    expect(cards.map((card) => card.querySelector("dd")?.textContent)).toEqual([
+      "4",
       "3",
       "2",
-      "4",
     ]);
     expect(Array.from(cards[0].parentElement!.children)).toEqual(cards);
     expect(screen.queryByText("securityStats.blocked")).not.toBeInTheDocument();
@@ -509,25 +509,28 @@ describe("SecurityCenterPage", () => {
     ).toHaveLength(2);
   });
 
-  it("keeps all three actions outside the scrolling filter fields", () => {
+  it("keeps the toolbar and results in one card, with actions outside the filter grid", () => {
     render(<SecurityCenterPage />);
     const fields = screen.getByRole("combobox", {
       name: "securityEvents.source",
     });
-    const scroller = fields.closest(".overflow-x-auto");
-    expect(scroller).not.toBeNull();
+    const grid = fields.closest(".sc-filters");
+    const toolbar = fields.closest(".sc-record-controls");
+    expect(grid).not.toBeNull();
+    expect(toolbar).not.toBeNull();
+    expect(toolbar?.parentElement).toContainElement(screen.getByRole("table"));
     for (const name of [
       "security.resetFilters",
       "security.refreshLogs",
       "securityEvents.clearFiltered",
     ]) {
       const button = screen.getByRole("button", { name });
-      expect(scroller).not.toContainElement(button);
-      expect(scroller?.parentElement).toContainElement(button);
+      expect(grid).not.toContainElement(button);
+      expect(toolbar).toContainElement(button);
     }
   });
 
-  it("keeps both filter focus rings consistent and inside the scroll area", () => {
+  it("keeps both filter focus borders consistent in the wrapping field grid", () => {
     render(<SecurityCenterPage />);
     fireEvent.click(
       screen.getByRole("combobox", { name: "securityEvents.source" }),
@@ -539,17 +542,16 @@ describe("SecurityCenterPage", () => {
     const search = screen.getByPlaceholderText("security.searchPlaceholder");
     for (const input of [session, search]) {
       expect(input).toHaveClass(
-        "h-8",
+        "h-[var(--filter-height)]",
         "rounded-md",
         "focus:border-primary",
-        "focus:ring-2",
-        "focus:ring-ring/25",
+        "focus:ring-0",
       );
-      expect(input).not.toHaveClass("focus:ring-0", "focus-visible:ring-0");
+      expect(input).not.toHaveClass("focus:ring-2", "focus-visible:ring-0");
     }
-    const scroller = session.parentElement?.parentElement;
-    expect(scroller).toContainElement(search);
-    expect(scroller).toHaveClass("overflow-x-auto", "p-1");
+    const grid = session.closest(".sc-filters");
+    expect(grid).toContainElement(search);
+    expect(grid?.parentElement).not.toHaveClass("overflow-x-auto");
   });
 
   it("shows and updates action buttons for custom rules", () => {
@@ -979,12 +981,15 @@ it("keeps audit headers on one line with reserved column widths and bounded long
       "security.riskLevel",
       "security.recordResult",
     ]);
-    for (const key of [
-      "security.firstSeenAt",
-      "security.lastSeenAt",
-      "security.sessionId",
-    ])
-      expect(widths[headers.indexOf(key)]).toBeGreaterThanOrEqual(208);
+    for (const key of ["security.firstSeenAt", "security.lastSeenAt"]) {
+      expect(widths[headers.indexOf(key)]).toBeGreaterThanOrEqual(176);
+    }
+    expect(
+      widths.slice(0, 6).reduce((sum, width) => sum + width, 0),
+    ).toBeLessThanOrEqual(860);
+    expect(
+      widths[headers.indexOf("security.sessionId")],
+    ).toBeGreaterThanOrEqual(150);
     expect(
       widths[headers.indexOf("security.triggerCount")],
     ).toBeGreaterThanOrEqual(112);

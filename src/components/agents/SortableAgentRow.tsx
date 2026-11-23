@@ -20,6 +20,7 @@ export function SortableAgentRow({
       id={app}
       sortable={sortable}
       handleClassName="mp-agent-drag-handle"
+      handlePlacement="end"
       handleLabel={t("agentConnections.sorting.handle", { app: name })}
       handleRole={t("agentConnections.sorting.role")}
       handleHint={t("agentConnections.sorting.hint")}

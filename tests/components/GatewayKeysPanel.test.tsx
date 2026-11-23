@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   fireEvent,
   render,
@@ -10,7 +11,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { GatewayKeysPanel } from "@/components/proxy/GatewayKeysPanel";
 import { gatewayApi } from "@/lib/api/gateway";
-import { APP_IDS, getAppLabel } from "@/config/appConfig";
+import { APP_IDS } from "@/config/appConfig";
 import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -123,6 +124,7 @@ function mount(
   );
 }
 beforeEach(() => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
   vi.clearAllMocks();
   vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
   vi.mocked(gatewayApi.list).mockResolvedValue([]);
@@ -427,11 +429,11 @@ it("offers every agent, binds routed agents and explains direct-only agents", as
   ]);
   mount();
   fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.agents" }));
-  const desktop = await screen.findByLabelText("Claude Desktop");
+  const desktop = await screen.findByLabelText("apps.claude-desktop");
   await waitFor(() =>
     expect(desktop).toHaveAttribute("id", "gateway-agent-claude-desktop"),
   );
-  fireEvent.change(desktop, { target: { value: "key" } });
+  selectAppOption(desktop, "key");
   await waitFor(() =>
     expect(gatewayApi.bind).toHaveBeenCalledWith("claude-desktop", "key"),
   );
@@ -468,7 +470,7 @@ it("shows usage attributed to a key and agent, including missing usage", async (
   );
   expect(
     await screen.findByText(
-      "Synthetic · gatewayKeys.sourceAgent: Claude Desktop",
+      "Synthetic · gatewayKeys.sourceAgent: apps.claude-desktop",
     ),
   ).toBeInTheDocument();
   expect(screen.getByText("allowed")).toBeInTheDocument();
@@ -602,7 +604,8 @@ it("reports shared connection readiness for every policy-capable Agent", async (
   fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.agents" }));
   await waitFor(() => {
     for (const app of routed) {
-      const row = screen.getByLabelText(getAppLabel(app)).parentElement!;
+      const agentName = app === "claude" ? "Claude Code" : `apps.${app}`;
+      const row = screen.getByLabelText(agentName).parentElement!;
       expect(row).toHaveTextContent(
         app === "claude-desktop"
           ? "gatewayKeys.routeRequired"
@@ -641,4 +644,19 @@ it("shows readable catalog names while storing exact route IDs", async () => {
   fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.edit" }));
   expect(screen.getByRole("checkbox", { name: /Example Model/ })).toBeChecked();
   expect(screen.getByLabelText("gatewayKeys.models")).toHaveValue(model.model);
+});
+
+it("preserves client protocol choices and request examples with the shared Select", async () => {
+  mount();
+  fireEvent.click(
+    screen.getByRole("tab", { name: "gatewayKeys.tabs.connect" }),
+  );
+  const trigger = screen.getByLabelText("gatewayKeys.clientProtocol");
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  expect(await screen.findAllByRole("option")).toHaveLength(4);
+  fireEvent.click(screen.getByRole("option", { name: "OpenAI Responses" }));
+  expect(trigger).toHaveTextContent("OpenAI Responses");
+  expect(document.querySelector("pre")).toHaveTextContent("/v1/responses");
+  expect(gatewayApi.bind).not.toHaveBeenCalled();
+  expect(gatewayApi.create).not.toHaveBeenCalled();
 });

@@ -353,7 +353,7 @@ export function ProviderPresetSelector({
               aria-label={t("providerPreset.searchAriaLabel", {
                 defaultValue: "Search provider presets",
               })}
-              className="w-60 h-8"
+              className="w-60 h-[var(--control-height)]"
               autoFocus
             />
           )}

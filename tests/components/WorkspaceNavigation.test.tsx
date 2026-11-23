@@ -22,10 +22,16 @@ vi.mock("@/contexts/UpdateContext", () => ({
 describe("WorkspaceNavigation", () => {
   it("reopens the update dialog beside Settings and disables installation in progress", () => {
     updateState.resetDismiss.mockClear();
-    const { container, rerender } = render(
+    const { rerender } = render(
       <WorkspaceNavigation view="agents" onSelect={vi.fn()} />,
     );
-    const row = container.querySelector(".workspace-settings-row");
+    const settings = screen.getByRole("button", {
+      name: "workspaceNav.settings",
+    });
+    const row = settings.parentElement;
+    expect(row?.previousElementSibling).toContainElement(
+      screen.getByRole("button", { name: "workspaceNav.security" }),
+    );
     const update = screen.getByRole("button", {
       name: "settings.updateAvailable",
     });

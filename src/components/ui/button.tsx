@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-[13px] font-medium transition-colors duration-[var(--interaction-duration)] ease-[var(--interaction-easing)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:pointer-events-none disabled:[&:not([aria-busy=true])]:bg-muted disabled:[&:not([aria-busy=true])]:text-[var(--disabled-foreground)]",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-[13px] leading-5 font-medium transition-colors duration-[var(--interaction-duration)] ease-[var(--interaction-easing)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:pointer-events-none disabled:[&:not([aria-busy=true])]:bg-muted disabled:[&:not([aria-busy=true])]:text-[var(--disabled-foreground)]",
   {
     variants: {
       variant: {
@@ -17,13 +17,13 @@ const buttonVariants = cva(
         secondary:
           "border border-border bg-card text-secondary-foreground hover:bg-[var(--hover-surface)] active:bg-accent",
         ghost:
-          "text-secondary-foreground hover:bg-[var(--hover-surface)] active:bg-accent",
+          "rounded-sm text-secondary-foreground hover:bg-[var(--hover-surface)] active:bg-accent",
         mcp: "bg-[var(--mcp-action)] text-white hover:bg-[var(--mcp-action-hover)]",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-[var(--compact-control-height)] px-3.5 py-0",
-        sm: "h-[var(--compact-control-height)] px-3 text-xs",
+        default: "h-[var(--button-height)] px-4 py-2",
+        sm: "h-[var(--button-height)] px-3 text-[13px]",
         lg: "h-10 rounded-md px-8",
         icon: "h-[var(--compact-control-height)] w-[var(--compact-control-height)] rounded-sm p-1.5 [&_svg]:h-4 [&_svg]:w-4",
       },

@@ -564,7 +564,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
             </Button>
           </div>
           {addError && (
-            <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+            <div className="flex items-center gap-1.5 text-xs text-destructive">
               <AlertCircle className="h-3 w-3" />
               {addError}
             </div>
@@ -613,12 +613,12 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
                         <div
                           className={`font-mono text-sm font-medium ${
                             latency < 300
-                              ? "text-emerald-600 dark:text-emerald-400"
+                              ? "text-[var(--success)]"
                               : latency < 500
-                                ? "text-yellow-600 dark:text-yellow-400"
+                                ? "text-[var(--warning)]"
                                 : latency < 800
-                                  ? "text-orange-600 dark:text-orange-400"
-                                  : "text-red-600 dark:text-red-400"
+                                  ? "text-[var(--warning)]"
+                                  : "text-destructive"
                           }`}
                         >
                           {latency}ms
@@ -627,11 +627,11 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
                     ) : isTesting ? (
                       <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
                     ) : entry.error ? (
-                      <div className="text-xs text-gray-400">
+                      <div className="text-xs text-muted-foreground">
                         {t("endpointTest.failed")}
                       </div>
                     ) : (
-                      <div className="text-xs text-gray-400">—</div>
+                      <div className="text-xs text-muted-foreground">—</div>
                     )}
 
                     <button
@@ -657,7 +657,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
 
         {/* 错误提示 */}
         {lastError && (
-          <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+          <div className="flex items-center gap-1.5 text-xs text-destructive">
             <AlertCircle className="h-3 w-3" />
             {lastError}
           </div>

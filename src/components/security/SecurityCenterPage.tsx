@@ -277,7 +277,7 @@ export function SecurityCenterPage({
           </p>
         </div>
 
-        {headerAction}
+        {headerAction && <div className="sc-header-action">{headerAction}</div>}
       </header>
       <div className="sc-tab-bar">
         <SlidingSegmentedControl
@@ -305,7 +305,7 @@ export function SecurityCenterPage({
           itemRole="tab"
           indicatorVariant="surface"
           className="max-w-full rounded-lg border-border bg-muted"
-          buttonClassName="min-h-8 rounded-md px-3 text-xs font-medium"
+          buttonClassName="min-h-9 rounded-sm px-3 text-[13px] font-medium"
           indicatorClassName="rounded-md"
           indicatorTestId="security-tabs-indicator"
         />
@@ -330,7 +330,7 @@ export function SecurityCenterPage({
         />
       ) : activeTab === "rules" ? (
         <section
-          className="mt-5 space-y-4"
+          className="space-y-[var(--workspace-module-gap)]"
           role="tabpanel"
           aria-label={t("security.tabRules")}
         >
@@ -382,7 +382,7 @@ export function SecurityCenterPage({
                         key={rule.id}
                         data-testid={`security-rule-${rule.id}`}
                         className={
-                          "sc-rule-row " + (!isEnabled ? "opacity-60" : "")
+                          "sc-rule-row " + (!isEnabled ? "bg-muted/40" : "")
                         }
                       >
                         <div className="sc-rule-copy space-y-1">
@@ -551,7 +551,7 @@ export function SecurityCenterPage({
         </section>
       ) : (
         <section
-          className="mt-5 space-y-4"
+          className="space-y-[var(--workspace-module-gap)]"
           role="tabpanel"
           aria-label={t("toolRisk.tabLabel", { defaultValue: "工具调用风险" })}
         >
@@ -680,7 +680,7 @@ export function SecurityCenterPage({
                     ? t("security.dialogRegexPlaceholder")
                     : t("security.dialogKeywordPlaceholder")
                 }
-                className="font-mono text-xs"
+                className="font-mono text-[13px]"
               />
             </div>
             <div className="space-y-1.5">

@@ -77,6 +77,18 @@ it("opens a compact empty profile menu without a redundant section separator", a
   expect(document.querySelector("[cmdk-list] .bg-border")).toBeNull();
 });
 
+it("focuses the profile name on create and returns focus to the switcher on cancel", async () => {
+  mount("claude", ["claude"], true);
+  const switcher = await screen.findByRole("combobox");
+  fireEvent.click(switcher);
+  fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+
+  const name = await screen.findByRole("textbox", { name: zh.profiles.name });
+  await waitFor(() => expect(name).toHaveFocus());
+  fireEvent.click(screen.getByRole("button", { name: zh.common.cancel }));
+  await waitFor(() => expect(switcher).toHaveFocus());
+});
+
 it.each(["kimi", "claude", "opencode"] as const)(
   "shows the selected bundle from %s even when that agent has no snapshot",
   async (app) => {

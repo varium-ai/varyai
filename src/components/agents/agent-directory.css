@@ -1,10 +1,78 @@
+.vary-agents:not(.tray-agents) {
+  row-gap: var(--workspace-module-gap);
+}
+
 .agent-directory-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: var(--workspace-page-top, 24px) 0 var(--workspace-section-gap);
+  padding: calc(var(--workspace-page-top, 24px) + 8px) 0 0;
+}
+
+.agent-directory-header .mp-page-heading {
+  margin: 0;
+}
+
+.agent-directory-header > button {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates {
+  flex: none;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  min-height: 56px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates .mp-agent-updates-say {
+  flex: 1 1 360px;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates > .mp-agent-update {
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates > .mp-agent-update svg {
+  width: 14px;
+  height: 14px;
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates > .mp-agent-update-all {
+  margin-left: auto;
+  border-color: transparent;
+  background: hsl(var(--primary-fill));
+  color: hsl(var(--primary-foreground));
+}
+
+.vary-agents:not(.tray-agents)
+  > .mp-agent-updates
+  > .mp-agent-update-all:hover:not(:disabled) {
+  background: var(--primary-fill-hover);
+  color: hsl(var(--primary-foreground));
+}
+
+.vary-agents:not(.tray-agents) > .mp-agent-updates > .mp-agent-update-all svg {
+  color: currentColor;
 }
 
 .agent-directory-toolbar {
@@ -12,21 +80,11 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin-bottom: var(--workspace-section-gap);
-}
-
-.vary-agents:not(.tray-agents) > .mp-agent-updates {
-  margin-bottom: var(--workspace-section-gap);
-}
-
-.vary-agents .agent-directory-toolbar ~ [role="tabpanel"] {
-  margin-top: 0;
 }
 
 .agent-directory-toolbar .agent-directory-tabs {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  height: var(--compact-control-height);
   align-items: center;
   gap: 3px;
   padding: 3px;
@@ -38,16 +96,19 @@
 .agent-directory-tabs [role="tab"] {
   gap: 7px;
   min-width: 0;
-  height: 100%;
-  min-height: 0;
+
   padding: 0 12px;
-  border-radius: 7px;
+
   color: var(--mp-fg-2);
-  font-size: 12px;
-  font-weight: 400;
+
   transition:
     background-color var(--interaction-duration) var(--interaction-easing),
     color var(--interaction-duration) var(--interaction-easing);
+  min-height: 36px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .agent-directory-tabs [role="tab"][aria-selected="false"]:hover {
@@ -57,9 +118,9 @@
 
 .agent-directory-tabs [role="tab"][aria-selected="true"] {
   background: var(--mp-card);
-  color: var(--mp-fg);
-  box-shadow: var(--mp-edge);
-  font-weight: 600;
+  color: var(--mp-link);
+  font-weight: 500;
+  box-shadow: none;
 }
 
 .agent-directory-tabs [role="tab"] > svg {
@@ -72,8 +133,9 @@
 .agent-directory-count {
   min-width: 2ch;
   color: var(--mp-muted);
-  font-size: 11px;
+
   font-variant-numeric: tabular-nums;
+  font-size: 12px;
 }
 
 .agent-directory-search {
@@ -100,9 +162,10 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
-  min-height: var(--workspace-row-height);
-  padding: var(--workspace-row-padding);
+
   border-radius: var(--radius);
+  min-height: var(--table-row-height);
+  padding: 8px 16px;
 }
 
 .agent-list-row .mp-agent-icon {
@@ -123,9 +186,10 @@
 }
 
 .agent-list-row .mp-agent-name h2 {
-  font-size: 15px;
-  font-weight: 600;
   overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .agent-list-row .mp-agent-status-text {
@@ -174,13 +238,50 @@
   grid-column: 1 / -1;
   min-width: 0;
   padding-left: 0;
+  order: 1;
 }
 
 .agent-list-row .mp-agent-drag-handle {
-  inset: 50% auto auto 2px;
-  width: 22px;
-  height: 26px;
-  transform: translateY(-50%);
+  position: static;
+  inset: auto;
+  width: 32px;
+  height: 32px;
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.agent-list-row .mp-agent-drag-handle > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-list-row .mp-agent-version-update {
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: hsl(var(--accent));
+  color: hsl(var(--link-foreground));
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.agent-list-row .mp-agent-version-update > svg {
+  width: 14px;
+  height: 14px;
+  color: currentColor;
+}
+
+.agent-list-row .mp-agent-version-update:hover:not(:disabled) {
+  background: var(--hover-surface);
+  color: hsl(var(--link-foreground));
+}
+
+.agent-list-row .mp-agent-version-update:focus-visible {
+  outline: 2px solid hsl(var(--link-foreground));
+  outline-offset: 2px;
 }
 
 .agent-list-row.mp-sortable-row[data-sortable] + .agent-list-row::before {

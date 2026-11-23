@@ -1,23 +1,25 @@
 :root {
-  --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23637184' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --native-select-chevron: url("../../assets/ui/chevron-down.svg");
 }
 .dark {
   --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2398a2b1' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
-/* Keep page-specific control sizes while sharing the single-select surface. */
+/* Standard single-select controls share the40px field surface. */
 :where(select:not([multiple]):not([size]):not(.cx-signing-proxy select)) {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  height: 36px;
+
   padding: 0 12px;
   border: 1px solid var(--mp-line);
-  border-radius: 8px;
+
   background-color: var(--mp-card);
   color: var(--mp-fg);
-  font: inherit;
+  font: 400 var(--control-font-size) / var(--control-line-height) var(--mp-font);
   box-shadow: none;
+  height: var(--select-height);
+  border-radius: var(--select-radius);
 }
 
 /* Reserve arrow space even when a page sets its own horizontal padding. */
@@ -59,4 +61,40 @@ select:not([multiple]):not([size]):where(
     background-image: none;
     padding-inline-end: 12px;
   }
+}
+
+/* Standard native text fields use the same geometry as Input and SelectTrigger.
+   Checkbox, radio, file, range and hidden controls keep their own semantics. */
+:where(
+  input:not(
+    [type="checkbox"],
+    [type="radio"],
+    [type="range"],
+    [type="file"],
+    [type="hidden"],
+    [type="color"],
+    [type="button"],
+    [type="submit"],
+    [type="reset"],
+    [type="image"]
+  )
+) {
+  height: var(--control-height);
+  border-radius: var(--control-radius);
+  font-size: var(--control-font-size);
+  line-height: var(--control-line-height);
+}
+
+/* Figma365:301 distinguishes text-entry fields from compact filters. */
+select:not([multiple]):not([size]) {
+  --control-height: var(--select-height);
+  --control-radius: var(--select-radius);
+}
+input[type="search"] {
+  --control-height: var(--filter-height);
+  --control-radius: var(--select-radius);
+}
+
+select:not([multiple]):not([size]):not([hidden]) {
+  border-radius: var(--select-radius);
 }

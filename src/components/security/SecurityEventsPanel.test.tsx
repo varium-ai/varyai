@@ -425,7 +425,7 @@ describe("unified security event list", () => {
   });
   it("explicit refresh returns to first page and resets update warning", async () => {
     render(<Harness />);
-    fireEvent.click(screen.getByText("security.nextPage"));
+    fireEvent.click(screen.getByRole("button", { name: "security.nextPage" }));
     expect(state.query.mock.calls.at(-1)![1]).toBe(2);
     fireEvent.click(
       screen.getByRole("button", { name: "security.refreshLogs" }),
@@ -486,7 +486,9 @@ describe("unified event snapshot and clear boundaries", () => {
         .spyOn(Date, "now")
         .mockReturnValue(new Date(2026, 9, 21, 23, 59).getTime());
       const { rerender } = render(<Harness initialRange={{ preset }} />);
-      fireEvent.click(screen.getByText("security.nextPage"));
+      fireEvent.click(
+        screen.getByRole("button", { name: "security.nextPage" }),
+      );
       const before = { ...latestFilter() };
       clock.mockReturnValue(new Date(2026, 9, 22, 0, 1).getTime());
       state.hasUpdates = true;
@@ -520,7 +522,7 @@ describe("unified event snapshot and clear boundaries", () => {
   it("shows update warnings without replacing a selected deep-page snapshot", () => {
     state.hasUpdates = true;
     const { rerender } = render(<Harness />);
-    fireEvent.click(screen.getByText("security.nextPage"));
+    fireEvent.click(screen.getByRole("button", { name: "security.nextPage" }));
     fireEvent.click(screen.getByTestId("security-event-dlp:7"));
     state.items = [{ ...dlp, triggerCount: 99 }];
     rerender(<Harness />);
@@ -654,7 +656,9 @@ describe("manual refresh feedback", () => {
       expect(loading.previousElementSibling).toContainElement(table);
       expect(loading).not.toHaveClass("absolute");
       expect(table.querySelector("tbody")).toBeEmptyDOMElement();
-      expect(screen.getByText("security.nextPage")).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "security.nextPage" }),
+      ).toBeDisabled();
       fireEvent.click(button);
       expect(state.refetch).toHaveBeenCalledTimes(1);
       await act(async () => vi.advanceTimersByTimeAsync(299));

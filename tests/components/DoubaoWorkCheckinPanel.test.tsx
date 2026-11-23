@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -99,7 +100,7 @@ it("lists accounts without claiming and offers an explicit switch action for the
   expect(
     screen.getByRole("button", { name: "doubaowork.checkin.checkNow" }),
   ).toBeEnabled();
-  fireEvent.change(select, { target: { value: "account-b" } });
+  selectAppOption(select, "account-b");
   const disclosure = screen.getByRole("button", {
     name: "doubaowork.checkin.title",
   });
@@ -193,9 +194,7 @@ it("refreshes a previously completed reward without claiming or switching accoun
   await screen.findByText("doubaowork.checkin.outcomes.already_checked");
   expect(screen.getByText("dailyCheckin.todayReward")).toBeVisible();
   expect(screen.getByText("dailyCheckin.days")).toBeVisible();
-  fireEvent.change(screen.getByRole("combobox"), {
-    target: { value: "account-b" },
-  });
+  selectAppOption(screen.getByRole("combobox"), "account-b");
   expect(
     screen.queryByText("dailyCheckin.todayReward"),
   ).not.toBeInTheDocument();
@@ -280,9 +279,7 @@ it("keeps the observed reward and updates only the account whose preference was 
   expect(
     screen.getByText("doubaowork.checkin.outcomes.already_checked"),
   ).toBeVisible();
-  fireEvent.change(screen.getByRole("combobox"), {
-    target: { value: "account-b" },
-  });
+  selectAppOption(screen.getByRole("combobox"), "account-b");
   expect(toggle).not.toBeChecked();
 });
 

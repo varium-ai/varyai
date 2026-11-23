@@ -2,21 +2,46 @@
   --compact-control-height: 2rem;
   --workspace-section-gap: 12px;
   --workspace-content-gap: 8px;
-  --workspace-row-height: 60px;
-  --workspace-row-padding: 8px 16px 8px 24px;
-  --mp-font: system-ui, sans-serif;
-  --background: 216 50% 98%;
+  --workspace-row-height: var(--table-row-height);
+  --workspace-row-padding: 8px var(--list-padding-inline);
+  --control-height: 40px;
+  --field-height: 40px;
+  --filter-height: 36px;
+  --select-height: 36px;
+  --button-height: 36px;
+  --select-radius: 6px;
+  --panel-radius: 12px;
+  --control-radius: 8px;
+  --control-font-size: 13px;
+  --control-line-height: 20px;
+  --table-row-height: 64px;
+  --table-header-height: 40px;
+  --list-padding-inline: 16px;
+  --list-action-gap: 12px;
+  --workspace-page-max-width: 1232px;
+  --workspace-page-gutter: 24px;
+  --workspace-module-gap: 16px;
+  --section-title-size: 16px;
+  --section-title-line-height: 24px;
+  --list-title-size: 14px;
+  --list-title-line-height: 20px;
+  --supporting-text-size: 12px;
+  --supporting-text-line-height: 18px;
+  --mp-font: "Inter Variable", "Noto Sans SC Variable", system-ui, sans-serif;
+  --code-font: "JetBrains Mono Variable", ui-monospace, monospace;
+  --background: 214.28571429 41.17647059% 96.66666667%;
   --card: 0 0% 100%;
-  --muted: 214 50% 97%;
+  --muted: 210 40% 94.11764706%;
   --accent: 219.13 100% 95.49%;
   --hover-surface: color-mix(in srgb, hsl(var(--primary)) 8%, hsl(var(--card)));
   --row-hover: color-mix(in srgb, hsl(var(--primary)) 6%, hsl(var(--card)));
+  --floating-shadow: 0 8px 24px rgb(38 50 66 / 12%);
   --interaction-duration: 150ms;
   --interaction-easing: ease-out;
 
   --foreground: 212.143 26.415% 20.784%;
   --secondary-foreground: 214.054 18.408% 39.412%;
-  --muted-foreground: 214.545 14.286% 45.294%;
+  --muted-foreground: 213.75 14.678899% 42.745098%;
   --disabled-foreground: #9ca8b5;
 
   --border: 211.429 35.593% 88.431%;
@@ -30,12 +55,16 @@
   --mcp-action: #10b981;
   --mcp-action-hover: #059669;
   --primary-foreground: 0 0% 100%;
+  /* Text and filled actions need stronger contrast than the brand/chart blue. */
+  --link-foreground: 218.965517 73.109244% 46.666667%;
+  --primary-fill: 218.965517 73.109244% 46.666667%;
+  --primary-fill-hover: #174cae;
 
-  --success: #087f5b;
+  --success: #087954;
   --success-surface: #e7f5ef;
-  --warning: #9a6700;
+  --warning: #916000;
   --warning-surface: #fff4dc;
-  --destructive: 355.252 55.823% 51.176%;
+  --destructive: 354.586466 56.118143% 46.470588%;
   --danger-surface: #fde6e7;
 
   --chart-cost: #ed4665;
@@ -53,17 +82,24 @@
   --input: var(--border);
   --ring: var(--primary);
   --radius: 0.5rem;
+  --page-title-size: 18px;
+  --page-title-line-height: 28px;
+  --page-title-weight: 500;
+  --page-title-font: var(--mp-font);
 }
 
 :root[data-platform="macos"] {
-  --mp-font: "PingFang SC", -apple-system, sans-serif;
+  --mp-font:
+    "Inter Variable", "Noto Sans SC Variable", "PingFang SC", sans-serif;
 }
 
 :root[data-platform="windows"] {
-  --mp-font: "Microsoft YaHei", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  --mp-font:
+    "Inter Variable", "Noto Sans SC Variable", "Microsoft YaHei", sans-serif;
 }
 
 .dark {
+  --floating-shadow: 0 12px 32px rgb(0 0 0 / 32%);
   --background: 220 4.11% 14.314%;
   --card: 220 6.122% 19.216%;
   --muted: 218.182 8.943% 24.118%;
@@ -77,7 +113,7 @@
 
   --foreground: 220 13.043% 90.98%;
   --secondary-foreground: 216 15.385% 74.51%;
-  --muted-foreground: 216 13.812% 64.51%;
+  --muted-foreground: 216 15.923567% 69.215686%;
   --disabled-foreground: #6f7885;
 
   --border: 220 8.451% 27.843%;
@@ -86,12 +122,13 @@
   --primary-hover: #4a8aff;
   --mcp-action: #059669;
   --mcp-action-hover: #047857;
+  --link-foreground: 218.360656 100% 76.078431%;
 
   --success: #51c99d;
   --success-surface: #203d33;
   --warning: #e6b957;
   --warning-surface: #423821;
-  --destructive: 355.714 78.873% 72.157%;
+  --destructive: 355.384615 88.135593% 76.862745%;
   --danger-surface: #442b32;
 }
 

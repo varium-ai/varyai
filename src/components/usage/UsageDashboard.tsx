@@ -35,7 +35,6 @@ import {
   useUsageModelLabels,
 } from "@/lib/query/usage";
 import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
-import { cn } from "@/lib/utils";
 import { getLocaleFromLanguage } from "./format";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
@@ -361,20 +360,15 @@ export function UsageDashboard({
                 title={label}
                 aria-label={label}
                 aria-pressed={appType === type}
-                className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  appType === type
-                    ? "bg-card text-primary shadow-sm"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
-                )}
+                className="stats-agent-option focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 {type === "all" ? (
-                  <LayoutGrid className="h-4 w-4" />
+                  <LayoutGrid className="h-6 w-6" />
                 ) : (
                   <ProviderIcon
                     icon={APP_ICON_NAME[type]}
                     name={label}
-                    size={16}
+                    size={24}
                   />
                 )}
               </button>
@@ -387,7 +381,7 @@ export function UsageDashboard({
           onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
         >
           <SelectTrigger
-            className="h-[34px] w-full bg-card text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+            className="h-[var(--select-height)] w-full bg-card text-[13px] focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
             title={
               selectedSourceOption
                 ? getUsageSourceLabel(selectedSourceOption, t)
@@ -417,7 +411,7 @@ export function UsageDashboard({
           onValueChange={(v) => setModel(decodeOptionValue(v))}
         >
           <SelectTrigger
-            className="h-[34px] w-full bg-card text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+            className="h-[var(--select-height)] w-full bg-card text-[13px] focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
             aria-label={t("usage.filterByModel")}
             title={selectedModelLabel ?? t("usage.filterByModel")}
             aria-describedby="usage-model-filter-scope"
@@ -443,7 +437,7 @@ export function UsageDashboard({
           onValueChange={(v) => changeRefreshInterval(Number(v))}
         >
           <SelectTrigger
-            className="h-[34px] w-full bg-card text-xs focus:border-border-default"
+            className="h-[var(--select-height)] w-full bg-card text-[13px] focus:border-border-default"
             title={t("usage.refreshInterval")}
             aria-label={t("usage.refreshInterval")}
           >
@@ -465,7 +459,7 @@ export function UsageDashboard({
           selection={range}
           triggerLabel={rangeLabel}
           onApply={setRange}
-          triggerClassName="h-[34px] w-full px-2"
+          triggerClassName="h-[var(--filter-height)] w-full px-2"
         />
         <span id="usage-model-filter-scope" className="stats-filter-note">
           {t("usage.modelFilterScope")}

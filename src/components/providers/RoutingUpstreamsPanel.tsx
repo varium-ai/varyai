@@ -976,6 +976,7 @@ export function RoutingUpstreamsPanel({
         handleRole={t("modelProviders.sorting.role")}
         handleHint={t("modelProviders.sorting.hint")}
         handleClassName="pv-drag-handle"
+        handlePlacement="end"
         aria-label={record.name}
         data-provider-id={record.id}
         className={`pv-row ${record.enabled === false ? "off" : ""}`}
@@ -1047,75 +1048,79 @@ export function RoutingUpstreamsPanel({
               )}
           </span>
         </button>
-        <span
-          className={`pv-key ${needsLogin ? "missing" : record.source.kind !== "api" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
-          title={
-            record.source.kind !== "api"
-              ? subscription || t("providerParity.subscription")
-              : undefined
-          }
-        >
-          <span>
-            {needsLogin
-              ? t("codexProvider.loggedOut")
-              : record.source.kind !== "api"
+        <div className="pv-row-state">
+          <span
+            className={`pv-key ${needsLogin ? "missing" : record.source.kind !== "api" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
+            title={
+              record.source.kind !== "api"
                 ? subscription || t("providerParity.subscription")
-                : t(
-                    record.hasApiKey
-                      ? "modelProviders.keySaved"
-                      : "modelProviders.keyMissing",
-                  )}
+                : undefined
+            }
+          >
+            <span>
+              {needsLogin
+                ? t("codexProvider.loggedOut")
+                : record.source.kind !== "api"
+                  ? subscription || t("providerParity.subscription")
+                  : t(
+                      record.hasApiKey
+                        ? "modelProviders.keySaved"
+                        : "modelProviders.keyMissing",
+                    )}
+            </span>
           </span>
-        </span>
-        {needsLogin && (
+          {needsLogin && (
+            <button
+              type="button"
+              className="pv-reauth"
+              disabled={busy || !!draft || !!selected}
+              aria-label={`${t("codexOauth.reauthLogin")} ${record.name}`}
+              onClick={() => void openRecord(record, true)}
+            >
+              {t("codexOauth.reauthLogin")}
+            </button>
+          )}
+          <Switch
+            className="mp-switch"
+            aria-label={`${t("modelPicker.enableProvider")} ${record.name}`}
+            checked={record.enabled !== false}
+            disabled={busy || !!draft || !!selected}
+            onCheckedChange={(enabled) => void toggle(record, enabled)}
+          />
+        </div>
+        <div className="pv-row-actions">
           <button
             type="button"
-            className="pv-reauth"
-            disabled={busy || !!draft || !!selected}
-            aria-label={`${t("codexOauth.reauthLogin")} ${record.name}`}
-            onClick={() => void openRecord(record, true)}
+            className="pv-row-copy"
+            aria-label={`${t("providerEditor.duplicate")} ${record.name}`}
+            title={`${t("providerEditor.duplicate")} ${record.name}`}
+            aria-haspopup="dialog"
+            disabled={
+              busy || !!draft || !!selected || record.source.kind !== "api"
+            }
+            onClick={(event) => {
+              event.stopPropagation();
+              stageDuplicate(record);
+            }}
           >
-            {t("codexOauth.reauthLogin")}
+            <Copy size={14} aria-hidden="true" />
           </button>
-        )}
-        <Switch
-          className="mp-switch"
-          aria-label={`${t("modelPicker.enableProvider")} ${record.name}`}
-          checked={record.enabled !== false}
-          disabled={busy || !!draft || !!selected}
-          onCheckedChange={(enabled) => void toggle(record, enabled)}
-        />
-        <button
-          type="button"
-          className="pv-row-copy"
-          aria-label={`${t("providerEditor.duplicate")} ${record.name}`}
-          title={`${t("providerEditor.duplicate")} ${record.name}`}
-          aria-haspopup="dialog"
-          disabled={
-            busy || !!draft || !!selected || record.source.kind !== "api"
-          }
-          onClick={(event) => {
-            event.stopPropagation();
-            stageDuplicate(record);
-          }}
-        >
-          <Copy size={14} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="pv-row-delete"
-          aria-label={`${t("common.delete")} ${record.name}`}
-          title={`${t("common.delete")} ${record.name}`}
-          aria-haspopup="dialog"
-          disabled={busy || !!draft || !!selected}
-          onClick={(event) => {
-            event.stopPropagation();
-            setDeleting(record);
-          }}
-        >
-          <Trash2 size={14} aria-hidden="true" />
-        </button>
-        <ChevronRight className="pv-chevron" size={11} aria-hidden />
+          <button
+            type="button"
+            className="pv-row-delete"
+            aria-label={`${t("common.delete")} ${record.name}`}
+            title={`${t("common.delete")} ${record.name}`}
+            aria-haspopup="dialog"
+            disabled={busy || !!draft || !!selected}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDeleting(record);
+            }}
+          >
+            <Trash2 size={14} aria-hidden="true" />
+          </button>
+          <ChevronRight className="pv-chevron" size={11} aria-hidden />
+        </div>
       </SortableWorkspaceRow>
     );
   }
@@ -1153,125 +1158,133 @@ export function RoutingUpstreamsPanel({
           </div>
         </header>
       )}
-      {!adding && !!records.data?.length && (
-        <div className="pv-head">
-          <SearchInput
-            wrapperClassName="pv-query"
-            aria-label={t("modelProviders.find")}
-            aria-describedby="provider-search-scope"
-            title={t("modelProviders.searchScope")}
-            placeholder={t("modelProviders.searchPlaceholder")}
-            value={query}
-            disabled={busy || !!draft}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <span id="provider-search-scope" className="pv-search-scope">
-            {t("modelProviders.searchScope")}
-          </span>
-          <div className="pv-list-actions">
-            {selected && (
-              <label className="pv-select-all">
-                <input
-                  type="checkbox"
-                  disabled={busy || !visible.length}
-                  checked={
-                    !!visible.length &&
-                    visible.every((record) => selected.has(record.id))
-                  }
-                  onChange={(event) =>
-                    setSelected(
-                      event.target.checked
-                        ? new Set(visible.map((record) => record.id))
-                        : new Set(),
-                    )
-                  }
-                />
-                <span>{t("modelProviders.selectAll")}</span>
-              </label>
-            )}
-            {selected && (
+      {!adding && (
+        <div className="pv-directory-panel">
+          {!adding && !!records.data?.length && (
+            <div className="pv-head">
+              <SearchInput
+                wrapperClassName="pv-query"
+                className="h-[var(--control-height)] leading-5"
+                aria-label={t("modelProviders.find")}
+                aria-describedby="provider-search-scope"
+                title={t("modelProviders.searchScope")}
+                placeholder={t("modelProviders.searchPlaceholder")}
+                value={query}
+                disabled={busy || !!draft}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <span id="provider-search-scope" className="pv-search-scope">
+                {t("modelProviders.searchScope")}
+              </span>
+
               <button
                 type="button"
-                className="pv-batch-delete"
-                disabled={!selected.size || busy}
-                onClick={() => setConfirmBulk(true)}
+                className="pv-manage"
+                aria-pressed={!!selected}
+                disabled={busy || !!draft}
+                onClick={() => setSelected(selected ? null : new Set())}
               >
-                {t("modelProviders.removeSelected", { count: selected.size })}
+                {t(selected ? "common.cancel" : "modelProviders.manage")}
               </button>
-            )}
-            <button
-              type="button"
-              className="pv-manage"
-              aria-pressed={!!selected}
-              disabled={busy || !!draft}
-              onClick={() => setSelected(selected ? null : new Set())}
-            >
-              {t(selected ? "common.cancel" : "modelProviders.manage")}
-            </button>
-          </div>
+              {selected && (
+                <div className="pv-bulk">
+                  <label className="pv-select-all">
+                    <input
+                      type="checkbox"
+                      disabled={busy || !visible.length}
+                      checked={
+                        !!visible.length &&
+                        visible.every((record) => selected.has(record.id))
+                      }
+                      onChange={(event) =>
+                        setSelected(
+                          event.target.checked
+                            ? new Set(visible.map((record) => record.id))
+                            : new Set(),
+                        )
+                      }
+                    />
+                    <span>{t("modelProviders.selectAll")}</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="pv-batch-delete"
+                    disabled={!selected.size || busy}
+                    onClick={() => setConfirmBulk(true)}
+                  >
+                    {t("modelProviders.removeSelected", {
+                      count: selected.size,
+                    })}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {!adding && records.isError && (
+            <div className="pv-list-error">
+              <p role="alert">
+                <CircleAlert size={16} aria-hidden="true" />
+                {t("modelProviders.errors.loadProviders")}
+              </p>
+              <Button
+                variant="outline"
+                aria-busy={records.isFetching || undefined}
+                disabled={records.isFetching}
+                onClick={() => void records.refetch()}
+              >
+                {t("common.retry")}
+              </Button>
+            </div>
+          )}
+          {!adding &&
+            (records.isPending ? (
+              <ProviderListSkeleton />
+            ) : (
+              <>
+                {!records.isError && records.data?.length === 0 && (
+                  <SearchEmptyState title={t("modelProviders.empty")} />
+                )}
+                {!!on.length && (
+                  <SortableProviderList records={on} onReorder={reorder}>
+                    {on.map(providerRow)}
+                  </SortableProviderList>
+                )}
+                {!!terms.length &&
+                  !filtered.length &&
+                  !!records.data?.length && (
+                    <SearchEmptyState
+                      title={t("modelProviders.noMatches")}
+                      hint={t("modelProviders.noMatchesHint")}
+                    />
+                  )}
+                {!!off.length && (
+                  <div className="pv-off-section">
+                    <button
+                      className="pv-off-head"
+                      aria-label={t("modelProviders.turnedOff")}
+                      aria-expanded={showOff || !!terms.length}
+                      aria-controls="pv-off-list"
+                      disabled={busy || !!draft || !!terms.length}
+                      onClick={() => setShowOff(!showOff)}
+                    >
+                      <ChevronRight size={11} />
+                      <span>{t("modelProviders.turnedOff")}</span>
+                      <small>{off.length}</small>
+                    </button>
+                    <SortableProviderList
+                      records={off}
+                      onReorder={reorder}
+                      id="pv-off-list"
+                      hidden={!showOff && !terms.length}
+                    >
+                      {off.map(providerRow)}
+                    </SortableProviderList>
+                  </div>
+                )}
+              </>
+            ))}
         </div>
       )}
-      {!adding && records.isError && (
-        <div className="pv-list-error">
-          <p role="alert">
-            <CircleAlert size={16} aria-hidden="true" />
-            {t("modelProviders.errors.loadProviders")}
-          </p>
-          <Button
-            variant="outline"
-            aria-busy={records.isFetching || undefined}
-            disabled={records.isFetching}
-            onClick={() => void records.refetch()}
-          >
-            {t("common.retry")}
-          </Button>
-        </div>
-      )}
-      {!adding &&
-        (records.isPending ? (
-          <ProviderListSkeleton />
-        ) : (
-          <>
-            {!records.isError && records.data?.length === 0 && (
-              <SearchEmptyState title={t("modelProviders.empty")} />
-            )}
-            {!!on.length && (
-              <SortableProviderList records={on} onReorder={reorder}>
-                {on.map(providerRow)}
-              </SortableProviderList>
-            )}
-            {!!terms.length && !filtered.length && !!records.data?.length && (
-              <SearchEmptyState
-                title={t("modelProviders.noMatches")}
-                hint={t("modelProviders.noMatchesHint")}
-              />
-            )}
-            {!!off.length && (
-              <div className="pv-off-section">
-                <button
-                  className="pv-off-head"
-                  aria-label={t("modelProviders.turnedOff")}
-                  aria-expanded={showOff || !!terms.length}
-                  aria-controls="pv-off-list"
-                  disabled={busy || !!draft || !!terms.length}
-                  onClick={() => setShowOff(!showOff)}
-                >
-                  <ChevronRight size={11} />
-                  <span>{t("modelProviders.turnedOff")}</span>
-                  <small>{off.length}</small>
-                </button>
-                <SortableProviderList
-                  records={off}
-                  onReorder={reorder}
-                  id="pv-off-list"
-                  hidden={!showOff && !terms.length}
-                >
-                  {off.map(providerRow)}
-                </SortableProviderList>
-              </div>
-            )}
-          </>
-        ))}
       {adding && (
         <div ref={sheet}>
           <ProviderAddSheet
