@@ -11,6 +11,8 @@ import {
 } from "@/components/security/securityEventLabels";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { useLanguageSync } from "@/hooks/useLanguageSync";
+import { useSettingsQuery } from "@/lib/query";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { securityApi } from "@/lib/api/security";
@@ -36,6 +38,8 @@ const quotaRoots = [
 const securityFilter = { view: "security_events" as const };
 export function TrayPanel() {
   const { t } = useTranslation();
+  const settings = useSettingsQuery();
+  useLanguageSync(settings.data?.language);
   const client = useQueryClient();
   const update = useUpdate();
   const [tab, setTab] = useState(() =>
@@ -88,6 +92,7 @@ export function TrayPanel() {
   useTauriEvent("tray-panel-refresh", () => {
     setActive(true);
     frame.current?.focus({ preventScroll: true });
+    void client.invalidateQueries({ queryKey: ["settings"] });
     void refresh();
   });
   useTauriEvent<boolean>("tray-panel-active", (active) => setActive(active));

@@ -73,6 +73,10 @@ vi.mock("@/lib/api/routingTrace", () => ({
 vi.mock("@/lib/api/routingUpstreams", () => ({
   routingUpstreamsApi: { list: vi.fn(async () => []) },
 }));
+vi.mock("@/lib/query", async (original) => ({
+  ...(await original<typeof import("@/lib/query")>()),
+  useSettingsQuery: () => ({ data: undefined }),
+}));
 vi.mock("@/lib/api/trayUsage", async (original) => ({
   ...(await original<typeof import("@/lib/api/trayUsage")>()),
   trayUsageApi: { read: vi.fn(async () => []) },
@@ -876,7 +880,10 @@ it("shows unknown historical risk and missing Agent identity safely", async () =
 
 it("spans embedded check-in panels across all columns of a tray agent row", () => {
   const sheet = document.createElement("style");
-  sheet.textContent = readFileSync("src/components/tray/tray-panel.css", "utf8");
+  sheet.textContent = readFileSync(
+    "src/components/tray/tray-panel.css",
+    "utf8",
+  );
   document.head.appendChild(sheet);
   const host = document.createElement("div");
   host.className = "tray-panel";
