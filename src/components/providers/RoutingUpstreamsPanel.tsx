@@ -701,17 +701,20 @@ export function RoutingUpstreamsPanel({
       apiKey: "",
     });
   }
-  async function fetchDraftModels(): Promise<FetchedModel[]> {
+  async function fetchDraftModels(
+    catalogFormat?: GlobalProviderPreset["apiFormat"],
+  ): Promise<FetchedModel[]> {
     if (!draft || draft.source.kind !== "api") return [];
     if (!apiKey) {
       const saved = savedCredentialSource();
       return routingUpstreamsApi.discover(saved.id, saved.revision);
     }
     const source = draft.source;
+    const apiFormat = catalogFormat ?? source.apiFormat;
     const header =
-      source.apiFormat === "gemini_native"
+      apiFormat === "gemini_native"
         ? "x-goog-api-key"
-        : source.apiFormat === "anthropic" && source.authType === "api-key"
+        : apiFormat === "anthropic" && source.authType === "api-key"
           ? "x-api-key"
           : "Authorization";
     return fetchModelsForConfig(
@@ -721,7 +724,7 @@ export function RoutingUpstreamsPanel({
       undefined,
       undefined,
       {
-        apiFormat: source.apiFormat,
+        apiFormat,
         requestHeaders: {
           [header]: header === "Authorization" ? `Bearer ${apiKey}` : apiKey,
         },

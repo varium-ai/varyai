@@ -55,13 +55,20 @@ The form, model selection, save and cancel controls remain available. Results
 merge into the current catalog without reverting edits made during the request.
 Responses from a closed or replaced editor, or from a changed endpoint, protocol
 or credential, are ignored.
+For a Gemini-compatible API, discovery starts at `/v1beta/models`. When that
+catalog is unavailable, invalid, or empty, discovery can use `/v1/models` at the
+same provider, with bearer authentication. A working Gemini catalog retains its
+own models. The selected inference protocol still applies to generation requests.
 
 The custom API editor places **Detect protocol** as a text button inside the
 right end of the Base URL field. Detection only loads that button; fields,
 model selection, Save and Cancel remain available. It tests the first selected
 chat model, or discovers a chat model when none is selected. There is no separate
-test-model input. Changing the URL, protocol or credential, or closing the
-editor, invalidates the pending result and any pending model-discovery step.
+test-model input. With an entered key, detection tries the other model catalog
+at the same provider when the preferred catalog fails or contains no chat
+model. The alternate catalog only supplies a model for the probe. Changing the
+URL, protocol or credential, or closing the editor, invalidates the pending
+result and any pending model-discovery step.
 
 Account selection and model select-all use the same 18px checkbox, including
 checked, mixed, disabled and keyboard-focus states. Color and checkmark

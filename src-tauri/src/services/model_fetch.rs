@@ -204,7 +204,6 @@ pub async fn fetch_models(
     };
     let headers =
         build_model_fetch_headers(api_key, api_format, user_agent.as_ref(), request_headers)?;
-    let native_url = candidates.first().cloned();
     if is_gemini && models_url_override.is_none_or(|value| value.trim().is_empty()) {
         let mut compatibility =
             url::Url::parse(&candidates[0]).map_err(|_| "Invalid models endpoint".to_string())?;
@@ -216,21 +215,35 @@ pub async fn fetch_models(
     }
     let client = crate::proxy::http_client::get_without_redirects()
         .map_err(|_| "Model discovery client unavailable".to_string())?;
+    let gemini_compatibility = is_gemini && candidates.len() > 1;
     let mut last_err: Option<String> = None;
+    let mut empty_native_catalog = false;
     let mut known_secrets = vec![api_key.to_string()];
     if let Some(request_headers) = request_headers {
         known_secrets.extend(request_headers.values().cloned());
     }
 
-    'candidates: for url in &candidates {
+    'candidates: for (index, url) in candidates.iter().enumerate() {
+        let try_openai_catalog = gemini_compatibility && index == 0;
+        let fail = move |error: String| {
+            if empty_native_catalog {
+                Ok(Vec::new())
+            } else {
+                Err(error)
+            }
+        };
         let mut candidate_headers = headers.clone();
-        if is_gemini && Some(url) != native_url.as_ref() && !headers.contains_key(AUTHORIZATION) {
-            if let Some(key) = headers
-                .get("x-goog-api-key")
-                .and_then(|value| value.to_str().ok())
+        if gemini_compatibility && index != 0 {
+            if let Some(key) = candidate_headers
+                .remove("x-goog-api-key")
+                .filter(|_| !candidate_headers.contains_key(AUTHORIZATION))
             {
-                let bearer = HeaderValue::from_str(&format!("Bearer {key}"))
+                let key = key
+                    .to_str()
                     .map_err(|_| "Invalid model discovery credential".to_string())?;
+                let mut bearer = HeaderValue::from_str(&format!("Bearer {key}"))
+                    .map_err(|_| "Invalid model discovery credential".to_string())?;
+                bearer.set_sensitive(true);
                 candidate_headers.insert(AUTHORIZATION, bearer);
             }
         }
@@ -253,17 +266,29 @@ pub async fn fetch_models(
             let response = match request.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    return Err(redact_model_fetch_error_body(
+                    let error = redact_model_fetch_error_body(
                         format!("Request failed: {}", e.without_url()),
                         &known_secrets,
-                    ));
+                    );
+                    if try_openai_catalog && page == 0 {
+                        last_err = Some(error);
+                        continue 'candidates;
+                    }
+                    return fail(error);
                 }
             };
 
             let status = response.status();
 
             if status.is_success() {
-                let resp = read_models_response(response).await?;
+                let resp = match read_models_response(response).await {
+                    Ok(resp) => resp,
+                    Err(error) if try_openai_catalog && page == 0 => {
+                        last_err = Some(error);
+                        continue 'candidates;
+                    }
+                    Err(error) => return fail(error),
+                };
 
                 let page_models: Vec<FetchedModel> = if let Some(data) = resp.data {
                     data.into_iter()
@@ -291,7 +316,7 @@ pub async fn fetch_models(
                     .filter(|token| is_gemini && !token.is_empty())
                 {
                     if !seen_tokens.insert(token.clone()) || page + 1 == MAX_MODEL_PAGES {
-                        return Err("Model catalog pagination did not terminate".to_string());
+                        return fail("Model catalog pagination did not terminate".to_string());
                     }
                     // Tokens are opaque query values, never URLs or credentials.
                     let query: Vec<(String, String)> = page_url
@@ -310,11 +335,20 @@ pub async fn fetch_models(
                 if is_gemini {
                     models.dedup_by(|a, b| a.id == b.id);
                 }
+                if try_openai_catalog && models.is_empty() {
+                    empty_native_catalog = true;
+                    continue 'candidates;
+                }
                 return Ok(models);
             }
 
             if page == 0
-                && (status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED)
+                && (matches!(
+                    status,
+                    StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+                ) || (try_openai_catalog
+                    && (status.is_server_error()
+                        || (status.is_client_error() && status != StatusCode::TOO_MANY_REQUESTS))))
             {
                 let body = redact_model_fetch_error_body(
                     response.text().await.unwrap_or_default(),
@@ -328,10 +362,13 @@ pub async fn fetch_models(
                 response.text().await.unwrap_or_default(),
                 &known_secrets,
             );
-            return Err(format!("HTTP {status}: {body}"));
+            return fail(format!("HTTP {status}: {body}"));
         }
     }
 
+    if empty_native_catalog {
+        return Ok(Vec::new());
+    }
     Err(format!(
         "All candidates failed: {}",
         last_err.unwrap_or_else(|| "no candidates".to_string())
@@ -763,39 +800,53 @@ mod tests {
     async fn gemini_compatible_gateway_falls_back_to_its_openai_catalog(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use axum::{routing::get, Json, Router};
-        let app = Router::new().route(
-            "/relay/v1/models",
-            get(|headers: axum::http::HeaderMap| async move {
-                assert_eq!(
-                    headers
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok()),
-                    Some("Bearer synthetic-key")
-                );
-                Json(serde_json::json!({"data":[{"id":"gemini-fixture"}]}))
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let base = format!("http://{}/relay", listener.local_addr()?);
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
         let headers = BTreeMap::from([("x-goog-api-key".into(), "synthetic-key".into())]);
-        let result = fetch_models(
-            &base,
-            "",
-            false,
-            None,
-            None,
-            Some("gemini_native"),
-            Some(&headers),
-        )
-        .await;
-        task.abort();
-        assert_eq!(
-            result?.first().map(|model| model.id.as_str()),
-            Some("gemini-fixture")
-        );
+        for (status, body) in [
+            (StatusCode::NOT_FOUND, "{}"),
+            (StatusCode::UNAUTHORIZED, "{}"),
+            (StatusCode::BAD_REQUEST, "{}"),
+            (StatusCode::SERVICE_UNAVAILABLE, "{}"),
+            (StatusCode::OK, r#"{"models":[]}"#),
+            (StatusCode::OK, "invalid json"),
+        ] {
+            let app = Router::new()
+                .route(
+                    "/relay/v1beta/models",
+                    get(move |headers: HeaderMap| async move {
+                        assert_eq!(headers["x-goog-api-key"], "synthetic-key");
+                        (status, body)
+                    }),
+                )
+                .route(
+                    "/relay/v1/models",
+                    get(|headers: HeaderMap| async move {
+                        assert_eq!(headers[AUTHORIZATION], "Bearer synthetic-key");
+                        assert!(!headers.contains_key("x-goog-api-key"));
+                        Json(serde_json::json!({"data":[{"id":"gemini-fixture"}]}))
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let base = format!("http://{}/relay/v1", listener.local_addr()?);
+            let task = tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            let result = fetch_models(
+                &base,
+                "",
+                false,
+                None,
+                None,
+                Some("gemini_native"),
+                Some(&headers),
+            )
+            .await;
+            task.abort();
+            assert_eq!(
+                result?.first().map(|model| model.id.as_str()),
+                Some("gemini-fixture"),
+                "Gemini catalog response: {status} {body}"
+            );
+        }
         Ok(())
     }
 

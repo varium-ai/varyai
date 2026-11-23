@@ -125,7 +125,7 @@ export function ProviderEditorDialog({
   onProtocolChange: (value: Format) => void;
   onRegionChange: (value: string) => void;
   onDiscover: () => Promise<FetchedModel[]>;
-  onFetchProbeModels: () => Promise<FetchedModel[]>;
+  onFetchProbeModels: (format: Format) => Promise<FetchedModel[]>;
   onProbe: (model: string) => Promise<ProtocolDetection[]>;
   onSave: (event: React.FormEvent, stagedModels?: unknown[]) => Promise<void>;
   onClose: () => void;
@@ -321,10 +321,19 @@ export function ProviderEditorDialog({
         model = providerModelId(chat) || undefined;
       }
       if (!model) {
-        const found = await onFetchProbeModels();
-        if (probeRequest.current !== request) return;
-        const chat = found.find((row) => !isImageGenerationModel(row));
-        model = chat?.id;
+        const fallback =
+          source.apiFormat === "gemini_native"
+            ? "openai_chat"
+            : "gemini_native";
+        const catalogFormats: Format[] = apiKey
+          ? [source.apiFormat, fallback]
+          : [source.apiFormat];
+        for (const format of catalogFormats) {
+          const found = await onFetchProbeModels(format).catch(() => []);
+          if (probeRequest.current !== request) return;
+          model = found.find((row) => !isImageGenerationModel(row))?.id;
+          if (model) break;
+        }
       }
       if (!model) throw new Error("unavailable");
       const detected = await onProbe(model);

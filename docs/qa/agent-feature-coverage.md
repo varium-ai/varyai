@@ -1,5 +1,46 @@
 # Agent feature coverage
 
+## Gemini-compatible model catalog discovery (macOS and Windows)
+
+Assessment against `APP_IDS`, `AppType`, the shared connection inventory and
+the provider forms. Both the draft and saved shared-provider commands use the
+same model-catalog service. Agent editors that call that service with either
+Gemini format use the same fallback. Discovery supplies model metadata to the
+existing picker. Runtime routing, selection, and status use the saved protocol.
+
+| Agent ID           | Discovery entry point in scope                           |
+| ------------------ | -------------------------------------------------------- |
+| `claude`           | Shared supplier or Gemini-compatible provider editor     |
+| `claude-desktop`   | Shared supplier or Gemini-compatible desktop editor      |
+| `codex`            | Shared supplier or Gemini-compatible provider editor     |
+| `gemini`           | Shared supplier or native Gemini provider editor         |
+| `grokbuild`        | Shared supplier model menu                               |
+| `opencode`         | Shared supplier or OpenCode provider form                |
+| `openclaw`         | Shared supplier or OpenClaw provider form                |
+| `hermes`           | Shared supplier or Hermes provider form                  |
+| `pi`               | Shared supplier or Gemini-compatible Pi provider form    |
+| `workbuddy`        | Shared supplier or China custom-provider form            |
+| `workbuddy-ai`     | Shared supplier or international custom-provider form    |
+| `qoder`            | Shared supplier or CN custom-provider form               |
+| `doubaowork`       | Official audit only                                      |
+| `trae`             | CN shared supplier model menu                           |
+| `trae-intl`        | International shared supplier model menu                |
+| `kimi`             | Shared supplier or managed provider form                 |
+| `qwen`             | Shared supplier or managed provider form                 |
+| `zcode`            | Shared supplier or managed provider form                 |
+| `deepseek-harness` | Shared supplier or managed provider form                 |
+| `t3code`           | Shared supplier model menu                               |
+
+Loopback regressions cover both Gemini format names, native success and
+pagination, and fallback to an authenticated OpenAI catalog. The saved-provider
+editor was verified in the running macOS development build. Its Gemini mode
+attempted both catalog paths at the same origin and displayed the models.
+Individual installed Agent editors and Windows verification remain pending.
+
+On the working tree over `eb416e75`, 38 model-catalog tests, `cargo check`,
+Rust formatting, Clippy, and the focused renderer checks passed. The full
+Cargo run failed to build its archive when local storage filled up.
+
 ## Responses reasoning stream completion (macOS and Windows)
 
 Pre-implementation assessment against `APP_IDS`, `AppType`, the connection

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { intentRoutingApi } from "@/lib/api/intentRouting";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 import i18n from "i18next";
 import { copyText } from "@/lib/clipboard";
@@ -2097,6 +2098,79 @@ describe("global upstream editor", () => {
       screen.getByRole("button", { name: "providerEditor.detect" }),
     ).toBeEnabled();
   });
+  it.each(["unavailable", "image-only"])(
+    "detects Gemini through the OpenAI catalog when Gemini model discovery is %s",
+    async (nativeCatalog) => {
+      const baseUrl = "https://relay.example/v1";
+      const apiKey = "synthetic-probe-key";
+      if (nativeCatalog === "unavailable") {
+        vi.mocked(fetchModelsForConfig).mockRejectedValueOnce(
+          new Error("synthetic-catalog-failure"),
+        );
+      } else {
+        vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+          { id: "synthetic-image", ownedBy: null, kind: "image" },
+        ]);
+      }
+      vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+        { id: "synthetic-chat", ownedBy: null },
+      ]);
+      vi.mocked(detectProviderProtocols).mockResolvedValueOnce([
+        {
+          format: "gemini_native",
+          text: { status: "verified" },
+          stream: { status: "verified" },
+        },
+      ]);
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      fireEvent.change(screen.getByLabelText("modelProviders.baseUrl"), {
+        target: { value: baseUrl },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
+        target: { value: apiKey },
+      });
+      const gemini = screen.getByRole("radio", { name: "Gemini" });
+      fireEvent.click(gemini);
+      fireEvent.click(
+        screen.getByRole("button", { name: "providerEditor.detect" }),
+      );
+
+      expect(await screen.findByText("synthetic-chat")).toBeVisible();
+      expect(detectProviderProtocols).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl, apiKey, model: "synthetic-chat" }),
+      );
+      expect(
+        vi
+          .mocked(fetchModelsForConfig)
+          .mock.calls.map((call) => [call[0], call[5]]),
+      ).toEqual([
+        [
+          baseUrl,
+          {
+            apiFormat: "gemini_native",
+            requestHeaders: { "x-goog-api-key": apiKey },
+          },
+        ],
+        [
+          baseUrl,
+          {
+            apiFormat: "openai_chat",
+            requestHeaders: { Authorization: `Bearer ${apiKey}` },
+          },
+        ],
+      ]);
+      expect(gemini).toHaveAttribute("aria-checked", "true");
+      expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    },
+  );
   it("can choose a probe model from discovery without changing the user's model selection", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       { ...primary, source: { ...primary.source, models: [] } },
