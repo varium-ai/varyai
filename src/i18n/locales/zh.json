@@ -2309,6 +2309,7 @@
     "totalRecords": "共 {{total}} 条记录",
     "goToPage": "跳转",
     "pageInputPlaceholder": "页码",
+    "invalidPageRange": "请输入 1 到 {{total}} 之间的页码",
     "modelPricing": "模型定价",
     "loadPricingError": "加载定价数据失败",
     "modelPricingDesc": "配置各模型的 Token 成本",

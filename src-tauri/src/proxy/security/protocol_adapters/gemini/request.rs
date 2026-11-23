@@ -38,7 +38,11 @@ pub(super) fn classify_generation(
     let Some((model, operation)) = model_and_operation.and_then(|path| path.split_once(':')) else {
         return Err(PlanError::Unsupported);
     };
-    if model.is_empty() || model.contains('/') {
+    if model.is_empty()
+        || model
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
         return Err(PlanError::Unsupported);
     }
     // Bare alt keys still count, so duplicate or incomplete framing cannot be admitted.

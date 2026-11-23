@@ -29,6 +29,8 @@ import { trayUsageApi, type TrayUsageRow } from "@/lib/api/trayUsage";
 import { routingTraceApi } from "@/lib/api/routingTrace";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { securityEventsApi } from "@/lib/api/securityEvents";
+import { settingsApi } from "@/lib/api/settings";
+import type { Settings } from "@/types";
 
 const updateState = vi.hoisted(() => ({
   isChecking: false,
@@ -876,7 +878,10 @@ it("shows unknown historical risk and missing Agent identity safely", async () =
 
 it("spans embedded check-in panels across all columns of a tray agent row", () => {
   const sheet = document.createElement("style");
-  sheet.textContent = readFileSync("src/components/tray/tray-panel.css", "utf8");
+  sheet.textContent = readFileSync(
+    "src/components/tray/tray-panel.css",
+    "utf8",
+  );
   document.head.appendChild(sheet);
   const host = document.createElement("div");
   host.className = "tray-panel";
@@ -892,5 +897,59 @@ it("spans embedded check-in panels across all columns of a tray agent row", () =
   } finally {
     host.remove();
     sheet.remove();
+  }
+});
+
+it("syncs TrayPanel language when settings language changes", async () => {
+  const instance = createInstance();
+  await instance.init({
+    lng: "zh",
+    fallbackLng: false,
+    resources: {
+      zh: { translation: zh },
+      en: { translation: en },
+    },
+  });
+  const getSettingsSpy = vi
+    .spyOn(settingsApi, "get")
+    .mockResolvedValue({ language: "en" } as Settings);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  try {
+    const { container } = render(
+      <I18nextProvider i18n={instance}>
+        <QueryClientProvider client={queryClient}>
+          <TrayPanel />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    await waitFor(() => {
+      expect(instance.language).toBe("en");
+      expect(container.querySelector(".tray-panel")).toHaveAttribute(
+        "lang",
+        "en",
+      );
+    });
+    expect(
+      screen.getByRole("button", { name: en.trayPanel.refresh }),
+    ).toBeVisible();
+
+    getSettingsSpy.mockResolvedValue({ language: "zh" } as Settings);
+    await queryClient.invalidateQueries({ queryKey: ["settings"] });
+
+    await waitFor(() => {
+      expect(instance.language).toBe("zh");
+      expect(container.querySelector(".tray-panel")).toHaveAttribute(
+        "lang",
+        "zh",
+      );
+    });
+    expect(
+      screen.getByRole("button", { name: zh.trayPanel.refresh }),
+    ).toBeVisible();
+  } finally {
+    getSettingsSpy.mockRestore();
   }
 });
