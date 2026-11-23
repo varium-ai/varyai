@@ -2584,7 +2584,7 @@ fn codex_browser_tabs_context_is_fresh_readable_and_redacts_under_routed_dlp(
             {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": "Continue"}]
+                "content": [{"type": "input_text", "text": "Continue 13800138000"}]
             }
         ]
     });
@@ -2598,6 +2598,9 @@ fn codex_browser_tabs_context_is_fresh_readable_and_redacts_under_routed_dlp(
         &headers,
     )?;
     assert!(matches!(admission, RestorationAdmission::Admitted(_)));
-    assert!(!routed_body.to_string().contains("13800138000"));
+    assert_eq!(routed_body["input"][0]["output"], "Tab contact 13800138000");
+    assert!(routed_body["input"][1]["content"][0]["text"]
+        .as_str()
+        .is_some_and(|text| !text.contains("13800138000")));
     Ok(())
 }

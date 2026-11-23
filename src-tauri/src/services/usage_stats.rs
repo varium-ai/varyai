@@ -2803,6 +2803,7 @@ mod tests {
                 request_id TEXT PRIMARY KEY,
                 app_type TEXT NOT NULL,
                 model TEXT NOT NULL,
+                request_model TEXT,
                 input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
                 cache_read_tokens INTEGER NOT NULL,
@@ -2935,10 +2936,6 @@ mod tests {
     fn test_codex_session_opaque_routing_model_and_request_model_dedup() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         create_legacy_nullable_logs_table(&conn)?;
-        conn.execute(
-            "ALTER TABLE proxy_request_logs ADD COLUMN request_model TEXT",
-            [],
-        )?;
         conn.execute_batch(
             "INSERT INTO proxy_request_logs (
                 request_id, app_type, model, request_model, input_tokens, output_tokens,

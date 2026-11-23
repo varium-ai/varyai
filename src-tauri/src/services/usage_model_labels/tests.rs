@@ -198,8 +198,15 @@ fn lookup_resolves_routing_group_uuids() -> Result<(), Box<dyn std::error::Error
     let group: crate::services::intent_routing::RoutingGroup = serde_json::from_value(json!({
         "id": group_id,
         "name": "Synthetic Routing Group",
+        "enabled": true,
         "revision": 0,
-        "members": []
+        "members": [{"id": "member", "providerId": "synthetic-provider", "modelId": "synthetic-model"}],
+        "defaultMemberId": "member",
+        "fallbackMemberIds": [],
+        "intentRecognitionEnabled": false,
+        "classifierTarget": null,
+        "classificationBudgetMs": 1000,
+        "rules": []
     }))?;
     {
         let conn = db
@@ -207,8 +214,8 @@ fn lookup_resolves_routing_group_uuids() -> Result<(), Box<dyn std::error::Error
             .lock()
             .map_err(|_| "synthetic lock")?;
         conn.execute(
-            "INSERT INTO intent_routing_groups(id, name, position, config) VALUES (?1, ?2, 0, ?3)",
-            rusqlite::params![group_id, group.name, serde_json::to_string(&group)?],
+            "INSERT INTO intent_routing_groups(id, revision, config) VALUES (?1, ?2, ?3)",
+            rusqlite::params![group_id, group.revision, serde_json::to_string(&group)?],
         )?;
     }
 
