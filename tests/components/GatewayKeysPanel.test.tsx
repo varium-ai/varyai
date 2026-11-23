@@ -491,13 +491,17 @@ it("uses an externally callable alias in connection examples for a shared key", 
     },
   ]);
   const { container } = mount();
-  fireEvent.click(screen.getByRole("tab", { name: "gatewayKeys.tabs.connect" }));
-  await screen.findByRole("option", { name: policy.name });
-  fireEvent.change(screen.getByLabelText("gatewayKeys.filterKey"), {
-    target: { value: "shared" },
-  });
-  expect(container.querySelector("pre")).toHaveTextContent("vary-auto/published");
-  expect(container.querySelector("pre")).not.toHaveTextContent("vary-provider/local-only");
+  await screen.findByText(policy.name);
+  fireEvent.click(
+    screen.getByRole("tab", { name: "gatewayKeys.tabs.connect" }),
+  );
+  selectAppOption(screen.getByLabelText("gatewayKeys.filterKey"), "shared");
+  expect(container.querySelector("pre")).toHaveTextContent(
+    "vary-auto/published",
+  );
+  expect(container.querySelector("pre")).not.toHaveTextContent(
+    "vary-provider/local-only",
+  );
 });
 
 it("offers every agent, binds routed agents and explains direct-only agents", async () => {
@@ -759,12 +763,12 @@ it("keeps bound routes visible when a separate Agent status fails", async () => 
   await waitFor(() => {
     for (const app of ["gemini", "codex", "trae", "trae-intl"] as const) {
       expect(
-        screen.getByLabelText(getAppLabel(app)).parentElement,
+        screen.getByLabelText(`apps.${app}`).parentElement,
       ).toHaveTextContent("gatewayKeys.bindingActive");
     }
-    expect(
-      screen.getByLabelText(getAppLabel("qoder")).parentElement,
-    ).toHaveTextContent("gatewayKeys.routeStatusUnavailable");
+    expect(screen.getByLabelText("apps.qoder").parentElement).toHaveTextContent(
+      "gatewayKeys.routeStatusUnavailable",
+    );
   });
   expect(agentConnectionsApi.get).toHaveBeenCalledTimes(5);
   expect(screen.queryByText("synthetic-status-failure")).toBeNull();
