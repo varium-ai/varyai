@@ -102,8 +102,8 @@ Assessment against `APP_IDS`, `AppType`, the shared connection registry and
 the gateway binding registry. The Keys tab uses the same shared provider and
 routing-group catalog on both platforms. The Agents tab keeps each entry's
 binding eligibility and readiness. New picker selections save canonical route
-IDs. Existing exact IDs, manually entered policies and binding enforcement
-continue through their existing paths.
+IDs. Existing saved IDs and binding enforcement continue through their existing
+paths.
 
 | Agent ID           | Existing policy entry point and adapter                  | Verification plan                         |
 | ------------------ | -------------------------------------------------------- | ----------------------------------------- |
@@ -127,6 +127,13 @@ continue through their existing paths.
 | `zcode`            | Managed or legacy native custom-provider routing         | Shared catalog and binding inventory      |
 | `deepseek-harness` | Managed provider-scoped Chat routing                     | Shared catalog and binding inventory      |
 | `t3code`           | Managed model-menu and native route                      | Shared catalog and binding inventory      |
+
+Selected-model list follow-up coverage uses the same entry points in the table
+on macOS and Windows. For every listed Agent, the shared Keys form displays
+catalog names, removes entries by exact route ID, and preserves saved IDs absent
+from the catalog. Existing native adapters and policy enforcement consume the
+same policy format. Renderer checks cover creation, editing, removal and the
+existing binding inventory. Installed-client verification remains pending.
 
 Synthetic regressions passed for catalog identity, exact policy saves,
 historical IDs absent from the picker, external connection examples and the
@@ -2555,6 +2562,14 @@ classification request were unavailable in the local routing history.
 The GLM recording shows Codex set to High reasoning and includes a short
 follow-up in an existing conversation. The recording does not expose the
 classifier result or continuation decision.
+
+The Gemini model-label follow-up applies to the Gemini row above on macOS and
+Windows. It uses managed dotenv and model definitions, the existing alias map
+and the Gemini URL ingress. Other Agent entries above keep their existing
+model projection and protocol paths. Regression coverage includes qualified
+Unicode names, duplicate names, previous aliases, key policy checks, and
+restoration of existing environment fields. Native macOS
+and Windows acceptance of the VaryAI integration remains pending.
 
 Verification on the working tree over `d32c8a68`, macOS 26.6.2 arm64,
 Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. The renderer build, TypeScript,

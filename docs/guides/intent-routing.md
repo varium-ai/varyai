@@ -348,6 +348,13 @@ The menu combines **available enabled global provider models and executable rout
 
 The shared VaryAI model picker uses readable model names for both rows and hover tooltips. Internal routing aliases remain selection values and are not shown in these tooltips.
 
+Managed Gemini CLI connections use the full catalog name as both the model ID
+and the model label. The local gateway resolves this name to the selected
+provider route and still accepts earlier model aliases. VaryAI sets a compatible
+User-Agent for Unicode model IDs through Gemini CLI's custom header setting.
+Gemini CLI 0.67.0 supports this configuration. Start a new CLI session after the
+gateway has synchronized the model list.
+
 When models in the same provider group have identical displayed names, the
 picker follows Magpie's `modelTells`: it removes common leading and trailing
 path segments from their public references and displays the remaining identity

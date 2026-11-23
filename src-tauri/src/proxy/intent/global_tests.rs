@@ -2509,6 +2509,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
             model_map: std::collections::BTreeMap::from([
                 ("wire-safe".into(), group().alias()),
                 ("Zhong-Wen-Lu-You-Zu".into(), group().alias()),
+                ("vendor/model · 合成供应商".into(), group().alias()),
             ]),
             visible_models: None,
             files: vec![],
@@ -2556,7 +2557,11 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
 
     policy.models = vec![picked.model.clone()];
     db.update_gateway_key(&key.key.id, policy)?;
-    for wire in ["wire-safe", "Zhong-Wen-Lu-You-Zu"] {
+    for wire in [
+        "wire-safe",
+        "Zhong-Wen-Lu-You-Zu",
+        "vendor/model%20%C2%B7%20%E5%90%88%E6%88%90%E4%BE%9B%E5%BA%94%E5%95%86",
+    ] {
         let count = client
             .post(format!("{root}/{wire}:countTokens"))
             .header("x-goog-api-key", concat!("synthetic", "-local"))
@@ -2589,7 +2594,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
     }
     let response = client
         .post(format!(
-            "{root}/Zhong-Wen-Lu-You-Zu:streamGenerateContent?alt=sse"
+            "{root}/vendor/model%20%C2%B7%20%E5%90%88%E6%88%90%E4%BE%9B%E5%BA%94%E5%95%86:streamGenerateContent?alt=sse"
         ))
         .header("x-goog-api-key", concat!("synthetic", "-local"))
         .json(&fixture)
