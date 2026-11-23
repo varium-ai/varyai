@@ -1,30 +1,40 @@
 .settings-page {
   container-type: inline-size;
-  max-width: var(--workspace-page-max-width, 1232px);
-  padding: var(--workspace-page-top, 24px) var(--workspace-page-inline, 24px) 0;
+  max-width: var(--workspace-page-max-width);
+  padding: calc(var(--workspace-page-top, 24px) + 8px)
+    var(--workspace-page-gutter) 0;
   color: hsl(var(--foreground));
 }
 .settings-header {
-  padding-bottom: 18px;
+  padding-bottom: var(--workspace-module-gap);
+}
+.settings-header h1 {
+  margin: 0;
+  font-size: var(--page-title-size);
+  font-weight: var(--page-title-weight);
+  line-height: var(--page-title-line-height);
+  font-family: var(--page-title-font);
 }
 .settings-header p,
-.setting-copy p {
+.setting-copy p,
+.settings-advanced-description {
   margin: 3px 0 0;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--supporting-text-size);
+  line-height: var(--supporting-text-line-height);
   color: hsl(var(--muted-foreground));
 }
 .settings-group h2 {
   margin: 0 0 8px;
-  font-size: 13px;
+
+  font-size: var(--section-title-size);
   font-weight: 500;
-  color: hsl(var(--muted-foreground));
+  line-height: var(--section-title-line-height);
+  color: hsl(var(--foreground));
 }
 .settings-list,
-.settings-accordion,
 .settings-about {
   border: 1px solid var(--mp-list-line, hsl(var(--border)));
-  border-radius: 10px;
+  border-radius: var(--panel-radius);
   background: var(--mp-list-bg, hsl(var(--card)));
 }
 .settings-list > * + * {
@@ -32,7 +42,7 @@
 }
 .setting-row,
 .settings-detail {
-  padding: 13px 18px;
+  padding: 16px var(--list-padding-inline);
 }
 .setting-row {
   display: flex;
@@ -40,17 +50,74 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px 20px;
-  min-height: 66px;
+  min-height: var(--table-row-height);
 }
 .setting-copy {
   flex: 1 1 180px;
   min-width: 0;
 }
-.setting-copy h3 {
+.setting-copy h3,
+.settings-advanced-title {
   margin: 0;
-  font-size: 13px;
+
+  font-size: var(--list-title-size);
   font-weight: 500;
-  line-height: 18px;
+  line-height: var(--list-title-line-height);
+}
+.settings-advanced-list {
+  overflow: hidden;
+}
+.settings-advanced-item {
+  border-bottom: 0;
+}
+.settings-advanced-trigger {
+  min-height: var(--table-row-height);
+  gap: 12px;
+  padding: 10px var(--list-padding-inline);
+  text-align: start;
+}
+.settings-advanced-trigger:hover,
+.settings-advanced-trigger[data-state="open"] {
+  background: var(--row-hover);
+  text-decoration: none;
+}
+.settings-advanced-trigger:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: -2px;
+}
+.settings-advanced-trigger > svg {
+  color: hsl(var(--muted-foreground));
+}
+.settings-advanced-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border-radius: var(--select-radius);
+  background: hsl(var(--muted));
+  color: hsl(var(--secondary-foreground));
+}
+.settings-advanced-title,
+.settings-advanced-description {
+  display: block;
+}
+.settings-advanced-description {
+  font-weight: 400;
+}
+.settings-advanced-content {
+  padding: 16px var(--list-padding-inline);
+  border-top: 1px solid hsl(var(--border));
+}
+.settings-advanced-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid hsl(var(--border));
 }
 @container (max-width: 440px) {
   .setting-row:has([role="group"]) .setting-copy {
@@ -59,5 +126,12 @@
   .setting-row,
   .settings-detail {
     padding-inline: 12px;
+    padding: 16px var(--list-padding-inline);
   }
+}
+
+.settings-header p {
+  font-size: 14px;
+  line-height: 20px;
+  margin-top: 8px;
 }

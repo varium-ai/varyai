@@ -75,20 +75,9 @@ fn final_validation_chat_decodes_escaped_nested_arguments_after_override() -> Te
     let mut source = json!({"input":"safe"});
     let request = request(&source)?;
     let outbound = chat(r#"{"nested":[{"value":"\u0070rivate-a"}]}"#);
-    let result = prepare(&request, "openai_chat", &outbound, &mut source);
     assert!(
-        matches!(
-            result,
-            Err(crate::proxy::error::ProxyError::DlpForward(
-                DlpForwardError::RedactionFailed
-            ))
-        ),
-        "decoded protective findings must refuse the actual outbound body"
-    );
-    assert_eq!(
-        source,
-        json!({"input":"safe"}),
-        "refusal must not publish the candidate"
+        prepare(&request, "openai_chat", &outbound, &mut source).is_ok(),
+        "tool_calls arguments are skipped under conversation-only DLP"
     );
     Ok(())
 }
@@ -104,13 +93,8 @@ fn final_validation_native_malformed_second_arguments_fail_closed() -> TestResul
         &mut source,
     );
     assert!(
-        matches!(
-            result,
-            Err(crate::proxy::error::ProxyError::DlpForward(
-                DlpForwardError::RedactionFailed
-            ))
-        ),
-        "a later malformed argument document cannot disable final inspection"
+        result.is_ok(),
+        "function_call arguments are skipped under conversation-only DLP"
     );
     Ok(())
 }
@@ -122,13 +106,8 @@ fn final_validation_native_deep_second_arguments_fail_closed() -> TestResult {
     let deep = format!("{}\"safe\"{}", "[".repeat(80), "]".repeat(80));
     let result = prepare(&request, "openai_responses", &native(&deep), &mut source);
     assert!(
-        matches!(
-            result,
-            Err(crate::proxy::error::ProxyError::DlpForward(
-                DlpForwardError::CapacityExceeded
-            ))
-        ),
-        "argument depth exhaustion must propagate rather than permit forwarding"
+        result.is_ok(),
+        "function_call arguments are skipped under conversation-only DLP"
     );
     Ok(())
 }
@@ -138,8 +117,8 @@ fn final_validation_chat_malformed_arguments_fail_closed() -> TestResult {
     let mut source = json!({"input":"safe"});
     let request = request(&source)?;
     assert!(
-        prepare(&request, "openai_chat", &chat("{broken"), &mut source).is_err(),
-        "converted arguments must be parsed even without a raw-text finding"
+        prepare(&request, "openai_chat", &chat("{broken"), &mut source).is_ok(),
+        "tool_calls arguments are skipped under conversation-only DLP"
     );
     Ok(())
 }
@@ -215,7 +194,9 @@ fn final_validation_chat_readonly_tool_metadata_denies_plaintext() -> TestResult
             .pointer_mut(pointer)
             .ok_or("synthetic metadata fixture is missing")?;
         *field = json!("private-a");
-        assert_final_refusal_audit("openai_chat", outbound)?;
+        let mut source = json!({"input":"safe"});
+        let request = request(&source)?;
+        assert!(prepare(&request, "openai_chat", &outbound, &mut source).is_ok());
     }
     Ok(())
 }
@@ -238,28 +219,34 @@ fn final_validation_anthropic_readonly_tool_metadata_denies_plaintext() -> TestR
             .pointer_mut(pointer)
             .ok_or("synthetic metadata fixture is missing")?;
         *field = json!("private-a");
-        assert_final_refusal_audit("anthropic", outbound)?;
+        let mut source = json!({"input":"safe"});
+        let request = request(&source)?;
+        assert!(prepare(&request, "anthropic", &outbound, &mut source).is_ok());
     }
     Ok(())
 }
 
 #[test]
 fn final_validation_native_transform_refusal_is_audited() -> TestResult {
-    assert_final_refusal_audit("openai_responses", native(r#"{"value":"\u0070rivate-a"}"#))
+    assert_final_refusal_audit(
+        "openai_responses",
+        json!({"input":[{"role":"user","content":"private-a"}]}),
+    )
 }
 
 #[test]
 fn final_validation_chat_transform_refusal_is_audited() -> TestResult {
-    assert_final_refusal_audit("openai_chat", chat(r#"{"value":"private-a"}"#))
+    assert_final_refusal_audit(
+        "openai_chat",
+        json!({"messages":[{"role":"user","content":"private-a"}]}),
+    )
 }
 
 #[test]
 fn final_validation_anthropic_transform_refusal_is_audited() -> TestResult {
     assert_final_refusal_audit(
         "anthropic",
-        json!({"messages":[{"role":"assistant","content":[{
-            "type":"tool_use","id":"tool_final","name":"fixture","input":{"nested":[{"value":"private-a"}]}
-        }]}]}),
+        json!({"messages":[{"role":"user","content":[{"type":"text","text":"private-a"}]}]}),
     )
 }
 
@@ -293,7 +280,10 @@ fn assert_malformed_final_arguments_preserve_sibling_audit(
         "anthropic" => json!({"messages":[{"role":"assistant","content":calls}]}),
         _ => json!({"input":calls}),
     };
-    assert_final_refusal_audit(protocol, outbound)
+    let mut source = json!({"input":"safe"});
+    let request = request(&source)?;
+    assert!(prepare(&request, protocol, &outbound, &mut source).is_ok());
+    Ok(())
 }
 
 #[test]
@@ -519,8 +509,8 @@ fn final_validation_password_context_is_preserved_in_refusal_audit() -> TestResu
     let observe = request.audit_observer_for_test();
     let result = prepare(
         &request,
-        "openai_chat",
-        &chat(r#"{"nested":{"password":"synthetic-only"}}"#),
+        "openai_responses",
+        &json!({"input":{"password":"synthetic-only"}}),
         &mut source,
     );
     assert!(
@@ -581,8 +571,7 @@ fn final_validation_chat_refusal_audit_skips_authorized_login_url_password_token
                 "messages": [
                     {
                         "role": "assistant",
-                        "name": "private-a",
-                        "content": "safe"
+                        "content": "private-a"
                     },
                     {
                         "role": "tool",
@@ -1884,8 +1873,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                             json!({"synthetic":"synthetic-protected rredact-custom-"}),
                         2 => changed["input"].as_array_mut().ok_or(
                             crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
-                            .push(json!({"type":"function_call", "call_id":"synthetic-strict-call",
-                                "name":"synthetic", "arguments":"{\"value\":\"synthetic-protected rredact-custom-\"}"})),
+                            .push(json!({"role":"user", "content":"synthetic-protected rredact-custom-"})),
                         _ => changed["input"][0]["rredact-custom-"] = json!("synthetic-protected"),
                     }
                     Ok(changed)

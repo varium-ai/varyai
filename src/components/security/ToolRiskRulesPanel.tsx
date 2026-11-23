@@ -461,7 +461,7 @@ export function ToolRiskRulesPanel({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-[var(--workspace-module-gap)]">
       <div className="sc-surface flex items-center justify-between gap-5 px-5 py-4">
         <div className="flex items-start gap-3">
           <div>
@@ -673,7 +673,7 @@ export function ToolRiskRulesPanel({
                     <TableCell className="whitespace-nowrap">
                       <Badge
                         variant={severityBadgeVariant(rule.severity)}
-                        className="min-h-0 rounded-full text-[11px]"
+                        className="sc-table-status min-h-0 rounded-full text-[11px]"
                       >
                         {t(`toolRisk.severity.${rule.severity}`, {
                           defaultValue: rule.severity,

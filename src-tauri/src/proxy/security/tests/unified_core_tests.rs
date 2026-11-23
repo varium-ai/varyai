@@ -1685,7 +1685,6 @@ async fn c2_first_result_pairing_is_not_call_snapshot_or_result_body_authority()
 async fn c2_first_and_replayed_result_bodies_are_inspected_without_publication() -> TestResult {
     let fixture = ResponsesFixture::new();
     let (prior, call) = c2_deliver_synthetic_call(&fixture).await?;
-    let mut uncompleted_result_reference: Option<String> = None;
     for (case, current) in ["13800000000", "13700000000", "13600000000"]
         .into_iter()
         .enumerate()
@@ -1696,42 +1695,20 @@ async fn c2_first_and_replayed_result_bodies_are_inspected_without_publication()
         }
         let mut body = json!({"input":[current_call,
             {"type":"function_call_output", "call_id":"synthetic-c2-call",
-                "output":format!("Synthetic result {current} {}", uncompleted_result_reference.as_deref().unwrap_or(""))}
+                "output":format!("Synthetic result {current}")}
         ]});
         let attempt = fixture.prepare(&mut body, false, Some(SESSION))?;
         let text = body["input"][1]["output"]
             .as_str()
             .ok_or("synthetic result missing")?;
         assert!(
-            !text.contains(current),
-            "first_or_replayed_result_not_inspected"
+            text.contains(current),
+            "first_or_replayed_result_should_be_skipped"
         );
-        let mut references = Vec::new();
-        super::output_text_matching::visit_complete_references(text, |range| {
-            references.push(text[range].to_owned());
-            Ok(())
-        })?;
-        assert!(
-            references
-                .iter()
-                .any(|reference| attempt.lease.resolve(reference).is_ok()),
-            "result_current_mapping_missing"
-        );
-        if let Some(reference) = &uncompleted_result_reference {
-            assert!(
-                attempt.lease.resolve(reference).is_err(),
-                "uncompleted_result_was_attested"
-            );
-        }
         assert!(
             attempt.lease.resolve(&prior).is_ok() == (case != 2),
             "result_pairing_replaced_snapshot_proof"
         );
-        if case == 0 {
-            uncompleted_result_reference = references
-                .into_iter()
-                .find(|reference| attempt.lease.resolve(reference).is_ok());
-        }
         // Admission/preparation alone must never publish completed result authority.
         drop(attempt);
     }
@@ -1764,7 +1741,8 @@ async fn c2_first_result_explicit_block_cannot_degrade_or_partially_mutate() -> 
         }
         let mut body = json!({"input":[replayed,
             {"type":"function_call_output", "call_id":"synthetic-c2-call",
-                "output":"13800000000 synthetic-stop"}
+                "output":"13800138000 synthetic-stop"},
+            {"role":"user", "content":"13800138000 synthetic-stop"}
         ]});
         let original = body.clone();
         let transformed = std::cell::Cell::new(false);

@@ -1900,7 +1900,7 @@ export function PiProviderForm({
                                                     className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ${
                                                       popoverOpen
                                                         ? "translate-x-0.5 bg-primary/10 text-primary"
-                                                        : "text-muted-foreground/50 group-hover:translate-x-0.5 group-hover:text-muted-foreground"
+                                                        : "text-muted-foreground group-hover:translate-x-0.5 group-hover:text-muted-foreground"
                                                     }`}
                                                   >
                                                     <ChevronRight className="h-3.5 w-3.5" />
@@ -2001,7 +2001,7 @@ export function PiProviderForm({
                                                       ),
                                                     },
                                                   )}
-                                                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                                                  className="h-[var(--control-height)] min-w-0 flex-1 font-mono text-[13px]"
                                                 />
                                               </div>
                                               <label className="flex cursor-pointer items-center gap-2.5 text-sm">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import { useTranslation } from "react-i18next";
 import {
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/command";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -74,6 +75,8 @@ interface ProfileSwitcherProps {
   selectedApps: AppId[];
   side?: "top" | "bottom";
   compact?: boolean;
+  nativeAgentPicker?: boolean;
+  triggerClassName?: string;
 }
 
 /** Shared project menu: legacy profiles apply to their scope; bundles preview all selected agents. */
@@ -82,8 +85,13 @@ export function ProfileSwitcher({
   selectedApps,
   side = "bottom",
   compact = false,
+  nativeAgentPicker = compact,
+  triggerClassName,
 }: ProfileSwitcherProps) {
   const { t } = useTranslation();
+  const nameErrorId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const openingCreateDialog = useRef(false);
   const [open, setOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isManageOpen, setIsManageOpen] = useState(false);
@@ -143,9 +151,13 @@ export function ProfileSwitcher({
       ? null
       : scopedCurrentId);
   const currentProfile = profiles.find((p) => p.id === currentId);
-  const duplicateName = (data?.profiles ?? []).some(
-    (profile) => profile.name.trim() === newName.trim(),
-  );
+  const duplicateName =
+    !createMutation.isPending &&
+    !createMutation.isSuccess &&
+    Boolean(newName.trim()) &&
+    (data?.profiles ?? []).some(
+      (profile) => profile.name.trim() === newName.trim(),
+    );
 
   const undoLast = async () => {
     if (!pendingUndo || undoing) return;
@@ -214,6 +226,7 @@ export function ProfileSwitcher({
       >
         <PopoverTrigger asChild>
           <button
+            ref={triggerRef}
             type="button"
             role="combobox"
             aria-expanded={open}
@@ -225,6 +238,7 @@ export function ProfileSwitcher({
               "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium transition-colors",
               "hover:bg-[var(--mp-hover)]",
               currentProfile ? "text-foreground" : "text-muted-foreground",
+              triggerClassName,
             )}
           >
             <FolderOpen className="h-4 w-4 shrink-0 opacity-70" />
@@ -236,6 +250,12 @@ export function ProfileSwitcher({
           </button>
         </PopoverTrigger>
         <PopoverContent
+          onCloseAutoFocus={(event) => {
+            if (openingCreateDialog.current) {
+              event.preventDefault();
+              openingCreateDialog.current = false;
+            }
+          }}
           side={side}
           align="start"
           sideOffset={compact ? 4 : 6}
@@ -284,6 +304,9 @@ export function ProfileSwitcher({
                   value="__create__"
                   keywords={[t("profiles.createFromCurrent")]}
                   onSelect={() => {
+                    openingCreateDialog.current = true;
+                    createMutation.reset();
+                    setNewName("");
                     setOpen(false);
                     setCreateBundle(false);
                     setBundleApps(selectedAvailableApps);
@@ -346,8 +369,15 @@ export function ProfileSwitcher({
           if (!open) closeCreateDialog();
         }}
       >
-        <DialogContent className="max-w-sm" zIndex="alert">
-          <DialogHeader className="space-y-3 border-b-0 bg-transparent pb-0">
+        <DialogContent
+          className="max-w-md"
+          zIndex="alert"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            triggerRef.current?.focus();
+          }}
+        >
+          <DialogHeader>
             <DialogTitle>{t("profiles.createFromCurrent")}</DialogTitle>
             <DialogDescription>
               {t(
@@ -358,133 +388,163 @@ export function ProfileSwitcher({
               )}
             </DialogDescription>
           </DialogHeader>
-          <div className="px-6 pt-3">
-            <Input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder={t("profiles.namePlaceholder")}
-              autoFocus
-            />
-            {duplicateName && (
-              <p role="alert" className="mt-2 text-sm text-destructive">
-                {t("profiles.nameExists")}
-              </p>
-            )}
-            <label className="mt-3 flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={createBundle}
-                onCheckedChange={(checked) => {
-                  setCreateBundle(checked === true);
-                  setBundleApps(selectedAvailableApps);
-                }}
+          <DialogBody className="space-y-4 pb-5">
+            <div className="space-y-1.5">
+              <Input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder={t("profiles.namePlaceholder")}
+                aria-label={t("profiles.name")}
+                aria-invalid={duplicateName || undefined}
+                aria-describedby={duplicateName ? nameErrorId : undefined}
               />
-              {t("profiles.bundle.create")}
-            </label>
-            {!createBundle && (
-              <label className="mt-3 flex flex-col gap-2 text-sm">
-                {t("profiles.bundle.singleAgent")}
-                {compact ? (
-                  <select
-                    aria-label={t("profiles.bundle.singleAgent")}
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                    value={captureApp}
-                    onChange={(event) =>
-                      setCaptureApp(event.target.value as AppId)
-                    }
-                  >
-                    {agents.map(({ app, available }) => (
-                      <option key={app} value={app} disabled={!available}>
-                        {t(`apps.${app}`)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <Select
-                    value={captureApp}
-                    onValueChange={(app) => setCaptureApp(app as AppId)}
-                  >
-                    <SelectTrigger
-                      aria-label={t("profiles.bundle.singleAgent")}
-                      className="vary-task-select"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent
-                      className="vary-task-select-menu"
-                      sideOffset={8}
-                    >
-                      {agents.map(({ app, available }) => (
-                        <SelectItem key={app} value={app} disabled={!available}>
-                          {t(`apps.${app}`)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              </label>
-            )}
-            {!createBundle && currentAgent?.reason && (
-              <p className="mt-3 text-sm text-muted-foreground">
-                {t(currentAgent.reason)}
-              </p>
-            )}
-            {createBundle && (
-              <fieldset className="mt-3 max-h-[45vh] space-y-3 overflow-y-auto text-sm">
-                <legend className="mb-2 text-muted-foreground">
-                  {t("profiles.bundle.chooseAgents")}
-                </legend>
-                {agents.map(
-                  ({ app, available, reason, mcp, skills, instructions }) => (
-                    <label key={app} className="flex items-start gap-2">
-                      <Checkbox
-                        disabled={!available}
-                        checked={bundleApps.includes(app)}
-                        onCheckedChange={(checked) =>
-                          setBundleApps((previous) =>
-                            checked
-                              ? [...previous, app]
-                              : previous.filter((value) => value !== app),
-                          )
-                        }
-                      />
-                      <span>
-                        <span
-                          className={!available ? "text-muted-foreground" : ""}
-                        >
-                          {t(`apps.${app}`)}
-                        </span>
-                        <span className="block text-xs text-muted-foreground">
-                          {available &&
-                            [
-                              t("profiles.bundle.modelsLabel"),
-                              mcp && "MCP",
-                              skills && "Skills",
-                              instructions &&
-                                t("profiles.bundle.instructionsLabel"),
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          {reason && ` ${t(reason)}`}
-                        </span>
-                      </span>
-                    </label>
-                  ),
-                )}
-                <p className="text-muted-foreground">
-                  {t("profiles.bundle.captureHint")}
+              {duplicateName && (
+                <p
+                  id={nameErrorId}
+                  role="alert"
+                  className="text-xs text-destructive"
+                >
+                  {t("profiles.nameExists")}
                 </p>
-              </fieldset>
-            )}
+              )}
+            </div>
+            <div className="rounded-md border border-border">
+              <label className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-t-md bg-muted/50 px-3 py-2.5 font-medium leading-5">
+                <Checkbox
+                  checked={createBundle}
+                  onCheckedChange={(checked) => {
+                    setCreateBundle(checked === true);
+                    setBundleApps(selectedAvailableApps);
+                  }}
+                />
+                <span>{t("profiles.bundle.create")}</span>
+              </label>
+              <div className="border-t border-border px-3 py-3">
+                {createBundle ? (
+                  <fieldset className="min-w-0">
+                    <legend className="mb-1 font-medium leading-5">
+                      {t("profiles.bundle.chooseAgents")}
+                    </legend>
+                    <div className="divide-y divide-border">
+                      {agents.map(
+                        ({
+                          app,
+                          available,
+                          reason,
+                          mcp,
+                          skills,
+                          instructions,
+                        }) => (
+                          <label
+                            key={app}
+                            className="flex items-start gap-2.5 py-2.5 last:pb-0"
+                          >
+                            <Checkbox
+                              className="mt-0.5"
+                              disabled={!available}
+                              checked={bundleApps.includes(app)}
+                              onCheckedChange={(checked) =>
+                                setBundleApps((previous) =>
+                                  checked
+                                    ? [...previous, app]
+                                    : previous.filter((value) => value !== app),
+                                )
+                              }
+                            />
+                            <span className="min-w-0 break-words leading-5">
+                              <span
+                                className={cn(
+                                  "font-medium",
+                                  !available && "text-muted-foreground",
+                                )}
+                              >
+                                {t(`apps.${app}`)}
+                              </span>
+                              {(available || reason) && (
+                                <span className="block text-xs text-muted-foreground">
+                                  {available &&
+                                    [
+                                      t("profiles.bundle.modelsLabel"),
+                                      mcp && "MCP",
+                                      skills && "Skills",
+                                      instructions &&
+                                        t("profiles.bundle.instructionsLabel"),
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  {reason && ` ${t(reason)}`}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        ),
+                      )}
+                    </div>
+                  </fieldset>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="flex flex-col gap-2 font-medium leading-5">
+                      {t("profiles.bundle.singleAgent")}
+                      {nativeAgentPicker ? (
+                        <select
+                          aria-label={t("profiles.bundle.singleAgent")}
+                          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                          value={captureApp}
+                          onChange={(event) =>
+                            setCaptureApp(event.target.value as AppId)
+                          }
+                        >
+                          {agents.map(({ app, available }) => (
+                            <option key={app} value={app} disabled={!available}>
+                              {t(`apps.${app}`)}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <Select
+                          value={captureApp}
+                          onValueChange={(value) =>
+                            setCaptureApp(value as AppId)
+                          }
+                        >
+                          <SelectTrigger
+                            aria-label={t("profiles.bundle.singleAgent")}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {agents.map(({ app, available }) => (
+                              <SelectItem
+                                key={app}
+                                value={app}
+                                disabled={!available}
+                              >
+                                {t(`apps.${app}`)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </label>
+                    {currentAgent?.reason && (
+                      <p className="text-xs text-muted-foreground">
+                        {t(currentAgent.reason)}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
             {createMutation.isError &&
               createMutation.variables.name === newName.trim() && (
-                <p role="alert" className="mt-3 text-sm text-destructive">
+                <p role="alert" className="text-xs text-destructive">
                   {t("profiles.createFailed", {
                     detail: profileErrorMessage(createMutation.error, t),
                   })}
                 </p>
               )}
-          </div>
-          <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">
+          </DialogBody>
+          <DialogFooter className="gap-3 border-t border-border py-4">
             <Button variant="outline" onClick={closeCreateDialog}>
               {t("common.cancel")}
             </Button>

@@ -33,7 +33,7 @@ describe("SecurityActivitySummary", () => {
     for (const value of ["17", "4", "3", "7"])
       expect(screen.getByText(value)).toBeInTheDocument();
     expect(
-      screen.getByText("securityStats.audited").parentElement,
+      screen.getByText("securityStats.warnings").parentElement,
     ).toHaveTextContent("7");
     expect(summary).toHaveBeenCalledWith(
       expect.objectContaining({

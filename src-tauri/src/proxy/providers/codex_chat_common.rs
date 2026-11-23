@@ -11,7 +11,7 @@ pub(crate) fn is_unsolicited_page_context(item: &Value) -> bool {
     item["type"] == "function_call_output"
         && item["namespace"] == "agent"
         && item.get("call_id").is_none_or(Value::is_null)
-        && (name == "codex_apps_open_page"
+        && (matches!(name, "codex_apps_open_page" | "browser_tabs")
             || name
                 .strip_prefix("codex_apps_selected_page_part_")
                 .and_then(|part| part.split_once("_of_"))

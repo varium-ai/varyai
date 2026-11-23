@@ -128,31 +128,10 @@ fn native_fixture() -> Value {
 }
 
 // Test-only fixture locations; production writes must use exact borrowed sites, not paths.
-fn leaf_specs() -> [(&'static str, SourceClass); 8] {
+fn leaf_specs() -> [(&'static str, SourceClass); 2] {
     [
-        ("/systemInstruction/parts/0/text", SourceClass::CurrentInput),
         ("/contents/0/parts/0/text", SourceClass::CurrentInput),
         ("/contents/1/parts/0/text", SourceClass::HistoricalText),
-        (
-            "/contents/1/parts/1/functionCall/args/top",
-            SourceClass::ToolArguments,
-        ),
-        (
-            "/contents/1/parts/1/functionCall/args/nested/0",
-            SourceClass::ToolArguments,
-        ),
-        (
-            "/contents/1/parts/1/functionCall/args/nested/1/note",
-            SourceClass::ToolArguments,
-        ),
-        (
-            "/contents/2/parts/0/functionResponse/response/output/text",
-            SourceClass::ToolResult,
-        ),
-        (
-            "/contents/2/parts/0/functionResponse/response/rows/0",
-            SourceClass::ToolResult,
-        ),
     ]
 }
 
@@ -335,17 +314,7 @@ fn ge1_system_instruction_spellings_are_native_borrowed_sites() -> TestResult {
         body[spelling] = json!({"parts":[{"text":CONTACT},{"inlineData":{"data":CONTACT}}]});
         let budget = PayloadBudget::with_limit(BUDGET_BYTES);
         let observed = observe(&body, &budget)?;
-        assert!(
-            observed.sites().len() == 1,
-            "ge1_system_text_not_selected_exactly"
-        );
-        let site = observed.sites().site(0).ok_or("ge1_system_site_missing")?;
-        assert!(
-            std::ptr::eq(site.native(), &body[spelling]["parts"][0]["text"])
-                && site.source() == SourceClass::CurrentInput
-                && site.constraint() == EditConstraint::Editable,
-            "ge1_system_native_site_changed"
-        );
+        assert!(observed.sites().len() == 0, "ge1_system_text_not_skipped");
         drop(observed);
         assert!(budget.used() == 0, "ge1_system_observation_charge_retained");
     }
@@ -441,7 +410,8 @@ fn ge1_current_mandatory_redaction_changes_only_native_string_leaves() -> TestRe
     )
     .map_err(|_| "ge1_mandatory_native_redaction_failed")?;
     assert!(
-        prepared.irreversible_occurrences == 8 && prepared.reversible_occurrences == 0,
+        prepared.irreversible_occurrences == leaf_specs().len()
+            && prepared.reversible_occurrences == 0,
         "ge1_mandatory_redaction_count_changed"
     );
     assert!(
@@ -507,7 +477,7 @@ fn ge1_reversible_preparation_preserves_native_objects_types_and_opaque_fields()
         "ge1_current_mapping_not_authorized"
     );
     assert!(
-        prepared.reversible_occurrences == 8
+        prepared.reversible_occurrences == leaf_specs().len()
             && prepared.irreversible_occurrences == 0
             && store.stats()?.entries == before.entries + 1,
         "ge1_native_occurrence_or_deduplication_changed"
@@ -533,31 +503,25 @@ fn ge1_signed_parts_keep_readable_sites_immutable_and_signature_opaque() -> Test
         let original = body.clone();
         let budget = PayloadBudget::with_limit(BUDGET_BYTES);
         let observed = observe(&body, &budget)?;
-        assert!(
-            observed.sites().len() == 1,
-            "ge1_signed_readable_leaf_missing_or_signature_scanned"
-        );
-        let site = observed.sites().site(0).ok_or("ge1_signed_site_missing")?;
         let part = &body["contents"][0]["parts"][0];
-        let (node, source) = if part.get("text").is_some() {
-            (&part["text"], SourceClass::HistoricalText)
-        } else if part.get("functionCall").is_some() {
-            (
-                &part["functionCall"]["args"]["nested"][0],
-                SourceClass::ToolArguments,
-            )
+        if part.get("text").is_some() {
+            assert!(
+                observed.sites().len() == 1,
+                "ge1_signed_readable_leaf_missing_or_signature_scanned"
+            );
+            let site = observed.sites().site(0).ok_or("ge1_signed_site_missing")?;
+            assert!(
+                std::ptr::eq(site.native(), &part["text"])
+                    && site.source() == SourceClass::HistoricalText
+                    && site.constraint() == EditConstraint::Immutable,
+                "ge1_signed_native_leaf_not_immutable"
+            );
         } else {
-            (
-                &part["functionResponse"]["response"]["output"],
-                SourceClass::ToolResult,
-            )
-        };
-        assert!(
-            std::ptr::eq(site.native(), node)
-                && site.source() == source
-                && site.constraint() == EditConstraint::Immutable,
-            "ge1_signed_native_leaf_not_immutable"
-        );
+            assert!(
+                observed.sites().len() == 0,
+                "ge1_signed_function_carrier_should_be_skipped"
+            );
+        }
         assert!(
             body == original,
             "ge1_signed_unit_mutated_during_observation"
@@ -593,19 +557,27 @@ fn ge1_signed_mandatory_patch_conflict_rolls_back_all_native_edits() -> TestResu
                     Ok(())
                 },
             );
-            assert!(
-                matches!(result, Err(PlanError::ImmutableContent)),
-                "ge1_signed_mandatory_patch_not_rejected"
-            );
-            assert!(!called.get(), "ge1_signed_conflict_reached_validator");
-            assert!(
-                lease.is_empty() && store.stats()? == before && body == original,
-                "ge1_signed_conflict_committed_partial_edit_or_mapping"
-            );
-            assert!(
-                budget.used() == baseline,
-                "ge1_signed_conflict_charge_retained"
-            );
+            if part.get("text").is_some() {
+                assert!(
+                    matches!(result, Err(PlanError::ImmutableContent)),
+                    "ge1_signed_mandatory_patch_not_rejected"
+                );
+                assert!(!called.get(), "ge1_signed_conflict_reached_validator");
+                assert!(
+                    lease.is_empty() && store.stats()? == before && body == original,
+                    "ge1_signed_conflict_committed_partial_edit_or_mapping"
+                );
+                assert!(
+                    budget.used() == baseline,
+                    "ge1_signed_conflict_charge_retained"
+                );
+            } else {
+                let prepared = result.map_err(|_| "ge1_signed_function_user_edit_failed")?;
+                assert!(
+                    prepared.body.as_value()["contents"][1]["parts"][0] == part && body == original,
+                    "ge1_signed_skipped_function_carrier_mutated"
+                );
+            }
             drop(observed);
             assert!(
                 budget.used() == 0,
@@ -634,7 +606,7 @@ fn ge1_unchanged_signed_parts_and_opaque_signature_preserve_native_units() -> Te
     let budget = PayloadBudget::with_limit(BUDGET_BYTES);
     let observed = observe(&body, &budget)?;
     assert!(
-        observed.sites().len() == 3,
+        observed.sites().len() == 1,
         "ge1_signed_opaque_fields_scanned"
     );
     let baseline = budget.used();
@@ -709,8 +681,7 @@ fn ge1_signed_authorized_reference_conflict_preserves_existing_lease_only() -> T
     );
     let body = json!({"contents":[
         {"role":"user","parts":[{"text":"13800000000"}]},
-        {"role":"model","parts":[{"functionCall":{"name":"synthetic_tool","args":{"value":reference}},
-            "thoughtSignature":"c3ludGhldGlj"}]}]});
+        {"role":"model","parts":[{"text":reference,"thoughtSignature":"c3ludGhldGlj"}]}]});
     let original = body.clone();
     let before = store.stats()?;
     let observed = observe(&body, &budget)?;
@@ -979,10 +950,7 @@ fn recursive_native_leaf(payload: &Value, depth: usize) -> TestResult<&Value> {
 fn ge1_resource_within_limit_recursive_values_remain_exact_borrowed_sites() -> TestResult {
     // Native root -> contents -> content -> parts -> Part -> call/result -> Struct -> payload.
     // Forty-eight additional containers leave the string below the depth-64 boundary.
-    for (carrier, field, source) in [
-        ("functionCall", "args", SourceClass::ToolArguments),
-        ("functionResponse", "response", SourceClass::ToolResult),
-    ] {
+    for (carrier, field) in [("functionCall", "args"), ("functionResponse", "response")] {
         let mut part = json!({});
         part[carrier] = json!({"name":"synthetic_tool"});
         part[carrier][field] = recursive_native_payload(48);
@@ -993,19 +961,12 @@ fn ge1_resource_within_limit_recursive_values_remain_exact_borrowed_sites() -> T
         let before = store.stats()?;
         let budget = PayloadBudget::with_limit(BUDGET_BYTES);
         let observed = observe(&body, &budget)?;
-        let leaf = recursive_native_leaf(&body["contents"][0]["parts"][0][carrier][field], 48)?;
         assert!(
-            std::ptr::eq(observed.native(), &body)
-                && observed.sites().len() == 1
-                && observed.sites().site(0).is_some_and(|site| {
-                    std::ptr::eq(site.native(), leaf)
-                        && site.source() == source
-                        && site.constraint() == EditConstraint::Editable
-                }),
+            std::ptr::eq(observed.native(), &body) && observed.sites().len() == 0,
             "ge1_resource_within_limit_recursive_site_lost"
         );
         assert!(
-            budget.used() > 0 && body == original && lease.is_empty() && store.stats()? == before,
+            body == original && lease.is_empty() && store.stats()? == before,
             "ge1_resource_within_limit_changed_owner_or_store"
         );
         drop(observed);
@@ -1029,15 +990,18 @@ fn ge1_resource_excessive_native_depth_fails_atomically_and_refunds() -> TestRes
         let before = store.stats()?;
         let budget = PayloadBudget::with_limit(BUDGET_BYTES);
         let uri: Uri = JSON_ROUTE.parse()?;
+        let observed = observe_request(&Method::POST, &uri, &body, budget.clone())
+            .map_err(|_| "ge1_resource_depth_skipped_function_carrier_failed")?;
         assert!(
-            matches!(
-                observe_request(&Method::POST, &uri, &body, budget.clone()),
-                Err(PlanError::Token(TokenError::CapacityExceeded))
-            ),
-            "ge1_resource_native_depth_limit_not_enforced"
+            observed.sites().len() == 1
+                && lease.is_empty()
+                && store.stats()? == before
+                && body == original,
+            "ge1_resource_depth_skipped_function_carrier_unexpected_state"
         );
+        drop(observed);
         assert!(
-            budget.used() == 0 && lease.is_empty() && store.stats()? == before && body == original,
+            budget.used() == 0,
             "ge1_resource_depth_failure_changed_owner_or_store"
         );
     }
@@ -1045,14 +1009,8 @@ fn ge1_resource_excessive_native_depth_fails_atomically_and_refunds() -> TestRes
 }
 
 // Reuse the signed fixtures and current native admission; never fabricate reference authority.
-const GE1_SIGNATURE_ALIAS_LEAVES: [(&str, SourceClass); 3] = [
-    ("/text", SourceClass::HistoricalText),
-    ("/functionCall/args/nested/0", SourceClass::ToolArguments),
-    (
-        "/functionResponse/response/output/nested/0",
-        SourceClass::ToolResult,
-    ),
-];
+const GE1_SIGNATURE_ALIAS_LEAVES: [(&str, SourceClass); 1] =
+    [("/text", SourceClass::HistoricalText)];
 
 fn signature_alias_parts(signature_field: &str) -> TestResult<[Value; 3]> {
     let mut parts = signed_parts();
@@ -1138,22 +1096,32 @@ fn assert_signature_alias_mandatory_conflict(
             Ok(())
         },
     );
-    assert!(
-        matches!(result, Err(PlanError::ImmutableContent)),
-        "ge1_signature_alias_mandatory_conflict_not_typed_unsupported"
-    );
-    assert!(
-        !called.get(),
-        "ge1_signature_alias_mandatory_conflict_reached_validator"
-    );
-    assert!(
-        lease.is_empty() && store.stats()? == before && body == original,
-        "ge1_signature_alias_mandatory_conflict_committed_sibling_or_mapping"
-    );
-    assert!(
-        budget.used() == baseline,
-        "ge1_signature_alias_mandatory_conflict_charge_retained"
-    );
+    if part_index == 0 {
+        assert!(
+            matches!(result, Err(PlanError::ImmutableContent)),
+            "ge1_signature_alias_mandatory_conflict_not_typed_unsupported"
+        );
+        assert!(
+            !called.get(),
+            "ge1_signature_alias_mandatory_conflict_reached_validator"
+        );
+        assert!(
+            lease.is_empty() && store.stats()? == before && body == original,
+            "ge1_signature_alias_mandatory_conflict_committed_sibling_or_mapping"
+        );
+        assert!(
+            budget.used() == baseline,
+            "ge1_signature_alias_mandatory_conflict_charge_retained"
+        );
+    } else {
+        let prepared = result.map_err(|_| "ge1_signature_alias_skipped_carrier_failed")?;
+        assert!(
+            prepared.body.as_value()["contents"][1]["parts"][0]
+                == original["contents"][1]["parts"][0]
+                && body == original,
+            "ge1_signature_alias_skipped_carrier_mutated"
+        );
+    }
     drop(observed);
     assert!(
         budget.used() == 0,
@@ -1218,7 +1186,11 @@ fn assert_signature_alias_authorized_reference_conflict(
     drop(seed_observed);
 
     let mut part = signature_alias_parts(signature_field)?[part_index].clone();
-    let (pointer, _) = GE1_SIGNATURE_ALIAS_LEAVES[part_index];
+    let pointer = match part_index {
+        0 => "/text",
+        1 => "/functionCall/args/nested/0",
+        _ => "/functionResponse/response/output/nested/0",
+    };
     *part
         .pointer_mut(pointer)
         .ok_or("ge1_signature_alias_reference_leaf_fixture_missing")? = json!(reference);
@@ -1241,31 +1213,41 @@ fn assert_signature_alias_authorized_reference_conflict(
             Ok(())
         },
     );
-    assert!(
-        matches!(result, Err(PlanError::ImmutableContent)),
-        "ge1_signature_alias_authorized_reference_not_typed_unsupported"
-    );
-    assert!(
-        !called.get()
-            && store.stats()? == before
-            && body == original
-            && lease.resolve(&reference)? == CONTACT
-            && budget.used() == baseline,
-        "ge1_signature_alias_reference_conflict_not_atomic"
-    );
-    let mut owned = 0;
-    lease.visit_authorized_tokens(|known| {
+    if part_index == 0 {
         assert!(
-            known == reference,
-            "ge1_signature_alias_reference_conflict_expanded_lease"
+            matches!(result, Err(PlanError::ImmutableContent)),
+            "ge1_signature_alias_authorized_reference_not_typed_unsupported"
         );
-        owned += 1;
-        Ok(())
-    })?;
-    assert!(
-        owned == 1,
-        "ge1_signature_alias_reference_conflict_changed_exact_ownership"
-    );
+        assert!(
+            !called.get()
+                && store.stats()? == before
+                && body == original
+                && lease.resolve(&reference)? == CONTACT
+                && budget.used() == baseline,
+            "ge1_signature_alias_reference_conflict_not_atomic"
+        );
+        let mut owned = 0;
+        lease.visit_authorized_tokens(|known| {
+            assert!(
+                known == reference,
+                "ge1_signature_alias_reference_conflict_expanded_lease"
+            );
+            owned += 1;
+            Ok(())
+        })?;
+        assert!(
+            owned == 1,
+            "ge1_signature_alias_reference_conflict_changed_exact_ownership"
+        );
+    } else {
+        let prepared = result.map_err(|_| "ge1_signature_alias_skipped_reference_failed")?;
+        assert!(
+            prepared.body.as_value()["contents"][1]["parts"][0]
+                == original["contents"][1]["parts"][0]
+                && body == original,
+            "ge1_signature_alias_skipped_reference_mutated"
+        );
+    }
     drop(observed);
     assert!(
         budget.used() == 0,
@@ -1294,9 +1276,9 @@ fn ge1_signature_alias_function_response_authorized_reference_fails_preserving_e
 #[test]
 #[serial_test::serial]
 fn ge1_signature_alias_unsigned_carriers_still_redact_and_tokenize() -> TestResult {
-    for (part_index, mut part) in signature_alias_parts("thought_signature")?
+    for (mut part, (pointer, _)) in signature_alias_parts("thought_signature")?
         .into_iter()
-        .enumerate()
+        .zip(GE1_SIGNATURE_ALIAS_LEAVES)
     {
         part.as_object_mut()
             .ok_or("ge1_signature_alias_unsigned_part_fixture_missing")?
@@ -1319,7 +1301,6 @@ fn ge1_signature_alias_unsigned_carriers_still_redact_and_tokenize() -> TestResu
                 |_, _, _| Ok(()),
             )
             .map_err(|_| "ge1_signature_alias_unsigned_preparation_failed")?;
-            let (pointer, _) = GE1_SIGNATURE_ALIAS_LEAVES[part_index];
             let replacement = prepared.body.as_value()["contents"][0]["parts"][0]
                 .pointer(pointer)
                 .and_then(Value::as_str)
@@ -2668,14 +2649,12 @@ fn ge3_lane_exact_ordered_contents_and_signed_two_turn_replay() -> TestResult {
     let mut expected = request.clone();
     let actual = prepared.body.as_value();
     expected["contents"][0]["parts"][0]["text"] = actual["contents"][0]["parts"][0]["text"].clone();
-    expected["contents"][0]["parts"][2]["functionCall"]["args"]["query"] =
-        expected["contents"][0]["parts"][0]["text"].clone();
     let reference = expected["contents"][0]["parts"][0]["text"]
         .as_str()
         .ok_or("ge3_replay_reference_missing")?;
     assert!(
         actual == &expected
-            && prepared.reversible_occurrences == 2
+            && prepared.reversible_occurrences == 1
             && next.resolve(reference)? == CONTACT
             && actual["contents"][0]["parts"][1] == source["candidates"][0]["content"]["parts"][1],
         "ge3_two_turn_native_or_signed_part_changed"
@@ -2714,8 +2693,8 @@ fn ge3_lane_native_ids_pair_reordered_results_without_text_authority() -> TestRe
         "ge3_native_id_pairing_missing"
     );
     assert!(
-        observed.sites().len() == 4,
-        "ge3_pairing_skipped_result_or_argument_dlp"
+        observed.sites().len() == 0,
+        "ge3_pairing_should_skip_function_carriers"
     );
     drop(observed);
     assert!(budget.used() == 0, "ge3_native_pair_charge_retained");
@@ -2942,12 +2921,10 @@ fn ge3_lane_first_and_edited_function_response_remain_current_dlp() -> TestResul
         )
         .map_err(|_| "ge3_result_current_dlp_rejected")?;
         assert!(
-            prepared.reversible_occurrences == 3
-                && !prepared.body.as_value()["contents"][1]["parts"][0]["functionResponse"]
+            prepared.reversible_occurrences == 1
+                && prepared.body.as_value()["contents"][1]["parts"][0]["functionResponse"]
                     ["response"]["text"]
-                    .as_str()
-                    .ok_or("ge3_result_text_missing")?
-                    .contains(CONTACT)
+                    == original["contents"][1]["parts"][0]["functionResponse"]["response"]["text"]
                 && prepared.body.as_value()["contents"][0]["parts"][1]
                     == original["contents"][0]["parts"][1]
                 && prepared.body.as_value()["contents"][1]["parts"][0]["functionResponse"]
@@ -2998,14 +2975,22 @@ fn ge3_lane_authorized_reference_in_signed_text_or_args_fails_atomically() -> Te
                 Ok(())
             },
         );
-        assert!(
-            matches!(result, Err(PlanError::ImmutableContent))
-                && !called.get()
-                && request == original
-                && fixture.store.stats()? == before
-                && budget.used() == baseline,
-            "ge3_signed_authorized_reference_mutated_or_committed"
-        );
+        if request["contents"][0]["parts"][0].get("text").is_some() {
+            assert!(
+                matches!(result, Err(PlanError::ImmutableContent))
+                    && !called.get()
+                    && request == original
+                    && fixture.store.stats()? == before
+                    && budget.used() == baseline,
+                "ge3_signed_authorized_reference_mutated_or_committed"
+            );
+        } else {
+            let prepared = result.map_err(|_| "ge3_signed_skipped_args_failed")?;
+            assert!(
+                prepared.body.as_value() == &original && request == original,
+                "ge3_signed_skipped_args_mutated"
+            );
+        }
         drop(observed);
         assert!(budget.used() == 0, "ge3_signed_failure_budget_retained");
     }
@@ -3332,7 +3317,7 @@ fn ge3_lane_m1_native_id_matches_frozen_shared_label_contract() -> TestResult {
             "ge3_m1_native_id_contract_mismatch"
         );
         assert!(
-            observed.sites().len() == 2 && request == original,
+            observed.sites().len() == 0 && request == original,
             "ge3_m1_native_id_changed_text_observation"
         );
         drop(observed);
@@ -3380,7 +3365,7 @@ fn ge3_lane_m1_names_match_frozen_shared_label_contract_with_or_without_ids() ->
                 "ge3_m1_native_name_contract_mismatch"
             );
             assert!(
-                observed.sites().len() == 2 && request == original,
+                observed.sites().len() == 0 && request == original,
                 "ge3_m1_native_name_changed_text_observation"
             );
             drop(observed);

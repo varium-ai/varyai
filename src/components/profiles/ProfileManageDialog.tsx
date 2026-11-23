@@ -158,7 +158,7 @@ export function ProfileManageDialog({
                       placeholder={t("profiles.namePlaceholder")}
                       value={editingName}
                       onChange={(e) => setEditingName(e.target.value)}
-                      className="min-w-0 flex-1"
+                      className="h-[var(--control-height)] min-w-0 flex-1"
                       autoFocus
                       onKeyDown={(e) => {
                         if (e.key === "Enter") saveRename();

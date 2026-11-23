@@ -14,10 +14,12 @@ import { StatisticsPage } from "@/components/statistics/StatisticsPage";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
+import { GatewayRuntimeStatus } from "@/components/GatewayRuntimeStatus";
 import { APP_IDS } from "@/config/appConfig";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { useSettingsQuery } from "@/lib/query";
 import { proxyApi } from "@/lib/api/proxy";
+import { proxyKeys } from "@/lib/query/proxy";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { isMac, DRAG_REGION_ATTR } from "@/lib/platform";
@@ -76,7 +78,7 @@ export default function App() {
     ),
   );
   const gateway = useQuery({
-    queryKey: ["proxyStatus"],
+    queryKey: proxyKeys.status,
     queryFn: proxyApi.getProxyStatus,
     refetchInterval: 5000,
   });
@@ -117,9 +119,24 @@ export default function App() {
         <div {...DRAG_REGION_ATTR} className="workspace-drag-region" />
       )}
       <div className="flex min-h-0 flex-1">
-        <WorkspaceNavigation view={view} onSelect={navigate} />
+        <WorkspaceNavigation
+          view={view}
+          onSelect={navigate}
+          footer={
+            showProfiles && (
+              <ProfileSwitcher
+                compact
+                nativeAgentPicker={false}
+                side="top"
+                activeApp={selectedApps[0] ?? "claude"}
+                selectedApps={selectedApps}
+                triggerClassName="workspace-profile-trigger"
+              />
+            )
+          }
+        />
         <main
-          className={`min-w-0 flex-1 ${view === "agents" ? "overflow-hidden" : "overflow-y-auto"}`}
+          className={`workspace-content min-w-0 flex-1 ${view === "agents" ? "overflow-hidden" : "overflow-y-auto"}`}
           key={view}
         >
           {view === "agents" && (
@@ -154,31 +171,11 @@ export default function App() {
         </main>
       </div>
       <footer className="workspace-footer">
-        <div className="flex min-w-0 items-center gap-2">
-          <span>Vary AI</span>
-          {showProfiles && (
-            <ProfileSwitcher
-              compact
-              side="top"
-              activeApp={selectedApps[0] ?? "claude"}
-              selectedApps={selectedApps}
-            />
-          )}
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1.5">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${gateway.data?.running ? "bg-emerald-500" : "bg-slate-300"}`}
-            />
-            {t(
-              gateway.isError
-                ? "workspaceNav.gatewayUnavailable"
-                : gateway.data?.running
-                  ? "workspaceNav.gatewayRunning"
-                  : "workspaceNav.gatewayStopped",
-            )}
-          </span>
-        </div>
+        <span>Vary AI</span>
+        <GatewayRuntimeStatus
+          running={gateway.data?.running}
+          unavailable={gateway.isError}
+        />
       </footer>
       <FirstRunNoticeDialog
         onConnected={() => {

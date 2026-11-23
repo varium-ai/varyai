@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
+import { DateTimeInput } from "@/components/ui/date-time-input";
 import {
   Popover,
   PopoverContent,
@@ -281,7 +281,7 @@ export function UsageDateRangePicker({
           {label}
         </div>
         <div className="flex items-center gap-1.5">
-          <Input
+          <DateTimeInput
             type="date"
             aria-label={t(
               field === "start" ? "usage.startDate" : "usage.endDate",
@@ -304,7 +304,7 @@ export function UsageDateRangePicker({
             }}
             readOnly={isEndLive}
           />
-          <Input
+          <DateTimeInput
             type="time"
             aria-label={label}
             step={60}
@@ -335,13 +335,15 @@ export function UsageDateRangePicker({
           type="button"
           variant={selection.preset === "custom" ? "default" : "outline"}
           className={cn(
-            "h-9 w-[100px] justify-start gap-1.5 text-xs",
+            "h-[var(--filter-height)] w-[100px] justify-start gap-1.5 text-[13px]",
             triggerClassName,
           )}
           title={triggerLabel}
         >
           <CalendarDays className="h-4 w-4 shrink-0" />
-          <span className="truncate flex-1">{triggerLabel}</span>
+          <span className="min-w-0 flex-1 truncate text-left">
+            {triggerLabel}
+          </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>

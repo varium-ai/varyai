@@ -32,6 +32,33 @@ use crate::{
     },
 };
 
+fn conversational_wire(request: &Value) -> String {
+    request["messages"]
+        .as_array()
+        .map(|messages| {
+            messages
+                .iter()
+                .filter(|msg| {
+                    matches!(
+                        msg.get("role").and_then(Value::as_str),
+                        Some("user" | "assistant")
+                    )
+                })
+                .map(|msg| {
+                    serde_json::to_string(&json!({
+                        "content": msg.get("content"),
+                        "reasoning_content": msg.get("reasoning_content"),
+                        "reasoning": msg.get("reasoning"),
+                        "refusal": msg.get("refusal"),
+                    }))
+                    .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<Value>>>);
 
@@ -779,7 +806,7 @@ async fn assert_current_only_identity(invalid: bool) -> TestResult {
     body["messages"]
         .as_array_mut()
         .ok_or("m2_identity_messages_missing")?
-        .push(json!({"role":"developer","content":HIDDEN_CONTACT}));
+        .push(json!({"role":"user","content":HIDDEN_CONTACT}));
     if invalid {
         body["metadata"] = json!({"session_id":"synthetic-m2-fallback"});
     }
@@ -862,7 +889,7 @@ async fn first_history_round(fixture: &HttpFixture) -> TestResult<Vec<Value>> {
     body["messages"]
         .as_array_mut()
         .ok_or("m2_history_messages_missing")?
-        .push(json!({"role":"developer","content":HIDDEN_CONTACT}));
+        .push(json!({"role":"user","content":HIDDEN_CONTACT}));
     let (status, wire, failed) =
         collect_wire(fixture.send(chat_request(&body, Some(SESSION))?).await?).await?;
     assert!(
@@ -897,13 +924,13 @@ async fn first_history_round(fixture: &HttpFixture) -> TestResult<Vec<Value>> {
 }
 
 fn history_replay(assistants: &[Value]) -> Value {
-    let mut messages = vec![json!({"role":"user","content":"Synthetic prior request."})];
+    let mut messages = vec![json!({"role":"user","content":CONTACT})];
     for assistant in assistants {
         messages.push(assistant.clone());
         if let Some(calls) = assistant["tool_calls"].as_array() {
             for call in calls {
                 messages.push(json!({"role":"tool","tool_call_id":call["id"],
-                    "content":CONTACT}));
+                    "content":"Synthetic tool output."}));
             }
         }
     }
@@ -925,7 +952,7 @@ async fn m2_chat_two_round_exact_native_assistant_and_tool_replay_imports_depend
     .await?;
     let requests = fixture.requests()?;
     assert!(requests.len() == 2, "m2_history_second_attempt_missing");
-    let outbound = serde_json::to_string(&requests[1])?;
+    let outbound = conversational_wire(&requests[1]);
     assert!(
         !outbound.contains(CONTACT)
             && !outbound.contains(HIDDEN_CONTACT)
@@ -1342,7 +1369,7 @@ async fn m2_chat_sse_exact_assistant_and_call_evidence_imports_hidden_dependency
     first["messages"]
         .as_array_mut()
         .ok_or("m2_sse_history_messages_missing")?
-        .push(json!({"role":"developer","content":HIDDEN_CONTACT}));
+        .push(json!({"role":"user","content":HIDDEN_CONTACT}));
     let (status, wire, failed) =
         collect_wire(fixture.send(chat_request(&first, Some(SESSION))?).await?).await?;
     assert!(
@@ -2483,7 +2510,7 @@ async fn m2_chat_four_round_json_sse_history_preserves_transitive_hidden_depende
                 body["messages"]
                     .as_array_mut()
                     .ok_or("m2_mixed_messages_missing")?
-                    .push(json!({"role":"developer","content":hidden}));
+                    .push(json!({"role":"user","content":hidden}));
             }
             body
         } else {
@@ -2539,7 +2566,7 @@ async fn m2_chat_four_round_json_sse_history_preserves_transitive_hidden_depende
         }
         let requests = fixture.requests()?;
         assert!(requests.len() == round + 1, "m2_mixed_attempt_count_wrong");
-        let outbound = serde_json::to_string(&requests[round])?;
+        let outbound = conversational_wire(&requests[round]);
         assert!(
             !outbound.contains(CONTACT) && HIDDEN.iter().all(|hidden| !outbound.contains(hidden)),
             "m2_mixed_private_input_forwarded"
@@ -2569,7 +2596,7 @@ async fn m2_chat_feedback_appended_json_sse_transcript_preserves_complete_batche
                 body["messages"]
                     .as_array_mut()
                     .ok_or("m2_mixed_messages_missing")?
-                    .push(json!({"role":"developer","content":hidden}));
+                    .push(json!({"role":"user","content":hidden}));
             }
             body
         } else {
@@ -2626,7 +2653,7 @@ async fn m2_chat_feedback_appended_json_sse_transcript_preserves_complete_batche
         assistants.extend(delivered);
         let requests = fixture.requests()?;
         assert!(requests.len() == round + 1, "m2_mixed_attempt_count_wrong");
-        let outbound = serde_json::to_string(&requests[round])?;
+        let outbound = conversational_wire(&requests[round]);
         assert!(
             !outbound.contains(CONTACT) && HIDDEN.iter().all(|hidden| !outbound.contains(hidden)),
             "m2_mixed_private_input_forwarded"
@@ -2704,7 +2731,7 @@ async fn m2_chat_feedback_appended_history_invalid_suffix_never_imports_valid_pr
             body["messages"]
                 .as_array_mut()
                 .ok_or("m2_appended_messages_missing")?
-                .push(json!({"role":"developer","content":hidden}));
+                .push(json!({"role":"user","content":hidden}));
         }
         let (status, wire, failed) =
             collect_wire(fixture.send(chat_request(&body, Some(SESSION))?).await?).await?;
@@ -2800,7 +2827,7 @@ async fn m2_chat_appended_transcript_invalid_suffix_never_keeps_prefix_authority
             body["messages"]
                 .as_array_mut()
                 .ok_or("m2_append_messages_missing")?
-                .push(json!({"role":"developer","content":hidden}));
+                .push(json!({"role":"user","content":hidden}));
         }
         let (status, wire, failed) =
             collect_wire(fixture.send(chat_request(&body, Some(SESSION))?).await?).await?;
@@ -2884,7 +2911,7 @@ async fn m2_chat_appended_transcript_invalid_suffix_never_keeps_prefix_authority
         assert!(
             requests.len() == 3
                 && requests.iter().all(|request| {
-                    let wire = request.to_string();
+                    let wire = conversational_wire(request);
                     !wire.contains(CONTACT) && HIDDEN.iter().all(|hidden| !wire.contains(hidden))
                 }),
             "m2_append_invalid_history_leaked_upstream"
@@ -2994,7 +3021,7 @@ async fn m2_chat_redacts_assistant_reasoning_and_refusal_history_end_to_end() ->
                 {
                     "role": "assistant",
                     "content": [
-                        {"type": "text", "text": "Synthetic text"},
+                        {"type": "text", "text": format!("Synthetic text {url_in_tool}")},
                         {"type": "refusal", "refusal": format!("Refused {key_in_part_refusal}")}
                     ],
                     "reasoning_content": format!("Thinking {key_in_reasoning_content}"),
@@ -3009,7 +3036,7 @@ async fn m2_chat_redacts_assistant_reasoning_and_refusal_history_end_to_end() ->
                 {
                     "role": "tool",
                     "tool_call_id": "call_1",
-                    "content": url_in_tool
+                    "content": "Synthetic tool output"
                 },
                 {"role": "user", "content": "Continue"}
             ]

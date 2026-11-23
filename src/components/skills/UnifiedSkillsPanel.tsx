@@ -828,12 +828,12 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
             <button
               type="button"
               onClick={openDocs}
-              className="text-muted-foreground/60 hover:text-foreground flex-shrink-0"
+              className="text-muted-foreground hover:text-foreground flex-shrink-0"
             >
               <ExternalLink size={12} />
             </button>
           )}
-          <span className="text-xs text-muted-foreground/50 flex-shrink-0">
+          <span className="text-xs text-muted-foreground flex-shrink-0">
             {sourceLabel}
           </span>
           {hasUpdate && (
@@ -1173,7 +1173,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
                     />
                   </div>
                   <div
-                    className="text-xs text-muted-foreground/50 mt-1 truncate"
+                    className="text-xs text-muted-foreground mt-1 truncate"
                     title={skill.path}
                   >
                     {skill.path}

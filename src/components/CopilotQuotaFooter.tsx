@@ -89,11 +89,11 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
       <div className="flex flex-col items-end gap-1 text-xs whitespace-nowrap flex-shrink-0">
         <div className="flex items-center gap-2 justify-end">
           {quota.plan && (
-            <span className="text-[10px] text-muted-foreground/70">
+            <span className="text-[10px] text-muted-foreground">
               {quota.plan}
             </span>
           )}
-          <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
             <Clock size={10} />
             {quota.queriedAt
               ? formatRelativeTime(quota.queriedAt, now, t)
@@ -130,7 +130,7 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
         </span>
         <div className="flex items-center gap-2">
           {quota.queriedAt && (
-            <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               <Clock size={10} />
               {formatRelativeTime(quota.queriedAt, now, t)}
             </span>

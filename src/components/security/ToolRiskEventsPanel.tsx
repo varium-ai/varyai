@@ -112,6 +112,9 @@ function ToolRiskEventsTable({
     summary: string;
   } | null>(null);
   const events = controlled?.events ?? standalone?.events ?? [];
+  const hasEvents = events.length > 0;
+  const columnLabelClass = hasEvents ? "whitespace-nowrap" : undefined;
+  const tableMinWidthClass = controlled ? "min-w-[1760px]" : "min-w-[1544px]";
   const isLoading = controlled?.isLoading ?? standalone?.isLoading ?? false;
   const isClearing = standalone?.isClearing ?? false;
   const offset = standalone?.offset ?? 0;
@@ -204,7 +207,7 @@ function ToolRiskEventsTable({
       <TableCell className="whitespace-nowrap">
         <Badge
           variant={verdictBadgeVariant(record.verdict)}
-          className="whitespace-nowrap text-[10px]"
+          className="sc-table-status whitespace-nowrap text-[10px]"
         >
           {toolVerdictLabel(t, record.verdict)}
         </Badge>
@@ -341,7 +344,7 @@ function ToolRiskEventsTable({
               <SelectTrigger
                 id="tool-risk-events-verdict"
                 data-testid="tool-risk-events-verdict-filter"
-                className="h-8 w-auto min-w-36 text-xs"
+                className="h-[var(--select-height)] w-auto min-w-36 text-[13px]"
               >
                 <SelectValue />
               </SelectTrigger>
@@ -381,53 +384,57 @@ function ToolRiskEventsTable({
 
       <Table
         data-testid="tool-risk-events-table"
-        className={`table-fixed ${controlled ? "min-w-[1760px]" : "min-w-[1544px]"}`}
+        className={
+          hasEvents ? `table-fixed ${tableMinWidthClass}` : "table-fixed"
+        }
       >
         {/* Keep metadata readable; the Table wrapper scrolls on narrow windows. */}
-        <colgroup>
-          <col style={{ width: 176 }} />
-          <col style={{ width: 104 }} />
-          <col style={{ width: 128 }} />
-          <col style={{ width: 320 }} />
-          <col style={{ width: 112 }} />
-          <col style={{ width: 152 }} />
-          <col style={{ width: 104 }} />
-          <col style={{ width: 184 }} />
-          {controlled && <col style={{ width: 216 }} />}
-          <col style={{ width: 264 }} />
-        </colgroup>
+        {hasEvents && (
+          <colgroup>
+            <col style={{ width: 176 }} />
+            <col style={{ width: 104 }} />
+            <col style={{ width: 128 }} />
+            <col style={{ width: 320 }} />
+            <col style={{ width: 112 }} />
+            <col style={{ width: 152 }} />
+            <col style={{ width: 104 }} />
+            <col style={{ width: 184 }} />
+            {controlled && <col style={{ width: 216 }} />}
+            <col style={{ width: 264 }} />
+          </colgroup>
+        )}
         <TableHeader>
           <TableRow>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colTime", { defaultValue: "时间" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colClient", { defaultValue: "客户端" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colOperation", { defaultValue: "操作" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colCommandSummary", { defaultValue: "命令摘要" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colVerdict", { defaultValue: "判定" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colCategory", { defaultValue: "风险类别" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colSeverity", { defaultValue: "严重度" })}
             </TableHead>
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colReason")}
             </TableHead>
             {controlled && (
-              <TableHead className="whitespace-nowrap">
+              <TableHead className={columnLabelClass}>
                 {t("security.detailOutbound")}
               </TableHead>
             )}
-            <TableHead className="whitespace-nowrap">
+            <TableHead className={columnLabelClass}>
               {t("toolRisk.colActions")}
             </TableHead>
           </TableRow>
@@ -476,7 +483,7 @@ function ToolRiskEventsTable({
       {controlled && isLoading && <SecurityEventsLoading />}
 
       {(hasPrev || hasNext) && (
-        <div className="flex items-center justify-end gap-2 border-t border-border/80 px-5 py-3">
+        <div className="sc-pagination sc-pagination-end">
           <Button
             size="sm"
             variant="outline"

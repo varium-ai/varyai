@@ -27,16 +27,6 @@ pub(in crate::proxy::security) fn observe_request<'native>(
         RequestObservation::new(native, ClientProtocol::new(Protocol::Anthropic), budget)?;
     let mut remaining_work = MAX_WORK;
     visit_node(0, &mut remaining_work)?;
-    if let Some(system) = native.get("system") {
-        observe_content(
-            &mut observed,
-            system,
-            SourceClass::CurrentInput,
-            false,
-            1,
-            &mut remaining_work,
-        )?;
-    }
     if let Some(messages) = native.get("messages").and_then(Value::as_array) {
         visit_node(1, &mut remaining_work)?;
         for message in messages {
@@ -106,23 +96,6 @@ fn observe_content<'native>(
                                 text,
                                 source,
                                 EditConstraint::Editable,
-                                depth + 2,
-                                remaining_work,
-                            )?;
-                        }
-                    }
-                    Some("tool_use") if message_blocks => {
-                        if let Some(input) = block.get("input") {
-                            observe_tool_input(observed, input, depth + 2, remaining_work)?;
-                        }
-                    }
-                    Some("tool_result") if message_blocks => {
-                        if let Some(result) = block.get("content") {
-                            observe_content(
-                                observed,
-                                result,
-                                SourceClass::ToolResult,
-                                false,
                                 depth + 2,
                                 remaining_work,
                             )?;

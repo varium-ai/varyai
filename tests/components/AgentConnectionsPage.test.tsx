@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   act,
   fireEvent,
@@ -168,11 +169,11 @@ describe("tool list sorting", () => {
     localStorage.removeItem(storageKey);
   });
 
-  it("reorders from the left handle, saves the order and restores it on remount", async () => {
+  it("reorders from the trailing handle, saves the order and restores it on remount", async () => {
     const { unmount } = mount();
     await screen.findByRole("article", { name: "apps.codex" });
     const codex = screen.getByRole("article", { name: "apps.codex" });
-    expect(codex.firstElementChild).toBe(handle("codex"));
+    expect(codex.lastElementChild).toBe(handle("codex"));
     drag("codex", 144, 48);
     fireEvent.pointerUp(document, { clientX: 12, clientY: 48 });
     await waitFor(() =>
@@ -430,7 +431,7 @@ describe("desktop Agent directory", () => {
         const update = harness.getByRole("button", {
           name: "agentUpdates.update",
         });
-        expect(update.compareDocumentPosition(version)).toBe(
+        expect(version.compareDocumentPosition(update)).toBe(
           Node.DOCUMENT_POSITION_FOLLOWING,
         );
         for (const [index, app] of APP_IDS.entries()) {
@@ -1679,14 +1680,14 @@ describe("Agent connections", () => {
       const select = within(row).getByRole("combobox", {
         name: "doubaowork.checkin.account",
       });
-      fireEvent.change(select, { target: { value: "second" } });
+      selectAppOption(select, "second");
       expect(trigger).toHaveAttribute("data-complete", "false");
       expect(trigger).toHaveTextContent("agentRewards.manualLabel");
       expect(trigger).not.toHaveTextContent("dailyCheckin.todayReward");
       fireEvent.click(trigger);
       fireEvent.click(trigger);
       expect(select).toHaveValue("second");
-      fireEvent.change(select, { target: { value: "first" } });
+      selectAppOption(select, "first");
       expect(trigger).toHaveAttribute("data-complete", "true");
       expect(trigger).toHaveTextContent("dailyCheckin.todayReward");
       expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
@@ -2118,9 +2119,7 @@ describe("Agent connections", () => {
               : "agentRewards.title",
       });
       if (app === "workbuddy")
-        fireEvent.change(within(panel).getByRole("combobox"), {
-          target: { value: "auto" },
-        });
+        selectAppOption(within(panel).getByRole("combobox"), "auto");
       fireEvent.click(within(panel).getByRole("switch"));
       await waitFor(() =>
         expect(trigger).toHaveAccessibleName(
@@ -3498,9 +3497,7 @@ describe("Agent connections", () => {
     await waitFor(() => expect(toggle).toBeEnabled());
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("article", { name: "apps.codex" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "agentConnections.individual" }),
-    );
+    fireEvent.click(screen.getByRole("switch", { name: "apps.codex" }));
     const dialog = screen.getByRole("dialog");
     await act(async () => finish());
     await waitFor(() => expect(toggle).toBeEnabled());
@@ -4079,9 +4076,7 @@ describe("Agent connections", () => {
           name: "agentConnections.restore",
         }),
       ).not.toBeInTheDocument();
-      expect(!!row.querySelector(".mp-agent-detail-actions")).toBe(
-        compact && !recoveryPending,
-      );
+      expect(row.querySelector(".mp-agent-detail-actions")).toBeNull();
       expect(
         within(row).getByRole("switch", { name: "apps.claude-desktop" }),
       ).toBeChecked();
@@ -4092,7 +4087,7 @@ describe("Agent connections", () => {
     },
   );
 
-  it("keeps individual settings in connected tray details without collapsing the row", async () => {
+  it("does not render individual settings in connected tray details", async () => {
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([
       {
         app: "claude",
@@ -4107,18 +4102,11 @@ describe("Agent connections", () => {
     const row = await screen.findByRole("article", { name: "apps.claude" });
     fireEvent.click(row);
     const panel = within(row).getByRole("region");
-    fireEvent.click(
-      within(panel).getByRole("button", {
+    expect(
+      within(panel).queryByRole("button", {
         name: "agentConnections.individual",
       }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("agentConnections.setupHint");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "common.cancel" }),
-    );
-    expect(panel).toBeInTheDocument();
-    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    ).not.toBeInTheDocument();
   });
 
   it("does not toggle a row while its text is being selected", async () => {

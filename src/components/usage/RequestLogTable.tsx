@@ -148,7 +148,10 @@ export function RequestLogTable({
   const locale = getLocaleFromLanguage(language);
 
   return (
-    <div className="space-y-4" aria-busy={isFetching}>
+    <div
+      className="stats-request-log space-y-[var(--workspace-module-gap)]"
+      aria-busy={isFetching}
+    >
       <div className="stats-surface stats-log-filters">
         <div>
           <span>{t("usage.status")}</span>
@@ -164,7 +167,7 @@ export function RequestLogTable({
           >
             <SelectTrigger
               aria-label={t("usage.status")}
-              className="h-[34px] w-full bg-card text-xs"
+              className="h-[var(--select-height)] w-full bg-card text-[13px]"
             >
               <SelectValue placeholder={t("usage.statusCode")} />
             </SelectTrigger>
@@ -182,7 +185,7 @@ export function RequestLogTable({
           <div>
             <span>{t("usage.timeRange")}</span>
             <UsageDateRangePicker
-              triggerClassName="h-[34px] w-full"
+              triggerClassName="h-[var(--filter-height)] w-full"
               selection={range}
               triggerLabel={rangeLabel}
               onApply={onRangeChange}
@@ -211,8 +214,8 @@ export function RequestLogTable({
           className="h-[400px] rounded-md bg-muted motion-safe:animate-pulse"
         />
       ) : (
-        <>
-          <div ref={tableRegion} className="stats-surface overflow-x-auto">
+        <div className="stats-surface stats-log-card">
+          <div ref={tableRegion} className="stats-log-table overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -274,7 +277,7 @@ export function RequestLogTable({
                         <TableCell className="text-left">
                           <UsageSourceLabel source={log} />
                         </TableCell>
-                        <TableCell className="text-left font-mono text-xs min-w-[160px] max-w-[260px]">
+                        <TableCell className="stats-log-model text-left font-mono">
                           <div
                             title={`${t("usage.requestModel")}: ${modelName(log.requestModel || log.model)} → ${t("usage.responseModel")}: ${modelName(log.model)}`}
                           >
@@ -287,7 +290,7 @@ export function RequestLogTable({
                               log.model !==
                                 (log.pricingModel || log.model)) && (
                               <div
-                                className="truncate text-[10px] text-muted-foreground"
+                                className="stats-log-secondary truncate text-muted-foreground"
                                 aria-label={t("usage.requestResponseModel")}
                               >
                                 {log.requestModel &&
@@ -318,7 +321,7 @@ export function RequestLogTable({
                           })()}
                           {(log.cacheReadTokens > 0 ||
                             log.cacheCreationTokens > 0) && (
-                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
+                            <div className="stats-log-secondary text-muted-foreground whitespace-nowrap">
                               {[
                                 log.cacheReadTokens > 0 &&
                                   `R${fmtInt(log.cacheReadTokens, locale)}`,
@@ -337,7 +340,7 @@ export function RequestLogTable({
                               const tpsStr = formatOutputTokensPerSecond(log);
                               if (tpsStr == null) return null;
                               return (
-                                <span className="text-muted-foreground text-xs">
+                                <span className="stats-log-secondary stats-log-rate text-muted-foreground">
                                   /{tpsStr} tps
                                 </span>
                               );
@@ -356,7 +359,7 @@ export function RequestLogTable({
                           </div>
                           {parseFiniteNumber(log.costMultiplier) != null &&
                             parseFiniteNumber(log.costMultiplier) !== 1 && (
-                              <div className="text-[11px] text-muted-foreground">
+                              <div className="stats-log-secondary text-muted-foreground">
                                 ×
                                 {parseFiniteNumber(log.costMultiplier)?.toFixed(
                                   2,
@@ -364,7 +367,7 @@ export function RequestLogTable({
                               </div>
                             )}
                         </TableCell>
-                        <TableCell className="text-right whitespace-nowrap text-xs tabular-nums">
+                        <TableCell className="stats-log-timing text-right whitespace-nowrap tabular-nums">
                           {(log.latencyMs / 1000).toFixed(1)}s
                           {log.firstTokenMs != null && (
                             <span className="text-muted-foreground">
@@ -374,7 +377,7 @@ export function RequestLogTable({
                         </TableCell>
                         <TableCell className="text-left">
                           <Badge
-                            className="tabular-nums"
+                            className="stats-log-status tabular-nums"
                             variant={
                               log.statusCode >= 200 && log.statusCode < 300
                                 ? "success"
@@ -395,69 +398,78 @@ export function RequestLogTable({
             </Table>
           </div>
 
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>{t("usage.totalRecords", { total })}</span>
-            <div className="flex items-center gap-1">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={changingPage || page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              {(() => {
-                const pages: (number | string)[] = [];
-                if (totalPages <= 9) {
-                  for (let i = 0; i < totalPages; i++) pages.push(i);
-                } else {
-                  const pageSet = new Set<number>();
-                  for (let i = 0; i < 3; i++) pageSet.add(i);
-                  for (let i = totalPages - 3; i < totalPages; i++)
-                    pageSet.add(i);
-                  for (
-                    let i = Math.max(0, page - 1);
-                    i <= Math.min(totalPages - 1, page + 1);
-                    i++
-                  )
-                    pageSet.add(i);
-                  const sorted = Array.from(pageSet).sort((a, b) => a - b);
-                  for (let i = 0; i < sorted.length; i++) {
-                    if (i > 0 && sorted[i] - sorted[i - 1] > 1) {
-                      pages.push(`ellipsis-${i}`);
+          <div className="stats-log-pagination">
+            <span className="stats-log-total">
+              {t("usage.totalRecords", { total })}
+            </span>
+            <div className="stats-log-pagination-controls">
+              <div className="stats-log-page-buttons">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={changingPage || page === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                {(() => {
+                  const pages: (number | string)[] = [];
+                  if (totalPages <= 9) {
+                    for (let i = 0; i < totalPages; i++) pages.push(i);
+                  } else {
+                    const pageSet = new Set<number>();
+                    for (let i = 0; i < 3; i++) pageSet.add(i);
+                    for (let i = totalPages - 3; i < totalPages; i++)
+                      pageSet.add(i);
+                    for (
+                      let i = Math.max(0, page - 1);
+                      i <= Math.min(totalPages - 1, page + 1);
+                      i++
+                    )
+                      pageSet.add(i);
+                    const sorted = Array.from(pageSet).sort((a, b) => a - b);
+                    for (let i = 0; i < sorted.length; i++) {
+                      if (i > 0 && sorted[i] - sorted[i - 1] > 1) {
+                        pages.push(`ellipsis-${i}`);
+                      }
+                      pages.push(sorted[i]);
                     }
-                    pages.push(sorted[i]);
                   }
-                }
-                return pages.map((p) =>
-                  typeof p === "string" ? (
-                    <span key={p} className="px-2 text-muted-foreground">
-                      ...
-                    </span>
-                  ) : (
-                    <Button
-                      key={p}
-                      variant={p === displayedPage ? "default" : "outline"}
-                      aria-current={p === displayedPage ? "page" : undefined}
-                      disabled={changingPage}
-                      size="sm"
-                      className="h-8 w-8 p-0"
-                      onClick={() => setPage(p)}
-                    >
-                      {p + 1}
-                    </Button>
-                  ),
-                );
-              })()}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={changingPage || page >= totalPages - 1}
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <div className="flex items-center gap-1 ml-2">
+                  return pages.map((p) =>
+                    typeof p === "string" ? (
+                      <span
+                        key={p}
+                        className="stats-log-ellipsis text-muted-foreground"
+                      >
+                        ...
+                      </span>
+                    ) : (
+                      <Button
+                        key={p}
+                        variant={p === displayedPage ? "default" : "outline"}
+                        aria-current={p === displayedPage ? "page" : undefined}
+                        disabled={changingPage}
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={() => setPage(p)}
+                      >
+                        {p + 1}
+                      </Button>
+                    ),
+                  );
+                })()}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={changingPage || page >= totalPages - 1}
+                  onClick={() =>
+                    setPage((p) => Math.min(totalPages - 1, p + 1))
+                  }
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="stats-log-page-jump">
                 <Input
                   type="text"
                   disabled={changingPage}
@@ -480,7 +492,7 @@ export function RequestLogTable({
               </div>
             </div>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

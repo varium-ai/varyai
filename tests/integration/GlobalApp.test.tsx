@@ -132,7 +132,7 @@ describe("Global application shell", () => {
       ).toHaveAttribute("aria-current", "page");
     }
   });
-  it("creates a multi-agent profile from the main footer using connected agents", async () => {
+  it("creates a multi-agent profile from the sidebar footer using connected agents", async () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -141,9 +141,11 @@ describe("Global application shell", () => {
         <App />
       </QueryClientProvider>,
     );
-    fireEvent.click(
-      await within(screen.getByRole("contentinfo")).findByRole("combobox"),
+    const switcher = await within(screen.getByRole("complementary")).findByRole(
+      "combobox",
     );
+    expect(screen.getByRole("contentinfo")).not.toContainElement(switcher);
+    fireEvent.click(switcher);
     fireEvent.click(await screen.findByText("profiles.createFromCurrent"));
     fireEvent.change(screen.getByPlaceholderText("profiles.namePlaceholder"), {
       target: { value: "Work setup" },
@@ -175,7 +177,7 @@ describe("Global application shell", () => {
       expect(client.getQueryState(["settings"])?.status).toBe("success"),
     );
     expect(
-      within(screen.getByRole("contentinfo")).queryByRole("combobox"),
+      within(screen.getByRole("complementary")).queryByRole("combobox"),
     ).not.toBeInTheDocument();
   });
   it("keeps the current page until discarding an unsaved draft is confirmed", async () => {

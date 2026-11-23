@@ -910,3 +910,24 @@ it("shows unknown historical risk and missing Agent identity safely", async () =
     "— · 未知",
   );
 });
+
+it("spans embedded check-in panels across all columns of a tray agent row", () => {
+  const sheet = document.createElement("style");
+  sheet.textContent = readFileSync("src/components/tray/tray-panel.css", "utf8");
+  document.head.appendChild(sheet);
+  const host = document.createElement("div");
+  host.className = "tray-panel";
+  host.innerHTML =
+    '<div class="tray-agents"><div class="mp-agent-row"><div class="mp-agent-checkin"></div></div></div>';
+  document.body.appendChild(host);
+  try {
+    const checkin = host.querySelector<HTMLElement>(".mp-agent-checkin")!;
+    const styles = getComputedStyle(checkin);
+    expect(styles.gridColumn).toBe("1 / -1");
+    expect(styles.minWidth).toBe("0");
+    expect(styles.paddingLeft).toBe("0px");
+  } finally {
+    host.remove();
+    sheet.remove();
+  }
+});

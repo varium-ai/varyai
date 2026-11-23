@@ -56,8 +56,10 @@ fn request(protocol: Protocol, streaming: bool, history: bool) -> Value {
     }
     if protocol == Protocol::Responses {
         value["input"].as_array_mut().unwrap().extend([
-            json!({"type":"function_call_output","id":"synthetic-page-context","namespace":"agent","name":"codex_apps_open_page","output":format!("Synthetic page context {SENSITIVE}")}),
+            json!({"type":"function_call_output","id":"synthetic-page-context","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page context"}),
             json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic page selection"}),
+            json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","output":"<in-app-browser-context>Synthetic browser tabs</in-app-browser-context>"}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":SENSITIVE}]}),
         ]);
     }
     if history {
@@ -364,7 +366,11 @@ async fn all_twelve_ir_edges_forward_native_wires_after_security_inspection(
                     if input == Protocol::Responses {
                         assert!(!body.to_string().contains(SENSITIVE));
                         let parsed = parse::request(output, &body, &uri.to_string())?;
-                        for context in ["Synthetic page context", "Synthetic page selection"] {
+                        for context in [
+                            "Synthetic page context",
+                            "Synthetic page selection",
+                            "Synthetic browser tabs",
+                        ] {
                             assert!(parsed.messages.iter().any(|message| message.role == "user"
                                 && message.parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text.contains(context)))));
                         }
@@ -892,5 +898,139 @@ async fn classic_claude_codex_and_grok_handlers_do_not_convert_ir_replies_twice(
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_browser_tabs_and_multimodal_tool_outputs_route_through_chat_proxy(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = ResetSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let reply_body = response(Protocol::Chat);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let app = Router::new().route(
+        "/*path",
+        post(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            let reply_body = reply_body.clone();
+            async move {
+                let _ = tx.send(body).await;
+                Json(reply_body)
+            }
+        }),
+    );
+    let upstream = tokio::spawn(async move { axum::serve(listener, app).await });
+    let runtime = runtime(&format!("http://{address}"), Protocol::Chat);
+    runtime.set_menu(runtime.global_snapshot()?.ok_or("missing global menu")?)?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let ingress = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let payload = json!({
+        "model": "vary-auto/ir-wire-fixture",
+        "stream": false,
+        "input": [
+            {
+                "type": "function_call_output",
+                "id": "synthetic-open-page",
+                "namespace": "agent",
+                "name": "codex_apps_open_page",
+                "output": "Synthetic page context"
+            },
+            {
+                "type": "function_call_output",
+                "id": "synthetic-browser-tabs",
+                "namespace": "agent",
+                "name": "browser_tabs",
+                "output": "<in-app-browser-context>Synthetic tab 1</in-app-browser-context>"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call-browser-1",
+                "name": "browser_cmd",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call-browser-2",
+                "name": "screenshot",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-browser-1",
+                "output": [
+                    {"type": "input_text", "text": "Synthetic DOM snapshot"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="}
+                ]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-browser-2",
+                "output": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,d29ybGQ="}
+                ]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Continue"}]
+            }
+        ]
+    });
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/intent/v1/responses",
+            ingress.port
+        ))
+        .bearer_auth("synthetic-menu")
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let wire = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await?
+        .ok_or("missing Chat upstream request")?;
+    let messages = wire["messages"].as_array().ok_or("missing Chat messages")?;
+    let wire_str = wire.to_string();
+    assert!(wire_str.contains("Tool context (agent.codex_apps_open_page):"));
+    assert!(wire_str.contains("Tool context (agent.browser_tabs):"));
+    assert!(wire_str.contains("<in-app-browser-context>Synthetic tab 1</in-app-browser-context>"));
+
+    let tool_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| (m["role"] == "tool").then_some(i))
+        .collect();
+    assert_eq!(tool_indices.len(), 2);
+    assert_eq!(tool_indices[1], tool_indices[0] + 1);
+    for idx in &tool_indices {
+        let content = messages[*idx]["content"]
+            .as_str()
+            .ok_or("Chat role:tool content must be string")?;
+        assert!(content.contains(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER));
+    }
+    let media_msg = &messages[tool_indices[1] + 1];
+    assert_eq!(media_msg["role"], "user");
+    let media_str = media_msg.to_string();
+    assert!(media_str.contains("aGVsbG8="));
+    assert!(media_str.contains("d29ybGQ="));
+    assert_eq!(messages[tool_indices[1] + 2]["role"], "user");
+    assert!(messages[tool_indices[1] + 2]
+        .to_string()
+        .contains("Continue"));
+
+    server.stop().await?;
+    upstream.abort();
     Ok(())
 }

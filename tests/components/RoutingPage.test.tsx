@@ -17,8 +17,14 @@ import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 
 vi.mock("@/components/routing/IntentRoutingPanel", () => ({
-  IntentRoutingPanel: ({ createRequest }: { createRequest: number }) => (
-    <div data-create-request={createRequest}>Group editor</div>
+  IntentRoutingPanel: ({
+    createRequest,
+    toolbarActions,
+  }: {
+    createRequest: number;
+    toolbarActions?: import("react").ReactNode;
+  }) => (
+    <div data-create-request={createRequest}>Group editor{toolbarActions}</div>
   ),
 }));
 vi.mock("@/lib/api/routingTrace", () => ({

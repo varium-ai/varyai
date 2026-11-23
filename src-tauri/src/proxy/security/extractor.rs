@@ -54,31 +54,14 @@ pub fn extract_payload_texts(body: &Value) -> Vec<ExtractedTextNode<'_>> {
         return nodes;
     };
 
-    if let Some(system_val) = root.get("system") {
-        extract_system_texts(system_val, "system", &mut nodes);
-    }
-
-    let gemini_sys = root
-        .get("system_instruction")
-        .or_else(|| root.get("systemInstruction"));
-    if let Some(sys_instruction) = gemini_sys {
-        if let Some(parts) = sys_instruction.get("parts").and_then(Value::as_array) {
-            for (idx, part) in parts.iter().enumerate() {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    nodes.push(ExtractedTextNode {
-                        location: format!("system_instruction.parts[{idx}].text"),
-                        text,
-                        is_password_field: false,
-                    });
-                }
-            }
-        } else {
-            extract_any_text(sys_instruction, "system_instruction", &mut nodes);
-        }
-    }
-
     if let Some(messages) = root.get("messages").and_then(Value::as_array) {
         for (m_idx, msg) in messages.iter().enumerate() {
+            if matches!(
+                msg.get("role").and_then(Value::as_str),
+                Some("system" | "developer" | "tool")
+            ) {
+                continue;
+            }
             let msg_loc = format!("messages[{m_idx}]");
             extract_message_node(msg, &msg_loc, &mut nodes);
         }
@@ -126,10 +109,7 @@ pub fn extract_payload_texts(body: &Value) -> Vec<ExtractedTextNode<'_>> {
         extract_any_text(prompt, "prompt", &mut nodes);
     }
     if let Some(input) = root.get("input") {
-        extract_any_text(input, "input", &mut nodes);
-    }
-    if let Some(instructions) = root.get("instructions") {
-        extract_any_text(instructions, "instructions", &mut nodes);
+        extract_responses_input(input, "input", &mut nodes);
     }
 
     if let Some(query) = root.get("query") {
@@ -151,24 +131,6 @@ pub fn extract_payload_texts(body: &Value) -> Vec<ExtractedTextNode<'_>> {
                             text,
                             is_password_field: false,
                         });
-                    }
-                    if let Some(func_call) = part.get("functionCall") {
-                        if let Some(args) = func_call.get("args") {
-                            extract_recursive_strings(
-                                args,
-                                &format!("{p_loc}.functionCall.args"),
-                                &mut nodes,
-                            );
-                        }
-                    }
-                    if let Some(func_resp) = part.get("functionResponse") {
-                        if let Some(resp) = func_resp.get("response") {
-                            extract_recursive_strings(
-                                resp,
-                                &format!("{p_loc}.functionResponse.response"),
-                                &mut nodes,
-                            );
-                        }
                     }
                 }
             }
@@ -235,24 +197,7 @@ fn extract_message_node<'a>(msg: &'a Value, path: &str, nodes: &mut Vec<Extracte
                                     });
                                 }
                             }
-                            "tool_result" => {
-                                if let Some(res_content) = b_obj.get("content") {
-                                    extract_any_text(
-                                        res_content,
-                                        &format!("{b_path}.tool_result.content"),
-                                        nodes,
-                                    );
-                                }
-                            }
-                            "tool_use" => {
-                                if let Some(input) = b_obj.get("input") {
-                                    extract_recursive_strings(
-                                        input,
-                                        &format!("{b_path}.tool_use.input"),
-                                        nodes,
-                                    );
-                                }
-                            }
+                            "tool_result" | "tool_use" => {}
                             "thinking" => {
                                 if let Some(thinking_text) =
                                     b_obj.get("thinking").and_then(Value::as_str)
@@ -301,20 +246,35 @@ fn extract_message_node<'a>(msg: &'a Value, path: &str, nodes: &mut Vec<Extracte
             });
         }
     }
+}
 
-    if let Some(tool_calls) = m_obj.get("tool_calls").and_then(Value::as_array) {
-        for (t_idx, tc) in tool_calls.iter().enumerate() {
-            let tc_path = format!("{path}.tool_calls[{t_idx}]");
-            if let Some(func) = tc.get("function") {
-                if let Some(args_str) = func.get("arguments").and_then(Value::as_str) {
-                    nodes.push(ExtractedTextNode {
-                        location: format!("{tc_path}.function.arguments"),
-                        text: args_str,
-                        is_password_field: false,
-                    });
+fn extract_responses_input<'a>(val: &'a Value, path: &str, nodes: &mut Vec<ExtractedTextNode<'a>>) {
+    match val {
+        Value::Array(arr) => {
+            for (idx, item) in arr.iter().enumerate() {
+                if let Some(obj) = item.as_object() {
+                    if matches!(
+                        obj.get("type").and_then(Value::as_str),
+                        Some(
+                            "function_call"
+                                | "function_call_output"
+                                | "custom_tool_call"
+                                | "custom_tool_call_output"
+                        )
+                    ) {
+                        continue;
+                    }
+                    if matches!(
+                        obj.get("role").and_then(Value::as_str),
+                        Some("system" | "developer" | "tool")
+                    ) {
+                        continue;
+                    }
                 }
+                extract_any_text(item, &format!("{path}[{idx}]"), nodes);
             }
         }
+        _ => extract_any_text(val, path, nodes),
     }
 }
 

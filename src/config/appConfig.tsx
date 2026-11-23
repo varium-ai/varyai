@@ -1,4 +1,5 @@
 import React from "react";
+import type { TFunction } from "i18next";
 import type { AppId } from "@/lib/api/types";
 import type { VisibleApps } from "@/types";
 import {
@@ -427,6 +428,10 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
 
 export function getAppLabel(appId: string): string {
   return APP_ICON_MAP[appId as AppId]?.label ?? appId;
+}
+
+export function getWorkspaceAgentLabel(t: TFunction, app: AppId): string {
+  return app === "claude" ? "Claude Code" : t(`apps.${app}`);
 }
 
 export function isManagedAgentApp(app: string): boolean {

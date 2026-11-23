@@ -60,7 +60,7 @@
   width: 88px;
   padding: 6px 8px;
   border: 1px solid var(--long-border);
-  border-radius: 6px;
+  border-radius: var(--control-radius);
   background: var(--mp-card, hsl(var(--background)));
 }
 .mp-long-threshold::placeholder {

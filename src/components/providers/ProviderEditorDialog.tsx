@@ -451,7 +451,7 @@ export function ProviderEditorDialog({
       }}
     >
       <DialogContent
-        className={`mp-dialog pv-provider-dialog${draft.codex ? " pv-codex-dialog" : ""}`}
+        className={`mp-dialog pv-provider-dialog${draft.codex ? " pv-codex-dialog" : ""}${draft.source.kind === "api" && !draft.codex ? " pv-api-editor" : ""}`}
         aria-busy={loading}
         onOpenAutoFocus={(event) => {
           event.preventDefault();

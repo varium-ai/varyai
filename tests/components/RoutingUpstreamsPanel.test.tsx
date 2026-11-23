@@ -1003,7 +1003,10 @@ describe("global upstream editor", () => {
       const copy = within(row).getByRole("button", {
         name: `providerEditor.duplicate ${record.name}`,
       });
-      expect(within(row).getByRole("switch").nextElementSibling).toBe(copy);
+      expect(
+        within(row).getByRole("switch").closest(".pv-row-state")
+          ?.nextElementSibling,
+      ).toBe(copy.closest(".pv-row-actions"));
       expect(copy.nextElementSibling).toBe(remove);
       if (kind === "subscription") expect(copy).toBeDisabled();
       else expect(copy).toBeEnabled();

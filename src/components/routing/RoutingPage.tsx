@@ -132,33 +132,23 @@ export function RoutingPage({
       data-testid="routing-page"
     >
       <header className="row-head rt-page-head">
-        <h1 className="vary-page-title">{t("workspaceNav.routing")}</h1>
-        <span
-          className={`rt-livedot ${!running || trace.isError ? "off" : ""}`}
-          aria-hidden
-        />
-        <span className="note">
-          {t(
-            trace.data && !running
-              ? "routingPage.gatewayStopped"
-              : "routingPage.liveHint",
-          )}
-        </span>
-        <span className="grow" />
+        <div className="rt-page-copy">
+          <h1 className="label vary-page-title">{t("workspaceNav.routing")}</h1>
+          <p className="note rt-page-note">
+            <span
+              className={`rt-livedot ${!running || trace.isError ? "off" : ""}`}
+              aria-hidden
+            />
+            {t(
+              trace.data && !running
+                ? "routingPage.gatewayStopped"
+                : "routingPage.liveHint",
+            )}
+          </p>
+        </div>
         <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
           <Plus size={13} />
           {t("intentRouting.create")}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="rt-mask"
-          aria-pressed={masked}
-          onClick={() => setMasked(!masked)}
-        >
-          {masked ? <Eye size={14} /> : <EyeOff size={14} />}
-          {t(masked ? "routingPage.showAccounts" : "routingPage.hideAccounts")}
         </Button>
       </header>
       {trace.isError && (
@@ -244,6 +234,24 @@ export function RoutingPage({
           createRequest={createRequest}
           showCreateButton={false}
           maskAccounts={masked}
+          toolbarActions={
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rt-mask"
+              aria-pressed={masked}
+              onClick={() => setMasked(!masked)}
+            >
+              {masked ? <Eye size={16} /> : <EyeOff size={16} />}
+              <span>
+                {t(
+                  masked
+                    ? "routingPage.showAccounts"
+                    : "routingPage.hideAccounts",
+                )}
+              </span>
+            </Button>
+          }
           onEditingChange={onEditingChange}
           onAddProvider={onAddProvider}
         />

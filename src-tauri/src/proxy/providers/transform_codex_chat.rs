@@ -6,7 +6,7 @@
 
 use super::codex_chat_common::{
     allows_long_thinking_tags, append_reasoning_content, extract_reasoning_field_text,
-    extract_reasoning_summary_text, response_function_call_item,
+    extract_reasoning_summary_text, is_unsolicited_page_context, response_function_call_item,
     response_function_call_item_with_namespace, split_leading_think_block_with_compatibility,
 };
 use crate::provider::CodexChatReasoningConfig;
@@ -1087,6 +1087,55 @@ fn append_responses_item_as_chat_message(
                 history,
             );
             pending_tool_calls.push(responses_tool_search_call_to_chat_tool_call(item));
+        }
+        Some("function_call_output") if is_unsolicited_page_context(item) => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_media,
+                pending_reasoning,
+                last_assistant_index,
+                history,
+            );
+            flush_pending_chat_tool_media(messages, pending_media);
+            attach_pending_reasoning_to_previous_assistant(
+                messages,
+                *last_assistant_index,
+                pending_reasoning,
+                history,
+            );
+            let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
+            let prefix = format!("Tool context (agent.{name}):");
+            let content = match item.get("output") {
+                Some(output) if output.is_array() => {
+                    match responses_content_to_chat_content("user", output) {
+                        Value::String(text) if text.is_empty() => Value::String(prefix),
+                        Value::String(text) => Value::String(format!("{prefix}\n{text}")),
+                        Value::Array(mut parts) => {
+                            parts.insert(0, json!({ "type": "text", "text": prefix }));
+                            Value::Array(parts)
+                        }
+                        _ => Value::String(prefix),
+                    }
+                }
+                Some(Value::String(text)) => {
+                    if text.is_empty() {
+                        Value::String(prefix)
+                    } else {
+                        Value::String(format!("{prefix}\n{text}"))
+                    }
+                }
+                Some(other) if !other.is_null() => {
+                    Value::String(format!("{prefix}\n{}", canonical_json_string(other)))
+                }
+                _ => Value::String(prefix),
+            };
+            let message = json!({
+                "role": "user",
+                "content": content
+            });
+            update_last_assistant_index(messages, &message, last_assistant_index);
+            messages.push(message);
         }
         Some("function_call_output") => {
             flush_pending_tool_calls(
@@ -6769,5 +6818,48 @@ mod tests {
             "tools should be present from tool_search_output"
         );
         assert_eq!(result["tools"][0]["function"]["name"], "search_docs");
+    }
+
+    #[test]
+    fn responses_to_chat_treats_unsolicited_browser_context_as_user_message() {
+        let input = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "namespace": "agent",
+                    "name": "codex_apps_open_page",
+                    "output": "Synthetic open page context"
+                },
+                {
+                    "type": "function_call_output",
+                    "namespace": "agent",
+                    "name": "browser_tabs",
+                    "output": "<in-app-browser-context>Synthetic tabs</in-app-browser-context>"
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Continue"}]
+                }
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).expect("should convert context");
+        let messages = result["messages"].as_array().expect("messages array");
+        assert!(messages.iter().all(|m| m["role"] != "tool"));
+        let user_texts: Vec<String> = messages
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .filter_map(|m| m["content"].as_str().map(str::to_string))
+            .collect();
+        assert!(user_texts.iter().any(|text| text
+            .contains("Tool context (agent.codex_apps_open_page):")
+            && text.contains("Synthetic open page context")));
+        assert!(user_texts
+            .iter()
+            .any(|text| text.contains("Tool context (agent.browser_tabs):")
+                && text
+                    .contains("<in-app-browser-context>Synthetic tabs</in-app-browser-context>")));
     }
 }

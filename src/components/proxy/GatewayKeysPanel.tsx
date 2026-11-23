@@ -1,7 +1,9 @@
+import { OptionSelect } from "@/components/ui/option-select";
 import { useEffect, useRef, useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { KeyRound, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -19,7 +21,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
+import {
+  fmtInt,
+  getLocaleFromLanguage,
+  getResolvedLang,
+} from "@/components/usage/format";
+import { GatewayRuntimeStatus } from "@/components/GatewayRuntimeStatus";
+import "./gateway-keys.css";
+import {
+  APP_IDS,
+  APP_ICON_MAP,
+  getWorkspaceAgentLabel,
+} from "@/config/appConfig";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { proxyKeys } from "@/lib/query/proxy";
@@ -34,13 +47,16 @@ type View = "keys" | "agents" | "usage" | "connect";
 export function GatewayKeysPanel({
   port,
   running = false,
+  statusUnavailable,
   takeoverStatus,
 }: {
   port: string;
   running?: boolean;
+  statusUnavailable?: boolean;
   takeoverStatus?: ProxyTakeoverStatus;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = getLocaleFromLanguage(getResolvedLang(i18n));
   const client = useQueryClient();
   const [view, setView] = useState<View>("keys");
   const { data: keys = [], isError } = useQuery({
@@ -100,7 +116,7 @@ export function GatewayKeysPanel({
   const [nameError, setNameError] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
-  const usageRef = useRef<HTMLSelectElement>(null);
+  const usageRef = useRef<HTMLButtonElement>(null);
   const [format, setFormat] = useState("anthropic");
   useEffect(() => {
     if (view === "keys" && formOpen) {
@@ -132,9 +148,12 @@ export function GatewayKeysPanel({
     (allModels || selectedModels.length > 0) &&
     (limit === "" ||
       (/^\d+$/.test(limit) && Number.isSafeInteger(Number(limit))));
-  const label = (app: string) =>
-    APP_ICON_MAP[app as keyof typeof APP_ICON_MAP]?.label ??
-    t("gatewayKeys.external");
+  const label = (app: string) => {
+    const knownAgent = APP_IDS.find((id) => id === app);
+    return knownAgent
+      ? getWorkspaceAgentLabel(t, knownAgent)
+      : t("gatewayKeys.external");
+  };
   async function run(action: () => Promise<unknown>) {
     setPending(true);
     try {
@@ -201,7 +220,7 @@ export function GatewayKeysPanel({
   const keyForm = formOpen ? (
     <form
       ref={formRef}
-      className="scroll-mt-4 rounded-lg border p-3 space-y-3"
+      className="gateway-keys-surface gateway-form"
       onSubmit={(e) => {
         e.preventDefault();
         if (!valid || pending) return;
@@ -239,10 +258,10 @@ export function GatewayKeysPanel({
         });
       }}
     >
-      <h5 className="font-medium text-sm">
+      <h4 className="gateway-list-title">
         {t(editing ? "gatewayKeys.edit" : "gatewayKeys.create")}
-      </h5>
-      <div>
+      </h4>
+      <div className="gateway-field">
         <Label htmlFor="gateway-name">{t("gatewayKeys.name")}</Label>
         <Input
           ref={nameRef}
@@ -325,7 +344,7 @@ export function GatewayKeysPanel({
           </div>
         </div>
       )}
-      <div>
+      <div className="gateway-field">
         <Label htmlFor="gateway-models">{t("gatewayKeys.models")}</Label>
         <Input
           id="gateway-models"
@@ -337,8 +356,8 @@ export function GatewayKeysPanel({
           placeholder={t("gatewayKeys.manualModels")}
         />
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div>
+      <div className="gateway-field-grid">
+        <div className="gateway-field">
           <Label htmlFor="gateway-limit">{t("gatewayKeys.limit")}</Label>
           <Input
             id="gateway-limit"
@@ -348,14 +367,13 @@ export function GatewayKeysPanel({
             placeholder={t("gatewayKeys.unlimited")}
           />
         </div>
-        <div>
+        <div className="gateway-field">
           <Label htmlFor="gateway-period">{t("gatewayKeys.period")}</Label>
-          <select
+          <OptionSelect
             id="gateway-period"
-            className="w-full h-9 rounded border bg-background px-2"
             value={period}
-            onChange={(e) =>
-              setPeriod(e.target.value as GatewayPolicy["period"])
+            onValueChange={(value) =>
+              setPeriod(value as GatewayPolicy["period"])
             }
           >
             {(["never", "daily", "monthly"] as const).map((p) => (
@@ -363,85 +381,99 @@ export function GatewayKeysPanel({
                 {t(`gatewayKeys.${p}`)}
               </option>
             ))}
-          </select>
+          </OptionSelect>
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
         {t("gatewayKeys.boundaries")}
       </p>
-      <div className="flex gap-2">
-        <Button type="submit" disabled={!valid || pending}>
-          {t(editing ? "common.save" : "common.add")}
-        </Button>
+      <div className="gateway-form-actions">
         <Button type="button" variant="outline" onClick={reset}>
           {t("common.cancel")}
+        </Button>
+        <Button type="submit" disabled={!valid || pending}>
+          {t(editing ? "common.save" : "common.add")}
         </Button>
       </div>
     </form>
   ) : null;
   return (
-    <section className="rounded-xl border border-border p-4 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold">{t("gatewayKeys.title")}</h4>
-        <span className="text-xs text-muted-foreground">
-          {t(running ? "gatewayKeys.running" : "gatewayKeys.stopped")}
-        </span>
-        {!running && (
+    <section className="gateway-keys">
+      <header className="gateway-keys-header">
+        <div>
+          <h2>{t("gatewayKeys.title")}</h2>
+          <p className="gateway-supporting-text">
+            {t("gatewayKeys.description")}
+          </p>
+        </div>
+        <div className="gateway-header-actions">
+          <GatewayRuntimeStatus
+            running={running}
+            unavailable={statusUnavailable}
+          />
+          {!running && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() =>
+                void run(async () => {
+                  await proxyApi.startProxyServer();
+                  await client.invalidateQueries({
+                    queryKey: proxyKeys.status,
+                  });
+                })
+              }
+            >
+              {t("gatewayKeys.startRouting")}
+            </Button>
+          )}
+        </div>
+      </header>
+      <div className="gateway-keys-toolbar">
+        <div
+          className="gateway-tabs"
+          role="tablist"
+          aria-label={t("gatewayKeys.title")}
+        >
+          {(["keys", "agents", "usage", "connect"] as const).map((tab) => (
+            <Button
+              key={tab}
+              role="tab"
+              aria-selected={view === tab}
+              variant={view === tab ? "secondary" : "ghost"}
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                setSecret("");
+                setView(tab);
+              }}
+            >
+              {t(`gatewayKeys.tabs.${tab}`)}
+            </Button>
+          ))}
+        </div>
+        {view === "keys" && !formOpen && (
           <Button
             size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() =>
-              void run(async () => {
-                await proxyApi.startProxyServer();
-                await client.invalidateQueries({ queryKey: proxyKeys.status });
-              })
-            }
+            onClick={() => {
+              setSecret("");
+              reset();
+              setFormOpen(true);
+            }}
           >
-            {t("gatewayKeys.startRouting")}
+            <Plus size={16} aria-hidden="true" />
+            {t("gatewayKeys.create")}
           </Button>
         )}
       </div>
-      <p className="text-xs text-muted-foreground">
-        {t("gatewayKeys.description")}
-      </p>
-      <div
-        className="flex flex-wrap gap-2"
-        role="tablist"
-        aria-label={t("gatewayKeys.title")}
-      >
-        {(["keys", "agents", "usage", "connect"] as const).map((tab) => (
-          <Button
-            key={tab}
-            role="tab"
-            aria-selected={view === tab}
-            variant={view === tab ? "default" : "outline"}
-            size="sm"
-            disabled={pending}
-            onClick={() => {
-              setSecret("");
-              setView(tab);
-            }}
-          >
-            {t(`gatewayKeys.tabs.${tab}`)}
-          </Button>
-        ))}
-      </div>
-      {(isError || usageError) && <p role="alert">{t("gatewayKeys.failed")}</p>}
+      {(isError || usageError) && (
+        <p role="alert" className="text-destructive">
+          {t("gatewayKeys.failed")}
+        </p>
+      )}
       {view === "keys" && (
-        <div className="space-y-3">
-          {!formOpen && (
-            <Button
-              size="sm"
-              onClick={() => {
-                setSecret("");
-                reset();
-                setFormOpen(true);
-              }}
-            >
-              {t("gatewayKeys.create")}
-            </Button>
-          )}
+        <div className="gateway-key-directory">
           {!editing && keyForm}
           <Dialog
             open={Boolean(secret)}
@@ -480,178 +512,187 @@ export function GatewayKeysPanel({
               </div>
             </DialogContent>
           </Dialog>
-          {!keys.length && !isError && (
-            <p className="rounded border border-dashed p-4 text-sm text-muted-foreground">
-              {t("gatewayKeys.empty")}
-            </p>
+          {!keys.length && !isError && !formOpen && (
+            <div className="gateway-keys-surface gateway-empty">
+              <KeyRound size={20} strokeWidth={1.5} aria-hidden="true" />
+              <p>{t("gatewayKeys.empty")}</p>
+            </div>
           )}
-          {keys.map((key) => {
-            const exhausted =
-              key.policy.tokenLimit !== null &&
-              key.usedTokens >= key.policy.tokenLimit;
-            return (
-              <article
-                key={key.id}
-                className="min-w-0 rounded-lg border p-3 space-y-2"
-              >
-                <div className="flex flex-wrap justify-between gap-2">
-                  <p
-                    className="min-w-0 flex-1 truncate font-medium text-sm"
-                    title={key.policy.name}
-                  >
-                    {key.policy.name}
-                  </p>
-                  <span className="shrink-0 text-xs">
-                    {t(
-                      key.revoked
-                        ? "gatewayKeys.revoked"
-                        : exhausted
-                          ? "gatewayKeys.exhausted"
-                          : "gatewayKeys.active",
-                    )}
-                  </span>
-                </div>
-                {key.policy.allModels ? (
-                  <p className="text-xs">{t("gatewayKeys.allModels")}</p>
-                ) : (
-                  <ul className="flex flex-wrap gap-1 text-xs">
-                    {key.policy.models.map((id) => (
-                      <li
-                        key={id}
-                        title={id}
-                        className="max-w-full truncate rounded bg-muted px-2 py-0.5"
-                      >
-                        {modelNames.get(id) || id}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <p className="text-sm">
-                  {t("gatewayKeys.usage", {
-                    used: key.usedTokens.toLocaleString(),
-                    limit: key.policy.tokenLimit?.toLocaleString() ?? "∞",
-                  })}
-                </p>
-                {key.policy.tokenLimit !== null && (
-                  <>
-                    <progress
-                      className="w-full h-2"
-                      aria-label={t("gatewayKeys.budgetProgress")}
-                      max={Math.max(1, key.policy.tokenLimit)}
-                      value={Math.min(key.usedTokens, key.policy.tokenLimit)}
-                    />
-                    <p className="text-xs">
-                      {t("gatewayKeys.remaining", {
-                        count: Math.max(
-                          0,
-                          key.policy.tokenLimit - key.usedTokens,
-                        ),
-                      })}
+          <div className="gateway-keys-surface gateway-key-list">
+            {keys.map((key) => {
+              const exhausted =
+                key.policy.tokenLimit !== null &&
+                key.usedTokens >= key.policy.tokenLimit;
+              return (
+                <article key={key.id} className="gateway-key-entry">
+                  <div className="gateway-key-heading">
+                    <p
+                      className="gateway-list-title min-w-0 flex-1 truncate"
+                      title={key.policy.name}
+                    >
+                      {key.policy.name}
                     </p>
-                  </>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  {t("gatewayKeys.reset", {
-                    time: key.resetsAt
-                      ? new Date(key.resetsAt * 1000).toLocaleString()
-                      : t("gatewayKeys.never"),
-                  })}
-                </p>
-                <p className="text-xs">
-                  {t("gatewayKeys.boundAgents", {
-                    agents: key.agents?.length
-                      ? key.agents.map(label).join(", ")
-                      : t("gatewayKeys.noneBound"),
-                  })}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {!key.revoked && (
+                    <span
+                      className="gateway-key-status"
+                      data-tone={
+                        key.revoked
+                          ? "neutral"
+                          : exhausted
+                            ? "warning"
+                            : "success"
+                      }
+                    >
+                      {t(
+                        key.revoked
+                          ? "gatewayKeys.revoked"
+                          : exhausted
+                            ? "gatewayKeys.exhausted"
+                            : "gatewayKeys.active",
+                      )}
+                    </span>
+                  </div>
+                  {key.policy.allModels ? (
+                    <p className="text-xs">{t("gatewayKeys.allModels")}</p>
+                  ) : (
+                    <ul className="flex flex-wrap gap-1 text-xs">
+                      {key.policy.models.map((id) => (
+                        <li
+                          key={id}
+                          title={id}
+                          className="max-w-full truncate rounded bg-muted px-2 py-0.5"
+                        >
+                          {modelNames.get(id) || id}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="text-sm">
+                    {t("gatewayKeys.usage", {
+                      used: fmtInt(key.usedTokens, locale),
+                      limit: fmtInt(key.policy.tokenLimit, locale, "∞"),
+                    })}
+                  </p>
+                  {key.policy.tokenLimit !== null && (
                     <>
-                      {key.secretAvailable && (
+                      <progress
+                        className="gateway-budget-progress"
+                        aria-label={t("gatewayKeys.budgetProgress")}
+                        max={Math.max(1, key.policy.tokenLimit)}
+                        value={Math.min(key.usedTokens, key.policy.tokenLimit)}
+                      />
+                      <p className="text-xs">
+                        {t("gatewayKeys.remaining", {
+                          count: Math.max(
+                            0,
+                            key.policy.tokenLimit - key.usedTokens,
+                          ),
+                        })}
+                      </p>
+                    </>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    {t("gatewayKeys.reset", {
+                      time: key.resetsAt
+                        ? new Date(key.resetsAt * 1000).toLocaleString(locale)
+                        : t("gatewayKeys.never"),
+                    })}
+                  </p>
+                  <p className="text-xs">
+                    {t("gatewayKeys.boundAgents", {
+                      agents: key.agents?.length
+                        ? key.agents.map(label).join(", ")
+                        : t("gatewayKeys.noneBound"),
+                    })}
+                  </p>
+                  <div className="gateway-key-actions">
+                    {!key.revoked && (
+                      <>
+                        {key.secretAvailable && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={() =>
+                              void run(async () => {
+                                const value = await gatewayApi.reveal(key.id);
+                                setSecret(value ?? "");
+                                if (!value)
+                                  toast.error(t("gatewayKeys.legacySecret"));
+                              })
+                            }
+                          >
+                            {t("gatewayKeys.reveal")}
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={pending}
+                          onClick={() => edit(key)}
+                        >
+                          {t("gatewayKeys.edit")}
+                        </Button>
                         <Button
                           size="sm"
                           variant="outline"
                           disabled={pending}
                           onClick={() =>
                             void run(async () => {
-                              const value = await gatewayApi.reveal(key.id);
-                              setSecret(value ?? "");
-                              if (!value)
-                                toast.error(t("gatewayKeys.legacySecret"));
+                              setSecret("");
+                              await gatewayApi.revoke(key.id);
                             })
                           }
                         >
-                          {t("gatewayKeys.reveal")}
+                          {t("gatewayKeys.revoke")}
                         </Button>
-                      )}
+                      </>
+                    )}
+                    {key.revoked && (
                       <Button
                         size="sm"
-                        variant="outline"
-                        disabled={pending}
-                        onClick={() => edit(key)}
+                        variant="destructive"
+                        disabled={pending || !!key.agents?.length}
+                        onClick={() => setDeleting(key)}
                       >
-                        {t("gatewayKeys.edit")}
+                        {t("common.delete")}
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={pending}
-                        onClick={() =>
-                          void run(async () => {
-                            setSecret("");
-                            await gatewayApi.revoke(key.id);
-                          })
-                        }
-                      >
-                        {t("gatewayKeys.revoke")}
-                      </Button>
-                    </>
-                  )}
-                  {key.revoked && (
+                    )}
                     <Button
                       size="sm"
-                      variant="destructive"
-                      disabled={pending || !!key.agents?.length}
-                      onClick={() => setDeleting(key)}
+                      variant="outline"
+                      onClick={() => {
+                        setSecret("");
+                        setUsageKey(key.id);
+                        setView("usage");
+                      }}
                     >
-                      {t("common.delete")}
+                      {t("gatewayKeys.viewUsage")}
                     </Button>
+                  </div>
+                  {!key.revoked && !key.secretAvailable && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("gatewayKeys.legacySecret")}
+                    </p>
                   )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setSecret("");
-                      setUsageKey(key.id);
-                      setView("usage");
-                    }}
-                  >
-                    {t("gatewayKeys.viewUsage")}
-                  </Button>
-                </div>
-                {!key.revoked && !key.secretAvailable && (
-                  <p className="text-xs text-muted-foreground">
-                    {t("gatewayKeys.legacySecret")}
-                  </p>
-                )}
-                {key.revoked && !!key.agents?.length && (
-                  <p className="text-xs text-muted-foreground">
-                    {t("gatewayKeys.deleteUnbindHint")}
-                  </p>
-                )}
-                {editing === key.id && keyForm}
-              </article>
-            );
-          })}
+                  {key.revoked && !!key.agents?.length && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("gatewayKeys.deleteUnbindHint")}
+                    </p>
+                  )}
+                  {editing === key.id && keyForm}
+                </article>
+              );
+            })}
+          </div>
         </div>
       )}
       {view === "agents" && (
-        <div className="space-y-3">
-          <p className="text-xs text-muted-foreground">
+        <div className="gateway-key-directory">
+          <p className="gateway-supporting-text">
             {t("gatewayKeys.bindingHint")}
           </p>
           {catalogError && <p role="alert">{t("gatewayKeys.catalogFailed")}</p>}
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="gateway-agent-grid">
             {APP_IDS.map((app, index) => {
               const supported = supportedApps.has(app);
               const bound = boundKeys.get(app);
@@ -666,18 +707,23 @@ export function GatewayKeysPanel({
                       connection.recoveryReason ===
                         "bridge_selection_pending")));
               return (
-                <div key={app} className="rounded-lg border p-3 space-y-2">
-                  <Label htmlFor={`gateway-agent-${app}`}>{label(app)}</Label>
+                <div key={app} className="gateway-keys-surface gateway-agent">
+                  <div className="flex items-center gap-2">
+                    <span aria-hidden="true">{APP_ICON_MAP[app].icon}</span>
+                    <Label
+                      className="gateway-list-title"
+                      htmlFor={`gateway-agent-${app}`}
+                    >
+                      {label(app)}
+                    </Label>
+                  </div>
                   {supported ? (
-                    <select
+                    <OptionSelect
                       id={`gateway-agent-${app}`}
-                      className="w-full h-9 rounded border bg-background px-2 text-sm"
                       disabled={pending}
                       value={bound?.id ?? ""}
-                      onChange={(e) =>
-                        void run(() =>
-                          gatewayApi.bind(app, e.target.value || null),
-                        )
+                      onValueChange={(value) =>
+                        void run(() => gatewayApi.bind(app, value || null))
                       }
                     >
                       <option value="">{t("gatewayKeys.noBinding")}</option>
@@ -695,7 +741,7 @@ export function GatewayKeysPanel({
                               : ""}
                           </option>
                         ))}
-                    </select>
+                    </OptionSelect>
                   ) : (
                     <p className="text-xs">{t("gatewayKeys.manualAgent")}</p>
                   )}
@@ -733,92 +779,95 @@ export function GatewayKeysPanel({
         </div>
       )}
       {view === "usage" && (
-        <div className="space-y-3">
-          <Label htmlFor="gateway-usage-filter">
-            {t("gatewayKeys.filterKey")}
-          </Label>
-          <select
-            ref={usageRef}
-            id="gateway-usage-filter"
-            className="min-w-0 max-w-full w-full h-9 rounded border bg-background px-2 scroll-mt-4"
-            value={usageKey}
-            onChange={(e) => setUsageKey(e.target.value)}
-          >
-            <option value="">{t("gatewayKeys.allKeys")}</option>
-            {keys.map((key) => (
-              <option key={key.id} value={key.id}>
-                {key.policy.name}
-              </option>
-            ))}
-          </select>
-          <p className="text-xs text-muted-foreground">
-            {t("gatewayKeys.usageHint")}
-          </p>
+        <div className="gateway-key-directory">
+          <div className="gateway-keys-surface gateway-usage-filter">
+            <Label htmlFor="gateway-usage-filter">
+              {t("gatewayKeys.filterKey")}
+            </Label>
+            <OptionSelect
+              ref={usageRef}
+              id="gateway-usage-filter"
+              className="min-w-0 scroll-mt-4"
+              value={usageKey}
+              onValueChange={(value) => setUsageKey(value)}
+            >
+              <option value="">{t("gatewayKeys.allKeys")}</option>
+              {keys.map((key) => (
+                <option key={key.id} value={key.id}>
+                  {key.policy.name}
+                </option>
+              ))}
+            </OptionSelect>
+            <p className="text-xs text-muted-foreground">
+              {t("gatewayKeys.usageHint")}
+            </p>
+          </div>
           {!usage.filter((u) => !usageKey || u.keyId === usageKey).length && (
-            <p className="rounded border border-dashed p-4 text-sm">
+            <p className="gateway-keys-surface gateway-empty">
               {t("gatewayKeys.noUsage")}
             </p>
           )}
-          {usage
-            .filter((u) => !usageKey || u.keyId === usageKey)
-            .map((u) => (
-              <div
-                key={`${u.keyId}:${u.window}:${u.agent}:${u.model}:${u.upstreamModel ?? ""}`}
-                className="rounded-lg border p-3 space-y-1 text-xs"
-              >
-                <div className="break-all text-sm">
-                  <span>{t("gatewayKeys.upstreamModel")}</span>:{" "}
-                  <span className="font-semibold">
-                    {u.upstreamModel ?? t("gatewayKeys.upstreamMissing")}
-                  </span>
+          <div className="gateway-keys-surface gateway-key-list">
+            {usage
+              .filter((u) => !usageKey || u.keyId === usageKey)
+              .map((u) => (
+                <div
+                  key={`${u.keyId}:${u.window}:${u.agent}:${u.model}:${u.upstreamModel ?? ""}`}
+                  className="gateway-usage-entry"
+                >
+                  <div className="gateway-list-title break-words">
+                    <span>{t("gatewayKeys.upstreamModel")}</span>:{" "}
+                    <span className="font-semibold">
+                      {u.upstreamModel ?? t("gatewayKeys.upstreamMissing")}
+                    </span>
+                  </div>
+                  <p className="text-muted-foreground">
+                    {keys.find((key) => key.id === u.keyId)?.policy.name ??
+                      u.keyId}{" "}
+                    · {t("gatewayKeys.sourceAgent")}: {label(u.agent)}
+                  </p>
+                  <div className="break-all text-muted-foreground">
+                    <span>{t("gatewayKeys.requestModel")}</span>:{" "}
+                    <span title={u.model}>
+                      {modelNames.get(u.model) || u.model}
+                    </span>
+                  </div>
+                  <p>
+                    {t("gatewayKeys.usagePeriod", {
+                      time: u.window
+                        ? new Date(u.window * 1000).toLocaleString(locale)
+                        : t("gatewayKeys.never"),
+                    })}
+                  </p>
+                  <p>
+                    {t("gatewayKeys.usageRow", {
+                      tokens: fmtInt(u.tokens, locale),
+                      requests: fmtInt(u.requests, locale),
+                      unmetered: fmtInt(u.unmetered, locale),
+                    })}
+                  </p>
+                  <p>
+                    {t("gatewayKeys.lastUsed", {
+                      time: new Date(u.lastUsed * 1000).toLocaleString(locale),
+                    })}
+                  </p>
                 </div>
-                <p className="text-muted-foreground">
-                  {keys.find((key) => key.id === u.keyId)?.policy.name ??
-                    u.keyId}{" "}
-                  · {t("gatewayKeys.sourceAgent")}: {label(u.agent)}
-                </p>
-                <div className="break-all text-muted-foreground">
-                  <span>{t("gatewayKeys.requestModel")}</span>:{" "}
-                  <span title={u.model}>
-                    {modelNames.get(u.model) || u.model}
-                  </span>
-                </div>
-                <p>
-                  {t("gatewayKeys.usagePeriod", {
-                    time: u.window
-                      ? new Date(u.window * 1000).toLocaleString()
-                      : t("gatewayKeys.never"),
-                  })}
-                </p>
-                <p>
-                  {t("gatewayKeys.usageRow", {
-                    tokens: u.tokens.toLocaleString(),
-                    requests: u.requests,
-                    unmetered: u.unmetered,
-                  })}
-                </p>
-                <p>
-                  {t("gatewayKeys.lastUsed", {
-                    time: new Date(u.lastUsed * 1000).toLocaleString(),
-                  })}
-                </p>
-              </div>
-            ))}
+              ))}
+          </div>
         </div>
       )}
       {view === "connect" && (
-        <div className="space-y-3">
-          <p className="text-xs text-muted-foreground">
+        <div className="gateway-keys-surface gateway-connect">
+          <p className="gateway-supporting-text">
             {t("gatewayKeys.connectHint")}
           </p>
           <Label htmlFor="gateway-connect-key">
             {t("gatewayKeys.filterKey")}
           </Label>
-          <select
+          <OptionSelect
             id="gateway-connect-key"
-            className="w-full h-9 rounded border bg-background px-2"
             value={connectKey}
-            onChange={(e) => setConnectKey(e.target.value)}
+            onValueChange={(value) => setConnectKey(value)}
           >
             <option value="">{t("gatewayKeys.chooseKey")}</option>
             {keys
@@ -828,7 +877,7 @@ export function GatewayKeysPanel({
                   {key.policy.name}
                 </option>
               ))}
-          </select>
+          </OptionSelect>
           <Label htmlFor="gateway-connect-format">
             {t("gatewayKeys.clientProtocol")}
           </Label>

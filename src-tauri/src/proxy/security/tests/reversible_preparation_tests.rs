@@ -51,55 +51,47 @@ fn preparation_new_authority_cannot_collide_with_immutable_keys() -> Result<(), 
     let key = [7; 32];
     let raw = "13800138000";
     let token = super::tokenization::make_token(&key, raw, TokenCategory::Phone)?;
-    for decoded in [false, true] {
-        let store = DlpTokenStore::with_test_key(key);
-        let mut lease = store.admit("codex", Some("synthetic-key-collision"), 1)?;
-        let budget = PayloadBudget::with_limit(1024 * 1024);
-        let body = if decoded {
-            let arguments = serde_json::to_string(&json!({&token:1,"value":raw}))
-                .map_err(|_| TokenError::RedactionFailed)?;
-            json!({"input":[{"type":"function_call","call_id":"call_collision","name":"fixture","arguments":arguments}]})
-        } else {
-            json!({"input":raw,"metadata":{&token:1}})
-        };
-        let mut called = false;
-        let result = prepare_codex_request_with_budget(
-            &mut lease,
-            &body,
-            &SecurityRuntimeConfig::default(),
-            &["chinese_phone_number"],
-            &[],
-            budget.clone(),
-            |_, _, _| {
-                called = true;
-                Ok(())
-            },
-        );
-        assert!(
-            matches!(
-                result,
-                Err(PlanError::Token(TokenError::ContextUnavailable))
-            ),
-            "new authority in immutable keys must refuse before commit"
-        );
-        assert!(
-            !called,
-            "refused immutable references cannot reach the validator"
-        );
-        assert!(
-            store.stats()?.entries == 0,
-            "refusal cannot commit token mappings"
-        );
-        assert!(
-            lease.resolve_if_authorized(&token)?.is_none(),
-            "refusal cannot grant authority"
-        );
-        drop(result);
-        assert!(
-            budget.used() == 0,
-            "refusal must release every candidate charge"
-        );
-    }
+    let store = DlpTokenStore::with_test_key(key);
+    let mut lease = store.admit("codex", Some("synthetic-key-collision"), 1)?;
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    let body = json!({"input":raw,"metadata":{&token:1}});
+    let mut called = false;
+    let result = prepare_codex_request_with_budget(
+        &mut lease,
+        &body,
+        &SecurityRuntimeConfig::default(),
+        &["chinese_phone_number"],
+        &[],
+        budget.clone(),
+        |_, _, _| {
+            called = true;
+            Ok(())
+        },
+    );
+    assert!(
+        matches!(
+            result,
+            Err(PlanError::Token(TokenError::ContextUnavailable))
+        ),
+        "new authority in immutable keys must refuse before commit"
+    );
+    assert!(
+        !called,
+        "refused immutable references cannot reach the validator"
+    );
+    assert!(
+        store.stats()?.entries == 0,
+        "refusal cannot commit token mappings"
+    );
+    assert!(
+        lease.resolve_if_authorized(&token)?.is_none(),
+        "refusal cannot grant authority"
+    );
+    drop(result);
+    assert!(
+        budget.used() == 0,
+        "refusal must release every candidate charge"
+    );
     Ok(())
 }
 
@@ -108,7 +100,7 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
 ) -> Result<(), PlanError> {
     let store = DlpTokenStore::with_test_key(std::array::from_fn(|index| index as u8));
     let mut lease = store.admit("codex", Some("synthetic-session"), 1)?;
-    let body = json!({"instructions": "13800138000", "input": [{"type": "function_call", "name": "synthetic", "arguments": r#"{ "value": "13800138000", "number": 18446744073709551617 }"#}]});
+    let body = json!({"input": [{"role": "user", "content": "13800138000"}, {"role": "assistant", "content": "13800138000"}]});
     let prepared = prepare_codex_request(
         &mut lease,
         &body,
@@ -122,10 +114,13 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
             Ok(42usize)
         },
     )?;
-    assert!(prepared.body.as_value()["instructions"] == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai");
     assert!(
-        prepared.body.as_value()["input"][0]["arguments"]
-            == r#"{ "value": "rredact-cn_phone-413ff0a68f6f0d574cb5-ai", "number": 18446744073709551617 }"#
+        prepared.body.as_value()["input"][0]["content"]
+            == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai"
+    );
+    assert!(
+        prepared.body.as_value()["input"][1]["content"]
+            == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai"
     );
     assert_eq!(
         (
@@ -137,7 +132,7 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
     assert_eq!(prepared.validated, 42);
     assert!(!prepared.encoded.as_slice().is_empty());
     assert_eq!(store.stats()?.entries, 1);
-    assert!(body["instructions"] == "13800138000");
+    assert!(body["input"][0]["content"] == "13800138000");
     Ok(())
 }
 
@@ -172,7 +167,8 @@ fn preparation_keeps_unselected_redaction_irreversible() -> Result<(), PlanError
 fn preparation_rejects_sensitive_read_only_values_before_mapping_commit() -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let body = json!({"instructions": "13800138000", "input": [{"type": "function_call", "name": "13800138000", "arguments": "{}"}]});
+    let body =
+        json!({"input": [{"role": "user", "content": "13800138000", "name": "13800138000"}]});
     let result = prepare_codex_request(
         &mut lease,
         &body,
@@ -435,29 +431,28 @@ fn preparation_password_context_and_cross_field_irreversibility_are_preserved(
 ) -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let body = json!({"instructions": "synthetic-secret", "input": [{"type": "function_call", "arguments": {"password": "synthetic-secret"}}]});
+    let body = json!({
+        "instructions": "synthetic-secret",
+        "input": [
+            {"role": "user", "content": "synthetic-secret"},
+            {"role": "assistant", "content": "synthetic-secret"},
+            {"type": "function_call", "arguments": {"password": "synthetic-secret"}}
+        ]
+    });
     let mut runtime = SecurityRuntimeConfig::default();
     runtime.custom_rules.push(rule(
         "synthetic-exact",
         "synthetic-secret",
         AuditAction::Redact,
     ));
-    runtime
-        .builtin_action_overrides
-        .insert("catalog:password-field".into(), AuditAction::Redact);
-    let prepared = prepare_codex_request(
-        &mut lease,
-        &body,
-        &runtime,
-        &["synthetic-exact"],
-        &[],
-        |_, _, proof| {
-            assert!(proof.is_empty());
-            Ok(())
-        },
-    )?;
-    assert!(prepared.body.as_value()["instructions"] == "[REDACTED]");
-    assert!(prepared.body.as_value()["input"][0]["arguments"]["password"] == "[REDACTED]");
+    let prepared = prepare_codex_request(&mut lease, &body, &runtime, &[], &[], |_, _, proof| {
+        assert!(proof.is_empty());
+        Ok(())
+    })?;
+    assert!(prepared.body.as_value()["instructions"] == "synthetic-secret");
+    assert!(prepared.body.as_value()["input"][0]["content"] == "[REDACTED]");
+    assert!(prepared.body.as_value()["input"][1]["content"] == "[REDACTED]");
+    assert!(prepared.body.as_value()["input"][2]["arguments"]["password"] == "synthetic-secret");
     assert_eq!(prepared.irreversible_occurrences, 2);
     assert_eq!(store.stats()?.entries, 0);
     Ok(())
@@ -1354,8 +1349,8 @@ fn decoded_preparation_fixture() -> Result<DecodedPreparationFixture, TokenError
 fn preparation_decoded_peak_exhaustion_precedes_validation_and_mapping_commit(
 ) -> Result<(), PlanError> {
     use super::payload_json::test_support::{self, Action, Phase};
-    let fixture = decoded_preparation_fixture()?;
-    let limit = fixture.parse_peaks[1] - 1;
+    let body =
+        json!({"input":[{"type":"function_call", "arguments":r#"{"value":"13800138000"}"#}]});
     let parses = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&parses);
     let _hook = test_support::install(move |event| {
@@ -1366,29 +1361,22 @@ fn preparation_decoded_peak_exhaustion_precedes_validation_and_mapping_commit(
     });
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let budget = PayloadBudget::with_limit(limit);
-    let mut validated = false;
-    let result = prepare_codex_request_with_budget(
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    let prepared = prepare_codex_request_with_budget(
         &mut lease,
-        &fixture.body,
+        &body,
         &SecurityRuntimeConfig::default(),
         &["chinese_phone_number"],
         &[],
         budget.clone(),
-        |_, _, _| {
-            validated = true;
-            Ok(())
-        },
-    );
-    assert_eq!(
-        result.err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
-    assert_eq!(parses.get(), 1);
-    assert!(!validated);
-    assert_eq!(budget.used(), 0);
+        |_, _, _| Ok(()),
+    )?;
+    assert_eq!(parses.get(), 0);
+    assert_eq!(prepared.reversible_occurrences, 0);
     assert_eq!(store.stats()?.entries, 0);
     assert!(lease.authorized_tokens()?.is_empty());
+    drop(prepared);
+    assert_eq!(budget.used(), 0);
     Ok(())
 }
 
@@ -1396,46 +1384,34 @@ fn preparation_decoded_peak_exhaustion_precedes_validation_and_mapping_commit(
 fn preparation_decoded_initial_and_residual_owners_share_bytes_budget_until_validation(
 ) -> Result<(), PlanError> {
     use super::payload_json::test_support::{self, Action, Phase};
-    let fixture = decoded_preparation_fixture()?;
-    let parse_peaks = fixture.parse_peaks;
-    let first_retained = fixture.first_retained;
+    let body =
+        json!({"input":[{"type":"function_call", "arguments":r#"{"value":"13800138000"}"#}]});
     let parses = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&parses);
     let _hook = test_support::install(move |event| {
         if event.phase == Phase::AfterParse {
             observed.set(observed.get() + 1);
-            if observed.get() == 1 {
-                assert_eq!(event.charged, first_retained);
-                assert_eq!(event.used, parse_peaks[0]);
-            } else {
-                assert_eq!(event.used, parse_peaks[1]);
-            }
         }
         Action::Continue
     });
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let budget = PayloadBudget::with_limit(fixture.peak);
+    let budget = PayloadBudget::with_limit(1024 * 1024);
     let prepared = prepare_codex_request_with_budget(
         &mut lease,
-        &fixture.body,
+        &body,
         &SecurityRuntimeConfig::default(),
         &["chinese_phone_number"],
         &[],
         budget.clone(),
-        |_, bytes, proof| {
-            assert_eq!(proof.len(), 1);
-            assert_eq!(budget.used(), fixture.retained + bytes.len());
+        |_, _, proof| {
+            assert!(proof.is_empty());
             Ok(())
         },
     )?;
-    assert_eq!(parses.get(), 2);
-    assert_eq!(prepared.reversible_occurrences, 1);
-    assert_eq!(
-        budget.used(),
-        fixture.candidate_charge + prepared.encoded.capacity()
-    );
-    assert_eq!(store.stats()?.entries, 1);
+    assert_eq!(parses.get(), 0);
+    assert_eq!(prepared.reversible_occurrences, 0);
+    assert_eq!(store.stats()?.entries, 0);
     drop(prepared);
     assert_eq!(budget.used(), 0);
     Ok(())
@@ -2526,5 +2502,105 @@ fn image_history_classifier_unknown_shapes_have_no_authority() -> Result<(), Tok
         is_fresh_readable_history(&source, &exhausted).is_err(),
         "image history must retain classification budget limits"
     );
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn codex_browser_tabs_context_is_fresh_readable_and_redacts_under_routed_dlp(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::http_restoration::{
+        admit_routed_http_request, RestorationAdmission, RestorationGateway,
+    };
+    use super::request_preparation::is_fresh_readable_history;
+
+    let budget = PayloadBudget::with_limit(64 * 1024);
+    for call_id in [None, Some(Value::Null)] {
+        let mut tabs = json!({
+            "type": "function_call_output",
+            "id": "synthetic-browser-tabs",
+            "namespace": "agent",
+            "name": "browser_tabs",
+            "output": "<in-app-browser-context>Synthetic open tab</in-app-browser-context>"
+        });
+        if let Some(call_id) = call_id {
+            tabs["call_id"] = call_id;
+        }
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {"type": "function_call", "call_id": "call-tabs-1", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-tabs-1", "output": "ok"},
+                tabs,
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Continue"}]}
+            ]
+        });
+        assert!(
+            matches!(is_fresh_readable_history(&body, &budget), Ok(true)),
+            "unsolicited agent.browser_tabs context must stay readable history"
+        );
+    }
+    for invalid in [
+        json!({"type":"function_call_output","namespace":"other","name":"browser_tabs","output":"Synthetic"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","call_id":"","output":"Synthetic"}),
+    ] {
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": [
+                {"type": "function_call", "call_id": "call-tabs-1", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-tabs-1", "output": "ok"},
+                invalid
+            ]
+        });
+        assert!(matches!(
+            is_fresh_readable_history(&body, &budget),
+            Ok(false)
+        ));
+    }
+
+    let previous = (*super::runtime::get_security_runtime()).clone();
+    struct Reset(SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            super::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset(previous);
+    let mut runtime = super::runtime::get_security_runtime().as_ref().clone();
+    runtime
+        .builtin_action_overrides
+        .insert("chinese_phone_number".into(), AuditAction::RedactRestore);
+    super::runtime::set_security_runtime_for_test(runtime);
+    let gateway = RestorationGateway::new_default();
+    let mut routed_body = json!({
+        "model": "gpt-5.4",
+        "input": [
+            {
+                "type": "function_call_output",
+                "namespace": "agent",
+                "name": "browser_tabs",
+                "output": "Tab contact 13800138000"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Continue 13800138000"}]
+            }
+        ]
+    });
+    let headers = axum::http::HeaderMap::new();
+    let admission = admit_routed_http_request(
+        &gateway,
+        &crate::app_config::AppType::Codex,
+        crate::proxy::protocol_bridge::Protocol::Responses,
+        "/v1/responses",
+        &mut routed_body,
+        &headers,
+    )?;
+    assert!(matches!(admission, RestorationAdmission::Admitted(_)));
+    assert_eq!(routed_body["input"][0]["output"], "Tab contact 13800138000");
+    assert!(routed_body["input"][1]["content"][0]["text"]
+        .as_str()
+        .is_some_and(|text| !text.contains("13800138000")));
     Ok(())
 }

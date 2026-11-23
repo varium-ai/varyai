@@ -1,3 +1,4 @@
+import { selectAppOption } from "../utils/appSelect";
 import {
   act,
   fireEvent,
@@ -1282,13 +1283,13 @@ it("inherits the saved account proxy on re-login and can explicitly choose globa
   );
   const proxy = screen.getByRole("combobox", { name: "codexBrowser.proxy" });
   expect(proxy).toHaveValue("inherit");
-  fireEvent.change(proxy, { target: { value: "" } });
+  selectAppOption(proxy, "");
   await waitFor(() => expect(start).toHaveBeenLastCalledWith("managed", ""));
-  fireEvent.change(proxy, { target: { value: "direct" } });
+  selectAppOption(proxy, "direct");
   await waitFor(() =>
     expect(start).toHaveBeenLastCalledWith("managed", "direct"),
   );
-  fireEvent.change(proxy, { target: { value: "inherit" } });
+  selectAppOption(proxy, "inherit");
   await waitFor(() =>
     expect(start).toHaveBeenLastCalledWith("managed", undefined),
   );

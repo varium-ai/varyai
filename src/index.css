@@ -1,3 +1,6 @@
+@import "./assets/fonts/inter/wght.css";
+@import "./assets/fonts/noto-sans-sc/wght.css";
+@import "./assets/fonts/jetbrains-mono/wght.css";
 @import "./design-tokens.css";
 @import "./components/layout/workspace.css";
 @import "./components/ui/dialog.css";
@@ -409,4 +412,23 @@ input[type="password"]::-ms-clear {
     min-width: 0;
     flex: 1 1 0%;
   }
+}
+
+/* Figma UI role geometry; brand SVGs are intentionally excluded. */
+.vary-workspace .lucide,
+.vary-dialog-surface .lucide {
+  stroke-width: 1.2px;
+}
+code,
+pre,
+.font-mono {
+  font-family: var(--code-font);
+}
+
+.vary-floating-surface {
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  box-shadow: var(--floating-shadow);
 }

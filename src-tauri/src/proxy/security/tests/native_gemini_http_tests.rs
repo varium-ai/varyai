@@ -529,8 +529,8 @@ async fn m4_gemini_current_function_response_text_is_tokenized() -> TestResult {
     let records = fixture.requests()?;
     let sent = serde_json::to_string(&records[0])?;
     assert!(
-        records.len() == 1 && !sent.contains(CONTACT),
-        "m4_gemini_function_response_not_tokenized"
+        records.len() == 1 && sent.contains(CONTACT),
+        "m4_gemini_function_response_should_be_skipped"
     );
     drop(records);
     assert!(

@@ -91,11 +91,12 @@ export function AgentVersionTag({
       {showVersions && cliVersion && (
         <span className="mp-agent-version">{cliLabel}</span>
       )}
+      {appTag}
       {((updatePromptState.visible && updates.updatable.includes(app)) ||
         updating) && (
         <button
           type="button"
-          className="mp-agent-update"
+          className="mp-agent-update mp-agent-version-update"
           title={appHint}
           disabled={
             disabled ||
@@ -117,7 +118,6 @@ export function AgentVersionTag({
           <span>{updateLabel}</span>
         </button>
       )}
-      {appTag}
       {waitingForExit && (
         <span className="mp-agent-version" role="status">
           {t("agentUpdates.waitingForExit")}
@@ -221,7 +221,7 @@ export function AgentUpdatesBar({
           {(updates.updatable.length >= 2 || updateBusy) && (
             <button
               type="button"
-              className="mp-agent-update"
+              className="mp-agent-update mp-agent-update-all"
               disabled={disabled || updates.busy}
               aria-busy={updateBusy}
               aria-label={t("agentUpdates.all")}

@@ -71,7 +71,7 @@
 .mp-checkin-field select {
   display: block;
   width: 100%;
-  height: 30px;
+  height: var(--control-height);
   padding: 0 8px;
   border: 1px solid var(--mp-line);
   border-radius: 7px;
@@ -92,7 +92,7 @@
   gap: 6px;
   padding: 4px 0;
   list-style: none;
-  color: var(--mp-action-text);
+  color: var(--mp-link);
   cursor: pointer;
   font-weight: 500;
 }
@@ -254,8 +254,8 @@
   color: var(--mp-fg);
 }
 .mp-checkin .mp-checkin-primary {
-  border-color: var(--mp-accent);
-  background: var(--mp-accent);
+  border-color: var(--mp-action);
+  background: var(--mp-action);
   color: white;
 }
 .mp-checkin .mp-checkin-primary[data-complete="true"] {
@@ -314,7 +314,7 @@
   border-color: transparent;
   border-radius: 16px;
   background: color-mix(in srgb, var(--mp-accent) 9%, var(--mp-card));
-  color: var(--mp-action-text);
+  color: var(--mp-link);
   font-weight: 500;
 }
 .mp-agent-start.mp-agent-checkin-trigger[data-inactive="true"] {

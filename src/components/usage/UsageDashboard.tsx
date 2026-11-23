@@ -2,7 +2,11 @@ import { APP_ICON_NAME } from "@/config/appConfig";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageHero } from "./UsageHero";
-import { getUsageModelOptions, isReadableUsageModelName } from "./modelOptions";
+import {
+  formatShortRoutingId,
+  getUsageModelOptions,
+  isReadableUsageModelName,
+} from "./modelOptions";
 import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
@@ -31,7 +35,6 @@ import {
   useUsageModelLabels,
 } from "@/lib/query/usage";
 import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
-import { cn } from "@/lib/utils";
 import { getLocaleFromLanguage } from "./format";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
@@ -258,24 +261,30 @@ export function UsageDashboard({
       modelLabels,
     ).map((option) => ({
       value: option.value,
-      routingId: option.routingId?.slice(6, 18),
+      routingId: option.routingId
+        ? formatShortRoutingId(option.routingId)
+        : undefined,
       hidden: option.resolvedLabel
         ? !isReadableUsageModelName(option.resolvedLabel.model)
         : option.routingModels
           ? option.routingModels.length === 0
           : !isReadableUsageModelName(option.value),
       label: option.resolvedLabel
-        ? t("usage.providerModelOption", {
-            model: option.resolvedLabel.displayName,
-            provider: option.resolvedLabel.providerName,
-          })
+        ? option.resolvedLabel.providerName
+          ? t("usage.providerModelOption", {
+              model: option.resolvedLabel.displayName,
+              provider: option.resolvedLabel.providerName,
+            })
+          : option.resolvedLabel.displayName
         : option.routingModels
           ? option.routingModels.length > 0
             ? t("usage.routingModelOption", {
                 models: option.routingModels.join(", "),
               })
             : t("usage.unknownRoutingModelOption", {
-                id: option.routingId?.slice(6, 18),
+                id: option.routingId
+                  ? formatShortRoutingId(option.routingId)
+                  : "",
               })
           : option.value,
     }));
@@ -351,20 +360,15 @@ export function UsageDashboard({
                 title={label}
                 aria-label={label}
                 aria-pressed={appType === type}
-                className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  appType === type
-                    ? "bg-card text-primary shadow-sm"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
-                )}
+                className="stats-agent-option focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 {type === "all" ? (
-                  <LayoutGrid className="h-4 w-4" />
+                  <LayoutGrid className="h-6 w-6" />
                 ) : (
                   <ProviderIcon
                     icon={APP_ICON_NAME[type]}
                     name={label}
-                    size={16}
+                    size={24}
                   />
                 )}
               </button>
@@ -377,7 +381,7 @@ export function UsageDashboard({
           onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
         >
           <SelectTrigger
-            className="h-[34px] w-full bg-card text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+            className="h-[var(--select-height)] w-full bg-card text-[13px] focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
             title={
               selectedSourceOption
                 ? getUsageSourceLabel(selectedSourceOption, t)
@@ -407,7 +411,7 @@ export function UsageDashboard({
           onValueChange={(v) => setModel(decodeOptionValue(v))}
         >
           <SelectTrigger
-            className="h-[34px] w-full bg-card text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+            className="h-[var(--select-height)] w-full bg-card text-[13px] focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
             aria-label={t("usage.filterByModel")}
             title={selectedModelLabel ?? t("usage.filterByModel")}
             aria-describedby="usage-model-filter-scope"
@@ -433,7 +437,7 @@ export function UsageDashboard({
           onValueChange={(v) => changeRefreshInterval(Number(v))}
         >
           <SelectTrigger
-            className="h-[34px] w-full bg-card text-xs focus:border-border-default"
+            className="h-[var(--select-height)] w-full bg-card text-[13px] focus:border-border-default"
             title={t("usage.refreshInterval")}
             aria-label={t("usage.refreshInterval")}
           >
@@ -455,7 +459,7 @@ export function UsageDashboard({
           selection={range}
           triggerLabel={rangeLabel}
           onApply={setRange}
-          triggerClassName="h-[34px] w-full px-2"
+          triggerClassName="h-[var(--filter-height)] w-full px-2"
         />
         <span id="usage-model-filter-scope" className="stats-filter-note">
           {t("usage.modelFilterScope")}

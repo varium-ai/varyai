@@ -1279,6 +1279,58 @@ impl Drop for Observer {
         }
     }
 }
+fn conversion_failure_reason(error: &super::ProxyError) -> &'static str {
+    let super::ProxyError::InvalidRequest(message) = error else {
+        return "other";
+    };
+    match message.as_str() {
+        "Missing request model" => "missing_request_model",
+        "Invalid protocol object" => "invalid_protocol_object",
+        "Invalid protocol array" => "invalid_protocol_array",
+        "Invalid protocol string" => "invalid_protocol_string",
+        "Missing protocol string" => "missing_protocol_string",
+        "Invalid protocol boolean" => "invalid_protocol_boolean",
+        "Invalid protocol token limit" => "invalid_protocol_token_limit",
+        "Invalid protocol thinking budget" => "invalid_protocol_thinking_budget",
+        "Invalid protocol number" => "invalid_protocol_number",
+        "Invalid protocol string list" => "invalid_protocol_string_list",
+        "Invalid tool arguments JSON" => "invalid_tool_arguments_json",
+        "Tool arguments must be an object" => "tool_arguments_not_object",
+        "Invalid tool schema" => "invalid_tool_schema",
+        "Invalid message role" => "invalid_message_role",
+        "File source is missing" => "missing_file_source",
+        "Invalid tool choice" | "Unsupported WorkBuddy tool choice" => "invalid_tool_choice",
+        "Unsupported response format" => "unsupported_response_format",
+        "Missing response schema" => "missing_response_schema",
+        "Multiple choices are unsupported across protocols" => "multiple_choices_unsupported",
+        "Invalid assistant reasoning" => "invalid_assistant_reasoning",
+        "Invalid allowed-tools mode" => "invalid_allowed_tools_mode",
+        "Unsupported allowed-tool type" => "unsupported_allowed_tool_type",
+        "Required allowed-tools choice has no callable tools" => "allowed_tools_empty",
+        "Invalid instructions" => "invalid_instructions",
+        "Missing tool call ID" => "missing_tool_call_id",
+        "Unresolved response item reference" => "unresolved_item_reference",
+        "Unsupported attachment source" => "unsupported_attachment_source",
+        "Invalid thinking type" => "invalid_thinking_type",
+        "Missing file URL" => "missing_file_url",
+        "Invalid function calling mode" => "invalid_function_calling_mode",
+        "Content cannot be represented in the selected protocol" => "unsupported_protocol_content",
+        "Unsupported official instructions" => "unsupported_official_instructions",
+        "Invalid Chat request" => "invalid_chat_request",
+        "Invalid official request" => "invalid_official_request",
+        "Hosted tools are unavailable for ChatGPT plan inference" => "hosted_tools_unavailable",
+        "Subscription token counting is unavailable" => "subscription_count_tokens_unsupported",
+        "Invalid WorkBuddy request" => "invalid_workbuddy_request",
+        "Missing WorkBuddy messages" => "missing_workbuddy_messages",
+        "Invalid WorkBuddy message" => "invalid_workbuddy_message",
+        "Native group requests require byte-preserving execution" => "native_requires_passthrough",
+        "Group execution requires an exact target model" => "missing_target_model",
+        "Invalid Gemini target model identifier" => "invalid_gemini_model",
+        "Group inspection requires a JSON object" => "invalid_json_object",
+        _ => "other",
+    }
+}
+
 fn error(status: StatusCode, code: &'static str) -> Response {
     let message = match code {
         "routing_model_unavailable" => {
@@ -2423,8 +2475,12 @@ async fn execute(
                 matches!(agent, "workbuddy" | "workbuddy-ai"),
             ) {
                 Ok(payload) => payload,
-                Err(_) => {
-                    return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed")
+                Err(err) => {
+                    log::warn!(
+                        "[Intent] Conversion rejected: agent={agent} from={protocol:?} to={output:?} official=true specialized=false reason={}",
+                        conversion_failure_reason(&err)
+                    );
+                    return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
                 }
             }
         } else {
@@ -2699,7 +2755,11 @@ async fn execute(
                     }
                     continue;
                 }
-                Err(super::ProxyError::InvalidRequest(_)) => {
+                Err(ref err @ super::ProxyError::InvalidRequest(_)) => {
+                    log::warn!(
+                        "[Intent] Conversion rejected: agent={agent} from={protocol:?} to={output:?} official=false specialized={specialized} reason={}",
+                        conversion_failure_reason(err)
+                    );
                     return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
                 }
                 Err(super::ProxyError::TransformError(_)) => {
@@ -2717,7 +2777,9 @@ async fn execute(
                     let code = super::native_subscription::rejection_code(upstream, status, bytes)
                         .unwrap_or_else(|| super::protocol_bridge::grok::rejection_code(bytes));
                     let hints = super::protocol_bridge::grok::rejection_hints(bytes);
-                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}, hints={hints:?}");
+                    log::warn!(
+                        "[Intent] Upstream rejected converted call: status={status}, code={code}, hints={hints:?}"
+                    );
                     return fail(
                         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                         code,
@@ -2933,30 +2995,38 @@ async fn execute(
             continue;
         }
         if !status.is_success() {
+            let mut error_bytes = None;
             if matches!(status.as_u16(), 400 | 413 | 422) {
                 let upstream_error = tokio::time::timeout(
                     Duration::from_secs(5),
                     response.bytes_with_limit(64 * 1024),
                 )
                 .await;
-                if upstream_error
-                    .ok()
-                    .and_then(Result::ok)
-                    .is_some_and(|bytes| length::overflow(status.as_u16(), &bytes))
-                {
-                    if pinned.is_some() {
-                        return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
+                if let Ok(Ok(bytes)) = upstream_error {
+                    if length::overflow(status.as_u16(), &bytes) {
+                        if pinned.is_some() {
+                            return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
+                        }
+                        overflowed = true;
+                        overflow_tokens = if status.as_u16() == 413 {
+                            None
+                        } else {
+                            estimated_tokens
+                        };
+                        refused_models.insert((target.provider_id.clone(), target.model.clone()));
+                        continue;
                     }
-                    overflowed = true;
-                    overflow_tokens = if status.as_u16() == 413 {
-                        None
-                    } else {
-                        estimated_tokens
-                    };
-                    refused_models.insert((target.provider_id.clone(), target.model.clone()));
-                    continue;
+                    error_bytes = Some(bytes);
                 }
             }
+            let hints = error_bytes
+                .as_deref()
+                .map(super::protocol_bridge::grok::rejection_hints)
+                .unwrap_or_default();
+            log::warn!(
+                "[Intent] Upstream rejected forwarded call: status={}, official={official_conversion}, hints={hints:?}",
+                status.as_u16()
+            );
             return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected");
         }
         if response

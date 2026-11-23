@@ -77,6 +77,18 @@ it("opens a compact empty profile menu without a redundant section separator", a
   expect(document.querySelector("[cmdk-list] .bg-border")).toBeNull();
 });
 
+it("focuses the profile name on create and returns focus to the switcher on cancel", async () => {
+  mount("claude", ["claude"], true);
+  const switcher = await screen.findByRole("combobox");
+  fireEvent.click(switcher);
+  fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+
+  const name = await screen.findByRole("textbox", { name: zh.profiles.name });
+  await waitFor(() => expect(name).toHaveFocus());
+  fireEvent.click(screen.getByRole("button", { name: zh.common.cancel }));
+  await waitFor(() => expect(switcher).toHaveFocus());
+});
+
 it.each(["kimi", "claude", "opencode"] as const)(
   "shows the selected bundle from %s even when that agent has no snapshot",
   async (app) => {
@@ -548,4 +560,53 @@ it("keeps the compact profile picker native and unavailable Agents disabled", as
   expect(
     screen.getByRole("option", { name: zh.apps.doubaowork }),
   ).toBeDisabled();
+});
+
+it("does not flash duplicate-name error after saving a new profile while post-create refresh is in flight", async () => {
+  const { providersApi } = await import("@/lib/api/providers");
+  const initial = await profilesApi.list();
+  let finishTrayUpdate!: () => void;
+  vi.mocked(providersApi.updateTrayMenu).mockImplementationOnce(
+    () =>
+      new Promise<boolean>((resolve) => {
+        finishTrayUpdate = () => resolve(true);
+      }),
+  );
+  vi.mocked(profilesApi.captureBundle).mockImplementationOnce(async () => {
+    vi.mocked(profilesApi.list).mockResolvedValueOnce({
+      ...initial,
+      profiles: [
+        {
+          id: "bundle-new",
+          name: "测试3",
+          payload: { bundle: { selections: [] } },
+        },
+      ],
+    } as never);
+    return {
+      id: "bundle-new",
+      name: "测试3",
+      payload: { bundle: { selections: [] } },
+    } as never;
+  });
+
+  mount("claude");
+  fireEvent.click(await screen.findByRole("combobox"));
+  fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
+  fireEvent.change(screen.getByPlaceholderText(zh.profiles.namePlaceholder), {
+    target: { value: "测试3" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
+
+  await waitFor(() => expect(providersApi.updateTrayMenu).toHaveBeenCalledTimes(1));
+  expect(screen.queryByText(zh.profiles.nameExists)).toBeNull();
+
+  await act(async () => {
+    finishTrayUpdate();
+  });
+  await waitFor(() =>
+    expect(
+      screen.queryByPlaceholderText(zh.profiles.namePlaceholder),
+    ).toBeNull(),
+  );
 });

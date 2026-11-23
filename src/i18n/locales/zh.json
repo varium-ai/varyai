@@ -1169,7 +1169,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "显示配置方案切换",
-      "showProfileSwitcherDescription": "在主面板底部显示配置方案切换入口"
+      "showProfileSwitcherDescription": "在主面板左侧导航底部显示配置方案切换入口"
     },
     "skillStorage": {
       "title": "Skills 存储位置",
@@ -2852,6 +2852,7 @@
     "manage": "管理配置方案…",
     "manageTitle": "管理配置方案",
     "manageDescription": "新建方案不会自动保存。点击“用当前配置更新快照”，会用当前选中管理且已配置的全部 Agent 及其当前配置整体替换该方案。旧的单工具配置方案保留切换时自动保存的行为。",
+    "name": "方案名称",
     "namePlaceholder": "例如：工作、个人",
     "rename": "重命名",
     "noSnapshotForScope": "本侧未保存",

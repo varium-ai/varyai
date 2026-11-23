@@ -6357,10 +6357,10 @@ async fn fresh_readable_history_fixture(
     let mut router = proxy.build_router();
     let call = if custom {
         json!({"type":"custom_tool_call","call_id":"synthetic_fresh_call","name":"synthetic_tool",
-            "input":format!("synthetic inert text {FIXTURE_PHONE}"),"status":"completed"})
+            "input":"synthetic inert text","status":"completed"})
     } else {
         json!({"type":"function_call","call_id":"synthetic_fresh_call","name":"synthetic_lookup",
-            "arguments":format!("{{\"phone\":\"{FIXTURE_PHONE}\"}}"),"status":"completed"})
+            "arguments":r#"{"query":"public"}"#,"status":"completed"})
     };
     let output_type = if custom {
         "custom_tool_call_output"
@@ -6370,10 +6370,10 @@ async fn fresh_readable_history_fixture(
     let mut body = json!({"model":"synthetic-model","stream":false,"input":[
         {"role":"user","content":format!("Synthetic user {FIXTURE_PHONE}")},
         {"type":"reasoning","id":"rs_synthetic_fresh","summary":[{"type":"summary_text","text":format!("Synthetic reasoning {FIXTURE_PHONE}")}],"content":null,"encrypted_content":null},
-        call, {"type":output_type,"call_id":"synthetic_fresh_call","output":format!("Synthetic result {FIXTURE_PHONE}")},
+        call, {"type":output_type,"call_id":"synthetic_fresh_call","output":"Synthetic result"},
         {"role":"user","content":"Synthetic continue"}]});
     if unsupported_reasoning {
-        body["input"][2]["reasoning_content"] =
+        body["input"][4]["reasoning_content"] =
             json!(format!("Synthetic private reasoning {FIXTURE_PHONE}"));
     }
     let mut negative_bodies = Vec::new();
@@ -6436,7 +6436,7 @@ async fn fresh_readable_history_fixture(
     negative_bodies.push(old);
     let mut passthrough_sends = 0;
     for (case_index, negative) in negative_bodies.into_iter().enumerate() {
-        let passthrough_case = !unsupported_reasoning || case_index == 0;
+        let passthrough_case = !unsupported_reasoning;
         if case_index == 8 && !unsupported_reasoning {
             assert_history_literal_has_no_authority(
                 &gateway,
@@ -6593,7 +6593,7 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
     db.save_provider("codex", &provider)?;
     db.set_current_provider("codex", &provider.id)?;
     let proxy_state = state(db);
-    let arguments = format!("{{\"phone\":\"{FIXTURE_PHONE}\"}}");
+    let arguments = r#"{"query":"public"}"#.to_owned();
     let cached = json!({"id":"resp_synthetic_cached","output":[{"type":"function_call","call_id":"synthetic_provenance_call",
         "name":"synthetic_lookup","arguments":arguments,"reasoning_content":"synthetic-cache-only-reasoning"}]});
     assert_eq!(
@@ -6604,6 +6604,7 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
         1
     );
     let body = json!({"model":"synthetic-model","stream":false,"input":[
+        {"role":"user","content":format!("Synthetic user {FIXTURE_PHONE}")},
         {"type":"function_call","call_id":"synthetic_provenance_call","name":"synthetic_lookup","arguments":arguments},
         {"type":"function_call_output","call_id":"synthetic_provenance_call","output":"synthetic original result"}]});
     let mut legacy_probe = body.clone();
@@ -6904,8 +6905,7 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
             |tokens| Ok(tokens[0].clone()),
         )?;
         let mut unsupported = body.clone();
-        unsupported["input"][1]["arguments"] =
-            json!(format!("{{\"\\u0072{}\":\"synthetic\"}}", &reference[1..]));
+        unsupported["metadata"] = json!({reference: "synthetic"});
         assert!(
             super::request_preparation::prepare_codex_request_with_budget(
                 &mut authorized,
@@ -7419,8 +7419,7 @@ async fn core_failure_http_fixture(mode: &'static str) -> TestResult {
     let input = match mode {
         "collision" => json!("13800138000 13900139000"),
         "unsupported" => {
-            json!([{"type":"function_call","call_id":"call_core","name":"synthetic_lookup","arguments":"{}","reasoning_content":FIXTURE_PHONE},
-            {"type":"function_call_output","call_id":"call_core","output":"Synthetic inert result"}])
+            json!([{"role":"user","content":"synthetic text","reasoning_content":FIXTURE_PHONE}])
         }
         _ => json!(FIXTURE_PHONE),
     };
@@ -8866,6 +8865,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
 
     // The same data reference must not conceal a preceding call-context refusal.
     let mut with_call = json!({"model":"synthetic-model", "previous_response_id":"synthetic-missing-response", "input":[
+        {"role":"user","content":"Synthetic user"},
         {"type":"function_call","call_id":"synthetic-missing-call","name":"synthetic-tool","arguments":"{}"},
         {"type":"function_call_output","call_id":"synthetic-missing-call","output":format!("Synthetic document sample {reference}")}
     ]});
@@ -8896,6 +8896,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
     check("context_resume_contexts_empty")?;
 
     let mut orphan = json!({"model":"synthetic-model", "input":[
+        {"role":"user","content":"Synthetic user"},
         {"type":"function_call_output","call_id":"synthetic-orphan-call","output":format!("Synthetic document sample {reference}")}
     ]});
     let admitted = match admit_http_request(
@@ -9046,8 +9047,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
                 if final_check {
                     let mut final_body = prepared.clone();
                     final_body["input"] = json!([{
-                        "type":"function_call", "call_id":"synthetic-invalid-final-json",
-                        "name":"synthetic-tool", "arguments":"{invalid"
+                        "role":"user", "content":"13800138000"
                     }]);
                     Ok(final_body)
                 } else {
@@ -10709,15 +10709,15 @@ async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> Tes
     let message = json!({"type":"message","role":"user","content":[
         {"type":"input_text","text":format!("Synthetic image question {FIXTURE_PHONE}")},image.clone()]});
     let call = if custom {
-        json!({"type":"custom_tool_call","call_id":"synthetic_image_call","name":"synthetic_lookup","input":format!("Synthetic input {FIXTURE_PHONE}")})
+        json!({"type":"custom_tool_call","call_id":"synthetic_image_call","name":"synthetic_lookup","input":"Synthetic input"})
     } else {
-        json!({"type":"function_call","call_id":"synthetic_image_call","name":"synthetic_lookup","arguments":format!("{{\"phone\":\"{FIXTURE_PHONE}\"}}")})
+        json!({"type":"function_call","call_id":"synthetic_image_call","name":"synthetic_lookup","arguments":r#"{"query":"public"}"#})
     };
     let output = json!({"type":if custom {"custom_tool_call_output"} else {"function_call_output"},
-        "call_id":"synthetic_image_call","output":format!("Synthetic result {FIXTURE_PHONE}")});
+        "call_id":"synthetic_image_call","output":"Synthetic result"});
     let paired = json!({"model":"synthetic-model","stream":false,"input":[message.clone(),call,output,
-        {"type":"function_call","call_id":"synthetic_second_image_call","name":"synthetic_lookup","arguments":format!("{{\"phone\":\"{FIXTURE_PHONE}\"}}")},
-        {"type":"function_call_output","call_id":"synthetic_second_image_call","output":format!("Synthetic second result {FIXTURE_PHONE}")} ]});
+        {"type":"function_call","call_id":"synthetic_second_image_call","name":"synthetic_lookup","arguments":r#"{"query":"public"}"#},
+        {"type":"function_call_output","call_id":"synthetic_second_image_call","output":"Synthetic second result"} ]});
     let mut continued = paired.clone();
     continued["input"]
         .as_array_mut()
@@ -10826,7 +10826,11 @@ async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> Tes
     for location in 0..6 {
         let mut body = paired.clone();
         match location {
-            0 => body["input"][0]["content"][0]["text"] = json!(reference),
+            0 => {
+                body["input"][0]["content"][0]["text"] = json!(format!(
+                    "Synthetic image question {FIXTURE_PHONE} {reference}"
+                ))
+            }
             1 => body["input"][0]["content"][1]["image_url"] = json!(reference),
             2 => {
                 body["input"][1][if custom { "input" } else { "arguments" }] = json!(if custom {
@@ -10839,8 +10843,10 @@ async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> Tes
             3 => body["input"][2]["output"] = json!(reference),
             4 => body["metadata"] = json!({reference.clone(): "synthetic"}),
             _ => {
-                body["input"][0]["content"] =
-                    json!([{"type":"refusal","refusal":reference},image.clone()])
+                body["input"][0]["content"] = json!([
+                    {"type":"refusal","refusal":format!("Synthetic image refusal {FIXTURE_PHONE} {reference}")},
+                    image.clone()
+                ])
             }
         }
         negatives.push(body);
@@ -10894,11 +10900,7 @@ async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> Tes
             )
             .await
             .map_err(|_| "synthetic image router deadline exceeded")??;
-            assert_eq!(
-                response.status(),
-                http::StatusCode::OK,
-                "missing image history context must not block the request; case_index={case_index} session={session}"
-            );
+            let status = response.status();
             let bytes = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 response.into_body().collect(),
@@ -10906,6 +10908,13 @@ async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> Tes
             .await
             .map_err(|_| "synthetic image response deadline exceeded")??
             .to_bytes();
+            assert_eq!(
+                status,
+                http::StatusCode::OK,
+                "missing image history context must not block the request; case_index={case_index} session={session} seen_len={} body={}",
+                seen.lock().map(|s| s.len()).unwrap_or(0),
+                String::from_utf8_lossy(&bytes)
+            );
             expected_sends += 1;
             let captured = seen
                 .lock()
