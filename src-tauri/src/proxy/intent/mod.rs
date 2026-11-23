@@ -1084,19 +1084,27 @@ impl Observer {
             })
         });
         self.completed |= matches!(kind, "response.completed" | "message_stop");
-        self.trace_terminal |= value["choices"].as_array().is_some_and(|choices| {
-            choices.iter().any(|choice| {
-                choice["finish_reason"]
-                    .as_str()
-                    .is_some_and(|reason| !reason.is_empty())
-            })
-        }) || value["candidates"].as_array().is_some_and(|candidates| {
-            candidates.iter().any(|candidate| {
-                candidate["finishReason"]
-                    .as_str()
-                    .is_some_and(|reason| !reason.is_empty())
-            })
-        });
+        for reason in value["choices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|choice| choice["finish_reason"].as_str())
+        {
+            self.trace_terminal |= !reason.is_empty();
+            self.completed |= matches!(reason, "stop" | "length");
+            self.pending_tools |= matches!(reason, "tool_calls" | "function_call");
+            self.failed |= reason == "error";
+        }
+        for reason in value["candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|candidate| candidate["finishReason"].as_str())
+        {
+            self.trace_terminal |= !reason.is_empty();
+            self.completed |= matches!(reason, "STOP" | "MAX_TOKENS");
+            self.failed |= matches!(reason, "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL");
+        }
         self.failed |= value.get("error").is_some_and(|error| !error.is_null())
             || matches!(value["status"].as_str(), Some("failed" | "incomplete"))
             || matches!(kind, "error" | "response.failed" | "response.incomplete")
@@ -1271,10 +1279,65 @@ impl Drop for Observer {
         }
     }
 }
+fn conversion_failure_reason(error: &super::ProxyError) -> &'static str {
+    let super::ProxyError::InvalidRequest(message) = error else {
+        return "other";
+    };
+    match message.as_str() {
+        "Missing request model" => "missing_request_model",
+        "Invalid protocol object" => "invalid_protocol_object",
+        "Invalid protocol array" => "invalid_protocol_array",
+        "Invalid protocol string" => "invalid_protocol_string",
+        "Missing protocol string" => "missing_protocol_string",
+        "Invalid protocol boolean" => "invalid_protocol_boolean",
+        "Invalid protocol token limit" => "invalid_protocol_token_limit",
+        "Invalid protocol thinking budget" => "invalid_protocol_thinking_budget",
+        "Invalid protocol number" => "invalid_protocol_number",
+        "Invalid protocol string list" => "invalid_protocol_string_list",
+        "Invalid tool arguments JSON" => "invalid_tool_arguments_json",
+        "Tool arguments must be an object" => "tool_arguments_not_object",
+        "Invalid tool schema" => "invalid_tool_schema",
+        "Invalid message role" => "invalid_message_role",
+        "File source is missing" => "missing_file_source",
+        "Invalid tool choice" | "Unsupported WorkBuddy tool choice" => "invalid_tool_choice",
+        "Unsupported response format" => "unsupported_response_format",
+        "Missing response schema" => "missing_response_schema",
+        "Multiple choices are unsupported across protocols" => "multiple_choices_unsupported",
+        "Invalid assistant reasoning" => "invalid_assistant_reasoning",
+        "Invalid allowed-tools mode" => "invalid_allowed_tools_mode",
+        "Unsupported allowed-tool type" => "unsupported_allowed_tool_type",
+        "Required allowed-tools choice has no callable tools" => "allowed_tools_empty",
+        "Invalid instructions" => "invalid_instructions",
+        "Missing tool call ID" => "missing_tool_call_id",
+        "Unresolved response item reference" => "unresolved_item_reference",
+        "Unsupported attachment source" => "unsupported_attachment_source",
+        "Invalid thinking type" => "invalid_thinking_type",
+        "Missing file URL" => "missing_file_url",
+        "Invalid function calling mode" => "invalid_function_calling_mode",
+        "Content cannot be represented in the selected protocol" => "unsupported_protocol_content",
+        "Unsupported official instructions" => "unsupported_official_instructions",
+        "Invalid Chat request" => "invalid_chat_request",
+        "Invalid official request" => "invalid_official_request",
+        "Hosted tools are unavailable for ChatGPT plan inference" => "hosted_tools_unavailable",
+        "Subscription token counting is unavailable" => "subscription_count_tokens_unsupported",
+        "Invalid WorkBuddy request" => "invalid_workbuddy_request",
+        "Missing WorkBuddy messages" => "missing_workbuddy_messages",
+        "Invalid WorkBuddy message" => "invalid_workbuddy_message",
+        "Native group requests require byte-preserving execution" => "native_requires_passthrough",
+        "Group execution requires an exact target model" => "missing_target_model",
+        "Invalid Gemini target model identifier" => "invalid_gemini_model",
+        "Group inspection requires a JSON object" => "invalid_json_object",
+        _ => "other",
+    }
+}
+
 fn error(status: StatusCode, code: &'static str) -> Response {
     let message = match code {
         "routing_model_unavailable" => {
             "This conversation's saved model is unavailable in VaryAI. Select a model from the current list in this conversation, then retry."
+        }
+        "routing_native_select_published_model" => {
+            "The selected model is unavailable in Vary AI. If it is a routing group, enable a usable member in Vary AI, or select another available model in Codex."
         }
         "routing_request_conversion_failed" => {
             "VaryAI could not convert the request for the selected API format. Try a route that supports the client's API format."
@@ -1603,16 +1666,23 @@ async fn execute(
                     .split('?')
                     .next()
                     .is_some_and(|p| p.ends_with(":streamGenerateContent"))));
-    let projection = match super::group_forward::canonical_request(protocol, &original, &endpoint) {
-        Ok(value) => match compact.filter(|c| c.native) {
-            Some(compact) => match compaction::history(&value, compact.operation) {
-                Ok(history) => history,
-                Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+    let responses_replay = protocol == Protocol::Responses && agent == "codex";
+    let mut projection =
+        match super::group_forward::canonical_request(protocol, &original, &endpoint) {
+            Ok(value) => match compact.filter(|c| c.native) {
+                Some(compact) => match compaction::history(&value, compact.operation) {
+                    Ok(history) => history,
+                    Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+                },
+                None => value,
             },
-            None => value,
-        },
-        Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_input"),
-    };
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_input"),
+        };
+    if responses_replay && compact.is_none() {
+        if let Some(items) = projection.get_mut("input").and_then(Value::as_array_mut) {
+            items.retain(|item| !length::empty_reasoning(item));
+        }
+    }
     let named_conversation = identity::named(&parts.headers).is_some();
     let desktop_probe = desktop_purpose == Some(super::connections::desktop::Purpose::Probe);
     let conversation = (!desktop_probe).then(|| identity::affinity(&parts.headers, &bytes));
@@ -1637,7 +1707,6 @@ async fn execute(
     } else {
         None
     };
-    let responses_replay = protocol == Protocol::Responses && agent == "codex";
     let visible_chat_replay = matches!(agent, "workbuddy" | "workbuddy-ai")
         && protocol == Protocol::Chat
         && !opaque_continuation(protocol, &original)
@@ -1677,7 +1746,21 @@ async fn execute(
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
     };
-    let (mut pinned, mut affinity, last_input_tokens) = {
+    let route_compaction = compact.is_some_and(|compact| !compact.native)
+        && parts.extensions.get::<native::ForcedTarget>().is_none()
+        && session.group.rules.iter().any(|rule| {
+            rule.enabled
+                && !rule.pause
+                && rule.description.is_empty()
+                && rule.conditions.as_ref().is_some_and(|conditions| {
+                    *conditions
+                        == crate::services::intent_routing::rules::Conditions {
+                            compact: true,
+                            ..Default::default()
+                        }
+                })
+        });
+    let (mut pinned, mut affinity, checkpoint_owner, last_input_tokens) = {
         let bindings = match scoped.bindings.lock() {
             Ok(bindings) => bindings,
             Err(_) => return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_state_unavailable"),
@@ -1727,8 +1810,9 @@ async fn execute(
             Ok(p) => p,
             Err(_) => return fail(StatusCode::CONFLICT, "routing_unknown_continuation"),
         };
+        let original_owner = pinned;
         let mut affinity = None;
-        if compact.is_none()
+        if (compact.is_none() || route_compaction)
             && length::portable(&projection)
             && !opaque_continuation(protocol, &original)
             && conversation.as_ref().is_some_and(|key| {
@@ -1750,7 +1834,18 @@ async fn execute(
         if native_request && !responses_replay && !bindings.known_opaque(&projection) {
             return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
         }
-        (pinned, affinity, bindings.last_input_tokens)
+        // A stateless summary may use another member while its checkpoint resumes the answer session.
+        let checkpoint_owner = if route_compaction && pinned.is_none() {
+            original_owner
+        } else {
+            None
+        };
+        (
+            pinned,
+            affinity,
+            checkpoint_owner,
+            bindings.last_input_tokens,
+        )
     };
     if let Some(forced) = parts.extensions.get::<native::ForcedTarget>() {
         if pinned.is_some_and(|index| index != forced.0) {
@@ -2122,19 +2217,19 @@ async fn execute(
         }
     }
     if pinned.is_none() && !count_tokens {
+        let now = chrono::Utc::now().timestamp();
         candidates.sort_by_key(|index| {
             let target = &session.targets[*index];
-            target.effort.free != Some(true)
+            let credits_last = target.effort.free != Some(true)
                 && target
                     .credentials
                     .as_ref()
                     .and_then(|c| c.quota_identity())
                     .is_some_and(|id| {
-                        crate::services::quota_panel::credits(
-                            &id,
-                            target.scheduling.exhausted(chrono::Utc::now().timestamp()),
-                        ) == crate::services::quota_panel::CreditsMode::Last
-                    })
+                        crate::services::quota_panel::credits(&id, target.scheduling.exhausted(now))
+                            == crate::services::quota_panel::CreditsMode::Last
+                    });
+            (states[*index].cooling(now), credits_last)
         });
     }
     trace.plan(
@@ -2375,8 +2470,12 @@ async fn execute(
                 matches!(agent, "workbuddy" | "workbuddy-ai"),
             ) {
                 Ok(payload) => payload,
-                Err(_) => {
-                    return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed")
+                Err(err) => {
+                    log::warn!(
+                        "[Intent] Conversion rejected: agent={agent} from={protocol:?} to={output:?} official=true specialized=false reason={}",
+                        conversion_failure_reason(&err)
+                    );
+                    return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
                 }
             }
         } else {
@@ -2485,16 +2584,19 @@ async fn execute(
             return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
         }
         // Once dispatched, a named conversation cannot move after an ambiguous failure.
-        if let Some(key) = conversation.as_ref().filter(|_| !count_tokens) {
+        if let Some(key) = conversation
+            .as_ref()
+            .filter(|_| !count_tokens && checkpoint_owner.is_none())
+        {
             if let Err(code) = scoped.update(|bindings| bindings.bind_session(key, index)) {
                 return fail(StatusCode::SERVICE_UNAVAILABLE, code);
             }
         }
-        if let Some(selected) = parts.extensions.get::<native::SelectedTarget>() {
+        if let Some(selected) = parts.extensions.get::<native::CheckpointTarget>() {
             let Ok(mut selected) = selected.0.write() else {
                 return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_state_unavailable");
             };
-            *selected = Some(index);
+            *selected = Some(checkpoint_owner.unwrap_or(index));
         }
         attempted = true;
         trace.observe_account(candidate, &target.scheduling);
@@ -2648,7 +2750,11 @@ async fn execute(
                     }
                     continue;
                 }
-                Err(super::ProxyError::InvalidRequest(_)) => {
+                Err(ref err @ super::ProxyError::InvalidRequest(_)) => {
+                    log::warn!(
+                        "[Intent] Conversion rejected: agent={agent} from={protocol:?} to={output:?} official=false specialized={specialized} reason={}",
+                        conversion_failure_reason(err)
+                    );
                     return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
                 }
                 Err(super::ProxyError::TransformError(_)) => {
@@ -2666,7 +2772,9 @@ async fn execute(
                     let code = super::native_subscription::rejection_code(upstream, status, bytes)
                         .unwrap_or_else(|| super::protocol_bridge::grok::rejection_code(bytes));
                     let hints = super::protocol_bridge::grok::rejection_hints(bytes);
-                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}, hints={hints:?}");
+                    log::warn!(
+                        "[Intent] Upstream rejected converted call: status={status}, code={code}, hints={hints:?}"
+                    );
                     return fail(
                         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                         code,
@@ -2882,30 +2990,38 @@ async fn execute(
             continue;
         }
         if !status.is_success() {
+            let mut error_bytes = None;
             if matches!(status.as_u16(), 400 | 413 | 422) {
                 let upstream_error = tokio::time::timeout(
                     Duration::from_secs(5),
                     response.bytes_with_limit(64 * 1024),
                 )
                 .await;
-                if upstream_error
-                    .ok()
-                    .and_then(Result::ok)
-                    .is_some_and(|bytes| length::overflow(status.as_u16(), &bytes))
-                {
-                    if pinned.is_some() {
-                        return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
+                if let Ok(Ok(bytes)) = upstream_error {
+                    if length::overflow(status.as_u16(), &bytes) {
+                        if pinned.is_some() {
+                            return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
+                        }
+                        overflowed = true;
+                        overflow_tokens = if status.as_u16() == 413 {
+                            None
+                        } else {
+                            estimated_tokens
+                        };
+                        refused_models.insert((target.provider_id.clone(), target.model.clone()));
+                        continue;
                     }
-                    overflowed = true;
-                    overflow_tokens = if status.as_u16() == 413 {
-                        None
-                    } else {
-                        estimated_tokens
-                    };
-                    refused_models.insert((target.provider_id.clone(), target.model.clone()));
-                    continue;
+                    error_bytes = Some(bytes);
                 }
             }
+            let hints = error_bytes
+                .as_deref()
+                .map(super::protocol_bridge::grok::rejection_hints)
+                .unwrap_or_default();
+            log::warn!(
+                "[Intent] Upstream rejected forwarded call: status={}, official={official_conversion}, hints={hints:?}",
+                status.as_u16()
+            );
             return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected");
         }
         if response
@@ -3032,7 +3148,10 @@ async fn execute(
                         timed_out = true;
                         break;
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        probe.finish(&mut probe_bindings, index);
+                        break;
+                    }
                     Ok(Some(Err(_))) => {
                         return fail(
                             StatusCode::BAD_GATEWAY,
@@ -3074,7 +3193,7 @@ async fn execute(
         }
         let mut upstream = futures::stream::iter(buffered.into_iter().map(Ok)).chain(upstream);
         trace.observe_account(candidate, &target.scheduling);
-        if let Some(key) = conversation.as_ref() {
+        if let Some(key) = conversation.as_ref().filter(|_| checkpoint_owner.is_none()) {
             if let Err(code) = scoped.update(|bindings| bindings.bind_session(key, index)) {
                 return fail(StatusCode::SERVICE_UNAVAILABLE, code);
             }
@@ -3179,7 +3298,7 @@ async fn execute(
                     }
                     if changed { bindings.persist(); }
                 }
-                if observer.completed && !observer.failed && !observer.pending_tools && !observer.oversized {
+                if observer.completed && !observer.failed && !observer.pending_tools && !observer.oversized && checkpoint_owner.is_none() {
                     if let Some(key) = conversation.as_ref() { bindings.complete_session(key); }
                 }
             });

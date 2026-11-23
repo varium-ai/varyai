@@ -331,7 +331,7 @@ fn encode_request(raw: &[u8], before: &Value, after: &Value) -> Result<Vec<u8>, 
 #[derive(Clone)]
 pub(super) struct ForcedTarget(pub usize);
 #[derive(Clone, Default)]
-pub(super) struct SelectedTarget(pub Arc<RwLock<Option<usize>>>);
+pub(super) struct CheckpointTarget(pub Arc<RwLock<Option<usize>>>);
 #[derive(Clone, Copy)]
 pub(super) struct Compact {
     pub operation: super::compaction::Operation,
@@ -767,7 +767,7 @@ pub(crate) async fn handle(
     if let Some(index) = forced {
         parts.extensions.insert(ForcedTarget(index));
     }
-    let selected = SelectedTarget::default();
+    let selected = CheckpointTarget::default();
     parts.extensions.insert(selected.clone());
     let native_compact =
         operation.is_some() && session.targets.iter().all(|target| target.official);
@@ -1659,6 +1659,26 @@ mod tests {
                 body.get("previous_response_id")
             );
         }
+        let calls = seen.lock().expect("fixture").len();
+        let unavailable = client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .json(
+                &serde_json::json!({"model":"group/synthetic-no-members","input":"Synthetic task"}),
+            )
+            .send()
+            .await?;
+        assert_eq!(unavailable.status(), StatusCode::NOT_FOUND);
+        let error: Value = unavailable.json().await?;
+        assert_eq!(
+            error["error"]["code"],
+            "routing_native_select_published_model"
+        );
+        assert!(error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("enable a usable member")
+                && message.contains("select another available model")));
+        assert_eq!(seen.lock().expect("fixture").len(), calls);
         server.stop().await?;
         task.abort();
         Ok(())

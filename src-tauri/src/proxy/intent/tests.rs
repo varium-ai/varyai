@@ -3,14 +3,32 @@ use super::*;
 #[test]
 fn page_context_does_not_claim_a_tool_continuation() {
     let bindings = Bindings::default();
-    let context = json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page"});
+    let open_page = json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page"});
+    let browser_tabs = json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","output":"<in-app-browser-context>Synthetic tabs</in-app-browser-context>"});
     assert_eq!(
-        bindings.resolve(&json!({"input":[context]}), None),
+        bindings.resolve(&json!({"input":[open_page.clone()]}), None),
         Ok(None)
     );
+    assert_eq!(
+        bindings.resolve(&json!({"input":[browser_tabs.clone()]}), None),
+        Ok(None)
+    );
+    assert!(!completed_tool_history(&json!({
+        "input": [open_page.clone(), browser_tabs.clone()]
+    })));
+    assert!(completed_tool_history(&json!({
+        "input": [
+            {"type":"function_call","call_id":"synthetic-call","name":"lookup","arguments":"{}"},
+            {"type":"function_call_output","call_id":"synthetic-call","output":"Synthetic result"},
+            open_page,
+            browser_tabs
+        ]
+    })));
     for item in [
         json!({"type":"function_call_output","output":"Synthetic result"}),
         json!({"type":"function_call_output","namespace":"other","name":"codex_apps_open_page","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"other","name":"browser_tabs","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"browser_tabs","call_id":"unknown-call","output":"Synthetic result"}),
         json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"unknown-call","output":"Synthetic result"}),
     ] {
         assert!(bindings.resolve(&json!({"input":[item]}), None).is_err());
@@ -475,6 +493,51 @@ fn visible_reasoning_ids_do_not_claim_opaque_continuation_ownership() {
     let mut reference = body;
     reference["previous_response_id"] = json!("synthetic-unknown");
     assert!(bindings.resolve(&reference, None).is_err());
+}
+
+#[test]
+fn complete_stream_without_done_allows_a_new_plain_turn_but_keeps_tool_and_error_state() {
+    for (wire, complete, pending, failed) in [
+        (
+            json!({"choices":[{"finish_reason":"stop"}]}),
+            true,
+            false,
+            false,
+        ),
+        (
+            json!({"choices":[{"finish_reason":"tool_calls"}]}),
+            false,
+            true,
+            false,
+        ),
+        (
+            json!({"choices":[{"finish_reason":"error"}]}),
+            false,
+            false,
+            true,
+        ),
+        (
+            json!({"candidates":[{"finishReason":"STOP"}]}),
+            true,
+            false,
+            false,
+        ),
+        (
+            json!({"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}),
+            false,
+            false,
+            true,
+        ),
+    ] {
+        let mut observer = Observer::default();
+        let mut bindings = Bindings::default();
+        observer.push(format!("data: {wire}\n\n").as_bytes(), &mut bindings, 0);
+        observer.finish(&mut bindings, 0);
+        assert_eq!(
+            (observer.completed, observer.pending_tools, observer.failed),
+            (complete, pending, failed)
+        );
+    }
 }
 
 #[test]

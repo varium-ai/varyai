@@ -698,6 +698,24 @@ fn automatic_groups_follow_catalogs_and_preserve_user_overrides_and_hides() {
     assert_eq!(auto.members.len(), 2);
     assert!(auto.enabled);
     assert_eq!(auto.revision, 0);
+    let disabled = db
+        .set_discovered_routing_group_enabled(&auto.id, false, None)
+        .expect("unpublish discovered group");
+    assert!(!disabled.enabled);
+    assert!(disabled.auto_generated);
+    let catalog = db.intent_routing_catalog().expect("unpublished");
+    assert_eq!(catalog.groups, vec![disabled]);
+    assert!(catalog.removed_groups.is_empty());
+    db.set_intent_routing_auto_create(false)
+        .expect("discovery off");
+    db.set_intent_routing_auto_create(true)
+        .expect("discovery on");
+    assert!(!db.intent_routing_catalog().expect("recomputed").groups[0].enabled);
+    assert_eq!(
+        db.set_discovered_routing_group_enabled(&auto.id, true, None)
+            .expect("republish discovered group"),
+        auto
+    );
     assert!(db
         .list_intent_routing_groups()
         .expect("saved only")

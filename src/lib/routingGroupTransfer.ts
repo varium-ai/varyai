@@ -14,6 +14,12 @@ import {
 import { compareVersions } from "./version";
 
 export const MAX_CLASSIFICATION_BUDGET_MS = 15000;
+export const SMART_RULE_DESCRIPTIONS = {
+  "Hard task":
+    "A hard task: complex reasoning, architecture design, root-cause analysis, changes across several files, or a task whose difficulty is unclear.",
+  "Easy task":
+    "An easy task: a straightforward question with enough information, formatting, a lookup, or a small well-defined edit.",
+};
 
 const strategy = z.enum(["ordered", "fastest"]);
 const templateKey = z.enum([
@@ -1175,14 +1181,14 @@ export function routingTemplates(
       primary.id,
       strongIds,
       undefined,
-      "A hard task: complex reasoning, architecture design, root-cause analysis, changes across several files, or a task whose difficulty is unclear.",
+      SMART_RULE_DESCRIPTIONS["Hard task"],
     );
     addRule(
       "Easy task",
       low.id,
       [primary.id, ...strongIds],
       undefined,
-      "An easy task: a straightforward question with enough information, formatting, a lookup, or a small well-defined edit.",
+      SMART_RULE_DESCRIPTIONS["Easy task"],
     );
     return { ...result, group: withSmartRuleMembers(group) };
   });
