@@ -264,6 +264,19 @@ async fn negotiate(
     Ok(selected)
 }
 
+#[test]
+fn client_config_h2_enables_alpn_while_http1_stays_empty() -> TestResult {
+    let h1 = super::upstream_tls::client_config()?;
+    assert!(h1.alpn_protocols.is_empty());
+
+    let h2 = super::upstream_tls::client_config_h2()?;
+    assert_eq!(
+        h2.alpn_protocols,
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
+    Ok(())
+}
+
 // Public, synthetic localhost identity for isolated tests; never installed in system trust.
 const CERT: &str = "MIIBdzCCAR2gAwIBAgIUe9UYx9x2UUuzwvzrGwD2vbOpylYwCgYIKoZIzj0EAwIwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTExNzA3NDk1N1oYDzIxMjYxMDI0MDc0OTU3WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASU6dZxssN50dESb41f3TJ6rlmBPmSO4OZRnMsE30nX4O84eXBiJVOsguUS10WpiMjV/GWVdu4dX0cDmrLh9Jdoo0swSTAdBgNVHQ4EFgQUKhqqdQSg5321viwp7688PAZ6+bIwGgYDVR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwIDSAAwRQIgTQamt+n+kHO5XiX3JJIaTDpSgq3gSMdKDLM7SzuzTTICIQCh2eOJYXTodxXDPL+CWi1Mjav1l136A7f7kPRe4ESc4A==";
 const KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiM6UaVdsMB6PMDFxQuBV8FIhSe+/sh4LJiB2wtmzmPWhRANCAASU6dZxssN50dESb41f3TJ6rlmBPmSO4OZRnMsE30nX4O84eXBiJVOsguUS10WpiMjV/GWVdu4dX0cDmrLh9Jdo";

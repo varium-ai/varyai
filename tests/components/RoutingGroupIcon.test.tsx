@@ -31,6 +31,13 @@ describe("RoutingGroupIcon", () => {
     },
   );
 
+  it("loads visible group artwork immediately when returning to the list", () => {
+    const { container } = render(
+      <RoutingGroupIcon icons={[{ icon: "workbuddy", name: "WorkBuddy" }]} />,
+    );
+    expect(container.querySelector("img")).toHaveAttribute("loading", "eager");
+  });
+
   it("renders the provider's uploaded image in the group stack", () => {
     const icon = "data:image/png;base64,c3ludGhldGlj";
     const { container } = render(

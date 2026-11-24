@@ -22,27 +22,31 @@ export function FirstRunNoticeDialog({
   const records = useQuery({
     queryKey: ["routing-upstreams"],
     queryFn: routingUpstreamsApi.list,
-    enabled: settings != null && settings.firstRunNoticeConfirmed !== true,
+    enabled: settings != null,
   });
-  const [automatic, setAutomatic] = useState<boolean | null>(null);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
-    if (automatic !== null || !settings) return;
-    if (settings.firstRunNoticeConfirmed === true) setAutomatic(false);
-    else if (records.isSuccess) setAutomatic(records.data.length === 0);
-  }, [automatic, settings, records.isSuccess, records.data]);
+    if (!settings || !records.isSuccess) return;
+    if (records.data.length < 1) {
+      setOpen(true);
+    }
+  }, [settings, records.isSuccess, records.data]);
 
   const handleFinish = async (connected: boolean) => {
     if (!settings) throw new Error("unavailable");
+    if (!connected && (!records.data || records.data.length < 1)) {
+      return;
+    }
     if (settings.firstRunNoticeConfirmed !== true) {
       const { webdavSync: _, ...rest } = settings;
       await settingsApi.save({ ...rest, firstRunNoticeConfirmed: true });
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
     }
-    setAutomatic(false);
+    setOpen(false);
     if (connected) onConnected?.();
   };
 
-  return automatic ? (
+  return open ? (
     <Suspense fallback={null}>
       <OnboardingWizard onFinish={handleFinish} />
     </Suspense>

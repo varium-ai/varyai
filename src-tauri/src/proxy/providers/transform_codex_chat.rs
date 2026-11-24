@@ -434,7 +434,7 @@ pub(crate) fn responses_to_chat_completions_with_reasoning_and_history(
     Ok((result, mapping))
 }
 
-fn apply_reasoning_options(
+pub(crate) fn apply_reasoning_options(
     result: &mut Value,
     body: &Value,
     model: &str,

@@ -53,26 +53,45 @@ it("does not interrupt installations that already have a provider", async () => 
   );
   expect(screen.queryByRole("dialog")).toBeNull();
 });
-it("does not reopen after acknowledgement", async () => {
+it("opens automatically when there are fewer than 1 providers even after prior acknowledgement", async () => {
   vi.mocked(settingsApi.get).mockResolvedValue({
     firstRunNoticeConfirmed: true,
   } as never);
+  mount();
+  expect(await screen.findByRole("dialog")).toBeVisible();
+});
+it("does not interrupt installations that already have a provider", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    { id: "existing" },
+  ] as never);
   const { client } = mount();
   await waitFor(() =>
-    expect(client.getQueryState(["settings"])?.status).toBe("success"),
+    expect(client.getQueryState(["routing-upstreams"])?.status).toBe("success"),
   );
   expect(screen.queryByRole("dialog")).toBeNull();
 });
-it("persists skipping and dismisses without navigating away", async () => {
+it("opens onboarding when the last provider is removed", async () => {
+  vi.mocked(settingsApi.get).mockResolvedValue({
+    firstRunNoticeConfirmed: true,
+  } as never);
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    { id: "existing" },
+  ] as never);
+  const { client } = mount();
+  await waitFor(() =>
+    expect(client.getQueryState(["routing-upstreams"])?.status).toBe("success"),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  client.setQueryData(["routing-upstreams"], []);
+  expect(await screen.findByRole("dialog")).toBeVisible();
+});
+it("does not allow skipping when there are fewer than 1 providers", async () => {
   const { onConnected } = mount();
   fireEvent.click(await screen.findByRole("button", { name: "Skip fixture" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(settingsApi.save).toHaveBeenCalledWith({
-    language: "en",
-    firstRunNoticeConfirmed: true,
-  });
+  expect(screen.getByRole("dialog")).toBeVisible();
+  expect(settingsApi.save).not.toHaveBeenCalled();
   expect(onConnected).not.toHaveBeenCalled();
-  expect(screen.queryByRole("dialog")).toBeNull();
 });
 it("keeps the guide open as providers refresh, then navigates to Tools on completion", async () => {
   const { client, onConnected } = mount();

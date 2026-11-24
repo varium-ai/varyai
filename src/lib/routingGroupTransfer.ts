@@ -13,6 +13,7 @@ import {
 } from "./routingMemberSelection";
 import { compareVersions } from "./version";
 
+export const MIN_CLASSIFICATION_BUDGET_MS = 500;
 export const MAX_CLASSIFICATION_BUDGET_MS = 15000;
 export const SMART_RULE_DESCRIPTIONS = {
   "Hard task":
@@ -189,7 +190,7 @@ const nativeGroup = z
     classificationBudgetMs: z
       .number()
       .int()
-      .min(500)
+      .min(MIN_CLASSIFICATION_BUDGET_MS)
       .max(MAX_CLASSIFICATION_BUDGET_MS),
     rules: z
       .array(

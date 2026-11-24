@@ -2573,6 +2573,28 @@ renderer tests and 7,995 Rust library and integration tests, with 21 ignored.
 An earlier run and an isolated retry failed the existing Pi Gemini tool
 observation regression. The regression passed in the final full run.
 
+For the Agent entries in the matrix below, both the editor trial and eligible
+live group turns use the same selected classifier transport on macOS and
+Windows. Chat classification uses the provider's supported reasoning switch.
+An explicit output-limit response has its own fallback reason on each of
+the four classifier protocols. Verification for this change uses synthetic
+classifier responses and renderer tests. Native Agent acceptance is pending.
+
+For each Agent below on macOS and Windows, refreshing a managed ChatGPT
+account catalog invalidates the shared default-model menu. Forgetting a
+managed login removes it from saved ChatGPT account pools before the next
+menu is used. The provider editor can also move an account to the front of
+the shared account order with **Set as preferred**. Provider deletion and
+native Codex login are separate operations.
+Real-account and installed-client verification for this change is pending.
+
+For every Agent in the following matrix, the hard/easy and custom editors,
+saved classifier target, and live classifier dispatch share the same path
+on macOS and Windows. WorkBuddy China and WorkBuddy AI are selectable upstream
+accounts independently of the calling Agent. Verification covers both regional
+catalogs and the native Chat and Messages transports with synthetic fixtures.
+Installed-client and real-account acceptance for this change is pending.
+
 The hard/easy rule descriptions use the same routing group editor for every
 Agent below on macOS and Windows. The editor renders built-in descriptions
 in the selected language and keeps saved rule text available to each existing

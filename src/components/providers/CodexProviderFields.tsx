@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { subscriptionPlanLabel } from "@/lib/subscriptionPlanLabel";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, ArrowUp, ArrowDown, GripVertical } from "lucide-react";
+import {
+  RefreshCw,
+  ArrowUp,
+  ArrowDown,
+  GripVertical,
+  Trash2,
+} from "lucide-react";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
@@ -57,6 +64,11 @@ export function CodexProviderFields({
   const [catalogFailed, setCatalogFailed] = useState(false);
   const autoFetched = useRef(new Set<string>());
   const [importing, setImporting] = useState(false);
+  const [forgetTarget, setForgetTarget] = useState<{
+    id: string;
+    login: string;
+  }>();
+  const [forgetting, setForgetting] = useState(false);
   const [filter, setFilter] = useState("");
   const [managing, setManaging] = useState(false);
   const [loginWay, setLoginWay] = useState<"browser" | "device">("browser");
@@ -175,7 +187,7 @@ export function CodexProviderFields({
       void client.invalidateQueries({ queryKey: [key] });
     }
   }, [completion, managing, client, draft, editor, policy, onChange]);
-  const working = fetching || importing;
+  const working = fetching || importing || forgetting;
   const authenticating = auth.isAddingAccount || !!browser?.isPending;
   useEffect(() => {
     onBusyChange(working);
@@ -213,6 +225,9 @@ export function CodexProviderFields({
         ready: !account.reauth_required,
       });
   }
+  const hasMultipleAccounts =
+    rows.filter((row) => !row.native || row.ready || row.aliases?.length)
+      .length > 1;
   for (const id of policy.accounts) {
     if (!aliases.has(id) && !rows.some((row) => row.id === id))
       rows.push({
@@ -312,10 +327,20 @@ export function CodexProviderFields({
     policy.accounts,
     onReauthStarted,
   ]);
-  const all = new Map(
-    [...catalog, ...policy.models].map((row) => [String(row.model), row]),
+  const savedModels = new Map(
+    policy.models.map((row) => [String(row.model), row]),
   );
-  const selected = new Set(policy.models.map((row) => String(row.model)));
+  const all = new Map(
+    catalog.map((row) => {
+      const id = String(row.model);
+      const preferences = savedModels.get(id)?.modelPreferences;
+      return [
+        id,
+        preferences ? { ...row, modelPreferences: preferences } : row,
+      ];
+    }),
+  );
+  const selected = new Set(savedModels.keys());
   const chatModels = [...all.values()].filter(
     (row) => !isImageGenerationModel(row),
   );
@@ -382,6 +407,48 @@ export function CodexProviderFields({
       setImporting(false);
     }
   }
+  async function forgetAccount() {
+    if (!forgetTarget || forgetting) return;
+    const { id } = forgetTarget;
+    setForgetting(true);
+    try {
+      const revisions = await routingUpstreamsApi.forgetCodexAccount(id);
+      const revision = revisions[draft.id];
+      onChange({
+        ...draft,
+        revision: revision === draft.revision + 1 ? revision : draft.revision,
+        codex: {
+          ...editor,
+          settings: {
+            ...policy,
+            accounts: policy.accounts.filter((entry) => entry !== id),
+          },
+          accounts: editor.accounts.flatMap((row) => {
+            const aliases = row.aliases?.filter((alias) => alias !== id);
+            if (row.id !== id) return [{ ...row, aliases }];
+            return aliases?.includes("native")
+              ? [{ ...row, id: "native", native: true, aliases: [] }]
+              : [];
+          }),
+        },
+      });
+      setForgetTarget(undefined);
+      client.removeQueries({ queryKey: ["codex-provider-quota", id] });
+      await Promise.all([
+        auth.refetchStatus(),
+        ...[
+          "routing-upstreams",
+          "intent-routing-providers",
+          "agent-model-catalog",
+          "intent-routing-groups",
+        ].map((key) => client.invalidateQueries({ queryKey: [key] })),
+      ]);
+    } catch (cause) {
+      onError("account", cause);
+    } finally {
+      setForgetting(false);
+    }
+  }
   function move(id: string, offset: number) {
     if (locked) return;
     const next = [...policy.accounts];
@@ -406,6 +473,11 @@ export function CodexProviderFields({
         <div>
           <div className="cx-accounts" data-routing-list>
             {ordered.map((account, index) => {
+              const checked = policy.accounts.includes(account.id);
+              const preferred = account.id === firstAccount;
+              const managedId = account.native
+                ? account.aliases?.find((alias) => alias !== "native")
+                : account.id;
               const query = quotas[index];
               const quota = query.data?.quota;
               const tiers =
@@ -448,11 +520,7 @@ export function CodexProviderFields({
                   className="cx-account"
                   role="group"
                   aria-label={account.login}
-                  data-codex-account={
-                    policy.accounts.includes(account.id)
-                      ? account.id
-                      : undefined
-                  }
+                  data-codex-account={checked ? account.id : undefined}
                   tabIndex={0}
                   onKeyDown={(event) => {
                     if (
@@ -465,32 +533,27 @@ export function CodexProviderFields({
                   }}
                 >
                   <div className="cx-account-name">
-                    {policy.accounts.length > 1 &&
-                      policy.accounts.includes(account.id) && (
-                        <button
-                          type="button"
-                          aria-label={`${t("codexProvider.reorder")} ${account.login}`}
-                          disabled={locked}
-                          onPointerDown={(event) => {
-                            if (!locked) drag.start(event, account.id);
-                          }}
-                          onClick={(event) => {
-                            if (drag.consumeClick(account.id))
-                              event.preventDefault();
-                          }}
-                        >
-                          <GripVertical size={12} />
-                        </button>
-                      )}
+                    {policy.accounts.length > 1 && checked && (
+                      <button
+                        type="button"
+                        aria-label={`${t("codexProvider.reorder")} ${account.login}`}
+                        disabled={locked}
+                        onPointerDown={(event) => {
+                          if (!locked) drag.start(event, account.id);
+                        }}
+                        onClick={(event) => {
+                          if (drag.consumeClick(account.id))
+                            event.preventDefault();
+                        }}
+                      >
+                        <GripVertical size={12} />
+                      </button>
+                    )}
                     <label>
                       <input
                         type="checkbox"
-                        checked={policy.accounts.includes(account.id)}
-                        disabled={
-                          locked ||
-                          (!account.ready &&
-                            !policy.accounts.includes(account.id))
-                        }
+                        checked={checked}
+                        disabled={locked || (!account.ready && !checked)}
                         onChange={(event) =>
                           update({
                             accounts: event.target.checked
@@ -503,6 +566,11 @@ export function CodexProviderFields({
                       />
                       <b>{account.login}</b>
                     </label>
+                    {preferred && (
+                      <span className="cx-plan">
+                        {t("codexProvider.preferredAccount")}
+                      </span>
+                    )}
                     {account.plan && (
                       <span className="cx-plan">
                         {subscriptionPlanLabel(account.plan)}
@@ -517,6 +585,27 @@ export function CodexProviderFields({
                       <span className="cx-plan">
                         {t("codexProvider.native")}
                       </span>
+                    )}
+                    {!preferred && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-label={`${t("codexProvider.setPreferredAccount")} ${account.login}`}
+                        disabled={locked || !account.ready}
+                        onClick={() =>
+                          update({
+                            accounts: [
+                              account.id,
+                              ...policy.accounts.filter(
+                                (id) => id !== account.id,
+                              ),
+                            ],
+                          })
+                        }
+                      >
+                        {t("codexProvider.setPreferredAccount")}
+                      </Button>
                     )}
                     <button
                       type="button"
@@ -536,6 +625,22 @@ export function CodexProviderFields({
                         }
                       />
                     </button>
+                    {hasMultipleAccounts && managedId && (
+                      <button
+                        type="button"
+                        title={t("codexOauth.removeAccount")}
+                        aria-label={`${t("codexOauth.removeAccount")} ${account.login}`}
+                        disabled={locked || authenticating}
+                        onClick={() =>
+                          setForgetTarget({
+                            id: managedId,
+                            login: account.login,
+                          })
+                        }
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
                     {needsLogin && (
                       <button
                         type="button"
@@ -546,31 +651,28 @@ export function CodexProviderFields({
                         {t("codexOauth.reauthLogin")}
                       </button>
                     )}
-                    {policy.accounts.length > 1 &&
-                      policy.accounts.includes(account.id) && (
-                        <>
-                          <button
-                            type="button"
-                            aria-label={`${t("codexProvider.moveUp")} ${account.login}`}
-                            disabled={
-                              locked || policy.accounts[0] === account.id
-                            }
-                            onClick={() => move(account.id, -1)}
-                          >
-                            <ArrowUp size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`${t("codexProvider.moveDown")} ${account.login}`}
-                            disabled={
-                              locked || policy.accounts.at(-1) === account.id
-                            }
-                            onClick={() => move(account.id, 1)}
-                          >
-                            <ArrowDown size={12} />
-                          </button>
-                        </>
-                      )}
+                    {policy.accounts.length > 1 && checked && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`${t("codexProvider.moveUp")} ${account.login}`}
+                          disabled={locked || policy.accounts[0] === account.id}
+                          onClick={() => move(account.id, -1)}
+                        >
+                          <ArrowUp size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`${t("codexProvider.moveDown")} ${account.login}`}
+                          disabled={
+                            locked || policy.accounts.at(-1) === account.id
+                          }
+                          onClick={() => move(account.id, 1)}
+                        >
+                          <ArrowDown size={12} />
+                        </button>
+                      </>
+                    )}
                   </div>
                   {!account.ready && (
                     <p className="pv-hint">{t("codexProvider.reauth")}</p>
@@ -850,6 +952,16 @@ export function CodexProviderFields({
               : [...policy.models, all.get(id)!],
           })
         }
+      />
+      <ConfirmDialog
+        isOpen={!!forgetTarget}
+        title={t("codexOauth.removeAccount")}
+        message={t("codexProvider.forgetLogin", {
+          login: forgetTarget?.login ?? "",
+        })}
+        pending={forgetting}
+        onCancel={() => setForgetTarget(undefined)}
+        onConfirm={() => void forgetAccount()}
       />
     </>
   );

@@ -69,6 +69,7 @@ type LifecycleState = {
     outcome:
       | "installed"
       | "failed"
+      | "missingNode"
       | "unverified"
       | "checkFailed"
       | "alreadyInstalled"
@@ -466,10 +467,20 @@ export function useAgentUpdates(installed: AppId[]) {
         return;
       }
       let failed = false;
+      let missingNode = false;
       try {
         await settingsApi.runToolLifecycleAction([tool], "install");
-      } catch {
+      } catch (cause) {
         failed = true;
+        const message =
+          typeof cause === "string"
+            ? cause
+            : cause instanceof Error
+              ? cause.message
+              : "";
+        if (message.includes("missing_node_npm")) {
+          missingNode = true;
+        }
       }
       // An exit code alone is not evidence that the selected CLI is usable.
       const [presence, versions] = await Promise.allSettled([
@@ -490,7 +501,13 @@ export function useAgentUpdates(installed: AppId[]) {
         !version.installed_but_broken;
       setInstallResult({
         app,
-        outcome: failed ? "failed" : verified ? "installed" : "unverified",
+        outcome: missingNode
+          ? "missingNode"
+          : failed
+            ? "failed"
+            : verified
+              ? "installed"
+              : "unverified",
       });
     } finally {
       executing.current = false;

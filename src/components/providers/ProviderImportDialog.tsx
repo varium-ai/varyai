@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import { ProviderImportSourceIcon } from "./ProviderImportSourceIcon";
+import { showProviderError } from "./providerErrorToast";
 import "./providers.css";
 
 type Choice = { on: boolean; mode: "key" | "add"; name?: string };
@@ -45,7 +46,6 @@ export function ProviderImportDialog({
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [sourcePath, setSourcePath] = useState<string>();
   const saving = useRef(false);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -59,7 +59,6 @@ export function ProviderImportDialog({
     if (!open) return;
     let active = true;
     setLoading(true);
-    setError("");
     setSources([]);
     setChoices({});
     const request = sourcePath
@@ -91,8 +90,8 @@ export function ProviderImportDialog({
             "",
         );
       })
-      .catch(() => {
-        if (active) setError("providerImport.failed");
+      .catch((cause) => {
+        if (active) showProviderError(t, "importProviders", cause);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -124,7 +123,6 @@ export function ProviderImportDialog({
     if (saving.current || !count) return;
     saving.current = true;
     setBusy(true);
-    setError("");
     const picks: ProviderImportPick[] = selected.map((item) => {
       const choice = choices[keyOf(tab, item.reference)];
       return {
@@ -141,11 +139,7 @@ export function ProviderImportDialog({
       await onImported();
       if (!embedded) onClose();
     } catch (cause) {
-      setError(
-        cause === "providerImport.conflict"
-          ? "providerImport.conflict"
-          : "providerImport.failed",
-      );
+      showProviderError(t, "importProviders", cause);
     } finally {
       saving.current = false;
       setBusy(false);
@@ -165,8 +159,8 @@ export function ProviderImportDialog({
         ],
       });
       if (typeof path === "string") setSourcePath(path);
-    } catch {
-      setError("providerImport.failed");
+    } catch (cause) {
+      showProviderError(t, "importProviders", cause);
     } finally {
       setBusy(false);
     }
@@ -441,11 +435,6 @@ export function ProviderImportDialog({
             </div>
           )}
         </>
-      )}
-      {error && (
-        <div className="pv-import-error" role="alert">
-          {t(error)}
-        </div>
       )}
       <footer className="pv-import-footer">
         <span>{t("providerImport.selected", { count })}</span>

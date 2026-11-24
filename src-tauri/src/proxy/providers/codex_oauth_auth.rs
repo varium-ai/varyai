@@ -1661,33 +1661,52 @@ impl CodexOAuthManager {
     }
 
     pub async fn remove_account(&self, account_id: &str) -> Result<(), CodexOAuthError> {
-        log::info!("[CodexOAuth] 移除账号: {account_id}");
+        self.remove_account_credentials(account_id, true).await
+    }
+
+    pub(crate) async fn forget_provider_login(
+        &self,
+        account_id: &str,
+    ) -> Result<(), CodexOAuthError> {
+        self.remove_account_credentials(account_id, false).await
+    }
+
+    async fn remove_account_credentials(
+        &self,
+        account_id: &str,
+        clear_native_login: bool,
+    ) -> Result<(), CodexOAuthError> {
         // Wait for all in-flight refresh/adopt operations before deleting. New
         // token work is blocked until the account, cache, lock and disk state
         // have been removed as one lifecycle transition.
         let _lifecycle = self.lifecycle_lock.write().await;
 
-        let managed_id_token = {
-            let accounts = self.accounts.read().await;
-            accounts
-                .get(account_id)
-                .ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?
-                .id_token
-                .clone()
+        let _persist = self.storage_lock.lock().await;
+        let mut remaining = self.accounts.read().await.clone();
+        let removed = remaining.remove(account_id);
+        if clear_native_login {
+            let account =
+                removed.ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?;
+            crate::codex_config::prepare_codex_live_auth_for_managed_account_removal(
+                account_id,
+                account.id_token.as_deref(),
+            )
+            .map_err(|error| CodexOAuthError::TokenFetchFailed(error.to_string()))?;
+            crate::codex_config::clear_codex_live_auth_for_managed_account(account_id)
+                .map_err(|error| CodexOAuthError::IoError(error.to_string()))?;
+        }
+        let mut default = self.default_account_id.read().await.clone();
+        if default.as_deref() == Some(account_id) {
+            default = Self::fallback_default_account_id(&remaining);
+        }
+        let store = CodexOAuthStore {
+            version: 2,
+            accounts: remaining,
+            default_account_id: default.clone(),
         };
-
-        // Explicit Auth Center removal means credentials for this managed
-        // account must leave the machine. Content matching intentionally also
-        // claims a native `codex login` of the same account; that is the same
-        // account-scoped credential the user just chose to remove.
-        crate::codex_config::prepare_codex_live_auth_for_managed_account_removal(
-            account_id,
-            managed_id_token.as_deref(),
-        )
-        .map_err(|error| CodexOAuthError::TokenFetchFailed(error.to_string()))?;
-        crate::codex_config::clear_codex_live_auth_for_managed_account(account_id)
-            .map_err(|error| CodexOAuthError::IoError(error.to_string()))?;
-
+        let content = serde_json::to_string_pretty(&store)
+            .map_err(|error| CodexOAuthError::ParseError(error.to_string()))?;
+        self.write_store_atomic(&content)?;
         {
             // 在 accounts 写锁内原子清除该账号的 token 缓存（accounts -> access_tokens
             // 顺序），确保不存在「账号已删但缓存仍在」的窗口。
@@ -1704,15 +1723,7 @@ impl CodexOAuthManager {
             .await
             .remove(account_id);
 
-        {
-            let accounts = self.accounts.read().await;
-            let mut default = self.default_account_id.write().await;
-            if default.as_deref() == Some(account_id) {
-                *default = Self::fallback_default_account_id(&accounts);
-            }
-        }
-
-        self.save_to_disk().await?;
+        *self.default_account_id.write().await = default;
         Ok(())
     }
 
@@ -3332,6 +3343,29 @@ mod tests {
             "legacy-workspace"
         );
         assert!(!manager.list_accounts().await[0].reauth_required);
+    }
+
+    #[tokio::test]
+    async fn forgetting_provider_login_persists_removal_and_keeps_other_accounts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        for id in ["fixture-a", "fixture-b"] {
+            manager
+                .add_test_account_with_access_token(id, "synthetic-access", None)
+                .await?;
+        }
+        manager.forget_provider_login("fixture-a").await?;
+        manager.forget_provider_login("fixture-a").await?;
+        let reopened = CodexOAuthManager::new(dir.path().to_owned());
+        let accounts = reopened.list_accounts().await;
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "fixture-b");
+        assert_eq!(
+            reopened.default_account_id().await.as_deref(),
+            Some("fixture-b")
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -1516,6 +1516,7 @@ pub fn run() {
             commands::codex_browser_login_callback,
             commands::codex_browser_login_cancel,
             commands::codex_provider_models,
+            commands::forget_codex_provider_account,
             commands::codex_provider_quota,
             commands::quota_panel_history,
             commands::quota_panel_note,

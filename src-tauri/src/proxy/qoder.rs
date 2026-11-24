@@ -319,9 +319,23 @@ pub(crate) async fn handle_official(
 }
 pub(crate) async fn send(
     target: String,
+    parts: http::request::Parts,
+    bytes: Vec<u8>,
+    job: Option<Job>,
+) -> Result<Response, ProxyError> {
+    send_with_dlp(target, parts, bytes, job, None, None, None, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_with_dlp(
+    target: String,
     mut parts: http::request::Parts,
     bytes: Vec<u8>,
     job: Option<Job>,
+    dlp_request: Option<std::sync::Arc<super::security::http_restoration::DlpHttpRequest>>,
+    protocol: Option<super::protocol_bridge::Protocol>,
+    provider_id: Option<&str>,
+    mut payload: Option<Value>,
 ) -> Result<Response, ProxyError> {
     let start = Instant::now();
     let gateway_model = parts
@@ -336,6 +350,66 @@ pub(crate) async fn send(
         header::HOST,
         http::HeaderValue::from_str(host).map_err(|_| invalid())?,
     );
+    let mut dlp_attempt = None;
+    let mut _input_owner = None;
+    let bytes = if let (Some(request), Some(protocol), Some(provider_id), Some(mut body)) =
+        (dlp_request.as_ref(), protocol, provider_id, payload.take())
+    {
+        let auth_principal = super::forwarder::dlp_auth_principal(&parts.headers);
+        let endpoint_path = uri
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or(uri.path());
+        let operation = super::providers::CodexAdapter::resolve_dlp_operation_descriptor(
+            &target,
+            endpoint_path,
+            protocol.format(),
+            &target,
+            false,
+        );
+        let (mut attempt, owner) = request.prepare_owned_attempt_with_history_for_proxy(
+            operation.as_ref(),
+            provider_id,
+            protocol.format(),
+            &target,
+            auth_principal.as_deref(),
+            &mut body,
+            |b, _ctx| Ok((b, None)),
+        )?;
+        _input_owner = Some(owner);
+        let error_credentials = request.capture_error_credentials(&parts.headers);
+        request
+            .prepare_native_error_safety(
+                &mut attempt,
+                &Value::Null,
+                &[],
+                error_credentials.as_ref(),
+            )
+            .map_err(ProxyError::DlpForward)?;
+        attempt
+            .validate_final_send_binding(
+                provider_id,
+                protocol.format(),
+                &target,
+                auth_principal.as_deref(),
+            )
+            .map_err(ProxyError::DlpForward)?;
+        attempt
+            .validate_final_send_history(&body)
+            .map_err(ProxyError::DlpForward)?;
+        attempt.record_permitted_attempt(provider_id, None);
+        let encoded = match attempt
+            .encode_outbound_body(&body)
+            .map_err(ProxyError::DlpForward)?
+        {
+            Some(encoded) => encoded.to_vec(),
+            None => serde_json::to_vec(&body).map_err(|_| invalid())?,
+        };
+        dlp_attempt = Some(attempt);
+        encoded
+    } else {
+        bytes
+    };
     let proxy = super::http_client::get_current_proxy_url();
     let responses = parts.method == http::Method::POST && uri.path().ends_with("/responses");
     let mut bytes = bytes::Bytes::from(bytes);
@@ -353,7 +427,7 @@ pub(crate) async fn send(
         )
         .await
         .map_err(|_| ProxyError::ForwardFailed("Qoder upstream connection failed".into()))?;
-        if !responses {
+        if !responses || dlp_attempt.is_some() {
             break response;
         }
         let (response, id) = recovery.inspect(response).await;
@@ -363,7 +437,34 @@ pub(crate) async fn send(
         }
         break response;
     };
-    relay_response(response, job, start, gateway_model).await
+    let response = if let Some(attempt) = dlp_attempt.as_mut() {
+        attempt
+            .guard_upstream_response(response)
+            .await
+            .map_err(ProxyError::DlpForward)?
+    } else {
+        response
+    };
+    let result = relay_response(response, job, start, gateway_model).await?;
+    Ok(match dlp_attempt {
+        Some(attempt)
+            if attempt.is_native_chat()
+                || attempt.is_native_anthropic()
+                || attempt.is_native_gemini() =>
+        {
+            attempt.restore_native_chat_http_response(result).await
+        }
+        Some(attempt) => {
+            attempt
+                .restore_client_http_response(
+                    result,
+                    super::security::response_restoration::ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await
+        }
+        None => result,
+    })
 }
 
 pub(super) async fn relay_response(

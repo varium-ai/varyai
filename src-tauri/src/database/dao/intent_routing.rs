@@ -1,6 +1,8 @@
 use crate::database::Database;
 use crate::services::intent_routing::{discover_groups, RoutingCatalog};
-use crate::services::intent_routing::{eligible_provider, valid_id, RoutingGroup, MAX_GROUPS};
+use crate::services::intent_routing::{
+    eligible_classifier_model, eligible_provider, valid_id, RoutingGroup, MAX_GROUPS,
+};
 use rusqlite::{params, OptionalExtension};
 
 const FAILED: &str = "intentRouting.failed";
@@ -631,7 +633,7 @@ impl Database {
         }) || group.classifier_target.as_ref().is_some_and(|t| {
             !providers
                 .get(&t.provider_id)
-                .is_some_and(|p| eligible_provider(p, true))
+                .is_some_and(|p| eligible_classifier_model(p, &t.model_id))
         }) {
             return Err("intentRouting.providerUnavailable".into());
         }

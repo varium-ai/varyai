@@ -489,6 +489,33 @@ impl Database {
         self.save_routing_upstream(record)
     }
 
+    pub(crate) fn detach_codex_account(
+        &self,
+        account: &str,
+    ) -> Result<HashMap<String, u32>, String> {
+        let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let tx = conn.transaction().map_err(|_| FAILED)?;
+        let mut revisions = HashMap::new();
+        for mut record in read_records(&tx)? {
+            if !matches!(record.source, UpstreamSource::Codex) {
+                continue;
+            }
+            let Some(settings) = record.codex_settings.as_mut() else {
+                continue;
+            };
+            if !settings.accounts.iter().any(|id| id == account) {
+                continue;
+            }
+            settings.accounts.retain(|id| id != account);
+            record.revision = record.revision.checked_add(1).ok_or(CONFLICT)?;
+            write_record(&tx, &record)?;
+            revisions.insert(record.id, record.revision);
+        }
+        tx.commit().map_err(|_| FAILED)?;
+        self.invalidate_routing_resources();
+        Ok(revisions)
+    }
+
     pub(crate) fn delete_routing_upstream(&self, id: &str, revision: u32) -> Result<(), String> {
         if !valid_identity(id) {
             return Err(INVALID.into());
