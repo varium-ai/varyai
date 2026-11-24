@@ -199,6 +199,44 @@ it("shows the supplier catalog without model-view modes", () => {
   expect(within(list).getByRole("button", { name: "chat-24" })).toBeVisible();
 });
 
+it("pages a large provider catalog without losing filtered access or selection", () => {
+  const modelCatalog = Array.from({ length: 505 }, (_, index) => ({
+    model: `large-relay-${String(index).padStart(3, "0")}`,
+  }));
+  render(<Editor modelCatalog={modelCatalog} />);
+  const list = within(
+    screen.getByRole("group", { name: "modelPicker.models" }),
+  );
+  const next = screen.getByRole("button", {
+    name: "providerEditor.nextModels",
+  });
+  const previous = screen.getByRole("button", {
+    name: "providerEditor.previousModels",
+  });
+  expect(list.getAllByRole("button")).toHaveLength(120);
+  expect(previous).toBeDisabled();
+
+  fireEvent.click(next);
+  const secondPageModel = list.getByRole("button", { name: "large-relay-120" });
+  fireEvent.click(secondPageModel);
+  expect(secondPageModel).toHaveAttribute("aria-pressed", "true");
+  expect(list.queryByRole("button", { name: "large-relay-000" })).toBeNull();
+
+  const search = screen.getByRole("searchbox");
+  fireEvent.change(search, { target: { value: "large-relay-504" } });
+  expect(list.getByRole("button", { name: "large-relay-504" })).toBeVisible();
+  expect(next).not.toBeInTheDocument();
+  fireEvent.change(search, { target: { value: "large-relay" } });
+  expect(list.getAllByRole("button")).toHaveLength(120);
+  fireEvent.click(
+    screen.getByRole("button", { name: "providerEditor.nextModels" }),
+  );
+  expect(list.getByRole("button", { name: "large-relay-120" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
 it("keeps bulk model testing removed when an image model is selected", () => {
   const onProbe = vi.fn();
   render(<Editor onProbe={onProbe} />);

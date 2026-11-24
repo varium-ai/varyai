@@ -704,6 +704,9 @@ export function IntentRoutingPanel({
     setError(null);
     try {
       await reloadQueries();
+      if (reloadRequest.current === request) {
+        toast.success(t("routingPage.refreshSuccess"));
+      }
     } catch (cause) {
       if (reloadRequest.current === request) report(cause);
     } finally {
@@ -845,6 +848,9 @@ export function IntentRoutingPanel({
   const valid =
     draft &&
     draft.name.trim() &&
+    Number.isInteger(draft.classificationBudgetMs) &&
+    draft.classificationBudgetMs >= 500 &&
+    draft.classificationBudgetMs <= MAX_CLASSIFICATION_BUDGET_MS &&
     (draft.contextWindow == null ||
       draft.contextWindow === -1 ||
       draft.contextWindow === 0 ||
@@ -1005,11 +1011,15 @@ export function IntentRoutingPanel({
         min={500}
         max={MAX_CLASSIFICATION_BUDGET_MS}
         step={1}
-        value={draft.classificationBudgetMs}
+        value={
+          Number.isNaN(draft.classificationBudgetMs)
+            ? ""
+            : draft.classificationBudgetMs
+        }
         onChange={(e) =>
           edit({
             ...draft,
-            classificationBudgetMs: Number(e.target.value),
+            classificationBudgetMs: e.currentTarget.valueAsNumber,
           })
         }
       />

@@ -106,7 +106,11 @@ impl RestorationRouteScope {
         else {
             return unsupported;
         };
-        if model.is_empty() || model.contains('/') {
+        if model.is_empty()
+            || model
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
             return unsupported;
         }
         // Keep bare alt keys visible so malformed duplicates cannot select SSE.

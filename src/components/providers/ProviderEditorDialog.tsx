@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getModelContextWindows } from "@/lib/api/model-fetch";
 import {
@@ -31,7 +31,11 @@ import {
   type GlobalProviderPreset,
 } from "@/config/globalProviderPresets";
 import { ProviderImageModels } from "./ProviderImageModels";
-import type { ProviderErrorHandler } from "./providerErrorToast";
+import {
+  PROVIDER_ERROR_DURATION_MS,
+  providerErrorMessage,
+  type ProviderErrorHandler,
+} from "./providerErrorToast";
 import { CodexProviderFields } from "./CodexProviderFields";
 import { ProviderKeysField } from "./ProviderKeysField";
 import { SubscriptionProviderFields } from "./SubscriptionProviderFields";
@@ -64,6 +68,38 @@ const formats: Array<[Format, string, string]> = [
   ["anthropic", "anthropic", "Anthropic"],
   ["gemini_native", "gemini", "Gemini"],
 ];
+const MODEL_PAGE_SIZE = 120;
+export const MAX_PROVIDER_MODEL_SELECTION = 256;
+
+function InlineProviderError({
+  title,
+  description,
+  onClose,
+}: {
+  title: string;
+  description?: string;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  useEffect(() => {
+    const timer = window.setTimeout(onClose, PROVIDER_ERROR_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [onClose]);
+
+  return (
+    <div className="pv-probe-results pv-inline-provider-error" role="alert">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p>{title}</p>
+          {description && <p>{description}</p>}
+        </div>
+        <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+          {t("common.close")}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export function ProviderEditorDialog({
   open = true,
@@ -88,7 +124,7 @@ export function ProviderEditorDialog({
   onKeyChange,
   onProtocolChange,
   onRegionChange,
-  onDiscover: _onDiscover,
+  onDiscover,
   onFetchProbeModels,
   onProbe,
   onSave,
@@ -124,7 +160,7 @@ export function ProviderEditorDialog({
   onProtocolChange: (value: Format) => void;
   onRegionChange: (value: string) => void;
   onDiscover: () => Promise<FetchedModel[]>;
-  onFetchProbeModels: () => Promise<FetchedModel[]>;
+  onFetchProbeModels: (format: Format) => Promise<FetchedModel[]>;
   onProbe: (model: string) => Promise<ProtocolDetection[]>;
   onSave: (event: React.FormEvent, stagedModels?: unknown[]) => Promise<void>;
   onClose: () => void;
@@ -148,8 +184,9 @@ export function ProviderEditorDialog({
       name.current?.focus({ preventScroll: true });
     wasLoading.current = loading;
   }, [loading]);
-  const [showAll, setShowAll] = useState(false);
+  const [modelPage, setModelPage] = useState(0);
   const [modelSearch, setModelSearch] = useState("");
+  const modelList = useRef<HTMLDivElement>(null);
   const source = draft.source.kind === "api" ? draft.source : null;
   const preset = globalProviderPresets.find(
     (value) => value.id === draft.presetId,
@@ -169,6 +206,11 @@ export function ProviderEditorDialog({
       : null;
   const [probing, setProbing] = useState(false);
   const [probeFailed, setProbeFailed] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<ReturnType<
+    typeof providerErrorMessage
+  > | null>(null);
+  const closeProbeError = useCallback(() => setProbeFailed(false), []);
+  const closeDiscoveryError = useCallback(() => setDiscoveryError(null), []);
   const probeRequest = useRef<object | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [iconBusy, setIconBusy] = useState(false);
@@ -183,6 +225,7 @@ export function ProviderEditorDialog({
     probeRequest.current = null;
     setProbing(false);
     setProbeFailed(false);
+    setDiscoveryError(null);
     setResults([]);
     return () => {
       probeRequest.current = null;
@@ -297,7 +340,7 @@ export function ProviderEditorDialog({
     choose(
       selectedIds.has(model)
         ? effectiveSelection.filter((value) => providerModelId(value) !== model)
-        : effectiveSelection.length < 256
+        : effectiveSelection.length < MAX_PROVIDER_MODEL_SELECTION
           ? [...effectiveSelection, available.get(model)]
           : effectiveSelection,
     );
@@ -319,10 +362,19 @@ export function ProviderEditorDialog({
         model = providerModelId(chat) || undefined;
       }
       if (!model) {
-        const found = await onFetchProbeModels();
-        if (probeRequest.current !== request) return;
-        const chat = found.find((row) => !isImageGenerationModel(row));
-        model = chat?.id;
+        const fallback =
+          source.apiFormat === "gemini_native"
+            ? "openai_chat"
+            : "gemini_native";
+        const catalogFormats: Format[] = apiKey
+          ? [source.apiFormat, fallback]
+          : [source.apiFormat];
+        for (const format of catalogFormats) {
+          const found = await onFetchProbeModels(format).catch(() => []);
+          if (probeRequest.current !== request) return;
+          model = found.find((row) => !isImageGenerationModel(row))?.id;
+          if (model) break;
+        }
       }
       if (!model) throw new Error("unavailable");
       const detected = await onProbe(model);
@@ -366,6 +418,13 @@ export function ProviderEditorDialog({
       .toLocaleLowerCase()
       .includes(modelTerm),
   );
+  const pageCount = Math.ceil(rows.length / MODEL_PAGE_SIZE);
+  const currentPage = Math.min(modelPage, Math.max(0, pageCount - 1));
+  const pageStart = currentPage * MODEL_PAGE_SIZE;
+  const pageRows = rows.slice(pageStart, pageStart + MODEL_PAGE_SIZE);
+  useEffect(() => {
+    if (modelList.current) modelList.current.scrollTop = 0;
+  }, [currentPage, modelTerm]);
   const effectiveSelection =
     draft.revision && source?.mode === "vendor"
       ? [...selected.filter(isImageGenerationModel), ...chatModels.slice(0, 24)]
@@ -422,7 +481,14 @@ export function ProviderEditorDialog({
         !source.baseUrl ||
         (!apiKey && !draft.hasApiKey)
       }
-      onClick={() => void _onDiscover()}
+      onClick={async () => {
+        setDiscoveryError(null);
+        try {
+          await onDiscover();
+        } catch (cause) {
+          setDiscoveryError(providerErrorMessage(t, "fetchModels", cause));
+        }
+      }}
     >
       {discovering && (
         <Loader2
@@ -464,6 +530,7 @@ export function ProviderEditorDialog({
           if (modelSearch && event.target === modelSearchInput.current) {
             event.preventDefault();
             setModelSearch("");
+            setModelPage(0);
           }
         }}
         onInteractOutside={(event) => {
@@ -730,25 +797,22 @@ export function ProviderEditorDialog({
                             {t("providerEditor.detect")}
                           </Button>
                         </div>
-                        {(probeFailed || !!results.length) && (
-                          <div
-                            className="pv-probe-results"
-                            role={probeFailed ? "alert" : "status"}
-                          >
+                        {probeFailed && (
+                          <InlineProviderError
+                            title={t("modelProviders.errors.testModels")}
+                            onClose={closeProbeError}
+                          />
+                        )}
+                        {!!results.length && (
+                          <div className="pv-probe-results" role="status">
                             <div className="flex items-center justify-between gap-2">
-                              {probeFailed && (
-                                <p>{t("modelProviders.errors.testModels")}</p>
-                              )}
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="icon"
                                 className="ml-auto shrink-0"
                                 aria-label={t("common.close")}
-                                onClick={() => {
-                                  setProbeFailed(false);
-                                  setResults([]);
-                                }}
+                                onClick={() => setResults([])}
                               >
                                 <X size={14} aria-hidden="true" />
                               </Button>
@@ -881,7 +945,7 @@ export function ProviderEditorDialog({
                                               row,
                                             ]),
                                           ).values(),
-                                        ].slice(0, 256)
+                                        ].slice(0, MAX_PROVIDER_MODEL_SELECTION)
                                       : effectiveSelection.filter(
                                           (row) =>
                                             !visibleIds.has(
@@ -920,73 +984,87 @@ export function ProviderEditorDialog({
                                 })}
                                 disabled={disabled}
                                 value={modelSearch}
-                                onChange={(event) =>
-                                  setModelSearch(event.target.value)
-                                }
+                                onChange={(event) => {
+                                  setModelSearch(event.target.value);
+                                  setModelPage(0);
+                                }}
                               />
                             )}
                           </div>
+                          {discoveryError && (
+                            <InlineProviderError
+                              {...discoveryError}
+                              onClose={closeDiscoveryError}
+                            />
+                          )}
+                          {pageCount > 1 && (
+                            <div className="pv-model-actions">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                disabled={currentPage === 0}
+                                onClick={() => setModelPage(currentPage - 1)}
+                              >
+                                {t("providerEditor.previousModels")}
+                              </Button>
+                              <span aria-live="polite">
+                                {currentPage + 1} / {pageCount}
+                              </span>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                disabled={currentPage === pageCount - 1}
+                                onClick={() => setModelPage(currentPage + 1)}
+                              >
+                                {t("providerEditor.nextModels")}
+                              </Button>
+                            </div>
+                          )}
                           <div
+                            ref={modelList}
                             className="pv-model-chips"
                             role="group"
                             aria-label={t("modelPicker.models")}
                           >
-                            {rows
-                              .filter(
-                                (row, index) =>
-                                  showAll ||
-                                  !!modelTerm ||
-                                  index < 120 ||
-                                  selectedIds.has(providerModelId(row)),
-                              )
-                              .map((value) => {
-                                const model = providerModelId(value);
-                                const checked = selectedIds.has(model);
-                                return (
-                                  <button
-                                    key={model}
-                                    type="button"
-                                    className={`pv-model-chip ${checked ? "selected" : ""}`}
-                                    aria-pressed={checked}
-                                    aria-label={model}
-                                    title={model}
-                                    disabled={
-                                      disabled ||
-                                      (!checked &&
-                                        effectiveSelection.length >= 256)
-                                    }
-                                    onClick={() => toggle(model)}
-                                  >
-                                    <Check
-                                      size={11}
-                                      aria-hidden
-                                      className="pv-model-check"
-                                    />
-                                    <span>{modelLabel(value)}</span>
-                                    {contextLabel(value) && (
-                                      <small
-                                        title={t("providerEditor.holdsTokens", {
-                                          n: contextWindow(
-                                            value,
-                                          )?.toLocaleString(i18n.language),
-                                        })}
-                                      >
-                                        {contextLabel(value)}
-                                      </small>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            {!showAll && !modelTerm && rows.length > 120 && (
-                              <button
-                                type="button"
-                                onClick={() => setShowAll(true)}
-                              >
-                                {t("providerParity.showOther", {
-                                  count: rows.length - 120,
-                                })}
-                              </button>
-                            )}
+                            {pageRows.map((value) => {
+                              const model = providerModelId(value);
+                              const checked = selectedIds.has(model);
+                              return (
+                                <button
+                                  key={model}
+                                  type="button"
+                                  className={`pv-model-chip ${checked ? "selected" : ""}`}
+                                  aria-pressed={checked}
+                                  aria-label={model}
+                                  title={model}
+                                  disabled={
+                                    disabled ||
+                                    (!checked &&
+                                      effectiveSelection.length >=
+                                        MAX_PROVIDER_MODEL_SELECTION)
+                                  }
+                                  onClick={() => toggle(model)}
+                                >
+                                  <Check
+                                    size={11}
+                                    aria-hidden
+                                    className="pv-model-check"
+                                  />
+                                  <span>{modelLabel(value)}</span>
+                                  {contextLabel(value) && (
+                                    <small
+                                      title={t("providerEditor.holdsTokens", {
+                                        n: contextWindow(value)?.toLocaleString(
+                                          i18n.language,
+                                        ),
+                                      })}
+                                    >
+                                      {contextLabel(value)}
+                                    </small>
+                                  )}
+                                </button>
+                              );
+                            })}
                           </div>
                           {!!draft.revision && !rows.length && (
                             <p className="pv-hint">
@@ -994,16 +1072,15 @@ export function ProviderEditorDialog({
                             </p>
                           )}
                         </>
-                        {!draft.revision && (
-                          <p className="pv-hint">
-                            {t("providerParity.optionalHint")}
-                          </p>
-                        )}
-                        {!!draft.revision && (
-                          <p className="pv-hint">
-                            {t(`providerParity.hint_${source.mode}`)}
-                          </p>
-                        )}
+                        <p className="pv-hint">
+                          {draft.revision ||
+                          copySourceName ||
+                          source.mode === "picked"
+                            ? t(`providerParity.hint_${source.mode}`)
+                            : t("providerParity.optionalHint", {
+                                max: MAX_PROVIDER_MODEL_SELECTION,
+                              })}
+                        </p>
                       </div>
                     </div>
                   )}

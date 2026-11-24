@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import i18n from "i18next";
 import en from "@/i18n/locales/en.json";
 import { RequestLogTable } from "@/components/usage/RequestLogTable";
@@ -185,4 +186,44 @@ it("does not show the previous source's rows while a different source loads", as
   expect(screen.queryByText("synthetic-page-1-row-1")).not.toBeInTheDocument();
   await act(async () => other.resolve(pageResult(0, 0)));
   expect(await screen.findByText(en.usage.noData)).toBeVisible();
+});
+
+it("shows a warning toast when page jump input is out of range or invalid", async () => {
+  const warningSpy = vi.spyOn(toast, "warning").mockImplementation(() => "");
+  try {
+    mount();
+    await screen.findByText("synthetic-page-1-row-1");
+    const callsBefore = vi.mocked(usageApi.getRequestLogs).mock.calls.length;
+
+    const input = screen.getByPlaceholderText(en.usage.pageInputPlaceholder);
+    const goButton = screen.getByRole("button", { name: en.usage.goToPage });
+
+    fireEvent.change(input, { target: { value: "99" } });
+    fireEvent.click(goButton);
+    expect(warningSpy).toHaveBeenLastCalledWith(
+      "Please enter a page number between 1 and 11",
+    );
+
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(warningSpy).toHaveBeenLastCalledWith(
+      "Please enter a page number between 1 and 11",
+    );
+
+    fireEvent.change(input, { target: { value: "abc" } });
+    fireEvent.click(goButton);
+    expect(warningSpy).toHaveBeenLastCalledWith(
+      "Please enter a page number between 1 and 11",
+    );
+    expect(vi.mocked(usageApi.getRequestLogs).mock.calls.length).toBe(
+      callsBefore,
+    );
+
+    fireEvent.change(input, { target: { value: "3" } });
+    fireEvent.click(goButton);
+    expect(await screen.findByText("synthetic-page-3-row-1")).toBeVisible();
+    expect(input).toHaveValue("");
+  } finally {
+    warningSpy.mockRestore();
+  }
 });

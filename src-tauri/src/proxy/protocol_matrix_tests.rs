@@ -532,7 +532,19 @@ async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
 /// Opt-in acceptance check with an installed CLI and a synthetic Chat upstream.
 #[tokio::test]
 #[ignore = "requires VARYAI_GEMINI_CLI pointing to an installed Gemini CLI"]
+#[serial_test::serial]
 async fn installed_gemini_cli_uses_chat_bridge() {
+    use super::security::{
+        get_security_runtime, runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    struct RestoreSecurity(SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = RestoreSecurity((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
     let cli = std::env::var("VARYAI_GEMINI_CLI").expect("set VARYAI_GEMINI_CLI");
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir(home.path().join(".gemini")).unwrap();
@@ -639,6 +651,8 @@ async fn installed_gemini_cli_uses_chat_bridge() {
         }
         command
             .env("HOME", home.path())
+            .env("GEMINI_CLI_HOME", home.path())
+            .env("NO_PROXY", "127.0.0.1,localhost,::1")
             .env("GEMINI_API_KEY", "synthetic-key")
             .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
             .env(

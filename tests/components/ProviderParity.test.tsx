@@ -109,17 +109,18 @@ it("requires a unique name before creating a provider", async () => {
   fireEvent.submit(dialog.querySelector("form")!);
   expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
 });
-it("fetches one candidate list without automatically picking or saving models", async () => {
+it("fetches one candidate list and preselects it in the unsaved draft", async () => {
   const dialog = await custom();
   fireEvent.click(
     within(dialog).getByRole("button", { name: "providerForm.fetchModels" }),
   );
-  const first = await within(dialog).findByRole("button", { name: "first" });
-  expect(first).toHaveAttribute("aria-pressed", "false");
   expect(
-    within(dialog).getByRole("button", { name: "second" }),
-  ).toHaveAttribute("aria-pressed", "false");
-  fireEvent.click(first);
+    await within(dialog).findByRole("button", { name: "first" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const second = within(dialog).getByRole("button", { name: "second" });
+  expect(second).toHaveAttribute("aria-pressed", "true");
+  expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+  fireEvent.click(second);
   fireEvent.submit(dialog.querySelector("form")!);
   await waitFor(() => expect(routingUpstreamsApi.save).toHaveBeenCalled());
   expect(
@@ -141,7 +142,7 @@ it("saves an empty selection without a blocking discovery and follows the vendor
   expect(fetchModelsForConfig).not.toHaveBeenCalled();
 });
 
-it("keeps image-only catalog picks from switching a new provider's chat list to picked mode", async () => {
+it("preselects and saves an image-only catalog as an explicit selection", async () => {
   vi.mocked(fetchModelsForConfig).mockResolvedValue([
     { id: "gpt-image-2", ownedBy: "" },
   ]);
@@ -149,14 +150,17 @@ it("keeps image-only catalog picks from switching a new provider's chat list to 
   fireEvent.click(
     within(dialog).getByRole("button", { name: "providerForm.fetchModels" }),
   );
-  fireEvent.click(
+  expect(
     await within(dialog).findByRole("button", { name: "gpt-image-2" }),
-  );
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(
+    within(dialog).getByRole("checkbox", { name: "providerEditor.selectAll" }),
+  ).toBeDisabled();
   fireEvent.submit(dialog.querySelector("form")!);
   await waitFor(() => expect(routingUpstreamsApi.save).toHaveBeenCalled());
   expect(
     vi.mocked(routingUpstreamsApi.save).mock.calls[0][0].source,
-  ).toMatchObject({ mode: "vendor", models: [{ model: "gpt-image-2" }] });
+  ).toMatchObject({ mode: "picked", models: [{ model: "gpt-image-2" }] });
 });
 it("keeps manual model entry removed and selects exact discovered model IDs without duplicates", async () => {
   const dialog = await custom();
@@ -169,10 +173,9 @@ it("keeps manual model entry removed and selects exact discovered model IDs with
   fireEvent.click(
     within(dialog).getByRole("button", { name: "providerForm.fetchModels" }),
   );
-  fireEvent.click(await within(dialog).findByRole("button", { name: "first" }));
-  expect(
-    within(dialog).getByRole("button", { name: "second" }),
-  ).toHaveAttribute("aria-pressed", "false");
+  const second = await within(dialog).findByRole("button", { name: "second" });
+  fireEvent.click(second);
+  expect(second).toHaveAttribute("aria-pressed", "false");
   fireEvent.click(
     within(dialog).getByRole("checkbox", { name: "providerEditor.selectAll" }),
   );

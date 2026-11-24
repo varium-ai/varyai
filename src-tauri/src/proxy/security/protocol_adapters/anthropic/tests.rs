@@ -2568,3 +2568,70 @@ fn an3_lane_m1_tool_names_match_frozen_shared_label_contract() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn an2_finalize_sse_supports_over_1024_delta_frames() -> TestResult {
+    use futures::StreamExt;
+    let fixture = an2_fixture(true)?;
+    let mut events = vec![
+        json!({"type":"message_start","message":{"id":"msg_long","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+    ];
+    for _ in 0..1200 {
+        events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}));
+    }
+    events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":fixture.reference}}));
+    events.push(json!({"type":"content_block_stop","index":0}));
+    events.push(json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1201}}));
+    events.push(json!({"type":"message_stop"}));
+
+    let wire = an2_sse_wire(&events)?;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let attempt = crate::proxy::security::restoration_core::AttemptProvenance::new(&budget)?;
+    let proof = futures::executor::block_on(
+        crate::proxy::security::http_restoration::test_transport::native_sse_proof_for_pair(
+            crate::proxy::security::restoration_contract::ProtocolPair::new(
+                ClientProtocol::new(Protocol::Anthropic),
+                crate::proxy::security::restoration_contract::UpstreamProtocol::new(
+                    Protocol::Anthropic,
+                ),
+            ),
+            &attempt,
+            &fixture.binding,
+            &budget,
+            bytes::Bytes::copy_from_slice(wire.as_bytes()),
+            bytes::Bytes::copy_from_slice(wire.as_bytes()),
+        ),
+    )
+    .map_err(|err| format!("proof_err: {err:?}"))?;
+    let mut stream = super::response::finalize_sse(
+        wire.as_bytes(),
+        &fixture.lease,
+        &fixture.binding,
+        budget,
+        &attempt,
+        proof,
+        8 * 1024 * 1024,
+    )
+    .map_err(|err| format!("finalize_err: {err:?}"))?
+    .into_delivery_stream();
+    let mut restored = String::new();
+    while let Some(chunk) = futures::executor::block_on(stream.next()) {
+        let chunk = chunk?;
+        for data in std::str::from_utf8(&chunk)?
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+        {
+            let source: Value = serde_json::from_str(data)?;
+            if source["delta"]["type"] == "text_delta" {
+                restored.push_str(
+                    source["delta"]["text"]
+                        .as_str()
+                        .ok_or("an2_long_sse_text_missing")?,
+                );
+            }
+        }
+    }
+    assert_eq!(restored, format!("{}{}", "a".repeat(1200), "13900000000"));
+    Ok(())
+}

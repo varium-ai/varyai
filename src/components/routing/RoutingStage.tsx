@@ -15,7 +15,7 @@ import appIcon from "@/assets/icons/app-icon.png";
 import { RoutingPackets } from "./RoutingPackets";
 import { attemptCandidateIndex } from "./routingAttempts";
 import { formatRoutingDuration } from "@/lib/routingDuration";
-import { useRoutingFlights } from "./useRoutingFlights";
+import { routingSourceKey, useRoutingFlights } from "./useRoutingFlights";
 import type {
   RoutingAccount,
   RoutingCandidate,
@@ -37,8 +37,10 @@ const seat = (c: RoutingCandidate) =>
   c.account?.id
     ? `${c.account.id}\0${c.model}\0${c.fixedEffort ?? ""}`
     : undefined;
-const candidateKey = (candidate: RoutingCandidate) =>
+const candidateKey = (trace: RoutingTrace, candidate: RoutingCandidate) =>
   JSON.stringify([
+    trace.agent,
+    trace.model,
     candidate.providerId,
     candidate.account?.kind,
     candidate.account?.id,
@@ -113,16 +115,9 @@ export function RoutingStage({
     concurrent,
     animate && !replay,
   );
-  const sourceModels =
-    sources && new Map(sources.map((source) => [source.agent, source.model]));
-  const activeIds = new Set(concurrent.filter(live).map((trace) => trace.id));
-  const visibleFlights = sourceModels
-    ? flights.filter((trace) => {
-        const model = sourceModels.get(trace.agent);
-        return (
-          model != null && (model === trace.model || activeIds.has(trace.id))
-        );
-      })
+  const sourceIds = sources && new Set(sources.map(routingSourceKey));
+  const visibleFlights = sourceIds
+    ? flights.filter((trace) => sourceIds.has(routingSourceKey(trace)))
     : flights;
   const traces = [
     ...new Map(
@@ -133,11 +128,18 @@ export function RoutingStage({
     ).values(),
   ];
   const gatewayWorking = animate && !replay && traces.some(live);
-  const agents = [...new Set(traces.map((trace) => trace.agent))];
-  if (sources) agents.sort();
-  const sourceAgents: (string | undefined)[] = agents.length
-    ? agents
-    : [undefined];
+  const sourceRows = sources
+    ? [...sources].sort((a, b) => a.agent.localeCompare(b.agent))
+    : [
+        ...new Map(
+          traces.map((trace) => [routingSourceKey(trace), trace]),
+        ).values(),
+      ];
+  const sourceCards = sourceRows.length ? sourceRows : [undefined];
+  const sourceKeys = sourceCards.map(
+    (trace) => trace && routingSourceKey(trace),
+  );
+  const currentSource = row && routingSourceKey(row);
   const seats = new Map<
     string,
     { candidate: RoutingCandidate; trace: RoutingTrace; index: number }
@@ -150,7 +152,7 @@ export function RoutingStage({
     }
     for (const index of [...attempted].sort((left, right) => left - right)) {
       const candidate = trace.candidates[index];
-      const key = candidateKey(candidate);
+      const key = candidateKey(trace, candidate);
       const previous = seats.get(key);
       if (
         !previous ||
@@ -178,7 +180,10 @@ export function RoutingStage({
     providersByName.set(name, ids);
   }
   const candidateIndex = new Map(
-    candidates.map(({ candidate }, index) => [candidateKey(candidate), index]),
+    candidates.map(({ candidate, trace }, index) => [
+      candidateKey(trace, candidate),
+      index,
+    ]),
   );
   const [paths, setPaths] = useState<{ sources: string[]; targets: string[] }>({
     sources: [],
@@ -186,8 +191,8 @@ export function RoutingStage({
   });
   const [narrow, setNarrow] = useState(false);
   const layoutKey = JSON.stringify([
-    sourceAgents,
-    candidates.map(({ candidate }) => candidateKey(candidate)),
+    sourceKeys,
+    candidates.map(({ candidate, trace }) => candidateKey(trace, candidate)),
   ]);
   const busy = new Set(
     concurrent
@@ -282,6 +287,15 @@ export function RoutingStage({
           ? "planningCandidates"
           : "noCandidatesRecorded";
   const hubDescription = `Vary AI · ${address || t("routingPage.listenerUnknown")}`;
+  const packetPaths = (trace: RoutingTrace) => [
+    paths.sources[sourceKeys.indexOf(routingSourceKey(trace))] ?? "",
+    ...trace.candidates.map(
+      (candidate) =>
+        paths.targets[
+          candidateIndex.get(candidateKey(trace, candidate)) ?? -1
+        ] ?? "",
+    ),
+  ];
   return (
     <div
       className={`rt-stage${narrow ? " narrow" : ""}${stageLayout === "compact" ? " compact" : ""}`}
@@ -300,13 +314,13 @@ export function RoutingStage({
             className={(() => {
               const matching = traces.filter((trace) => {
                 if (index < paths.sources.length)
-                  return sourceAgents[index] === trace.agent;
+                  return sourceKeys[index] === routingSourceKey(trace);
                 const chosen = chosenCandidate(trace);
                 const target =
                   chosen == null ? undefined : trace.candidates[chosen];
                 return (
                   target &&
-                  candidateIndex.get(candidateKey(target)) ===
+                  candidateIndex.get(candidateKey(trace, target)) ===
                     index - paths.sources.length
                 );
               });
@@ -325,29 +339,13 @@ export function RoutingStage({
       <RoutingPackets
         compact={stageLayout === "compact"}
         row={row}
-        paths={[
-          paths.sources[Math.max(0, sourceAgents.indexOf(row?.agent))] ?? "",
-          ...(row?.candidates.map(
-            (candidate) =>
-              paths.targets[
-                candidateIndex.get(candidateKey(candidate)) ?? -1
-              ] ?? "",
-          ) ?? []),
-        ]}
+        paths={row ? packetPaths(row) : [""]}
         flights={
           animate && !replay
             ? visibleFlights.map((trace) => ({
                 row: trace,
                 color: hues[trace.agent] ?? "var(--rt-accent)",
-                paths: [
-                  paths.sources[sourceAgents.indexOf(trace.agent)] ?? "",
-                  ...trace.candidates.map(
-                    (candidate) =>
-                      paths.targets[
-                        candidateIndex.get(candidateKey(candidate)) ?? -1
-                      ] ?? "",
-                  ),
-                ],
+                paths: packetPaths(trace),
               }))
             : undefined
         }
@@ -357,17 +355,16 @@ export function RoutingStage({
         speed={speed}
       />
       <div className="rt-srcs">
-        {sourceAgents.map((source) => {
+        {sourceCards.map((sourceTrace, index) => {
+          const source = sourceTrace?.agent;
+          const key = sourceKeys[index];
           const agent = APP_IDS.find((id) => id === source);
           const name = agent
             ? agent === "claude"
               ? t("apps.claudeCode")
               : t(`apps.${agent}`)
             : source || t("routingPage.agent");
-          const selectedSource = source === row?.agent;
-          const sourceTrace =
-            sources?.find((trace) => trace.agent === source) ??
-            traces.find((trace) => trace.agent === source);
+          const selectedSource = key === currentSource;
           const sourceModel =
             sourceTrace && modelLabel
               ? modelLabel(sourceTrace)
@@ -376,8 +373,8 @@ export function RoutingStage({
                 : sourceTrace?.model;
           return (
             <div
-              key={source ?? "idle"}
-              className={`rt-node rt-src ${traces.some((trace) => trace.agent === source && isAnswering(trace)) ? "now" : ""}`}
+              key={key ?? "idle"}
+              className={`rt-node rt-src ${traces.some((trace) => routingSourceKey(trace) === key && isAnswering(trace)) ? "now" : ""}`}
               style={
                 {
                   "--rt-agent": hues[source ?? ""] ?? "var(--rt-accent)",
@@ -589,6 +586,7 @@ export function RoutingStage({
             quota && !resting ? remaining(quota.resetsAt) : undefined;
           const status = [
             baseStatus,
+            sourceRows.length > 1 ? modelLabel?.(trace) : undefined,
             sessionLabel,
             rateLabel,
             renewal && !baseStatus.includes(renewal) ? renewal : undefined,
@@ -597,7 +595,7 @@ export function RoutingStage({
             .join(" · ");
           return (
             <li
-              key={candidateKey(candidate)}
+              key={candidateKey(trace, candidate)}
               style={
                 {
                   "--rt-agent": hues[trace.agent] ?? "var(--rt-accent)",

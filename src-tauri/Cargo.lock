@@ -5506,8 +5506,6 @@ dependencies = [
 [[package]]
 name = "tao"
 version = "0.34.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e06d52c379e63da659a483a958110bbde891695a0ecb53e48cc7786d5eda7bb"
 dependencies = [
  "bitflags 2.11.0",
  "block2",
@@ -6739,6 +6737,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-user-notifications",
  "once_cell",
+ "percent-encoding",
  "regex",
  "reqwest 0.12.28",
  "ring",
@@ -6755,6 +6754,7 @@ dependencies = [
  "serial_test",
  "sha2",
  "sys-locale",
+ "tao",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",

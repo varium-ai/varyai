@@ -18,7 +18,7 @@ export interface GatewayKey {
 }
 export interface GatewayCatalog {
   agents: { id: string; localRouting: boolean }[];
-  models: { agent: string; provider: string; model: string; name?: string }[];
+  models: { model: string; name: string }[];
 }
 export interface GatewayUsage {
   keyId: string;

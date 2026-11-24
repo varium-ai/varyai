@@ -8,30 +8,13 @@ use tauri::State;
 pub async fn get_gateway_catalog(
     state: State<'_, AppState>,
 ) -> Result<crate::proxy::gateway::GatewayCatalog, String> {
-    let db = state.db.clone();
-    let mut catalog = tauri::async_runtime::spawn_blocking(move || {
-        crate::proxy::gateway::catalog(&db).map_err(|_| "gatewayKeys.failed".to_string())
-    })
-    .await
-    .map_err(|_| "gatewayKeys.failed".to_string())??;
     state
         .proxy_service
         .refresh_global_routing()
         .await
         .map_err(|_| "gatewayKeys.failed")?;
-    if let Some(menu) = state.proxy_service.intent_runtime.global_snapshot()? {
-        for model in crate::services::agent_connections::models(&menu) {
-            if !catalog.models.iter().any(|row| row.model == model.id) {
-                catalog.models.push(crate::proxy::gateway::GatewayModel {
-                    agent: "global".into(),
-                    provider: model.group,
-                    name: model.name,
-                    model: model.id,
-                });
-            }
-        }
-    }
-    Ok(catalog)
+    let menu = state.proxy_service.intent_runtime.global_snapshot()?;
+    Ok(crate::proxy::gateway::catalog(menu.as_deref()))
 }
 
 #[tauri::command]

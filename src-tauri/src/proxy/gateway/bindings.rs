@@ -1,13 +1,15 @@
 //! Local agent policies reuse existing routing and client authentication.
 use super::*;
-use crate::{app_config::AppType, proxy::server::ProxyState};
+use crate::{
+    app_config::AppType,
+    proxy::{intent::Menu, server::ProxyState},
+};
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
     middleware::Next,
     response::Response,
 };
-use std::collections::BTreeSet;
 
 pub(super) fn path_model(path: &str) -> Option<String> {
     let encoded = path.split("/models/").nth(1)?.rsplit_once(':')?.0;
@@ -395,8 +397,6 @@ pub struct GatewayAgent {
 }
 #[derive(Serialize)]
 pub struct GatewayModel {
-    pub agent: String,
-    pub provider: String,
     pub model: String,
     pub name: String,
 }
@@ -406,127 +406,90 @@ pub struct GatewayCatalog {
     pub models: Vec<GatewayModel>,
 }
 
-// Read only recognized model fields, never arbitrary configuration strings.
-fn model_ids(value: &serde_json::Value, out: &mut BTreeSet<String>) {
-    if let Some(array) = value.as_array() {
-        for row in array {
-            if let Some(s) = row.as_str() {
-                out.insert(s.into());
+pub(crate) fn catalog(menu: Option<&Menu>) -> GatewayCatalog {
+    let agents = AppType::all()
+        .map(|app| GatewayAgent {
+            id: app.as_str().into(),
+            local_routing: supports_binding(app.as_str()),
+        })
+        .collect();
+    let mut entries = menu
+        .into_iter()
+        .flat_map(|menu| menu.models.values().map(move |model| (menu, model)))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(_, model)| (model.order, &model.label, &model.alias));
+    let models = entries
+        .into_iter()
+        .filter_map(|(menu, model)| {
+            let session = menu.groups.get(&model.alias)?;
+            let name = if model.alias.starts_with("vary-provider/") {
+                &model.label
             } else {
-                model_ids(row, out);
-            }
-        }
-        return;
-    }
-    let Some(obj) = value.as_object() else {
-        return;
-    };
-    for field in [
-        "model",
-        "id",
-        "modelId",
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_SMALL_FAST_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "ANTHROPIC_DEFAULT_FABLE_MODEL",
-        "GEMINI_MODEL",
-    ] {
-        if let Some(s) = obj.get(field).and_then(serde_json::Value::as_str) {
-            if !s.trim().is_empty() && s.len() <= 200 {
-                out.insert(s.into());
-            }
-        }
-    }
-    for field in [
-        "env",
-        "models",
-        "modelPicker",
-        "options",
-        "modelCatalog",
-        "settings",
-    ] {
-        if let Some(v) = obj.get(field) {
-            model_ids(v, out);
-        }
-    }
-    if let Some(s) = obj.get("config").and_then(serde_json::Value::as_str) {
-        if let Ok(v) = s.parse::<toml::Value>() {
-            if let Some(m) = v.get("model").and_then(toml::Value::as_str) {
-                out.insert(m.into());
-            }
-        }
-    }
-}
-
-pub fn catalog(db: &Database) -> Result<GatewayCatalog, AppError> {
-    let mut agents = Vec::new();
-    let mut models = Vec::new();
-    for app in AppType::all() {
-        let id = app.as_str();
-        agents.push(GatewayAgent {
-            id: id.into(),
-            local_routing: supports_binding(id),
-        });
-        for provider in db.get_all_providers(id)?.values() {
-            let mut ids = BTreeSet::new();
-            model_ids(&provider.settings_config, &mut ids);
-            if let Some(meta) = &provider.meta {
-                ids.extend(meta.claude_desktop_model_routes.keys().cloned());
-            }
-            models.extend(ids.into_iter().map(|model| GatewayModel {
-                agent: id.into(),
-                provider: provider.name.clone(),
-                name: model.clone(),
-                model,
-            }));
-        }
-    }
-    models.extend(
-        db.list_intent_routing_groups()
-            .map_err(|_| AppError::Config("Routing catalog unavailable".into()))?
-            .into_iter()
-            .filter(|group| group.enabled)
-            .map(|group| GatewayModel {
-                agent: "global".into(),
-                provider: group.name.clone(),
-                name: group.name.clone(),
-                model: group.alias(),
-            }),
-    );
-    Ok(GatewayCatalog { agents, models })
+                &session.group.name
+            };
+            Some(GatewayModel {
+                model: model.alias.clone(),
+                name: name.clone(),
+            })
+        })
+        .collect();
+    GatewayCatalog { agents, models }
 }
 
 #[cfg(test)]
 mod global_catalog_tests {
     use super::*;
-    #[test]
-    fn policy_picker_includes_enabled_global_aliases_not_disabled_drafts() {
-        let db = Database::memory().unwrap();
-        let provider = crate::provider::Provider::with_id(
-            "fixture".into(),
-            "Synthetic".into(),
-            serde_json::json!({"auth":{"OPENAI_API_KEY":concat!("synthetic","-source")},"apiFormat":"openai_responses","config":"model='exact'\nmodel_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'"}),
-            None,
-        );
-        db.save_provider("codex", &provider).unwrap();
-        db.register_routing_fixture("codex", &provider.id).unwrap();
-        let group:crate::services::intent_routing::RoutingGroup=serde_json::from_value(serde_json::json!({
-            "id":"global-picker","name":"Synthetic group","revision":0,"client":"global","enabled":false,
-            "members":[{"id":"a","providerId":"fixture","modelId":"exact"}],"defaultMemberId":"a","fallbackMemberIds":[],"intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+    use crate::{
+        provider::Provider,
+        proxy::providers::codex_oauth_auth::CodexOAuthManager,
+        services::intent_routing::{menu, RoutingGroup},
+    };
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn policy_picker_lists_shared_provider_routes_and_groups_once() {
+        let home = tempfile::tempdir().unwrap();
+        let manager = Arc::new(CodexOAuthManager::new(home.path().to_owned()));
+        let provider = |id: &str, name: &str| {
+            Provider::with_id(
+                id.into(),
+                name.into(),
+                json!({"auth":{"OPENAI_API_KEY":"synthetic-source"},"apiFormat":"openai_responses","config":"model='exact'\nmodel_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'"}),
+                None,
+            )
+        };
+        let group: RoutingGroup = serde_json::from_value(json!({
+            "id":"global-picker","name":"Synthetic group","revision":0,"client":"global","enabled":true,
+            "members":[{"id":"a","providerId":"fixture-a","modelId":"exact"}],"defaultMemberId":"a","fallbackMemberIds":[],"intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
         })).unwrap();
-        let mut group = db.save_intent_routing_group(group).unwrap();
-        assert!(!catalog(&db)
+        let mut stand_in = group.clone();
+        stand_in.id = "historical".into();
+        let menu = menu::prepare_with_stand_ins(
+            manager,
+            vec![
+                provider("fixture-a", "Supplier A"),
+                provider("fixture-b", "Supplier B"),
+            ],
+            vec![group],
+            None,
+            vec![stand_in],
+        )
+        .await
+        .unwrap();
+        assert!(menu.groups.contains_key("vary-auto/historical"));
+        let catalog = catalog(Some(&menu));
+        assert!(!serde_json::to_string(&catalog)
             .unwrap()
-            .models
-            .iter()
-            .any(|m| m.agent == "global"));
-        group.enabled = true;
-        db.save_intent_routing_group(group).unwrap();
-        let models = catalog(&db).unwrap().models;
-        assert!(models.iter().any(|m| m.agent == "global"
-            && m.model == "vary-auto/global-picker"
-            && m.provider == "Synthetic group"));
+            .contains("synthetic-source"));
+        let models = catalog.models;
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].model, "vary-auto/global-picker");
+        assert_eq!(models[0].name, "Synthetic group");
+        for (id, name) in [("fixture-a", "Supplier A"), ("fixture-b", "Supplier B")] {
+            let alias = format!("vary-provider/{}", menu::direct_id(id, "exact"));
+            assert!(models
+                .iter()
+                .any(|row| row.model == alias && row.name == format!("exact · {name}")));
+        }
     }
 }

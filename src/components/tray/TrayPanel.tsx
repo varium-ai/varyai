@@ -10,8 +10,8 @@ import {
   securityEventRiskLabel,
 } from "@/components/security/securityEventLabels";
 import { useUpdate } from "@/contexts/UpdateContext";
+import { useSyncLanguage } from "@/hooks/useSyncLanguage";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { useLanguageSync } from "@/hooks/useLanguageSync";
 import { useSettingsQuery } from "@/lib/query";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
@@ -39,7 +39,7 @@ const securityFilter = { view: "security_events" as const };
 export function TrayPanel() {
   const { t } = useTranslation();
   const settings = useSettingsQuery();
-  useLanguageSync(settings.data?.language);
+  const i18n = useSyncLanguage(settings.data?.language);
   const client = useQueryClient();
   const update = useUpdate();
   const [tab, setTab] = useState(() =>
@@ -138,7 +138,13 @@ export function TrayPanel() {
     ),
   );
   return (
-    <div className="tray-panel" data-tab={tab} ref={frame} tabIndex={-1}>
+    <div
+      className="tray-panel"
+      data-tab={tab}
+      lang={i18n.language}
+      ref={frame}
+      tabIndex={-1}
+    >
       <header className="tray-header">
         <div className="tray-brand">
           <img src={appIcon} alt="" />
@@ -289,7 +295,7 @@ export function TrayPanel() {
 }
 
 function TraySecurity() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const settings = useQuery({
     queryKey: ["security", "settings"],
     queryFn: securityApi.getSettings,
@@ -348,7 +354,7 @@ function TraySecurity() {
                 </small>
               </span>
               <time>
-                {new Date(event.timestamp * 1000).toLocaleTimeString([], {
+                {new Date(event.timestamp).toLocaleTimeString(i18n.language, {
                   hour: "2-digit",
                   minute: "2-digit",
                 })}

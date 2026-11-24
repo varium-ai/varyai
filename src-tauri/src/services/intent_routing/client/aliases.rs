@@ -17,7 +17,7 @@ pub(super) fn project(
     project_menu(catalog, retained, None)
 }
 
-fn wire_name(label: &str) -> String {
+pub(crate) fn wire_name(label: &str) -> String {
     let normalized = label
         .chars()
         .map(|c| {
