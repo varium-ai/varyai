@@ -630,9 +630,12 @@ mod tests {
         let db = std::sync::Arc::new(crate::database::Database::memory().expect("db"));
         db.set_setting(crate::services::qoder_proxy::ENABLED_KEY, "true")
             .expect("enabled");
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("tls");
+        let listener = std::sync::Arc::new(
+            tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("tls"),
+        );
+        let listener_owner = std::sync::Arc::downgrade(&listener);
         let local = listener.local_addr().expect("addr");
         let server = crate::proxy::qoder_tls::Server::start(
             listener,
@@ -696,9 +699,9 @@ mod tests {
             pending_handshakes.push(connection);
         }
         server.stop().await;
-        let _listener = tokio::net::TcpListener::bind(local)
-            .await
-            .expect("port released");
+        // A released ephemeral port may already belong to another parallel test.
+        // Observe the original listener's lifetime instead of rebinding its address.
+        assert!(listener_owner.upgrade().is_none());
         // Do not let this runtime finish detached connection tasks after stop returns.
         for mut connection in pending_handshakes {
             use std::io::Read;
