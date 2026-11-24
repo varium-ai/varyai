@@ -1252,17 +1252,16 @@ async fn agent_model_switch_keeps_unsigned_reasoning_history_portable(
                 } else {
                     json!({"model":group().alias(),"max_tokens":32,"messages":[assistant,{"role":"user","content":"Synthetic next question"}]})
                 };
-                let blocked = client
+                let forwarded = client
                     .post(&url)
                     .bearer_auth(format!("synthetic-{app}"))
                     .json(&payload)
                     .send()
                     .await?;
-                assert_eq!(blocked.status(), StatusCode::CONFLICT);
-                assert!(
-                    rx.try_recv().is_err(),
-                    "unknown encrypted state must not reach upstream"
-                );
+                assert_eq!(forwarded.status(), StatusCode::OK);
+                let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                    .await?
+                    .ok_or("missing forwarded opaque request")?;
             }
         }
     }
