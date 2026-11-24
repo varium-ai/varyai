@@ -146,6 +146,10 @@ export const routingUpstreamsApi = {
       "codex_provider_quota",
       { account },
     ),
+  forgetCodexAccount: (account: string) =>
+    invoke<Record<string, number>>("forget_codex_provider_account", {
+      account,
+    }),
   importCodexAccount: (path: string) =>
     invoke<{ id: string }>("import_codex_provider_account", { path }),
   testCodexModel: (

@@ -39,6 +39,7 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
     codexQuota: vi.fn(),
     testCodexModel: vi.fn(),
     importCodexAccount: vi.fn(),
+    forgetCodexAccount: vi.fn(),
     save: vi.fn(),
     remove: vi.fn(),
   },
@@ -769,6 +770,131 @@ it("keeps the removed test-model control absent and never probes selected models
   expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
 });
 
+it.each([true, false])(
+  "sets the preferred account and loads its models when already checked is %s",
+  async (checked) => {
+    const alternate = {
+      id: "alternate",
+      login: "alternate@example.test",
+      native: false,
+      ready: true,
+    };
+    const target = {
+      id: "target",
+      login: "target@example.test",
+      native: false,
+      ready: true,
+    };
+    vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+      ...upstream,
+      codex: {
+        ...codex,
+        accounts: [...codex.accounts, alternate, target],
+        settings: {
+          ...codex.settings,
+          accounts: ["native", alternate.id, ...(checked ? [target.id] : [])],
+        },
+      },
+    } as never);
+    vi.mocked(routingUpstreamsApi.codexModels).mockResolvedValue([
+      { model: "preferred-model" },
+    ]);
+
+    await open();
+    const firstRow = screen.getByRole("group", { name: "person@example.test" });
+    const targetRow = screen.getByRole("group", { name: target.login });
+    expect(
+      within(firstRow).getByText("codexProvider.preferredAccount"),
+    ).toBeVisible();
+    fireEvent.click(
+      within(targetRow).getByRole("button", {
+        name: `codexProvider.setPreferredAccount ${target.login}`,
+      }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "preferred-model" }),
+    ).toBeEnabled();
+    expect(
+      within(targetRow).getByText("codexProvider.preferredAccount"),
+    ).toBeVisible();
+    expect(within(targetRow).getByRole("checkbox")).toBeChecked();
+    expect(
+      within(firstRow).queryByText("codexProvider.preferredAccount"),
+    ).not.toBeInTheDocument();
+    expect(routingUpstreamsApi.codexModels).toHaveBeenCalledWith(
+      upstream.id,
+      upstream.revision,
+      target.id,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          accounts: [target.id, "native", alternate.id],
+        }),
+      ),
+    );
+  },
+);
+
+it("shows only the free account catalog after deselecting the paid account", async () => {
+  const free = {
+    id: "free",
+    login: "free@example.test",
+    native: false,
+    ready: true,
+  };
+  const paid = {
+    id: "paid",
+    login: "paid@example.test",
+    native: false,
+    ready: true,
+  };
+  const paidModels = Array.from({ length: 10 }, (_, i) => ({
+    model: `chat-${i + 1}`,
+  }));
+  const freeModels = paidModels.slice(0, 3);
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      accounts: [paid, free],
+      models: paidModels,
+      settings: {
+        ...codex.settings,
+        accounts: [paid.id, free.id],
+        models: paidModels,
+      },
+    },
+  } as never);
+  vi.mocked(routingUpstreamsApi.codexModels).mockResolvedValue(freeModels);
+
+  await open();
+  const group = screen.getByRole("group", { name: "modelPicker.models" });
+  expect(within(group).getAllByRole("button")).toHaveLength(10);
+  fireEvent.click(screen.getByRole("checkbox", { name: paid.login }));
+  await waitFor(() =>
+    expect(within(group).getAllByRole("button")).toHaveLength(3),
+  );
+  expect(routingUpstreamsApi.codexModels).toHaveBeenCalledWith(
+    upstream.id,
+    upstream.revision,
+    free.id,
+  );
+  expect(
+    within(group).queryByRole("button", { name: "chat-4" }),
+  ).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ accounts: [free.id], models: paidModels }),
+    ),
+  );
+});
+
 it("never labels a different account's catalog as the newly selected account's list", async () => {
   vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
     ...upstream,
@@ -929,11 +1055,20 @@ it("refreshes repaired credentials and model observations without discarding uns
   expect(
     screen.getByRole("checkbox", { name: "person@example.test" }),
   ).toBeChecked();
-  expect(screen.getByRole("button", { name: "model-a" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  expect(
+    await screen.findByRole("button", { name: "repaired-model" }),
+  ).toBeEnabled();
+  expect(
+    screen.queryByRole("button", { name: "model-a" }),
+  ).not.toBeInTheDocument();
   expect(routingUpstreamsApi.editor).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ models: codex.settings.models }),
+    ),
+  );
 });
 
 it("selects the repaired native alias in the draft while preserving model choices", async () => {
@@ -1536,4 +1671,77 @@ it("never treats a ready native alias as proof that the selected managed credent
     screen.getByRole("button", { name: "codexProvider.fetchModels" }),
   ).toBeDisabled();
   expect(routingUpstreamsApi.codexModels).not.toHaveBeenCalled();
+});
+
+it("hides the remove button when a managed login is the only actual account", async () => {
+  const account = {
+    id: "only",
+    login: "only@example.test",
+    native: false,
+    ready: true,
+  };
+  managedAccounts.rows = [{ ...account, reauth_required: false }];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      accounts: [{ ...codex.accounts[0], ready: false }, account],
+      settings: { ...codex.settings, accounts: [account.id] },
+    },
+  } as never);
+  await open();
+  const row = screen.getByRole("group", { name: account.login });
+  expect(within(row).getByRole("checkbox")).toBeChecked();
+  expect(
+    within(row).queryByRole("button", {
+      name: `codexOauth.removeAccount ${account.login}`,
+    }),
+  ).not.toBeInTheDocument();
+});
+
+it("confirms forgetting one managed login and saves remaining draft selections at the new revision", async () => {
+  const account = {
+    id: "second",
+    login: "second@example.test",
+    native: false,
+    ready: true,
+  };
+  managedAccounts.rows = [{ ...account, reauth_required: false }];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      accounts: [...codex.accounts, account],
+      settings: { ...codex.settings, accounts: ["native", "second"] },
+    },
+  } as never);
+  vi.mocked(routingUpstreamsApi.forgetCodexAccount).mockImplementation(
+    async () => {
+      managedAccounts.rows = [];
+      return { fixture: 3 };
+    },
+  );
+  await open();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "codexOauth.removeAccount second@example.test",
+    }),
+  );
+  expect(routingUpstreamsApi.forgetCodexAccount).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("checkbox", { name: "second@example.test" }),
+    ).toBeNull(),
+  );
+  expect(routingUpstreamsApi.forgetCodexAccount).toHaveBeenCalledWith("second");
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        revision: 3,
+      }),
+      expect.objectContaining({ accounts: ["native"] }),
+    ),
+  );
 });
