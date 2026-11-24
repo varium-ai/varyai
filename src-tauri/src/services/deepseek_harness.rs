@@ -452,17 +452,34 @@ pub(crate) fn apply(value: &mut Value, id: &str, name: &str, config: &Value) -> 
     } else {
         json!({"Authorization":format!("Bearer {}",config["apiKey"].as_str().ok_or(FAILED)?)})
     };
-    let models = config["models"].as_array().ok_or(FAILED)?.iter().map(|model| {
-        let mut row = json!({"id":model["model"],"name":model.get("displayName").unwrap_or(&model["model"])});
-        if let Some(window) = model["contextWindow"].as_u64().filter(|window| *window > 0) {
-            row["contextWindow"] = json!(window);
-            row["maxTokens"] = json!((window / 2).clamp(1, 8192));
-        }
-        for field in ["input", "reasoningEfforts"] {
-            if let Some(value) = model.get(field) { row[field] = value.clone(); }
-        }
-        row
-    }).collect::<Vec<_>>();
+    let model_configs = config["models"].as_array().ok_or(FAILED)?;
+    let first_model = model_configs
+        .first()
+        .and_then(|model| model.get("model"))
+        .and_then(Value::as_str)
+        .ok_or(FAILED)?
+        .to_owned();
+    let models = model_configs
+        .iter()
+        .map(|model| {
+            let model_id = model.get("model").and_then(Value::as_str).ok_or(FAILED)?;
+            let display_name = model
+                .get("displayName")
+                .and_then(Value::as_str)
+                .unwrap_or(model_id);
+            let mut row = json!({"id":model_id,"name":display_name});
+            if let Some(window) = model["contextWindow"].as_u64().filter(|window| *window > 0) {
+                row["contextWindow"] = json!(window);
+                row["maxTokens"] = json!((window / 2).clamp(1, 8192));
+            }
+            for field in ["input", "reasoningEfforts"] {
+                if let Some(value) = model.get(field) {
+                    row[field] = value.clone();
+                }
+            }
+            Ok(row)
+        })
+        .collect::<Result<Vec<Value>, String>>()?;
     let route = format!("varyai-{id}");
     let provider = json!({"id":key(id),"name":PLUGIN,"config":{"providers":{route:{"displayName":name,"api":protocol,"baseURL":config["baseUrl"],"headers":auth,"models":models,"defaultContextWindow":32000,"defaultMaxTokens":8192}}}});
     value["providers"]
@@ -472,7 +489,7 @@ pub(crate) fn apply(value: &mut Value, id: &str, name: &str, config: &Value) -> 
     value["legacyProviders"] = json!(false);
     set_selection(
         value,
-        &json!({"provider":format!("varyai-{id}"),"model":config["models"][0]["model"]}),
+        &json!({"provider":format!("varyai-{id}"),"model":first_model}),
     )?;
     Ok(())
 }
@@ -760,6 +777,23 @@ pub(crate) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_rejects_incomplete_model_catalogs_without_panicking() -> Result<(), String> {
+        let source = "- id: llm-pi-ai\n  config: {providers: {}}\n";
+        let configs = [
+            json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[]}),
+            json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"displayName":"Synthetic"}]}),
+        ];
+        for config in configs {
+            let mut doc = parse(source)?;
+            assert!(
+                apply(&mut doc, "shared-catalog", "Vary AI", &config).is_err(),
+                "incomplete model catalog must fail without panicking"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn empty_native_adapter_templates_accept_routes_and_restore() -> Result<(), String> {

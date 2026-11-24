@@ -262,11 +262,15 @@ fn run_tool_lifecycle_silently(command_line: &str, label: &str) -> Result<(), St
     let bat_file = script.path();
     std::fs::write(bat_file, command_line).map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
-    let output = Command::new("cmd")
-        .arg("/C")
-        .arg(bat_file)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").arg(bat_file).creation_flags(CREATE_NO_WINDOW);
+    // A GUI-launched Windows process can miss the user PATH. Detection already
+    // reconstructs it. npm-based installers need the same environment or every
+    // Agent except the PowerShell installers reports a false failure.
+    if let Some(path) = effective_path_os() {
+        cmd.env("PATH", path);
+    }
+    let output = cmd.output();
 
     finish_lifecycle_output(&output.map_err(|e| format!("启动安装进程失败: {e}"))?)
 }
@@ -7834,5 +7838,52 @@ mod tests {
             command,
             "pushd \"\\\\server\\share\\100%%^&^(test^)\" || exit /b 1\r\n"
         );
+    }
+
+    #[test]
+    fn windows_lifecycle_subprocess_merges_effective_path() {
+        let source = include_str!("misc.rs");
+        let start = source
+            .find("#[cfg(target_os = \"windows\")]\nfn run_tool_lifecycle_silently")
+            .unwrap();
+        let end = start + source[start..].find("\n}\n").unwrap();
+        let block = &source[start..end];
+        assert!(
+            block.contains("effective_path_os()"),
+            "Windows installers must see the user and machine PATH"
+        );
+        assert!(
+            block.contains(".env(\"PATH\""),
+            "The reconstructed PATH must be injected into the child process"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    mod windows_install_strategy {
+        use super::super::*;
+
+        #[test]
+        fn windows_install_commands_cover_every_npm_backed_cli() {
+            for tool in [
+                "claude", "codex", "gemini", "opencode", "openclaw", "pi", "qwen",
+            ] {
+                let command = static_fallback_command_for(tool, ToolLifecycleAction::Install);
+                assert!(
+                    command.contains("npm i -g"),
+                    "{tool} should keep a usable npm install path: {command}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_native_installers_keep_their_npm_fallback() {
+            let grok = static_fallback_command_for("grok", ToolLifecycleAction::Install);
+            assert!(grok.contains("powershell -NoProfile"));
+            assert!(grok.contains("npm i -g @xai-official/grok@latest"));
+
+            let hermes = static_fallback_command_for("hermes", ToolLifecycleAction::Install);
+            assert!(hermes.contains("powershell -NoProfile"));
+            assert!(!hermes.contains("pip"));
+        }
     }
 }

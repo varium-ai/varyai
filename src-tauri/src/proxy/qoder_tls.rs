@@ -24,10 +24,11 @@ pub(crate) struct Server {
 }
 impl Server {
     pub async fn start(
-        listener: tokio::net::TcpListener,
+        listener: impl Into<Arc<tokio::net::TcpListener>>,
         directory: &Path,
         state: OfficialState,
     ) -> Result<Self, String> {
+        let listener = listener.into();
         use rustls::pki_types::{
             CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer,
         };
