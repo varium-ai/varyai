@@ -105,6 +105,48 @@ fn object(value: &mut Value, key: &str) -> Result<(), AppError> {
     }
     Ok(())
 }
+pub(crate) fn complete_zcode_default_selection(
+    value: &mut Value,
+    preferred: Option<&str>,
+) -> Result<(), AppError> {
+    let config = &mut value["config"];
+    let selection = &config["defaultModelSelection"];
+    let provider = selection["providerId"].clone();
+    let model = selection["modelId"].clone();
+    let Some(rule) = config
+        .pointer_mut("/modelConfigRules/providerModelRules")
+        .and_then(Value::as_array_mut)
+        .and_then(|rules| {
+            rules
+                .iter_mut()
+                .find(|rule| rule["providerId"] == provider && rule["modelId"] == model)
+        })
+    else {
+        return Ok(());
+    };
+    let model_config = &mut rule["config"];
+    object(model_config, "optionSpecs")?;
+    let options = &mut model_config["optionSpecs"];
+    object(options, "reasoningLevel")?;
+    let values = &mut options["reasoningLevel"]["values"];
+    // ZCode validates the saved option against this model's advertised values.
+    if values.as_array().is_none_or(Vec::is_empty) {
+        *values = json!(["disabled"]);
+    }
+    let levels = values.as_array().ok_or_else(invalid)?;
+    let preferred = preferred.map(|level| if level == "none" { "disabled" } else { level });
+    let level = preferred
+        .filter(|preferred| levels.iter().any(|level| level == *preferred))
+        .or_else(|| levels.iter().rev().find_map(Value::as_str))
+        .ok_or_else(invalid)?;
+    let level = json!(level);
+    let options = &mut config["defaultModelSelection"]["options"];
+    if !options.is_object() {
+        *options = json!({});
+    }
+    options["reasoningLevel"] = level;
+    Ok(())
+}
 fn pointer(parts: &[&str]) -> String {
     parts
         .iter()
@@ -733,6 +775,7 @@ impl Document {
                 }
                 self.value["config"]["defaultModelSelection"] =
                     json!({"providerId":key,"modelId":first});
+                complete_zcode_default_selection(&mut self.value, None)?;
             }
             _ => return Err(invalid()),
         }
@@ -1920,6 +1963,10 @@ model = "alpha"
         assert_eq!(
             rules[1]["config"]["personalModelIds"],
             json!(["alpha", "beta"])
+        );
+        assert_eq!(
+            doc.value["config"]["defaultModelSelection"]["options"]["reasoningLevel"],
+            "disabled"
         );
         assert!(doc.value.get("provider").is_none());
         let routes = doc.route("zcode", "http://127.0.0.1:1234").expect("route");

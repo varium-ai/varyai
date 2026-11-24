@@ -744,6 +744,51 @@ impl Bindings {
             .get(&continuation::hash("session", key))
             .copied()
     }
+    fn knows_tool_calls(&self, body: &Value) -> bool {
+        body["input"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .filter(|item| item["type"] == "function_call")
+                .all(|item| {
+                    item["call_id"].as_str().is_some_and(|id| {
+                        let key = continuation::hash("call", id);
+                        match self.calls.get(&key) {
+                            Some(owner) => *owner != usize::MAX,
+                            None => self
+                                .calls
+                                .contains_key(&continuation::archived_call_key(&key)),
+                        }
+                    })
+                })
+        })
+    }
+    fn has_archived_call_in_open_turn(&self, body: &Value) -> bool {
+        body["input"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .rev()
+                .take_while(|item| item["type"] != "message" || item["role"] != "assistant")
+                .any(|item| {
+                    item["call_id"].as_str().is_some_and(|id| {
+                        let key = continuation::hash("call", id);
+                        self.calls
+                            .contains_key(&continuation::archived_call_key(&key))
+                    })
+                })
+        })
+    }
+    fn remember_call(&mut self, id: &str, target: usize) -> bool {
+        let key = continuation::hash("call", id);
+        let target = if self
+            .calls
+            .contains_key(&continuation::archived_call_key(&key))
+        {
+            usize::MAX
+        } else {
+            target
+        };
+        remember(&mut self.calls, "call", id, target)
+    }
     /// Responses replay follows observed affinity. Unknown vendor state is
     /// forwarded intact for the vendor to validate, as in Magpie.
     fn resolve_replay(&self, body: &Value, session: Option<&str>) -> Result<Option<usize>, ()> {
@@ -929,7 +974,7 @@ impl Bindings {
             if self.full() {
                 break;
             }
-            changed |= remember(&mut self.calls, "call", id, target);
+            changed |= self.remember_call(id, target);
         }
         if let Some(choices) = response.get("choices").and_then(Value::as_array) {
             for call in choices
@@ -942,7 +987,7 @@ impl Bindings {
                     break;
                 }
                 if let Some(id) = call["id"].as_str().filter(|id| id.len() <= 256) {
-                    changed |= remember(&mut self.calls, "call", id, target);
+                    changed |= self.remember_call(id, target);
                 }
             }
         }
@@ -964,7 +1009,7 @@ impl Bindings {
             if self.full() {
                 break;
             }
-            changed |= remember(&mut self.calls, "call", id, target);
+            changed |= self.remember_call(id, target);
         }
         for item in items {
             if self.full() {
@@ -981,7 +1026,7 @@ impl Bindings {
             }
             if item["type"] == "function_call" {
                 if let Some(id) = item["call_id"].as_str().filter(|id| id.len() <= 256) {
-                    changed |= remember(&mut self.calls, "call", id, target);
+                    changed |= self.remember_call(id, target);
                 }
             }
         }
@@ -1712,8 +1757,14 @@ async fn execute(
     } else {
         None
     };
-    let visible_chat_replay = matches!(agent, "workbuddy" | "workbuddy-ai")
-        && protocol == Protocol::Chat
+    let visible_history_replay = matches!(
+        (agent, protocol),
+        ("workbuddy" | "workbuddy-ai", Protocol::Chat)
+            | (
+                "deepseek-harness",
+                Protocol::Chat | Protocol::Anthropic | Protocol::Responses
+            )
+    ) && compact.is_none()
         && !opaque_continuation(protocol, &original)
         && length::portable(&projection);
     let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
@@ -1722,16 +1773,29 @@ async fn execute(
         && session.targets.len() == 1
         && !opaque_continuation(protocol, &original)
         && completed_tool_history(&projection);
+    let harness_chat = agent == "deepseek-harness" && protocol == Protocol::Chat;
+    let harness_tool_history = harness_chat
+        && compact.is_none()
+        && !opaque_continuation(protocol, &original)
+        && completed_tool_history(&projection);
+    let harness_next_user_turn = harness_tool_history
+        && named_conversation
+        && session.group.affinity == "turn"
+        && user_follow_up_after_tool_reply(&projection);
     // Counts and standalone startup probes cannot claim or change conversation ownership.
     let scoped = if count_tokens || desktop_probe {
         Arc::new(scopes::Conversation::default())
     } else {
         let policy = if responses_replay {
             scopes::HistoryPolicy::ResponsesReplay
-        } else if visible_chat_replay {
-            scopes::HistoryPolicy::VisibleChatReplay
+        } else if visible_history_replay {
+            scopes::HistoryPolicy::VisibleHistoryReplay
         } else if portable_tool_history {
             scopes::HistoryPolicy::Portable
+        } else if harness_tool_history {
+            scopes::HistoryPolicy::OwnedToolHistory {
+                next_user_turn: harness_next_user_turn,
+            }
         } else {
             scopes::HistoryPolicy::Strict
         };
@@ -1790,7 +1854,14 @@ async fn execute(
                         )
                     })
                 });
-            if portable_tool_history {
+            if harness_next_user_turn
+                && pinned != Some(usize::MAX)
+                && bindings.knows_tool_calls(&projection)
+            {
+                Ok(None)
+            } else if harness_chat && bindings.has_archived_call_in_open_turn(&projection) {
+                Err(())
+            } else if portable_tool_history {
                 // An existing named scope still pins its destination. A self-contained
                 // transcript can start a new single-target scope after a model switch.
                 Ok(pinned)
@@ -3331,7 +3402,7 @@ async fn execute(
                     if let Some(items) = projection["input"].as_array() {
                         for id in items.iter().filter(|item| item["type"] == "function_call").filter_map(|item| item["call_id"].as_str()) {
                             if bindings.full() { break; }
-                            changed |= remember(&mut bindings.calls, "call", id, index);
+                            changed |= bindings.remember_call(id, index);
                         }
                     }
                     if changed { bindings.persist(); }
@@ -3498,6 +3569,21 @@ fn completed_tool_history(projection: &Value) -> bool {
         }
     }
     !seen.is_empty() && pending.is_empty()
+}
+
+fn user_follow_up_after_tool_reply(projection: &Value) -> bool {
+    projection["input"]
+        .as_array()
+        .and_then(|items| items.split_last())
+        .is_some_and(|(last, history)| {
+            last["type"] == "message"
+                && last["role"] == "user"
+                && history
+                    .iter()
+                    .rev()
+                    .take_while(|item| item["type"] != "function_call_output")
+                    .any(|item| item["type"] == "message" && item["role"] == "assistant")
+        })
 }
 
 fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {

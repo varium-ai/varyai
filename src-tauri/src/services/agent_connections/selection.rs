@@ -385,7 +385,25 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
                     })
                 })
             {
-                put(&mut file.installed, &path, Some(choice.clone()))?;
+                if old.app == "zcode" && choice["providerId"] == "varyai-shared-catalog" {
+                    let projected = &file.installed["config"]["defaultModelSelection"];
+                    let preferred = choice["options"]["reasoningLevel"]
+                        .as_str()
+                        .or_else(|| {
+                            (projected["modelId"] == choice["modelId"])
+                                .then(|| projected["options"]["reasoningLevel"].as_str())
+                                .flatten()
+                        })
+                        .map(str::to_owned);
+                    put(&mut file.installed, &path, Some(choice.clone()))?;
+                    crate::services::agent_clients::complete_zcode_default_selection(
+                        &mut file.installed,
+                        preferred.as_deref(),
+                    )
+                    .map_err(|_| FAILED)?;
+                } else {
+                    put(&mut file.installed, &path, Some(choice.clone()))?;
+                }
             }
         }
     }

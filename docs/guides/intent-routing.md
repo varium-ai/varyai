@@ -413,6 +413,18 @@ Before dispatch, supported text and tool schemas are estimated at four UTF-8 byt
 
 An observed, successfully completed plain-history turn has soft affinity: as its replayable history grows it may move to a larger member. Capability groups with per-turn affinity use the current priority on the next replayable turn, including after a member is re-enabled or reordered. Requests with response references, tool state, encrypted reasoning or checkpoints remain bound to their producer; ambiguous submission, interrupted output and pending tool calls do not become portable. A restart conservatively restores hard affinity until another complete plain turn is observed. Codex Responses can recover from an explicit upstream encrypted-state refusal using the bounded same-destination cleanup described below; initial requests retain their state. Capacity-only refreshes preserve unchanged static transport identity. Existing Codex conversations can retain their initial metadata; reload/reconnect and start a new conversation to observe the new catalog. Synthetic tests do not establish real-account or installed-client acceptance.
 
+Managed WorkBuddy and DeepSeek Harness requests with self-contained visible history can continue in the same conversation when group members are removed or restored. Remaining destinations retain their exact ownership. Per-turn affinity can reselect the preferred member after an observed completed turn. Requests that depend on upstream response IDs, tool state or encrypted reasoning still require their original binding.
+
+Managed Harness Chat also resumes a saved conversation with a completed tool transcript after a membership change when the gateway can match the calls to their original, still available destination. This check also applies to observations restored from disk after a gateway restart.
+
+In a per-turn group, a Harness tool result awaiting its assistant reply stays
+with its original model. Once the transcript includes that reply, the next
+user message follows the current group order. The gateway checks the recorded
+tool calls and forwards the complete visible transcript. A completed
+transcript can follow a surviving group member after the last responder or a
+historical tool owner is disabled. Saved evidence of a completed call does
+not grant authority to send a live tool result to a different model.
+
 ## Continuation recovery after restart
 
 Normal Codex model-menu/native and authenticated external gateway requests persist **observed ownership**, not conversation text. A new runtime or menu reconnect can restore response IDs, tool-call IDs, item references, opaque-content hashes and conversation pins for the same authenticated consumer and alias. Codex Responses follows Magpie's upstream-validation approach: still-available exact destinations retain their ownership when other group members change, and unknown state is forwarded intact for upstream validation. Strict recovery requires the complete destination set to match. Target reordering remaps owners by fingerprint rather than array position. Native ingress scopes recovery by the request workspace, falling back to the authorization header, following Magpie's account-scoping convention. This namespace is separate from upstream authentication; there is no local authentication lease. Temporary editor execution remains memory-only.

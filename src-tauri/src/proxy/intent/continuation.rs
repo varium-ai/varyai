@@ -79,6 +79,12 @@ pub(super) fn hash(domain: &str, value: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
+// Store replay evidence in a separate hash domain within the existing call
+// map. A marker carries no destination and cannot resolve as a live call.
+pub(super) fn archived_call_key(call_key: &str) -> String {
+    hash("archived-call", call_key)
+}
+
 fn hex(value: &str) -> bool {
     value.len() == 64
         && value
