@@ -19,6 +19,9 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
     let _home = Home(std::env::var_os("CC_SWITCH_TEST_HOME"));
     std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
     crate::settings::reload_settings()?;
+    crate::gemini_config::write_gemini_env_text_atomic(
+        "GEMINI_CLI_CUSTOM_HEADERS=\"X-Fixture: a, b\"\n",
+    )?;
     let provider = crate::provider::Provider::with_id(
         "fixture".into(),
         "Synthetic".into(),
@@ -97,7 +100,7 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
         );
         assert_eq!(upgraded.model_map.get(name), Some(second));
         assert!(name.contains("Zeta"), "{app} unreadable model");
-        if matches!(app, "gemini" | "t3code") {
+        if app == "t3code" {
             assert!(name.is_ascii() && !name.contains(char::is_whitespace));
         }
         if app == "gemini" {
@@ -122,7 +125,7 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                         );
                         assert_eq!(
                             file.installed["modelConfigs"]["modelDefinitions"][id]["displayName"],
-                            model.name
+                            id
                         );
                         assert_eq!(
                             file.installed["modelConfigs"]["modelDefinitions"][id]["isVisible"],
@@ -175,10 +178,23 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
                 .ok_or("missing visible names")?;
             assert_eq!(visible.len(), 2);
             assert_ne!(visible[0], visible[1]);
-            assert_eq!(Some(visible), upgraded.visible_models.as_deref());
-            assert!(visible
-                .iter()
-                .all(|wire| wire.is_ascii() && !wire.contains(char::is_whitespace)));
+            if app == "gemini" {
+                assert!(visible.iter().any(|wire| wire == "Renamed · 我的模型"));
+                assert_eq!(current.model_map.get(name), Some(second));
+                let env = current
+                    .files
+                    .iter()
+                    .find(|file| matches!(file.format, Format::Env));
+                assert_eq!(
+                    env.ok_or("missing Gemini .env")?.installed["GEMINI_CLI_CUSTOM_HEADERS"],
+                    "X-Fixture: a, b, User-Agent: GeminiCLI-VaryAI"
+                );
+            } else {
+                assert_eq!(Some(visible), upgraded.visible_models.as_deref());
+                assert!(visible
+                    .iter()
+                    .all(|wire| wire.is_ascii() && !wire.contains(char::is_whitespace)));
+            }
             let selected = model_wire(&current.model_map, Some(visible), second);
             for file in &current.files {
                 if matches!(file.format, Format::Toml) {
@@ -204,7 +220,7 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
             if app == "gemini" {
                 let definitions = &reduced.files[1].installed["modelConfigs"]["modelDefinitions"];
                 assert_eq!(definitions.as_object().map(|rows| rows.len()), Some(1));
-                assert_eq!(definitions[selected]["displayName"], "Renamed · 我的模型");
+                assert_eq!(definitions[selected]["displayName"], selected);
             }
             assert_eq!(serde_json::to_value(native::get(app)?)?["model"], selected);
         }
@@ -235,7 +251,7 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
         &mut receipt,
         None,
     )?;
-    let wire = "Zhong-Wen-Lu-You-Zu";
+    let wire = gemini_group.name.as_str();
     assert_eq!(receipt.files[0].installed["GEMINI_MODEL"], wire);
     assert_eq!(receipt.files[1].installed["model"]["name"], wire);
     assert_eq!(

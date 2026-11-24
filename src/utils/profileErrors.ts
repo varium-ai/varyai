@@ -6,6 +6,7 @@ export function profileErrorMessage(
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
   const message = extractErrorMessage(value);
+  if (message === "profiles.nameExists") return t(message);
   if (message.startsWith("profiles.bundle.agentError:")) {
     const match = message.match(
       /^profiles\.bundle\.agentError:([a-z-]+):(profiles\.bundle\.[a-zA-Z]+)$/,

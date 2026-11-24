@@ -830,7 +830,6 @@
   gap: 6px;
   max-height: min(240px, 40vh);
   overflow-y: auto;
-  overscroll-behavior: contain;
   padding: 2px 1px;
 }
 .pv-editor button.pv-model-chip {
@@ -1602,6 +1601,9 @@
 }
 .pv-provider-dialog .pv-probe-results .ok {
   color: var(--mp-green);
+}
+.pv-provider-dialog .pv-inline-provider-error p {
+  color: var(--mp-red);
 }
 .pv-provider-dialog .pv-account-list {
   overflow: hidden;

@@ -44,9 +44,11 @@ export const useCreateProfileMutation = () => {
       await updateTrayMenuSafely();
       toast.success(t("profiles.createSuccess"), { closeButton: true });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, { apps }) => {
       const message = extractErrorMessage(error);
-      const detail = message?.includes("profiles.nameExists")
+      const duplicate = message === "profiles.nameExists";
+      if (duplicate && apps) return;
+      const detail = duplicate
         ? t("profiles.nameExists")
         : profileErrorMessage(error, t);
       toast.error(t("profiles.createFailed", { detail }), {

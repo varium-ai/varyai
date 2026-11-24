@@ -113,6 +113,7 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
                 menu.as_ref()?
                     .groups
                     .get(&id)
+                    .filter(|session| session.group.enabled)
                     .map(|session| session.model_entry(&id))
             })
             .collect::<Vec<_>>();
@@ -182,6 +183,7 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
             request,
             grant.id.clone(),
             &requested_model,
+            RequestIngress::Gateway,
         )
         .await;
         return if response.status().is_success() {

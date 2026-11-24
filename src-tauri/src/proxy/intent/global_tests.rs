@@ -2437,6 +2437,7 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
 async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
+    use crate::proxy::gateway::{self, KeyPolicy, Period};
     use crate::proxy::security::{
         get_security_runtime, runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
     };
@@ -2477,6 +2478,27 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
         ..Default::default()
     });
     session.targets[0].upstream = Some(provider);
+    let alias = group().alias();
+    resource.models.insert(
+        alias.clone(),
+        MenuModel {
+            alias,
+            label: "Synthetic group".into(),
+            description: "VaryAI routing group",
+            order: 0,
+        },
+    );
+    let catalog = gateway::catalog(Some(&resource));
+    let picked = catalog.models.first().ok_or("missing model choice")?;
+    let db = Arc::new(Database::memory()?);
+    let mut policy = KeyPolicy {
+        name: "Synthetic Gemini policy".into(),
+        models: vec!["exact-model".into()],
+        all_models: false,
+        token_limit: None,
+        period: Period::Never,
+    };
+    let key = db.create_gateway_key(policy.clone())?;
     runtime.set_global(resource, 0)?;
     runtime
         .connections
@@ -2487,6 +2509,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
             model_map: std::collections::BTreeMap::from([
                 ("wire-safe".into(), group().alias()),
                 ("Zhong-Wen-Lu-You-Zu".into(), group().alias()),
+                ("vendor/model · 合成供应商".into(), group().alias()),
             ]),
             visible_models: None,
             files: vec![],
@@ -2498,7 +2521,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
             listen_port: 0,
             ..Default::default()
         },
-        Arc::new(Database::memory()?),
+        db.clone(),
         None,
     )
     .with_intent_runtime(runtime);
@@ -2519,9 +2542,26 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
         .await?
         .json()
         .await?;
-    // Internally constructed legacy menus have no published display catalog.
     assert!(models["models"].is_array());
-    for wire in ["wire-safe", "Zhong-Wen-Lu-You-Zu"] {
+    db.bind_gateway_agent("gemini", Some(&key.key.id))?;
+    let denied = client
+        .post(format!("{root}/wire-safe:generateContent"))
+        .header("x-goog-api-key", "synthetic-local")
+        .json(&fixture)
+        .send()
+        .await?;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let denied: Value = denied.json().await?;
+    assert_eq!(denied["error"]["code"], "model_not_allowed");
+    assert!(rx.try_recv().is_err());
+
+    policy.models = vec![picked.model.clone()];
+    db.update_gateway_key(&key.key.id, policy)?;
+    for wire in [
+        "wire-safe",
+        "Zhong-Wen-Lu-You-Zu",
+        "vendor/model%20%C2%B7%20%E5%90%88%E6%88%90%E4%BE%9B%E5%BA%94%E5%95%86",
+    ] {
         let count = client
             .post(format!("{root}/{wire}:countTokens"))
             .header("x-goog-api-key", concat!("synthetic", "-local"))
@@ -2554,7 +2594,7 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
     }
     let response = client
         .post(format!(
-            "{root}/Zhong-Wen-Lu-You-Zu:streamGenerateContent?alt=sse"
+            "{root}/vendor/model%20%C2%B7%20%E5%90%88%E6%88%90%E4%BE%9B%E5%BA%94%E5%95%86:streamGenerateContent?alt=sse"
         ))
         .header("x-goog-api-key", concat!("synthetic", "-local"))
         .json(&fixture)

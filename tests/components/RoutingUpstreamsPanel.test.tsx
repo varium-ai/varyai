@@ -11,6 +11,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
+import { intentRoutingApi } from "@/lib/api/intentRouting";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 import i18n from "i18next";
 import { copyText } from "@/lib/clipboard";
@@ -26,6 +28,9 @@ import {
 vi.mock("@/lib/api/model-fetch", () => ({ fetchModelsForConfig: vi.fn() }));
 vi.mock("@/lib/api/provider-protocol-detection", () => ({
   detectProviderProtocols: vi.fn(),
+}));
+vi.mock("@/lib/api/intentRouting", () => ({
+  intentRoutingApi: { providers: vi.fn(async () => []) },
 }));
 
 vi.mock("@/lib/api/routingUpstreams", () => ({
@@ -712,7 +717,7 @@ describe("global upstream editor", () => {
     expect(fetch).toBeEnabled();
   });
 
-  it("clears only the discovery loading state after failure and allows retry", async () => {
+  it("shows a saved supplier's discovery error inline and clears it on retry", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     vi.mocked(routingUpstreamsApi.discover)
       .mockRejectedValueOnce(new Error("Synthetic discovery failure"))
@@ -727,6 +732,9 @@ describe("global upstream editor", () => {
       name: "providerForm.fetchModels",
     });
     fireEvent.click(fetch);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "modelProviders.errors.fetchModels",
+    );
     await waitFor(() => expect(fetch).toHaveAttribute("aria-busy", "false"));
     expect(fetch).toBeEnabled();
     expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
@@ -734,8 +742,68 @@ describe("global upstream editor", () => {
     expect(
       await screen.findByRole("button", { name: "retry-model" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(routingUpstreamsApi.discover).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["close", "timeout"] as const)(
+    "dismisses a new supplier's model discovery error via %s without leaving the draft",
+    async (dismissal) => {
+      vi.mocked(fetchModelsForConfig).mockRejectedValueOnce(
+        new Error("synthetic-private-detail"),
+      );
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      const editor = screen.getByRole("dialog", {
+        name: "providerFlow.custom",
+      });
+      const name = within(editor).getByLabelText("modelProviders.name");
+      const endpoint = within(editor).getByLabelText("modelProviders.baseUrl");
+      fireEvent.change(name, { target: { value: "Unsaved supplier" } });
+      fireEvent.change(endpoint, {
+        target: { value: "https://fixture.example/v1" },
+      });
+      fireEvent.change(within(editor).getByLabelText("modelProviders.apiKey"), {
+        target: { value: "synthetic-key" },
+      });
+      const fetch = within(editor).getByRole("button", {
+        name: "providerForm.fetchModels",
+      });
+      vi.useFakeTimers();
+      try {
+        await act(async () => fireEvent.click(fetch));
+        const error = within(editor).getByRole("alert");
+        expect(error).toHaveClass("pv-inline-provider-error");
+        expect(error).toHaveTextContent("modelProviders.errors.fetchModels");
+        expect(error).not.toHaveTextContent("synthetic-private-detail");
+        expect(toast.error).not.toHaveBeenCalled();
+
+        if (dismissal === "close") {
+          fireEvent.click(
+            within(error).getByRole("button", { name: "common.close" }),
+          );
+        } else {
+          act(() => vi.advanceTimersByTime(5999));
+          expect(error).toBeVisible();
+          act(() => vi.advanceTimersByTime(1));
+        }
+        expect(within(editor).queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.getAllByRole("dialog")).toEqual([editor]);
+        expect(name).toHaveValue("Unsaved supplier");
+        expect(endpoint).toHaveValue("https://fixture.example/v1");
+        expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("uses a tri-state select-all checkbox beside model discovery", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
@@ -864,6 +932,95 @@ describe("global upstream editor", () => {
     expect(all.closest("label")?.nextElementSibling).toBe(fetch);
     expect(fetch).toBeDisabled();
   });
+
+  it.each(["all", "partial", "empty", "limited"] as const)(
+    "preselects a new provider's fetched models and saves the %s selection",
+    async (selection) => {
+      const catalog = [
+        { id: "first-chat", ownedBy: null },
+        { id: "second-chat", ownedBy: null },
+        { id: "image-fixture", ownedBy: null, kind: "image" as const },
+        ...(selection === "limited"
+          ? Array.from({ length: 254 }, (_, index) => ({
+              id: `extra-chat-${index}`,
+              ownedBy: null,
+            }))
+          : []),
+      ];
+      vi.mocked(fetchModelsForConfig).mockResolvedValueOnce(catalog);
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      fireEvent.change(screen.getByLabelText("modelProviders.name"), {
+        target: { value: "Synthetic new provider" },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.baseUrl"), {
+        target: { value: "https://fixture.example/v1" },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
+        target: { value: "synthetic-key" },
+      });
+
+      const fetch = screen.getByRole("button", {
+        name: "providerForm.fetchModels",
+      });
+      const selectAll = screen.getByRole("checkbox", {
+        name: "providerEditor.selectAll",
+      });
+      fireEvent.click(fetch);
+      const second = await screen.findByRole("button", { name: "second-chat" });
+      const image = screen.getByRole("button", { name: "image-fixture" });
+      if (selection === "limited") expect(selectAll).toBePartiallyChecked();
+      else expect(selectAll).toBeChecked();
+      expect(second).toHaveAttribute("aria-pressed", "true");
+      expect(image).toHaveAttribute("aria-pressed", "true");
+
+      if (selection === "partial") fireEvent.click(second);
+      if (selection === "empty") {
+        fireEvent.click(selectAll);
+        fireEvent.click(image);
+        vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+          ...catalog,
+          { id: "refresh-chat", ownedBy: null },
+        ]);
+        fireEvent.click(fetch);
+        expect(
+          await screen.findByRole("button", { name: "refresh-chat" }),
+        ).toHaveAttribute("aria-pressed", "false");
+        expect(selectAll).not.toBeChecked();
+      }
+
+      const savedModels =
+        selection === "empty"
+          ? []
+          : catalog
+              .slice(0, 256)
+              .filter(
+                ({ id }) => selection !== "partial" || id !== "second-chat",
+              )
+              .map((row) => ({
+                model: row.id,
+                ...("kind" in row ? { kind: row.kind } : {}),
+              }));
+      fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+      await waitFor(() =>
+        expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: expect.objectContaining({
+              mode: "picked",
+              models: savedModels,
+            }),
+          }),
+        ),
+      );
+    },
+  );
 
   it("shows subscription allowance beneath the provider name without opening the form", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
@@ -1629,6 +1786,60 @@ describe("global upstream editor", () => {
       ).toHaveTextContent("modelProviders.matchedModels");
     },
   );
+  it("shows prepared models for automatic providers without saved model rows", async () => {
+    const vendor = {
+      ...primary,
+      source: { ...primary.source, mode: "vendor" as const, models: [] },
+    };
+    const picked = {
+      ...vendor,
+      id: "empty-selection",
+      name: "Synthetic empty selection",
+      source: { ...vendor.source, mode: "picked" as const },
+    };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([vendor, picked]);
+    vi.mocked(intentRoutingApi.providers).mockResolvedValueOnce(
+      [vendor, picked].map(({ id, name }) => ({
+        id,
+        name,
+        taskEligible: true,
+        classifierEligible: false,
+        models: [{ id: "cached-vision-v3", name: "Cached vision" }],
+      })),
+    );
+    const translations = structuredClone(
+      i18n.getResourceBundle("zh", "translation"),
+    );
+    i18n.addResourceBundle(
+      "zh",
+      "translation",
+      {
+        modelProviders: { modelCount_other: "Models: {{count}}" },
+      },
+      true,
+      true,
+    );
+    try {
+      mount();
+      const row = await screen.findByRole("article", { name: vendor.name });
+      expect(await within(row).findByText(/Models: 1/)).toBeVisible();
+      expect(
+        screen.getByRole("article", { name: picked.name }),
+      ).toHaveTextContent("Models: 0");
+      fireEvent.change(
+        screen.getByRole("searchbox", { name: "modelProviders.find" }),
+        {
+          target: { value: "Cached vision" },
+        },
+      );
+      expect(row).toHaveTextContent("cached-vision-v3");
+      expect(screen.queryByRole("article", { name: picked.name })).toBeNull();
+      expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    } finally {
+      i18n.removeResourceBundle("zh", "translation");
+      i18n.addResourceBundle("zh", "translation", translations);
+    }
+  });
   it("distinguishes a saved single key from a provider that still needs a key", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       primary,
@@ -1962,6 +2173,7 @@ describe("global upstream editor", () => {
       screen.getByRole("button", { name: "providerEditor.detect" }),
     );
     const result = await screen.findByRole("alert");
+    expect(result).toHaveClass("pv-inline-provider-error");
     expect(result).toHaveTextContent("modelProviders.errors.testModels");
     fireEvent.click(
       within(result).getByRole("button", { name: "common.close" }),
@@ -2039,6 +2251,79 @@ describe("global upstream editor", () => {
       screen.getByRole("button", { name: "providerEditor.detect" }),
     ).toBeEnabled();
   });
+  it.each(["unavailable", "image-only"])(
+    "detects Gemini through the OpenAI catalog when Gemini model discovery is %s",
+    async (nativeCatalog) => {
+      const baseUrl = "https://relay.example/v1";
+      const apiKey = "synthetic-probe-key";
+      if (nativeCatalog === "unavailable") {
+        vi.mocked(fetchModelsForConfig).mockRejectedValueOnce(
+          new Error("synthetic-catalog-failure"),
+        );
+      } else {
+        vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+          { id: "synthetic-image", ownedBy: null, kind: "image" },
+        ]);
+      }
+      vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+        { id: "synthetic-chat", ownedBy: null },
+      ]);
+      vi.mocked(detectProviderProtocols).mockResolvedValueOnce([
+        {
+          format: "gemini_native",
+          text: { status: "verified" },
+          stream: { status: "verified" },
+        },
+      ]);
+      mount();
+      const add = await screen.findByRole("button", {
+        name: "modelProviders.add",
+      });
+      await waitFor(() => expect(add).toBeEnabled());
+      fireEvent.click(add);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "providerFlow.custom" }),
+      );
+      fireEvent.change(screen.getByLabelText("modelProviders.baseUrl"), {
+        target: { value: baseUrl },
+      });
+      fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
+        target: { value: apiKey },
+      });
+      const gemini = screen.getByRole("radio", { name: "Gemini" });
+      fireEvent.click(gemini);
+      fireEvent.click(
+        screen.getByRole("button", { name: "providerEditor.detect" }),
+      );
+
+      expect(await screen.findByText("synthetic-chat")).toBeVisible();
+      expect(detectProviderProtocols).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl, apiKey, model: "synthetic-chat" }),
+      );
+      expect(
+        vi
+          .mocked(fetchModelsForConfig)
+          .mock.calls.map((call) => [call[0], call[5]]),
+      ).toEqual([
+        [
+          baseUrl,
+          {
+            apiFormat: "gemini_native",
+            requestHeaders: { "x-goog-api-key": apiKey },
+          },
+        ],
+        [
+          baseUrl,
+          {
+            apiFormat: "openai_chat",
+            requestHeaders: { Authorization: `Bearer ${apiKey}` },
+          },
+        ],
+      ]);
+      expect(gemini).toHaveAttribute("aria-checked", "true");
+      expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+    },
+  );
   it("can choose a probe model from discovery without changing the user's model selection", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       { ...primary, source: { ...primary.source, models: [] } },

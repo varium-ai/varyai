@@ -344,8 +344,17 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         Ok(body) if body.is_object() => body,
         _ => return error(StatusCode::BAD_REQUEST, "routing_invalid_json"),
     };
-    let Some(model) = gemini
-        .map(|(model, _)| model)
+    let decoded = if let Some((wire, _)) = gemini.filter(|_| app == "gemini") {
+        let Ok(decoded) = percent_encoding::percent_decode_str(wire).decode_utf8() else {
+            return error(StatusCode::BAD_REQUEST, "routing_model_invalid");
+        };
+        Some(decoded)
+    } else {
+        None
+    };
+    let Some(model) = decoded
+        .as_deref()
+        .or_else(|| gemini.map(|(model, _)| model))
         .or_else(|| body["model"].as_str())
     else {
         return error(StatusCode::BAD_REQUEST, "routing_model_required");
@@ -515,6 +524,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         Request::from_parts(parts, Body::from(bytes)),
         format!("agent:{app}"),
         &alias,
+        super::handler_context::RequestIngress::Direct,
     )
     .await;
     match grant {
