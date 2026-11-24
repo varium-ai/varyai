@@ -862,6 +862,7 @@ impl Bindings {
         }
         Ok(selected)
     }
+    #[cfg(test)]
     fn known_opaque(&self, body: &Value) -> bool {
         body.get("input")
             .and_then(Value::as_array)
@@ -1748,6 +1749,7 @@ async fn execute(
         );
         match scoped {
             Ok(scoped) => scoped,
+            Err("routing_unknown_continuation") => Arc::new(scopes::Conversation::default()),
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
     };
@@ -1811,10 +1813,7 @@ async fn execute(
         } else {
             bindings.resolve(&projection, conversation.as_deref())
         };
-        let mut pinned = match resolution {
-            Ok(p) => p,
-            Err(_) => return fail(StatusCode::CONFLICT, "routing_unknown_continuation"),
-        };
+        let mut pinned = resolution.ok().flatten();
         let original_owner = pinned;
         let mut affinity = None;
         if (compact.is_none() || route_compaction)
@@ -1835,9 +1834,6 @@ async fn execute(
                     affinity = pinned.take();
                 }
             }
-        }
-        if native_request && !responses_replay && !bindings.known_opaque(&projection) {
-            return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
         }
         // A stateless summary may use another member while its checkpoint resumes the answer session.
         let checkpoint_owner = if route_compaction && pinned.is_none() {

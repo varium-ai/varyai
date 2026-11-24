@@ -1,7 +1,13 @@
 // Adapted from the reference routing stage (MIT), without credential-derived labels.
 // See third_party/routing-reference/LICENSE.
-import { Bot } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Bot, ChevronDown, Share2 } from "lucide-react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -25,14 +31,66 @@ import type {
 function live(row?: RoutingTrace) {
   return row?.state === "routing" || row?.state === "streaming";
 }
-const hues: Record<string, string> = {
-  claude: "#d97757",
-  "claude-desktop": "#d97757",
-  codex: "#7f83d8",
-  gemini: "#0ea5e9",
-  opencode: "#c69a14",
-  pi: "#10b981",
+const AGENT_PALETTE = [
+  "#d97757",
+  "#bd8638",
+  "#a59234",
+  "#849e4a",
+  "#5aa66c",
+  "#25a98f",
+  "#00a6b0",
+  "#2e9fc9",
+  "#5e95d7",
+  "#858ad7",
+  "#a47fca",
+  "#bb77b1",
+];
+const AGENT_HUE_INDEX: Record<string, number> = {
+  claude: 0,
+  "claude-desktop": 0,
+  codex: 9,
+  gemini: 7,
+  "gemini-cli": 7,
+  copilot: 10,
+  cursor: 5,
+  opencode: 2,
+  crush: 11,
+  goose: 3,
+  pi: 4,
+  omp: 11,
+  omo: 10,
+  dsh: 6,
+  qoder: 8,
+  qwen: 6,
+  trae: 1,
+  windsurf: 5,
 };
+function assignAgentHues(
+  agents: Array<string | undefined>,
+): Map<string, string> {
+  const assigned = new Map<string, string>();
+  const used = new Set<string>();
+  for (const rawId of agents) {
+    if (!rawId || assigned.has(rawId)) continue;
+    let start = AGENT_HUE_INDEX[rawId];
+    if (start == null) {
+      let hash = 0;
+      for (const ch of rawId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+      start = hash % AGENT_PALETTE.length;
+    }
+    let color = AGENT_PALETTE[start];
+    for (let offset = 0; offset < AGENT_PALETTE.length; offset++) {
+      const candidate = AGENT_PALETTE[(start + offset) % AGENT_PALETTE.length];
+      if (!used.has(candidate)) {
+        color = candidate;
+        break;
+      }
+    }
+    used.add(color);
+    assigned.set(rawId, color);
+  }
+  return assigned;
+}
 const seat = (c: RoutingCandidate) =>
   c.account?.id
     ? `${c.account.id}\0${c.model}\0${c.fixedEffort ?? ""}`
@@ -139,18 +197,20 @@ export function RoutingStage({
   const sourceKeys = sourceCards.map(
     (trace) => trace && routingSourceKey(trace),
   );
+  const agentHues = assignAgentHues([
+    row?.agent,
+    ...traces.map((trace) => trace.agent),
+    ...sourceRows.map((trace) => trace.agent),
+  ]);
+  const agentHue = (agent?: string) =>
+    (agent ? agentHues.get(agent) : undefined) ?? "var(--rt-accent)";
   const currentSource = row && routingSourceKey(row);
   const seats = new Map<
     string,
     { candidate: RoutingCandidate; trace: RoutingTrace; index: number }
   >();
   for (const trace of traces) {
-    const attempted = new Set<number>();
-    for (const step of trace.steps) {
-      const index = attemptCandidateIndex(trace, step);
-      if (index != null) attempted.add(index);
-    }
-    for (const index of [...attempted].sort((left, right) => left - right)) {
+    for (let index = 0; index < trace.candidates.length; index++) {
       const candidate = trace.candidates[index];
       const key = candidateKey(trace, candidate);
       const previous = seats.get(key);
@@ -166,6 +226,59 @@ export function RoutingStage({
     }
   }
   const candidates = [...seats.values()];
+  const routeKeyOf = (trace: RoutingTrace) =>
+    trace.groupName?.trim() || modelLabel?.(trace) || trace.model;
+  const isRoutingGroup = (trace: RoutingTrace) => {
+    const name = trace.groupName?.trim();
+    return Boolean(
+      name && name !== "Direct model" && trace.strategy !== "direct",
+    );
+  };
+  const routeGroups: Array<{
+    key: string;
+    label: string;
+    modelRef: string;
+    isGroup: boolean;
+    strategy: string;
+    agents: string[];
+    items: typeof candidates;
+  }> = [];
+  const routeGroupMap = new Map<string, (typeof routeGroups)[number]>();
+  for (const entry of candidates) {
+    const key = routeKeyOf(entry.trace);
+    let group = routeGroupMap.get(key);
+    if (!group) {
+      group = {
+        key,
+        label: key,
+        modelRef: entry.trace.model,
+        isGroup: isRoutingGroup(entry.trace),
+        strategy: entry.trace.strategy,
+        agents: [],
+        items: [],
+      };
+      routeGroupMap.set(key, group);
+      routeGroups.push(group);
+    }
+    const agentId = APP_IDS.find((id) => id === entry.trace.agent);
+    const agentDisplay = agentId
+      ? agentId === "claude"
+        ? t("apps.claudeCode")
+        : t(`apps.${agentId}`)
+      : entry.trace.agent;
+    if (agentDisplay && !group.agents.includes(agentDisplay)) {
+      group.agents.push(agentDisplay);
+    }
+    group.items.push(entry);
+  }
+  const hasGroupHeaders = (group: (typeof routeGroups)[number]) =>
+    stageLayout !== "compact" && (group.isGroup || routeGroups.length > 1);
+  const [collapsedSubs, setCollapsedSubs] = useState<Record<string, boolean>>(
+    {},
+  );
+  const visibleCandidates = routeGroups.flatMap((group) =>
+    hasGroupHeaders(group) && collapsedSubs[group.key] ? [] : group.items,
+  );
   const providersByName = new Map<string, Set<string>>();
   for (const provider of [
     ...upstreams.map(({ id, name }) => ({ id, name })),
@@ -180,19 +293,31 @@ export function RoutingStage({
     providersByName.set(name, ids);
   }
   const candidateIndex = new Map(
-    candidates.map(({ candidate, trace }, index) => [
+    visibleCandidates.map(({ candidate, trace }, index) => [
       candidateKey(trace, candidate),
       index,
     ]),
   );
-  const [paths, setPaths] = useState<{ sources: string[]; targets: string[] }>({
+  const [paths, setPaths] = useState<{
+    sources: string[];
+    subs: { key: string; d: string }[];
+    targets: string[];
+  }>({
     sources: [],
+    subs: [],
     targets: [],
   });
   const [narrow, setNarrow] = useState(false);
   const layoutKey = JSON.stringify([
     sourceKeys,
-    candidates.map(({ candidate, trace }) => candidateKey(trace, candidate)),
+    visibleCandidates.map(({ candidate, trace }) =>
+      candidateKey(trace, candidate),
+    ),
+    routeGroups.map((group) => [
+      group.key,
+      hasGroupHeaders(group),
+      !!collapsedSubs[group.key],
+    ]),
   ]);
   const busy = new Set(
     concurrent
@@ -226,9 +351,19 @@ export function RoutingStage({
         ?.getBoundingClientRect();
       const hub = node.querySelector(".rt-hub")?.getBoundingClientRect();
       const list = node.querySelector(".rt-accts")?.getBoundingClientRect();
-      const candidates = [
-        ...node.querySelectorAll(".rt-accts li:not(.idle)"),
-      ].map((child) => child.getBoundingClientRect());
+      const subElements = [
+        ...node.querySelectorAll<HTMLElement>(".rt-accts li.rt-sub"),
+      ];
+      const subRects = new Map<string, DOMRect>();
+      for (const el of subElements) {
+        const key = el.getAttribute("data-sub-key");
+        if (key) subRects.set(key, el.getBoundingClientRect());
+      }
+      const candidateElements = [
+        ...node.querySelectorAll<HTMLElement>(
+          ".rt-accts li:not(.idle):not(.rt-sub)",
+        ),
+      ];
       if (!sources.length || !hub) return;
       const wire = (a: DOMRect, b: DOMRect, source = false) => {
         if (b.left < a.right) {
@@ -246,6 +381,14 @@ export function RoutingStage({
         const middle = (x1 + x2) / 2;
         return `M${x1},${y1} C${middle},${y1} ${middle},${y2} ${x2},${y2}`;
       };
+      const fromSub = (sub: DOMRect, target: DOMRect) => {
+        const subLeft = sub.left - box.left;
+        const x = subLeft + 9;
+        const y1 = sub.top + sub.height / 2 - box.top;
+        const x2 = target.left - box.left;
+        const y2 = target.top + target.height / 2 - box.top;
+        return `M${subLeft} ${y1} Q${x} ${y1} ${x} ${y1 + 9} L${x} ${y2 - 9} Q${x} ${y2} ${x2} ${y2}`;
+      };
       setPaths({
         sources: sources.map((source) =>
           sourceList &&
@@ -253,11 +396,28 @@ export function RoutingStage({
             ? ""
             : wire(source, hub, true),
         ),
-        targets: candidates.map((candidate) =>
-          list && (candidate.bottom <= list.top || candidate.top >= list.bottom)
-            ? ""
-            : wire(hub, candidate),
-        ),
+        subs: subElements.map((el) => {
+          const key = el.getAttribute("data-sub-key") ?? "";
+          const rect = el.getBoundingClientRect();
+          const d =
+            list && (rect.bottom <= list.top || rect.top >= list.bottom)
+              ? ""
+              : wire(hub, rect);
+          return { key, d };
+        }),
+        targets: candidateElements.map((el) => {
+          const candidate = el.getBoundingClientRect();
+          if (
+            list &&
+            (candidate.bottom <= list.top || candidate.top >= list.bottom)
+          )
+            return "";
+          const parentKey = el.getAttribute("data-parent-sub");
+          const parentRect = parentKey ? subRects.get(parentKey) : undefined;
+          return parentRect
+            ? fromSub(parentRect, candidate)
+            : wire(hub, candidate);
+        }),
       });
     }
     layout();
@@ -302,7 +462,7 @@ export function RoutingStage({
       ref={stage}
       style={
         {
-          "--rt-agent": hues[row?.agent ?? ""] ?? "var(--rt-accent)",
+          "--rt-agent": agentHue(row?.agent),
         } as CSSProperties
       }
     >
@@ -324,17 +484,34 @@ export function RoutingStage({
                     index - paths.sources.length
                 );
               });
-              return matching.some((trace) => isAnswering(trace)) && animate
-                ? "live"
-                : matching.some(
-                      (trace) =>
-                        trace.state === "completed" || isAnswering(trace),
-                    )
-                  ? "lit"
-                  : "";
+              if (matching.some((trace) => isAnswering(trace)) && animate)
+                return "live";
+              if (
+                matching.some(
+                  (trace) => trace.state === "completed" || isAnswering(trace),
+                )
+              )
+                return "lit";
+              if (index >= paths.sources.length) return "rest";
+              return "";
             })()}
           />
         ))}
+        {paths.subs.map(({ key, d }) => {
+          const groupTraces = traces.filter(
+            (trace) => routeKeyOf(trace) === key,
+          );
+          const subClass =
+            groupTraces.some((trace) => isAnswering(trace)) && animate
+              ? "live"
+              : groupTraces.some(
+                    (trace) =>
+                      trace.state === "completed" || isAnswering(trace),
+                  )
+                ? "lit"
+                : "";
+          return <path key={`sub:${key}`} d={d} className={subClass} />;
+        })}
       </svg>
       <RoutingPackets
         compact={stageLayout === "compact"}
@@ -344,7 +521,7 @@ export function RoutingStage({
           animate && !replay
             ? visibleFlights.map((trace) => ({
                 row: trace,
-                color: hues[trace.agent] ?? "var(--rt-accent)",
+                color: agentHue(trace.agent),
                 paths: packetPaths(trace),
               }))
             : undefined
@@ -354,7 +531,7 @@ export function RoutingStage({
         replay={replay}
         speed={speed}
       />
-      <div className="rt-srcs">
+      <div className={`rt-srcs${sourceCards.length > 1 ? " many" : ""}`}>
         {sourceCards.map((sourceTrace, index) => {
           const source = sourceTrace?.agent;
           const key = sourceKeys[index];
@@ -374,10 +551,10 @@ export function RoutingStage({
           return (
             <div
               key={key ?? "idle"}
-              className={`rt-node rt-src ${traces.some((trace) => routingSourceKey(trace) === key && isAnswering(trace)) ? "now" : ""}`}
+              className={`rt-node rt-src${sourceTrace ? " has-agent" : ""}${traces.some((trace) => routingSourceKey(trace) === key && isAnswering(trace)) ? " now" : ""}`}
               style={
                 {
-                  "--rt-agent": hues[source ?? ""] ?? "var(--rt-accent)",
+                  "--rt-agent": agentHue(source),
                 } as CSSProperties
               }
               title={
@@ -401,18 +578,6 @@ export function RoutingStage({
                 )}
               </span>
               <b>{name}</b>
-              {sourceModel && (modelLabel || (row && selectedSource)) && (
-                <small
-                  className={stageLayout === "compact" ? "sr-only" : undefined}
-                  title={
-                    sourceTrace?.model !== sourceModel
-                      ? sourceTrace?.model
-                      : undefined
-                  }
-                >
-                  {sourceModel}
-                </small>
-              )}
             </div>
           );
         })}
@@ -438,211 +603,282 @@ export function RoutingStage({
             )}
           </li>
         )}
-        {candidates.map(({ candidate, trace, index }) => {
-          const supplier = upstreams.find(
-            (provider) =>
-              provider.id ===
-              (candidate.sourceProviderId ?? candidate.providerId),
+        {routeGroups.map((group) => {
+          const showSub = hasGroupHeaders(group);
+          const isOpen = !collapsedSubs[group.key];
+          const groupActive = group.items.some(
+            ({ trace }) => isAnswering(trace) || trace.state === "completed",
           );
-          const chosen = chosenCandidate(trace);
-          const active = isAnswering(trace);
-          const observedAt =
-            (liveObservations ? now : trace.startedAt + trace.durationMs) /
-            1000;
-          // Current telemetry belongs only to this exact credential and model, never to a historical request.
-          const observation = liveObservations
-            ? (currentAccounts.find(
-                (a) =>
-                  candidate.account?.id &&
-                  a.id === candidate.account.id &&
-                  a.model === candidate.model &&
-                  a.providerId === candidate.providerId,
-              ) ?? candidate.account)
-            : candidate.account;
-          const step = [...trace.steps]
-            .reverse()
-            .find((s) => s.candidate === index);
-          const attempt = trace.steps.reduce(
-            (last, s, i) =>
-              s.kind === "attempt" && s.candidate === index ? i : last,
-            -1,
-          );
-          const wentOn =
-            attempt >= 0 &&
-            trace.steps.some(
-              (s, i) =>
-                i > attempt &&
-                s.candidate !== index &&
-                attemptCandidateIndex(trace, s) != null,
-            );
-          const failed =
-            ["rejected", "failed", "first_token_timeout"].includes(
-              step?.kind ?? "",
-            ) ||
-            (chosen === index && trace.state === "failed");
-          const passed = ["context", "images", "paused"].includes(
-            step?.kind ?? "",
-          );
-          const resting = (observation?.restUntil ?? 0) > observedAt;
-          const answering = chosen === index && active;
-          const answered = chosen === index && trace.state === "completed";
-          const singleKey =
-            supplier?.source.kind === "api" &&
-            Number(!supplier.transport?.primaryOff && supplier.hasApiKey) +
-              (supplier.transport?.keys.filter((key) => key.enabled).length ??
-                0) ===
-              1;
-          const accountKind = singleKey
-            ? "provider"
-            : (candidate.account?.kind ?? "provider");
-          const providerName = accountName(candidate);
-          const duplicateName =
-            (providersByName.get(providerName.trim().toLocaleLowerCase())
-              ?.size ?? 0) > 1;
-          const displayName =
-            (accountKind !== "provider" && candidate.account?.label) ||
-            (duplicateName
-              ? `${providerName} · ${candidate.sourceProviderId ?? candidate.providerId}`
-              : providerName);
-          const plan =
-            accountKind === "account" ? observation?.plan : undefined;
-          const windows =
-            observation?.windows.filter(
-              (w) => Number.isFinite(w.usedPercent) && w.resetsAt > observedAt,
-            ) ?? [];
-          const quota = windows.reduce<(typeof windows)[number] | undefined>(
-            (fullest, w) =>
-              !fullest || w.usedPercent > fullest.usedPercent ? w : fullest,
-            undefined,
-          );
-          const used = quota
-            ? Math.max(0, Math.min(100, quota.usedPercent))
-            : undefined;
-          const remaining = (until: number) => {
-            return t("routingPage.resetIn", {
-              time: formatRoutingDuration((until - observedAt) * 1000, t),
-            });
-          };
-          const baseStatus = resting
-            ? t("routingPage.seatResting", {
-                time: remaining(observation!.restUntil),
-              })
-            : passed
-              ? t(`routingPage.step.${step!.kind}`)
-              : failed
-                ? t(
-                    wentOn
-                      ? "routingPage.seatWentOn"
-                      : "routingPage.seatFailed",
-                  )
-                : answering
-                  ? t("routingPage.seatAnswering")
-                  : answered
-                    ? t("routingPage.seatAnswered")
-                    : liveObservations &&
-                        seat(candidate) &&
-                        busy.has(seat(candidate)!)
-                      ? t("routingPage.seatAnsweringOther")
-                      : quota
-                        ? t("routingPage.seatQuota", {
-                            percent: Math.round(100 - used!),
-                            time: remaining(quota.resetsAt),
-                          })
-                        : accountKind === "account"
-                          ? t("routingPage.accountQuotaUnknown")
-                          : t(
-                              accountKind === "key"
-                                ? "routingPage.apiKey"
-                                : "routingPage.oneKey",
-                            );
-          // Keep the renewal visible when another state takes the status line.
-          const replying = answering && !resting && !passed && !failed;
-          const showResponse =
-            replying || (answered && !resting && !passed && !failed);
-          const sessionTitle = showResponse
-            ? trace.sessionTitle?.trim()
-            : undefined;
-          const sessionLabel = sessionTitle
-            ? t("routingPage.sessionTitleLabel", {
-                title: accountText(sessionTitle),
-                defaultValue: "Conversation title: {{title}}",
-              })
-            : showResponse &&
-                trace.session &&
-                /^[a-f0-9]{64}$/.test(trace.session)
-              ? t("routingPage.sessionReference", {
-                  id: trace.session.slice(0, 8),
-                })
-              : undefined;
-          const rate = showResponse ? trace.outputTokensPerSecond : undefined;
-          const rateLabel =
-            rate != null && Number.isFinite(rate) && rate > 0
-              ? t("routingPage.outputRate", {
-                  value: rate,
-                  formatParams: { value: { maximumFractionDigits: 1 } },
-                })
-              : undefined;
-          const renewal =
-            quota && !resting ? remaining(quota.resetsAt) : undefined;
-          const status = [
-            baseStatus,
-            sourceRows.length > 1 ? modelLabel?.(trace) : undefined,
-            sessionLabel,
-            rateLabel,
-            renewal && !baseStatus.includes(renewal) ? renewal : undefined,
-          ]
-            .filter(Boolean)
-            .join(" · ");
           return (
-            <li
-              key={candidateKey(trace, candidate)}
-              style={
-                {
-                  "--rt-agent": hues[trace.agent] ?? "var(--rt-accent)",
-                } as CSSProperties
-              }
-              className={`${answering || answered ? "on" : ""} ${answering ? "now" : ""} ${replying && animate && !replay ? "replying" : ""} ${failed || resting ? "rest" : ""} ${passed ? "left" : ""} ${used != null && used >= 90 ? "low" : ""}`}
-              title={`${accountText(displayName)} · ${candidate.model}${candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""} · ${status}`}
-              tabIndex={0}
-            >
-              <b>
-                <span className="rt-seat-icon">
-                  <UpstreamIcon
-                    icon={supplier ? upstreamIcon(supplier) : undefined}
-                    name={accountText(supplier?.name ?? candidate.providerName)}
-                    size={16}
-                  />
-                </span>
-                <span className="who">
-                  <AccountLabel>{displayName}</AccountLabel>
-                </span>
-                {plan && <span className="rt-seat-plan">{plan}</span>}
-                <code className="mdl" title={candidate.model}>
-                  {candidate.model}
-                  {candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""}
-                </code>
-              </b>
-              <em
-                className={`rt-seat-status${sessionLabel || rateLabel ? " has-response" : ""}`}
-              >
-                {step?.status != null &&
-                  step.status >= 400 &&
-                  step.status !== 499 && <code>{step.status}</code>}
-                {status}
-              </em>
-              {used != null && (
-                <div
-                  className="rt-seat-bar"
-                  role="progressbar"
-                  aria-label={t("routingPage.accountQuotaLeft")}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={100 - used}
+            <Fragment key={group.key}>
+              {showSub && (
+                <li
+                  className={`rt-sub${isOpen ? " open" : ""}${groupActive ? " on" : ""}`}
+                  data-sub-key={group.key}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isOpen}
+                  onClick={() =>
+                    setCollapsedSubs((prev) => ({
+                      ...prev,
+                      [group.key]: !prev[group.key],
+                    }))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setCollapsedSubs((prev) => ({
+                        ...prev,
+                        [group.key]: !prev[group.key],
+                      }));
+                    }
+                  }}
                 >
-                  <i style={{ width: `${100 - used}%` }} />
-                </div>
+                  <Share2 size={14} aria-hidden="true" />
+                  <span className="n">{group.label}</span>
+                  {group.modelRef &&
+                    group.modelRef !== group.label &&
+                    !group.modelRef.startsWith("vary-auto/") && (
+                      <code className="mdl">{group.modelRef}</code>
+                    )}
+                  <span className="chev" aria-hidden="true">
+                    <ChevronDown size={13} />
+                  </span>
+                </li>
               )}
-            </li>
+              {(!showSub || isOpen) &&
+                group.items.map(({ candidate, trace, index }) => {
+                  const supplier = upstreams.find(
+                    (provider) =>
+                      provider.id ===
+                      (candidate.sourceProviderId ?? candidate.providerId),
+                  );
+                  const chosen = chosenCandidate(trace);
+                  const active = isAnswering(trace);
+                  const observedAt =
+                    (liveObservations
+                      ? now
+                      : trace.startedAt + trace.durationMs) / 1000;
+                  // Current telemetry belongs only to this exact credential and model, never to a historical request.
+                  const observation = liveObservations
+                    ? (currentAccounts.find(
+                        (a) =>
+                          candidate.account?.id &&
+                          a.id === candidate.account.id &&
+                          a.model === candidate.model &&
+                          a.providerId === candidate.providerId,
+                      ) ?? candidate.account)
+                    : candidate.account;
+                  const step = [...trace.steps]
+                    .reverse()
+                    .find((s) => s.candidate === index);
+                  const attempt = trace.steps.reduce(
+                    (last, s, i) =>
+                      s.kind === "attempt" && s.candidate === index ? i : last,
+                    -1,
+                  );
+                  const wentOn =
+                    attempt >= 0 &&
+                    trace.steps.some(
+                      (s, i) =>
+                        i > attempt &&
+                        s.candidate !== index &&
+                        attemptCandidateIndex(trace, s) != null,
+                    );
+                  const failed =
+                    ["rejected", "failed", "first_token_timeout"].includes(
+                      step?.kind ?? "",
+                    ) ||
+                    (chosen === index && trace.state === "failed");
+                  const passed = ["context", "images", "paused"].includes(
+                    step?.kind ?? "",
+                  );
+                  const resting = (observation?.restUntil ?? 0) > observedAt;
+                  const answering = chosen === index && active;
+                  const answered =
+                    chosen === index && trace.state === "completed";
+                  const singleKey =
+                    supplier?.source.kind === "api" &&
+                    Number(
+                      !supplier.transport?.primaryOff && supplier.hasApiKey,
+                    ) +
+                      (supplier.transport?.keys.filter((key) => key.enabled)
+                        .length ?? 0) ===
+                      1;
+                  const accountKind = singleKey
+                    ? "provider"
+                    : (candidate.account?.kind ?? "provider");
+                  const providerName = accountName(candidate);
+                  const duplicateName =
+                    (providersByName.get(
+                      providerName.trim().toLocaleLowerCase(),
+                    )?.size ?? 0) > 1;
+                  const displayName =
+                    (accountKind !== "provider" && candidate.account?.label) ||
+                    (duplicateName
+                      ? `${providerName} · ${candidate.sourceProviderId ?? candidate.providerId}`
+                      : providerName);
+                  const plan =
+                    accountKind === "account" ? observation?.plan : undefined;
+                  const windows =
+                    observation?.windows.filter(
+                      (w) =>
+                        Number.isFinite(w.usedPercent) &&
+                        w.resetsAt > observedAt,
+                    ) ?? [];
+                  const quota = windows.reduce<
+                    (typeof windows)[number] | undefined
+                  >(
+                    (fullest, w) =>
+                      !fullest || w.usedPercent > fullest.usedPercent
+                        ? w
+                        : fullest,
+                    undefined,
+                  );
+                  const used = quota
+                    ? Math.max(0, Math.min(100, quota.usedPercent))
+                    : undefined;
+                  const remaining = (until: number) => {
+                    return t("routingPage.resetIn", {
+                      time: formatRoutingDuration(
+                        (until - observedAt) * 1000,
+                        t,
+                      ),
+                    });
+                  };
+                  const baseStatus = resting
+                    ? t("routingPage.seatResting", {
+                        time: remaining(observation!.restUntil),
+                      })
+                    : passed
+                      ? t(`routingPage.step.${step!.kind}`)
+                      : failed
+                        ? t(
+                            wentOn
+                              ? "routingPage.seatWentOn"
+                              : "routingPage.seatFailed",
+                          )
+                        : answering
+                          ? t("routingPage.seatAnswering")
+                          : answered
+                            ? t("routingPage.seatAnswered")
+                            : liveObservations &&
+                                seat(candidate) &&
+                                busy.has(seat(candidate)!)
+                              ? t("routingPage.seatAnsweringOther")
+                              : quota
+                                ? t("routingPage.seatQuota", {
+                                    percent: Math.round(100 - used!),
+                                    time: remaining(quota.resetsAt),
+                                  })
+                                : accountKind === "account"
+                                  ? t("routingPage.accountQuotaUnknown")
+                                  : t(
+                                      accountKind === "key"
+                                        ? "routingPage.apiKey"
+                                        : "routingPage.oneKey",
+                                    );
+                  // Keep the renewal visible when another state takes the status line.
+                  const replying = answering && !resting && !passed && !failed;
+                  const showResponse =
+                    replying || (answered && !resting && !passed && !failed);
+                  const sessionTitle = showResponse
+                    ? trace.sessionTitle?.trim()
+                    : undefined;
+                  const sessionLabel = sessionTitle
+                    ? accountText(sessionTitle)
+                    : showResponse &&
+                        trace.session &&
+                        /^[a-f0-9]{64}$/.test(trace.session)
+                      ? t("routingPage.sessionReference", {
+                          id: trace.session.slice(0, 8),
+                        })
+                      : undefined;
+                  const rate = showResponse
+                    ? trace.outputTokensPerSecond
+                    : undefined;
+                  const rateLabel =
+                    rate != null && Number.isFinite(rate) && rate > 0
+                      ? t("routingPage.outputRate", {
+                          value: rate,
+                          formatParams: { value: { maximumFractionDigits: 1 } },
+                        })
+                      : undefined;
+                  const renewal =
+                    quota && !resting ? remaining(quota.resetsAt) : undefined;
+                  const status = [
+                    baseStatus,
+                    sourceRows.length > 1 ? modelLabel?.(trace) : undefined,
+                    sessionLabel,
+                    rateLabel,
+                    renewal && !baseStatus.includes(renewal)
+                      ? renewal
+                      : undefined,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <li
+                      key={candidateKey(trace, candidate)}
+                      data-parent-sub={showSub ? group.key : undefined}
+                      style={
+                        {
+                          "--rt-agent": agentHue(trace.agent),
+                          "--depth": showSub ? 1 : 0,
+                        } as CSSProperties
+                      }
+                      className={`${answering || answered ? "on" : ""} ${answering ? "now" : ""} ${replying && animate && !replay ? "replying" : ""} ${failed || resting ? "rest" : ""} ${passed ? "left" : ""} ${used != null && used >= 90 ? "low" : ""}`}
+                      title={`${accountText(displayName)} · ${candidate.model}${candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""} · ${status}`}
+                      tabIndex={0}
+                    >
+                      {stageLayout !== "compact" && (
+                        <span className="rt-seat-dot" aria-hidden="true" />
+                      )}
+                      <b>
+                        <span className="rt-seat-icon">
+                          <UpstreamIcon
+                            icon={supplier ? upstreamIcon(supplier) : undefined}
+                            name={accountText(
+                              supplier?.name ?? candidate.providerName,
+                            )}
+                            size={16}
+                          />
+                        </span>
+                        <span className="who">
+                          <AccountLabel>{displayName}</AccountLabel>
+                        </span>
+                        {plan && <span className="rt-seat-plan">{plan}</span>}
+                        <code className="mdl" title={candidate.model}>
+                          {candidate.model}
+                          {candidate.fixedEffort
+                            ? ` :${candidate.fixedEffort}`
+                            : ""}
+                        </code>
+                      </b>
+                      <em
+                        className={`rt-seat-status${sessionLabel || rateLabel ? " has-response" : ""}`}
+                      >
+                        {step?.status != null &&
+                          step.status >= 400 &&
+                          step.status !== 499 && <code>{step.status}</code>}
+                        {status}
+                      </em>
+                      {used != null && (
+                        <div
+                          className="rt-seat-bar"
+                          role="progressbar"
+                          aria-label={t("routingPage.accountQuotaLeft")}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={100 - used}
+                        >
+                          <i style={{ width: `${100 - used}%` }} />
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+            </Fragment>
           );
         })}
       </ol>

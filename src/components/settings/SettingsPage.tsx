@@ -538,7 +538,7 @@ function AdvancedSettingsItem({
           <span className="settings-advanced-description">{description}</span>
         </span>
       </AccordionTrigger>
-      <AccordionContent className="settings-advanced-content">
+      <AccordionContent className="settings-advanced-content py-4">
         {children}
       </AccordionContent>
     </AccordionItem>

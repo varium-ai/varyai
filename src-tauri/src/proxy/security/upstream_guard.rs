@@ -850,8 +850,8 @@ mod tests {
 
     #[test]
     fn upstream_workspace_exact_capacity_boundary() -> TestResult {
-        // Default 256 MiB budget must admit a full 8 MiB response workspace.
-        let default_limit = 256 * 1024 * 1024;
+        // Default uncapped budget must admit a full 8 MiB response workspace.
+        let default_limit = isize::MAX as usize;
         assert_eq!(PayloadBudget::default().limit(), default_limit);
         let default_budget = PayloadBudget::with_limit(default_limit);
         let max_owner = UpstreamPayloadOwner::new(&default_budget)

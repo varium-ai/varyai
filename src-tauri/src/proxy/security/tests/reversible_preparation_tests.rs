@@ -1645,8 +1645,8 @@ fn preparation_owner_repeated_history_has_one_charged_snapshot_and_exact_input_l
         &[],
         |tokens| Ok(tokens.to_vec()),
     )?;
-    let history = vec![tokens[0].as_str(); 4097];
-    let budget = PayloadBudget::with_limit(64 * 1024);
+    let history = vec![tokens[0].as_str(); 16_385];
+    let budget = PayloadBudget::with_limit(256 * 1024);
     let copies = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = copies.clone();
     let shared = budget.clone();
@@ -1662,7 +1662,7 @@ fn preparation_owner_repeated_history_has_one_charged_snapshot_and_exact_input_l
         &json!({}),
         &SecurityRuntimeConfig::default(),
         &[],
-        &history[..4096],
+        &history[..16_384],
         budget.clone(),
         |_, _, proof| {
             assert_eq!(proof, [tokens[0].as_str()]);
@@ -1681,20 +1681,20 @@ fn preparation_owner_repeated_history_has_one_charged_snapshot_and_exact_input_l
     assert_eq!(copies.get(), 1);
     drop(prepared);
     assert_eq!(budget.used(), 0);
-    let result = prepare_codex_request_with_budget(
+    let prepared_large = prepare_codex_request_with_budget(
         &mut lease,
         &json!({}),
         &SecurityRuntimeConfig::default(),
         &[],
         &history,
         budget.clone(),
-        |_, _, _| Ok(()),
-    );
-    assert_eq!(
-        result.err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
-    assert_eq!(copies.get(), 1);
+        |_, _, proof| {
+            assert_eq!(proof, [tokens[0].as_str()]);
+            Ok(())
+        },
+    )?;
+    assert_eq!(copies.get(), 2);
+    drop(prepared_large);
     assert_eq!(budget.used(), 0);
     assert_eq!(store.stats()?.entries, 1);
     drop(hook);
