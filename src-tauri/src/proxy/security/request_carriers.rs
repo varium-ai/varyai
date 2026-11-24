@@ -228,7 +228,11 @@ impl CodexRequestCarriers {
         }
         let mut budget = Budget::default();
         budget.value(body, 0)?;
-        let original = PayloadJson::try_from_value(body, shared_budget.clone(), MAX_COPY_BYTES)?;
+        // Budget::value bounded the request above. The owned JSON snapshot
+        // reserves its larger allocation estimate against the shared pool,
+        // just as the rewritten candidate does.
+        let original =
+            PayloadJson::try_from_value(body, shared_budget.clone(), shared_budget.limit())?;
         let mut plan = Self {
             original,
             leaves: PayloadVec::new(shared_budget.clone())?,

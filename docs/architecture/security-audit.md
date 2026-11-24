@@ -48,6 +48,8 @@ These statements describe the tested local contract. They are not a claim of pro
 
 ## Authenticated shared model routes
 
+Codex carrier preflight counts the complete request, including tool schemas, against its structural limits. Original and rewritten JSON snapshots each reserve their allocation estimate from the shared payload budget.
+
 Authenticated shared connections and routing groups reuse the established restoration owners for native Chat, Anthropic Messages and Gemini generation requests when the upstream uses the same protocol. Responses requests from shared Agents reuse the existing Responses owner, including its supported Chat/Anthropic conversion facades. The original supported request text reaches actual-attempt preparation; a separately redacted canonical projection is used only for route classification. Same-protocol shared requests also pass actual-send preparation. JSON and SSE responses reuse bound completion verification and client restoration.
 
 Native Chat error-detail preparation is optional. Large tool catalogs can exceed the bounded private-pattern collection used to sanitize a possible upstream error. That failure must not prevent an otherwise valid request from being sent. If no error-detail context is available, native SSE errors retain the existing fixed failure delivery and never release upstream error text or completion authority. Upstream HTTP errors retain their status with a fixed safe body when sanitization is unavailable. Request redaction, credential capture, attempt binding and successful-response restoration remain mandatory.

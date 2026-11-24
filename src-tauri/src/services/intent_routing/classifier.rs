@@ -306,6 +306,18 @@ fn decode_result(
     protocol: Protocol,
     value: &Value,
 ) -> (Option<String>, &'static str) {
+    let output_limit = match protocol {
+        Protocol::Chat => value["choices"][0]["finish_reason"] == "length",
+        Protocol::Responses => {
+            value["status"] == "incomplete"
+                && value["incomplete_details"]["reason"] == "max_output_tokens"
+        }
+        Protocol::Anthropic => value["stop_reason"] == "max_tokens",
+        Protocol::Gemini => value["candidates"][0]["finishReason"] == "MAX_TOKENS",
+    };
+    if output_limit {
+        return (None, "output_limit");
+    }
     match native_text(protocol, value)
         .as_deref()
         .filter(|content| content.len() <= 4096)
@@ -414,11 +426,24 @@ async fn trial_with_runtime(
             None
         };
         let config = group.clone();
-        let payload = tauri::async_runtime::spawn_blocking(move || {
+        let mut payload = tauri::async_runtime::spawn_blocking(move || {
             prepare_payload(&config, &text, &runtime, protocol, thinking_level)
         })
         .await
         .map_err(|_| "privacy")??;
+        if protocol == Protocol::Chat {
+            use crate::proxy::providers::{
+                resolve_codex_chat_reasoning_config, transform_codex_chat::apply_reasoning_options,
+            };
+            if let Some(config) = resolve_codex_chat_reasoning_config(&provider, &payload) {
+                apply_reasoning_options(
+                    &mut payload,
+                    &json!({"reasoning":{"effort":"none"}}),
+                    model,
+                    Some(&config),
+                );
+            }
+        }
         let (endpoint, headers) =
             super::execution::static_transport(&provider, model).map_err(|_| "unavailable")?;
         let url = reqwest::Url::parse(&endpoint).map_err(|_| "unavailable")?;
@@ -605,8 +630,30 @@ mod tests {
         let payload = task.await.unwrap();
         assert_eq!(payload["model"], "classifier-model");
         assert_eq!(payload["stream"], false);
+        assert!(payload.get("thinking").is_none());
         assert!(payload.get("tools").is_none());
         assert_eq!(payload["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn chat_classifier_requests_a_final_answer_from_a_thinking_model() {
+        let (endpoint, received) = server(
+            "200 OK",
+            json!({"choices":[{"finish_reason":"stop","message":{
+                "content":"{\"intentId\":\"debug\"}"
+            }}]})
+            .to_string(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+        let mut group = group();
+        group.classifier_target.as_mut().unwrap().model_id = "zai-org/GLM-5-FP8".into();
+        let result = test_trial(group, provider(&endpoint), "Synthetic question".into())
+            .await
+            .unwrap();
+        let request = received.await.unwrap();
+        assert_eq!(request["thinking"]["type"], "disabled");
+        assert_eq!(result.outcome, "matched");
     }
 
     #[tokio::test]
@@ -811,6 +858,12 @@ mod tests {
             decode_result(&group, Protocol::Chat, &response),
             (Some("debug".into()), "matched")
         );
+        response["choices"][0]["finish_reason"] = json!("length");
+        assert_eq!(
+            decode_result(&group, Protocol::Chat, &response),
+            (None, "output_limit")
+        );
+        response["choices"][0]["finish_reason"] = json!("stop");
         response["choices"][0]["message"]["tool_calls"] = json!([]);
         assert_eq!(
             decode_result(&group, Protocol::Chat, &response),
@@ -902,51 +955,61 @@ mod tests {
         let anthropic = json!({"stop_reason":"end_turn","content":[{"type":"text","text":answer}]});
         let gemini =
             json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":answer}]}}]});
-        for (protocol, fixture, path, invalid) in [
+        let mut capped = responses.clone();
+        capped["status"] = json!("incomplete");
+        capped["incomplete_details"] = json!({"reason":"max_output_tokens"});
+        assert_eq!(
+            decode_result(&group, Protocol::Responses, &capped),
+            (None, "output_limit")
+        );
+        for (protocol, fixture, path, invalid, outcome) in [
             (
                 Protocol::Responses,
                 &responses,
                 "/output/0/content/0/type",
                 json!("refusal"),
+                "invalid_output",
             ),
             (
                 Protocol::Responses,
                 &responses,
                 "/status",
                 json!("incomplete"),
+                "invalid_output",
             ),
             (
                 Protocol::Anthropic,
                 &anthropic,
                 "/content/0/type",
                 json!("tool_use"),
+                "invalid_output",
             ),
             (
                 Protocol::Anthropic,
                 &anthropic,
                 "/stop_reason",
                 json!("max_tokens"),
+                "output_limit",
             ),
             (
                 Protocol::Gemini,
                 &gemini,
                 "/candidates/0/content/parts/0",
                 json!({"text":answer,"functionCall":{}}),
+                "invalid_output",
             ),
             (
                 Protocol::Gemini,
                 &gemini,
                 "/candidates/0/finishReason",
                 json!("MAX_TOKENS"),
+                "output_limit",
             ),
         ] {
             assert_eq!(decode_result(&group, protocol, fixture).1, "matched");
             let mut response = fixture.clone();
             *response.pointer_mut(path).unwrap() = invalid;
-            assert_eq!(
-                decode_result(&group, protocol, &response),
-                (None, "invalid_output")
-            );
+            assert_eq!(decode_result(&group, protocol, &response), (None, outcome));
         }
     }
 }

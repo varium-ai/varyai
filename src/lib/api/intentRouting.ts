@@ -116,6 +116,7 @@ export interface ClassificationTrial {
     | "no_rules"
     | "privacy"
     | "input_limit"
+    | "output_limit"
     | "invalid_output"
     | "request_failed"
     | "unavailable"
