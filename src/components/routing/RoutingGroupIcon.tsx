@@ -20,18 +20,22 @@ export function RoutingGroupIcon({
   if (unique.length)
     return (
       <span className="mp-icon-stack" aria-hidden="true">
-        {unique.slice(0, 3).map((entry) => (
-          <span className="mp-icon-disc" key={entry.icon || entry.name}>
-            <UpstreamIcon
-              icon={entry.icon ?? undefined}
-              name={accountText(entry.name)}
-              size={unique.length === 1 ? 20 : 13}
-            />
-          </span>
-        ))}
         {unique.length > 3 && (
           <span className="mp-icon-disc more">+{unique.length - 3}</span>
         )}
+        {unique
+          .slice(0, 3)
+          .reverse()
+          .map((entry) => (
+            <span className="mp-icon-disc" key={entry.icon || entry.name}>
+              <UpstreamIcon
+                icon={entry.icon ?? undefined}
+                name={accountText(entry.name)}
+                loading="eager"
+                size={unique.length === 1 ? 20 : 13}
+              />
+            </span>
+          ))}
       </span>
     );
   const appId = APP_IDS.find((id) => id === client);

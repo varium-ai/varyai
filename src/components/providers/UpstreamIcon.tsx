@@ -56,10 +56,12 @@ export function UpstreamIcon({
   icon,
   name,
   size = 22,
+  loading,
 }: {
   icon?: string;
   name: string;
   size?: number;
+  loading?: "eager" | "lazy";
 }) {
   const [failed, setFailed] = useState<string>();
   if (icon?.startsWith("data:image/") && failed !== icon) {
@@ -91,6 +93,7 @@ export function UpstreamIcon({
         icon={builtin}
         name={name}
         size={size}
+        loading={loading}
         showFallback={false}
       />
     );

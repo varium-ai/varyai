@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { routingUpstreamsApi as routing } from "@/lib/api/routingUpstreams";
@@ -23,6 +24,7 @@ import { providerImportApi } from "@/lib/api/providerImport";
 import { copyText } from "@/lib/clipboard";
 import { getSettings, setSettings } from "../msw/state";
 
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 vi.mock("@/lib/api/routingUpstreams", () => ({
   routingUpstreamsApi: {
     list: vi.fn(),
@@ -144,8 +146,8 @@ function enterKey() {
     target: { value: "sk-synthetic-fixture" },
   });
 }
-it("starts with three paths, copies setup help and allows skipping", async () => {
-  const finish = mount();
+it("starts with three paths, copies setup help and hides skip when forced", async () => {
+  mount();
   expect(
     screen.getByRole("button", { name: "onboarding.keyAction" }),
   ).toBeVisible();
@@ -155,12 +157,13 @@ it("starts with three paths, copies setup help and allows skipping", async () =>
   expect(
     screen.getByRole("button", { name: "onboarding.importAction" }),
   ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "onboarding.skip" }),
+  ).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "common.copy" }));
   await waitFor(() =>
     expect(copyText).toHaveBeenCalledWith("onboarding.helpPrompt"),
   );
-  fireEvent.click(screen.getByRole("button", { name: "onboarding.skip" }));
-  await waitFor(() => expect(finish).toHaveBeenCalledWith(false));
 });
 it("resets copied feedback two seconds after the latest successful copy", async () => {
   vi.useFakeTimers();
@@ -445,9 +448,6 @@ it("locks navigation and prevents duplicate saves while connecting", async () =>
     screen.getByRole("button", { name: "apiKeyInput.show" }),
   ).toBeDisabled();
   expect(screen.getByRole("button", { name: "common.back" })).toBeDisabled();
-  expect(
-    screen.getByRole("button", { name: "onboarding.skip" }),
-  ).toBeDisabled();
   await act(async () => resolve([]));
   expect(fetchModelsForConfig).toHaveBeenCalledTimes(1);
 });
@@ -840,11 +840,24 @@ it.each(["subscription", "import"] as const)(
       vi.mocked(routing.save).mockRejectedValueOnce(cause);
     else vi.mocked(providerImportApi.import).mockRejectedValueOnce(cause);
     await submitConnection(method);
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      method === "subscription"
-        ? "onboarding.accountFailed"
-        : "providerImport.failed",
-    );
+    if (method === "subscription") {
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "onboarding.accountFailed",
+      );
+    } else {
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(
+          "providerImport.failed",
+          expect.objectContaining({
+            id: "provider-error-importProviders",
+            description: undefined,
+          }),
+        ),
+      );
+      expect(JSON.stringify(vi.mocked(toast.error).mock.calls)).not.toContain(
+        "synthetic-connection-failure",
+      );
+    }
     expect(finish).not.toHaveBeenCalled();
     expect(document.body).not.toHaveTextContent("synthetic-connection-failure");
   },
@@ -875,9 +888,6 @@ it.each(["key", "subscription", "import"] as const)(
     );
     await submitConnection(method);
     await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
-    expect(
-      screen.getByRole("button", { name: "onboarding.skip" }),
-    ).toBeDisabled();
     expect(
       screen.queryByRole("button", { name: "onboarding.enterTools" }),
     ).toBeNull();

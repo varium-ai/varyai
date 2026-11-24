@@ -280,7 +280,7 @@ export function AgentInstallDialog({
     <>
       {updates.installResult && (
         <p
-          className={`mp-agent-install-result${["failed", "checkFailed", "unverified"].includes(updates.installResult.outcome) ? " failed" : ""}`}
+          className={`mp-agent-install-result${["failed", "missingNode", "checkFailed", "unverified"].includes(updates.installResult.outcome) ? " failed" : ""}`}
           role="status"
         >
           {t(`agentInstall.${updates.installResult.outcome}`, {

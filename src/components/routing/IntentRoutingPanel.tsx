@@ -13,6 +13,7 @@ import {
 import {
   blankRoutingGroup,
   MAX_CLASSIFICATION_BUDGET_MS,
+  MIN_CLASSIFICATION_BUDGET_MS,
   recommendRoutingMemberOrder,
   routingTemplates,
   routingLevels,
@@ -845,12 +846,15 @@ export function IntentRoutingPanel({
           ]),
         ].some((value) => value.toLocaleLowerCase().includes(query))),
   );
+  const budgetValid =
+    !!draft &&
+    Number.isInteger(draft.classificationBudgetMs) &&
+    draft.classificationBudgetMs >= MIN_CLASSIFICATION_BUDGET_MS &&
+    draft.classificationBudgetMs <= MAX_CLASSIFICATION_BUDGET_MS;
   const valid =
     draft &&
     draft.name.trim() &&
-    Number.isInteger(draft.classificationBudgetMs) &&
-    draft.classificationBudgetMs >= 500 &&
-    draft.classificationBudgetMs <= MAX_CLASSIFICATION_BUDGET_MS &&
+    budgetValid &&
     (draft.contextWindow == null ||
       draft.contextWindow === -1 ||
       draft.contextWindow === 0 ||
@@ -1003,12 +1007,15 @@ export function IntentRoutingPanel({
       </div>
     );
   const classificationBudget = draft && (
-    <label className="block space-y-1 text-sm">
-      {t("intentRouting.budget")}
+    <div className="block space-y-1 text-sm">
+      <label htmlFor={`${editorId}-budget`}>{t("intentRouting.budget")}</label>
       <Input
         type="number"
         required
-        min={500}
+        id={`${editorId}-budget`}
+        aria-invalid={!budgetValid}
+        aria-describedby={budgetValid ? undefined : `${editorId}-budget-error`}
+        min={MIN_CLASSIFICATION_BUDGET_MS}
         max={MAX_CLASSIFICATION_BUDGET_MS}
         step={1}
         value={
@@ -1023,7 +1030,19 @@ export function IntentRoutingPanel({
           })
         }
       />
-    </label>
+      {!budgetValid && (
+        <p
+          id={`${editorId}-budget-error`}
+          role="alert"
+          className="text-xs text-destructive"
+        >
+          {t("intentRouting.budgetRange", {
+            min: MIN_CLASSIFICATION_BUDGET_MS,
+            max: MAX_CLASSIFICATION_BUDGET_MS,
+          })}
+        </p>
+      )}
+    </div>
   );
   const classificationTrial = draft && (
     <details className="rt-diagnostics">

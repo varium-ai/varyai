@@ -57,8 +57,10 @@ const subscriptionPreviews = subscriptionProviders.filter(
 
 export function OnboardingWizard({
   onFinish,
+  allowSkip = false,
 }: {
   onFinish: (connected: boolean) => Promise<void>;
+  allowSkip?: boolean;
 }) {
   const { t } = useTranslation();
   const client = useQueryClient();
@@ -375,13 +377,17 @@ export function OnboardingWizard({
               {t("onboarding.connectStep")}
             </li>
           </ol>
-          <Button
-            variant="ghost"
-            disabled={locked}
-            onClick={() => void finish(connected)}
-          >
-            {t("onboarding.skip")}
-          </Button>
+          {allowSkip ? (
+            <Button
+              variant="ghost"
+              disabled={locked}
+              onClick={() => void finish(connected)}
+            >
+              {t("onboarding.skip")}
+            </Button>
+          ) : (
+            <span aria-hidden />
+          )}
         </header>
         <div className="ob-scroll">
           <div className="ob-content">

@@ -1335,4 +1335,33 @@ describe("Agent versions and updates", () => {
     ).toBeInTheDocument();
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
   });
+
+  it("shows a dedicated message when CLI installation fails due to missing Node/npm", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      claude: false,
+      codex: true,
+    });
+    vi.mocked(settingsApi.runToolLifecycleAction).mockRejectedValue(
+      "missing_node_npm",
+    );
+    mount();
+    const notInstalledTab = await screen.findByRole("tab", {
+      name: /agentConnections\.directory\.notInstalled/,
+    });
+    fireEvent.mouseDown(notInstalledTab);
+    fireEvent.click(notInstalledTab);
+    const row = await screen.findByRole("group", { name: "Claude Code" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentInstall.install" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "agentInstall.confirm" }),
+    );
+    expect(
+      await screen.findByText("agentInstall.missingNode"),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector(".mp-agent-install-result.failed"),
+    ).not.toBeNull();
+  });
 });

@@ -16,6 +16,69 @@ pub(super) fn fixture() -> RoutingGroup {
     })).expect("synthetic group")
 }
 
+#[tokio::test]
+async fn workbuddy_classifiers_use_the_selected_catalog_and_survive_publication(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for service in ["workbuddy", "workbuddy-ai"] {
+        let db = Database::memory()?;
+        let saved = db.save_routing_upstream(serde_json::from_value(json!({
+            "schemaVersion":1, "id":"", "name":"Fixture", "revision":0,
+            "source":{"kind":"subscription","provider":service,"accountId":"synthetic",
+                "mode":"picked","models":["balanced-model","strong-model","claude-fixture"],
+                "catalog":["balanced-model","strong-model","claude-fixture","unselected"]}
+        }))?)?;
+        let providers = db.routing_providers()?;
+        let p = providers
+            .iter()
+            .find(|p| p.id == saved.id)
+            .ok_or("missing provider")?;
+        assert!(eligible_provider(p, true), "{service}");
+        let mut group = fixture();
+        for member in &mut group.members {
+            member.provider_id = saved.id.clone();
+        }
+        group.enabled = true;
+        group.intent_recognition_enabled = true;
+        group.classifier_target = Some(Target {
+            provider_id: saved.id.clone(),
+            model_id: "claude-fixture".into(),
+        });
+        let group = db.save_intent_routing_group(group)?;
+        let mut invalid = group.clone();
+        invalid
+            .classifier_target
+            .as_mut()
+            .ok_or("missing classifier")?
+            .model_id = "unselected".into();
+        assert!(db.save_intent_routing_group(invalid).is_err());
+        let dir = tempfile::tempdir()?;
+        let manager = std::sync::Arc::new(
+            crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(dir.path().into()),
+        );
+        let alias = group.alias();
+        let menu = menu::prepare(manager, providers, vec![group], None).await?;
+        let classifier = menu
+            .groups
+            .get(&alias)
+            .and_then(|s| s.classifier.as_ref())
+            .ok_or("missing published classifier")?;
+        assert_eq!(classifier.id, saved.id);
+        let protocol = if service == "workbuddy" {
+            Protocol::Anthropic
+        } else {
+            Protocol::Chat
+        };
+        assert_eq!(static_protocol(classifier), Some(protocol));
+        assert_eq!(
+            crate::services::subscription_provider::binding(classifier)
+                .ok_or("missing binding")?
+                .account_id,
+            "synthetic"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn retired_experimental_metadata_does_not_prevent_reading_original_configuration(
 ) -> Result<(), Box<dyn std::error::Error>> {

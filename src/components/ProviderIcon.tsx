@@ -9,6 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 
 interface ProviderIconProps {
+  loading?: "eager" | "lazy";
   icon?: string; // 图标名称
   name: string; // 供应商名称（用于 fallback）
   color?: string; // 自定义颜色 (Deprecated, kept for compatibility but ignored for SVG)
@@ -24,6 +25,7 @@ export const ProviderIcon: React.FC<ProviderIconProps> = ({
   size = 32,
   className,
   showFallback = true,
+  loading = "lazy",
 }) => {
   // 获取内联 SVG 字符串
   const iconSvg = useMemo(() => {
@@ -93,7 +95,7 @@ export const ProviderIcon: React.FC<ProviderIconProps> = ({
           className,
         )}
         style={{ width: sizeStyle.width, height: sizeStyle.height }}
-        loading="lazy"
+        loading={loading}
       />
     );
   }

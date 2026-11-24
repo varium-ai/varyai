@@ -432,8 +432,12 @@ impl RoutingGroup {
 
 /// A configuration eligibility check, not an inference or capability probe.
 pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
-    if crate::services::subscription_provider::binding(provider).is_some() {
-        return !classifier;
+    if let Some(binding) = crate::services::subscription_provider::binding(provider) {
+        return !classifier
+            || (binding.provider.is_workbuddy()
+                && provider.settings_config["modelCatalog"]["models"]
+                    .as_array()
+                    .is_some_and(|models| !models.is_empty()));
     }
     if provider.category.as_deref() == Some("official")
         || provider.uses_managed_account_auth()
@@ -461,6 +465,43 @@ pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
         && url.query().is_none()
         && url.fragment().is_none()
         && !matches!(url.host_str(), Some("chatgpt.com" | "chat.openai.com"))
+}
+
+pub(crate) fn eligible_classifier_model(provider: &Provider, model: &str) -> bool {
+    if provider
+        .settings_config
+        .get("routingSubscription")
+        .is_none()
+    {
+        return eligible_provider(provider, true);
+    }
+    crate::services::subscription_provider::binding(provider)
+        .is_some_and(|binding| binding.provider.is_workbuddy())
+        && provider.settings_config["modelCatalog"]["models"]
+            .as_array()
+            .is_some_and(|models| {
+                models
+                    .iter()
+                    .any(|row| row["model"].as_str() == Some(model))
+            })
+}
+
+/// Pick an executable classifier from the same catalog the editor displays.
+pub(crate) fn classifier_for_model(provider: &Provider, model: &str) -> Option<Provider> {
+    use crate::services::{routing_upstreams, subscription_provider};
+    if provider
+        .settings_config
+        .get("routingSubscription")
+        .is_some()
+    {
+        if !eligible_classifier_model(provider, model) {
+            return None;
+        }
+        return subscription_provider::for_model(provider, model).ok();
+    }
+    routing_upstreams::variants_for_model(provider, model)
+        .into_iter()
+        .find(|variant| eligible_provider(variant, true))
 }
 
 fn static_protocol(provider: &Provider) -> Option<Protocol> {

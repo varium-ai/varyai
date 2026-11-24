@@ -227,3 +227,24 @@ it("shows a warning toast when page jump input is out of range or invalid", asyn
     warningSpy.mockRestore();
   }
 });
+
+it("disables page jump input and button when there is only one page", async () => {
+  const warningSpy = vi.spyOn(toast, "warning").mockImplementation(() => "");
+  try {
+    vi.mocked(usageApi.getRequestLogs).mockResolvedValue(pageResult(0, 2));
+    mount();
+    await screen.findByText("synthetic-page-1-row-1");
+
+    const input = screen.getByPlaceholderText(en.usage.pageInputPlaceholder);
+    const goButton = screen.getByRole("button", { name: en.usage.goToPage });
+
+    expect(input).toBeDisabled();
+    expect(goButton).toBeDisabled();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(goButton);
+    expect(warningSpy).not.toHaveBeenCalled();
+  } finally {
+    warningSpy.mockRestore();
+  }
+});

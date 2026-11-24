@@ -82,34 +82,71 @@ pub(crate) async fn handle(
         Value::Null
     };
     let model = payload["model"].as_str().unwrap_or_default().to_string();
+    let protocol = if is_model {
+        match suffix {
+            "chat/completions" => Some(super::protocol_bridge::Protocol::Chat),
+            "responses" | "v1/responses" => Some(super::protocol_bridge::Protocol::Responses),
+            "messages" | "beta/messages" | "v1/messages" => {
+                Some(super::protocol_bridge::Protocol::Anthropic)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut target = url::Url::parse(&route.upstream).map_err(|_| invalid())?;
+    target.set_path(&format!("{}/{suffix}", target.path().trim_end_matches('/')));
+    target.set_query(parts.uri.query());
+    let mut dlp_request = None;
     if is_model {
         if !route.models.is_empty() && !route.models.contains(&model) {
             return Err(invalid());
         }
-        #[cfg(test)]
-        let before = payload.to_string();
-        let blocked = super::security::inspect_and_intercept_mut_with_headers(
-            &app_type,
-            &mut payload,
-            &parts.headers,
-        )?;
-        #[cfg(test)]
-        if let Ok(dir) = std::env::var("VARYAI_LIVE_TEST_DIR") {
-            let after = payload.to_string();
-            let flags = serde_json::json!({"phone_before":before.contains("13800138000"),"phone_after":after.contains("13800138000"),"private_marker_before":before.contains("-----BEGIN RSA PRIVATE KEY-----"),"private_marker_after":after.contains("-----BEGIN RSA PRIVATE KEY-----"),"blocked":blocked.is_some()});
-            let _ = crate::config::atomic_write_private(
-                &std::path::Path::new(&dir).join("dlp-outcome.json"),
-                flags.to_string().as_bytes(),
-            );
+        if let Some(protocol) = protocol {
+            let endpoint_path = match target.query() {
+                Some(q) if !q.is_empty() => format!("{}?{q}", target.path()),
+                _ => target.path().to_owned(),
+            };
+            match super::security::http_restoration::admit_routed_http_request(
+                &state.restoration_gateway,
+                &app_type,
+                protocol,
+                &endpoint_path,
+                &mut payload,
+                &parts.headers,
+            )? {
+                super::security::http_restoration::RestorationAdmission::Admitted(request) => {
+                    dlp_request = Some(std::sync::Arc::new(*request));
+                }
+                super::security::http_restoration::RestorationAdmission::Intercepted(blocked) => {
+                    return Ok(blocked);
+                }
+                super::security::http_restoration::RestorationAdmission::Passthrough => {}
+            }
         }
-        if let Some(blocked) = blocked {
-            return Ok(blocked);
+        if dlp_request.is_none() {
+            #[cfg(test)]
+            let before = payload.to_string();
+            let blocked = super::security::inspect_and_intercept_mut_with_headers(
+                &app_type,
+                &mut payload,
+                &parts.headers,
+            )?;
+            #[cfg(test)]
+            if let Ok(dir) = std::env::var("VARYAI_LIVE_TEST_DIR") {
+                let after = payload.to_string();
+                let flags = serde_json::json!({"phone_before":before.contains("13800138000"),"phone_after":after.contains("13800138000"),"private_marker_before":before.contains("-----BEGIN RSA PRIVATE KEY-----"),"private_marker_after":after.contains("-----BEGIN RSA PRIVATE KEY-----"),"blocked":blocked.is_some()});
+                let _ = crate::config::atomic_write_private(
+                    &std::path::Path::new(&dir).join("dlp-outcome.json"),
+                    flags.to_string().as_bytes(),
+                );
+            }
+            if let Some(blocked) = blocked {
+                return Ok(blocked);
+            }
         }
     }
     let session = super::security::audit_session_id(&app_type, &parts.headers, &payload);
-    let mut target = url::Url::parse(&route.upstream).map_err(|_| invalid())?;
-    target.set_path(&format!("{}/{suffix}", target.path().trim_end_matches('/')));
-    target.set_query(parts.uri.query());
     let mut headers = HeaderMap::new();
     for (name, value) in parts.headers.iter() {
         if matches!(
@@ -155,6 +192,11 @@ pub(crate) async fn handle(
                 .map_err(|_| invalid())?;
         if let Some(mut provider) = provider {
             if super::native_protocol::needs_conversion(&provider, &parts.uri)? {
+                if dlp_request.is_some() {
+                    return Err(ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                    ));
+                }
                 provider.settings_config["baseUrl"] = Value::String(route.upstream.clone());
                 return super::native_protocol::forward(
                     &state, app_type, &provider, parts, payload, job,
@@ -163,12 +205,24 @@ pub(crate) async fn handle(
             }
         }
     }
-    let bytes = if is_model {
+    let bytes = if is_model && dlp_request.is_none() {
         serde_json::to_vec(&payload).map_err(|_| invalid())?
+    } else if is_model {
+        Vec::new()
     } else {
         bytes.to_vec()
     };
-    super::qoder::send(target.into(), parts, bytes, job).await
+    super::qoder::send_with_dlp(
+        target.into(),
+        parts,
+        bytes,
+        job,
+        dlp_request,
+        protocol,
+        Some(&route.provider_id),
+        is_model.then_some(payload),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -895,5 +949,189 @@ mod tests {
             gateway.stop().await.expect("stop");
             task.abort();
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn kimi_agent_client_restores_sensitive_tokens_in_chat_and_anthropic() {
+        use crate::proxy::security::{
+            runtime::{get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig},
+            types::AuditAction,
+        };
+        use axum::{extract::Json, response::IntoResponse};
+        struct Restore(SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*get_security_runtime()).clone());
+        let mut security = SecurityRuntimeConfig::default();
+        security
+            .builtin_action_overrides
+            .insert("chinese_phone_number".into(), AuditAction::RedactRestore);
+        set_security_runtime_for_test(security);
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(4);
+        let app = Router::new().fallback(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body.clone()).await;
+                let stream = body["stream"].as_bool() == Some(true);
+                let text = body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if body.get("max_tokens").is_some() {
+                    if stream {
+                        let frames = [
+                            format!(
+                                "event: message_start\ndata: {}\n\n",
+                                json!({"type":"message_start","message":{"id":"msg_kimi","type":"message","role":"assistant","model":"kimi-k2","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}})
+                            ),
+                            format!(
+                                "event: content_block_start\ndata: {}\n\n",
+                                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})
+                            ),
+                            format!(
+                                "event: content_block_delta\ndata: {}\n\n",
+                                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+                            ),
+                            format!(
+                                "event: content_block_stop\ndata: {}\n\n",
+                                json!({"type":"content_block_stop","index":0})
+                            ),
+                            format!(
+                                "event: message_delta\ndata: {}\n\n",
+                                json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}})
+                            ),
+                            format!(
+                                "event: message_stop\ndata: {}\n\n",
+                                json!({"type":"message_stop"})
+                            ),
+                        ]
+                        .concat();
+                        axum::response::Response::builder()
+                            .header("content-type", "text/event-stream")
+                            .body(axum::body::Body::from(frames))
+                            .unwrap()
+                    } else {
+                        axum::Json(json!({
+                            "id": "msg_kimi",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "kimi-k2",
+                            "content": [{"type": "text", "text": text}],
+                            "stop_reason": "end_turn",
+                            "stop_sequence": null,
+                            "usage": {"input_tokens": 1, "output_tokens": 1}
+                        }))
+                        .into_response()
+                    }
+                } else if stream {
+                    let frames = format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":"chat_kimi","object":"chat.completion.chunk","model":"kimi-k2","choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
+                        json!({"id":"chat_kimi","object":"chat.completion.chunk","model":"kimi-k2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+                    );
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(frames))
+                        .unwrap()
+                } else {
+                    axum::Json(json!({
+                        "id": "chat_kimi",
+                        "object": "chat.completion",
+                        "model": "kimi-k2",
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }))
+                    .into_response()
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("addr");
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let db = Arc::new(crate::database::Database::memory().expect("db"));
+        let gateway = crate::proxy::server::ProxyServer::new(
+            crate::proxy::ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db.clone(),
+            None,
+        );
+        let info = gateway.start().await.expect("start");
+        let local = format!(
+            "http://127.0.0.1:{}/agents/kimi/providers/fixture/v1",
+            info.port
+        );
+        let backup = Backup {
+            path: std::path::PathBuf::from("unused-test-config"),
+            routes: vec![native::Route {
+                id: "fixture".into(),
+                pointer: "/unused".into(),
+                provider_id: "fixture".into(),
+                models: vec!["kimi-k2".into()],
+                upstream: format!("http://{addr}/v1"),
+                local: local.clone(),
+                created_provider: None,
+            }],
+        };
+        db.save_live_backup("kimi", &serde_json::to_string(&backup).expect("backup"))
+            .await
+            .expect("persist");
+        db.set_setting(&native::enabled_key("kimi"), "true")
+            .expect("enabled");
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        for stream in [false, true] {
+            for (suffix, body) in [
+                (
+                    "chat/completions",
+                    json!({"model":"kimi-k2","messages":[{"role":"user","content":"13800001234"}],"stream":stream}),
+                ),
+                (
+                    "messages",
+                    json!({"model":"kimi-k2","max_tokens":64,"messages":[{"role":"user","content":"13800001234"}],"stream":stream}),
+                ),
+            ] {
+                let response = client
+                    .post(format!("{local}/{suffix}"))
+                    .bearer_auth("synthetic-kimi-key")
+                    .header("x-api-key", "synthetic-kimi-key")
+                    .json(&body)
+                    .send()
+                    .await
+                    .expect("request");
+                assert_eq!(response.status(), 200, "suffix={suffix} stream={stream}");
+                let text = response.text().await.expect("body");
+                assert!(
+                    text.contains("13800001234"),
+                    "suffix={suffix} stream={stream} text={text}"
+                );
+                assert!(
+                    !text.contains("rredact-"),
+                    "suffix={suffix} stream={stream} text={text}"
+                );
+                let sent = rx.recv().await.expect("upstream");
+                let sent_str = sent.to_string();
+                assert!(!sent_str.contains("13800001234"));
+                assert!(sent_str.contains("rredact-cn_phone-"));
+            }
+        }
+
+        gateway.stop().await.expect("stop");
+        task.abort();
     }
 }
