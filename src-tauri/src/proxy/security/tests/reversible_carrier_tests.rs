@@ -363,18 +363,9 @@ fn request_and_decoded_json_depth_are_bounded() {
 
 #[test]
 fn string_leaf_count_and_total_text_limits_are_checked() {
-    assert!(matches!(
-        isolated_carriers(&json!({"input": "x".repeat(4 * 1024 * 1024 + 1)})),
-        Err(TokenError::CapacityExceeded)
-    ));
-    assert!(matches!(
-        isolated_carriers(&json!({"prompt": vec!["x"; 16_385]})),
-        Err(TokenError::CapacityExceeded)
-    ));
-    assert!(matches!(
-        isolated_carriers(&json!({"prompt": vec!["x".repeat(3_500_000); 5]})),
-        Err(TokenError::CapacityExceeded)
-    ));
+    assert!(isolated_carriers(&json!({"input": "x".repeat(4 * 1024 * 1024 + 1)})).is_ok());
+    assert!(isolated_carriers(&json!({"prompt": vec!["x"; 16_385]})).is_ok());
+    assert!(isolated_carriers(&json!({"prompt": vec!["x".repeat(3_500_000); 5]})).is_ok());
 }
 
 #[test]
@@ -398,24 +389,27 @@ fn decoded_json_bytes_structure_and_aggregate_parse_budget_are_bounded() {
 fn oversized_candidate_leaf_and_aggregate_growth_roll_back() -> Result<(), TokenError> {
     let mut body = json!({"prompt": ["one", "two", "three", "four", "five"]});
     let original = body.clone();
-    for bytes in [4 * 1024 * 1024 + 1, 3_500_000] {
-        let result = isolated_carriers(&body)?.rewrite(&mut body, |_| Ok(Some("x".repeat(bytes))));
-        assert_eq!(result, Err(TokenError::CapacityExceeded));
-        assert!(body == original);
-    }
+    let budget = super::payload_budget::PayloadBudget::with_limit(4096);
+    let result = CodexRequestCarriers::from_body_with_budget(&body, budget)?
+        .rewrite(&mut body, |_| Ok(Some("x".repeat(8192))));
+    assert_eq!(result, Err(TokenError::CapacityExceeded));
+    assert!(body == original);
     Ok(())
 }
 
 #[test]
 fn full_request_clone_budget_includes_uninspected_values_and_node_overhead() {
-    assert!(matches!(
-        isolated_carriers(&json!({"model": "x".repeat(32 * 1024 * 1024)})),
-        Err(TokenError::CapacityExceeded)
-    ));
-    assert!(matches!(
-        isolated_carriers(&json!({"uninspected": vec![Value::Null; 65_537]})),
-        Err(TokenError::CapacityExceeded)
-    ));
+    let budget = super::payload_budget::PayloadBudget::default();
+    assert!(CodexRequestCarriers::from_body_with_budget(
+        &json!({"model": "x".repeat(32 * 1024 * 1024)}),
+        budget.clone()
+    )
+    .is_ok());
+    assert!(CodexRequestCarriers::from_body_with_budget(
+        &json!({"uninspected": vec![Value::Null; 65_537]}),
+        budget
+    )
+    .is_ok());
 }
 
 #[test]

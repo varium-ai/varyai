@@ -67,9 +67,9 @@ pub(super) fn plan_request_with_budget(
     historical_plaintexts: &[&str],
     budget: PayloadBudget,
 ) -> Result<PayloadVec<PlannedField>, PlanError> {
-    const MAX_ITEMS: usize = 16_384;
-    const MAX_FRAGMENT_BYTES: usize = 4 * 1024 * 1024;
-    const MAX_COMPARISON_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_ITEMS: usize = isize::MAX as usize;
+    const MAX_FRAGMENT_BYTES: usize = isize::MAX as usize;
+    const MAX_COMPARISON_BYTES: usize = isize::MAX as usize;
     let match_count = fields.iter().try_fold(0usize, |sum, field| {
         sum.checked_add(field.matches.len())
             .ok_or(TokenError::CapacityExceeded)

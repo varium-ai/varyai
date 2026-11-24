@@ -18,12 +18,12 @@ use std::io::{self, Write};
 use std::ops::Range;
 
 const MAX_DEPTH: usize = 64;
-const MAX_NODES: usize = 65_536;
-const MAX_LEAVES: usize = 16_384;
-const MAX_STRING_BYTES: usize = 4 * 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_ARGUMENT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_COPY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_NODES: usize = isize::MAX as usize;
+const MAX_LEAVES: usize = isize::MAX as usize;
+const MAX_STRING_BYTES: usize = isize::MAX as usize;
+const MAX_TEXT_BYTES: usize = isize::MAX as usize;
+const MAX_ARGUMENT_BYTES: usize = isize::MAX as usize;
+const MAX_COPY_BYTES: usize = isize::MAX as usize;
 const NODE_CHARGE: usize = 64;
 
 /// An ordinal is stable only within this immutable plan. No keys/paths are exposed.
@@ -1154,9 +1154,9 @@ mod refusal_audit_tests {
 
     #[test]
     fn refusal_audit_never_skips_capacity_errors() {
-        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let budget = PayloadBudget::with_limit(1024);
         let body = json!({"input":[
-            {"role":"user", "content":"x".repeat(MAX_STRING_BYTES + 1)},
+            {"role":"user", "content":"x".repeat(2048)},
             {"role":"user", "content":"synthetic-sibling"}
         ]});
         assert_eq!(

@@ -16,7 +16,7 @@ use std::sync::{
 /// captured entities). A long streamed answer is thousands of tiny frames, so
 /// the charged total runs far ahead of the actual memory; the pool must be
 /// sized for that accounting or legitimate long replies fail as `CapacityExceeded`.
-const DEFAULT_LIMIT: usize = 1024 * 1024 * 1024;
+const DEFAULT_LIMIT: usize = isize::MAX as usize;
 static GLOBAL: LazyLock<Arc<BudgetState>> =
     LazyLock::new(|| Arc::new(BudgetState::new(DEFAULT_LIMIT)));
 

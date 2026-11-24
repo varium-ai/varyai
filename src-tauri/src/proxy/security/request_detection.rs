@@ -14,8 +14,8 @@ use super::{
     types::{AuditAction, RuleCategory},
 };
 
-const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_MATCHES: usize = 16_384;
+const MAX_TEXT_BYTES: usize = isize::MAX as usize;
+const MAX_MATCHES: usize = isize::MAX as usize;
 
 // No Debug/Serialize: custom rule identities are private configuration.
 pub(super) struct DetectedSpan<'a> {
@@ -63,7 +63,7 @@ pub(super) fn detect_spans_with_budget<'a>(
     for rule in runtime.custom_rules.iter().filter(|rule| rule.enabled) {
         pattern_bytes = pattern_bytes
             .checked_add(rule.pattern.len())
-            .filter(|bytes| *bytes <= 4 * MAX_TEXT_BYTES)
+            .filter(|bytes| *bytes <= MAX_TEXT_BYTES.saturating_mul(4))
             .ok_or(TokenError::CapacityExceeded)?;
         if rule.pattern.len() > MAX_TEXT_BYTES {
             return Err(TokenError::CapacityExceeded);

@@ -22,8 +22,8 @@ use super::{
     tokenization::{DlpRequestLease, TokenError},
 };
 
-const MAX_ITEMS: usize = 16_384;
-const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ITEMS: usize = isize::MAX as usize;
+const MAX_ENCODED_BYTES: usize = isize::MAX as usize;
 
 /// Inspection provenance for immutable client input, never restoration or execution authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

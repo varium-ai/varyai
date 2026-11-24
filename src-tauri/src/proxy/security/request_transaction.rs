@@ -11,9 +11,9 @@ use super::{
     tokenization::{DlpRequestLease, TokenError, TokenFragment},
 };
 
-const MAX_ITEMS: usize = 16_384;
-const MAX_FIELD_BYTES: usize = 4 * 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ITEMS: usize = isize::MAX as usize;
+const MAX_FIELD_BYTES: usize = isize::MAX as usize;
+const MAX_TEXT_BYTES: usize = isize::MAX as usize;
 
 /// Candidate text and proof strings are memory-only and must not be diagnosed.
 pub(super) struct PreparedFields<T> {

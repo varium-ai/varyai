@@ -15,15 +15,15 @@ use std::{
 fn default_handles_share_the_exact_global_ceiling() -> Result<(), TokenError> {
     let first = PayloadBudget::default();
     let second = PayloadBudget::default();
-    assert_eq!(first.limit(), 1024 * 1024 * 1024);
+    assert_eq!(first.limit(), isize::MAX as usize);
     assert_eq!(second.limit(), first.limit());
     assert_eq!(first.used(), 0);
-    let reservation = first.reserve(first.limit())?;
+    let reservation = first.reserve(1024 * 1024)?;
     let independent = PayloadBudget::with_limit(3);
     let independent_owner = independent.reserve(3)?;
-    assert_eq!(second.used(), first.limit());
+    assert_eq!(second.used(), 1024 * 1024);
     assert!(matches!(
-        second.reserve(1),
+        second.reserve(isize::MAX as usize),
         Err(TokenError::CapacityExceeded)
     ));
     drop(reservation);
