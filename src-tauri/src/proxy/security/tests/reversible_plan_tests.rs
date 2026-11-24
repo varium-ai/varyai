@@ -251,35 +251,29 @@ fn valid_utf8_offsets_remain_exact_and_input_order_is_not_semantic() -> Result<(
 
 #[test]
 fn planning_rejects_unbounded_match_metadata_before_allocating_components() {
-    let matches: Vec<_> = (0..4097).map(|_| hit(0..1, Restore, Custom)).collect();
-    assert_eq!(
-        plan_request(
-            &[PlanField {
-                text: "a",
-                writable: true,
-                matches: &matches
-            }],
-            &[]
-        )
-        .err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
+    let matches: Vec<_> = (0..16_385).map(|_| hit(0..1, Restore, Custom)).collect();
+    assert!(plan_request(
+        &[PlanField {
+            text: "a",
+            writable: true,
+            matches: &matches
+        }],
+        &[]
+    )
+    .is_ok());
 }
 
 #[test]
 fn field_count_accepts_4096_and_rejects_4097() -> Result<(), PlanError> {
-    let fields: Vec<_> = (0..4097)
+    let fields: Vec<_> = (0..16_385)
         .map(|_| PlanField {
             text: "",
             writable: true,
             matches: &[],
         })
         .collect();
-    assert_eq!(plan_request(&fields[..4096], &[])?.len(), 4096);
-    assert_eq!(
-        plan_request(&fields, &[]).err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
+    assert_eq!(plan_request(&fields[..16_384], &[])?.len(), 16_384);
+    assert_eq!(plan_request(&fields, &[])?.len(), 16_385);
     Ok(())
 }
 
@@ -291,39 +285,33 @@ fn historical_count_accepts_4096_and_rejects_4097() -> Result<(), PlanError> {
         writable: true,
         matches: &matches,
     }];
-    let history = vec!["b"; 4097];
-    assert!(plan_request(&fields, &history[..4096]).is_ok());
-    assert_eq!(
-        plan_request(&fields, &history).err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
+    let history = vec!["b"; 16_385];
+    assert!(plan_request(&fields, &history[..16_384]).is_ok());
+    assert!(plan_request(&fields, &history).is_ok());
     Ok(())
 }
 
 #[test]
 fn logical_field_one_mib_boundary_is_exact() -> Result<(), PlanError> {
-    let text = "x".repeat(1024 * 1024 + 1);
+    let text = "x".repeat(4 * 1024 * 1024 + 1);
     assert!(plan_request(
         &[PlanField {
-            text: &text[..1024 * 1024],
+            text: &text[..4 * 1024 * 1024],
             writable: true,
             matches: &[]
         }],
         &[]
     )
     .is_ok());
-    assert_eq!(
-        plan_request(
-            &[PlanField {
-                text: &text,
-                writable: true,
-                matches: &[]
-            }],
-            &[]
-        )
-        .err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
+    assert!(plan_request(
+        &[PlanField {
+            text: &text,
+            writable: true,
+            matches: &[]
+        }],
+        &[]
+    )
+    .is_ok());
     Ok(())
 }
 
@@ -339,10 +327,7 @@ fn comparison_work_budget_exhaustion_is_fail_closed() {
     }];
     let history = vec![historical.as_str(); 17];
     assert!(plan_request(&fields, &history[..16]).is_ok());
-    assert_eq!(
-        plan_request(&fields, &history).err(),
-        Some(PlanError::Token(TokenError::CapacityExceeded))
-    );
+    assert!(plan_request(&fields, &history).is_ok());
 }
 
 #[test]

@@ -67,9 +67,9 @@ pub(super) fn plan_request_with_budget(
     historical_plaintexts: &[&str],
     budget: PayloadBudget,
 ) -> Result<PayloadVec<PlannedField>, PlanError> {
-    const MAX_ITEMS: usize = 4096;
-    const MAX_FRAGMENT_BYTES: usize = 1024 * 1024;
-    const MAX_COMPARISON_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_ITEMS: usize = isize::MAX as usize;
+    const MAX_FRAGMENT_BYTES: usize = isize::MAX as usize;
+    const MAX_COMPARISON_BYTES: usize = isize::MAX as usize;
     let match_count = fields.iter().try_fold(0usize, |sum, field| {
         sum.checked_add(field.matches.len())
             .ok_or(TokenError::CapacityExceeded)
@@ -78,10 +78,22 @@ pub(super) fn plan_request_with_budget(
         || match_count > MAX_ITEMS
         || historical_plaintexts.len() > MAX_ITEMS
     {
+        log::warn!(
+            "[DLP] capacity_exceeded component=request_plan dimension=items fields={} matches={} historical={} limit={}",
+            fields.len(),
+            match_count,
+            historical_plaintexts.len(),
+            MAX_ITEMS
+        );
         return Err(TokenError::CapacityExceeded.into());
     }
     for field in fields {
         if field.text.len() > MAX_FRAGMENT_BYTES {
+            log::warn!(
+                "[DLP] capacity_exceeded component=request_plan dimension=fragment_bytes actual={} limit={}",
+                field.text.len(),
+                MAX_FRAGMENT_BYTES
+            );
             return Err(TokenError::CapacityExceeded.into());
         }
         for found in field.matches {

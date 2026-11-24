@@ -268,7 +268,9 @@ it("loads supplier icons by provider ID for recorded candidates", async () => {
   expect(
     document.querySelector('.rt-seat-icon [title="Configured supplier"] svg'),
   ).not.toBeNull();
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+    2,
+  );
 });
 
 it("keeps idle topology empty even when connected clients and providers are configured", async () => {
@@ -319,7 +321,9 @@ it("shows only the recorded destination for a direct request", async () => {
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show(configuredCatalog());
   await screen.findByText("routingPage.singleSeat");
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+    1,
+  );
   expect(document.querySelector(".rt-accts")).toHaveTextContent(
     "Synthetic primary",
   );
@@ -358,7 +362,7 @@ it.each([
   },
 );
 
-it("shows only the attempted model for a group with unused candidates", async () => {
+it("shows all candidates in a group including standby ones", async () => {
   snapshot([
     {
       ...route,
@@ -375,10 +379,10 @@ it("shows only the attempted model for a group with unused candidates", async ()
   ]);
   show();
   await screen.findByText("model-b", { selector: ".rt-accts .mdl" });
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
-  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
-    "unused-model",
-  );
+  const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
+  expect(seats).toHaveLength(2);
+  expect(document.querySelector(".rt-accts")).toHaveTextContent("unused-model");
+  expect(seats[1]).toHaveClass("on");
   expect(document.querySelector(".rt-route-summary")).toBeNull();
 });
 
@@ -476,7 +480,7 @@ it("shows the catalog model name throughout a direct request, retaining the inte
     },
   ]);
   show();
-  expect(await screen.findAllByText("Friendly Flash")).toHaveLength(2);
+  expect(await screen.findAllByText("Friendly Flash")).toHaveLength(1);
   for (const label of document.querySelectorAll(".rt-model-label")) {
     expect(label).toHaveTextContent("Friendly Flash");
     expect(label).toHaveAttribute("title", internal);
@@ -487,7 +491,7 @@ it("shows the catalog model name throughout a direct request, retaining the inte
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );
   expect(screen.getAllByText(/Synthetic vendor/).length).toBeGreaterThan(0);
-  expect(screen.getAllByText("Friendly Flash")).toHaveLength(2);
+  expect(screen.getAllByText("Friendly Flash")).toHaveLength(1);
 });
 
 it("uses the recorded group name rather than a hash or the last fallback model", async () => {
@@ -530,7 +534,7 @@ it("does not expose an opaque model alias when no readable model metadata remain
   show();
   expect(
     await screen.findAllByText("routingPage.modelUnavailable"),
-  ).toHaveLength(2);
+  ).toHaveLength(1);
   expect(screen.queryByText(internal)).not.toBeInTheDocument();
 });
 
@@ -617,7 +621,7 @@ it("preserves vendor names while masking account addresses", async () => {
     "fixture.account@example.test",
   );
   expect(
-    document.querySelector(".rt-accts li")?.getAttribute("title"),
+    document.querySelector(".rt-accts li:not(.rt-sub)")?.getAttribute("title"),
   ).toContain("Codex ·");
   fireEvent.click(
     screen.getByRole("button", { name: "routingPage.showAccounts" }),
@@ -753,7 +757,9 @@ it.each([...APP_IDS, "external-fixture"])(
     await waitFor(() =>
       expect(document.querySelectorAll(".rt-src")).toHaveLength(2),
     );
-    expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+    expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+      4,
+    );
     expect(document.querySelectorAll(".rt-sky [data-flight-id]")).toHaveLength(
       2,
     );
@@ -785,8 +791,14 @@ it("attributes concurrent Codex requests to their quota and automatic routes", a
   await screen.findByText("other-model");
   const sources = view.container.querySelectorAll(".rt-src");
   expect(sources).toHaveLength(2);
-  expect(sources[0]).toHaveTextContent("Synthetic quota route");
-  expect(sources[1]).toHaveTextContent("Synthetic automatic route");
+  expect(sources[0]).toHaveAttribute(
+    "title",
+    expect.stringContaining("Synthetic quota route"),
+  );
+  expect(sources[1]).toHaveAttribute(
+    "title",
+    expect.stringContaining("Synthetic automatic route"),
+  );
   const quotaSeat = screen.getByText("model-a").closest("li");
   const automaticSeat = screen.getByText("other-model").closest("li");
   expect(quotaSeat).toHaveTextContent("Synthetic quota route");

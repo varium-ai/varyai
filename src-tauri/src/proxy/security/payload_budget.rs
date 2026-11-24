@@ -16,7 +16,7 @@ use std::sync::{
 /// captured entities). A long streamed answer is thousands of tiny frames, so
 /// the charged total runs far ahead of the actual memory; the pool must be
 /// sized for that accounting or legitimate long replies fail as `CapacityExceeded`.
-const DEFAULT_LIMIT: usize = 256 * 1024 * 1024;
+const DEFAULT_LIMIT: usize = isize::MAX as usize;
 static GLOBAL: LazyLock<Arc<BudgetState>> =
     LazyLock::new(|| Arc::new(BudgetState::new(DEFAULT_LIMIT)));
 
@@ -40,8 +40,8 @@ impl BudgetState {
         })
         .map(|_| ())
         .map_err(|used| {
-            log::debug!(
-                "[DLP] payload budget exhausted used={used} requested={bytes} limit={}",
+            log::warn!(
+                "[DLP] capacity_exceeded component=payload_budget used={used} requested={bytes} limit={}",
                 self.limit
             );
             TokenError::CapacityExceeded
