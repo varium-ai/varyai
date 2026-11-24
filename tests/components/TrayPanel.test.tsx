@@ -80,6 +80,9 @@ vi.mock("@/lib/api/routingTrace", () => ({
 vi.mock("@/lib/api/routingUpstreams", () => ({
   routingUpstreamsApi: { list: vi.fn(async () => []) },
 }));
+vi.mock("@/lib/api/settings", () => ({
+  settingsApi: { get: vi.fn(async () => ({})) },
+}));
 vi.mock("@/lib/api/trayUsage", async (original) => ({
   ...(await original<typeof import("@/lib/api/trayUsage")>()),
   trayUsageApi: { read: vi.fn(async () => []) },

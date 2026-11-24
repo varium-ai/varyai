@@ -263,26 +263,41 @@ struct Windows<'a> {
     failed: bool,
 }
 unsafe extern "system" fn window_callback(window: HWND, context: LPARAM) -> i32 {
-    // EnumWindows calls synchronously; this stack context stays live throughout.
-    let context = unsafe { &mut *(context as *mut Windows<'_>) };
-    let mut pid = 0;
-    unsafe {
-        GetWindowThreadProcessId(window, &mut pid);
-    }
-    if let Some(process) = context.processes.iter().find(|process| process.pid == pid) {
-        let Ok(_handle) = checked(process, 0) else {
-            context.failed = true;
-            return 0;
-        };
-        if unsafe { IsWindowVisible(window) } != 0 {
-            context.shown = true;
+    // EnumWindows calls this through the C ABI. A Rust panic crossing that
+    // boundary aborts the whole application, so keep every fallible Rust
+    // operation inside a catch boundary and convert it into a normal failure.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // EnumWindows calls synchronously; this stack context stays live throughout.
+        let context = unsafe { &mut *(context as *mut Windows<'_>) };
+        let mut pid = 0;
+        unsafe {
+            GetWindowThreadProcessId(window, &mut pid);
         }
-        if context.close && unsafe { PostMessageW(window, WM_CLOSE, 0, 0) } == 0 {
-            context.failed = true;
-            return 0;
+        if let Some(process) = context.processes.iter().find(|process| process.pid == pid) {
+            let Ok(_handle) = checked(process, 0) else {
+                context.failed = true;
+                return 0;
+            };
+            if unsafe { IsWindowVisible(window) } != 0 {
+                context.shown = true;
+            }
+            if context.close && unsafe { PostMessageW(window, WM_CLOSE, 0, 0) } == 0 {
+                context.failed = true;
+                return 0;
+            }
+        }
+        1
+    }));
+    match result {
+        Ok(continue_enumeration) => continue_enumeration,
+        Err(_) => {
+            if context != 0 {
+                let context = unsafe { &mut *(context as *mut Windows<'_>) };
+                context.failed = true;
+            }
+            0
         }
     }
-    1
 }
 fn windows(processes: &[Process], close: bool) -> Result<bool, String> {
     let mut context = Windows {
@@ -587,4 +602,25 @@ fn installed_image(app: &str) -> Result<std::path::PathBuf, String> {
                 && matches_image(app, &path.to_string_lossy(), &local, &programs)
         })
         .ok_or_else(|| FAILED.into())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn enum_windows_callback_contains_a_panic_boundary() {
+        let source = include_str!("native.rs");
+        let start = source
+            .find("unsafe extern \"system\" fn window_callback")
+            .unwrap();
+        let end = start + source[start..].find("\nfn windows(").unwrap();
+        let callback = &source[start..end];
+        assert!(
+            callback.contains("catch_unwind"),
+            "A Rust panic must not unwind through the Win32 callback ABI"
+        );
+        assert!(
+            callback.contains("AssertUnwindSafe"),
+            "The callback context requires an explicit unwind-safety assertion"
+        );
+    }
 }

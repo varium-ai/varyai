@@ -1,12 +1,15 @@
 //! Fixed lifecycle events; never serialize native errors or user-supplied values.
 use crate::app_config::AppType;
+use futures::FutureExt;
 use std::{
     future::Future,
+    panic::AssertUnwindSafe,
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+const OPERATION_FAILED: &str = "agentConnections.operationFailed";
 
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
@@ -87,6 +90,7 @@ fn safe_reason(error: &str) -> &'static str {
         "agentConnections.restartUnsupported" => "unsupported",
         "agentConnections.restartConfirmationRequired" => "confirmation_required",
         "intentRouting.cancelled" => "cancelled",
+        OPERATION_FAILED => "operation_failed",
         super::MISSING => "log_missing",
         super::EMPTY => "log_empty",
         super::SAME_SOURCE => "source_destination_conflict",
@@ -101,7 +105,10 @@ pub(crate) async fn record<T>(
     work: impl Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
     let mut operation = Operation::start(app, action);
-    let result = work.await;
+    let outcome = AssertUnwindSafe(work).catch_unwind().await;
+    // A malformed native configuration must produce a safe command error,
+    // never a panic that closes the application while a switch is being used.
+    let result = outcome.unwrap_or_else(|_| Err(OPERATION_FAILED.to_string()));
     operation.finish(&result);
     result
 }
@@ -153,6 +160,18 @@ mod tests {
                 operation.cancelled();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn operation_diagnostics_convert_panics_into_generic_errors() {
+        let result: Result<(), String> = record("deepseek-harness", Action::Connect, async {
+            panic!("synthetic private panic payload")
+        })
+        .await;
+        assert_eq!(
+            result.as_ref().map_err(String::as_str),
+            Err(OPERATION_FAILED)
+        );
     }
 
     #[test]

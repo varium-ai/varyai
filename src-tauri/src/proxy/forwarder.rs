@@ -4948,7 +4948,7 @@ pub(crate) mod final_send_binding_test_support {
 }
 
 // Memory-only credential identity; never log or persist this value.
-pub(super) fn dlp_auth_principal(headers: &http::HeaderMap) -> Option<String> {
+pub(crate) fn dlp_auth_principal(headers: &http::HeaderMap) -> Option<String> {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     let mut found = false;

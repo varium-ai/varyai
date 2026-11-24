@@ -92,6 +92,7 @@ export function TrayPanel() {
   useTauriEvent("tray-panel-refresh", () => {
     setActive(true);
     frame.current?.focus({ preventScroll: true });
+    void client.invalidateQueries({ queryKey: ["settings"] });
     void refresh();
   });
   useTauriEvent<boolean>("tray-panel-active", (active) => setActive(active));

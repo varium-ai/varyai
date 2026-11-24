@@ -62,9 +62,33 @@ fn registration_matches(app: &str, name: &str) -> bool {
     let name = [" (User)", " (System)"].iter().fold(name, |name, suffix| {
         name.strip_suffix(suffix).unwrap_or(name)
     });
-    layouts(app)
-        .iter()
-        .any(|(folder, _)| name.eq_ignore_ascii_case(folder))
+    let name = name.to_ascii_lowercase();
+    match app {
+        // The China installer has been observed with versioned and branded
+        // DisplayName values while sharing `WorkBuddy.exe` with the
+        // international edition. Accept the CN family only when the name does
+        // not identify the AI/international edition.
+        "workbuddy" => {
+            let international = name.starts_with("workbuddy ai")
+                || name.starts_with("workbuddy-ai")
+                || name.starts_with("workbuddyai")
+                || name.contains("international");
+            let china = name == "workbuddy"
+                || name.starts_with("workbuddy ")
+                || name.starts_with("workbuddy(")
+                || name.starts_with("workbuddy-");
+            china && !international
+        }
+        "workbuddy-ai" => {
+            name.starts_with("workbuddy ai")
+                || name.starts_with("workbuddy-ai")
+                || name.starts_with("workbuddyai")
+                || name.contains("international")
+        }
+        _ => layouts(app)
+            .iter()
+            .any(|(folder, _)| name.eq_ignore_ascii_case(folder)),
+    }
 }
 
 fn numeric_version(value: &str) -> Option<Vec<u32>> {
@@ -174,6 +198,15 @@ pub(crate) fn detect(app: &str, snapshot: &Snapshot) -> Option<Installation> {
         for (folder, executable) in layouts(app) {
             if installed_file(&root.join(folder).join(executable)) {
                 return Some(Installation { version: None });
+            }
+        }
+    }
+    if matches!(app, "workbuddy" | "workbuddy-ai") {
+        if let Some(local) = &snapshot.local {
+            for (folder, executable) in layouts(app) {
+                if installed_file(&local.join(folder).join(executable)) {
+                    return Some(Installation { version: None });
+                }
             }
         }
     }

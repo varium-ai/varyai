@@ -82,34 +82,71 @@ pub(crate) async fn handle(
         Value::Null
     };
     let model = payload["model"].as_str().unwrap_or_default().to_string();
+    let protocol = if is_model {
+        match suffix {
+            "chat/completions" => Some(super::protocol_bridge::Protocol::Chat),
+            "responses" | "v1/responses" => Some(super::protocol_bridge::Protocol::Responses),
+            "messages" | "beta/messages" | "v1/messages" => {
+                Some(super::protocol_bridge::Protocol::Anthropic)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut target = url::Url::parse(&route.upstream).map_err(|_| invalid())?;
+    target.set_path(&format!("{}/{suffix}", target.path().trim_end_matches('/')));
+    target.set_query(parts.uri.query());
+    let mut dlp_request = None;
     if is_model {
         if !route.models.is_empty() && !route.models.contains(&model) {
             return Err(invalid());
         }
-        #[cfg(test)]
-        let before = payload.to_string();
-        let blocked = super::security::inspect_and_intercept_mut_with_headers(
-            &app_type,
-            &mut payload,
-            &parts.headers,
-        )?;
-        #[cfg(test)]
-        if let Ok(dir) = std::env::var("VARYAI_LIVE_TEST_DIR") {
-            let after = payload.to_string();
-            let flags = serde_json::json!({"phone_before":before.contains("13800138000"),"phone_after":after.contains("13800138000"),"private_marker_before":before.contains("-----BEGIN RSA PRIVATE KEY-----"),"private_marker_after":after.contains("-----BEGIN RSA PRIVATE KEY-----"),"blocked":blocked.is_some()});
-            let _ = crate::config::atomic_write_private(
-                &std::path::Path::new(&dir).join("dlp-outcome.json"),
-                flags.to_string().as_bytes(),
-            );
+        if let Some(protocol) = protocol {
+            let endpoint_path = match target.query() {
+                Some(q) if !q.is_empty() => format!("{}?{q}", target.path()),
+                _ => target.path().to_owned(),
+            };
+            match super::security::http_restoration::admit_routed_http_request(
+                &state.restoration_gateway,
+                &app_type,
+                protocol,
+                &endpoint_path,
+                &mut payload,
+                &parts.headers,
+            )? {
+                super::security::http_restoration::RestorationAdmission::Admitted(request) => {
+                    dlp_request = Some(std::sync::Arc::new(*request));
+                }
+                super::security::http_restoration::RestorationAdmission::Intercepted(blocked) => {
+                    return Ok(blocked);
+                }
+                super::security::http_restoration::RestorationAdmission::Passthrough => {}
+            }
         }
-        if let Some(blocked) = blocked {
-            return Ok(blocked);
+        if dlp_request.is_none() {
+            #[cfg(test)]
+            let before = payload.to_string();
+            let blocked = super::security::inspect_and_intercept_mut_with_headers(
+                &app_type,
+                &mut payload,
+                &parts.headers,
+            )?;
+            #[cfg(test)]
+            if let Ok(dir) = std::env::var("VARYAI_LIVE_TEST_DIR") {
+                let after = payload.to_string();
+                let flags = serde_json::json!({"phone_before":before.contains("13800138000"),"phone_after":after.contains("13800138000"),"private_marker_before":before.contains("-----BEGIN RSA PRIVATE KEY-----"),"private_marker_after":after.contains("-----BEGIN RSA PRIVATE KEY-----"),"blocked":blocked.is_some()});
+                let _ = crate::config::atomic_write_private(
+                    &std::path::Path::new(&dir).join("dlp-outcome.json"),
+                    flags.to_string().as_bytes(),
+                );
+            }
+            if let Some(blocked) = blocked {
+                return Ok(blocked);
+            }
         }
     }
     let session = super::security::audit_session_id(&app_type, &parts.headers, &payload);
-    let mut target = url::Url::parse(&route.upstream).map_err(|_| invalid())?;
-    target.set_path(&format!("{}/{suffix}", target.path().trim_end_matches('/')));
-    target.set_query(parts.uri.query());
     let mut headers = HeaderMap::new();
     for (name, value) in parts.headers.iter() {
         if matches!(
@@ -155,6 +192,11 @@ pub(crate) async fn handle(
                 .map_err(|_| invalid())?;
         if let Some(mut provider) = provider {
             if super::native_protocol::needs_conversion(&provider, &parts.uri)? {
+                if dlp_request.is_some() {
+                    return Err(ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+                    ));
+                }
                 provider.settings_config["baseUrl"] = Value::String(route.upstream.clone());
                 return super::native_protocol::forward(
                     &state, app_type, &provider, parts, payload, job,
@@ -163,12 +205,24 @@ pub(crate) async fn handle(
             }
         }
     }
-    let bytes = if is_model {
+    let bytes = if is_model && dlp_request.is_none() {
         serde_json::to_vec(&payload).map_err(|_| invalid())?
+    } else if is_model {
+        Vec::new()
     } else {
         bytes.to_vec()
     };
-    super::qoder::send(target.into(), parts, bytes, job).await
+    super::qoder::send_with_dlp(
+        target.into(),
+        parts,
+        bytes,
+        job,
+        dlp_request,
+        protocol,
+        Some(&route.provider_id),
+        is_model.then_some(payload),
+    )
+    .await
 }
 
 #[cfg(test)]
