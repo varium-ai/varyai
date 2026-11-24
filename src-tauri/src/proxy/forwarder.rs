@@ -54,6 +54,20 @@ pub(crate) struct DlpOperationDescriptor<'a> {
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 const GATEWAY_USER_AGENT: &str = concat!("varyai/", env!("CARGO_PKG_VERSION"));
 
+/// The shared group model is routing metadata for native Gemini (which selects
+/// the model in the URL), but must be kept when bridged to another wire protocol.
+fn should_strip_gemini_routed_model(
+    app_type: &AppType,
+    exact_bridge: Option<&ExactBridge>,
+    wire_ready: bool,
+    has_routed_restoration: bool,
+) -> bool {
+    let wire_is_gemini = exact_bridge.map_or(!wire_ready, |bridge| {
+        bridge.output == super::protocol_bridge::Protocol::Gemini
+    });
+    matches!(app_type, AppType::Gemini) && wire_is_gemini && has_routed_restoration
+}
+
 /// Internal wire-execution mode, never a consumer identity or routing decision.
 /// Only explicit group bridge execution can insert this extension.
 #[derive(Clone)]
@@ -2544,11 +2558,15 @@ impl RequestForwarder {
             };
 
             // The shared group model is routing metadata; Gemini selects it in the URL.
-            if matches!(app_type, AppType::Gemini)
-                && extensions
+            // Keep `model` when the request has been bridged to a non-Gemini wire protocol.
+            if should_strip_gemini_routed_model(
+                app_type,
+                exact_bridge,
+                wire_ready,
+                extensions
                     .get::<super::group_forward::RoutedRestoration>()
-                    .is_some()
-            {
+                    .is_some(),
+            ) {
                 if let Some(fields) = request_body.as_object_mut() {
                     fields.remove("model");
                 }
@@ -7318,6 +7336,35 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[test]
+    fn routed_gemini_keeps_model_when_bridged_to_non_gemini() {
+        use super::super::protocol_bridge::Protocol;
+        // Native Gemini with RoutedRestoration strips `model` (Gemini puts it in the URL).
+        assert!(should_strip_gemini_routed_model(
+            &AppType::Gemini,
+            None,
+            false,
+            true,
+        ));
+        // Bridged Gemini -> Chat must keep `model` in the JSON body.
+        let chat_bridge = ExactBridge {
+            output: Protocol::Chat,
+        };
+        assert!(!should_strip_gemini_routed_model(
+            &AppType::Gemini,
+            Some(&chat_bridge),
+            true,
+            true,
+        ));
+        // Non-exact bridged Gemini -> Chat (wire_ready=true) must also keep `model`.
+        assert!(!should_strip_gemini_routed_model(
+            &AppType::Gemini,
+            None,
+            true,
+            true,
+        ));
     }
 }
 
