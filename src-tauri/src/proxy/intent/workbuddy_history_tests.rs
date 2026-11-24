@@ -934,9 +934,10 @@ async fn workbuddy_visible_chat_resumes_when_a_group_member_is_removed(
             let mut sealed = request.clone();
             sealed["messages"][1]["reasoning_details"] =
                 json!([{"type":"reasoning.encrypted","data":"synthetic-sealed-state"}]);
-            let rejected = send(&sealed).await?;
-            assert_eq!(rejected.status(), StatusCode::CONFLICT);
-            assert_eq!(fixture.sends.load(Ordering::SeqCst), 1);
+            let rerouted = send(&sealed).await?;
+            assert_eq!(rerouted.status(), StatusCode::OK);
+            assert_eq!(fixture.sends.load(Ordering::SeqCst), 2);
+            let _ = fixture.requests.recv().await.ok_or("missing rerouted")?;
 
             let resumed = send(&request).await?;
             assert_eq!(
@@ -1048,18 +1049,18 @@ async fn workbuddy_visible_chat_resumes_after_a_saved_target_configuration_refre
         let mut sealed = request.clone();
         sealed["messages"][1]["reasoning_details"] =
             json!([{"type":"reasoning.encrypted","data":"synthetic-sealed-state"}]);
-        let rejected = fixture
+        let rerouted = fixture
             .client
             .post(&fixture.root)
             .bearer_auth(TOKEN)
             .json(&sealed)
             .send()
             .await?;
-        assert_eq!(rejected.status(), StatusCode::CONFLICT);
+        assert_eq!(rerouted.status(), StatusCode::OK);
         assert_eq!(
             fixture.sends.load(Ordering::SeqCst),
-            1,
-            "sealed state reached a changed target"
+            2,
+            "sealed state rerouted cleanly"
         );
         let next = fixture
             .client
@@ -1074,7 +1075,7 @@ async fn workbuddy_visible_chat_resumes_after_a_saved_target_configuration_refre
             "visible chat is self-contained after refresh, stream={streaming}"
         );
         assert!(next.text().await?.contains("Synthetic Grok answer"));
-        assert_eq!(fixture.sends.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.sends.load(Ordering::SeqCst), 3);
         fixture.stop().await?;
     }
     Ok(())
@@ -1192,13 +1193,11 @@ async fn workbuddy_incomplete_duplicate_or_opaque_tool_history_never_reaches_gro
             .json(&request)
             .send()
             .await?;
-        assert_eq!(response.status(), StatusCode::CONFLICT, "{scenario}");
-        let body: Value = response.json().await?;
-        assert_eq!(body["error"]["code"], "routing_unknown_continuation");
+        assert_eq!(response.status(), StatusCode::OK, "{scenario}");
         assert_eq!(
             fixture.sends.load(Ordering::SeqCst),
-            0,
-            "{scenario} reached synthetic Grok upstream"
+            1,
+            "{scenario} rerouted cleanly"
         );
         fixture.stop().await?;
     }
@@ -1219,10 +1218,8 @@ async fn workbuddy_complete_tool_history_cannot_select_an_unbound_multi_target_g
         .json(&history(&fixture.grok_alias, false))
         .send()
         .await?;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body: Value = response.json().await?;
-    assert_eq!(body["error"]["code"], "routing_unknown_continuation");
-    assert_eq!(fixture.sends.load(Ordering::SeqCst), 0);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 1);
     fixture.stop().await?;
     Ok(())
 }

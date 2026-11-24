@@ -621,6 +621,12 @@ impl DlpForwardError {
             Self::RestoreUnsupported => return Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint).into_app_response(app_type),
             other => return other.into_app_response(app_type),
         };
+        log::warn!(
+            "[DLP] routed_request_rejected app={} code={} status={}",
+            app_type.as_str(),
+            code,
+            self.status_code().as_u16()
+        );
         Self::render_app_error(
             app_type,
             self.status_code(),

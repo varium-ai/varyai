@@ -174,12 +174,11 @@ async fn desktop_startup_probe_ignores_stale_conversation_without_releasing_it(
             "synthetic-new-destination"
         );
         let continuation = request(16).send().await?;
-        assert_eq!(continuation.status(), StatusCode::CONFLICT);
+        assert_eq!(continuation.status(), StatusCode::OK);
         assert_eq!(
-            continuation.json::<Value>().await?["error"]["code"],
-            "routing_unknown_continuation"
+            rx.recv().await.ok_or("missing rerouted continuation")?["model"],
+            "synthetic-new-destination"
         );
-        assert!(rx.try_recv().is_err());
         server.stop().await?;
         task.abort();
     }

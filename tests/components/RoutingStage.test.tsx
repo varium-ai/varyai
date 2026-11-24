@@ -142,7 +142,7 @@ it.each(
     (["responsive", "compact"] as const).map((layout) => ({ agent, layout })),
   ),
 )(
-  "only shows the attempted destination for $agent in $layout",
+  "shows all ranked candidates and highlights the attempted destination for $agent in $layout",
   ({ agent, layout }) => {
     const request = { ...row, agent, sessionTitle: "Synthetic conversation" };
     const view = show({
@@ -162,23 +162,23 @@ it.each(
         />,
       );
     const seats = () =>
-      view.container.querySelectorAll(".rt-accts li:not(.idle)");
+      view.container.querySelectorAll(".rt-accts li:not(.idle):not(.rt-sub)");
     const highlighted = () =>
       view.container.querySelectorAll(".rt-accts .replying");
     expect(highlighted()).toHaveLength(0);
-    expect(seats()).toHaveLength(0);
+    expect(seats()).toHaveLength(3);
     update({ firstTokenMs: null });
     expect(highlighted()).toHaveLength(1);
-    expect(seats()).toHaveLength(1);
-    expect(seats()[0]).toHaveClass("replying");
-    expect(seats()[0]).toHaveTextContent("model-a");
-    expect(seats()[0]).toHaveTextContent("Synthetic conversation");
-    expect(seats()[0].querySelector(".rt-seat-status")).toHaveClass(
+    expect(seats()).toHaveLength(3);
+    expect(seats()[1]).toHaveClass("replying");
+    expect(seats()[1]).toHaveTextContent("model-a");
+    expect(seats()[1]).toHaveTextContent("Synthetic conversation");
+    expect(seats()[1].querySelector(".rt-seat-status")).toHaveClass(
       "has-response",
     );
-    expect(seats()[0]).not.toHaveTextContent("routingPage.outputRate");
+    expect(seats()[1]).not.toHaveTextContent("routingPage.outputRate");
     update({ outputTokensPerSecond: 42.5 });
-    expect(seats()[0]).toHaveTextContent("routingPage.outputRate");
+    expect(seats()[1]).toHaveTextContent("routingPage.outputRate");
     expect(view.container.querySelector(".rt-accts .dot")).toBeNull();
     update({}, true);
     expect(highlighted()).toHaveLength(0);
@@ -188,9 +188,9 @@ it.each(
       outputTokensPerSecond: 42.5,
     });
     expect(highlighted()).toHaveLength(0);
-    expect(seats()[0]).toHaveTextContent("routingPage.seatAnswered");
-    expect(seats()[0]).toHaveTextContent("Synthetic conversation");
-    expect(seats()[0]).toHaveTextContent("routingPage.outputRate");
+    expect(seats()[1]).toHaveTextContent("routingPage.seatAnswered");
+    expect(seats()[1]).toHaveTextContent("Synthetic conversation");
+    expect(seats()[1]).toHaveTextContent("routingPage.outputRate");
   },
 );
 
@@ -265,16 +265,12 @@ it("renders each concurrent response's localized title and measured rate on its 
   const [first, second] = view.container.querySelectorAll(
     ".rt-seat-status.has-response",
   );
-  expect(first).toHaveTextContent(
-    /正在回答.*会话名称：合成测试会话 · 42\.5 tok\/s/,
-  );
+  expect(first).toHaveTextContent(/正在回答.*合成测试会话 · 42\.5 tok\/s/);
   expect(first?.closest("li")).toHaveAttribute(
     "title",
     expect.stringContaining("合成测试会话 · 42.5 tok/s"),
   );
-  expect(second).toHaveTextContent(
-    /正在回答.*会话名称：另一条测试会话 · 17\.1 tok\/s/,
-  );
+  expect(second).toHaveTextContent(/正在回答.*另一条测试会话 · 17\.1 tok\/s/);
 });
 
 it.each([0, -3, Infinity, NaN, undefined])(
@@ -282,15 +278,10 @@ it.each([0, -3, Infinity, NaN, undefined])(
   (rate) => {
     const digest = "ab123456".repeat(8);
     show({ row: { ...row, session: digest, outputTokensPerSecond: rate } });
-    expect(document.querySelector(".rt-seat-status")).toHaveTextContent(
-      "routingPage.sessionReference",
-    );
-    expect(document.querySelector(".rt-seat-status")).not.toHaveTextContent(
-      digest,
-    );
-    expect(document.querySelector(".rt-seat-status")).not.toHaveTextContent(
-      "routingPage.outputRate",
-    );
+    const status = document.querySelectorAll(".rt-seat-status")[1];
+    expect(status).toHaveTextContent("routingPage.sessionReference");
+    expect(status).not.toHaveTextContent(digest);
+    expect(status).not.toHaveTextContent("routingPage.outputRate");
   },
 );
 
@@ -344,15 +335,14 @@ it("renders individual safe key seats, the requested alias and the listener with
   show({ row: allSeatsRow });
   const src = document.querySelector(".rt-src")!;
   expect(src).toHaveTextContent("apps.codex");
-  expect(src).toHaveTextContent("auto/research");
+  expect(src.querySelector("small")).toBeNull();
   expect(document.querySelector(".rt-hub")).toHaveTextContent(
     "127.0.0.1:15722",
   );
   expect(document.querySelector(".rt-hub i")).toBeNull();
-  expect(src.querySelector("small")).not.toHaveClass("sr-only");
   expect(document.querySelector(".rt-hub b")).not.toHaveClass("sr-only");
   expect(document.querySelector(".rt-hub small")).not.toHaveClass("sr-only");
-  const seats = document.querySelectorAll(".rt-accts li");
+  const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
   expect(seats).toHaveLength(3);
   expect(seats[0]).toHaveTextContent("routingPage.apiKey");
   expect(seats[1]).toHaveClass("on", "now");
@@ -487,7 +477,7 @@ it("shows recorded masked key labels instead of provider names and key ordinals"
       })),
     },
   });
-  const seats = document.querySelectorAll(".rt-accts li");
+  const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
   expect(seats[0].querySelector(".who")).toHaveTextContent("sk-4…766b");
   expect(seats[1].querySelector(".who")).toHaveTextContent("sk-8…cd3e");
   expect(seats[0].querySelector(".who")).not.toHaveTextContent(
@@ -521,9 +511,9 @@ it.each([true, false])(
         ],
       },
     });
-    expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(
-      hasCandidates ? 1 : 0,
-    );
+    expect(
+      document.querySelectorAll(".rt-accts li:not(.idle):not(.rt-sub)"),
+    ).toHaveLength(hasCandidates ? 3 : 0);
     expect(document.querySelector(".rt-accts")).not.toHaveTextContent("499");
     expect(document.querySelector(".rt-accts .rest")).toBeNull();
     if (!hasCandidates)
@@ -537,7 +527,7 @@ it("keeps the tray stage horizontal while the workspace stage folds at narrow wi
   expect(document.querySelector(".rt-stage")).not.toHaveClass("narrow");
   expect(document.querySelector(".rt-stage")).toHaveClass("compact");
   expect(document.querySelector(".rt-hub b")).toHaveClass("sr-only");
-  expect(document.querySelector(".rt-src small")).toHaveClass("sr-only");
+  expect(document.querySelector(".rt-src small")).toBeNull();
   view.unmount();
   show();
   expect(document.querySelector(".rt-stage")).toHaveClass("narrow");
@@ -555,11 +545,12 @@ it("distinguishes a retry from the final error and does not animate completed se
       ],
     },
   });
-  const seats = document.querySelectorAll(".rt-accts li");
-  expect(seats).toHaveLength(2);
+  const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
+  expect(seats).toHaveLength(3);
   expect(seats[0]).toHaveTextContent("routingPage.seatWentOn");
   expect(seats[0]).toHaveTextContent("502");
   expect(seats[1]).toHaveTextContent("routingPage.seatAnswered");
+  expect(seats[2]).toHaveTextContent("routingPage.seatQuota");
   expect(document.querySelector(".rt-accts .now")).toBeNull();
   expect(document.querySelector(".rt-wires .live")).toBeNull();
 });
@@ -604,7 +595,7 @@ it("shows other activity on an attempted seat without highlighting it as selecte
     concurrent: [another],
     liveObservations: true,
   });
-  const seats = document.querySelectorAll(".rt-accts li");
+  const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
   expect(seats[0]).toHaveTextContent("routingPage.seatAnsweringOther");
   expect(seats[0]).not.toHaveClass("on");
   expect(seats[1]).toHaveClass("on");
@@ -626,7 +617,7 @@ it("shows an idle placeholder before any request has been recorded", () => {
   );
 });
 
-it("does not draw destinations skipped before dispatch or referenced by invalid attempts", () => {
+it("marks destinations skipped before dispatch as passed and ignores invalid attempt indices", () => {
   show({
     row: {
       ...row,
@@ -643,12 +634,14 @@ it("does not draw destinations skipped before dispatch or referenced by invalid 
       ],
     },
   });
-  expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(0);
-  expect(document.querySelectorAll(".rt-wires path")).toHaveLength(1);
-  expect(
-    screen.getByText("routingPage.noCandidatesFailed"),
-  ).toBeInTheDocument();
-  expect(document.querySelector(".rt-accts")).toHaveTextContent("400");
+  const seats = document.querySelectorAll(
+    ".rt-accts li:not(.idle):not(.rt-sub)",
+  );
+  expect(seats).toHaveLength(3);
+  expect(seats[0]).toHaveClass("left");
+  expect(seats[0]).toHaveTextContent("routingPage.step.context");
+  expect(seats[1]).toHaveClass("left");
+  expect(seats[1]).toHaveTextContent("routingPage.step.images");
 });
 
 it.each(["responsive", "compact"] as const)(
@@ -666,12 +659,12 @@ it.each(["responsive", "compact"] as const)(
       const view = show({ layout });
       const wires = view.container.querySelectorAll(".rt-wires path");
       const packetWires = view.container.querySelectorAll(".rt-packet-path");
-      expect(wires).toHaveLength(2);
+      expect(wires).toHaveLength(layout === "compact" ? 4 : 5);
       expect(packetWires).toHaveLength(4);
-      expect(wires[1].getAttribute("d")).toMatch(/320,30$/);
-      expect(packetWires[1]).toHaveAttribute("d", "");
-      expect(packetWires[2]).toHaveAttribute("d", wires[1].getAttribute("d"));
-      expect(packetWires[3]).toHaveAttribute("d", "");
+      expect(wires[2].getAttribute("d")).toMatch(/320[ ,]30$/);
+      expect(packetWires[1]).toHaveAttribute("d", wires[1].getAttribute("d"));
+      expect(packetWires[2]).toHaveAttribute("d", wires[2].getAttribute("d"));
+      expect(packetWires[3]).toHaveAttribute("d", wires[3].getAttribute("d"));
     } finally {
       bounds.mockRestore();
     }
@@ -706,12 +699,14 @@ it("keeps simultaneous request paths on stage when the latest request changes", 
     />,
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(2);
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+    4,
+  );
   expect(
-    [...document.querySelectorAll(".rt-accts .mdl")]
+    [...document.querySelectorAll(".rt-accts li:not(.rt-sub) .mdl")]
       .map((model) => model.textContent)
       .sort(),
-  ).toEqual(["model-a", "other-model"]);
+  ).toEqual(["another-unused-model", "model-a", "other-model", "unused-model"]);
   expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
   expect([...document.querySelectorAll(".rt-packet")].includes(packet!)).toBe(
     true,
@@ -727,7 +722,9 @@ it("keeps simultaneous request paths on stage when the latest request changes", 
     />,
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+    2,
+  );
 });
 
 it("clears a completed model from another group while the next request is being planned", () => {
@@ -775,7 +772,9 @@ it("shows one node per shared destination without duplicating a concurrent branc
     />,
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+    3,
+  );
   expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
 });
 
@@ -812,7 +811,7 @@ it("shows recorded subscription plans beside names without guessing a plan for k
       })),
     },
   });
-  const seats = document.querySelectorAll(".rt-accts li");
+  const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
   expect(seats[2].querySelector("b")).toHaveTextContent("ChatGPT Plus");
   expect(seats[0].querySelector("b")).not.toHaveTextContent("ChatGPT Plus");
 });
@@ -821,7 +820,7 @@ it("keeps renewal information alongside an answering account's status", () => {
   show({
     row: { ...row, steps: [{ kind: "attempt", candidate: 2, atMs: 1 }] },
   });
-  const status = document.querySelector(".rt-seat-status");
+  const status = document.querySelectorAll(".rt-seat-status")[2];
   expect(status).toHaveTextContent("routingPage.seatAnswering");
   expect(status).toHaveTextContent("routingPage.resetIn");
 });
@@ -833,7 +832,7 @@ it("prioritizes passed-over context before active and quota states", () => {
       steps: [attempt(2), { kind: "context", candidate: 2, atMs: 1 }],
     },
   });
-  const status = document.querySelector(".rt-seat-status");
+  const status = document.querySelectorAll(".rt-seat-status")[2];
   expect(status).toHaveTextContent("routingPage.step.context");
   expect(status).not.toHaveTextContent("routingPage.seatQuota");
 });
@@ -879,7 +878,7 @@ it.each(["responsive", "compact"] as const)(
         />
       </I18nextProvider>,
     );
-    const seat = document.querySelector(".rt-accts li")!;
+    const seat = document.querySelector(".rt-accts li:not(.rt-sub)")!;
     expect(seat.querySelector(".rt-seat-status")).toHaveTextContent(
       "4 天后重置",
     );
@@ -931,7 +930,7 @@ it.each(["responsive", "compact"] as const)(
       layout,
       row: { ...row, candidates, steps: [attempt(0), attempt(1)] },
     });
-    const seats = document.querySelectorAll(".rt-accts li");
+    const seats = document.querySelectorAll(".rt-accts li:not(.rt-sub)");
     expect(seats).toHaveLength(2);
     candidates.forEach((candidate, index) => {
       const label = `Synthetic relay · ${candidate.providerId}`;
@@ -976,7 +975,7 @@ it("uses the public supplier ID when a configured name is duplicated outside the
       },
     })),
   });
-  const seat = document.querySelector(".rt-accts li")!;
+  const seat = document.querySelector(".rt-accts li:not(.rt-sub)")!;
   expect(seat.querySelector(".who")).toHaveTextContent(
     "Synthetic relay · supplier-a",
   );
@@ -1008,7 +1007,9 @@ it("does not treat one supplier's models, effort variants or execution identitie
       },
     ],
   });
-  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
+  expect(document.querySelectorAll(".rt-accts li:not(.rt-sub)")).toHaveLength(
+    3,
+  );
   for (const label of document.querySelectorAll(".rt-accts .who")) {
     expect(label.textContent).toBe("Synthetic relay");
   }
@@ -1067,4 +1068,44 @@ it("preserves configured account and key labels when their providers have duplic
   ].entries()) {
     expect(label.textContent).toBe(`Synthetic seat ${index}`);
   }
+});
+
+it("groups candidates under route headers and assigns distinct agent hues when multiple routes are active", () => {
+  const other: RoutingTrace = {
+    ...row,
+    id: "other-route",
+    agent: "claude",
+    groupName: "Long context",
+    candidates: [
+      {
+        providerId: "other-prov",
+        providerName: "OpenRouter",
+        model: "google/gemini-3.1-pro",
+      },
+    ],
+    steps: [{ kind: "attempt", candidate: 0, atMs: 1 }],
+  };
+  const { container } = show({
+    row,
+    sources: [row, other],
+  });
+
+  const wayHeaders = container.querySelectorAll(".rt-accts li.rt-sub");
+  expect(wayHeaders).toHaveLength(2);
+  expect(wayHeaders[0]).toHaveTextContent("Research");
+  expect(wayHeaders[1]).toHaveTextContent("Long context");
+  expect(
+    container.querySelectorAll(".rt-accts li:not(.rt-sub) .rt-seat-dot"),
+  ).toHaveLength(4);
+
+  const sourceNodes = [
+    ...container.querySelectorAll<HTMLElement>(".rt-src.has-agent"),
+  ];
+  expect(sourceNodes).toHaveLength(2);
+  const hues = sourceNodes.map((node) =>
+    node.style.getPropertyValue("--rt-agent"),
+  );
+  expect(hues[0]).not.toBe("");
+  expect(hues[1]).not.toBe("");
+  expect(hues[0]).not.toBe(hues[1]);
 });

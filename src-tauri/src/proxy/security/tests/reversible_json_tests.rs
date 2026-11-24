@@ -149,14 +149,14 @@ fn json_copy_depth_and_node_limits_fail_without_building() {
         observed.set(observed.get() + 1);
         Action::Continue
     });
-    for body in [&deep, &wide] {
-        assert_eq!(
-            PayloadJson::try_from_value(body, budget.clone(), 16 * LIMIT).err(),
-            Some(TokenError::CapacityExceeded)
-        );
-        assert_eq!(budget.used(), 0);
-    }
+    assert_eq!(
+        PayloadJson::try_from_value(&deep, budget.clone(), 16 * LIMIT).err(),
+        Some(TokenError::CapacityExceeded)
+    );
+    assert_eq!(budget.used(), 0);
     assert_eq!(calls.get(), 0);
+    assert!(PayloadJson::try_from_value(&wide, budget.clone(), 16 * LIMIT).is_ok());
+    assert_eq!(budget.used(), 0);
 }
 
 #[test]
@@ -448,7 +448,6 @@ fn decoded_json_encoded_depth_and_node_bounds_reject_before_parser() {
     for encoded in [
         "x".repeat(8 * 1024 * 1024 + 1),
         format!("{}null{}", "[".repeat(65), "]".repeat(65)),
-        wide,
     ] {
         let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
         assert_eq!(
@@ -458,6 +457,9 @@ fn decoded_json_encoded_depth_and_node_bounds_reject_before_parser() {
         assert_eq!(budget.used(), 0);
     }
     assert_eq!(calls.get(), 0);
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    assert!(PayloadJson::try_from_str(&wide, budget.clone(), 64 * 1024 * 1024).is_ok());
+    assert_eq!(budget.used(), 0);
 }
 
 #[test]

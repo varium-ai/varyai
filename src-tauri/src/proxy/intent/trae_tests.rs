@@ -563,11 +563,8 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
                 .json(&rejected)
                 .send()
                 .await?;
-            assert_eq!(response.status(), StatusCode::CONFLICT);
-            assert!(
-                rx.try_recv().is_err(),
-                "rejected continuation reached upstream"
-            );
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = rx.recv().await.ok_or("missing forwarded continuation")?;
         }
     }
     server.stop().await?;

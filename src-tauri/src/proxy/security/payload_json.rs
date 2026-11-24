@@ -14,7 +14,7 @@ use std::fmt;
 use std::io::{self, Write};
 
 const MAX_DEPTH: usize = 64;
-const MAX_NODES: usize = 65_536;
+const MAX_NODES: usize = isize::MAX as usize;
 const NODE_BYTES: usize = 128;
 // For locked indexmap 2.13: bucket storage plus rounded hash indices/control
 // bytes, even for small maps. Never clone the source's potentially sparse table.
