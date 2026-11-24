@@ -280,7 +280,9 @@ pub async fn set_proxy_takeover_for_app(
         } else {
             Action::Disconnect
         },
-        Box::pin(set_proxy_takeover_for_app_inner(app, state, app_type, enabled)),
+        Box::pin(set_proxy_takeover_for_app_inner(
+            app, state, app_type, enabled,
+        )),
     )
     .await
 }

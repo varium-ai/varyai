@@ -525,7 +525,9 @@ pub(crate) async fn restart_agent_connection(
     record(
         &diagnostic_app,
         Action::Restart,
-        Box::pin(restart_agent_connection_inner(app_handle, state, app, confirmed)),
+        Box::pin(restart_agent_connection_inner(
+            app_handle, state, app, confirmed,
+        )),
     )
     .await
 }
@@ -735,7 +737,9 @@ pub(crate) async fn set_agent_connection(
         } else {
             Action::Disconnect
         },
-        Box::pin(set_agent_connection_inner(app_handle, state, app, enabled, model)),
+        Box::pin(set_agent_connection_inner(
+            app_handle, state, app, enabled, model,
+        )),
     )
     .await
 }
