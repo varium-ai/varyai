@@ -296,6 +296,19 @@ fn run_tool_update_with_retry(
     }
 }
 
+fn is_missing_node_npm_output(raw: &str, exit_code: Option<i32>) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    let mentions_node_or_npm = lower.contains("npm") || lower.contains("node");
+    if !mentions_node_or_npm {
+        return false;
+    }
+    matches!(exit_code, Some(9009) | Some(127))
+        || lower.contains("is not recognized as an internal or external command")
+        || raw.contains("不是内部或外部命令")
+        || lower.contains("command not found")
+        || lower.contains("no such file or directory")
+}
+
 /// Return the final output lines when an installation or update command fails.
 fn finish_lifecycle_output(output: &std::process::Output) -> Result<(), String> {
     if output.status.success() {
@@ -308,6 +321,9 @@ fn finish_lifecycle_output(output: &std::process::Output) -> Result<(), String> 
     } else {
         stderr.trim()
     };
+    if is_missing_node_npm_output(raw, output.status.code()) {
+        return Err("missing_node_npm".to_string());
+    }
     let detail = last_lines(raw, 8);
     Err(if detail.is_empty() {
         format!("命令执行失败 (exit code: {:?})", output.status.code())
@@ -7834,5 +7850,33 @@ mod tests {
             command,
             "pushd \"\\\\server\\share\\100%%^&^(test^)\" || exit /b 1\r\n"
         );
+    }
+
+    #[test]
+    fn is_missing_node_npm_output_detects_windows_and_posix_errors() {
+        assert!(is_missing_node_npm_output(
+            "'npm' 不是内部或外部命令，也不是可运行的程序或批处理文件。",
+            Some(1),
+        ));
+        assert!(is_missing_node_npm_output(
+            "'npm' is not recognized as an internal or external command.",
+            Some(9009),
+        ));
+        assert!(is_missing_node_npm_output(
+            "bash: npm: command not found",
+            Some(127),
+        ));
+        assert!(is_missing_node_npm_output(
+            "env: node: No such file or directory",
+            Some(127),
+        ));
+        assert!(!is_missing_node_npm_output(
+            "npm ERR! network request failed",
+            Some(1),
+        ));
+        assert!(!is_missing_node_npm_output(
+            "curl: command not found",
+            Some(127),
+        ));
     }
 }
