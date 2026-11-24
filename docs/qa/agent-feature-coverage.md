@@ -1,5 +1,36 @@
 # Agent feature coverage
 
+## Routing-group visibility in Agent model pickers
+
+The routing-group publication switch controls the catalog used by connected
+Agents on macOS and Windows. The VaryAI route picker uses the global snapshot.
+Codex also publishes the same group visibility through its Responses catalogs.
+
+| Agent ID           | Model picker and routing adapter                                        | Verification                                                            |
+| ------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `claude`           | Claude Code Messages menu                                               | Shared catalog projection                                               |
+| `claude-desktop`   | Claude Desktop Messages menu                                            | Shared catalog projection                                               |
+| `codex`            | ChatGPT App native Responses catalog and standalone Codex model catalog | Compare both catalogs with the global snapshot after toggling one group |
+| `gemini`           | Gemini CLI native model menu                                            | Shared catalog projection                                               |
+| `grokbuild`        | Grok Build Responses menu                                               | Shared catalog projection                                               |
+| `opencode`         | OpenCode managed model menu                                             | Shared catalog projection                                               |
+| `openclaw`         | OpenClaw managed model menu                                             | Shared catalog projection                                               |
+| `hermes`           | Hermes managed model menu                                               | Shared catalog projection                                               |
+| `pi`               | Pi managed model menu                                                   | Shared catalog projection                                               |
+| `workbuddy`        | WorkBuddy China Chat menu                                               | User confirmed the toggle in WorkBuddy                                  |
+| `workbuddy-ai`     | WorkBuddy international Chat menu                                       | Shared catalog projection                                               |
+| `qoder`            | Qoder CN managed model menu                                             | Shared catalog projection                                               |
+| `doubaowork`       | Official audit-only connection                                          | No VaryAI routing-group picker                                          |
+| `trae`             | TRAE CN bridge model menu                                               | Shared catalog projection                                               |
+| `trae-intl`        | TRAE international bridge model menu                                    | Shared catalog projection                                               |
+| `kimi`             | Kimi Code managed model menu                                            | Shared catalog projection                                               |
+| `qwen`             | Qwen Code managed model menu                                            | Shared catalog projection                                               |
+| `zcode`            | ZCode managed model menu                                                | Shared catalog projection                                               |
+| `deepseek-harness` | DeepSeek Harness managed model menu                                     | Shared catalog projection                                               |
+| `t3code`           | T3 Code managed model menu                                              | Shared catalog projection                                               |
+
+Native client and Windows acceptance remain pending, with the WorkBuddy self-test recorded above.
+
 ## Visible conversation history after routing membership changes
 
 This fix is scoped to managed WorkBuddy and DeepSeek Harness connections. The
@@ -7,11 +38,28 @@ existing connection and route picker continue to identify the same group. The
 shared proxy must handle a member being disabled and re-enabled on macOS and
 Windows while preserving provider-owned conversation state.
 
-| Agent ID | Entry point and wire adapter | Runtime and verification |
-| -------- | ---------------------------- | ------------------------ |
-| `workbuddy`, `workbuddy-ai` | Managed desktop and CLI, Chat Completions | Synthetic HTTP replay across member removal and re-enablement. Installed-client acceptance pending. |
+| Agent ID           | Entry point and wire adapter                              | Runtime and verification                                                                                            |
+| ------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `workbuddy`        | Managed desktop and CLI, Chat Completions                 | Synthetic HTTP replay across member removal and re-enablement. Installed-client acceptance pending.                 |
+| `workbuddy-ai`     | Managed desktop and CLI, Chat Completions                 | Synthetic HTTP replay across member removal and re-enablement. Installed-client acceptance pending.                 |
 | `deepseek-harness` | Managed desktop, Chat Completions, Messages and Responses | Synthetic HTTP replay across member removal and re-enablement on each adapter. Installed-client acceptance pending. |
-| `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `t3code` | Existing adapters and routing entry points | Existing history policies remain in effect. Codex Responses retains its independent replay policy. |
+| `claude`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `claude-desktop`   | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `codex`            | Existing adapters and routing entry points                | Codex Responses retains its independent replay policy.                                                              |
+| `gemini`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `grokbuild`        | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `opencode`         | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `openclaw`         | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `hermes`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `pi`               | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `qoder`            | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `doubaowork`       | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `trae`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `trae-intl`        | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `kimi`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `qwen`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `zcode`            | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `t3code`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
 
 Retained tool ownership, opaque state, and incompatible destination replacement
 remain subject to the existing continuation checks. No native client restart
