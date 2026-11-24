@@ -490,7 +490,7 @@ pub(crate) async fn authorize_agent_model_control(
     record(
         &diagnostic_app,
         Action::AuthorizeModelControl,
-        authorize_agent_model_control_inner(state, app, confirmed),
+        Box::pin(authorize_agent_model_control_inner(state, app, confirmed)),
     )
     .await
 }
@@ -525,7 +525,7 @@ pub(crate) async fn restart_agent_connection(
     record(
         &diagnostic_app,
         Action::Restart,
-        restart_agent_connection_inner(app_handle, state, app, confirmed),
+        Box::pin(restart_agent_connection_inner(app_handle, state, app, confirmed)),
     )
     .await
 }
@@ -579,7 +579,7 @@ pub(crate) async fn reapply_agent_connection(
     record(
         &diagnostic_app,
         Action::Reapply,
-        reapply_agent_connection_inner(state, app),
+        Box::pin(reapply_agent_connection_inner(state, app)),
     )
     .await
 }
@@ -735,7 +735,7 @@ pub(crate) async fn set_agent_connection(
         } else {
             Action::Disconnect
         },
-        set_agent_connection_inner(app_handle, state, app, enabled, model),
+        Box::pin(set_agent_connection_inner(app_handle, state, app, enabled, model)),
     )
     .await
 }

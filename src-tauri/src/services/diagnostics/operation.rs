@@ -99,6 +99,14 @@ fn safe_reason(error: &str) -> &'static str {
     }
 }
 
+/// Runs `work` and records the outcome as a fixed lifecycle event.
+///
+/// Callers must pass `work` as `Box::pin(...)`: the connection commands build
+/// very large async state machines, and Tauri's release `respond_async_serialized`
+/// moves the command future by value across several main-thread stack frames.
+/// Keeping the state machine behind a pointer prevents that copy chain from
+/// overflowing the 1 MB main-thread stack (STATUS_STACK_OVERFLOW, 0xc00000fd)
+/// while a switch is being used.
 pub(crate) async fn record<T>(
     app: &str,
     action: Action,
