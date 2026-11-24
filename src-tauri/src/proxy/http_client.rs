@@ -253,7 +253,7 @@ fn client_builder(
     total_timeout: Option<Duration>,
 ) -> Result<reqwest::ClientBuilder, String> {
     let builder = Client::builder()
-        .use_preconfigured_tls(super::upstream_tls::client_config()?)
+        .use_preconfigured_tls(super::upstream_tls::client_config_h2()?)
         .redirect(redirects)
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
