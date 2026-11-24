@@ -415,10 +415,7 @@ async fn trial_with_runtime(
             .as_ref()
             .ok_or("unavailable")?
             .model_id;
-        let provider = crate::services::routing_upstreams::variants_for_model(&provider, model)
-            .into_iter()
-            .find(|variant| eligible_provider(variant, true))
-            .ok_or("unavailable")?;
+        let provider = super::classifier_for_model(&provider, model).ok_or("unavailable")?;
         let protocol = super::static_protocol(&provider).ok_or("unavailable")?;
         let thinking_level = if protocol == Protocol::Gemini {
             gemini_thinking_level(&provider, model)
@@ -444,9 +441,6 @@ async fn trial_with_runtime(
                 );
             }
         }
-        let (endpoint, headers) =
-            super::execution::static_transport(&provider, model).map_err(|_| "unavailable")?;
-        let url = reqwest::Url::parse(&endpoint).map_err(|_| "unavailable")?;
         let client = match client {
             Some(client) => client,
             None => tauri::async_runtime::spawn_blocking(
@@ -456,6 +450,21 @@ async fn trial_with_runtime(
             .map_err(|_| "unavailable")?
             .map_err(|_| "unavailable")?,
         };
+        if let Some(binding) = crate::services::subscription_provider::binding(&provider) {
+            let result = Box::pin(crate::proxy::workbuddy_classifier_request(
+                binding,
+                &client,
+                protocol,
+                payload,
+                &provider,
+                MAX_RESPONSE,
+            ))
+            .await?;
+            return Ok(decode_result(&group, protocol, &result));
+        }
+        let (endpoint, headers) =
+            super::execution::static_transport(&provider, model).map_err(|_| "unavailable")?;
+        let url = reqwest::Url::parse(&endpoint).map_err(|_| "unavailable")?;
         send(&client, url, headers, &payload, protocol, &group).await
     };
     let (intent_id, outcome) = match tokio::time::timeout(

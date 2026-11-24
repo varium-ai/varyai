@@ -2580,6 +2580,13 @@ An explicit output-limit response has its own fallback reason on each of
 the four classifier protocols. Verification for this change uses synthetic
 classifier responses and renderer tests. Native Agent acceptance is pending.
 
+For every Agent in the following matrix, the hard/easy and custom editors,
+saved classifier target, and live classifier dispatch share the same path
+on macOS and Windows. WorkBuddy China and WorkBuddy AI are selectable upstream
+accounts independently of the calling Agent. Verification covers both regional
+catalogs and the native Chat and Messages transports with synthetic fixtures.
+Installed-client and real-account acceptance for this change is pending.
+
 The hard/easy rule descriptions use the same routing group editor for every
 Agent below on macOS and Windows. The editor renders built-in descriptions
 in the selected language and keeps saved rule text available to each existing

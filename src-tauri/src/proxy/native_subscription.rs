@@ -141,6 +141,60 @@ fn envelope(
     body
 }
 
+/// Classifiers share WorkBuddy's regional transport, with a smaller response budget.
+pub(crate) async fn workbuddy_classifier_request(
+    binding: crate::services::subscription_provider::Binding,
+    client: &reqwest::Client,
+    protocol: Protocol,
+    payload: Value,
+    provider: &Provider,
+    max_bytes: usize,
+) -> Result<Value, &'static str> {
+    if !binding.provider.is_workbuddy() {
+        return Err("unavailable");
+    }
+    let account = accounts::resolve(binding.provider, &binding.account_id)
+        .await
+        .map_err(|_| "unavailable")?;
+    let model_name = provider.settings_config["modelCatalog"]["models"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["model"] == payload["model"]))
+        .and_then(|row| row["displayName"].as_str());
+    let (response, _) = workbuddy::send(
+        client,
+        &account,
+        protocol,
+        payload,
+        None,
+        &HeaderMap::new(),
+        false,
+        None,
+        model_name,
+    )
+    .await
+    .map_err(|_| "request_failed")?;
+    workbuddy_classifier_reply(ProxyResponse::Reqwest(response), protocol, max_bytes).await
+}
+
+async fn workbuddy_classifier_reply(
+    response: ProxyResponse,
+    protocol: Protocol,
+    max_bytes: usize,
+) -> Result<Value, &'static str> {
+    let bytes = response
+        .bytes_with_limit(max_bytes)
+        .await
+        .map_err(|err| match err {
+            ProxyError::ResponseBodyTooLarge(_) => "invalid_output",
+            _ => "request_failed",
+        })?;
+    let stream = futures::stream::once(async move { Ok(bytes) });
+    let reply = ir::stream::collect(Box::pin(stream), protocol)
+        .await
+        .map_err(|_| "invalid_output")?;
+    ir::reply::render(protocol, &reply).map_err(|_| "invalid_output")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward(
     provider: &Provider,
@@ -683,6 +737,48 @@ async fn claude_with_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn workbuddy_classifier_reads_bounded_complete_regional_replies(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let classification = r#"{"intentId":"debug"}"#;
+        for protocol in [Protocol::Chat, Protocol::Anthropic] {
+            let body = match protocol {
+                Protocol::Chat => {
+                    json!({"id":"fixture","model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":classification},"finish_reason":"stop"}]})
+                }
+                _ => {
+                    json!({"id":"fixture","model":"fixture","role":"assistant","type":"message","content":[{"type":"text","text":classification}],"stop_reason":"end_turn"})
+                }
+            };
+            let reply = ir::reply::parse(protocol, &body)?;
+            let frames = ir::stream::from_reply(&reply, protocol)?;
+            let response = |bytes| ProxyResponse::buffered(StatusCode::OK, HeaderMap::new(), bytes);
+            let result =
+                workbuddy_classifier_reply(response(frames.clone()), protocol, frames.len())
+                    .await?;
+            let text = if protocol == Protocol::Chat {
+                &result["choices"][0]["message"]["content"]
+            } else {
+                &result["content"][0]["text"]
+            };
+            assert_eq!(text, classification);
+            assert_eq!(
+                workbuddy_classifier_reply(response(frames.clone()), protocol, frames.len() - 1)
+                    .await,
+                Err("invalid_output")
+            );
+            assert_eq!(
+                workbuddy_classifier_reply(
+                    response(frames.slice(..frames.len() / 2)),
+                    protocol,
+                    frames.len()
+                )
+                .await,
+                Err("invalid_output")
+            );
+        }
+        Ok(())
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_claude_resumes_typed_history_and_returns_the_following_turn(

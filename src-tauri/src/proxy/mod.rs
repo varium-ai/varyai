@@ -28,6 +28,7 @@ pub mod media_sanitizer;
 pub mod model_mapper;
 mod native_protocol;
 mod native_subscription;
+pub(crate) use native_subscription::workbuddy_classifier_request;
 mod protocol_bridge;
 pub(crate) use protocol_bridge::Protocol;
 pub mod provider_router;
