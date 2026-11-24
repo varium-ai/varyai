@@ -587,7 +587,7 @@ impl Decoder {
                     }
                 }
                 Some("reasoning") => {
-                    let text = item["summary"]
+                    let summary = item["summary"]
                         .as_array()
                         .map(|a| {
                             a.iter()
@@ -595,6 +595,24 @@ impl Decoder {
                                 .collect::<String>()
                         })
                         .unwrap_or_default();
+                    let previous = self.texts.get(&i).map(String::as_str).unwrap_or_default();
+                    let text = if !summary.is_empty() && summary.starts_with(previous) {
+                        summary
+                    } else {
+                        // Responses reasoning text deltas can be finalized in content.
+                        let content = item["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|part| part["type"] == "reasoning_text")
+                            .filter_map(|part| part["text"].as_str())
+                            .collect::<String>();
+                        if content.is_empty() {
+                            summary
+                        } else {
+                            content
+                        }
+                    };
                     self.complete_text(i, &text, true, e)?;
                     if kind.ends_with(".done") {
                         if item.get("encrypted_content").is_some() {
@@ -1667,6 +1685,56 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn responses_reasoning_content_reaches_each_stream_terminal() {
+        for summary in [
+            json!([]),
+            json!([{"type":"summary_text","text":"Brief summary"}]),
+        ] {
+            let reasoning = json!({
+                "id":"reasoning", "type":"reasoning", "summary":summary,
+                "content":[{"type":"reasoning_text","text":"Synthetic thought"}],
+                "encrypted_content":null
+            });
+            let message = json!({
+                "id":"message", "type":"message", "role":"assistant",
+                "content":[{"type":"output_text","text":"Synthetic answer"}]
+            });
+            let input = [
+                json!({"type":"response.created","response":{"id":"synthetic","model":"fixture"}}),
+                json!({"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning","type":"reasoning","summary":[],"content":[]}}),
+                json!({"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"Synthetic "}),
+                json!({"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"thought"}),
+                json!({"type":"response.output_item.done","output_index":0,"item":reasoning}),
+                json!({"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Synthetic answer"}),
+                json!({"type":"response.output_item.done","output_index":1,"item":message}),
+                json!({"type":"response.completed","response":{"id":"synthetic","model":"fixture","status":"completed","output":[reasoning,message],"usage":{"input_tokens":2,"output_tokens":5}}}),
+            ]
+            .into_iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+            for target in [
+                Protocol::Gemini,
+                Protocol::Chat,
+                Protocol::Anthropic,
+                Protocol::Responses,
+            ] {
+                let wire = transcode(source(input.clone()), Protocol::Responses, target);
+                let actual = collect(wire, target)
+                    .await
+                    .unwrap_or_else(|e| panic!("Responses -> {target:?}: {e}"));
+                assert_eq!(actual.stop, "stop");
+                assert_eq!(actual.usage.output, 5);
+                assert!(actual.parts.iter().any(
+                    |part| matches!(part, Part::Thinking {text,..} if text == "Synthetic thought")
+                ));
+                assert!(actual.parts.iter().any(
+                    |part| matches!(part, Part::Text {text,..} if text == "Synthetic answer")
+                ));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn incomplete_stream_emits_sanitized_error_without_success() {
         let input =

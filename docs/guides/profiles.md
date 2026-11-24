@@ -33,6 +33,7 @@ Selecting a single-client profile opens its details, including the currently sel
 New or refreshed multi-agent profiles capture the current supplier and its saved model configuration for WorkBuddy, Qoder, Kimi, Qwen, ZCode and TRAE. Previously enabled suppliers do not become additional targets. OpenCode, OpenClaw, Hermes and Pi retain their enabled-provider sets. Existing snapshots keep their saved targets until explicitly refreshed. Opening supplier lists after applying a profile does not invalidate Undo; actual external configuration edits still do.
 
 Profile names must be unique after trimming surrounding whitespace. Creation and renaming report a duplicate name without overwriting either profile. Existing duplicate profiles can still refresh their snapshots or be renamed to resolve the duplication.
+If another client claims a name before your save reaches storage, the creation dialog displays the duplicate error beside that draft. Enter a different name and confirm again.
 
 Opening the profile menu refreshes agent availability so newly configured clients can be selected. Preview/apply and Undo checks ignore JSON object-key ordering, including provider metadata maps. Changes to values, ordered lists or native file contents still invalidate the review and require a fresh preview.
 

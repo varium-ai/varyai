@@ -764,27 +764,42 @@ it.each([...APP_IDS, "external-fixture"])(
   },
 );
 
-it("keeps one source for an Agent's concurrent requests across models and sessions", async () => {
-  snapshot([
-    sourceRequest("codex"),
-    sourceRequest("codex", {
-      id: "second-codex-request",
-      model: "other-model",
-      session: "other-session",
-      candidates: [
-        {
-          providerId: "other",
-          providerName: "Other synthetic supplier",
-          model: "other-model",
-        },
-      ],
-    }),
-  ]);
-  show();
-  await screen.findByText("Other synthetic supplier");
-  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+it("attributes concurrent Codex requests to their quota and automatic routes", async () => {
+  const quota = sourceRequest("codex", {
+    model: "vary-auto/expiring-quota",
+    groupName: "Synthetic quota route",
+    candidates: [route.candidates[0]],
+  });
+  const automatic = sourceRequest("codex", {
+    id: "second-codex-request",
+    model: "vary-auto/automatic",
+    groupName: "Synthetic automatic route",
+    session: "other-session",
+    candidates: [{ ...route.candidates[1], model: "other-model" }],
+  });
+  snapshot([quota, automatic]);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = show(client);
+  await screen.findByText("other-model");
+  const sources = view.container.querySelectorAll(".rt-src");
+  expect(sources).toHaveLength(2);
+  expect(sources[0]).toHaveTextContent("Synthetic quota route");
+  expect(sources[1]).toHaveTextContent("Synthetic automatic route");
+  const quotaSeat = screen.getByText("model-a").closest("li");
+  const automaticSeat = screen.getByText("other-model").closest("li");
+  expect(quotaSeat).toHaveTextContent("Synthetic quota route");
+  expect(automaticSeat).toHaveTextContent("Synthetic automatic route");
   expect(document.querySelector(".rt-what")).toHaveTextContent(
     "routingPage.stage",
+  );
+  snapshot([quota, { ...automatic, state: "completed" }]);
+  await client.invalidateQueries({ queryKey: ["routing-trace"] });
+  await waitFor(() => expect(screen.queryByText("other-model")).toBeNull());
+  expect(view.container.querySelectorAll(".rt-src")).toHaveLength(1);
+  expect(view.container.querySelector(".rt-what")).toHaveTextContent(
+    "Synthetic quota route",
   );
 });
 

@@ -1090,6 +1090,11 @@ body:has(.tray-panel),
   font-size: 11px;
 }
 
+.tray-panel .tray-agents .mp-agent-checkin {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
 .tray-section-title {
   margin-top: 14px;
 }

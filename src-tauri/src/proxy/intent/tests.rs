@@ -242,6 +242,15 @@ async fn codex_account_pool_falls_back_within_one_member_and_pins_the_answering_
 #[serial_test::serial]
 async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for SecurityRuntimeRestore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security =
+        SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     use crate::{
         database::Database,
         proxy::{
@@ -1515,4 +1524,50 @@ fn colliding_upstream_ids_and_unknown_tool_types_are_not_rerouted() {
             None
         )
         .is_err());
+}
+
+#[test]
+fn missing_workbuddy_model_entitlement_allows_only_an_unpinned_fallback() {
+    let entitlement = br#"{"error":{"code":"11158"}}"#;
+    for service in ["workbuddy", "workbuddy-ai", "github_copilot"] {
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            json!({"routingSubscription":{"provider":service,"accountId":"fixture"}}),
+            None,
+        );
+        assert_eq!(
+            retry_converted_rejection(&provider, 400, entitlement, None, true),
+            service != "github_copilot"
+        );
+        assert!(!retry_converted_rejection(
+            &provider,
+            400,
+            entitlement,
+            Some(0),
+            true
+        ));
+        assert!(!retry_converted_rejection(
+            &provider,
+            400,
+            entitlement,
+            None,
+            false
+        ));
+        assert!(!retry_converted_rejection(
+            &provider,
+            400,
+            br#"{"code":11133}"#,
+            None,
+            true
+        ));
+        assert!(!retry_converted_rejection(
+            &provider,
+            404,
+            entitlement,
+            None,
+            true
+        ));
+        assert!(retry_converted_rejection(&provider, 429, b"", None, false));
+    }
 }

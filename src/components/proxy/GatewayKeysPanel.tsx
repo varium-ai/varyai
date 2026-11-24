@@ -1,9 +1,9 @@
 import { OptionSelect } from "@/components/ui/option-select";
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { KeyRound, Plus } from "lucide-react";
+import { KeyRound, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -59,12 +59,6 @@ export function GatewayKeysPanel({
   const locale = getLocaleFromLanguage(getResolvedLang(i18n));
   const client = useQueryClient();
   const [view, setView] = useState<View>("keys");
-  const { data: connections } = useQuery({
-    queryKey: ["agent-connections"],
-    queryFn: agentConnectionsApi.list,
-    enabled: view === "agents" && running,
-    refetchInterval: view === "agents" && running ? 5000 : false,
-  });
   const { data: keys = [], isError } = useQuery({
     queryKey: ["gateway-keys"],
     queryFn: gatewayApi.list,
@@ -75,10 +69,31 @@ export function GatewayKeysPanel({
     queryFn: gatewayApi.catalog,
     refetchInterval: 10000,
   });
+  const supportedApps = new Set(
+    catalog?.agents
+      .filter((agent) => agent.localRouting)
+      .map((agent) => agent.id),
+  );
+  const boundKeys = new Map(
+    keys.flatMap((key) => (key.agents ?? []).map((app) => [app, key] as const)),
+  );
+  const connections = useQueries({
+    queries: APP_IDS.map((app) => {
+      const enabled =
+        view === "agents" &&
+        running &&
+        supportedApps.has(app) &&
+        boundKeys.has(app);
+      return {
+        queryKey: ["agent-connections", app],
+        queryFn: () => agentConnectionsApi.get(app),
+        enabled,
+        refetchInterval: enabled ? 5000 : false,
+      };
+    }),
+  });
   const modelNames = new Map(
-    catalog?.models
-      .filter((model) => model.name)
-      .map((row) => [row.model, row.name]),
+    catalog?.models.map((row) => [row.model, row.name]),
   );
   const { data: usage = [], isError: usageError } = useQuery({
     queryKey: ["gateway-usage"],
@@ -87,7 +102,7 @@ export function GatewayKeysPanel({
   });
   const [formOpen, setFormOpen] = useState(false);
   const [name, setName] = useState("");
-  const [models, setModels] = useState("");
+  const [selectedModels, setSelectedModels] = useState(() => new Set<string>());
   const [allModels, setAllModels] = useState(true);
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState("");
@@ -120,17 +135,9 @@ export function GatewayKeysPanel({
       usageRef.current?.focus({ preventScroll: true });
     }
   }, [view, formOpen, editing, usageKey]);
-  const selectedModels = [
-    ...new Set(
-      models
-        .split(",")
-        .map((m) => m.trim())
-        .filter(Boolean),
-    ),
-  ];
   const valid =
     name.trim() &&
-    (allModels || selectedModels.length > 0) &&
+    (allModels || selectedModels.size > 0) &&
     (limit === "" ||
       (/^\d+$/.test(limit) && Number.isSafeInteger(Number(limit))));
   const label = (app: string) => {
@@ -155,11 +162,19 @@ export function GatewayKeysPanel({
       setPending(false);
     }
   }
+  function setModelAllowed(id: string, allowed: boolean) {
+    setSelectedModels((current) => {
+      const next = new Set(current);
+      if (allowed) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
   function reset() {
     setNameError(false);
     setEditing(null);
     setName("");
-    setModels("");
+    setSelectedModels(new Set());
     setAllModels(true);
     setLimit("");
     setSearch("");
@@ -170,7 +185,7 @@ export function GatewayKeysPanel({
     setNameError(false);
     setEditing(key.id);
     setName(key.policy.name);
-    setModels(key.policy.models.join(", "));
+    setSelectedModels(new Set(key.policy.models));
     setAllModels(key.policy.allModels ?? false);
     setLimit(
       key.policy.tokenLimit === null ? "" : String(key.policy.tokenLimit),
@@ -180,7 +195,9 @@ export function GatewayKeysPanel({
     setFormOpen(true);
   }
   const connect = keys.find((key) => key.id === connectKey);
-  const exampleModel = connect?.policy.models[0] ?? "MODEL_ID";
+  const exampleModel =
+    connect?.policy.models.find((id) => !id.startsWith("vary-provider/")) ??
+    "MODEL_ID";
   const base = `http://127.0.0.1:${port}/gateway`;
   const endpoint =
     format === "anthropic"
@@ -226,7 +243,7 @@ export function GatewayKeysPanel({
         }
         const policy: GatewayPolicy = {
           name: name.trim(),
-          models: allModels ? [] : selectedModels,
+          models: allModels ? [] : [...selectedModels],
           allModels,
           tokenLimit: limit === "" ? null : Number(limit),
           period,
@@ -293,36 +310,24 @@ export function GatewayKeysPanel({
           <div className="max-h-48 overflow-y-auto rounded border p-2 space-y-2">
             {(catalog?.models ?? [])
               .filter((m) =>
-                `${m.name ?? ""} ${m.model} ${m.provider} ${label(m.agent)}`
+                `${m.name} ${m.model}`
                   .toLowerCase()
                   .includes(search.toLowerCase()),
               )
-              .map((m, i) => (
+              .map((m) => (
                 <label
-                  key={`${m.agent}:${m.provider}:${m.model}:${i}`}
+                  key={m.model}
                   className="flex min-w-0 items-center gap-2 text-xs"
                 >
                   <input
                     type="checkbox"
-                    checked={selectedModels.includes(m.model)}
+                    checked={selectedModels.has(m.model)}
                     onChange={(e) =>
-                      setModels(
-                        (e.target.checked
-                          ? [...selectedModels, m.model]
-                          : selectedModels.filter((id) => id !== m.model)
-                        ).join(", "),
-                      )
+                      setModelAllowed(m.model, e.currentTarget.checked)
                     }
                   />
                   <span className="min-w-0 break-words" title={m.model}>
-                    {m.name || m.model}
-                    <span className="text-muted-foreground">
-                      {" "}
-                      ·{" "}
-                      {m.agent === "global"
-                        ? m.provider
-                        : `${label(m.agent)} / ${m.provider}`}
-                    </span>
+                    {m.name}
                   </span>
                 </label>
               ))}
@@ -332,20 +337,50 @@ export function GatewayKeysPanel({
               </p>
             )}
           </div>
+          <div className="gateway-field">
+            <p id="gateway-selected-models" className="text-sm font-medium">
+              {t("gatewayKeys.models")}
+            </p>
+            {selectedModels.size ? (
+              <ul
+                aria-labelledby="gateway-selected-models"
+                className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto p-1 text-xs"
+              >
+                {[...selectedModels].map((id) => {
+                  const modelName = modelNames.get(id);
+                  const displayName =
+                    modelName || t("gatewayKeys.modelOutsideCatalog");
+                  return (
+                    <li
+                      key={id}
+                      title={modelName || id}
+                      className="inline-flex max-w-full items-center gap-1 rounded bg-muted py-0.5 pl-2 pr-0.5"
+                    >
+                      <span className="truncate">{displayName}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 shrink-0 p-0"
+                        aria-label={t("gatewayKeys.removeModel", {
+                          name: modelName || id,
+                        })}
+                        onClick={() => setModelAllowed(id, false)}
+                      >
+                        <X aria-hidden="true" />
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {t("gatewayKeys.noSelectedModels")}
+              </p>
+            )}
+          </div>
         </div>
       )}
-      <div className="gateway-field">
-        <Label htmlFor="gateway-models">{t("gatewayKeys.models")}</Label>
-        <Input
-          id="gateway-models"
-          value={models}
-          onChange={(e) => {
-            setModels(e.target.value);
-            setAllModels(false);
-          }}
-          placeholder={t("gatewayKeys.manualModels")}
-        />
-      </div>
       <div className="gateway-field-grid">
         <div className="gateway-field">
           <Label htmlFor="gateway-limit">{t("gatewayKeys.limit")}</Label>
@@ -683,21 +718,19 @@ export function GatewayKeysPanel({
           </p>
           {catalogError && <p role="alert">{t("gatewayKeys.catalogFailed")}</p>}
           <div className="gateway-agent-grid">
-            {APP_IDS.map((app) => {
-              const supported =
-                catalog?.agents.find((a) => a.id === app)?.localRouting ??
-                false;
-              const bound = keys.find((key) => key.agents?.includes(app));
+            {APP_IDS.map((app, index) => {
+              const supported = supportedApps.has(app);
+              const bound = boundKeys.get(app);
+              const status = connections[index];
+              const connection = status.data;
               const enabled =
                 running &&
                 (takeoverStatus?.[app] ||
-                  connections?.some(
-                    (connection) =>
-                      connection.app === app &&
-                      connection.enabled &&
-                      connection.configured &&
-                      !connection.recoveryPending,
-                  ));
+                  (connection?.enabled &&
+                    connection.configured &&
+                    (!connection.recoveryPending ||
+                      connection.recoveryReason ===
+                        "bridge_selection_pending")));
               return (
                 <div key={app} className="gateway-keys-surface gateway-agent">
                   <div className="flex items-center gap-2">
@@ -742,11 +775,15 @@ export function GatewayKeysPanel({
                       {t(
                         !bound
                           ? "gatewayKeys.notBound"
-                          : !enabled
-                            ? "gatewayKeys.routeRequired"
-                            : bound.revoked
+                          : enabled
+                            ? bound.revoked
                               ? "gatewayKeys.boundRevoked"
-                              : "gatewayKeys.bindingActive",
+                              : "gatewayKeys.bindingActive"
+                            : running && !connection
+                              ? status.isError
+                                ? "gatewayKeys.routeStatusUnavailable"
+                                : "common.loading"
+                              : "gatewayKeys.routeRequired",
                       )}
                     </p>
                   )}
@@ -816,7 +853,9 @@ export function GatewayKeysPanel({
                   </p>
                   <div className="break-all text-muted-foreground">
                     <span>{t("gatewayKeys.requestModel")}</span>:{" "}
-                    <span>{u.model}</span>
+                    <span title={u.model}>
+                      {modelNames.get(u.model) || u.model}
+                    </span>
                   </div>
                   <p>
                     {t("gatewayKeys.usagePeriod", {

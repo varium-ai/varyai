@@ -4043,6 +4043,9 @@ describe("IntentRoutingPanel", () => {
     await waitFor(() => expect(intentRoutingApi.list).toHaveBeenCalledOnce());
     await waitFor(() => expect(reload).toHaveAttribute("aria-busy", "false"));
     expect(intentRoutingApi.refreshCatalogs).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledExactlyOnceWith(
+      "routingPage.refreshSuccess",
+    );
   });
 
   it("keeps cached refresh and group editing available during explicit model sync", async () => {
@@ -4492,7 +4495,13 @@ describe("IntentRoutingPanel", () => {
     expect(await screen.findByText(timeout)).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("routingPage.classifierAdvanced"));
-    fireEvent.change(screen.getByLabelText("intentRouting.budget"), {
+    const deadline = screen.getByLabelText("intentRouting.budget");
+    fireEvent.change(deadline, { target: { value: "" } });
+    expect(deadline).toHaveValue(null);
+    expect(screen.getByRole("button", { name: "common.save" })).toBeDisabled();
+    fireEvent.click(consent);
+    expect(run).toBeDisabled();
+    fireEvent.change(deadline, {
       target: { value: "5000" },
     });
     expect(consent).not.toBeChecked();
@@ -4508,7 +4517,6 @@ describe("IntentRoutingPanel", () => {
       await screen.findByText("intentRouting.trialOutcome.timeout 5000"),
     ).toBeInTheDocument();
 
-    const deadline = screen.getByLabelText("intentRouting.budget");
     expect(deadline).toHaveAttribute("max", "15000");
     fireEvent.change(deadline, { target: { value: "15000" } });
     fireEvent.click(consent);

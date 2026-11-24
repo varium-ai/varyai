@@ -1,5 +1,155 @@
 # Agent feature coverage
 
+## Shared API provider catalog discovery and selection (macOS and Windows)
+
+Assessment against `APP_IDS`, `AppType`, the shared connection inventory and
+the provider forms. Both the draft and saved shared-provider commands use the
+same model-catalog service. Agent editors that call that service with either
+Gemini format use the same fallback. Discovery supplies model metadata to the
+existing picker. Runtime routing, selection, and status use the saved protocol.
+
+For initial selection, the shared Add Provider editor is the entry point for
+every row that can consume shared supplier models. Fetching a catalog in that
+form sets the same explicit model selection already consumed by the Agent
+menus and routing groups. Agent-specific editors, protocol adapters, connection
+status, and route execution keep their existing contracts. Doubao Work's
+official audit-only connection has no shared supplier picker. Renderer
+verification covers default selection, manual removal, saving an empty
+selection, and the existing catalog refresh path on the common UI. Native
+Agent and Windows acceptance remain pending for this editor change.
+
+Manual catalog discovery errors are handled in the same shared provider editor
+for all applicable Agents below. The renderer regression verifies dismissal in
+a new draft and retry in a saved provider. This is the form's error state.
+
+| Agent ID           | Discovery entry point in scope                           |
+| ------------------ | -------------------------------------------------------- |
+| `claude`           | Shared supplier or Gemini-compatible provider editor     |
+| `claude-desktop`   | Shared supplier or Gemini-compatible desktop editor      |
+| `codex`            | Shared supplier or Gemini-compatible provider editor     |
+| `gemini`           | Shared supplier or native Gemini provider editor         |
+| `grokbuild`        | Shared supplier model menu                               |
+| `opencode`         | Shared supplier or OpenCode provider form                |
+| `openclaw`         | Shared supplier or OpenClaw provider form                |
+| `hermes`           | Shared supplier or Hermes provider form                  |
+| `pi`               | Shared supplier or Gemini-compatible Pi provider form    |
+| `workbuddy`        | Shared supplier or China custom-provider form            |
+| `workbuddy-ai`     | Shared supplier or international custom-provider form    |
+| `qoder`            | Shared supplier or CN custom-provider form               |
+| `doubaowork`       | Official audit only                                      |
+| `trae`             | CN shared supplier model menu                           |
+| `trae-intl`        | International shared supplier model menu                |
+| `kimi`             | Shared supplier or managed provider form                 |
+| `qwen`             | Shared supplier or managed provider form                 |
+| `zcode`            | Shared supplier or managed provider form                 |
+| `deepseek-harness` | Shared supplier or managed provider form                 |
+| `t3code`           | Shared supplier model menu                               |
+
+Loopback regressions cover both Gemini format names, native success and
+pagination, and fallback to an authenticated OpenAI catalog. The saved-provider
+editor was verified in the running macOS development build. Its Gemini mode
+attempted both catalog paths at the same origin and displayed the models.
+Individual installed Agent editors and Windows verification remain pending.
+
+On the working tree over `eb416e75`, 38 model-catalog tests, `cargo check`,
+Rust formatting, Clippy, and the focused renderer checks passed. The full
+Cargo run failed to build its archive when local storage filled up.
+
+## Responses reasoning stream completion (macOS and Windows)
+
+Pre-implementation assessment against `APP_IDS`, `AppType`, the connection
+registry and the gateway protocol endpoints. The shared Responses stream
+decoder runs when a routed request uses a Responses upstream and the gateway
+converts or collects its stream. The Agent model picker, connection status and
+policy enforcement retain their existing behavior. Native passthrough retains
+its original response frames. The same Rust decoder runs on both platforms.
+
+| Agent ID           | Applicable adapter and entry point                           | Verification plan                     |
+| ------------------ | ------------------------------------------------------------ | ------------------------------------- |
+| `claude`           | Managed Messages and external Messages bridge                | Synthetic Anthropic output and errors |
+| `claude-desktop`   | Managed Desktop Messages bridge                              | Synthetic Anthropic output and errors |
+| `codex`            | Native Responses and routed Responses or Chat                | Synthetic Responses and Chat output   |
+| `gemini`           | Managed Gemini and external Gemini streaming bridge          | Live reproduction and Gemini fixture  |
+| `grokbuild`        | Managed native Responses, including converted routes         | Synthetic Responses output and errors |
+| `opencode`         | Managed configured protocol                                  | Shared protocol fixture               |
+| `openclaw`         | Managed configured protocol                                  | Shared protocol fixture               |
+| `hermes`           | Managed configured protocol                                  | Shared protocol fixture               |
+| `pi`               | Provider-scoped Responses, Messages, Chat and Gemini         | Shared four-protocol fixture           |
+| `workbuddy`        | China managed Chat bridge                                    | Synthetic Chat output and errors      |
+| `workbuddy-ai`     | International managed Chat bridge                            | Synthetic Chat output and errors      |
+| `qoder`            | CN managed custom model route                                | Shared protocol fixture               |
+| `doubaowork`       | Existing native route and separate audit path                | Shared decoder where conversion runs  |
+| `trae`             | CN managed custom-provider bridge                            | Synthetic Chat output and errors      |
+| `trae-intl`        | International managed custom-provider bridge                 | Synthetic Chat output and errors      |
+| `kimi`             | Managed custom-provider route                                | Shared protocol fixture               |
+| `qwen`             | Managed custom-provider route                                | Shared protocol fixture               |
+| `zcode`            | Managed custom-provider route                                | Shared protocol fixture               |
+| `deepseek-harness` | Managed Chat bridge                                          | Synthetic Chat output and errors      |
+| `t3code`           | Managed model menu and native route                          | Shared protocol fixture               |
+
+The shared stream suite passed 15 tests. The Responses fixture covers an empty
+summary and a distinct summary with matching typed reasoning content. All four
+output protocols retain the answer, successful terminal and usage.
+
+Native verification used Gemini CLI 0.67.0 on macOS 26.6.2 arm64. A live request
+through the bound GLM-5.3-Flash route reproduced the missing terminal in the old
+development process. The same routed request completed in the rebuilt process
+from a temporary CLI home. Other installed clients and Windows remain pending.
+
+## Gateway key model picker (macOS and Windows)
+
+Assessment against `APP_IDS`, `AppType`, the shared connection registry and
+the gateway binding registry. The Keys tab uses the same shared provider and
+routing-group catalog on both platforms. The Agents tab keeps each entry's
+binding eligibility and readiness. New picker selections save canonical route
+IDs. Existing saved IDs and binding enforcement continue through their existing
+paths.
+
+| Agent ID           | Existing policy entry point and adapter                  | Verification plan                         |
+| ------------------ | -------------------------------------------------------- | ----------------------------------------- |
+| `claude`           | Managed or legacy Messages routing                       | Shared catalog and existing policy tests  |
+| `claude-desktop`   | Managed or legacy Desktop Messages and model mapping     | Shared catalog and existing policy tests  |
+| `codex`            | Managed or legacy Chat/Responses and temporary sessions  | Shared catalog and existing policy tests  |
+| `gemini`           | Managed or legacy Gemini model from the URL              | Shared catalog and existing policy tests  |
+| `grokbuild`        | Managed or legacy Responses and compact                  | Shared catalog and existing policy tests  |
+| `opencode`         | Managed provider-scoped routing                          | Shared catalog and binding inventory      |
+| `openclaw`         | Managed routing with no automatic gateway-key binding    | Shared catalog and unavailable binding    |
+| `hermes`           | Managed provider-scoped routing                          | Shared catalog and binding inventory      |
+| `pi`               | Managed/provider-scoped native protocol routing          | Shared catalog and existing policy tests  |
+| `workbuddy`        | China managed or legacy custom/official Chat             | Shared catalog and binding inventory      |
+| `workbuddy-ai`     | International managed or legacy custom/official Chat     | Shared catalog and binding inventory      |
+| `qoder`            | CN managed or legacy custom/official model routing       | Shared catalog and binding inventory      |
+| `doubaowork`       | Existing native custom-provider and separate audit path   | Shared catalog and binding inventory      |
+| `trae`             | China native bridge and custom-provider routing          | Shared catalog and binding inventory      |
+| `trae-intl`        | International native bridge and custom-provider routing  | Shared catalog and binding inventory      |
+| `kimi`             | Managed or legacy native custom-provider routing         | Shared catalog and binding inventory      |
+| `qwen`             | Managed or legacy native custom-provider routing         | Shared catalog and binding inventory      |
+| `zcode`            | Managed or legacy native custom-provider routing         | Shared catalog and binding inventory      |
+| `deepseek-harness` | Managed provider-scoped Chat routing                     | Shared catalog and binding inventory      |
+| `t3code`           | Managed model-menu and native route                      | Shared catalog and binding inventory      |
+
+Selected-model list follow-up coverage uses the same entry points in the table
+on macOS and Windows. For every listed Agent, the shared Keys form displays
+catalog names, removes entries by exact route ID, and preserves saved IDs absent
+from the catalog. Existing native adapters and policy enforcement consume the
+same policy format. Renderer checks cover creation, editing, removal and the
+existing binding inventory. Installed-client verification remains pending.
+
+Synthetic regressions passed for catalog identity, exact policy saves,
+historical IDs absent from the picker, external connection examples and the
+full Agent binding inventory. The Gemini HTTP regression verified that the
+legacy upstream ID is denied on a managed connection and that the route ID
+returned by the picker permits the same request.
+
+The working tree over `ae21978f` passed TypeScript, Prettier, the renderer
+build, 4,868 renderer tests, the helper checks and the production dependency
+audit on macOS 26.6.2 arm64 with Node 20.20.2 and pnpm 10.12.3. Rust 1.98.1
+passed `cargo check`, `cargo fmt --check`, Clippy with `-D warnings` and
+the full Cargo suite (7,846 library and 165 integration tests, 21 ignored).
+The installed Gemini CLI bridge smoke test passed separately with a temporary
+home and loopback fixtures. Installed-app picker acceptance with real keys and
+Windows verification remain pending.
+
 ## Routed security errors (macOS and Windows)
 
 | Agent entries                                                                                                                             | Runtime and UI                                                                                                                    | Verification                                                      |
@@ -523,12 +673,14 @@ compilation disabled. The locked desktop prevented a native editor recheck.
 
 The Routing workspace derives its source cards
 from the existing gateway trace snapshot on macOS and Windows. `Trace` below
-means one card per recorded Agent ID, independent request animations, and
-only destinations referenced by a valid gateway `attempt` step in either
-layout. Candidates that were planned or skipped without an attempt have no
+means one card per recorded Agent and active route, independent request
+animations, and only destinations referenced by a valid gateway `attempt` step
+in either layout. Candidates that were planned or skipped without an attempt have no
 card or branch. Attempted fallbacks and concurrent routes retain their original
 trace indices for packet motion. Each row uses its existing native or protocol
-adapter. Variants that already share a trace ID share a source card. Flows
+adapter. Concurrent requests to the same route share a source card. The
+workspace uses the route alias to attribute each attempted upstream, including
+when the same Agent has concurrent requests on different routes. Flows
 outside the gateway trace recorder have no source card. The compact tray has
 its own selection flow and already supports multiple live sources.
 
@@ -1876,6 +2028,21 @@ applications. Native per-Agent acceptance remains pending on every platform.
 
 ## Routing list refresh and bounded catalog synchronization
 
+The November 23 renderer follow-up applies to the common Routing workspace
+used by every Agent listed below. Cached refresh confirms completion, and the
+classification deadline can remain empty while editing. Saving and trialing
+require a deadline in the existing supported range. The native adapters and
+stored deadline format stay on their existing paths on macOS and Windows.
+
+The same observation path rechecks missing native session titles on its
+two-second interval for every Agent with a native title reader. It still
+requires an exact Agent-scoped session match and excludes titles from history.
+The shared group executor applies model-entitlement fallback to requests from
+every Agent that can select an explicitly bound WorkBuddy China or WorkBuddy
+AI subscription. The regression covers both subscription types, a non-WorkBuddy
+provider, pinned continuations, a missing fallback and unrelated refusals.
+Native Agent and paid-account acceptance remain pending.
+
 Implementation assessment before the 2026-11-17 change: the Routing page has one
 shared entry for all Agents. A local list refresh must use cached catalogs;
 explicit model synchronization may fetch catalogs, with bounded concurrency and
@@ -2009,10 +2176,74 @@ Checked working-tree changes over `f010e2b3` on macOS arm64, Rust 1.98.1, Node 2
 
 The initial full Rust run found a fixture pinned to TRAE helper revision 19 after the production helper moved to 20. The fixture now reads the bundled revision and retains its assertion that configuration synchronization must not enable auditing. The initial frontend run found an outdated generic Doubao restart-button expectation; the all-Agent recovery test now expects Doubao's dedicated audit launcher, while the other Agents retain generic restart expectations. Full frontend regression passed after that correction. Final `cargo check`, `cargo fmt --check`, `cargo clippy -- -D warnings` and full `cargo test` (all with `--manifest-path src-tauri/Cargo.toml`) passed: 7,904 tests passed and 21 intentionally ignored, including 7,739 library tests passed. The existing test-only unused-method and macOS unwind-table linker warnings remain. Native new-build notifications, Windows/Linux CI and installer acceptance are not inferred from local checks. Earlier no-test notes above describe earlier revisions, not this final verification run.
 
+## November 23 tray and provider regressions
+
+The tray reads persisted Security Events without changing collection, policies,
+event identity or gateway framing. It renders DLP and tool events in local time
+using the stored Unix milliseconds. The compact Agents tab uses the same
+check-in cards and account actions as the workspace and gives each expanded card
+the full tray row. The provider editor pages its API chat catalog and allows
+scrolling to continue into the surrounding form at the catalog boundary. Only
+the editor's presentation changes. Saved selection, discovery, protocol
+adapters and Agent catalogs keep their existing contracts on macOS and Windows.
+When a saved API provider uses automatic selection and has no saved model rows,
+its provider-list count and search use the prepared catalog already read by
+the routing editor. This is a read-only fallback before the per-Agent adapters.
+The workspace and tray profile dialogs share the capture entry points in the
+UI consistency matrix. A capture error belongs to the submitted draft name.
+When the name changes, the dialog checks the current value and allows a retry
+through the existing per-Agent capture adapter.
+
+| Agent              | Existing event and provider entry point                      | Compact check-in entry point | Native macOS / Windows |
+| ------------------ | ------------------------------------------------------------ | ---------------------------- | ---------------------- |
+| `claude`           | Claude Code Messages through the gateway                     | Unavailable                  | Pending / pending      |
+| `claude-desktop`   | Claude Desktop Messages through the desktop gateway          | Unavailable                  | Pending / pending      |
+| `codex`            | CLI and Desktop Responses through the managed gateway        | Unavailable                  | Pending / pending      |
+| `gemini`           | Gemini CLI native gateway                                    | Unavailable                  | Pending / pending      |
+| `grokbuild`        | Grok Build CLI gateway                                       | Unavailable                  | Pending / pending      |
+| `opencode`         | OpenCode native provider and gateway                         | Unavailable                  | Pending / pending      |
+| `openclaw`         | OpenClaw provider registry and gateway                       | Unavailable                  | Pending / pending      |
+| `hermes`           | Hermes profile and Chat gateway                              | Unavailable                  | Pending / pending      |
+| `pi`               | Pi provider and native gateway                               | Unavailable                  | Pending / pending      |
+| `workbuddy`        | WorkBuddy China desktop and CLI connection                   | WorkBuddy account card       | Pending / pending      |
+| `workbuddy-ai`     | WorkBuddy International connection                           | Unavailable                  | Pending / pending      |
+| `qoder`            | Qoder China desktop connection and gateway                   | Qoder rewards card           | Pending / pending      |
+| `doubaowork`       | Doubao native audit adapter, outside the API provider editor | Doubao account card          | Pending / pending      |
+| `trae`             | TRAE China bridge and native audit collector                 | TRAE rewards card            | Pending / pending      |
+| `trae-intl`        | TRAE International bridge and native audit collector         | Unavailable                  | Pending / pending      |
+| `kimi`             | Kimi CLI and desktop provider projection                     | Unavailable                  | Pending / pending      |
+| `qwen`             | Qwen CLI provider projection                                 | Unavailable                  | Pending / pending      |
+| `zcode`            | ZCode desktop provider projection                            | ZCode rewards card           | Pending / pending      |
+| `deepseek-harness` | DeepSeek Harness native provider and gateway                 | Unavailable                  | Pending / pending      |
+| `t3code`           | Managed T3 Code Responses connection                         | Unavailable                  | Pending / pending      |
+
+Renderer verification exercises event time for all 20 Agent IDs, protection
+enabled and disabled, both event types, and all four locales. The compact
+check-in fixtures cover the five existing cards. The provider fixture covers
+catalogs that exceed a single page, model filtering and selection.
+
 ## November 20 bug-list regression coverage
 
 The Agent picker and key binding status use the following paths on macOS and
 Windows. Each platform needs a native self-test in addition to fixture tests.
+
+For the November 23 key-status follow-up, each policy-capable row below reads
+the same per-Agent status as the Agents page when a key is bound and the
+gateway is running. A failed status read is local to that row. TRAE China and
+International can have an active managed route while native starting-model
+selection is pending. Binding, authentication, and inference admission still
+use the existing per-Agent adapters. The external OpenClaw row has no managed
+key status. Synthetic coverage includes both TRAE editions, Gemini, Codex, and
+the other policy-capable rows. Native acceptance is tracked separately.
+
+The November 23 gateway publication check covers the same Agent inventory
+through its existing native routes. The publication flag controls the external
+key-authenticated gateway catalog and inference for Chat, Messages, Responses
+and Gemini. The per-Agent adapters and their own key bindings continue to use
+the local catalog. Doubao Work's audit integration has no local model route.
+The routing page's status filter names the gateway publication state on macOS
+and Windows. Loopback gateway tests verify publication changes independently
+of native-client acceptance.
 
 Supplier grouping in the VaryAI Agent picker uses the shared catalog for the
 applicable Agents in this matrix. Numbered supplier labels follow the same
@@ -2346,6 +2577,14 @@ classification request were unavailable in the local routing history.
 The GLM recording shows Codex set to High reasoning and includes a short
 follow-up in an existing conversation. The recording does not expose the
 classifier result or continuation decision.
+
+The Gemini model-label follow-up applies to the Gemini row above on macOS and
+Windows. It uses managed dotenv and model definitions, the existing alias map
+and the Gemini URL ingress. Other Agent entries above keep their existing
+model projection and protocol paths. Regression coverage includes qualified
+Unicode names, duplicate names, previous aliases, key policy checks, and
+restoration of existing environment fields. Native macOS
+and Windows acceptance of the VaryAI integration remains pending.
 
 Verification on the working tree over `d32c8a68`, macOS 26.6.2 arm64,
 Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. The renderer build, TypeScript,

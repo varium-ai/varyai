@@ -12,6 +12,10 @@ export function routeInProgress(row: RoutingTrace) {
   return row.state === "routing" || row.state === "streaming";
 }
 
+export function routingSourceKey(row: RoutingTrace) {
+  return JSON.stringify([row.agent, row.model]);
+}
+
 export function liveRoutingSources(rows: RoutingTrace[], now: number) {
   const finishedAt = (row: RoutingTrace) => row.startedAt + row.durationMs;
   const ordered = [
@@ -24,8 +28,13 @@ export function liveRoutingSources(rows: RoutingTrace[], now: number) {
       .sort((first, second) => finishedAt(second) - finishedAt(first)),
   ];
   const sources = new Map<string, RoutingTrace>();
+  const agents = new Set<string>();
   for (const request of ordered) {
-    if (!sources.has(request.agent)) sources.set(request.agent, request);
+    if (!routeInProgress(request) && agents.has(request.agent)) continue;
+    const key = routingSourceKey(request);
+    if (sources.has(key)) continue;
+    sources.set(key, request);
+    agents.add(request.agent);
     if (sources.size === MAX_SOURCES) break;
   }
   return sources.size ? [...sources.values()] : rows.slice(0, 1);

@@ -46,6 +46,8 @@ Start the loopback gateway explicitly and configure a gateway key under **Settin
 
 Protocol selection belongs to the request and chosen upstream, not to the consuming agent. Same-protocol requests preserve native fields and JSON lexemes except supported model/redaction/effort edits. Cross-protocol requests use the explicit bridge; unsupported semantics fail before forwarding instead of being silently discarded. Opaque state is never moved to a different account merely because another member is healthy. Official Codex destinations retain their native Responses constraints.
 
+The stream bridge can reconcile a Responses reasoning item's streamed text with its final `summary` or typed `content`. It checks consistency with text already streamed and requires a valid upstream terminal event before reporting successful completion to the client.
+
 The executable global catalog exists independently of Codex activation and per-agent current-provider selection. Resource changes invalidate its generation immediately; control-plane refresh rebuilds snapshots off the forwarding path. Database restore/import invalidates old snapshots and resets imported publication flags; explicitly publish the intended groups again after reviewing imported resources. A failed refresh revokes stale targets. Group aliases are not passed to ordinary upstream routing when the group is unpublished, unavailable or stale. Account health is shared, while continuation state is scoped by authenticated gateway key and conversation. Native Chat, Messages and Gemini tool/opaque continuations require an observed pinned destination within the same consumer and conversation. The authenticated TRAE Chat adapter also accepts unnamed tool history when every call resolves to one previously observed destination in its Agent and alias scope. When TRAE rewrites a call ID, the assistant function name and JSON arguments must match a complete observed payload by hash; tool results alone cannot establish this mapping. TRAE rewritten-call ownership is never inferred from message text. Responses continuations can locate their consumer-scoped conversation by known response or call IDs without a separate session header. Unknown/conflicting response or tool IDs fail closed. At most 1024 consumer/conversation scopes are retained, with a one-hour inactive lifetime; active streams retain their lease. In-flight requests may finish after an edit or revocation. Eligible normal gateway and Codex-menu conversations can restore exact ownership after restart from the private continuation store described below; this does not reconstruct upstream history or decrypt foreign opaque state.
 
 ## Compact list
@@ -87,6 +89,10 @@ Custom drafts start with an editable, distinct group name. The publication
 switch also works for automatically discovered groups and retains discovery
 as their membership source. The live stage labels the session's name as the
 conversation title.
+
+When an Agent sends requests to different routes at the same time, each
+route has its own source and attempted upstream cards. The cards show the
+requested route during concurrent activity.
 
 Use **Manage** beside **Refresh** only for list selection and bulk removal. It does not reveal templates or settings. Select individual rows or use **Select all** for the current filter, then choose **Remove selected** and confirm. **Cancel** exits management without removing anything. The management button remains visible but disabled when the list is empty and becomes available after a group is added.
 
@@ -174,6 +180,10 @@ one model per supplier.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
+When a WorkBuddy subscription account explicitly reports that it lacks access
+to a selected model, an unpinned request can try the next eligible group
+member. Requests pinned to a destination retain the subscription error.
+
 In **Advanced settings → Rules**, select the information icon to see how match
 conditions work. Select **Add rule** beside it to start editing a rule. Each
 rule shows its preferred member and the fallback models in the order they will
@@ -208,7 +218,7 @@ Save closes the dialog after persistence succeeds. Failed saves retain the draft
 
 The provider-exclusion control opens a compact checklist below the discovery description. Select multiple providers without reopening it; changes save immediately. The panel scrolls when needed and stays within the window. Long provider names are truncated with the full name available on hover. Escape closes the panel and returns focus to the control.
 
-The automatic-discovery switch and provider-exclusion controls are temporarily hidden from the routing page. Their saved preferences remain independent of proxy activation and default to off when no preference exists. Opening or managing the list does not change an explicitly saved on or off preference. When enabled, the list derives enabled groups from explicitly registered global providers using their saved `modelCatalog.models[].model` entries and account-scoped official Codex model discovery caches. Selecting **Refresh** fetches official catalogs; refresh operations remain available with automatic creation off. Ordinary list reads never perform network discovery. No inference requests are made.
+The automatic-discovery switch and provider-exclusion controls are temporarily hidden from the routing page. Their saved preferences remain independent of proxy activation and default to off when no preference exists. Opening or managing the list does not change an explicitly saved on or off preference. When enabled, the list derives enabled groups from explicitly registered global providers using their saved `modelCatalog.models[].model` entries and account-scoped official Codex model discovery caches. **Refresh** reloads the saved list and confirms completion. **Sync models** fetches upstream catalogs and remains available with automatic creation off. Neither action runs inference.
 
 Registered executable upstreams participate, including available official and OAuth Codex accounts. Imported static Codex connections also contribute their explicitly selected TOML model without rewriting provider storage. An empty API model selection follows its cached vendor list; a nonempty saved selection remains authoritative. With automatic discovery on, entering Routing loads missing model lists off the forwarding path, with four concurrent catalog preparations and a five-minute UI freshness interval. Official accounts fetch their own visible models from the fixed ChatGPT Codex models endpoint, never from a public model list or another account. Opening a signed-in official provider with no cached models also loads the selected account's catalog. Missing login, fetch failure, and successful empty results have separate safe messages. These are model-list reads, not inference probes or automatic logins.
 
@@ -341,6 +351,13 @@ label, including the provider or routing suffix and any disambiguation number.
 The menu combines **available enabled global provider models and executable routing groups**. Direct entries retain each exact upstream identity; selecting one never silently substitutes a different provider. Group-only model unlisting withdraws a direct entry without removing the group target. Unsupported transports, unavailable credentials and non-executable entries are omitted, with a count in the UI; discovery is not evidence of inference permission. At most 256 entries are published, reserving room for the routing groups. Agents with a starting-model control choose their own default from this shared menu; native-picker applications choose the chat model inside the application. Background catalog refresh preserves the starting choice while explicit selection changes it; provider creation and editing do not select an Agent or change another Agent's default. Existing Codex conversations may retain their earlier native configuration.
 
 The shared VaryAI model picker uses readable model names for both rows and hover tooltips. Internal routing aliases remain selection values and are not shown in these tooltips.
+
+Managed Gemini CLI connections use the full catalog name as both the model ID
+and the model label. The local gateway resolves this name to the selected
+provider route and still accepts earlier model aliases. VaryAI sets a compatible
+User-Agent for Unicode model IDs through Gemini CLI's custom header setting.
+Gemini CLI 0.67.0 supports this configuration. Start a new CLI session after the
+gateway has synchronized the model list.
 
 When models in the same provider group have identical displayed names, the
 picker follows Magpie's `modelTells`: it removes common leading and trailing

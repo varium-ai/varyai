@@ -114,7 +114,6 @@ pub(crate) struct Store {
 
 struct SessionTitles {
     refreshed: Instant,
-    checked: BTreeSet<[u8; 32]>,
     titles: BTreeMap<[u8; 32], String>,
 }
 
@@ -426,7 +425,10 @@ impl Store {
                 if cache.get(agent).is_some_and(|entry| {
                     let age = entry.refreshed.elapsed();
                     age < Duration::from_secs(2)
-                        || (age < Duration::from_secs(15) && digests.is_subset(&entry.checked))
+                        || (age < Duration::from_secs(15)
+                            && digests
+                                .iter()
+                                .all(|digest| entry.titles.contains_key(digest)))
                 }) {
                     continue;
                 }
@@ -445,7 +447,6 @@ impl Store {
                     agent.to_owned(),
                     SessionTitles {
                         refreshed: Instant::now(),
-                        checked: digests,
                         titles,
                     },
                 );

@@ -294,7 +294,7 @@ export function TrayPanel() {
 }
 
 function TraySecurity() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const settings = useQuery({
     queryKey: ["security", "settings"],
     queryFn: securityApi.getSettings,
@@ -353,7 +353,7 @@ function TraySecurity() {
                 </small>
               </span>
               <time>
-                {new Date(event.timestamp * 1000).toLocaleTimeString([], {
+                {new Date(event.timestamp).toLocaleTimeString(i18n.language, {
                   hour: "2-digit",
                   minute: "2-digit",
                 })}

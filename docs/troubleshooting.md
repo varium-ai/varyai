@@ -820,6 +820,12 @@ Local development packages may be unsigned or use an ad-hoc signature. Gatekeepe
 
 A missing Launchpad entry does not establish that an application failed to install. Check the actual application path and package before changing system registration or replacing the installed app.
 
+## macOS crash during a display configuration change
+
+The crash log at `~/.varyai/crash.log` can identify this failure by an `Option::unwrap()` panic in Tao's `window_delegate.rs` under `window_did_change_backing_properties`. AppKit can deliver this callback while the window has no content view. The patched Tao skips scale and resize events while the view is absent and can report the scale change when AppKit calls back with the view attached.
+
+The Cargo patch uses the published [Tao 0.34.6 crate](https://crates.io/crates/tao/0.34.6), with the source change confined to the macOS window delegate. Run the isolated AppKit regression on macOS with `cargo test --manifest-path src-tauri/Cargo.toml --test macos_window_backing_properties`.
+
 ## Agent installation checks
 
 Settings > About > Local environment check lists every supported agent. The eight managed CLI cards retain version checks and installation/update actions. A missing Codex CLI shows **Not installed** and an **Install** button; an installed CLI that cannot run has a separate environment warning. Failed checks show a retry message rather than an installation prompt.

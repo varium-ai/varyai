@@ -2,6 +2,7 @@ use super::{put, FileEdit, Format, Model, Receipt, FAILED};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 #[derive(Clone, Copy)]
 enum PickerIds {
@@ -95,6 +96,41 @@ fn catalog_names(
     (projected, chosen)
 }
 
+fn gemini_label(label: &str) -> String {
+    let label = label.trim();
+    if label.is_empty()
+        || label.contains(['?', '&', '#', '%', '\\', '$'])
+        || label.contains("..")
+        || label.chars().any(char::is_control)
+        || label.split('/').any(|part| part == ".")
+        || label.starts_with("models/")
+        || label.starts_with("tunedModels/")
+    {
+        return crate::services::intent_routing::client::aliases::wire_name(
+            &deunicode::deunicode(label).replace(['/', '.'], "-"),
+        );
+    }
+    label.to_owned()
+}
+
+fn gemini_custom_headers(existing: &str) -> String {
+    static USER_AGENT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(^|,)[ \t]*user-agent[ \t]*:")
+            .expect("valid User-Agent header pattern")
+    });
+    const LOCAL_AGENT: &str = "User-Agent: GeminiCLI-VaryAI";
+    let existing = existing.trim();
+    if USER_AGENT.is_match(existing) {
+        USER_AGENT
+            .replace_all(existing, "${1}User-Agent:")
+            .into_owned()
+    } else if existing.is_empty() {
+        LOCAL_AGENT.to_owned()
+    } else {
+        format!("{existing}, {LOCAL_AGENT}")
+    }
+}
+
 pub(super) fn build(
     app: &str,
     catalog: &[Model],
@@ -122,28 +158,16 @@ pub(super) fn build(
                 .model_map
                 .insert(wire_id(&model.id), model.id.clone());
         }
-        let mut projection = json!({"models":catalog.iter().map(|model| {
-            let mut entry = json!({"slug":model.id,"display_name":model.name});
-            if model.id.starts_with("vary-auto/") || model.id.starts_with("auto/") {
-                let name = model.name.strip_suffix(" · routing group").unwrap_or(&model.name);
-                entry["gemini_group_name"] = json!(name);
-            }
-            entry
-        }).collect::<Vec<_>>()});
-        let visible = crate::services::intent_routing::client::aliases::project_readable(
-            &mut projection,
-            &mut receipt.model_map,
-        )?;
-        let chosen = crate::services::intent_routing::client::aliases::selected(
-            &visible,
-            &receipt.model_map,
-            selected,
-        )
-        .ok_or(FAILED)?
-        .to_owned();
-        let mut projected = catalog.to_vec();
-        for (model, wire) in projected.iter_mut().zip(visible) {
-            model.id = wire;
+        let mut labels = catalog.to_vec();
+        for model in &mut labels {
+            model.name = gemini_label(&model.name);
+        }
+        let (mut projected, chosen) = current_catalog(&labels, selected, &mut receipt.model_map);
+        if receipt.model_map.len() > 16384 {
+            return Err("intentRouting.limit".into());
+        }
+        for model in &mut projected {
+            model.name.clone_from(&model.id);
         }
         (projected, chosen)
     } else if matches!(app, "hermes" | "zcode") {
@@ -263,6 +287,17 @@ fn edit(
                     ("GEMINI_MODEL", selected.to_owned()),
                 ] {
                     value[key] = json!(next);
+                }
+                // Gemini CLI includes the chosen model in User-Agent by default.
+                // Keep that header byte-safe when an on-wire model ID contains Unicode.
+                if catalog
+                    .iter()
+                    .any(|model| model.id.chars().any(|c| c > '\u{ff}'))
+                {
+                    let key = "GEMINI_CLI_CUSTOM_HEADERS";
+                    value[key] = json!(gemini_custom_headers(
+                        value[key].as_str().unwrap_or_default()
+                    ));
                 }
             }
             "grokbuild" => {

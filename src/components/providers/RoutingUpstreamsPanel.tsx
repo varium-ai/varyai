@@ -19,8 +19,13 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderAddSheet } from "./ProviderAddSheet";
 import { ProviderImportDialog } from "./ProviderImportDialog";
-import { ProviderEditorDialog, providerIdSlug } from "./ProviderEditorDialog";
+import {
+  MAX_PROVIDER_MODEL_SELECTION,
+  ProviderEditorDialog,
+  providerIdSlug,
+} from "./ProviderEditorDialog";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+import { intentRoutingApi } from "@/lib/api/intentRouting";
 import {
   globalProviderPresets,
   type GlobalProviderPreset,
@@ -43,6 +48,16 @@ import { subscriptionProviders } from "@/config/subscriptionProviders";
 import { randomBuiltinIcon } from "@/icons/builtin";
 
 const orderStorageKey = "vary-provider-order";
+
+function needsPreparedCatalog({ source }: RoutingUpstream) {
+  return (
+    source.kind === "api" &&
+    source.mode === "vendor" &&
+    !source.catalog.length &&
+    !source.models.length
+  );
+}
+
 function readProviderOrder(): string[] {
   try {
     const value: unknown = JSON.parse(
@@ -86,6 +101,17 @@ export function RoutingUpstreamsPanel({
     queryFn: routingUpstreamsApi.list,
     refetchInterval: 15_000,
   });
+  const prepared = useQuery({
+    queryKey: ["intent-routing-providers"],
+    queryFn: intentRoutingApi.providers,
+    enabled: records.data?.some(needsPreparedCatalog) ?? false,
+  });
+  const preparedModels = new Map(
+    prepared.data?.map(({ id, models }) => [
+      id,
+      models?.map(({ id, name }) => ({ model: id, displayName: name })),
+    ]),
+  );
   const [draft, setDraft] = useState<RoutingUpstream | null>(null);
   const [rejectedName, setRejectedName] = useState<{
     editor: string;
@@ -562,7 +588,9 @@ export function RoutingUpstreamsPanel({
           mode: !draft.revision
             ? parsed.some((row) => !isImageGenerationModel(row))
               ? "picked"
-              : "vendor"
+              : copyFrom
+                ? "vendor"
+                : source.mode
             : stagedModels?.some((row) => !isImageGenerationModel(row))
               ? "picked"
               : source.mode,
@@ -679,17 +707,20 @@ export function RoutingUpstreamsPanel({
       apiKey: "",
     });
   }
-  async function fetchDraftModels(): Promise<FetchedModel[]> {
+  async function fetchDraftModels(
+    catalogFormat?: GlobalProviderPreset["apiFormat"],
+  ): Promise<FetchedModel[]> {
     if (!draft || draft.source.kind !== "api") return [];
     if (!apiKey) {
       const saved = savedCredentialSource();
       return routingUpstreamsApi.discover(saved.id, saved.revision);
     }
     const source = draft.source;
+    const apiFormat = catalogFormat ?? source.apiFormat;
     const header =
-      source.apiFormat === "gemini_native"
+      apiFormat === "gemini_native"
         ? "x-goog-api-key"
-        : source.apiFormat === "anthropic" && source.authType === "api-key"
+        : apiFormat === "anthropic" && source.authType === "api-key"
           ? "x-api-key"
           : "Authorization";
     return fetchModelsForConfig(
@@ -699,7 +730,7 @@ export function RoutingUpstreamsPanel({
       undefined,
       undefined,
       {
-        apiFormat: source.apiFormat,
+        apiFormat,
         requestHeaders: {
           [header]: header === "Authorization" ? `Bearer ${apiKey}` : apiKey,
         },
@@ -728,18 +759,39 @@ export function RoutingUpstreamsPanel({
     try {
       const found = await fetchDraftModels();
       if (!isCurrent()) return [];
+      const catalog = found.map(modelRow);
+      const currentSource = latestEditorInput.current.draft?.source;
+      const selectFetchedModels =
+        !draft.revision &&
+        !copyFrom &&
+        currentSource?.kind === "api" &&
+        currentSource.mode === "vendor" &&
+        catalog.length > 0;
       setDiscovered(found);
+      if (selectFetchedModels) {
+        setModels(
+          JSON.stringify(
+            catalog.slice(0, MAX_PROVIDER_MODEL_SELECTION),
+            null,
+            2,
+          ),
+        );
+      }
       setDraft((current) =>
         current?.source.kind === "api"
           ? {
               ...current,
-              source: { ...current.source, catalog: found.map(modelRow) },
+              source: {
+                ...current.source,
+                catalog,
+                mode: selectFetchedModels ? "picked" : current.source.mode,
+              },
             }
           : current,
       );
       return found;
     } catch (cause) {
-      if (isCurrent()) report("fetchModels", cause);
+      if (isCurrent()) throw cause;
       return [];
     } finally {
       if (discoveryRequest.current === request) {
@@ -834,6 +886,8 @@ export function RoutingUpstreamsPanel({
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   function searchableModels(record: RoutingUpstream) {
     if (record.source.kind === "codex") return [];
+    if (needsPreparedCatalog(record))
+      return preparedModels.get(record.id) ?? [];
     return record.source.mode === "picked" || !record.source.catalog.length
       ? record.source.models
       : record.source.catalog;

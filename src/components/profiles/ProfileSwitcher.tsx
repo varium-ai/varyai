@@ -535,13 +535,14 @@ export function ProfileSwitcher({
                 )}
               </div>
             </div>
-            {createMutation.isError && (
-              <p role="alert" className="text-xs text-destructive">
-                {t("profiles.createFailed", {
-                  detail: profileErrorMessage(createMutation.error, t),
-                })}
-              </p>
-            )}
+            {createMutation.isError &&
+              createMutation.variables.name === newName.trim() && (
+                <p role="alert" className="text-xs text-destructive">
+                  {t("profiles.createFailed", {
+                    detail: profileErrorMessage(createMutation.error, t),
+                  })}
+                </p>
+              )}
           </DialogBody>
           <DialogFooter className="gap-3 border-t border-border py-4">
             <Button variant="outline" onClick={closeCreateDialog}>

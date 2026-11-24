@@ -43,7 +43,12 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/components/agents/AgentConnectionsPage", () => ({
   AgentConnectionsPage: ({ compact }: { compact: boolean }) => (
-    <div data-testid="compact-agents">{String(compact)}</div>
+    <div className="tray-agents" data-testid="compact-agents">
+      {String(compact)}
+      <div className="mp-agent-row">
+        <div className="mp-agent-checkin" data-testid="compact-checkin" />
+      </div>
+    </div>
   ),
 }));
 vi.mock("@/components/profiles/ProfileSwitcher", () => ({
@@ -174,6 +179,22 @@ it("opens Usage through the third tab and hands off to workspace statistics", as
   expect(trayPanelApi.open).toHaveBeenNthCalledWith(1, "stats");
   fireEvent.click(screen.getByRole("button", { name: "trayPanel.openMain" }));
   expect(trayPanelApi.open).toHaveBeenNthCalledWith(2, "stats");
+});
+it("gives expanded check-in cards the full compact Agent row", () => {
+  const sheet = document.createElement("style");
+  sheet.textContent = readFileSync(
+    "src/components/tray/tray-panel.css",
+    "utf8",
+  );
+  document.head.appendChild(sheet);
+  try {
+    mount();
+    const card = screen.getByTestId("compact-checkin");
+    expect(getComputedStyle(card).gridColumn).toBe("1 / -1");
+    expect(getComputedStyle(card).minWidth).toBe("0");
+  } finally {
+    sheet.remove();
+  }
 });
 it("restores the former Routing selection into Usage and refreshes the current period", async () => {
   localStorage.setItem("vary:tray-tab", "routing");
@@ -702,10 +723,11 @@ const eventCases = [
 ] as const;
 function syntheticEvent(index: number, appType: string | null): SecurityEvent {
   const [action, result, , riskLevel] = eventCases[index];
+  const timestamp = Date.UTC(2026, 10, 23, 2, 13 + index, 17);
   const common = {
     key: `synthetic:${index}`,
-    timestamp: 1000 + index,
-    lastSeenAt: 1000 + index,
+    timestamp,
+    lastSeenAt: timestamp,
     triggerCount: 1,
     appType,
     sessionId: "synthetic-session",
@@ -812,6 +834,15 @@ it.each(
       1,
       8,
     );
+    const times = Array.from(container.querySelectorAll(".tray-events time"));
+    expect(times.map((time) => time.textContent)).toEqual(
+      items.map(({ timestamp }) =>
+        new Date(timestamp).toLocaleTimeString("zh", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      ),
+    );
     expect(items).toEqual(original);
   },
 );
@@ -854,6 +885,12 @@ it.each(
                 : "securityEvents.unknown";
       expect(row.querySelector("small")).toHaveTextContent(
         `codex · ${instance.t(riskKey)}`,
+      );
+      expect(row.querySelector("time")).toHaveTextContent(
+        new Date(items[index].timestamp).toLocaleTimeString(language, {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
       );
       expect(row.querySelector(".tray-dot")).toHaveAttribute(
         "data-result",

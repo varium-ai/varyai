@@ -394,49 +394,22 @@ fn missing_usage_is_visible_and_bindings_persist_without_storing_secrets_in_deta
 }
 
 #[test]
-fn catalog_covers_every_agent_without_returning_credentials(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let db = Database::memory()?;
-    let p = crate::provider::Provider::with_id(
-        "fixture".into(),
-        "Synthetic".into(),
-        serde_json::json!({"env":{"ANTHROPIC_MODEL":"fixture-model","ANTHROPIC_AUTH_TOKEN":"synthetic-private"},"modelPicker":{"options":[{"model":"fixture-extra"}]}}),
-        None,
-    );
-    db.save_provider("claude", &p)?;
-    let value = catalog(&db)?;
-    let encoded = serde_json::to_string(&value)?;
-    assert!(!encoded.contains("synthetic-private"));
-    assert_eq!(
-        value.agents.len(),
-        crate::app_config::AppType::all().count()
-    );
-    assert!(value.models.iter().any(|m| m.model == "fixture-extra"));
-    assert!(value
-        .agents
-        .iter()
-        .any(|a| a.id == "claude-desktop" && a.local_routing));
-    assert!(value
-        .agents
-        .iter()
-        .any(|a| a.id == "hermes" && a.local_routing));
-    assert!(value
-        .agents
-        .iter()
-        .any(|a| a.id == "opencode" && a.local_routing));
-    assert!(value
-        .agents
-        .iter()
-        .any(|a| a.id == "workbuddy-ai" && a.local_routing));
-    assert!(value
-        .agents
-        .iter()
-        .any(|a| a.id == "trae-intl" && a.local_routing));
-    for app in ["t3code"] {
-        assert!(value.agents.iter().any(|a| a.id == app && a.local_routing));
+fn catalog_covers_every_agent_without_configured_models() {
+    use crate::app_config::AppType;
+
+    let catalog = catalog(None);
+    assert!(catalog.models.is_empty());
+    assert_eq!(catalog.agents.len(), AppType::all().count());
+    for app in AppType::all() {
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .find(|agent| agent.id == app.as_str())
+                .map(|agent| agent.local_routing),
+            Some(app != AppType::OpenClaw)
+        );
     }
-    assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 1);
-    Ok(())
 }
 
 #[test]
