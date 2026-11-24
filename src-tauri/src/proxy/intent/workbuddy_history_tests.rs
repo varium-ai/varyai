@@ -559,6 +559,8 @@ async fn harness_saved_tool_history_follows_priority_after_the_tool_round(
         .any(|item| item["type"] == "function_call_output"
             && item["call_id"] == THIRD_ID
             && item["output"] == "Synthetic completed result"));
+    assert_eq!(send(&unknown).await?.status(), StatusCode::CONFLICT);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 2);
 
     let response = send(&request).await?;
     assert_eq!(response.status(), StatusCode::OK);

@@ -1758,14 +1758,16 @@ async fn execute(
     } else {
         None
     };
-    let visible_history_replay = matches!(
+    let visible_history_agent = matches!(
         (agent, protocol),
         ("workbuddy" | "workbuddy-ai", Protocol::Chat)
             | (
                 "deepseek-harness",
                 Protocol::Chat | Protocol::Anthropic | Protocol::Responses
             )
-    ) && compact.is_none()
+    );
+    let visible_history_replay = visible_history_agent
+        && compact.is_none()
         && !opaque_continuation(protocol, &original)
         && length::portable(&projection);
     let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
@@ -1783,6 +1785,11 @@ async fn execute(
         && named_conversation
         && session.group.affinity == "turn"
         && user_follow_up_after_tool_reply(&projection);
+    let previous_response_required = visible_history_agent
+        && projection
+            .get("previous_response_id")
+            .is_some_and(|id| !id.is_null());
+    let requires_owner = previous_response_required || harness_tool_history;
     // Counts and standalone startup probes cannot claim or change conversation ownership.
     let scoped = if count_tokens || desktop_probe {
         Arc::new(scopes::Conversation::default())
@@ -1791,12 +1798,12 @@ async fn execute(
             scopes::HistoryPolicy::ResponsesReplay
         } else if visible_history_replay {
             scopes::HistoryPolicy::VisibleHistoryReplay
-        } else if portable_tool_history {
-            scopes::HistoryPolicy::Portable
         } else if harness_tool_history {
             scopes::HistoryPolicy::OwnedToolHistory {
                 next_user_turn: harness_next_user_turn,
             }
+        } else if portable_tool_history {
+            scopes::HistoryPolicy::Portable
         } else {
             scopes::HistoryPolicy::Strict
         };
@@ -1813,7 +1820,9 @@ async fn execute(
         );
         match scoped {
             Ok(scoped) => scoped,
-            Err("routing_unknown_continuation") => Arc::new(scopes::Conversation::default()),
+            Err("routing_unknown_continuation") if !requires_owner => {
+                Arc::new(scopes::Conversation::default())
+            }
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
     };
@@ -1863,6 +1872,11 @@ async fn execute(
                 Ok(None)
             } else if harness_chat && bindings.has_archived_call_in_open_turn(&projection) {
                 Err(())
+            } else if requires_owner {
+                bindings.resolve(
+                    &projection,
+                    conversation.as_deref().filter(|_| named_conversation),
+                )
             } else if portable_tool_history {
                 // An existing named scope still pins its destination. A self-contained
                 // transcript can start a new single-target scope after a model switch.
@@ -1884,7 +1898,13 @@ async fn execute(
         } else {
             bindings.resolve(&projection, conversation.as_deref())
         };
-        let mut pinned = resolution.ok().flatten();
+        let mut pinned = match resolution {
+            Ok(pinned) => pinned,
+            Err(()) if requires_owner => {
+                return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
+            }
+            Err(()) => None,
+        };
         let original_owner = pinned;
         let mut affinity = None;
         if (compact.is_none() || route_compaction)
