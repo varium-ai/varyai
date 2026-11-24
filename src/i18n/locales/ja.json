@@ -2235,6 +2235,7 @@
     "totalRecords": "全 {{total}} 件",
     "goToPage": "移動",
     "pageInputPlaceholder": "ページ",
+    "invalidPageRange": "1 から {{total}} までのページ番号を入力してください",
     "modelPricing": "モデル料金",
     "loadPricingError": "料金データの読み込みに失敗しました",
     "modelPricingDesc": "各モデルのトークンコストを設定",

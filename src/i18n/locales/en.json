@@ -2309,6 +2309,7 @@
     "totalRecords": "{{total}} records total",
     "goToPage": "Go",
     "pageInputPlaceholder": "Page",
+    "invalidPageRange": "Please enter a page number between 1 and {{total}}",
     "modelPricing": "Model Pricing",
     "loadPricingError": "Failed to load pricing data",
     "modelPricingDesc": "Configure token costs for each model",

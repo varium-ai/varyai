@@ -27,6 +27,7 @@ import {
   type UsageRangeSelection,
 } from "@/types/usage";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { toast } from "sonner";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { UsageSourceLabel } from "./UsageSourceLabel";
 import {
@@ -137,9 +138,16 @@ export function RequestLogTable({
 
   const handleGoToPage = () => {
     const trimmed = pageInput.trim();
-    if (!/^\d+$/.test(trimmed)) return;
+    if (!trimmed || totalPages <= 0) return;
     const parsed = Number(trimmed);
-    if (parsed < 1 || parsed > totalPages) return;
+    if (!/^\d+$/.test(trimmed) || parsed < 1 || parsed > totalPages) {
+      toast.warning(
+        t("usage.invalidPageRange", {
+          total: totalPages,
+        }),
+      );
+      return;
+    }
     setPage(parsed - 1);
     setPageInput("");
   };

@@ -21,6 +21,7 @@ import { useSettingsQuery } from "@/lib/query";
 import { proxyApi } from "@/lib/api/proxy";
 import { proxyKeys } from "@/lib/query/proxy";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
+import { useSyncLanguage } from "@/hooks/useSyncLanguage";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { isMac, DRAG_REGION_ATTR } from "@/lib/platform";
 import { GlobalSecurityToggle } from "@/components/security/GlobalSecurityToggle";
@@ -83,15 +84,7 @@ export default function App() {
     refetchInterval: 5000,
   });
   useUsageCacheBridge();
-  useEffect(() => {
-    const language = settings.data?.language;
-    if (
-      language &&
-      ["en", "zh", "zh-TW", "ja"].includes(language) &&
-      i18n.language !== language
-    )
-      void i18n.changeLanguage(language);
-  }, [settings.data?.language, i18n]);
+  useSyncLanguage(settings.data?.language);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key === ",") {

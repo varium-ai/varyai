@@ -2715,6 +2715,22 @@ async fn execute(
                     continue;
                 }
             };
+            let record_retryable_rejection = |transient: &mut Vec<(usize, usize)>, status: u16| {
+                trace.step(trace::Kind::Rejected, Some(candidate), Some(status));
+                if status == 429 {
+                    target
+                        .scheduling
+                        .rate_limited(chrono::Utc::now().timestamp());
+                }
+                if status != 400 {
+                    target
+                        .scheduling
+                        .failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
+                }
+                if matches!(status, 429 | 500 | 502 | 503 | 504) {
+                    transient.push((candidate, index));
+                }
+            };
             match forwarded {
                 Ok(response) => response,
                 Err(super::ProxyError::DlpForward(error)) => {
@@ -2746,20 +2762,21 @@ async fn execute(
                         !attempts.is_empty(),
                     ) =>
                 {
-                    trace.step(trace::Kind::Rejected, Some(candidate), Some(status));
-                    if status == 429 {
-                        target
-                            .scheduling
-                            .rate_limited(chrono::Utc::now().timestamp());
-                    }
-                    if status != 400 {
-                        target
-                            .scheduling
-                            .failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
-                    }
-                    if matches!(status, 429 | 500 | 502 | 503 | 504) {
-                        transient.push((candidate, index));
-                    }
+                    record_retryable_rejection(&mut transient, status);
+                    continue;
+                }
+                Err(super::ProxyError::SafeUpstream(error))
+                    if pinned.is_none()
+                        && matches!(
+                            error.status().as_u16(),
+                            401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
+                        ) =>
+                {
+                    let status = error.status().as_u16();
+                    log::warn!(
+                        "[Intent] SafeUpstream rejected converted call (will failover): agent={agent} {error}"
+                    );
+                    record_retryable_rejection(&mut transient, status);
                     continue;
                 }
                 Err(ref err @ super::ProxyError::InvalidRequest(_)) => {
@@ -2792,7 +2809,14 @@ async fn execute(
                         code,
                     );
                 }
-                Err(super::ProxyError::SafeUpstream(error)) => return error.to_response(),
+                Err(super::ProxyError::SafeUpstream(error)) => {
+                    let status = error.status().as_u16();
+                    log::warn!(
+                        "[Intent] SafeUpstream rejected converted call: agent={agent} {error}"
+                    );
+                    trace.finish(status, trace::State::Failed);
+                    return error.to_response();
+                }
                 Err(_) => {
                     return fail(
                         StatusCode::BAD_GATEWAY,
@@ -3195,9 +3219,11 @@ async fn execute(
                 continue;
             }
             if probe.failed && probe.first_content.is_none() && !probe.pending_tools {
-                target
-                    .scheduling
-                    .failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
+                if status != 400 {
+                    target
+                        .scheduling
+                        .failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp());
+                }
                 trace.step(trace::Kind::Rejected, Some(candidate), Some(502));
                 continue;
             }

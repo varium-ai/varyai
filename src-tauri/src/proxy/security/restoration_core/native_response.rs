@@ -847,6 +847,17 @@ impl<'native> NativeSseObservation<'native> {
         )
     }
 
+    pub(in crate::proxy::security) fn new_native(
+        entity: &'native [u8],
+        ordered_frames: &[&'native NativeSseFrameObservation<'native>],
+        client: ClientProtocol,
+        lease: &DlpRequestLease,
+        binding: &'native ActualAttemptBinding,
+        budget: PayloadBudget,
+    ) -> Result<Self, RestoreError> {
+        Self::with_limits(entity, ordered_frames, client, lease, binding, budget, None)
+    }
+
     pub(in crate::proxy::security) fn new(
         entity: &'native [u8],
         ordered_frames: &[&'native NativeSseFrameObservation<'native>],
@@ -1550,9 +1561,6 @@ fn inspect_native_sse_streams<'native>(
     for index in 0..observed.frame_count() {
         let frame = observed.frame(index).ok_or(RestoreError::RestoreFailed)?;
         for site_index in 0..frame.sites().len() {
-            if protocol != Protocol::Chat && sites.len() >= 128 {
-                return Err(RestoreError::RestoreFailed);
-            }
             let site = frame
                 .sites()
                 .site(site_index)
@@ -1960,7 +1968,7 @@ fn stage_native_sse_inner<'native>(
     if snapshots.is_empty() {
         return Err(RestoreError::RestoreFailed);
     }
-    if !snapshots[0].chat_choice && snapshots.len() > 128 {
+    if lifecycle.is_none() && !snapshots[0].chat_choice && snapshots.len() > 128 {
         return Err(RestoreError::capacity(TokenError::CapacityExceeded));
     }
 
@@ -2743,11 +2751,10 @@ pub(in crate::proxy::security) fn compose_gemini_snapshots(
             .ok_or(RestoreError::RestoreFailed)
     }
 
-    if candidates.is_empty() || candidates.len() > 1024 {
+    if candidates.is_empty() {
         return Err(RestoreError::RestoreFailed);
     }
     let mut order = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
-    let mut content_count = 0usize;
     for candidate in candidates {
         let candidate_index = index(candidate)?;
         if !order.as_slice().contains(&candidate_index) {
@@ -2769,10 +2776,6 @@ pub(in crate::proxy::security) fn compose_gemini_snapshots(
                         RestoreError::RestoreFailed
                     }
                 })?;
-                content_count += 1;
-                if content_count > 1024 {
-                    return Err(RestoreError::RestoreFailed);
-                }
             }
             None if candidate.get("finishReason").is_some() => {}
             None => return Err(RestoreError::RestoreFailed),
