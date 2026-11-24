@@ -950,4 +950,188 @@ mod tests {
             task.abort();
         }
     }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn kimi_agent_client_restores_sensitive_tokens_in_chat_and_anthropic() {
+        use crate::proxy::security::{
+            runtime::{get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig},
+            types::AuditAction,
+        };
+        use axum::{extract::Json, response::IntoResponse};
+        struct Restore(SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*get_security_runtime()).clone());
+        let mut security = SecurityRuntimeConfig::default();
+        security
+            .builtin_action_overrides
+            .insert("chinese_phone_number".into(), AuditAction::RedactRestore);
+        set_security_runtime_for_test(security);
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(4);
+        let app = Router::new().fallback(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body.clone()).await;
+                let stream = body["stream"].as_bool() == Some(true);
+                let text = body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if body.get("max_tokens").is_some() {
+                    if stream {
+                        let frames = [
+                            format!(
+                                "event: message_start\ndata: {}\n\n",
+                                json!({"type":"message_start","message":{"id":"msg_kimi","type":"message","role":"assistant","model":"kimi-k2","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}})
+                            ),
+                            format!(
+                                "event: content_block_start\ndata: {}\n\n",
+                                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})
+                            ),
+                            format!(
+                                "event: content_block_delta\ndata: {}\n\n",
+                                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+                            ),
+                            format!(
+                                "event: content_block_stop\ndata: {}\n\n",
+                                json!({"type":"content_block_stop","index":0})
+                            ),
+                            format!(
+                                "event: message_delta\ndata: {}\n\n",
+                                json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}})
+                            ),
+                            format!(
+                                "event: message_stop\ndata: {}\n\n",
+                                json!({"type":"message_stop"})
+                            ),
+                        ]
+                        .concat();
+                        axum::response::Response::builder()
+                            .header("content-type", "text/event-stream")
+                            .body(axum::body::Body::from(frames))
+                            .unwrap()
+                    } else {
+                        axum::Json(json!({
+                            "id": "msg_kimi",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "kimi-k2",
+                            "content": [{"type": "text", "text": text}],
+                            "stop_reason": "end_turn",
+                            "stop_sequence": null,
+                            "usage": {"input_tokens": 1, "output_tokens": 1}
+                        }))
+                        .into_response()
+                    }
+                } else if stream {
+                    let frames = format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":"chat_kimi","object":"chat.completion.chunk","model":"kimi-k2","choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
+                        json!({"id":"chat_kimi","object":"chat.completion.chunk","model":"kimi-k2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+                    );
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(frames))
+                        .unwrap()
+                } else {
+                    axum::Json(json!({
+                        "id": "chat_kimi",
+                        "object": "chat.completion",
+                        "model": "kimi-k2",
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }))
+                    .into_response()
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("addr");
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let db = Arc::new(crate::database::Database::memory().expect("db"));
+        let gateway = crate::proxy::server::ProxyServer::new(
+            crate::proxy::ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db.clone(),
+            None,
+        );
+        let info = gateway.start().await.expect("start");
+        let local = format!(
+            "http://127.0.0.1:{}/agents/kimi/providers/fixture/v1",
+            info.port
+        );
+        let backup = Backup {
+            path: std::path::PathBuf::from("unused-test-config"),
+            routes: vec![native::Route {
+                id: "fixture".into(),
+                pointer: "/unused".into(),
+                provider_id: "fixture".into(),
+                models: vec!["kimi-k2".into()],
+                upstream: format!("http://{addr}/v1"),
+                local: local.clone(),
+                created_provider: None,
+            }],
+        };
+        db.save_live_backup("kimi", &serde_json::to_string(&backup).expect("backup"))
+            .await
+            .expect("persist");
+        db.set_setting(&native::enabled_key("kimi"), "true")
+            .expect("enabled");
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        for stream in [false, true] {
+            for (suffix, body) in [
+                (
+                    "chat/completions",
+                    json!({"model":"kimi-k2","messages":[{"role":"user","content":"13800001234"}],"stream":stream}),
+                ),
+                (
+                    "messages",
+                    json!({"model":"kimi-k2","max_tokens":64,"messages":[{"role":"user","content":"13800001234"}],"stream":stream}),
+                ),
+            ] {
+                let response = client
+                    .post(format!("{local}/{suffix}"))
+                    .bearer_auth("synthetic-kimi-key")
+                    .header("x-api-key", "synthetic-kimi-key")
+                    .json(&body)
+                    .send()
+                    .await
+                    .expect("request");
+                assert_eq!(response.status(), 200, "suffix={suffix} stream={stream}");
+                let text = response.text().await.expect("body");
+                assert!(
+                    text.contains("13800001234"),
+                    "suffix={suffix} stream={stream} text={text}"
+                );
+                assert!(
+                    !text.contains("rredact-"),
+                    "suffix={suffix} stream={stream} text={text}"
+                );
+                let sent = rx.recv().await.expect("upstream");
+                let sent_str = sent.to_string();
+                assert!(!sent_str.contains("13800001234"));
+                assert!(sent_str.contains("rredact-cn_phone-"));
+            }
+        }
+
+        gateway.stop().await.expect("stop");
+        task.abort();
+    }
 }

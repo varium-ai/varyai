@@ -52,6 +52,7 @@ pub(crate) struct DlpOperationDescriptor<'a> {
 }
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+const GATEWAY_USER_AGENT: &str = concat!("varyai/", env!("CARGO_PKG_VERSION"));
 
 /// Internal wire-execution mode, never a consumer identity or routing decision.
 /// Only explicit group bridge execution can insert this extension.
@@ -2849,8 +2850,13 @@ impl RequestForwarder {
         };
         // Codex→Anthropic emulation: when there is no custom UA, override Codex's
         // codex_cli_rs UA with the Claude Code UA.
+        // Protocol-converted (ExactBridge) calls: default to the gateway User-Agent
+        // instead of leaking the source client's UA (e.g. Gemini CLI) to a different
+        // target protocol, unless the provider explicitly configured one.
         let custom_user_agent = if custom_user_agent.is_none() && codex_impersonate_claude_code {
             Some(http::HeaderValue::from_static(CLAUDE_CODE_USER_AGENT))
+        } else if custom_user_agent.is_none() && exact && !is_copilot {
+            Some(http::HeaderValue::from_static(GATEWAY_USER_AGENT))
         } else {
             custom_user_agent
         };
@@ -3150,6 +3156,11 @@ impl RequestForwarder {
                 .iter()
                 .any(|h| key_str.eq_ignore_ascii_case(h))
             {
+                continue;
+            }
+
+            // --- 协议桥接（ExactBridge）：仅保留协议无关的通用内容/协商头，剥离源客户端专有头 ---
+            if exact && !matches!(key_str, "content-type" | "accept") {
                 continue;
             }
 
@@ -7180,6 +7191,133 @@ mod tests {
         });
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[tokio::test]
+    async fn exact_bridge_normalizes_headers_and_sets_gateway_user_agent() {
+        use axum::{http::HeaderMap as AxumHeaderMap, routing::post, Json, Router};
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Option<AxumHeaderMap>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |headers: AxumHeaderMap, _body: Bytes| {
+                let captured_clone = captured_clone.clone();
+                async move {
+                    *captured_clone.lock().unwrap() = Some(headers);
+                    Json(serde_json::json!({
+                        "id": "chatcmpl-synthetic",
+                        "object": "chat.completion",
+                        "choices": [{
+                            "index": 0,
+                            "message": { "role": "assistant", "content": "ok" },
+                            "finish_reason": "stop"
+                        }]
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let provider = Provider {
+            id: "synthetic-chat-provider".to_string(),
+            name: "Synthetic Chat".to_string(),
+            settings_config: serde_json::json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": format!("http://{addr}/v1"),
+                    "ANTHROPIC_API_KEY": "synthetic-key"
+                }
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        let mut inbound_headers = HeaderMap::new();
+        inbound_headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+        inbound_headers.insert(
+            http::header::ACCEPT,
+            http::HeaderValue::from_static("application/json"),
+        );
+        inbound_headers.insert(
+            http::header::USER_AGENT,
+            http::HeaderValue::from_static("GeminiCLI/0.0.0-synthetic"),
+        );
+        inbound_headers.insert(
+            "x-goog-api-client",
+            http::HeaderValue::from_static("google-genai-sdk/0.0.0"),
+        );
+        inbound_headers.insert(
+            "x-goog-api-key",
+            http::HeaderValue::from_static("caller-key"),
+        );
+
+        let body = serde_json::json!({
+            "contents": [{ "role": "user", "parts": [{ "text": "hello" }] }]
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(5), Duration::from_secs(5));
+        let response = forwarder
+            .forward_bridge(
+                super::super::protocol_bridge::Bridge {
+                    input: super::super::protocol_bridge::Protocol::Gemini,
+                    output: super::super::protocol_bridge::Protocol::Chat,
+                },
+                &http::Method::POST,
+                &provider,
+                "/v1beta/models/synthetic:generateContent",
+                &body,
+                &inbound_headers,
+                &Extensions::new(),
+            )
+            .await
+            .expect("exact bridge call should succeed");
+        assert_eq!(response.0.status(), StatusCode::OK);
+
+        let sent = captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("upstream captured headers");
+        assert!(sent.get("x-goog-api-client").is_none());
+        assert!(sent.get("x-goog-api-key").is_none());
+        assert_eq!(
+            sent.get(http::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok()),
+            Some(GATEWAY_USER_AGENT)
+        );
+        assert_eq!(
+            sent.get(http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer synthetic-key")
+        );
+        assert_eq!(
+            sent.get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        assert_eq!(
+            sent.get(http::header::ACCEPT).and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+
+        server.abort();
     }
 }
 

@@ -51,6 +51,18 @@ pub(super) fn client_config() -> Result<rustls::ClientConfig, String> {
         .clone()
 }
 
+/// Upstream TLS config for pooled reqwest clients that support HTTP/2 via ALPN.
+pub(super) fn client_config_h2() -> Result<rustls::ClientConfig, String> {
+    static CONFIG: OnceLock<Result<rustls::ClientConfig, String>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let mut config = client_config()?;
+            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            Ok(config)
+        })
+        .clone()
+}
+
 pub(super) fn with_roots(roots: rustls::RootCertStore) -> Result<rustls::ClientConfig, String> {
     // Keep hybrid TLS 1.3 available even when a local listener installs ring globally.
     rustls::ClientConfig::builder_with_provider(Arc::new(
