@@ -317,7 +317,7 @@ export function SharedModelPicker({
         </label>
         {visibility && (
           <div
-            className="mp-am-seg"
+            className="mp-am-seg vary-segmented"
             role="group"
             aria-label={t("agentConnections.modelListView")}
           >
@@ -339,7 +339,7 @@ export function SharedModelPicker({
       {view === "order" && (
         <div className="mp-am-order-tools">
           <div
-            className="mp-am-seg"
+            className="mp-am-seg vary-segmented"
             role="group"
             aria-label={t("agentConnections.modelListView")}
           >

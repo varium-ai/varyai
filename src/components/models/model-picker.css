@@ -13,9 +13,6 @@
   --mp-control: #63636b;
   --mp-model-accent-soft: color-mix(in srgb, var(--mp-accent) 10%, transparent);
   --mp-model-bg: rgb(255 255 255 / 94%);
-  --mp-model-seg-track: #e6e6eb;
-  --mp-model-seg-thumb: var(--mp-card);
-  --mp-model-seg-edge: 0 1px 2px rgb(0 0 0 / 14%), 0 0 0 0.5px rgb(0 0 0 / 8%);
   display: flex;
   flex-direction: column;
   width: min(380px, calc(100vw - 16px));
@@ -47,10 +44,6 @@
   --mp-control: #a1a1aa;
   --mp-model-accent-soft: color-mix(in srgb, var(--mp-accent) 16%, transparent);
   --mp-model-bg: rgb(38 38 43 / 96%);
-  --mp-model-seg-track: rgb(255 255 255 / 3.5%);
-  --mp-model-seg-thumb: rgb(255 255 255 / 15%);
-  --mp-model-seg-edge:
-    inset 0 0.5px 0 rgb(255 255 255 / 8%), 0 1px 2px rgb(0 0 0 / 30%);
   box-shadow:
     0 16px 44px rgb(0 0 0 / 55%),
     0 2px 8px rgb(0 0 0 / 30%),
@@ -178,25 +171,14 @@
 .mp-am-seg {
   display: inline-flex;
   flex: none;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--mp-model-seg-track, var(--mp-card-2));
 }
 .mp-am-seg button {
   height: 24px;
   padding: 0 9px;
   border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--mp-control);
   font: inherit;
   font-size: 12px;
   white-space: nowrap;
-}
-.mp-am-seg button[aria-pressed="true"] {
-  background: var(--mp-model-seg-thumb, var(--mp-card));
-  color: var(--mp-fg);
-  box-shadow: var(--mp-model-seg-edge, 0 1px 3px rgb(0 0 0 / 9%));
 }
 .mp-am-order-tools {
   display: flex;

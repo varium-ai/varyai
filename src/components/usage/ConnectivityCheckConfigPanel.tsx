@@ -78,17 +78,19 @@ export function ConnectivityCheckConfigPanel() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="settings-advanced-section">
       {error && (
         <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription className="text-xs leading-[18px]">
+            {error}
+          </AlertDescription>
         </Alert>
       )}
 
       {/* 连通检测语义说明：可达 ≠ 配置正确 */}
       <Alert>
         <Info className="h-4 w-4" />
-        <AlertDescription>
+        <AlertDescription className="text-xs leading-[18px]">
           {t("streamCheck.connectivityNote", {
             defaultValue:
               "连通检测仅探测供应商地址是否可达，不发送真实模型请求。收到任意响应即视为“可达”——这不代表鉴权或模型配置一定正确。",
@@ -98,11 +100,11 @@ export function ConnectivityCheckConfigPanel() {
 
       {/* 检查参数配置 */}
       <div className="space-y-4">
-        <h4 className="text-sm font-medium text-muted-foreground">
+        <h4 className="settings-advanced-subtitle">
           {t("streamCheck.checkParams")}
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-2">
+        <div className="settings-advanced-fields">
+          <div className="settings-advanced-field">
             <Label htmlFor="timeoutSecs">{t("streamCheck.timeout")}</Label>
             <Input
               id="timeoutSecs"
@@ -117,7 +119,7 @@ export function ConnectivityCheckConfigPanel() {
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="settings-advanced-field">
             <Label htmlFor="maxRetries">{t("streamCheck.maxRetries")}</Label>
             <Input
               id="maxRetries"
@@ -132,7 +134,7 @@ export function ConnectivityCheckConfigPanel() {
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="settings-advanced-field">
             <Label htmlFor="degradedThresholdMs">
               {t("streamCheck.degradedThreshold")}
             </Label>
@@ -152,16 +154,16 @@ export function ConnectivityCheckConfigPanel() {
         </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="settings-advanced-divider settings-advanced-actions justify-end">
         <Button onClick={handleSave} disabled={isSaving}>
           {isSaving ? (
             <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2 className="h-4 w-4 animate-spin" />
               {t("common.saving")}
             </>
           ) : (
             <>
-              <Save className="mr-2 h-4 w-4" />
+              <Save className="h-4 w-4" />
               {t("common.save")}
             </>
           )}

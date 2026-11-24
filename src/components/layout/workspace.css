@@ -2,8 +2,11 @@
    MIT attribution: third_party/routing-reference/LICENSE. */
 :root {
   --mp-bg: hsl(var(--background));
-  --workspace-sidebar-fill: rgb(225 237 253 / 82%);
-  --workspace-content-fill: rgb(243 246 250 / 94%);
+  --workspace-sidebar-fill: rgb(231 240 252 / 40%);
+  --workspace-content-fill: rgb(255 255 255 / 95%);
+  --workspace-nav-selected-fill: #6897e3;
+  --workspace-nav-selected-opacity: 0.26;
+  --workspace-nav-selected-text: #17468d;
   --mp-card: hsl(var(--card));
   --mp-list-bg: var(--mp-card);
   --mp-list-line: var(--mp-line);
@@ -30,7 +33,10 @@
 }
 .dark {
   --workspace-sidebar-fill: rgb(32 44 63 / 88%);
-  --workspace-content-fill: hsl(var(--background) / 94%);
+  --workspace-content-fill: hsl(var(--background) / 95%);
+  --workspace-nav-selected-fill: #71a5f6;
+  --workspace-nav-selected-opacity: 0.24;
+  --workspace-nav-selected-text: #d7e5ff;
   --mp-list-bg: var(--mp-card);
   --mp-list-line: var(--mp-line);
   --mp-list-divider: var(--mp-line-2);
@@ -100,10 +106,10 @@
   --workspace-page-inline: 24px;
   --workspace-page-top: 24px;
   --workspace-brand-top: 24px;
-  background: linear-gradient(
+  --workspace-chrome-fill: linear-gradient(
     to right,
-    var(--workspace-sidebar-fill),
-    var(--workspace-content-fill) calc(var(--workspace-sidebar-width) + 24px)
+    var(--workspace-sidebar-fill) var(--workspace-sidebar-width),
+    var(--workspace-content-fill) var(--workspace-sidebar-width)
   );
 }
 html[data-platform="macos"] body:has(.vary-workspace) {
@@ -125,6 +131,13 @@ html[data-platform="macos"] body:has(.vary-workspace) {
   height: 24px;
   flex: none;
 }
+.workspace-drag-region,
+.workspace-footer {
+  background: var(--workspace-chrome-fill);
+}
+.workspace-content {
+  background: var(--workspace-content-fill);
+}
 .workspace-sidebar {
   position: relative;
   isolation: isolate;
@@ -133,6 +146,7 @@ html[data-platform="macos"] body:has(.vary-workspace) {
   flex-direction: column;
   width: var(--workspace-sidebar-width);
   padding: var(--workspace-brand-top, 16px) 12px 16px;
+  background: var(--workspace-sidebar-fill);
   border-right: 1px solid hsl(var(--border) / 38%);
   transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -141,7 +155,8 @@ html[data-platform="macos"] body:has(.vary-workspace) {
   top: 0;
   z-index: 0;
   border-radius: var(--radius);
-  background: var(--mp-pill);
+  background: var(--workspace-nav-selected-fill);
+  opacity: var(--workspace-nav-selected-opacity);
   pointer-events: none;
   transition:
     transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -212,7 +227,7 @@ html[data-platform="macos"] body:has(.vary-workspace) {
 }
 .workspace-nav-item[aria-current="page"] {
   background: transparent;
-  color: var(--mp-link);
+  color: var(--workspace-nav-selected-text);
   font-weight: 500;
 }
 .workspace-nav-item[aria-current="page"] svg {
@@ -250,7 +265,7 @@ html[data-platform="macos"] body:has(.vary-workspace) {
 @media (prefers-reduced-transparency: reduce) {
   .vary-workspace {
     --workspace-sidebar-fill: #e7f0fc;
-    --workspace-content-fill: #f3f6fa;
+    --workspace-content-fill: #fff;
   }
   .dark .vary-workspace {
     --workspace-sidebar-fill: #252f3e;
@@ -271,23 +286,26 @@ html[data-platform="macos"] body:has(.vary-workspace) {
   font-size: 11px;
 }
 .gateway-runtime-status {
+  --gateway-runtime-color: var(--warning);
+  --gateway-runtime-surface: var(--warning-surface);
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: hsl(var(--muted-foreground));
+  color: var(--gateway-runtime-color);
+  font-weight: 500;
 }
-.gateway-runtime-dot {
-  width: 6px;
-  height: 6px;
+.gateway-runtime-status[data-status="running"] {
+  --gateway-runtime-color: var(--success);
+  --gateway-runtime-surface: var(--success-surface);
+}
+.gateway-runtime-status[data-status="unavailable"] {
+  --gateway-runtime-color: hsl(var(--destructive));
+  --gateway-runtime-surface: var(--danger-surface);
+}
+.gateway-runtime-icon {
+  width: 12px;
+  height: 12px;
   flex: none;
-  border-radius: 50%;
-  background: hsl(var(--muted-foreground));
-}
-.gateway-runtime-status[data-status="running"] .gateway-runtime-dot {
-  background: var(--success);
-}
-.gateway-runtime-status[data-status="unavailable"] .gateway-runtime-dot {
-  background: var(--warning);
 }
 html:has(.vary-workspace) .tray-profile-menu {
   --tray-menu-bg: hsl(var(--popover));

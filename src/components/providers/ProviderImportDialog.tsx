@@ -192,7 +192,7 @@ export function ProviderImportDialog({
             <div
               role="tablist"
               aria-label={t("providerImport.sources")}
-              className="pv-import-tabs"
+              className="pv-import-tabs vary-segmented"
             >
               {sources.map((source, index) => (
                 <button

@@ -116,6 +116,9 @@ export function RoutingPage({
     providerId: string;
     providerName: string;
   }) => candidate.providerName;
+  const maskLabel = t(
+    masked ? "routingPage.showAccounts" : "routingPage.hideAccounts",
+  );
   return (
     <AccountMask
       masked={masked}
@@ -239,17 +242,17 @@ export function RoutingPage({
               variant="ghost"
               size="sm"
               className="rt-mask"
+              aria-label={maskLabel}
+              title={maskLabel}
               aria-pressed={masked}
               onClick={() => setMasked(!masked)}
             >
-              {masked ? <Eye size={16} /> : <EyeOff size={16} />}
-              <span>
-                {t(
-                  masked
-                    ? "routingPage.showAccounts"
-                    : "routingPage.hideAccounts",
-                )}
-              </span>
+              {masked ? (
+                <Eye size={16} aria-hidden="true" />
+              ) : (
+                <EyeOff size={16} aria-hidden="true" />
+              )}
+              <span className="rt-group-action-label">{maskLabel}</span>
             </Button>
           }
           onEditingChange={onEditingChange}

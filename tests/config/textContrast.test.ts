@@ -6,9 +6,9 @@ import { describe, expect, it } from "vitest";
 type RGB = [number, number, number];
 const css = postcss.parse(readFileSync("src/design-tokens.css", "utf8"));
 
-function declarations(selector: string): Record<string, string> {
+function declarations(selector: string, styles = css): Record<string, string> {
   const values: Record<string, string> = {};
-  css.walkRules(selector, (rule) => {
+  styles.walkRules(selector, (rule) => {
     rule.walkDecls((declaration) => {
       values[declaration.prop] = declaration.value;
     });
@@ -108,6 +108,32 @@ it("uses the WCAG sRGB luminance endpoints", () => {
   expect(contrast([0, 0, 0], [1, 1, 1])).toBe(21);
   expect(contrast([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])).toBe(1);
 });
+
+it.each(["light", "dark"])(
+  "keeps the selected sidebar label readable over the blended tint in %s mode",
+  (theme) => {
+    const styles = postcss.parse(
+      readFileSync("src/components/layout/workspace.css", "utf8"),
+    );
+    const tokens = {
+      ...declarations(":root", styles),
+      ...(theme === "dark" ? declarations(".dark", styles) : {}),
+    };
+    const fill = color(tokens["--workspace-nav-selected-fill"], tokens);
+    const label = color(tokens["--workspace-nav-selected-text"], tokens);
+    const opacity = Number(tokens["--workspace-nav-selected-opacity"]);
+    const workspace =
+      theme === "dark" ? ".dark .vary-workspace" : ".vary-workspace";
+    const sidebar = color(
+      declarations(workspace, styles)["--workspace-sidebar-fill"],
+      tokens,
+    );
+    const blended = fill.map(
+      (channel, index) => channel * opacity + sidebar[index] * (1 - opacity),
+    ) as RGB;
+    expect(contrast(label, blended)).toBeGreaterThanOrEqual(4.5);
+  },
+);
 
 it("keeps text and filled backgrounds separate from brand/chart primary in Tailwind", () => {
   const require = createRequire(import.meta.url);

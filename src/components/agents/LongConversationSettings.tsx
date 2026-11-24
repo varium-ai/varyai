@@ -96,7 +96,7 @@ export function LongConversationSettings({
       </div>
       <div className="mp-long-controls">
         <div
-          className="mp-long-segments"
+          className="mp-long-segments vary-segmented"
           role="radiogroup"
           aria-label={t("longConversations.title")}
         >

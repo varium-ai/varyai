@@ -8,7 +8,7 @@
 
 .gateway-keys-header,
 .gateway-keys-toolbar,
-.gateway-header-actions,
+.gateway-header-title,
 .gateway-key-heading,
 .gateway-key-actions,
 .gateway-form-actions {
@@ -26,12 +26,12 @@
 }
 
 .gateway-keys-header {
-  align-items: flex-start;
-  gap: 12px 24px;
+  gap: 12px 20px;
+  padding: 12px var(--list-padding-inline);
 }
 
-.gateway-keys-header > :first-child {
-  flex: 1 1 250px;
+.gateway-header-copy {
+  flex: 1 1 320px;
   min-width: 0;
 }
 
@@ -41,8 +41,16 @@
   font-weight: 500;
 }
 
-.gateway-keys-header p {
-  margin-top: 4px;
+.gateway-header-copy p {
+  margin-top: var(--page-title-description-gap);
+}
+
+.gateway-header-title .gateway-runtime-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--gateway-runtime-surface);
+  font-size: var(--supporting-text-size);
+  line-height: var(--supporting-text-line-height);
 }
 
 .gateway-supporting-text,
@@ -55,21 +63,11 @@
 .gateway-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--control-radius);
-  background: hsl(var(--muted));
 }
 
 .gateway-tabs button {
   min-height: 32px;
   height: auto;
-  border-radius: var(--select-radius);
-}
-
-.gateway-tabs button[aria-selected="true"] {
-  color: hsl(var(--link-foreground));
 }
 
 .gateway-keys-surface {
