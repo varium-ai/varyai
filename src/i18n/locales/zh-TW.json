@@ -2236,6 +2236,7 @@
     "totalRecords": "共 {{total}} 筆紀錄",
     "goToPage": "跳轉",
     "pageInputPlaceholder": "頁碼",
+    "invalidPageRange": "請輸入 1 到 {{total}} 之間的頁碼",
     "modelPricing": "模型定價",
     "loadPricingError": "載入定價資料失敗",
     "modelPricingDesc": "設定各模型的 Token 成本",

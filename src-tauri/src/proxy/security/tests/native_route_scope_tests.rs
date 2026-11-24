@@ -638,6 +638,12 @@ fn c4_classifier_gemini_registered_routes_are_exact() -> TestResult {
                 operation,
                 framing,
             )?;
+            assert_gemini_classification(
+                "POST",
+                &format!("{prefix}synthetic-org/synthetic-scope-model:{suffix}"),
+                operation,
+                framing,
+            )?;
         }
     }
     for (method, uri) in [
@@ -659,10 +665,9 @@ fn c4_classifier_gemini_registered_routes_are_exact() -> TestResult {
             "/gateway/v1beta/models/synthetic-scope-model:generateContent",
         ),
         ("POST", "/v1beta/models/:generateContent"),
-        (
-            "POST",
-            "/v1beta/models/nested/synthetic-scope-model:generateContent",
-        ),
+        ("POST", "/v1beta/models/foo//bar:generateContent"),
+        ("POST", "/v1beta/models/foo/:generateContent"),
+        ("POST", "/v1beta/models/../bar:generateContent"),
         (
             "POST",
             "/v1beta/models/synthetic-scope-model:generateContent/extra",

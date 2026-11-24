@@ -1203,9 +1203,6 @@ impl VerifiedNativeSse {
                     let encoded = std::str::from_utf8(data.as_slice())
                         .map_err(|_| RestoreError::RestoreFailed)?;
                     if encoded.trim() != "[DONE]" {
-                        if client.protocol() != Protocol::Chat && sources.len() >= 1024 {
-                            return Err(RestoreError::RestoreFailed);
-                        }
                         sources
                             .push(
                                 PayloadJson::try_from_str(encoded, budget.clone(), budget.limit())
@@ -1259,9 +1256,6 @@ impl VerifiedNativeSse {
                 for source in sources.as_slice() {
                     if let Some(candidates) = source.as_value().get("candidates") {
                         for candidate in candidates.as_array().ok_or(RestoreError::RestoreFailed)? {
-                            if nodes.len() >= 1024 {
-                                return Err(RestoreError::RestoreFailed);
-                            }
                             nodes.push(candidate).map_err(RestoreError::capacity)?;
                         }
                     }

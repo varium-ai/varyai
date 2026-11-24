@@ -315,6 +315,42 @@ This is a required implementation and acceptance ledger, not a declaration that 
 
 For every Agent-facing change, assess all entries below against its entry point, protocol/native adapter, runtime behavior, UI state and supported platforms. Record implementation, synthetic regression and native acceptance separately. New Agents must be added here and assessed against existing cross-Agent features. Missing or unverified entries prevent an all-Agent completion claim unless the user explicitly accepts a narrower scope.
 
+## Windows 0.4.0 bug-fix sweep (macOS and Windows)
+
+This ledger covers the eight Windows tracker items 17–24. The installer,
+taskbar icon and tray-panel language changes are application-wide; native
+connection handlers, CLI installation and installation discovery were assessed
+against the full `APP_IDS` / `AppType` inventory. macOS keeps the existing
+status-bar icon family and Dock artwork; the new ICO only changes Windows
+installer, taskbar and window icon density. The Windows CLI installation
+subprocess now receives the same reconstructed PATH that detection already
+uses. Native connection panics are contained at the Win32 callback boundary and
+at the diagnostics command boundary, and DeepSeek profile writes validate model
+entries before selecting one.
+
+| Agent ID           | Entry points and applicable fixes                                                                 | Verification status                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `claude`           | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `claude-desktop`   | Shared connection switch and detection; installer, taskbar and tray panel                          | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `codex`            | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `gemini`           | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `grokbuild`        | Grok CLI install path stays PowerShell-first; shared connection switch; installer and tray panel    | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `opencode`         | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `openclaw`         | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `hermes`           | PowerShell installer path unchanged; shared connection switch; installer, taskbar and tray panel    | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `pi`               | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `workbuddy`        | Windows CN registration aliases, LOCALAPPDATA root, CLI discovery, model control and connection     | Synthetic Windows fixture passed; native installed-client acceptance pending        |
+| `workbuddy-ai`     | Windows international registration aliases, LOCALAPPDATA root, model control and connection        | Synthetic Windows fixture passed; native installed-client acceptance pending        |
+| `qoder`            | Model-control connection switch; installer, taskbar and tray panel                                  | Synthetic regression passed; native installed-client acceptance pending             |
+| `doubaowork`       | Audit-only connection switch; installer, taskbar and tray panel                                     | Synthetic regression passed; native installed-client acceptance pending             |
+| `trae`             | TRAE China bridge connection switch; installer, taskbar and tray panel                              | Synthetic regression passed; native installed-client acceptance pending             |
+| `trae-intl`        | TRAE International bridge connection switch; installer, taskbar and tray panel                     | Synthetic regression passed; native installed-client acceptance pending             |
+| `kimi`             | CLI discovery; shared connection switch; installer, taskbar and tray panel                          | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `qwen`             | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
+| `zcode`            | Desktop detection; shared connection switch; installer, taskbar and tray panel                      | Synthetic regression passed; native installed-client acceptance pending             |
+| `deepseek-harness` | Validated profile writes; shared connection switch; installer, taskbar and tray panel              | Synthetic regression passed; native installed-client acceptance pending             |
+| `t3code`           | Desktop detection; shared connection switch; installer, taskbar and tray panel                      | Synthetic regression passed; native installed-client acceptance pending             |
+
 ## WorkBuddy subscription upstreams
 
 Both regional providers enter through Providers → Add → Subscription. The

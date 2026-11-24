@@ -178,12 +178,14 @@ fn ge1_generation_uri_query_selects_json_or_sse() -> TestResult {
             (":streamGenerateContent?synthetic=1&alt=sse", Framing::Sse),
             (":streamGenerateContent?alt=sse&synthetic=1", Framing::Sse),
         ] {
-            let uri: Uri = format!("{prefix}synthetic-model{suffix}").parse()?;
-            assert!(
-                matches!(classify_generation(&Method::POST, &uri), Ok((operation, framing))
-                    if operation == Operation::GenerateContent && framing == expected),
-                "ge1_generation_classification_missing"
-            );
+            for model in ["synthetic-model", "synthetic-org/synthetic-model"] {
+                let uri: Uri = format!("{prefix}{model}{suffix}").parse()?;
+                assert!(
+                    matches!(classify_generation(&Method::POST, &uri), Ok((operation, framing))
+                        if operation == Operation::GenerateContent && framing == expected),
+                    "ge1_generation_classification_missing"
+                );
+            }
         }
     }
     Ok(())
@@ -236,11 +238,15 @@ fn ge1_non_generation_routes_and_methods_are_unsupported() -> TestResult {
         (Method::POST, "/v1beta/models/:generateContent"),
         (
             Method::POST,
-            "/v1beta/models/nested/synthetic-model:generateContent",
+            "/v1beta/models/synthetic-model:generateContent/extra",
         ),
         (
             Method::POST,
-            "/v1beta/models/synthetic-model:generateContent/extra",
+            "/v1beta/models/synthetic-org//synthetic-model:generateContent",
+        ),
+        (
+            Method::POST,
+            "/v1beta/models/../synthetic-model:generateContent",
         ),
         (Method::POST, "/v1/models/synthetic-model:generateContent"),
         (

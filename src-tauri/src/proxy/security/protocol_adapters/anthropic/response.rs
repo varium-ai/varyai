@@ -369,7 +369,6 @@ pub(in crate::proxy::security) fn finalize_sse(
     let mut groups: PayloadVec<SseGroup<'_>> =
         PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut remaining_work = 4 * 1024 * 1024;
-    let mut site_count = 0usize;
     for (frame_index, (raw, source)) in parsed.as_slice().iter().enumerate() {
         let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
         if let Some(source) = source {
@@ -451,10 +450,6 @@ pub(in crate::proxy::security) fn finalize_sse(
                 )?;
             }
         }
-        site_count = site_count
-            .checked_add(sites.len())
-            .filter(|count| *count <= 128)
-            .ok_or_else(|| RestoreError::capacity(TokenError::CapacityExceeded))?;
         frames
             .push(NativeSseFrameObservation::new(
                 raw,
@@ -468,7 +463,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     for frame in frames.as_slice() {
         ordered.push(frame).map_err(RestoreError::capacity)?;
     }
-    let observation = NativeSseObservation::new(
+    let observation = NativeSseObservation::new_native(
         entity,
         ordered.as_slice(),
         client(),

@@ -141,6 +141,43 @@ fn domestic_and_international_editions_never_substitute_for_each_other() {
 }
 
 #[test]
+fn workbuddy_china_accepts_versioned_or_branded_registration_names() {
+    let root = tempfile::tempdir().unwrap();
+    let executable = root.path().join("Custom Apps").join("WorkBuddy.exe");
+    file(&executable);
+    for name in [
+        "WorkBuddy 1.0.0",
+        "WorkBuddy (CN)",
+        "WorkBuddy China (User)",
+        "WorkBuddy (System)",
+    ] {
+        let snapshot = Snapshot {
+            registrations: vec![Registration {
+                name: name.into(),
+                icon: format!("\"{}\",0", executable.display()),
+                ..Registration::default()
+            }],
+            ..Snapshot::default()
+        };
+        assert!(detect("workbuddy", &snapshot).is_some(), "{name}");
+        assert!(detect("workbuddy-ai", &snapshot).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn workbuddy_editions_are_found_in_their_local_appdata_roots() {
+    let root = tempfile::tempdir().unwrap();
+    file(&root.path().join("WorkBuddy").join("WorkBuddy.exe"));
+    file(&root.path().join("WorkBuddy AI").join("WorkBuddy.exe"));
+    let snapshot = Snapshot {
+        local: Some(root.path().into()),
+        ..Snapshot::default()
+    };
+    assert!(detect("workbuddy", &snapshot).is_some());
+    assert!(detect("workbuddy-ai", &snapshot).is_some());
+}
+
+#[test]
 fn store_packages_require_the_main_product_and_valid_version() {
     let snapshot = Snapshot {
         packages: vec![

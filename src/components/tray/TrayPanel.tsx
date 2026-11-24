@@ -10,7 +10,9 @@ import {
   securityEventRiskLabel,
 } from "@/components/security/securityEventLabels";
 import { useUpdate } from "@/contexts/UpdateContext";
+import { useSyncLanguage } from "@/hooks/useSyncLanguage";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { useSettingsQuery } from "@/lib/query";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { securityApi } from "@/lib/api/security";
@@ -36,6 +38,8 @@ const quotaRoots = [
 const securityFilter = { view: "security_events" as const };
 export function TrayPanel() {
   const { t } = useTranslation();
+  const settings = useSettingsQuery();
+  const i18n = useSyncLanguage(settings.data?.language);
   const client = useQueryClient();
   const update = useUpdate();
   const [tab, setTab] = useState(() =>
@@ -88,6 +92,7 @@ export function TrayPanel() {
   useTauriEvent("tray-panel-refresh", () => {
     setActive(true);
     frame.current?.focus({ preventScroll: true });
+    void client.invalidateQueries({ queryKey: ["settings"] });
     void refresh();
   });
   useTauriEvent<boolean>("tray-panel-active", (active) => setActive(active));
@@ -133,7 +138,13 @@ export function TrayPanel() {
     ),
   );
   return (
-    <div className="tray-panel" data-tab={tab} ref={frame} tabIndex={-1}>
+    <div
+      className="tray-panel"
+      data-tab={tab}
+      lang={i18n.language}
+      ref={frame}
+      tabIndex={-1}
+    >
       <header className="tray-header">
         <div className="tray-brand">
           <img src={appIcon} alt="" />

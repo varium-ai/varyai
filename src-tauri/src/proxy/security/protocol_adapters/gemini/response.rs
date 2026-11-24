@@ -352,7 +352,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     for frame in frames.as_slice() {
         ordered.push(frame).map_err(RestoreError::capacity)?;
     }
-    let observation = NativeSseObservation::new(
+    let observation = NativeSseObservation::new_native(
         entity,
         ordered.as_slice(),
         client(),
