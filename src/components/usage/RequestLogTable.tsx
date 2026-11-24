@@ -138,7 +138,7 @@ export function RequestLogTable({
 
   const handleGoToPage = () => {
     const trimmed = pageInput.trim();
-    if (!trimmed || totalPages <= 0) return;
+    if (!trimmed || totalPages <= 1) return;
     const parsed = Number(trimmed);
     if (!/^\d+$/.test(trimmed) || parsed < 1 || parsed > totalPages) {
       toast.warning(
@@ -480,7 +480,7 @@ export function RequestLogTable({
               <div className="stats-log-page-jump">
                 <Input
                   type="text"
-                  disabled={changingPage}
+                  disabled={changingPage || totalPages <= 1}
                   value={pageInput}
                   onChange={(e) => setPageInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -492,7 +492,7 @@ export function RequestLogTable({
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={changingPage}
+                  disabled={changingPage || totalPages <= 1}
                   onClick={handleGoToPage}
                 >
                   {t("usage.goToPage")}

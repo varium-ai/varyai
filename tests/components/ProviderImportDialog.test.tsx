@@ -7,9 +7,11 @@ import {
 } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import i18n from "i18next";
+import { toast } from "sonner";
 import { ProviderImportDialog } from "@/components/providers/ProviderImportDialog";
 import { providerImportApi } from "@/lib/api/providerImport";
 
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 vi.mock("@/lib/api/providerImport", () => ({
   providerImportApi: { preview: vi.fn(), import: vi.fn() },
 }));
@@ -248,7 +250,7 @@ it("selects only importable rows and sends references with fresh-source fingerpr
   );
   expect(done).toHaveBeenCalled();
 });
-it("keeps the modal open and reports only a safe message on source changes", async () => {
+it("keeps the modal open and reports only a safe toast message on source changes", async () => {
   vi.mocked(providerImportApi.import).mockRejectedValue(
     "providerImport.conflict synthetic-private",
   );
@@ -257,10 +259,55 @@ it("keeps the modal open and reports only a safe message on source changes", asy
   const tabs = await screen.findByRole("tablist");
   fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
   fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "providerImport.failed",
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "providerImport.failed",
+      expect.objectContaining({
+        id: "provider-error-importProviders",
+        description: undefined,
+      }),
+    ),
   );
-  expect(screen.queryByText(/synthetic-private/)).not.toBeInTheDocument();
+  expect(JSON.stringify(vi.mocked(toast.error).mock.calls)).not.toContain(
+    "synthetic-private",
+  );
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(done).not.toHaveBeenCalled();
+});
+
+it("shows specific toast descriptions for recognized import error codes", async () => {
+  const done = vi.fn();
+  mount(done);
+  const tabs = await screen.findByRole("tablist");
+  fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
+
+  vi.mocked(providerImportApi.import).mockRejectedValueOnce(
+    "routingUpstreams.nameExists",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "providerImport.failed",
+      expect.objectContaining({
+        id: "provider-error-importProviders",
+        description: "providerImport.nameExists",
+      }),
+    ),
+  );
+
+  vi.mocked(providerImportApi.import).mockRejectedValueOnce(
+    "providerImport.conflict",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "providerImport.failed",
+      expect.objectContaining({
+        id: "provider-error-importProviders",
+        description: "providerImport.conflict",
+      }),
+    ),
+  );
   expect(done).not.toHaveBeenCalled();
 });
 

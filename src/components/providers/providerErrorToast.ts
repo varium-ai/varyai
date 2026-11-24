@@ -11,6 +11,7 @@ export type ProviderOperation =
   | "fetchModels"
   | "testModels"
   | "importAccount"
+  | "importProviders"
   | "signIn"
   | "account"
   | "copy"
@@ -46,28 +47,37 @@ export function providerErrorMessage(
     "modelLimit",
     "configTooLarge",
   ];
-  const reason = [
-    "conflict",
-    "limit",
-    "referenced",
-    "sourceUnavailable",
-    "nameExists",
-  ].includes(code)
-    ? `modelProviders.${code}`
-    : detailedReasons.includes(code)
-      ? `modelProviders.errors.${code}`
-      : code === "invalid"
-        ? `modelProviders.errors.${operation === "importAccount" ? "invalidAccountFile" : "invalid"}`
-        : code === "invalidModels"
-          ? "modelProviders.invalidModels"
-          : code === "emptyCatalog"
-            ? "intentRouting.catalogReason.empty"
-            : undefined;
+  const reason =
+    cause === "providerImport.conflict"
+      ? "providerImport.conflict"
+      : cause === "providerImport.invalid"
+        ? "providerImport.invalid"
+        : operation === "importProviders" && code === "nameExists"
+          ? "providerImport.nameExists"
+          : [
+                "conflict",
+                "limit",
+                "referenced",
+                "sourceUnavailable",
+                "nameExists",
+              ].includes(code)
+            ? `modelProviders.${code}`
+            : detailedReasons.includes(code)
+              ? `modelProviders.errors.${code}`
+              : code === "invalid"
+                ? `modelProviders.errors.${operation === "importAccount" ? "invalidAccountFile" : "invalid"}`
+                : code === "invalidModels"
+                  ? "modelProviders.invalidModels"
+                  : code === "emptyCatalog"
+                    ? "intentRouting.catalogReason.empty"
+                    : undefined;
   return {
     title: t(
       operation === "copy"
         ? "onboarding.copyFailed"
-        : `modelProviders.errors.${operation}`,
+        : operation === "importProviders"
+          ? "providerImport.failed"
+          : `modelProviders.errors.${operation}`,
     ),
     description: reason ? t(reason) : undefined,
   };

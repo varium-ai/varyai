@@ -202,32 +202,58 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
         Protocol::Gemini => AppType::Gemini,
         _ => AppType::Codex,
     };
-    match super::security::inspect_with_context(
-        &AppType::Pi,
-        &wire,
-        &target.provider_id,
-        Some(&request_id),
-        &mut value,
-        &parts.headers,
-    ) {
-        Ok(Some(blocked)) => return blocked,
-        Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_inspection_failed"),
-        _ => {}
-    }
-    let session_id = super::security::audit_session_id(&AppType::Pi, &parts.headers, &original);
-    if protocol != Protocol::Gemini {
-        value["model"] = Value::String(target.model_id.clone());
-    }
-    let payload = match json::encode_redacted(&bytes, &original, &value) {
-        Ok(v) => v,
-        Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_unsafe_payload_edit"),
-    };
     let mut url = match endpoint(target, gemini_stream) {
         Ok(u) => u,
         Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_invalid_endpoint"),
     };
     if anthropic_beta {
         url.query_pairs_mut().append_pair("beta", "true");
+    }
+    let endpoint_path = match url.query() {
+        Some(q) if !q.is_empty() => format!("{}?{q}", url.path()),
+        _ => url.path().to_owned(),
+    };
+    let bridge_protocol = match protocol {
+        Protocol::Chat => super::protocol_bridge::Protocol::Chat,
+        Protocol::Responses => super::protocol_bridge::Protocol::Responses,
+        Protocol::Anthropic => super::protocol_bridge::Protocol::Anthropic,
+        Protocol::Gemini => super::protocol_bridge::Protocol::Gemini,
+    };
+    let dlp_request = match super::security::http_restoration::admit_routed_http_request(
+        &state.restoration_gateway,
+        &AppType::Pi,
+        bridge_protocol,
+        &endpoint_path,
+        &mut value,
+        &parts.headers,
+    ) {
+        Ok(super::security::http_restoration::RestorationAdmission::Admitted(request)) => {
+            Some(std::sync::Arc::new(request))
+        }
+        Ok(super::security::http_restoration::RestorationAdmission::Intercepted(blocked)) => {
+            return blocked;
+        }
+        Ok(super::security::http_restoration::RestorationAdmission::Passthrough) => None,
+        Err(super::ProxyError::DlpForward(err)) => return err.into_routed_app_response(&wire),
+        Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_inspection_failed"),
+    };
+    if dlp_request.is_none() {
+        match super::security::inspect_with_context(
+            &AppType::Pi,
+            &wire,
+            &target.provider_id,
+            Some(&request_id),
+            &mut value,
+            &parts.headers,
+        ) {
+            Ok(Some(blocked)) => return blocked,
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_inspection_failed"),
+            _ => {}
+        }
+    }
+    let session_id = super::security::audit_session_id(&AppType::Pi, &parts.headers, &original);
+    if protocol != Protocol::Gemini {
+        value["model"] = Value::String(target.model_id.clone());
     }
     let uri: http::Uri = match url.as_str().parse() {
         Ok(u) => u,
@@ -281,6 +307,66 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
     {
         headers.insert(header::HOST, host);
     }
+    let (payload, mut dlp_attempt) = if let Some(ref request) = dlp_request {
+        let auth_principal = super::forwarder::dlp_auth_principal(&headers);
+        let operation = super::providers::CodexAdapter::resolve_dlp_operation_descriptor(
+            target.base_url.as_str(),
+            &endpoint_path,
+            bridge_protocol.format(),
+            url.as_str(),
+            false,
+        );
+        let (mut attempt, _input_owner) = match request
+            .prepare_owned_attempt_with_history_for_proxy(
+                operation.as_ref(),
+                &target.provider_id,
+                bridge_protocol.format(),
+                url.as_str(),
+                auth_principal.as_deref(),
+                &mut value,
+                |body, _ctx| Ok((body, None)),
+            ) {
+            Ok(prepared) => prepared,
+            Err(super::ProxyError::DlpForward(err)) => return err.into_routed_app_response(&wire),
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_inspection_failed"),
+        };
+        let error_credentials = request.capture_error_credentials(&headers);
+        if let Err(err) = request.prepare_native_error_safety(
+            &mut attempt,
+            &Value::Null,
+            &[],
+            error_credentials.as_ref(),
+        ) {
+            return err.into_routed_app_response(&wire);
+        }
+        if let Err(err) = attempt.validate_final_send_binding(
+            &target.provider_id,
+            bridge_protocol.format(),
+            url.as_str(),
+            auth_principal.as_deref(),
+        ) {
+            return err.into_routed_app_response(&wire);
+        }
+        if let Err(err) = attempt.validate_final_send_history(&value) {
+            return err.into_routed_app_response(&wire);
+        }
+        attempt.record_permitted_attempt(&target.provider_id, Some(&request_id));
+        let encoded = match attempt.encode_outbound_body(&value) {
+            Ok(Some(encoded)) => encoded.to_vec(),
+            Ok(None) => match json::encode_redacted(&bytes, &original, &value) {
+                Ok(v) => v,
+                Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_unsafe_payload_edit"),
+            },
+            Err(err) => return err.into_routed_app_response(&wire),
+        };
+        (encoded, Some(attempt))
+    } else {
+        let encoded = match json::encode_redacted(&bytes, &original, &value) {
+            Ok(v) => v,
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "pi_unsafe_payload_edit"),
+        };
+        (encoded, None)
+    };
     let proxy = super::http_client::get_current_proxy_url();
     let response = match super::hyper_client::send_request(
         uri,
@@ -305,6 +391,14 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
     if !status.is_success() {
         return fail(status, "pi_upstream_error");
     }
+    let response = if let Some(attempt) = dlp_attempt.as_mut() {
+        match attempt.guard_upstream_response(response).await {
+            Ok(guarded) => guarded,
+            Err(err) => return err.into_routed_app_response(&wire),
+        }
+    } else {
+        response
+    };
     let mut response_headers = response.headers().clone();
     strip_hop_headers(&mut response_headers);
     response_headers.remove("set-cookie");
@@ -431,7 +525,25 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
     let mut result = Response::new(Body::from_stream(stream));
     *result.status_mut() = status;
     *result.headers_mut() = response_headers;
-    result
+    match dlp_attempt {
+        Some(attempt)
+            if attempt.is_native_chat()
+                || attempt.is_native_anthropic()
+                || attempt.is_native_gemini() =>
+        {
+            attempt.restore_native_chat_http_response(result).await
+        }
+        Some(attempt) => {
+            attempt
+                .restore_client_http_response(
+                    result,
+                    super::security::response_restoration::ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await
+        }
+        None => result,
+    }
 }
 fn strip_hop_headers(headers: &mut HeaderMap) {
     let names = headers

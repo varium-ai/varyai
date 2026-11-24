@@ -13,6 +13,17 @@ use std::sync::{
 #[tokio::test]
 #[serial_test::serial]
 async fn pi_gemini_native_session_reaches_tool_events_without_leaking_private_headers() {
+    use crate::proxy::security::runtime::{
+        get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    struct SecurityReset(SecurityRuntimeConfig);
+    impl Drop for SecurityReset {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security_reset = SecurityReset((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
     use crate::proxy::tool_observation::channel::test_channel;
     use crate::services::tool_risk::{
         response_parser::ResponseProcessor, runtime::*, worker::project_event,
@@ -92,6 +103,17 @@ async fn pi_gemini_native_session_reaches_tool_events_without_leaking_private_he
 #[tokio::test]
 #[serial_test::serial]
 async fn pi_gateway_auth_exact_routing_and_lossless_streaming() {
+    use crate::proxy::security::runtime::{
+        get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    struct SecurityReset(SecurityRuntimeConfig);
+    impl Drop for SecurityReset {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security_reset = SecurityReset((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
     let _ = rustls::crypto::ring::default_provider().install_default();
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
@@ -295,6 +317,17 @@ async fn four_protocol_gateway() -> (
 #[tokio::test]
 #[serial_test::serial]
 async fn pi_all_four_native_protocol_paths_and_credentials() {
+    use crate::proxy::security::runtime::{
+        get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    struct SecurityReset(SecurityRuntimeConfig);
+    impl Drop for SecurityReset {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security_reset = SecurityReset((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
     let (server, upstream, _, origin) = four_protocol_gateway().await;
     let client = reqwest::Client::new();
     for (id, path, header, body) in [
@@ -491,6 +524,17 @@ async fn pi_blocked_requests_use_the_wire_error_envelope_without_echoing_secrets
 #[tokio::test]
 #[serial_test::serial]
 async fn pi_tool_argument_fragment_arrives_before_response_completion() {
+    use crate::proxy::security::runtime::{
+        get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    struct Restore(SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
     let _ = rustls::crypto::ring::default_provider().install_default();
     let (release, wait) = tokio::sync::oneshot::channel::<()>();
     let wait = Arc::new(tokio::sync::Mutex::new(Some(wait)));
@@ -541,12 +585,17 @@ async fn pi_tool_argument_fragment_arrives_before_response_completion() {
         .send()
         .await
         .expect("send");
+    let status = res.status();
     let chunk = tokio::time::timeout(Duration::from_secs(2), res.chunk())
         .await
         .expect("first delta arrived before release")
         .expect("chunk")
         .expect("bytes");
-    assert!(String::from_utf8_lossy(&chunk).contains("arguments"));
+    let text = String::from_utf8_lossy(&chunk);
+    assert!(
+        text.contains("arguments"),
+        "unexpected status={status} chunk={text:?}"
+    );
     release.send(()).expect("release");
     let _ = res.bytes().await.expect("finish");
     server.stop().await.expect("stop");
@@ -667,6 +716,245 @@ async fn pi_original_provider_phone_is_inspected_before_forwarding() {
     let text = response.text().await.expect("body");
     assert!(!text.contains("13800138000"));
     assert!(text.contains("sensitive_data_blocked"));
+    server.stop().await.expect("stop");
+    upstream.abort();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn pi_restores_sensitive_tokens_across_native_protocols() {
+    use crate::proxy::security::{
+        runtime::{get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig},
+        types::AuditAction,
+    };
+    use axum::{extract::Json, response::IntoResponse};
+    struct Restore(SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*get_security_runtime()).clone());
+    let mut security = SecurityRuntimeConfig::default();
+    security
+        .builtin_action_overrides
+        .insert("chinese_phone_number".into(), AuditAction::RedactRestore);
+    set_security_runtime_for_test(security);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(8);
+    let app = Router::new().fallback(move |Json(body): Json<Value>| {
+        let tx = tx.clone();
+        async move {
+            let _ = tx.send(body.clone()).await;
+            let stream = body["stream"].as_bool() == Some(true);
+            if body.get("input").is_some() {
+                let text = body["input"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let resp = json!({
+                    "id": "resp_pi",
+                    "object": "response",
+                    "status": "completed",
+                    "model": "model-responses",
+                    "output": [{
+                        "id": "msg_pi",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": text, "annotations": []}]
+                    }],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                });
+                if stream {
+                    let frames = format!(
+                        "event: response.completed\ndata: {}\n\n",
+                        json!({"type": "response.completed", "response": resp})
+                    );
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(frames))
+                        .unwrap()
+                } else {
+                    Json(resp).into_response()
+                }
+            } else if body.get("max_tokens").is_some() {
+                let text = body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if stream {
+                    let frames = [
+                        format!(
+                            "event: message_start\ndata: {}\n\n",
+                            json!({"type":"message_start","message":{"id":"msg_pi","type":"message","role":"assistant","model":"model-anthropic","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}})
+                        ),
+                        format!(
+                            "event: content_block_start\ndata: {}\n\n",
+                            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})
+                        ),
+                        format!(
+                            "event: content_block_delta\ndata: {}\n\n",
+                            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+                        ),
+                        format!(
+                            "event: content_block_stop\ndata: {}\n\n",
+                            json!({"type":"content_block_stop","index":0})
+                        ),
+                        format!(
+                            "event: message_delta\ndata: {}\n\n",
+                            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}})
+                        ),
+                        format!(
+                            "event: message_stop\ndata: {}\n\n",
+                            json!({"type":"message_stop"})
+                        ),
+                    ]
+                    .concat();
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(frames))
+                        .unwrap()
+                } else {
+                    Json(json!({
+                        "id": "msg_pi",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "model-anthropic",
+                        "content": [{"type": "text", "text": text}],
+                        "stop_reason": "end_turn",
+                        "stop_sequence": null,
+                        "usage": {"input_tokens": 1, "output_tokens": 1}
+                    }))
+                    .into_response()
+                }
+            } else {
+                let text = body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if stream {
+                    let frames = format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":"chat_pi","object":"chat.completion.chunk","model":"model-chat","choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
+                        json!({"id":"chat_pi","object":"chat.completion.chunk","model":"model-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+                    );
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(frames))
+                        .unwrap()
+                } else {
+                    Json(json!({
+                        "id": "chat_pi",
+                        "object": "chat.completion",
+                        "model": "model-chat",
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }))
+                    .into_response()
+                }
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let addr = listener.local_addr().expect("addr");
+    let upstream = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let runtime = Arc::new(crate::services::pi_routing::Runtime::default());
+    let providers = vec![
+        Provider::with_id(
+            "chat".into(),
+            "Chat".into(),
+            json!({"api":"openai-completions","baseUrl":format!("http://{addr}/v1"),"apiKey":"k","models":[{"id":"model-chat"}]}),
+            None,
+        ),
+        Provider::with_id(
+            "anthropic".into(),
+            "Anthropic".into(),
+            json!({"api":"anthropic-messages","baseUrl":format!("http://{addr}"),"apiKey":"k","models":[{"id":"model-anthropic"}]}),
+            None,
+        ),
+        Provider::with_id(
+            "responses".into(),
+            "Responses".into(),
+            json!({"api":"openai-responses","baseUrl":format!("http://{addr}/v1"),"apiKey":"k","models":[{"id":"model-responses"}]}),
+            None,
+        ),
+    ];
+    let enabled = vec!["chat".into(), "anthropic".into(), "responses".into()];
+    *runtime.catalog.write().expect("catalog") = Some(Arc::new(
+        Catalog::build(
+            &providers,
+            &enabled,
+            "http://127.0.0.1:12345",
+            "local-token",
+        )
+        .expect("catalog"),
+    ));
+    let server = crate::proxy::server::ProxyServer::new(
+        crate::proxy::ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(crate::database::Database::memory().expect("db")),
+        None,
+    )
+    .with_pi_runtime(runtime);
+    let info = server.start().await.expect("server");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("client");
+
+    for stream in [false, true] {
+        for (path, body) in [
+            (
+                "/pi/v1/chat/completions",
+                json!({"model":alias("chat","model-chat"),"messages":[{"role":"user","content":"13800001234"}],"stream":stream}),
+            ),
+            (
+                "/pi/v1/messages",
+                json!({"model":alias("anthropic","model-anthropic"),"max_tokens":64,"messages":[{"role":"user","content":"13800001234"}],"stream":stream}),
+            ),
+            (
+                "/pi/v1/responses",
+                json!({"model":alias("responses","model-responses"),"input":[{"role":"user","content":"13800001234"}],"stream":stream}),
+            ),
+        ] {
+            let req = client.post(format!("http://127.0.0.1:{}{path}", info.port));
+            let req = if path == "/pi/v1/messages" {
+                req.header("x-api-key", "local-token")
+            } else {
+                req.bearer_auth("local-token")
+            };
+            let res = req.json(&body).send().await.expect("send");
+            assert_eq!(res.status(), 200, "path={path} stream={stream}");
+            let text = res.text().await.expect("text");
+            assert!(
+                text.contains("13800001234"),
+                "path={path} stream={stream} text={text}"
+            );
+            assert!(
+                !text.contains("rredact-"),
+                "path={path} stream={stream} text={text}"
+            );
+            let sent = rx.recv().await.expect("upstream");
+            let sent_str = sent.to_string();
+            assert!(
+                !sent_str.contains("13800001234"),
+                "path={path} stream={stream}"
+            );
+            assert!(
+                sent_str.contains("rredact-cn_phone-"),
+                "path={path} stream={stream}"
+            );
+        }
+    }
+
     server.stop().await.expect("stop");
     upstream.abort();
 }
