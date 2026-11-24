@@ -47,6 +47,10 @@ pub(super) fn title_session(
     let id = match agent {
         "codex" => session.session_id.strip_prefix("codex_")?,
         "grokbuild" => session.session_id.strip_prefix("grokbuild_")?,
+        "deepseek-harness" => session
+            .session_id
+            .strip_prefix("deepseek-harness_")
+            .unwrap_or(&session.session_id),
         _ => &session.session_id,
     };
     crate::proxy::tool_observation::types::normalized_session_id(Some(id))
@@ -401,10 +405,13 @@ mod tests {
             );
         }
         let body = serde_json::json!({"metadata":{"session_id":id}});
-        assert_eq!(
-            title_session("openclaw", &HeaderMap::new(), &body, true).as_deref(),
-            Some(id)
-        );
+        for agent in ["openclaw", "deepseek-harness"] {
+            assert_eq!(
+                title_session(agent, &HeaderMap::new(), &body, true).as_deref(),
+                Some(id),
+                "{agent}"
+            );
+        }
         for agent in [
             "claude-desktop",
             "gemini",
@@ -417,7 +424,6 @@ mod tests {
             "kimi",
             "qwen",
             "zcode",
-            "deepseek-harness",
             "t3code",
         ] {
             assert_eq!(

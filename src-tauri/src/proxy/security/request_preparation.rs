@@ -22,7 +22,7 @@ use super::{
     tokenization::{DlpRequestLease, TokenError},
 };
 
-const MAX_ITEMS: usize = 4096;
+const MAX_ITEMS: usize = 16_384;
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
 /// Inspection provenance for immutable client input, never restoration or execution authority.

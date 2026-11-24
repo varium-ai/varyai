@@ -14,8 +14,8 @@ use super::{
     types::{AuditAction, RuleCategory},
 };
 
-const MAX_TEXT_BYTES: usize = 1024 * 1024;
-const MAX_MATCHES: usize = 4096;
+const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MATCHES: usize = 16_384;
 
 // No Debug/Serialize: custom rule identities are private configuration.
 pub(super) struct DetectedSpan<'a> {
@@ -40,6 +40,11 @@ pub(super) fn detect_spans_with_budget<'a>(
     budget: PayloadBudget,
 ) -> Result<PayloadVec<DetectedSpan<'a>>, TokenError> {
     if text.len() > MAX_TEXT_BYTES {
+        log::warn!(
+            "[DLP] capacity_exceeded component=request_detection dimension=text_bytes actual={} limit={}",
+            text.len(),
+            MAX_TEXT_BYTES
+        );
         return Err(TokenError::CapacityExceeded);
     }
     if !runtime.enabled || text.is_empty() {
@@ -47,6 +52,11 @@ pub(super) fn detect_spans_with_budget<'a>(
     }
     // Bound configured request work before scanning with captured matchers.
     if runtime.custom_rules.len() > MAX_MATCHES {
+        log::warn!(
+            "[DLP] capacity_exceeded component=request_detection dimension=custom_rules actual={} limit={}",
+            runtime.custom_rules.len(),
+            MAX_MATCHES
+        );
         return Err(TokenError::CapacityExceeded);
     }
     let mut pattern_bytes = 0usize;

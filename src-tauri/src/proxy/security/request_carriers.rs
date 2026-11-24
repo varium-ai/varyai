@@ -19,11 +19,11 @@ use std::ops::Range;
 
 const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 65_536;
-const MAX_LEAVES: usize = 4096;
-const MAX_STRING_BYTES: usize = 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ARGUMENT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_LEAVES: usize = 16_384;
+const MAX_STRING_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ARGUMENT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_COPY_BYTES: usize = 32 * 1024 * 1024;
 const NODE_CHARGE: usize = 64;
 
 /// An ordinal is stable only within this immutable plan. No keys/paths are exposed.
@@ -535,6 +535,13 @@ impl CodexRequestCarriers {
         match value {
             Value::String(text) => {
                 if text.len() > MAX_STRING_BYTES || self.leaves.len() >= MAX_LEAVES {
+                    log::warn!(
+                        "[DLP] capacity_exceeded component=request_carriers dimension=leaf_or_string text_bytes={} max_string_bytes={} leaves={} max_leaves={}",
+                        text.len(),
+                        MAX_STRING_BYTES,
+                        self.leaves.len(),
+                        MAX_LEAVES
+                    );
                     return Err(TokenError::CapacityExceeded);
                 }
                 add_limited(&mut self.text_bytes, text.len(), MAX_TEXT_BYTES)?;
@@ -690,6 +697,11 @@ impl CodexRequestCarriers {
             return self.collect(value, path, None, Mode::Arguments, password);
         };
         if encoded.len() > MAX_STRING_BYTES {
+            log::warn!(
+                "[DLP] capacity_exceeded component=request_carriers dimension=argument_string_bytes actual={} limit={}",
+                encoded.len(),
+                MAX_STRING_BYTES
+            );
             return Err(TokenError::CapacityExceeded);
         }
         add_limited(&mut self.argument_bytes, encoded.len(), MAX_ARGUMENT_BYTES)?;

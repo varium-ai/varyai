@@ -1,6 +1,7 @@
 .gateway-keys,
 .gateway-key-directory {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--workspace-module-gap);
   min-width: 0;
 }
@@ -15,6 +16,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
+  min-width: 0;
 }
 
 .gateway-keys-header,
@@ -97,8 +99,10 @@
 .gateway-usage-filter,
 .gateway-connect {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 12px;
+  min-width: 0;
   padding: 16px var(--list-padding-inline);
 }
 
@@ -133,6 +137,11 @@
   gap: var(--workspace-module-gap);
 }
 
+.gateway-key-list {
+  min-width: 0;
+  overflow: hidden;
+}
+
 .gateway-key-list:empty {
   display: none;
 }
@@ -140,6 +149,7 @@
 .gateway-key-entry,
 .gateway-usage-entry {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 8px;
   padding: 16px var(--list-padding-inline);

@@ -364,15 +364,15 @@ fn request_and_decoded_json_depth_are_bounded() {
 #[test]
 fn string_leaf_count_and_total_text_limits_are_checked() {
     assert!(matches!(
-        isolated_carriers(&json!({"input": "x".repeat(1024 * 1024 + 1)})),
+        isolated_carriers(&json!({"input": "x".repeat(4 * 1024 * 1024 + 1)})),
         Err(TokenError::CapacityExceeded)
     ));
     assert!(matches!(
-        isolated_carriers(&json!({"prompt": vec!["x"; 4097]})),
+        isolated_carriers(&json!({"prompt": vec!["x"; 16_385]})),
         Err(TokenError::CapacityExceeded)
     ));
     assert!(matches!(
-        isolated_carriers(&json!({"prompt": vec!["x".repeat(900_000); 5]})),
+        isolated_carriers(&json!({"prompt": vec!["x".repeat(3_500_000); 5]})),
         Err(TokenError::CapacityExceeded)
     ));
 }
@@ -398,7 +398,7 @@ fn decoded_json_bytes_structure_and_aggregate_parse_budget_are_bounded() {
 fn oversized_candidate_leaf_and_aggregate_growth_roll_back() -> Result<(), TokenError> {
     let mut body = json!({"prompt": ["one", "two", "three", "four", "five"]});
     let original = body.clone();
-    for bytes in [1024 * 1024 + 1, 900_000] {
+    for bytes in [4 * 1024 * 1024 + 1, 3_500_000] {
         let result = isolated_carriers(&body)?.rewrite(&mut body, |_| Ok(Some("x".repeat(bytes))));
         assert_eq!(result, Err(TokenError::CapacityExceeded));
         assert!(body == original);
@@ -409,7 +409,7 @@ fn oversized_candidate_leaf_and_aggregate_growth_roll_back() -> Result<(), Token
 #[test]
 fn full_request_clone_budget_includes_uninspected_values_and_node_overhead() {
     assert!(matches!(
-        isolated_carriers(&json!({"model": "x".repeat(8 * 1024 * 1024)})),
+        isolated_carriers(&json!({"model": "x".repeat(32 * 1024 * 1024)})),
         Err(TokenError::CapacityExceeded)
     ));
     assert!(matches!(

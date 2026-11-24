@@ -11,9 +11,9 @@ use super::{
     tokenization::{DlpRequestLease, TokenError, TokenFragment},
 };
 
-const MAX_ITEMS: usize = 4096;
-const MAX_FIELD_BYTES: usize = 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ITEMS: usize = 16_384;
+const MAX_FIELD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Candidate text and proof strings are memory-only and must not be diagnosed.
 pub(super) struct PreparedFields<T> {
@@ -62,6 +62,12 @@ pub(super) fn prepare_fields_with_history<T>(
         return Err(TokenError::RedactionFailed.into());
     }
     if fields.len() > MAX_ITEMS || historical_tokens.len() > MAX_ITEMS {
+        log::warn!(
+            "[DLP] capacity_exceeded component=request_transaction dimension=items fields={} historical={} limit={}",
+            fields.len(),
+            historical_tokens.len(),
+            MAX_ITEMS
+        );
         return Err(TokenError::CapacityExceeded.into());
     }
     let mut input_bytes = 0usize;
@@ -70,6 +76,11 @@ pub(super) fn prepare_fields_with_history<T>(
         input_bytes = bounded_sum(input_bytes, field.text.len(), MAX_TEXT_BYTES)?;
         match_count = bounded_sum(match_count, field.matches.len(), MAX_ITEMS)?;
         if field.text.len() > MAX_FIELD_BYTES {
+            log::warn!(
+                "[DLP] capacity_exceeded component=request_transaction dimension=field_bytes actual={} limit={}",
+                field.text.len(),
+                MAX_FIELD_BYTES
+            );
             return Err(TokenError::CapacityExceeded.into());
         }
     }
