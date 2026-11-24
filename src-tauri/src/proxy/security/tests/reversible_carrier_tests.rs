@@ -63,6 +63,33 @@ fn rewrite_visible(body: &mut Value) -> Result<(), TokenError> {
 }
 
 #[test]
+fn codex_large_tool_catalog_preserves_schemas_and_inspects_user_input() -> Result<(), TokenError> {
+    let properties: serde_json::Map<_, _> = (0..12)
+        .map(|i| {
+            (
+                format!("parameter_{i}"),
+                json!({"type":"string","description":"Synthetic parameter"}),
+            )
+        })
+        .collect();
+    let tools: Vec<_> = (0..469)
+        .map(|i| json!({"type":"function","name":format!("fixture_{i}"),"parameters":{"type":"object","properties":properties}}))
+        .collect();
+    let mut body = json!({"tools":tools,"input":"hello"});
+    assert!(matches!(
+        CodexRequestCarriers::from_body_with_budget(
+            &body,
+            super::payload_budget::PayloadBudget::with_limit(1024)
+        ),
+        Err(TokenError::CapacityExceeded)
+    ));
+    rewrite_visible(&mut body)?;
+    assert_eq!(body["input"], "changed:hello");
+    assert_eq!(body["tools"].as_array(), Some(&tools));
+    Ok(())
+}
+
+#[test]
 fn codex_roots_and_known_message_text_are_writable() -> Result<(), TokenError> {
     let mut body = json!({
         "instructions": "instruction", "prompt": ["prompt-one", "prompt-two"],

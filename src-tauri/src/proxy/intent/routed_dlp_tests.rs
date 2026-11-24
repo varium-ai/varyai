@@ -334,6 +334,33 @@ async fn shared_routes_restore_contacts_and_keep_normal_followups_usable(
             }
         }
     }
+    let properties: serde_json::Map<_, _> = (0..12)
+        .map(|i| {
+            (
+                format!("arg_{i}"),
+                json!({"type":"string","description":"Synthetic argument"}),
+            )
+        })
+        .collect();
+    let tools: Vec<_> = (0..469)
+        .map(|i| {
+            json!({
+                "type":"function","name":format!("fixture_{i}"),
+                "parameters":{"type":"object","properties":properties}
+            })
+        })
+        .collect();
+    let response = client
+        .post(format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port))
+        .bearer_auth("synthetic-native-token")
+        .header("version", "0.167.0")
+        .json(&json!({"model":native_wire,"input":"hello","tools":tools,"stream":false,"store":false}))
+        .send().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await?
+        .ok_or("missing large catalog request")?;
+    assert_eq!(sent["tools"].as_array().map(Vec::len), Some(tools.len()));
     let native = json!({"model":alias,"messages":[{"role":"user","content":contact}]});
     let admission = crate::proxy::security::http_restoration::admit_routed_http_request(
         &crate::proxy::security::http_restoration::RestorationGateway::new_default(),
