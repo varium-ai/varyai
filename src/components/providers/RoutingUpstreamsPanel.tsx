@@ -1524,7 +1524,11 @@ export function RoutingUpstreamsPanel({
         title={t("modelProviders.delete")}
         message={
           deleting
-            ? `${deleting.name} · ${t("modelProviders.deleteHint")}`
+            ? `${deleting.name} · ${t(
+                deleting.source.kind === "codex"
+                  ? "codexProvider.deleteProviderHint"
+                  : "modelProviders.deleteHint",
+              )}`
             : t("modelProviders.deleteHint")
         }
         pending={busy}

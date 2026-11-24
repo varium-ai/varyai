@@ -50,6 +50,12 @@ impl ModelCache {
         cache.valid_at(fetched_at).then_some(cache)
     }
 
+    fn publish(&self, db: &Database, key: &str) -> Result<(), String> {
+        db.save_routing_model_cache(key, self)?;
+        db.invalidate_routing_resources();
+        Ok(())
+    }
+
     fn valid_at(&self, now: i64) -> bool {
         now.checked_sub(self.fetched_at)
             .is_some_and(|age| (0..=CACHE_TTL).contains(&age))
@@ -558,7 +564,7 @@ pub(crate) async fn prepare_provider(
             let key = identity.key.clone();
             cache = Some(
                 tauri::async_runtime::spawn_blocking(move || {
-                    write_db.save_routing_model_cache(&key, &next)?;
+                    next.publish(&write_db, &key)?;
                     Ok::<_, String>(next)
                 })
                 .await
@@ -918,6 +924,76 @@ fn discovery_names(value: &Value) -> std::collections::BTreeMap<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chatgpt_catalog_refresh_invalidates_shared_menu_and_preserves_account_model_access(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::codex_provider::{self, ModelMode, Settings};
+        let db = Arc::new(Database::memory()?);
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut provider =
+            Provider::with_id("official".into(), "Synthetic".into(), json!({}), None);
+        provider.category = Some("official".into());
+        let policy = Settings {
+            accounts: vec!["fixture-free".into(), "fixture-paid".into()],
+            mode: ModelMode::Picked,
+            models: vec![json!({"model":"common"}), json!({"model":"extended"})],
+            groups_only: false,
+        };
+        codex_provider::attach(&mut provider, &policy)?;
+
+        for (id, models) in [
+            ("fixture-free", json!([{"slug":"common"}])),
+            (
+                "fixture-paid",
+                json!([{"slug":"common"},{"slug":"extended"}]),
+            ),
+        ] {
+            manager
+                .add_test_account_with_user_identity(id, "synthetic", id)
+                .await?;
+            let mut account = provider.clone();
+            codex_provider::bind(&mut account, id);
+            let source = source(&account, &manager).await.ok_or("missing identity")?;
+            ModelCache::from_catalog(json!({"models":models}), chrono::Utc::now().timestamp())
+                .ok_or("invalid catalog")?
+                .publish(&db, &source.key)?;
+        }
+        let (mut prepared, _) =
+            prepare_editor_pool(db.clone(), manager.clone(), provider.clone(), false).await?;
+        codex_provider::filter_models(&mut prepared);
+        let menu =
+            super::super::menu::prepare(manager.clone(), vec![prepared], vec![], None).await?;
+        assert_eq!(menu.groups.len(), 2);
+        let extended = menu
+            .groups
+            .values()
+            .find(|group| group.targets[0].model == "extended")
+            .ok_or("missing paid model")?;
+        assert_eq!(extended.targets.len(), 1);
+        assert!(extended.targets[0]
+            .credentials
+            .as_ref()
+            .is_some_and(|credentials| credentials.workspace == "fixture-paid"));
+
+        let generation = db.routing_generation();
+        let mut account = provider.clone();
+        codex_provider::bind(&mut account, "fixture-paid");
+        let source = source(&account, &manager).await.ok_or("missing identity")?;
+        ModelCache::from_catalog(json!({"models":[]}), chrono::Utc::now().timestamp())
+            .ok_or("invalid empty catalog")?
+            .publish(&db, &source.key)?;
+        assert!(db.routing_generation() > generation);
+        let (mut prepared, _) = prepare_editor_pool(db, manager.clone(), provider, false).await?;
+        codex_provider::filter_models(&mut prepared);
+        let menu = super::super::menu::prepare(manager, vec![prepared], vec![], None).await?;
+        assert_eq!(menu.groups.len(), 1);
+        let common = menu.groups.values().next().ok_or("missing free model")?;
+        assert_eq!(common.targets[0].model, "common");
+        assert_eq!(common.targets.len(), 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn catalog_refresh_starts_queued_providers_before_the_first_slow_provider_finishes(

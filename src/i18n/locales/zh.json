@@ -5875,6 +5875,10 @@
     "duplicate": "该 ChatGPT 账号已添加，请使用已有账号。"
   },
   "codexProvider": {
+    "preferredAccount": "首选",
+    "setPreferredAccount": "设为首选",
+    "deleteProviderHint": "删除供应商及其模型配置。已保存的 ChatGPT 登录可在新供应商中复用，也可以在账号列表中单独删除。",
+    "forgetLogin": "从 VaryAI 删除 {{login}} 的登录记录？所有使用这个账号的供应商都将移除它。",
     "quotaHeld": "此账号当前用量受限；有积分不代表已授权自动消费。",
     "creditBalance": "积分余额：{{balance}}",
     "loggedOut": "已退出登录",

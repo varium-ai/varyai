@@ -252,25 +252,31 @@ async fn observe_editor(
             None
         };
     let accounts = merge_native_account(accounts, matching.as_deref(), &mut settings);
-    // Local cached catalog only. A refresh is a separate explicit action.
-    let mut unfiltered = provider.clone();
-    unfiltered
-        .settings_config
-        .as_object_mut()
-        .map(|o| o.remove(codex_provider::POLICY));
-    let (prepared, _) = crate::services::intent_routing::catalog::prepare_provider(
-        state.db.clone(),
-        state.codex_oauth_manager.clone(),
-        unfiltered,
-        false,
-    )
-    .await?;
-    let models = prepared
-        .settings_config
-        .pointer("/modelCatalog/models")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    // Seed the editor with discovery for its first selected account.
+    let mut models = Vec::new();
+    if let Some(account) = settings.accounts.first() {
+        let mut unfiltered = provider;
+        codex_provider::bind(&mut unfiltered, account);
+        unfiltered
+            .settings_config
+            .as_object_mut()
+            .map(|o| o.remove(codex_provider::POLICY));
+        let (prepared, status) = crate::services::intent_routing::catalog::prepare_provider(
+            state.db.clone(),
+            state.codex_oauth_manager.clone(),
+            unfiltered,
+            false,
+        )
+        .await?;
+        if status.is_some_and(|status| status.status == "cached") {
+            models = prepared
+                .settings_config
+                .pointer("/modelCatalog/models")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+        }
+    }
     Ok(Editor {
         upstream,
         codex: Some(CodexEditor {
@@ -344,6 +350,7 @@ pub(crate) async fn save_codex_provider(
     if !settings.valid() {
         return Err("routingUpstreams.invalid".into());
     }
+    let _guard = state.proxy_service.lock_switch_for_app("codex").await;
     let available = state.codex_oauth_manager.list_accounts().await;
     if settings
         .accounts
@@ -358,6 +365,27 @@ pub(crate) async fn save_codex_provider(
         .map_err(|_| "routingUpstreams.failed")??;
     crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(saved)
+}
+
+#[tauri::command]
+pub(crate) async fn forget_codex_provider_account(
+    state: State<'_, AppState>,
+    account: String,
+) -> Result<std::collections::HashMap<String, u32>, String> {
+    if account == "native" || !crate::services::routing_upstreams::valid_identity(&account) {
+        return Err("routingUpstreams.invalid".into());
+    }
+    let _guard = state.proxy_service.lock_switch_for_app("codex").await;
+    state
+        .codex_oauth_manager
+        .forget_provider_login(&account)
+        .await
+        .map_err(|_| "routingUpstreams.failed")?;
+    state.db.invalidate_routing_resources();
+    let db = state.db.clone();
+    let revisions = tokio::task::spawn_blocking(move || db.detach_codex_account(&account)).await;
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
+    revisions.map_err(|_| "routingUpstreams.failed")?
 }
 
 #[tauri::command]
@@ -389,6 +417,7 @@ pub(crate) async fn codex_provider_models(
     if !status.is_some_and(|s| s.status == "updated") {
         return Err("routingUpstreams.sourceUnavailable".into());
     }
+    crate::services::intent_routing::menu::refresh_after_change(&state.proxy_service).await;
     Ok(provider
         .settings_config
         .pointer("/modelCatalog/models")
@@ -489,6 +518,41 @@ pub(crate) struct CodexQuotaObservation {
 #[cfg(test)]
 mod account_tests {
     use super::*;
+
+    #[test]
+    fn forgetting_chatgpt_login_detaches_every_provider_without_selecting_a_replacement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = crate::database::Database::memory()?;
+        let create = |name: &str, accounts: &[&str]| {
+            let mut draft = new_codex_draft();
+            draft.name = name.to_string();
+            save_codex_record(
+                &db,
+                draft,
+                Settings {
+                    accounts: accounts.iter().map(|s| s.to_string()).collect(),
+                    ..Settings::default()
+                },
+            )
+        };
+        let both = create("Both", &["a", "b"])?;
+        let only = create("Only B", &["b"])?;
+        let untouched = create("Only A", &["a"])?;
+        let updates = db.detach_codex_account("b")?;
+        assert_eq!(updates.len(), 2);
+        for (record, accounts) in [(both, vec!["a"]), (only, vec![])] {
+            let saved = db.routing_upstream_editor(&record.id, updates[&record.id])?;
+            assert_eq!(
+                saved.codex_settings.ok_or("missing settings")?.accounts,
+                accounts
+            );
+        }
+        assert!(db
+            .routing_upstream_editor(&untouched.id, untouched.revision)
+            .is_ok());
+        assert!(db.detach_codex_account("b")?.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn opening_and_cancelling_codex_drafts_persist_nothing_and_save_persists_once(
