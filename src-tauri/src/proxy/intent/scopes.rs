@@ -126,12 +126,15 @@ pub(super) enum HistoryPolicy {
     #[default]
     Strict,
     Portable,
-    VisibleChatReplay,
+    VisibleHistoryReplay,
+    OwnedToolHistory {
+        next_user_turn: bool,
+    },
     ResponsesReplay,
 }
 impl HistoryPolicy {
     fn allows_fresh(self) -> bool {
-        !matches!(self, Self::Strict)
+        !matches!(self, Self::Strict | Self::OwnedToolHistory { .. })
     }
 }
 
@@ -246,16 +249,22 @@ impl Conversations {
             .retain(|e| e.touched.elapsed() < CONVERSATION_TTL || Arc::strong_count(&e.state) > 1);
         let matches =
             |e: &Entry| e.consumer == consumer && Arc::ptr_eq(&e.identity, &session.bindings);
-        let hashed_name = name
-            .key
-            .map(|name| continuation::hash("conversation", name));
+        let session_name = name.key;
+        let hashed_name = session_name.map(|name| continuation::hash("conversation", name));
         let name = Name {
             key: hashed_name.as_deref(),
             derived: name.derived,
         };
         let mut expected = targets.clone();
         expected.sort();
-        for (id, snapshot) in store.scope(&scope) {
+        let owned_tool_history = matches!(policy, HistoryPolicy::OwnedToolHistory { .. });
+        let closed_tool_turn = matches!(
+            policy,
+            HistoryPolicy::OwnedToolHistory {
+                next_user_turn: true
+            }
+        );
+        for (id, mut snapshot) in store.scope(&scope) {
             if !name.derived && name.key.is_some_and(|name| name != id) {
                 continue;
             }
@@ -282,20 +291,24 @@ impl Conversations {
                 // A stale affinity snapshot cannot veto a new Codex request.
                 continue;
             }
-            if (saved != expected || saved.is_empty())
-                && !matches!(policy, HistoryPolicy::ResponsesReplay)
-            {
-                if !matches!(policy, HistoryPolicy::VisibleChatReplay) || !length::portable(body) {
+            let membership_changed = saved != expected || saved.is_empty();
+            if membership_changed && !matches!(policy, HistoryPolicy::ResponsesReplay) {
+                let visible_history =
+                    matches!(policy, HistoryPolicy::VisibleHistoryReplay) && length::portable(body);
+                if !visible_history && !owned_tool_history {
                     return Err("routing_unknown_continuation");
                 }
                 // Keep the existing single-target replay after configuration edits.
-                if targets.len() == 1 {
+                if visible_history && targets.len() == 1 {
                     continue;
                 }
-                if !expected.iter().all(|target| saved.contains(target)) {
+                let members_removed = expected.iter().all(|target| saved.contains(target));
+                let members_added =
+                    !saved.is_empty() && saved.iter().all(|target| expected.contains(target));
+                if !(members_removed || members_added) {
                     return Err("routing_unknown_continuation");
                 }
-                // An exact surviving owner can keep its bindings after a member is removed.
+                // Surviving owners keep their original bindings across membership changes.
                 let all_bindings_survive = [
                     &snapshot.responses,
                     &snapshot.calls,
@@ -306,11 +319,32 @@ impl Conversations {
                 .into_iter()
                 .flat_map(|map| map.values().flatten())
                 .all(|target| destination_index(target).is_some());
-                if !all_bindings_survive {
-                    if snapshot.calls.is_empty() && snapshot.opaque.is_empty() {
+                if !all_bindings_survive && !closed_tool_turn {
+                    if visible_history && snapshot.calls.is_empty() && snapshot.opaque.is_empty() {
                         continue;
                     }
                     return Err("routing_unknown_continuation");
+                }
+                if closed_tool_turn {
+                    for call_id in body["input"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|item| item["type"] == "function_call")
+                        .filter_map(|item| item["call_id"].as_str())
+                    {
+                        let key = continuation::hash("call", call_id);
+                        if snapshot
+                            .calls
+                            .get(&key)
+                            .and_then(Option::as_deref)
+                            .is_some_and(|owner| destination_index(owner).is_none())
+                        {
+                            snapshot
+                                .calls
+                                .insert(continuation::archived_call_key(&key), None);
+                        }
+                    }
                 }
             }
             if entries.len() >= MAX_CONVERSATIONS {
@@ -323,7 +357,7 @@ impl Conversations {
                         None => usize::MAX,
                         Some(target) => match destination_index(&target) {
                             Some(index) => index,
-                            None if matches!(policy, HistoryPolicy::ResponsesReplay) => continue,
+                            None if closed_tool_turn || matches!(policy, HistoryPolicy::ResponsesReplay) => continue,
                             None => return Err("routing_unknown_continuation"),
                         },
                     };
@@ -331,9 +365,15 @@ impl Conversations {
                 }
                 Ok(restored)
             };
+            let saved_session_owner = session_name
+                .and_then(|key| snapshot.sessions.get(&continuation::hash("session", key)))
+                .is_some_and(Option::is_some);
             let sessions = remap(snapshot.sessions)?;
             let mut completed_sessions = snapshot.completed_sessions;
-            if matches!(policy, HistoryPolicy::ResponsesReplay) {
+            if matches!(
+                policy,
+                HistoryPolicy::ResponsesReplay | HistoryPolicy::VisibleHistoryReplay
+            ) {
                 completed_sessions
                     .retain(|key| sessions.get(key).is_some_and(|owner| *owner != usize::MAX));
             } else {
@@ -354,6 +394,25 @@ impl Conversations {
                 }),
                 ..Default::default()
             };
+            if membership_changed {
+                if let HistoryPolicy::OwnedToolHistory { next_user_turn } = policy {
+                    let session_owner = session_name.and_then(|key| bindings.session(key));
+                    if next_user_turn {
+                        if !saved_session_owner || !bindings.knows_tool_calls(body) {
+                            return Err("routing_unknown_continuation");
+                        }
+                    } else {
+                        // A tool reply still belongs to its observed owner.
+                        let owner = bindings
+                            .resolve(body, session_name)
+                            .map_err(|_| "routing_unknown_continuation")?
+                            .ok_or("routing_unknown_continuation")?;
+                        if !name.derived && session_owner != Some(owner) {
+                            return Err("routing_unknown_continuation");
+                        }
+                    }
+                }
+            }
             entries.push(Entry {
                 consumer: consumer.into(),
                 identity: session.bindings.clone(),

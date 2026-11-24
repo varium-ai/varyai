@@ -2995,8 +2995,7 @@ impl ProxyService {
             let catalog_ready = started.elapsed();
             self.intent_runtime
                 .reserve_global_aliases(groups.iter().map(|g| g.alias()))?;
-            let groups = groups.into_iter().filter(|g| g.enabled).collect::<Vec<_>>();
-            if providers.is_empty() && groups.is_empty() {
+            if providers.is_empty() && !groups.iter().any(|group| group.enabled) {
                 self.intent_runtime.clear_global();
                 return Ok(());
             }
@@ -8655,6 +8654,7 @@ mod tests {
         let mut group = synthetic_codex_menu().groups["vary-auto/fixture"]
             .group
             .clone();
+        group.enabled = true;
         group.members[0].provider_id = sources[0].clone();
         for queued in [false, true] {
             for _ in 0..3 {
@@ -8842,9 +8842,10 @@ mod tests {
             .default_model
             .clone()
             .expect("current provider default");
-        let group = synthetic_codex_menu().groups["vary-auto/fixture"]
+        let mut group = synthetic_codex_menu().groups["vary-auto/fixture"]
             .group
             .clone();
+        group.enabled = true;
         let mut saved = db.save_intent_routing_group(group).expect("save group");
         super::super::intent_routing::menu::refresh_active(&service).await;
         let after = service
@@ -8910,6 +8911,44 @@ mod tests {
             &after.groups[&direct_alias].bindings,
             &rotated.groups[&direct_alias].bindings
         ));
+        for enabled in [false, true] {
+            saved.enabled = enabled;
+            saved = db
+                .save_intent_routing_group(saved)
+                .expect("set publication");
+            service.schedule_routing_refresh().await;
+            service.catalog_sync.drain().await;
+
+            let alias = "vary-auto/fixture";
+            let global = service
+                .intent_runtime
+                .global_snapshot()
+                .expect("global snapshot")
+                .expect("global catalog");
+            assert_eq!(global.listed_aliases().any(|model| model == alias), enabled);
+            let (codex, catalog) = service.intent_runtime.native.menu().expect("Codex catalog");
+            assert_eq!(codex.groups.contains_key(alias), enabled);
+            assert_eq!(
+                catalog["models"]
+                    .as_array()
+                    .expect("Codex model entries")
+                    .iter()
+                    .any(|model| model["display_name"] == "Fixture · routing group"),
+                enabled
+            );
+            assert!(codex.groups.contains_key(&direct_alias));
+
+            let config: toml::Value = std::fs::read_to_string(service.intent_client.config_path())
+                .expect("Codex config")
+                .parse()
+                .expect("TOML");
+            let on_disk: Value = serde_json::from_slice(
+                &std::fs::read(config["model_catalog_json"].as_str().expect("catalog path"))
+                    .expect("standalone Codex catalog"),
+            )
+            .expect("JSON");
+            assert_eq!(on_disk, catalog);
+        }
         db.delete_intent_routing_group_with_providers(
             "fixture",
             saved.revision,

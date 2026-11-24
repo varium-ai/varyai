@@ -1019,9 +1019,24 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
     task.abort();
 }
 
+struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+
+impl Drop for SecurityRuntimeRestore {
+    fn drop(&mut self) {
+        crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+    }
+}
+
+fn synthetic_security_runtime() -> SecurityRuntimeRestore {
+    let restore = SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    restore
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn readable_auto_alias_uses_ordered_routing_but_continuations_ignore_cooldown() {
+    let _security = synthetic_security_runtime();
     use crate::{
         database::Database,
         proxy::{server::ProxyServer, ProxyConfig},
@@ -1099,17 +1114,32 @@ async fn readable_auto_alias_uses_ordered_routing_but_continuations_ignore_coold
     let first = send(json!({"model":"auto/synthetic-model","input":"synthetic"}))
         .await
         .expect("first")
+        .error_for_status()
+        .expect("initial request accepted")
         .json::<Value>()
         .await
         .expect("json");
     assert_eq!(first["model"], "strong-model");
     preferred_health.failed(&http::HeaderMap::new(), now);
-    let continuation = send(json!({"model":"auto/synthetic-model","previous_response_id":"response-strong-model","input":"synthetic"})).await.expect("continuation").json::<Value>().await.expect("json");
+    let continuation = send(json!({
+        "model":"auto/synthetic-model",
+        "previous_response_id":"response-strong-model",
+        "input":"synthetic"
+    }))
+    .await
+    .expect("continuation")
+    .error_for_status()
+    .expect("continuation accepted")
+    .json::<Value>()
+    .await
+    .expect("json");
     assert_eq!(continuation["model"], "strong-model");
     preferred_health.failed(&http::HeaderMap::new(), now);
     let next = send(json!({"model":"auto/synthetic-model","input":"new synthetic"}))
         .await
         .expect("next")
+        .error_for_status()
+        .expect("new request accepted")
         .json::<Value>()
         .await
         .expect("json");
@@ -1121,15 +1151,7 @@ async fn readable_auto_alias_uses_ordered_routing_but_continuations_ignore_coold
 #[tokio::test]
 #[serial_test::serial]
 async fn live_session_forwards_exact_models_and_pins_tools_without_current_provider() {
-    struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
-    impl Drop for SecurityRuntimeRestore {
-        fn drop(&mut self) {
-            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
-        }
-    }
-    let _security =
-        SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
-    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let _security = synthetic_security_runtime();
     use crate::{
         database::Database,
         proxy::{server::ProxyServer, ProxyConfig},
