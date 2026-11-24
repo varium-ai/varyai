@@ -1779,13 +1779,14 @@
 .vary-routing .rt-editor-bar .rt-remove {
   color: var(--mp-red);
 }
+/* Reverse paint order keeps the first icon on top without positioned table descendants. */
 .mp-icon-stack {
   display: inline-flex;
+  flex-direction: row-reverse;
   flex: none;
   align-items: center;
 }
 .mp-icon-stack .mp-icon-disc {
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1796,16 +1797,7 @@
   box-shadow: 0 0 0 1px var(--mp-line);
 }
 .mp-icon-stack .mp-icon-disc + .mp-icon-disc {
-  margin-left: -4px;
-}
-.mp-icon-stack .mp-icon-disc:nth-child(1) {
-  z-index: 3;
-}
-.mp-icon-stack .mp-icon-disc:nth-child(2) {
-  z-index: 2;
-}
-.mp-icon-stack .mp-icon-disc:nth-child(3) {
-  z-index: 1;
+  margin-inline-end: -4px;
 }
 .mp-icon-stack .mp-icon-disc:only-child {
   box-shadow: none;

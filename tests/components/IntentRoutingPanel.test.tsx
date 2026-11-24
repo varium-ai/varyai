@@ -4517,8 +4517,13 @@ describe("IntentRoutingPanel", () => {
       await screen.findByText("intentRouting.trialOutcome.timeout 5000"),
     ).toBeInTheDocument();
 
+    fireEvent.change(deadline, { target: { value: "15001" } });
+    expect(deadline).toHaveAttribute("aria-invalid", "true");
+    expect(deadline).toHaveAccessibleDescription("intentRouting.budgetRange");
+    expect(run).toBeDisabled();
     expect(deadline).toHaveAttribute("max", "15000");
     fireEvent.change(deadline, { target: { value: "15000" } });
+    expect(screen.queryByText("intentRouting.budgetRange")).toBeNull();
     fireEvent.click(consent);
     fireEvent.click(run);
     expect(intentRoutingApi.trial).toHaveBeenLastCalledWith(

@@ -2573,6 +2573,13 @@ renderer tests and 7,995 Rust library and integration tests, with 21 ignored.
 An earlier run and an isolated retry failed the existing Pi Gemini tool
 observation regression. The regression passed in the final full run.
 
+For the Agent entries in the matrix below, both the editor trial and eligible
+live group turns use the same selected classifier transport on macOS and
+Windows. Chat classification uses the provider's supported reasoning switch.
+An explicit output-limit response has its own fallback reason on each of
+the four classifier protocols. Verification for this change uses synthetic
+classifier responses and renderer tests. Native Agent acceptance is pending.
+
 The hard/easy rule descriptions use the same routing group editor for every
 Agent below on macOS and Windows. The editor renders built-in descriptions
 in the selected language and keeps saved rule text available to each existing
