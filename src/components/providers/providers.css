@@ -438,6 +438,7 @@
   color: var(--mp-muted);
 }
 .pv-picker-dialog .pv-picker-head .pv-vendor-search {
+  position: relative;
   width: 100%;
   margin-top: 4px;
 }
@@ -541,6 +542,7 @@
   background: var(--mp-accent);
 }
 .vary-providers .pv-vendor-search {
+  position: relative;
   min-width: 0;
   width: 240px;
   max-width: 100%;
