@@ -5803,6 +5803,10 @@
     "duplicate": "此 ChatGPT 帳號已新增，請使用現有帳號。"
   },
   "codexProvider": {
+    "preferredAccount": "首選",
+    "setPreferredAccount": "設為首選",
+    "deleteProviderHint": "刪除供應商及其模型設定。已儲存的 ChatGPT 登入可在新供應商中重複使用，也可以在帳號清單中個別刪除。",
+    "forgetLogin": "從 VaryAI 刪除 {{login}} 的登入記錄？所有使用此帳號的供應商都會移除它。",
     "quotaHeld": "此帳號目前用量受限；有點數不代表已授權自動消費。",
     "creditBalance": "點數餘額：{{balance}}",
     "loggedOut": "已登出",

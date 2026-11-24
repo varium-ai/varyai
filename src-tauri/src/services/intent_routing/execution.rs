@@ -97,12 +97,9 @@ async fn prepare_inner(
             .ok_or("intentRouting.providerUnavailable")?;
         let provider = providers
             .get(&target.provider_id)
-            .filter(|p| eligible_provider(p, true))
             .ok_or("intentRouting.providerUnavailable")?;
         Some(
-            crate::services::routing_upstreams::variants_for_model(provider, &target.model_id)
-                .into_iter()
-                .find(|variant| eligible_provider(variant, true))
+            super::classifier_for_model(provider, &target.model_id)
                 .ok_or("intentRouting.providerUnavailable")?,
         )
     } else {

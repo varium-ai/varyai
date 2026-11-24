@@ -5880,6 +5880,10 @@
     "duplicate": "This ChatGPT account is already added. Use its existing account row."
   },
   "codexProvider": {
+    "preferredAccount": "Preferred",
+    "setPreferredAccount": "Set as preferred",
+    "deleteProviderHint": "Delete this provider and its model settings. Saved ChatGPT logins remain available for reuse and can be removed from the account list.",
+    "forgetLogin": "Delete the saved login for {{login}} from VaryAI? This removes the account from every provider that uses it.",
     "quotaHeld": "Usage is restricted for this account. Available credits do not automatically authorize spending.",
     "creditBalance": "Credit balance: {{balance}}",
     "loggedOut": "Logged out",

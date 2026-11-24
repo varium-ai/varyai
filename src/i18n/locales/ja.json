@@ -5802,6 +5802,10 @@
     "duplicate": "この ChatGPT アカウントは追加済みです。既存のアカウントを使用してください。"
   },
   "codexProvider": {
+    "preferredAccount": "優先",
+    "setPreferredAccount": "優先に設定",
+    "deleteProviderHint": "このプロバイダーとモデル設定を削除します。保存済みの ChatGPT ログインは再利用でき、アカウント一覧から個別に削除できます。",
+    "forgetLogin": "{{login}} のログイン情報を VaryAI から削除しますか？このアカウントを使用するすべてのプロバイダーから削除されます。",
     "quotaHeld": "このアカウントの使用は制限されています。クレジット残高があっても自動使用は許可されません。",
     "creditBalance": "クレジット残高：{{balance}}",
     "loggedOut": "ログアウト済み",

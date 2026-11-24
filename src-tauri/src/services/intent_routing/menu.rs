@@ -1,5 +1,5 @@
 //! One immutable model menu contains direct provider models and routing groups.
-use super::{eligible_provider, execution, Member, RoutingGroup};
+use super::{classifier_for_model, execution, Member, RoutingGroup};
 use crate::{
     provider::Provider,
     proxy::{
@@ -330,12 +330,8 @@ pub(crate) async fn prepare(
             .any(|(member, target)| group.includes_in_menu(member) && target.is_some());
         let classifier = if group.uses_classifier() {
             group.classifier_target.as_ref().and_then(|t| {
-                let provider = providers
-                    .iter()
-                    .find(|p| p.id == t.provider_id && eligible_provider(p, true))?;
-                crate::services::routing_upstreams::variants_for_model(provider, &t.model_id)
-                    .into_iter()
-                    .find(|variant| eligible_provider(variant, true))
+                let provider = providers.iter().find(|p| p.id == t.provider_id)?;
+                classifier_for_model(provider, &t.model_id)
             })
         } else {
             None
