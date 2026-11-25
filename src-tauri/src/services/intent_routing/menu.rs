@@ -461,7 +461,8 @@ pub(crate) async fn prepare_with_stand_ins(
             )
         })
         .collect();
-    let mut menu = prepare(manager, providers, groups, current).await?;
+    let published = groups.into_iter().filter(|group| group.enabled).collect();
+    let mut menu = prepare(manager, providers, published, current).await?;
     // Stand-ins remain executable for old sessions, never offered as routing groups.
     // Reuse direct destinations so compatibility aliases do not consume picker slots.
     for group in stand_ins.into_iter().take(MAX_MENU_ENTRIES) {
