@@ -126,6 +126,55 @@ fn authorization_from_native(value: isize) -> Authorization {
     }
 }
 
+/// Windows notification switches are opt-out DWORDs: an absent value keeps the
+/// Windows default of allowed delivery, `0` disables, `1` enables. Any other
+/// value is unreadable rather than guessed.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsSwitch {
+    Enabled,
+    Disabled,
+    Unknown,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn switch_from_dword(value: Option<u32>) -> WindowsSwitch {
+    match value {
+        None | Some(1) => WindowsSwitch::Enabled,
+        Some(0) => WindowsSwitch::Disabled,
+        Some(_) => WindowsSwitch::Unknown,
+    }
+}
+
+/// Combines the global toast switch and the per-app switch. An explicit
+/// disable at either level denies delivery; otherwise an unreadable switch
+/// leaves the authorization undetermined instead of claiming either side.
+#[cfg(any(target_os = "windows", test))]
+fn windows_authorization(global: WindowsSwitch, app: WindowsSwitch) -> Authorization {
+    use WindowsSwitch::{Disabled, Enabled, Unknown};
+    match (global, app) {
+        (Disabled, _) | (_, Disabled) => Authorization::Denied,
+        (Unknown, _) | (_, Unknown) => Authorization::Unknown,
+        (Enabled, Enabled) => Authorization::Authorized,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_status(
+    global: WindowsSwitch,
+    app: WindowsSwitch,
+    is_dev: bool,
+) -> NotificationPermissionStatus {
+    let mut status = unknown_status("windows", is_dev);
+    status.authorization = windows_authorization(global, app);
+    // Windows has no authorization prompt to request.
+    status.can_request = false;
+    // Banner and sound sub-toggles are not readable through a stable API.
+    status.alerts_enabled = None;
+    status.sound_enabled = None;
+    status
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn setting_from_native(value: isize) -> Option<bool> {
     match value {
@@ -145,8 +194,15 @@ pub async fn get_notification_permission_status(
     if macos::can_query(&app) {
         return macos::query().await;
     }
-    let _ = app;
-    Ok(unknown_status(std::env::consts::OS, tauri::is_dev()))
+    #[cfg(target_os = "windows")]
+    {
+        Ok(windows::query(&app))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Ok(unknown_status(std::env::consts::OS, tauri::is_dev()))
+    }
 }
 
 #[tauri::command]
@@ -171,6 +227,48 @@ pub async fn open_notification_settings(app: AppHandle) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<String>)
         .map_err(|_| "failed to open notification settings".into())
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::*;
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    /// A missing value keeps the Windows default of allowed delivery; a value
+    /// that cannot be read or interpreted stays unknown instead of guessed.
+    fn read_switch(root: &RegKey, path: &str, name: &str) -> WindowsSwitch {
+        let key = match root.open_subkey(path) {
+            Ok(key) => key,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return switch_from_dword(None);
+            }
+            Err(_) => return WindowsSwitch::Unknown,
+        };
+        match key.get_value::<u32, _>(name) {
+            Ok(value) => switch_from_dword(Some(value)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => switch_from_dword(None),
+            Err(_) => WindowsSwitch::Unknown,
+        }
+    }
+
+    /// Windows has no authorization prompt: the notification plugin posts
+    /// toasts under the Tauri identifier, so the per-app Settings switch lives
+    /// under that same AUMID and the global switch gates every toast.
+    pub fn query(app: &AppHandle) -> NotificationPermissionStatus {
+        let root = RegKey::predef(HKEY_CURRENT_USER);
+        let global = read_switch(
+            &root,
+            r"Software\Microsoft\Windows\CurrentVersion\PushNotifications",
+            "ToastEnabled",
+        );
+        let app_path = format!(
+            r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\{}",
+            app.config().identifier
+        );
+        let per_app = read_switch(&root, &app_path, "Enabled");
+        windows_status(global, per_app, tauri::is_dev())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -420,5 +518,69 @@ mod tests {
         assert!(!linux.can_open_settings);
         assert!(!linux.can_request);
         assert_eq!(settings_url("windows"), Some("ms-settings:notifications"));
+    }
+
+    #[test]
+    fn windows_switch_values_treat_absent_as_enabled_and_refuse_unrecognized_dwords() {
+        assert_eq!(switch_from_dword(None), WindowsSwitch::Enabled);
+        assert_eq!(switch_from_dword(Some(1)), WindowsSwitch::Enabled);
+        assert_eq!(switch_from_dword(Some(0)), WindowsSwitch::Disabled);
+        assert_eq!(switch_from_dword(Some(2)), WindowsSwitch::Unknown);
+        assert_eq!(switch_from_dword(Some(u32::MAX)), WindowsSwitch::Unknown);
+    }
+
+    #[test]
+    fn windows_authorization_denies_on_disable_and_never_guesses_unreadable_switches() {
+        use WindowsSwitch::{Disabled, Enabled, Unknown};
+        // A global toast disable denies delivery even when the per-app switch is readable.
+        assert_eq!(
+            windows_authorization(Disabled, Enabled),
+            Authorization::Denied
+        );
+        assert_eq!(
+            windows_authorization(Disabled, Unknown),
+            Authorization::Denied
+        );
+        // A per-app disable denies delivery even when the global switch is unreadable.
+        assert_eq!(
+            windows_authorization(Unknown, Disabled),
+            Authorization::Denied
+        );
+        assert_eq!(
+            windows_authorization(Enabled, Disabled),
+            Authorization::Denied
+        );
+        // Absent switches keep the Windows default of allowed delivery.
+        assert_eq!(
+            windows_authorization(Enabled, Enabled),
+            Authorization::Authorized
+        );
+        // Unreadable switches are never reported as authorized or disabled.
+        assert_eq!(
+            windows_authorization(Unknown, Enabled),
+            Authorization::Unknown
+        );
+        assert_eq!(
+            windows_authorization(Enabled, Unknown),
+            Authorization::Unknown
+        );
+    }
+
+    #[test]
+    fn windows_status_never_claims_a_request_step_or_unverifiable_alert_settings() {
+        let authorized = windows_status(WindowsSwitch::Enabled, WindowsSwitch::Enabled, true);
+        assert_eq!(authorized.authorization, Authorization::Authorized);
+        assert_eq!(authorized.platform, "windows");
+        assert!(authorized.is_dev);
+        assert!(!authorized.can_request);
+        assert!(authorized.can_open_settings);
+        assert_eq!(authorized.alerts_enabled, None);
+        assert_eq!(authorized.sound_enabled, None);
+        let denied = windows_status(WindowsSwitch::Enabled, WindowsSwitch::Disabled, false);
+        assert_eq!(denied.authorization, Authorization::Denied);
+        assert!(!denied.can_request);
+        assert!(denied.can_open_settings);
+        assert_eq!(denied.alerts_enabled, None);
+        assert_eq!(denied.sound_enabled, None);
     }
 }
