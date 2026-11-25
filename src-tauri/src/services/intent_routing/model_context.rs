@@ -33,6 +33,8 @@ struct Catalog {
     normalized_facts: std::sync::OnceLock<BTreeMap<String, String>>,
     #[serde(skip)]
     normalized_windows: std::sync::OnceLock<BTreeMap<String, u64>>,
+    #[serde(skip)]
+    kin_capabilities: std::sync::OnceLock<BTreeMap<String, Value>>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -243,6 +245,86 @@ impl Catalog {
             })
         })
     }
+
+    /// Borrows reasoning levels from the newest thinking model sharing the same
+    /// versionless family shape (e.g. `gpt-6.3-sol` from `gpt-6.2-sol`), so new
+    /// releases keep effort options even before catalog snapshots catch up.
+    fn kin_capability(&self, key: &str) -> Option<&Value> {
+        type KinRank = (String, Vec<u64>, String);
+        let shape = versionless(key)?;
+        let index = self.kin_capabilities.get_or_init(|| {
+            let mut best: BTreeMap<String, (KinRank, Value)> = BTreeMap::new();
+            for (id, cap) in &self.capabilities {
+                let Some(shape) = versionless(id) else {
+                    continue;
+                };
+                let Some(reasoning_cap) = reasoning_only(cap) else {
+                    continue;
+                };
+                let released = self
+                    .facts(id)
+                    .map(|fact| fact.released.clone())
+                    .unwrap_or_default();
+                let rank = (released, version_numbers(id), id.clone());
+                let replace = best
+                    .get(&shape)
+                    .is_none_or(|(existing_rank, _)| rank > *existing_rank);
+                if replace {
+                    best.insert(shape, (rank, reasoning_cap));
+                }
+            }
+            best.into_iter()
+                .map(|(shape, (_, cap))| (shape, cap))
+                .collect()
+        });
+        index.get(&shape)
+    }
+}
+
+fn is_version_token(token: &str) -> bool {
+    let trimmed = token.strip_prefix('v').unwrap_or(token);
+    !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn versionless(normalized_id: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut versioned = false;
+    let mut named = false;
+    for token in normalized_id.split('-').filter(|s| !s.is_empty()) {
+        if is_version_token(token) {
+            versioned = true;
+            if parts.last() != Some(&"#") {
+                parts.push("#");
+            }
+        } else {
+            named = true;
+            parts.push(token);
+        }
+    }
+    (versioned && named).then(|| parts.join("-"))
+}
+
+fn version_numbers(normalized_id: &str) -> Vec<u64> {
+    normalized_id
+        .split('-')
+        .filter(|s| is_version_token(s))
+        .filter_map(|s| s.strip_prefix('v').unwrap_or(s).parse::<u64>().ok())
+        .collect()
+}
+
+fn reasoning_only(cap: &Value) -> Option<Value> {
+    let parsed = super::effort::Capability::parse(cap);
+    if parsed.quiet || parsed.levels.is_empty() {
+        return None;
+    }
+    let mut entry = json!({
+        "reasoningLevels": parsed.levels,
+        "reasoning": true,
+    });
+    if let Some(default_level) = &parsed.default_level {
+        entry["defaultReasoningLevel"] = json!(default_level);
+    }
+    Some(entry)
 }
 
 #[cfg(not(test))]
@@ -353,6 +435,8 @@ fn enrich(providers: &mut [Provider], catalog: &Catalog) {
                     .capabilities
                     .get(&key)
                     .or_else(|| bundled().capabilities.get(&key))
+                    .or_else(|| catalog.kin_capability(&key))
+                    .or_else(|| bundled().kin_capability(&key))
                     .map(|capability| (id.to_owned(), capability.clone()))
             })
             .collect::<serde_json::Map<_, _>>();
@@ -641,7 +725,10 @@ mod tests {
         assert_eq!(capability("custom").levels, ["high"]);
         assert!(capability("quiet").reasonless);
         assert!(capability("limited").levels.is_empty());
-        assert!(capability("toggle").levels.is_empty());
+        assert_eq!(
+            capability("toggle").levels,
+            ["none", "low", "medium", "high", "xhigh", "max"]
+        );
         assert!(capability("toggle").thinks());
         assert!(!capability("unknown").thinks());
         assert_eq!(provider.settings_config["modelCatalog"], saved);
@@ -805,5 +892,109 @@ mod editor_window_tests {
             );
         }
         assert!(!windows.contains_key(&ids[3]));
+    }
+}
+
+#[cfg(test)]
+mod kin_capability_tests {
+    use super::*;
+
+    #[test]
+    fn versionless_collapses_numeric_and_v_prefixed_versions_only() {
+        assert_eq!(
+            versionless(&super::super::discovery::same_model("gpt-6.2-sol")).as_deref(),
+            Some("gpt-#-sol")
+        );
+        assert_eq!(
+            versionless(&super::super::discovery::same_model("mimo-v2.7-flash")).as_deref(),
+            Some("mimo-#-flash")
+        );
+        assert_eq!(
+            versionless(&super::super::discovery::same_model("claude-sonnet-4.6")).as_deref(),
+            Some("claude-sonnet-#")
+        );
+        assert_eq!(
+            versionless(&super::super::discovery::same_model("gpt-4o")),
+            None
+        );
+        assert_eq!(
+            versionless(&super::super::discovery::same_model("o3-mini")),
+            None
+        );
+    }
+
+    #[test]
+    fn kin_capability_borrows_newest_reasoning_levels_without_leaking_other_fields() {
+        let catalog = Catalog {
+            facts: BTreeMap::from([
+                (
+                    "gpt-6.1-sol".into(),
+                    TemplateFacts {
+                        released: "2026-10-01".into(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "gpt-6.2-sol".into(),
+                    TemplateFacts {
+                        released: "2026-11-10".into(),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            capabilities: BTreeMap::from([
+                (
+                    super::super::discovery::same_model("gpt-6.1-sol"),
+                    json!({
+                        "reasoning": true,
+                        "reasoningLevels": ["low", "medium", "high"],
+                    }),
+                ),
+                (
+                    super::super::discovery::same_model("gpt-6.2-sol"),
+                    json!({
+                        "reasoning": true,
+                        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+                        "defaultReasoningLevel": "medium",
+                        "service_tiers": ["priority"],
+                        "maxOutputTokens": 64000,
+                    }),
+                ),
+                (
+                    super::super::discovery::same_model("gpt-5"),
+                    json!({
+                        "reasoning": true,
+                        "reasoningLevels": ["low", "medium", "high"],
+                    }),
+                ),
+            ]),
+            ..Catalog::default()
+        };
+
+        let mut provider = Provider::with_id(
+            "relay".into(),
+            "Relay".into(),
+            json!({
+                "modelCatalog": {
+                    "models": [
+                        {"model": "gpt-6.3-sol"},
+                        {"model": "gpt-4o"},
+                    ]
+                }
+            }),
+            None,
+        );
+        enrich(std::slice::from_mut(&mut provider), &catalog);
+
+        let public = &provider.settings_config["routingPublicCapabilities"];
+        assert_eq!(
+            public["gpt-6.3-sol"],
+            json!({
+                "reasoning": true,
+                "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+                "defaultReasoningLevel": "medium",
+            })
+        );
+        assert!(public.get("gpt-4o").is_none());
     }
 }

@@ -699,9 +699,7 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
     } else if let Some(value) = &r.reasoning.effort {
         body["reasoning_effort"] = json!(value);
     }
-    if let Some(value) = &r.reasoning.summary {
-        body["reasoning_summary"] = json!(value);
-    }
+    // Chat Completions does not support Responses' reasoning_summary (matches Magpie buildChat).
     if let Some(format) = &r.format {
         body["response_format"] = if format.kind == "json_schema" {
             json!({"type":"json_schema","json_schema":{"name":format.name.as_deref().unwrap_or("response"),"schema":format.schema,"strict":format.strict.unwrap_or(false)}})
@@ -2125,5 +2123,18 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn chat_translation_omits_reasoning_summary() {
+        let body = json!({
+            "model": "gpt-6.2-sol",
+            "input": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "high", "summary": "auto"},
+            "stream": true
+        });
+        let ir = super::super::parse::request(Protocol::Responses, &body, "/v1/responses").unwrap();
+        let chat = request(&ir, Protocol::Chat).unwrap();
+        assert_eq!(chat["reasoning_effort"], "high");
+        assert!(chat.get("reasoning_summary").is_none());
     }
 }
