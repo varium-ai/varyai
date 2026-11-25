@@ -1598,6 +1598,47 @@ describe("global upstream editor", () => {
     expect(call).toBeGreaterThanOrEqual(0);
     expect(focus.mock.calls[call]).toEqual([{ preventScroll: true }]);
   });
+  it("allows stored-key model discovery and protocol detection after switching protocol before saving", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    vi.mocked(routingUpstreamsApi.discover).mockResolvedValue([
+      { id: "claude-sonnet-4-6", ownedBy: null },
+    ]);
+    vi.mocked(routingUpstreamsApi.probe).mockResolvedValue([
+      {
+        format: "anthropic",
+        text: { status: "verified" },
+        stream: { status: "verified" },
+      },
+    ]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.discover).toHaveBeenCalledWith("primary", 4, {
+        apiFormat: "anthropic",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.probe).toHaveBeenCalledWith(
+        "primary",
+        4,
+        "large-model",
+      ),
+    );
+    expect(
+      await screen.findByText(/providerEditor.verified/),
+    ).toBeInTheDocument();
+  });
   it("shows only a newly entered key and runs stored-key probes only after an explicit click", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     vi.mocked(routingUpstreamsApi.probe).mockResolvedValue([

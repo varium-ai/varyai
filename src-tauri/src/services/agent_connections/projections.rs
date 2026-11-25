@@ -47,6 +47,11 @@ fn catalog_names(
         .iter()
         .map(|label| label.to_lowercase())
         .collect::<BTreeSet<_>>();
+    let mut label_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for model in &projected {
+        *label_counts.entry(model.name.to_lowercase()).or_default() += 1;
+    }
     let mut displayed = BTreeSet::new();
     let mut order = (0..projected.len()).collect::<Vec<_>>();
     order.sort_by(|a, b| catalog[*a].id.cmp(&catalog[*b].id));
@@ -82,7 +87,30 @@ fn catalog_names(
         model_map.insert(name.clone(), internal);
         model.id = name;
         let label = model.name.clone();
-        let mut display = label.clone();
+        let is_duplicate_label = label_counts
+            .get(&label.to_lowercase())
+            .is_some_and(|&count| count > 1);
+        let mut display = if is_duplicate_label {
+            if let Some(native) = model.native_model.as_deref() {
+                let candidate =
+                    if let Some(prefix) = label.strip_suffix(&format!(" · {}", model.group)) {
+                        format!("{prefix} ({native}) · {}", model.group)
+                    } else {
+                        format!("{label} ({native})")
+                    };
+                if !displayed.contains(&candidate.to_lowercase())
+                    && !reserved_labels.contains(&candidate.to_lowercase())
+                {
+                    candidate
+                } else {
+                    label.clone()
+                }
+            } else {
+                label.clone()
+            }
+        } else {
+            label.clone()
+        };
         let mut duplicate = 2;
         while displayed.contains(&display.to_lowercase())
             || (display != label && reserved_labels.contains(&display.to_lowercase()))

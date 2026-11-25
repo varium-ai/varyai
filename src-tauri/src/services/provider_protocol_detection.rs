@@ -10,7 +10,7 @@ const MARKER: &str = "VARYAI_PROTOCOL_OK";
 // Reasoning models may spend the first few hundred output tokens before answering.
 const OUTPUT_TOKEN_LIMIT: u32 = 1024;
 const BODY_LIMIT: usize = 256 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(20);
+const TIMEOUT: Duration = Duration::from_secs(10);
 const FORMATS: [&str; 4] = [
     "openai_chat",
     "openai_responses",
@@ -239,12 +239,12 @@ async fn probe(
         {
             return Err(ProbeOutcome::new("invalid_response"));
         }
+        if stream {
+            return read_stream_outcome(format, response).await;
+        }
         let bytes = read_bounded(response).await?;
-        let valid = if stream {
-            std::str::from_utf8(&bytes).is_ok_and(|s| valid_stream(format, s))
-        } else {
-            serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| valid_message(format, &v))
-        };
+        let valid =
+            serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| valid_message(format, &v));
         Ok(ProbeOutcome::new(if valid {
             "verified"
         } else {
@@ -272,49 +272,106 @@ fn valid_message(format: &str, body: &Value) -> bool {
         _ => body["candidates"].as_array().is_some_and(|c| !c.is_empty()),
     }
 }
+enum FrameVerdict {
+    Continue,
+    Matched,
+    Invalid,
+}
+
+fn validate_sse_frame(format: &str, frame: &str) -> FrameVerdict {
+    let data = frame
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if data.is_empty() || data == "[DONE]" {
+        return FrameVerdict::Continue;
+    }
+    let Ok(body) = serde_json::from_str::<Value>(&data) else {
+        return FrameVerdict::Invalid;
+    };
+    if body.get("error").is_some()
+        || matches!(
+            body["type"].as_str(),
+            Some("error" | "response.failed" | "response.incomplete")
+        )
+    {
+        return FrameVerdict::Invalid;
+    }
+    let matched = match format {
+        "openai_chat" => body["choices"].as_array().is_some(),
+        "openai_responses" => body["type"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("response.")),
+        "anthropic" => matches!(
+            body["type"].as_str(),
+            Some(
+                "message_start"
+                    | "content_block_start"
+                    | "content_block_delta"
+                    | "content_block_stop"
+                    | "message_delta"
+                    | "message_stop"
+            )
+        ),
+        _ => body["candidates"].as_array().is_some(),
+    };
+    if matched {
+        FrameVerdict::Matched
+    } else {
+        FrameVerdict::Continue
+    }
+}
+
+/// Verifies a streaming probe as soon as the first valid SSE event arrives.
+async fn read_stream_outcome(
+    format: &str,
+    mut response: Response,
+) -> Result<ProbeOutcome, ProbeOutcome> {
+    let mut bytes = Vec::new();
+    let mut normalized = String::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if bytes.len() + chunk.len() > BODY_LIMIT {
+            return Err(ProbeOutcome::new("invalid_response"));
+        }
+        bytes.extend_from_slice(&chunk);
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(err) if err.error_len().is_none() => continue,
+            Err(_) => return Err(ProbeOutcome::new("invalid_response")),
+        };
+        normalized.clear();
+        normalized.push_str(&text.replace("\r\n", "\n"));
+        while let Some(end) = normalized.find("\n\n") {
+            let frame = &normalized[..end];
+            match validate_sse_frame(format, frame) {
+                FrameVerdict::Matched => return Ok(ProbeOutcome::new("verified")),
+                FrameVerdict::Invalid => return Err(ProbeOutcome::new("invalid_response")),
+                FrameVerdict::Continue => {}
+            }
+            let remaining = normalized[end + 2..].to_owned();
+            normalized = remaining;
+            bytes = normalized.as_bytes().to_vec();
+        }
+    }
+    if !normalized.is_empty() {
+        if let FrameVerdict::Matched = validate_sse_frame(format, &normalized) {
+            return Ok(ProbeOutcome::new("verified"));
+        }
+    }
+    Err(ProbeOutcome::new("invalid_response"))
+}
+
 pub(crate) fn valid_stream(format: &str, source: &str) -> bool {
     let normalized = source.replace("\r\n", "\n");
     let mut saw_event = false;
     for frame in normalized.split("\n\n") {
-        let data = frame
-            .lines()
-            .filter_map(|l| l.strip_prefix("data:"))
-            .map(str::trim_start)
-            .collect::<Vec<_>>()
-            .join("\n");
-        if data.is_empty() || data == "[DONE]" {
-            continue;
+        match validate_sse_frame(format, frame) {
+            FrameVerdict::Invalid => return false,
+            FrameVerdict::Matched => saw_event = true,
+            FrameVerdict::Continue => {}
         }
-        let Ok(body) = serde_json::from_str::<Value>(&data) else {
-            return false;
-        };
-        if body.get("error").is_some()
-            || matches!(
-                body["type"].as_str(),
-                Some("error" | "response.failed" | "response.incomplete")
-            )
-        {
-            return false;
-        }
-        let matched = match format {
-            "openai_chat" => body["choices"].as_array().is_some(),
-            "openai_responses" => body["type"]
-                .as_str()
-                .is_some_and(|t| t.starts_with("response.")),
-            "anthropic" => matches!(
-                body["type"].as_str(),
-                Some(
-                    "message_start"
-                        | "content_block_start"
-                        | "content_block_delta"
-                        | "content_block_stop"
-                        | "message_delta"
-                        | "message_stop"
-                )
-            ),
-            _ => body["candidates"].as_array().is_some(),
-        };
-        saw_event |= matched;
     }
     saw_event
 }
@@ -323,6 +380,7 @@ pub(crate) fn valid_stream(format: &str, source: &str) -> bool {
 mod tests {
     use super::*;
     use axum::{http::StatusCode as HttpStatus, response::IntoResponse, routing::post, Router};
+    use futures::StreamExt;
     use std::sync::{
         atomic::{AtomicU16, AtomicUsize, Ordering},
         Arc,
@@ -575,5 +633,47 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, "Invalid detection configuration");
+    }
+
+    #[tokio::test]
+    async fn stream_probe_verifies_on_first_valid_event_without_waiting_for_eof() {
+        let mock = Router::new().fallback(post(|_req: axum::extract::Request| async move {
+            let first = format!(
+                "data: {}\n\n",
+                json!({"choices":[{"delta":{"content":"Hi"}}]})
+            );
+            let stream = futures::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(first))
+            })
+            .chain(futures::stream::pending::<
+                Result<axum::body::Bytes, std::convert::Infallible>,
+            >());
+            (
+                [("content-type", "text/event-stream")],
+                axum::body::Body::from_stream(stream),
+            )
+        }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let config = DetectionConfig {
+            base_url: format!("http://{address}"),
+            api_key: "synthetic-key".into(),
+            model: "fixture".into(),
+            anthropic_auth_field: None,
+        };
+        let base = url::Url::parse(&config.base_url).unwrap();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            probe(&Client::new(), &config, &base, "openai_chat", true),
+        )
+        .await
+        .expect("stream probe should return on first valid SSE event");
+        assert_eq!(outcome.status, "verified");
+        server.abort();
     }
 }

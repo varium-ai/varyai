@@ -235,6 +235,7 @@ it("refreshes Usage from the header and shows progress while it refetches", asyn
     expect(refresh).toBeEnabled();
     expect(refresh).toHaveAttribute("aria-busy", "false");
   });
+  expect(toast.success).toHaveBeenCalledWith("settings.autoReload");
   const periods = vi.mocked(trayUsageApi.read).mock.calls.flat();
   expect(periods.filter((period) => period === "today")).toHaveLength(2);
   expect(periods.filter((period) => period === "activity")).toHaveLength(2);
@@ -825,7 +826,7 @@ it.each(
       "风险预警",
     );
     expect(container.querySelector(".tray-events")).toHaveTextContent(
-      `${app} · 中`,
+      `${app} · 中 · Synthetic rule`,
     );
     expect(
       screen.getByText(
@@ -840,7 +841,9 @@ it.each(
     const times = Array.from(container.querySelectorAll(".tray-events time"));
     expect(times.map((time) => time.textContent)).toEqual(
       items.map(({ timestamp }) =>
-        new Date(timestamp).toLocaleTimeString("zh", {
+        new Date(timestamp).toLocaleString("zh", {
+          month: "2-digit",
+          day: "2-digit",
           hour: "2-digit",
           minute: "2-digit",
         }),
@@ -849,6 +852,44 @@ it.each(
     expect(items).toEqual(original);
   },
 );
+
+it("shows HH:mm for today events, MM/DD HH:mm for earlier days, and trigger count when repeated", async () => {
+  const now = Date.now();
+  const earlier = Date.UTC(2026, 10, 20, 5, 52, 31);
+  const items = [
+    {
+      ...syntheticEvent(0, "claude"),
+      timestamp: now,
+      lastSeenAt: now,
+      triggerCount: 3,
+    },
+    {
+      ...syntheticEvent(1, "codex"),
+      timestamp: earlier,
+      lastSeenAt: earlier,
+      triggerCount: 1,
+    },
+  ];
+  const { container } = await mountLocalizedEvents("zh", zh, items);
+  const rows = container.querySelector(".tray-events");
+  expect(rows).toHaveTextContent("claude · 中 · Synthetic rule ×3");
+  expect(rows).toHaveTextContent("codex · CRITICAL 严重 · Synthetic rule");
+  const times = Array.from(container.querySelectorAll(".tray-events time"));
+  expect(times[0]?.textContent).toBe(
+    new Date(now).toLocaleTimeString("zh", {
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  );
+  expect(times[1]?.textContent).toBe(
+    new Date(earlier).toLocaleString("zh", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  );
+});
 it.each(
   (
     [

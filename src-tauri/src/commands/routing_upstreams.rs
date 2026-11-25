@@ -353,12 +353,50 @@ pub(crate) async fn save_routing_upstream(
 }
 
 #[tauri::command]
+/// Validates an unsaved API format override for saved-credential probe/discovery.
+fn validate_api_format_override(api_format: Option<&str>) -> Result<Option<&str>, String> {
+    match api_format {
+        None => Ok(None),
+        Some(value @ ("openai_chat" | "openai_responses" | "anthropic" | "gemini_native")) => {
+            Ok(Some(value))
+        }
+        Some(_) => Err("routingUpstreams.invalid".into()),
+    }
+}
+
+/// Validates an unsaved auth type override for saved-credential probe/discovery.
+fn validate_auth_type_override(auth_type: Option<&str>) -> Result<Option<&str>, String> {
+    match auth_type {
+        None => Ok(None),
+        Some(value @ ("api-key" | "bearer" | "both")) => Ok(Some(value)),
+        Some(_) => Err("routingUpstreams.invalid".into()),
+    }
+}
+
+fn resolve_anthropic_auth_field(
+    provider: &crate::provider::Provider,
+    auth_type_override: Option<&str>,
+) -> String {
+    match auth_type_override {
+        Some("api-key") => "ANTHROPIC_API_KEY".into(),
+        Some(_) => "ANTHROPIC_AUTH_TOKEN".into(),
+        None => provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.api_key_field.clone())
+            .unwrap_or_else(|| "ANTHROPIC_AUTH_TOKEN".into()),
+    }
+}
+
+#[tauri::command]
 pub(crate) async fn probe_routing_upstream(
     state: State<'_, AppState>,
     id: String,
     revision: u32,
     model: String,
+    auth_type: Option<String>,
 ) -> Result<Vec<crate::services::provider_protocol_detection::ProtocolDetection>, String> {
+    let auth_override = validate_auth_type_override(auth_type.as_deref())?.map(str::to_owned);
     if model.trim().is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
         return Err("routingUpstreams.invalid".into());
     }
@@ -380,13 +418,10 @@ pub(crate) async fn probe_routing_upstream(
         base_url,
         api_key,
         model: model.trim().into(),
-        anthropic_auth_field: Some(
-            provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.api_key_field.clone())
-                .unwrap_or_else(|| "ANTHROPIC_AUTH_TOKEN".into()),
-        ),
+        anthropic_auth_field: Some(resolve_anthropic_auth_field(
+            &provider,
+            auth_override.as_deref(),
+        )),
     };
     crate::services::provider_protocol_detection::detect(config)
         .await
@@ -441,7 +476,11 @@ pub(crate) async fn discover_routing_upstream_models(
     state: State<'_, AppState>,
     id: String,
     revision: u32,
+    api_format: Option<String>,
+    auth_type: Option<String>,
 ) -> Result<Vec<crate::services::model_fetch::FetchedModel>, String> {
+    let format_override = validate_api_format_override(api_format.as_deref())?.map(str::to_owned);
+    let auth_override = validate_auth_type_override(auth_type.as_deref())?.map(str::to_owned);
     let db = state.db.clone();
     let provider =
         tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
@@ -452,12 +491,18 @@ pub(crate) async fn discover_routing_upstream_models(
     }
     let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
     let (base, key) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
-    let format = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.api_format.as_deref())
+    let format = format_override
+        .as_deref()
+        .or_else(|| {
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_format.as_deref())
+        })
         .ok_or("routingUpstreams.sourceUnavailable")?;
-    let auth = provider.settings_config["authType"].as_str();
+    let auth = auth_override
+        .as_deref()
+        .or_else(|| provider.settings_config["authType"].as_str());
     let header = if format == "gemini_native" {
         "x-goog-api-key"
     } else if format == "anthropic" && auth == Some("api-key") {
@@ -683,5 +728,53 @@ mod subscription_tests {
             .get("subscriptionPlans")
             .is_none());
         Ok(())
+    }
+
+    #[test]
+    fn protocol_and_auth_overrides_validate_allowed_values() {
+        assert_eq!(validate_api_format_override(None), Ok(None));
+        for format in [
+            "openai_chat",
+            "openai_responses",
+            "anthropic",
+            "gemini_native",
+        ] {
+            assert_eq!(validate_api_format_override(Some(format)), Ok(Some(format)));
+        }
+        assert_eq!(
+            validate_api_format_override(Some("unknown")),
+            Err("routingUpstreams.invalid".into())
+        );
+
+        assert_eq!(validate_auth_type_override(None), Ok(None));
+        for auth in ["api-key", "bearer", "both"] {
+            assert_eq!(validate_auth_type_override(Some(auth)), Ok(Some(auth)));
+        }
+        assert_eq!(
+            validate_auth_type_override(Some("basic")),
+            Err("routingUpstreams.invalid".into())
+        );
+    }
+
+    #[test]
+    fn anthropic_auth_field_respects_draft_override() {
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Fixture".into(),
+            serde_json::json!({}),
+            None,
+        );
+        assert_eq!(
+            resolve_anthropic_auth_field(&provider, None),
+            "ANTHROPIC_AUTH_TOKEN"
+        );
+        assert_eq!(
+            resolve_anthropic_auth_field(&provider, Some("api-key")),
+            "ANTHROPIC_API_KEY"
+        );
+        assert_eq!(
+            resolve_anthropic_auth_field(&provider, Some("bearer")),
+            "ANTHROPIC_AUTH_TOKEN"
+        );
     }
 }

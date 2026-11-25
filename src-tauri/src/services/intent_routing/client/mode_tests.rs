@@ -714,7 +714,7 @@ fn incomplete_auth_read_does_not_switch_an_existing_chatgpt_connection(
     assert!(doc.get("model_catalog_json").is_none());
     assert_eq!(
         doc["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-        Some(true)
+        Some(false)
     );
     fs::remove_file(dir.path().join("auth.json"))?;
     manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;

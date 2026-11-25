@@ -214,6 +214,7 @@ export function useToolRiskEvents(
   return {
     events: query.data ?? [],
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     refetch: query.refetch,
     clearEvents: (beforeTimestamp?: number) =>
       clearMutation.mutateAsync(beforeTimestamp),

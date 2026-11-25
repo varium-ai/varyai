@@ -229,6 +229,16 @@ pub(crate) fn qualify_menu_labels(menu: &mut Menu) {
     }
 }
 
+fn disambiguate_with_model_id(label: &str, source: Option<&str>, model_id: &str) -> String {
+    if let Some(source) = source {
+        let suffix = format!(" · {source}");
+        if let Some(prefix) = label.strip_suffix(&suffix) {
+            return format!("{prefix} ({model_id}){suffix}");
+        }
+    }
+    format!("{label} ({model_id})")
+}
+
 pub(super) fn project_menu(
     catalog: &mut Value,
     retained: &mut BTreeMap<String, String>,
@@ -281,7 +291,8 @@ pub(super) fn project_menu(
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or(canonical)
                 .to_owned();
-            Ok((canonical.to_owned(), id, provider, label))
+            let model_id = direct.map(|target| target.model.clone());
+            Ok((canonical.to_owned(), id, provider, label, model_id))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let sources = menu.map_or_else(BTreeMap::new, |menu| {
@@ -291,7 +302,7 @@ pub(super) fn project_menu(
             .filter_map(|model| model["slug"].as_str());
         source_labels(visible, menu)
     });
-    for (index, (canonical, _, provider, label)) in entries.iter().enumerate() {
+    for (index, (canonical, _, provider, label, _)) in entries.iter().enumerate() {
         if let Some(source) = sources
             .get(provider)
             .filter(|_| canonical.starts_with("vary-provider/"))
@@ -311,9 +322,40 @@ pub(super) fn project_menu(
         }
     }
     let mut reserved = same.keys().cloned().collect::<BTreeSet<_>>();
-    // Equal custom model/group names still need a hint, never an internal ID.
+    // Equal custom model/group names still need a hint, never an internal provider ID.
+    // Prefer the upstream model ID when every colliding entry has a distinct one.
     for indices in same.values_mut().filter(|indices| indices.len() > 1) {
         indices.sort_by(|&a, &b| entries[a].1.cmp(&entries[b].1));
+        let model_id_candidates = indices
+            .iter()
+            .map(|&index| {
+                let label = models[index]["display_name"]
+                    .as_str()
+                    .unwrap_or(&entries[index].3);
+                let model_id = entries[index].4.as_deref()?;
+                let source = sources
+                    .get(&entries[index].2)
+                    .filter(|_| entries[index].0.starts_with("vary-provider/"));
+                Some(disambiguate_with_model_id(
+                    label,
+                    source.map(String::as_str),
+                    model_id,
+                ))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(candidates) = model_id_candidates.filter(|candidates| {
+            let mut seen = BTreeSet::new();
+            candidates.iter().all(|candidate| {
+                let key = candidate.to_lowercase();
+                !reserved.contains(&key) && seen.insert(key)
+            })
+        }) {
+            for (&index, candidate) in indices.iter().zip(candidates) {
+                reserved.insert(candidate.to_lowercase());
+                models[index]["display_name"] = Value::String(candidate);
+            }
+            continue;
+        }
         let mut number = 1;
         for &index in indices.iter() {
             let label = models[index]["display_name"]
@@ -333,7 +375,7 @@ pub(super) fn project_menu(
     let mut legacy = Vec::new();
     let reserved = entries
         .iter()
-        .map(|(_, id, _, _)| id.clone())
+        .map(|(_, id, _, _, _)| id.clone())
         .collect::<BTreeSet<_>>();
     if reserved.len() != entries.len() {
         return Err("intentRouting.clientConflict".into());
@@ -342,7 +384,7 @@ pub(super) fn project_menu(
     // accounts have their own provider IDs. Bind only an unambiguous published
     // subscription route, and retain its owner even if that route is removed.
     let mut codex_legacy: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (index, (canonical, _, _, _)) in entries.iter().enumerate() {
+    for (index, (canonical, _, _, _, _)) in entries.iter().enumerate() {
         let Some(session) = menu
             .and_then(|menu| menu.groups.get(canonical))
             .filter(|_| canonical.starts_with("vary-provider/"))
@@ -373,7 +415,7 @@ pub(super) fn project_menu(
             retained.insert(wire, owner);
         }
     }
-    for (index, (canonical, id, _, _)) in entries.into_iter().enumerate() {
+    for (index, (canonical, id, _, _, _)) in entries.into_iter().enumerate() {
         if retained.get(&id).is_some_and(|owner| owner != &canonical) {
             return Err("intentRouting.clientConflict".into());
         }
@@ -977,5 +1019,33 @@ mod tests {
             .unwrap();
         assert_eq!(hidden["visibility"], "hide");
         assert_eq!(hidden["context_window"], 123456);
+    }
+
+    #[test]
+    fn same_provider_duplicate_display_names_use_model_ids_instead_of_numbers() {
+        let mut menu = source_menu(&[("workbuddy", "WorkBuddy", false)]);
+        for (alias, model_id) in [
+            ("vary-provider/wb-free", "hy4flash-free"),
+            ("vary-provider/wb-paid", "hy4flash"),
+        ] {
+            let mut session = menu.groups["vary-provider/workbuddy"].clone();
+            let inner = std::sync::Arc::make_mut(&mut session);
+            inner.group.id = alias.into();
+            inner.targets[0].model = model_id.into();
+            menu.groups.insert(alias.into(), session);
+        }
+        let mut value = catalog(&[
+            ("vary-provider/wb-free", "Hy4 flash"),
+            ("vary-provider/wb-paid", "Hy4 flash"),
+        ]);
+        project_menu(&mut value, &mut BTreeMap::new(), Some(&menu)).unwrap();
+        assert_eq!(
+            value["models"][0]["display_name"],
+            "Hy4 flash (hy4flash-free) · WorkBuddy"
+        );
+        assert_eq!(
+            value["models"][1]["display_name"],
+            "Hy4 flash (hy4flash) · WorkBuddy"
+        );
     }
 }

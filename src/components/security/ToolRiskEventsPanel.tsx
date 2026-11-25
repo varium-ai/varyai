@@ -116,6 +116,7 @@ function ToolRiskEventsTable({
   const columnLabelClass = hasEvents ? "whitespace-nowrap" : undefined;
   const tableMinWidthClass = controlled ? "min-w-[1760px]" : "min-w-[1544px]";
   const isLoading = controlled?.isLoading ?? standalone?.isLoading ?? false;
+  const isFetching = standalone?.isFetching ?? false;
   const isClearing = standalone?.isClearing ?? false;
   const offset = standalone?.offset ?? 0;
   const verdict = standalone?.verdict ?? "all";
@@ -285,9 +286,13 @@ function ToolRiskEventsTable({
               size="sm"
               variant="outline"
               className="gap-1.5"
+              disabled={isFetching}
+              aria-busy={isFetching}
               onClick={() => void refetch()}
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw
+                className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`}
+              />
               {t("common.refresh", { defaultValue: "刷新" })}
             </Button>
             <Button
