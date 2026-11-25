@@ -507,7 +507,6 @@ impl DlpForwardError {
 
     pub(crate) fn error_type(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(StatusCode::PAYLOAD_TOO_LARGE) => "request_too_large",
             Self::UpstreamStatus(_) => "upstream_error",
             Self::RestoreFailed | Self::RestoreFailedAt(_) => "server_error",
             Self::ContextUnavailable
@@ -522,7 +521,6 @@ impl DlpForwardError {
 
     pub(crate) fn code(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(StatusCode::PAYLOAD_TOO_LARGE) => "request_too_large",
             Self::UpstreamStatus(_) => "upstream_error",
             Self::RestoreFailed | Self::RestoreFailedAt(_) => "dlp_restore_failed",
             Self::ContextUnavailable => "dlp_context_unavailable",
@@ -570,7 +568,6 @@ impl DlpForwardError {
 
     pub(crate) fn client_error_type(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(StatusCode::PAYLOAD_TOO_LARGE) => "request_too_large",
             Self::UpstreamStatus(_) => "upstream_error",
             Self::Blocked | Self::RestoreUnsupportedFor(_) => "invalid_request_error",
             _ => "server_error",
@@ -579,7 +576,6 @@ impl DlpForwardError {
 
     pub(crate) fn client_code(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(StatusCode::PAYLOAD_TOO_LARGE) => "request_too_large",
             Self::UpstreamStatus(_) => "upstream_error",
             Self::Blocked => "dlp_blocked",
             Self::RestoreUnsupportedFor(_) => CLIENT_UNSUPPORTED_ENDPOINT_CODE,
@@ -698,7 +694,7 @@ impl DlpForwardError {
             AppType::Claude | AppType::ClaudeDesktop => json!({
                 "type": "error",
                 "error": {
-                    "type": if error_type == "request_too_large" {
+                    "type": if status == StatusCode::PAYLOAD_TOO_LARGE {
                         "request_too_large"
                     } else if status == StatusCode::BAD_REQUEST {
                         "invalid_request_error"

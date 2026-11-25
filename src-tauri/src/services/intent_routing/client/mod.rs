@@ -1728,6 +1728,29 @@ fn references_projection(value: &toml::Value) -> bool {
         _ => false,
     }
 }
+fn provider_table_owned(current: Option<&toml::Value>, installed: Option<&toml::Value>) -> bool {
+    let (Some(toml::Value::Table(cur)), Some(toml::Value::Table(inst))) = (current, installed)
+    else {
+        return current == installed;
+    };
+    if cur == inst {
+        return true;
+    }
+    // Preserve user-written `requires_openai_auth = false` on the owned provider table.
+    if cur
+        .get("requires_openai_auth")
+        .and_then(toml::Value::as_bool)
+        != Some(false)
+    {
+        return false;
+    }
+    let mut cur_norm = cur.clone();
+    let mut inst_norm = inst.clone();
+    cur_norm.remove("requires_openai_auth");
+    inst_norm.remove("requires_openai_auth");
+    cur_norm == inst_norm
+}
+
 fn projection_owned(current: &str, installed: &str) -> bool {
     let (Ok(current), Ok(installed)) = (
         current.parse::<toml::Value>(),
@@ -1740,10 +1763,12 @@ fn projection_owned(current: &str, installed: &str) -> bool {
             || (installed.get("openai_base_url").is_some()
                 && current.get("openai_base_url") == installed.get("openai_base_url")))
         && current.get("model_catalog_json") == installed.get("model_catalog_json")
-        && current.get("model_providers").and_then(|v| v.get(PROVIDER))
-            == installed
+        && provider_table_owned(
+            current.get("model_providers").and_then(|v| v.get(PROVIDER)),
+            installed
                 .get("model_providers")
-                .and_then(|v| v.get(PROVIDER))
+                .and_then(|v| v.get(PROVIDER)),
+        )
 }
 fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<String>, String> {
     let Some(current) = current else {

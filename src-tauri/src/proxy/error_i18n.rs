@@ -131,6 +131,10 @@ pub(crate) fn dlp_routed_message(code: &str) -> &'static str {
 }
 
 pub(crate) fn dlp_blocked_message(reason: &str) -> String {
+    #[cfg(test)]
+    if crate::settings::get_settings().language.is_none() {
+        return dlp_blocked_message_for(Lang::Zh, reason);
+    }
     dlp_blocked_message_for(current_lang(), reason)
 }
 
