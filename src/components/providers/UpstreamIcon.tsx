@@ -52,6 +52,30 @@ export function upstreamIcon(record: RoutingUpstream) {
   )?.icon;
 }
 
+/**
+ * Enrich catalog model choices with the same resolved provider icon used by
+ * the provider list when the backend model entry has no explicit icon.
+ */
+export function withUpstreamIcons<
+  T extends { id: string; reference?: string; icon?: string | null },
+>(models: T[], upstreams?: RoutingUpstream[] | null): T[] {
+  if (!models.length || !upstreams?.length) return models;
+  const byId = new Map(upstreams.map((upstream) => [upstream.id, upstream]));
+  return models.map((model) => {
+    if (!model.id.startsWith("vary-provider/") || !model.reference) {
+      return model;
+    }
+    const slash = model.reference.indexOf("/");
+    const providerId =
+      slash > 0 ? model.reference.slice(0, slash) : model.reference;
+    const upstream = byId.get(providerId);
+    if (!upstream) return model;
+    const resolved = upstreamIcon(upstream);
+    if (!resolved || resolved === model.icon) return model;
+    return { ...model, icon: resolved };
+  });
+}
+
 export function UpstreamIcon({
   icon,
   name,

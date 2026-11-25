@@ -55,6 +55,11 @@ vi.mock("@/lib/api/intentRouting", () => ({
     setContextSettings: vi.fn(async () => {}),
   },
 }));
+vi.mock("@/lib/api/routingUpstreams", () => ({
+  routingUpstreamsApi: {
+    list: vi.fn(async () => []),
+  },
+}));
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
     list: vi.fn(),

@@ -1130,6 +1130,8 @@ body:has(.tray-panel),
 }
 
 .tray-panel time {
+  flex: none;
+  white-space: nowrap;
   color: var(--mp-muted);
   font-size: 10px;
 }

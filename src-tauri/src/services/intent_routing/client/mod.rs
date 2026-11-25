@@ -179,25 +179,70 @@ fn read(path: &Path) -> Result<Option<String>, String> {
         Err(_) => Err(FAILED.into()),
     }
 }
-fn requires_openai_auth(config: &Path, doc: &DocumentMut) -> bool {
-    match chatgpt_sign_in(config, doc) {
-        Some(signed_in) => signed_in,
-        None => {
-            let provider = doc
-                .get("model_provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("openai");
-            doc.get("model_providers")
-                .and_then(|providers| providers.get(PROVIDER).or_else(|| providers.get(provider)))
-                .and_then(|provider| provider.get("requires_openai_auth"))
-                .and_then(|value| value.as_bool())
-                .unwrap_or(
-                    provider == "openai"
-                        && crate::codex_config::codex_config_auth_store_mode(&doc.to_string())
-                            != crate::codex_config::CodexAuthStoreMode::File,
-                )
-        }
+/// Standalone `[model_providers.varyai]` authenticates via `experimental_bearer_token`,
+/// matching magpie so Codex Desktop never blocks on a ChatGPT login screen.
+fn requires_openai_auth(_config: &Path, _doc: &DocumentMut) -> bool {
+    false
+}
+
+fn has_chatgpt_tokens(auth: &Value) -> bool {
+    let Some(object) = auth.as_object() else {
+        return false;
+    };
+    let mode = object.get("auth_mode").and_then(Value::as_str);
+    matches!(mode, None | Some("chatgpt" | "chatgptAuthTokens"))
+        && object.get("OPENAI_API_KEY").is_none_or(Value::is_null)
+        && auth
+            .pointer("/tokens/access_token")
+            .and_then(Value::as_str)
+            .is_some_and(|token| !token.trim().is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_chatgpt_sign_in(config: &Path) -> Option<bool> {
+    let home = config.parent()?;
+    let canonical = home.canonicalize().unwrap_or_else(|_| home.to_owned());
+    use sha2::{Digest, Sha256};
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(canonical.to_string_lossy().as_bytes())
+    );
+    let account = format!("cli|{}", &digest[..16]);
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Codex Auth",
+            "-a",
+            &account,
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let auth: Value = serde_json::from_str(trimmed).ok()?;
+    Some(has_chatgpt_tokens(&auth))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_chatgpt_sign_in(_config: &Path) -> Option<bool> {
+    None
+}
+
+fn file_chatgpt_sign_in(config: &Path) -> Option<bool> {
+    let path = config.parent()?.join("auth.json");
+    let Some(text) = read(&path).ok()? else {
+        return Some(false);
+    };
+    let auth: Value = serde_json::from_str(&text).ok()?;
+    Some(has_chatgpt_tokens(&auth))
 }
 
 /// Unknown reads preserve the installed mode while Codex rotates its login file.
@@ -211,27 +256,20 @@ fn chatgpt_sign_in(config: &Path, doc: &DocumentMut) -> Option<bool> {
         return Some(false);
     }
     match codex_config_auth_store_mode(&doc.to_string()) {
-        CodexAuthStoreMode::File => {
-            let path = config.parent()?.join("auth.json");
-            let Some(text) = read(&path).ok()? else {
-                return Some(false);
-            };
-            let auth: Value = serde_json::from_str(&text).ok()?;
-            let object = auth.as_object()?;
-            let mode = object.get("auth_mode").and_then(Value::as_str);
-            Some(
-                matches!(mode, None | Some("chatgpt" | "chatgptAuthTokens"))
-                    && object.get("OPENAI_API_KEY").is_none_or(Value::is_null)
-                    && auth
-                        .pointer("/tokens/access_token")
-                        .and_then(Value::as_str)
-                        .is_some_and(|token| !token.trim().is_empty()),
-            )
-        }
+        CodexAuthStoreMode::File => file_chatgpt_sign_in(config),
         CodexAuthStoreMode::Ephemeral => Some(false),
-        CodexAuthStoreMode::Keyring | CodexAuthStoreMode::Auto | CodexAuthStoreMode::Unknown => {
-            None
+        CodexAuthStoreMode::Keyring => keychain_chatgpt_sign_in(config),
+        CodexAuthStoreMode::Auto => {
+            if let Some(signed_in) = keychain_chatgpt_sign_in(config) {
+                return Some(signed_in);
+            }
+            match file_chatgpt_sign_in(config) {
+                Some(true) => Some(true),
+                // Preserve any explicit requires_openai_auth when no login file is present.
+                Some(false) | None => None,
+            }
         }
+        CodexAuthStoreMode::Unknown => None,
     }
 }
 
