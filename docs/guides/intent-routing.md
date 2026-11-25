@@ -351,7 +351,7 @@ summaries from prior turns are omitted from the classifier input. Opaque
 continuations still use their existing ownership. The classifier response
 may include null tool fields or an empty tool-call array.
 
-The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
+The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Codex browser context sent as recognized, unsolicited text output does not prevent live classification. Only the latest user text is sent to the classifier. The selected task model still receives the browser context. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
 
 ## Storage and safety
 

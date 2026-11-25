@@ -234,7 +234,7 @@ fn full_output(item: &Value) -> bool {
         && text_parts(&item["output"], &["input_text", "text"])
 }
 
-fn is_page_context(item: &Value) -> bool {
+pub(crate) fn is_page_context(item: &Value) -> bool {
     super::super::providers::codex_chat_common::is_unsolicited_page_context(item)
         && item_fields(item, &["name", "namespace", "call_id", "output", "status"])
         && completed(item)

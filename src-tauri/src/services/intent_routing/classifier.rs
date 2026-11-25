@@ -25,10 +25,9 @@ pub(crate) struct TrialResult {
 }
 
 /// Unknown continuations never become new classification opportunities.
-pub(crate) fn extract_user_text(body: &Value) -> Option<String> {
-    if body
-        .get("previous_response_id")
-        .is_some_and(|v| !v.is_null())
+pub(crate) fn extract_user_text(body: &Value, codex_responses: bool) -> Option<String> {
+    if !body["previous_response_id"].is_null()
+        || (codex_responses && !body["conversation"].is_null())
     {
         return None;
     }
@@ -37,21 +36,28 @@ pub(crate) fn extract_user_text(body: &Value) -> Option<String> {
         return bounded_text(text);
     }
     let items = input.as_array()?;
+    // Codex adds browser context as unsolicited output items without a call ID.
+    // Classification uses only the new user text, while forwarding keeps those items.
+    let is_page_context =
+        |item: &Value| codex_responses && crate::proxy::intent::is_codex_page_context(item);
     if items.len() > 1024
-        || items.iter().any(|item| {
-            !crate::proxy::intent::visible_reasoning(item)
-                && (!matches!(
-                    item.get("type").and_then(Value::as_str),
-                    None | Some("message")
-                ) || !matches!(
-                    item.get("role").and_then(Value::as_str),
-                    Some("user" | "assistant" | "system" | "developer")
-                ))
-        })
+        || items
+            .iter()
+            .filter(|item| !is_page_context(item))
+            .any(|item| {
+                !crate::proxy::intent::visible_reasoning(item)
+                    && (!matches!(
+                        item.get("type").and_then(Value::as_str),
+                        None | Some("message")
+                    ) || !matches!(
+                        item.get("role").and_then(Value::as_str),
+                        Some("user" | "assistant" | "system" | "developer")
+                    ))
+            })
     {
         return None;
     }
-    let last = items.last()?;
+    let last = items.iter().rfind(|item| !is_page_context(item))?;
     if last.get("role")?.as_str()? != "user" {
         return None;
     }
@@ -421,7 +427,7 @@ async fn trial_with_runtime(
         {
             return Ok((None, "no_rules"));
         }
-        let text = extract_user_text(&json!({"input":text})).ok_or("input_limit")?;
+        let text = extract_user_text(&json!({"input":text}), false).ok_or("input_limit")?;
         let model = &group
             .classifier_target
             .as_ref()
@@ -832,14 +838,20 @@ mod tests {
     #[test]
     fn extracts_only_a_new_user_turn_and_rejects_continuations() {
         assert_eq!(
-            extract_user_text(&json!({"input":"hello", "instructions":"private system"})),
+            extract_user_text(
+                &json!({"input":"hello", "instructions":"private system"}),
+                false
+            ),
             Some("hello".into())
         );
         assert_eq!(
-            extract_user_text(&json!({"input":[
-                {"role":"system", "content":"private"},
-                {"role":"user", "content":[{"type":"input_text", "text":"hello"}, {"type":"input_image", "image_url":"private"}]}
-            ]})),
+            extract_user_text(
+                &json!({"input":[
+                    {"role":"system", "content":"private"},
+                    {"role":"user", "content":[{"type":"input_text", "text":"hello"}, {"type":"input_image", "image_url":"private"}]}
+                ]}),
+                false
+            ),
             Some("hello".into())
         );
         for body in [
@@ -848,8 +860,38 @@ mod tests {
             json!({"input":[{"role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"private"}]}),
             json!({"input":[{"role":"user","content":[{"type":"unknown","text":"ambiguous"}]}]}),
         ] {
-            assert!(extract_user_text(&body).is_none());
+            assert!(extract_user_text(&body, false).is_none());
         }
+    }
+
+    #[test]
+    fn codex_ignores_only_unsolicited_text_page_context() {
+        let mut body = json!({"input":[
+            {"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic browser URL"},
+            {"role":"user","content":[{"type":"input_text","text":"Synthetic question"}]},
+            {"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic browser context"}
+        ]});
+        assert_eq!(
+            extract_user_text(&body, true).as_deref(),
+            Some("Synthetic question")
+        );
+        assert!(extract_user_text(&body, false).is_none());
+
+        for (key, value) in [
+            ("call_id", json!("live-tool-call")),
+            ("name", json!("unknown_tool")),
+            ("namespace", json!("custom")),
+            ("encrypted_content", json!("synthetic-sealed")),
+        ] {
+            let mut invalid = body.clone();
+            invalid["input"][0][key] = value;
+            assert!(extract_user_text(&invalid, true).is_none());
+        }
+        body["conversation"] = json!({"id":"conversation-cursor"});
+        assert!(extract_user_text(&body, true).is_none());
+        body["conversation"] = Value::Null;
+        body["previous_response_id"] = json!("cursor");
+        assert!(extract_user_text(&body, true).is_none());
     }
 
     #[test]
@@ -863,14 +905,14 @@ mod tests {
             {"role":"user","content":[{"type":"input_text","text":"Synthetic arithmetic"}]}
         ]});
         assert_eq!(
-            extract_user_text(&body).as_deref(),
+            extract_user_text(&body, false).as_deref(),
             Some("Synthetic arithmetic")
         );
         body["input"][1]["encrypted_content"] = json!("synthetic-sealed");
-        assert!(extract_user_text(&body).is_none());
+        assert!(extract_user_text(&body, false).is_none());
         body["input"][1]["encrypted_content"] = Value::Null;
         body["input"][1]["status"] = json!("in_progress");
-        assert!(extract_user_text(&body).is_none());
+        assert!(extract_user_text(&body, false).is_none());
     }
 
     #[test]

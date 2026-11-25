@@ -2670,6 +2670,26 @@ remain pending.
 
 ## Routing group names and intent classifier responses
 
+Codex Desktop, CLI, and authenticated standalone Codex Responses use the
+same classifier eligibility check on macOS and Windows. The native browser
+context adjustment applies to the Codex Responses paths in the Agent matrix
+below. Other adapters keep their existing eligibility checks. The picker and
+group configuration contract are shared. The regression checks that only the
+current user text reaches the classifier and that the business request still
+carries its browser context. The fixture also checks an opaque continuation
+stays on its owner without a second classifier call. In a sanitized replay of
+the reported Codex turn, the previous extractor returned no user text and the
+updated extractor returned only the new question. On macOS arm64 with Rust
+1.98.1, 23 targeted tests passed, including the authenticated Responses HTTP
+fixture under conversation affinity, unit coverage for routing and privacy
+boundaries, and the existing Codex and Harness continuation regressions.
+The shared routed DLP and native parity run passed nine tests. Rust check,
+strict Clippy, formatting and the renderer build passed. The complete Rust
+library run passed 7,897 tests and reproduced two existing GLM adapter and
+Agent diagnostics failures. The frontend baseline still reports GLM type
+errors and unrelated Agent picker failures. The installed client, real
+classifier and Windows runtime were not exercised.
+
 The shared Agent picker consumes canonical IDs and catalog labels. Gemini's
 native footer reads the configured model ID, and Grok Build's native default
 refers to a profile key. Intent classification is shared across executable

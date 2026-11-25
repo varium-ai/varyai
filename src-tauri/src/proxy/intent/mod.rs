@@ -13,6 +13,7 @@ mod concurrency_tests;
 mod continuation;
 mod identity;
 pub(super) mod length;
+pub(crate) use codex_replay::is_page_context as is_codex_page_context;
 pub(crate) use length::visible_reasoning;
 pub(crate) mod native;
 mod native_gateway;
@@ -1944,7 +1945,11 @@ async fn execute(
         });
         if (compact.is_none() || route_compaction)
             && !opaque_continuation(protocol, &original)
-            && (inline_new_turn || (completed && length::portable(&projection)))
+            && (inline_new_turn
+                || (completed
+                    && length::portable_ignoring(&projection, |item| {
+                        responses_replay && compact.is_none() && codex_replay::is_page_context(item)
+                    })))
         {
             match session.group.affinity.as_str() {
                 "strict" => {}
@@ -2130,7 +2135,7 @@ async fn execute(
         && !classifier_candidates.is_empty()
     {
         match (
-            classifier::extract_user_text(inspected_projection),
+            classifier::extract_user_text(inspected_projection, responses_replay),
             session.classifier.clone(),
         ) {
             (Some(text), Some(provider)) => {
