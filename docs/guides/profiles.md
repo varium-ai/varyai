@@ -39,6 +39,8 @@ Opening the profile menu refreshes agent availability so newly configured client
 
 Qwen profile snapshots record upstream model endpoints, so proxy port or route changes do not invalidate model selection. Applying a snapshot resolves the current local route and preserves the model's wire API. Older OpenAI selectors can resolve a Responses-only model when the endpoint and model identify exactly one entry; ambiguous or removed models remain errors. Kimi and ZCode selections use stable model/provider IDs rather than proxy URLs.
 
+VaryAI writes the selected ZCode model with a reasoning option that the model advertises. It uses the catalog default when available and advertises `disabled` for a selected model without reasoning levels.
+
 If an agent fails during apply, the dialog identifies that agent and the failed provider, model-selection or resource step, then reports whether the previous configuration was restored. Error details use fixed messages instead of raw configuration or credential-bearing upstream errors.
 
 The shared menu displays the last successfully applied multi-agent profile across client pages, including clients not captured in that profile. Uncaptured clients keep their existing configuration and per-client markers. The shared selection survives application restarts; Undo restores the previous selection. Choosing **No profile** clears the selected bundle's markers without rewriting client configuration. Applying a single-client profile returns the menu to its per-client selection behavior.

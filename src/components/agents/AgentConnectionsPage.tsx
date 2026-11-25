@@ -985,14 +985,19 @@ export function AgentConnectionsPage({
         <ChevronDown size={11} aria-hidden="true" />
       </button>
     );
+    const canRestartHarnessManually =
+      app === "deepseek-harness" &&
+      !state?.recoveryPending &&
+      (state?.desktopState === "current" || state?.desktopState === "stopped");
     const restartButton = app !== "doubaowork" &&
-      (operation === "restarting" || (canRestart && !connection.isError)) && (
+      (operation === "restarting" ||
+        ((canRestart || canRestartHarnessManually) && !connection.isError)) && (
         <button
           type="button"
           className="mp-agent-fix"
           aria-label={t("agentConnections.restart")}
           title={
-            enabled
+            enabled || canRestartHarnessManually
               ? undefined
               : t("agentConnections.states.restoredRestartRequired")
           }

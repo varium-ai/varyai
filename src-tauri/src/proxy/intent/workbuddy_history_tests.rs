@@ -268,6 +268,437 @@ impl Fixture {
     }
 }
 
+async fn visible_history_follows_member_changes(
+    agent: &str,
+    protocol: Protocol,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = Fixture::with_targets("openai_chat", 3).await?;
+    let endpoint = match protocol {
+        Protocol::Chat => "chat/completions",
+        Protocol::Anthropic => "messages",
+        Protocol::Responses => "responses",
+        Protocol::Gemini => unreachable!("fixture uses managed WorkBuddy and Harness protocols"),
+    };
+    let root = fixture.root.replace(
+        "/workbuddy/v1/chat/completions",
+        &format!("/{agent}/v1/{endpoint}"),
+    );
+    fixture
+        .runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: agent.into(),
+            token: TOKEN.into(),
+            model: fixture.grok_alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let dir = tempfile::tempdir()?;
+    fixture
+        .runtime
+        .prepare_continuations(dir.path().join("continuations.json"))
+        .await;
+    let mut full = (*fixture
+        .runtime
+        .global_snapshot()?
+        .ok_or("missing synthetic menu")?)
+    .clone();
+    Arc::make_mut(
+        full.groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    )
+    .group
+    .affinity = "turn".into();
+    let mut reduced = full.clone();
+    let route = Arc::make_mut(
+        reduced
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    );
+    route.targets.remove(0);
+    route.group.members.remove(0);
+    route.group.default_member_id = "other-1".into();
+    route.group.fallback_member_ids = vec!["other-2".into()];
+    let history_key = if protocol == Protocol::Responses {
+        "input"
+    } else {
+        "messages"
+    };
+    let mut request = json!({"model":fixture.grok_alias});
+    if protocol == Protocol::Anthropic {
+        request["max_tokens"] = json!(128);
+    }
+    request[history_key] = json!([]);
+    for (turn, (mut menu, expected)) in [
+        (full.clone(), "grok-4.5"),
+        (reduced, "grok-synthetic-1"),
+        (full, "grok-4.5"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        Arc::make_mut(
+            menu.groups
+                .get_mut(&fixture.grok_alias)
+                .ok_or("missing route")?,
+        )
+        .bindings = Arc::default();
+        fixture.runtime.set_global(menu, 0)?;
+        request[history_key]
+            .as_array_mut()
+            .ok_or("missing synthetic history")?
+            .push(json!({"role":"user","content":"Synthetic task"}));
+        let send = |body: &Value| {
+            fixture
+                .client
+                .post(&root)
+                .bearer_auth(TOKEN)
+                .header("x-session-id", "synthetic-catalog-membership")
+                .json(body)
+                .send()
+        };
+        if turn > 0 {
+            let mut dependent = request.clone();
+            dependent["previous_response_id"] = json!("synthetic-owner-required");
+            let rejected = send(&dependent).await?;
+            assert_eq!(
+                rejected.status(),
+                StatusCode::CONFLICT,
+                "{agent} {endpoint}"
+            );
+            assert_eq!(fixture.sends.load(Ordering::SeqCst), turn);
+        }
+        let response = send(&request).await?;
+        let status = response.status();
+        let body: Value = response.json().await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{agent} {endpoint}: {}",
+            body["error"]["code"]
+        );
+        let forwarded = fixture.requests.recv().await.ok_or("missing request")?;
+        assert_eq!(forwarded["model"], expected, "{agent} {endpoint}");
+        assert_eq!(
+            forwarded["input"].as_array().map(Vec::len),
+            request[history_key].as_array().map(Vec::len),
+            "the complete transcript reaches the chosen model"
+        );
+        request[history_key]
+            .as_array_mut()
+            .ok_or("missing synthetic history")?
+            .push(json!({"role":"assistant","content":"Synthetic Grok answer"}));
+        fixture.runtime.flush_continuations().await;
+    }
+    fixture.stop().await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn workbuddy_visible_history_follows_member_changes() -> Result<(), Box<dyn std::error::Error>>
+{
+    let _security = security();
+    for agent in ["workbuddy", "workbuddy-ai"] {
+        visible_history_follows_member_changes(agent, Protocol::Chat).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn harness_visible_history_follows_member_changes() -> Result<(), Box<dyn std::error::Error>>
+{
+    let _security = security();
+    for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
+        visible_history_follows_member_changes("deepseek-harness", protocol).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn harness_saved_tool_history_follows_priority_after_the_tool_round(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    let mut fixture = Fixture::with_follow_up("openai_chat", 3, true).await?;
+    let endpoint = fixture.root.replace("/workbuddy/", "/deepseek-harness/");
+    fixture
+        .runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "deepseek-harness".into(),
+            token: TOKEN.into(),
+            model: fixture.grok_alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let dir = tempfile::tempdir()?;
+    let continuation_path = dir.path().join("continuations.json");
+    fixture
+        .runtime
+        .prepare_continuations(continuation_path.clone())
+        .await;
+    let mut full = (*fixture
+        .runtime
+        .global_snapshot()?
+        .ok_or("missing synthetic menu")?)
+    .clone();
+    Arc::make_mut(
+        full.groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    )
+    .group
+    .affinity = "turn".into();
+    let mut reduced = full.clone();
+    let group = Arc::make_mut(
+        reduced
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    );
+    group.bindings = Arc::default();
+    group.targets.remove(0);
+    group.group.members.remove(0);
+    group.group.default_member_id = "other-1".into();
+    group.group.fallback_member_ids = vec!["other-2".into()];
+    fixture.runtime.set_global(reduced, 0)?;
+
+    let send = |body: &Value| {
+        fixture
+            .client
+            .post(&endpoint)
+            .bearer_auth(TOKEN)
+            .header("x-vary-harness-session-id", "synthetic-saved-tool-history")
+            .json(body)
+            .send()
+    };
+    let opening = json!({"model":fixture.grok_alias,"messages":[
+        {"role":"user","content":"Synthetic opening"}
+    ]});
+    let response = send(&opening).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await?;
+    let call = body
+        .pointer("/choices/0/message/tool_calls/0")
+        .ok_or("missing tool call")?;
+    assert_eq!(call["id"], THIRD_ID);
+    assert_eq!(
+        fixture
+            .requests
+            .recv()
+            .await
+            .ok_or("missing opening request")?["model"],
+        "grok-synthetic-1"
+    );
+    fixture.runtime.flush_continuations().await;
+
+    // Restore the observations from disk, as on app restart.
+    let restored = continuation::Store::load(
+        continuation_path.clone(),
+        continuation_path.with_extension("key"),
+    )
+    .await?;
+    *fixture
+        .runtime
+        .continuations
+        .write()
+        .map_err(|_| "continuation lock poisoned")? = Some(restored);
+    let mut reenabled = full.clone();
+    Arc::make_mut(
+        reenabled
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    )
+    .bindings = Arc::default();
+    fixture.runtime.set_global(reenabled, 0)?;
+    let request = json!({"model":fixture.grok_alias,"messages":[
+        {"role":"user","content":"Synthetic opening"},
+        {"role":"assistant","content":null,"tool_calls":[call]},
+        {"role":"tool","tool_call_id":THIRD_ID,"content":"Synthetic completed result"},
+        {"role":"assistant","content":"Synthetic prior answer"},
+        {"role":"user","content":"Synthetic follow-up"}
+    ]});
+    let mut unknown = request.clone();
+    unknown["messages"][1]["tool_calls"][0]["id"] = json!("synthetic-unobserved-call");
+    unknown["messages"][2]["tool_call_id"] = json!("synthetic-unobserved-call");
+    let rejected = send(&unknown).await?;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 1);
+
+    let mut tool_result = request.clone();
+    tool_result["messages"]
+        .as_array_mut()
+        .ok_or("missing history")?
+        .truncate(3);
+    let response = send(&tool_result).await?;
+    let status = response.status();
+    let body: Value = response.json().await?;
+    assert_eq!(status, StatusCode::OK, "{}", body["error"]["code"]);
+    let forwarded = fixture
+        .requests
+        .recv()
+        .await
+        .ok_or("missing restored request")?;
+    assert_eq!(forwarded["model"], "grok-synthetic-1");
+    let input = forwarded["input"].as_array().ok_or("missing history")?;
+    assert!(input
+        .iter()
+        .any(|item| item["type"] == "function_call" && item["call_id"] == THIRD_ID));
+    assert!(input
+        .iter()
+        .any(|item| item["type"] == "function_call_output"
+            && item["call_id"] == THIRD_ID
+            && item["output"] == "Synthetic completed result"));
+    assert_eq!(send(&unknown).await?.status(), StatusCode::CONFLICT);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 2);
+
+    let response = send(&request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await?;
+    let forwarded = fixture.requests.recv().await.ok_or("missing new turn")?;
+    assert_eq!(
+        forwarded["model"], "grok-4.5",
+        "a new turn must follow current priority"
+    );
+    let input = forwarded["input"].as_array().ok_or("missing history")?;
+    assert!(input
+        .iter()
+        .any(|item| item["type"] == "function_call" && item["call_id"] == THIRD_ID));
+    assert!(input
+        .iter()
+        .any(|item| item["type"] == "function_call_output"
+            && item["call_id"] == THIRD_ID
+            && item["output"] == "Synthetic completed result"));
+    fixture.runtime.flush_continuations().await;
+
+    let mut reordered = full.clone();
+    let group = Arc::make_mut(
+        reordered
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    );
+    group.bindings = Arc::default();
+    group.targets.rotate_right(1);
+    group.group.members.rotate_right(1);
+    group.group.default_member_id = "other-2".into();
+    group.group.fallback_member_ids = vec!["direct".into(), "other-1".into()];
+    fixture.runtime.set_global(reordered, 0)?;
+    let response = send(&request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await?;
+    let forwarded = fixture
+        .requests
+        .recv()
+        .await
+        .ok_or("missing reordered turn")?;
+    assert_eq!(
+        forwarded["model"], "grok-synthetic-2",
+        "a new turn must follow the saved order"
+    );
+    fixture.runtime.flush_continuations().await;
+
+    let mut without_last_responder = full.clone();
+    let group = Arc::make_mut(
+        without_last_responder
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    );
+    group.bindings = Arc::default();
+    group.targets.remove(2);
+    group.group.members.remove(2);
+    group.group.fallback_member_ids = vec!["other-1".into()];
+    fixture
+        .runtime
+        .set_global(without_last_responder.clone(), 0)?;
+    let response = send(&request).await?;
+    let status = response.status();
+    let body: Value = response.json().await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "last responder removed: {}",
+        body["error"]["code"]
+    );
+    let forwarded = fixture
+        .requests
+        .recv()
+        .await
+        .ok_or("missing fallback turn")?;
+    assert_eq!(forwarded["model"], "grok-4.5");
+    fixture.runtime.flush_continuations().await;
+
+    let mut missing_owner = without_last_responder;
+    let group = Arc::make_mut(
+        missing_owner
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    );
+    group.bindings = Arc::default();
+    group.targets.remove(1);
+    group.group.members.remove(1);
+    group.group.fallback_member_ids.clear();
+    fixture.runtime.set_global(missing_owner, 0)?;
+    assert_eq!(send(&tool_result).await?.status(), StatusCode::CONFLICT);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 5);
+    let response = send(&request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await?;
+    let forwarded = fixture
+        .requests
+        .recv()
+        .await
+        .ok_or("missing replayed turn")?;
+    assert_eq!(forwarded["model"], "grok-4.5");
+    assert_eq!(send(&tool_result).await?.status(), StatusCode::CONFLICT);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 6);
+    fixture.runtime.flush_continuations().await;
+
+    let restored = continuation::Store::load(
+        continuation_path.clone(),
+        continuation_path.with_extension("key"),
+    )
+    .await?;
+    *fixture
+        .runtime
+        .continuations
+        .write()
+        .map_err(|_| "continuation lock poisoned")? = Some(restored);
+    let mut reenabled = full;
+    Arc::make_mut(
+        reenabled
+            .groups
+            .get_mut(&fixture.grok_alias)
+            .ok_or("missing route")?,
+    )
+    .bindings = Arc::default();
+    fixture.runtime.set_global(reenabled, 0)?;
+    let response = send(&request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await?;
+    let forwarded = fixture
+        .requests
+        .recv()
+        .await
+        .ok_or("missing restored turn")?;
+    assert_eq!(forwarded["model"], "grok-4.5");
+    assert_eq!(send(&tool_result).await?.status(), StatusCode::CONFLICT);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 7);
+    fixture.stop().await
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_before_deadline(
