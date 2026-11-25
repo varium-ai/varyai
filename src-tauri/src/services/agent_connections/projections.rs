@@ -1662,8 +1662,8 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_real_world_empty_patch_layer_and_grant_credentials_round_trip(
-    ) -> Result<(), String> {
+    fn deepseek_real_world_empty_patch_layer_and_grant_credentials_round_trip() -> Result<(), String>
+    {
         let root = tempfile::tempdir().map_err(|_| FAILED)?;
         let profile_dir = root.path().join("profiles").join("desktop");
         std::fs::create_dir_all(&profile_dir).map_err(|_| FAILED)?;
@@ -1676,10 +1676,12 @@ mod tests {
         let cred_source = "version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: synthetic-test-secret\n";
         std::fs::write(&cred_path, cred_source).map_err(|_| FAILED)?;
         // Session helper must match SOURCE exactly.
-        let session_path =
-            crate::services::deepseek_harness::session::path(&path);
-        std::fs::write(&session_path, crate::services::deepseek_harness::session::SOURCE)
-            .map_err(|_| FAILED)?;
+        let session_path = crate::services::deepseek_harness::session::path(&path);
+        std::fs::write(
+            &session_path,
+            crate::services::deepseek_harness::session::SOURCE,
+        )
+        .map_err(|_| FAILED)?;
 
         let catalog = vec![Model {
             api: "openai-completions",
@@ -1726,7 +1728,9 @@ mod tests {
             let manager = super::super::Manager {
                 root: root.path().join("receipts"),
             };
-            std::fs::create_dir_all(&manager.root).map_err(|_| FAILED).unwrap();
+            std::fs::create_dir_all(&manager.root)
+                .map_err(|_| FAILED)
+                .unwrap();
             manager
                 .install(receipt)
                 .map_err(|e| format!("install failed: {e}"))
@@ -1751,12 +1755,14 @@ mod tests {
 
         // Verify the credentials file was updated correctly.
         let cred_live = std::fs::read_to_string(&cred_path).map_err(|_| FAILED)?;
-        assert!(cred_live.contains("VARYAI_HARNESS_GATEWAY_KEY"), "refs key added");
+        assert!(
+            cred_live.contains("VARYAI_HARNESS_GATEWAY_KEY"),
+            "refs key added"
+        );
         assert!(cred_live.contains("synthetic-test-token"), "token written");
 
         // Verify the session file still matches SOURCE.
-        let session_live =
-            std::fs::read_to_string(&session_path).map_err(|_| FAILED)?;
+        let session_live = std::fs::read_to_string(&session_path).map_err(|_| FAILED)?;
         assert_eq!(
             session_live,
             crate::services::deepseek_harness::session::SOURCE,
