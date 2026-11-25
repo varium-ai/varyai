@@ -49,7 +49,8 @@ export function AgentRewardsPanel({
   const auto = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       agentRewardsApi.setAuto(app, id, enabled),
-    onSuccess: (value) =>
+    onSuccess: async (value) => {
+      await client.cancelQueries({ queryKey });
       client.setQueryData<AgentRewardStatus>(queryKey, (previous) =>
         previous?.accountId === value.accountId
           ? {
@@ -58,7 +59,8 @@ export function AgentRewardsPanel({
               autoConfigured: value.autoConfigured,
             }
           : previous,
-      ),
+      );
+    },
   });
   const native = useMutation({
     mutationFn: agentRewardsApi.nativeAccount,
@@ -357,11 +359,7 @@ export function AgentRewardsPanel({
                     : data?.autoConfigured) ?? false)
             }
             disabled={
-              !data?.accountId ||
-              !!data.savedOutcome ||
-              busy ||
-              query.isFetching ||
-              query.isError
+              !data?.accountId || !!data.savedOutcome || busy || query.isError
             }
             onCheckedChange={(enabled) => {
               claim.reset();

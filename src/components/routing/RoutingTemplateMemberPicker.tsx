@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronUp, GripVertical, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AccountLabel } from "@/components/AccountLabel";
@@ -11,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import type {
   RoutingMember,
   RoutingProviderOption,
@@ -20,10 +22,12 @@ import {
   routingMemberKey,
   routingMemberUnavailableReason,
 } from "@/lib/routingMemberSelection";
+import { RoutingMemberQuotaDates } from "./RoutingMemberQuotaDates";
 
 type TemplateMemberPickerProps = {
   providers: RoutingProviderOption[];
   members: RoutingMember[];
+  showExpiry?: boolean;
   disabled: boolean;
   onChange: (members: RoutingMember[]) => void;
   onRecommendOrder?: () => void;
@@ -32,11 +36,19 @@ type TemplateMemberPickerProps = {
 export function RoutingTemplateMemberPicker({
   providers,
   members,
+  showExpiry,
   disabled,
   onChange,
   onRecommendOrder,
 }: TemplateMemberPickerProps) {
   const { t } = useTranslation();
+  const upstreams = useQuery({
+    queryKey: ["routing-upstreams"],
+    queryFn: routingUpstreamsApi.list,
+    enabled: !!showExpiry,
+    staleTime: 30_000,
+    retry: false,
+  });
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const catalog = useMemo(() => {
     const choices = new Map<
@@ -208,6 +220,16 @@ export function RoutingTemplateMemberPicker({
                     />
                   </ModelPickerPopoverContent>
                 </Popover>
+                {showExpiry && (
+                  <RoutingMemberQuotaDates
+                    upstream={upstreams.data?.find(
+                      ({ id }) => id === member.providerId,
+                    )}
+                    relayExpiry={provider?.relayExpiry}
+                    modelId={member.modelId}
+                    loadingUpstreams={upstreams.isPending}
+                  />
+                )}
                 {members.length > 1 &&
                   ([-1, 1] as const).map((offset) => {
                     const action = t(

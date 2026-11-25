@@ -530,9 +530,77 @@ fn catalog(provider: SubscriptionProvider, value: &Value) -> Result<Vec<Value>, 
     Ok(models)
 }
 
-pub(super) async fn quota(
-    account: &Account,
-) -> Result<crate::services::subscription::SubscriptionQuota, String> {
+fn billing_number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.trim().parse().ok())
+        .filter(|n| n.is_finite() && *n >= 0.0)
+}
+
+fn quota_dates(
+    provider: SubscriptionProvider,
+    enterprise: bool,
+    value: &Value,
+    now: i64,
+) -> (Option<String>, Option<String>) {
+    let date = |value: &Value| {
+        let utc = if let Some(n) = value.as_i64() {
+            if n >= 1_000_000_000_000 {
+                chrono::DateTime::from_timestamp_millis(n)
+            } else {
+                chrono::DateTime::from_timestamp(n, 0)
+            }
+        } else {
+            let text = value.as_str()?.trim();
+            chrono::DateTime::parse_from_rfc3339(text)
+                .ok()
+                .map(|date| date.to_utc())
+                .or_else(|| {
+                    if provider != SubscriptionProvider::Workbuddy {
+                        return None;
+                    }
+                    let date =
+                        chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").ok()?;
+                    let offset = chrono::FixedOffset::east_opt(8 * 3600)?;
+                    date.and_local_timezone(offset)
+                        .single()
+                        .map(|date| date.to_utc())
+                })
+        }?;
+        (utc.timestamp() > now).then_some(utc)
+    };
+    let format = |date: chrono::DateTime<chrono::Utc>| date.to_rfc3339();
+    if enterprise {
+        return (date(&value["cycleResetTime"]).map(format), None);
+    }
+    let packages = ["CreditGroups", "Packages"]
+        .into_iter()
+        .filter_map(|key| value[key].as_array())
+        .flatten();
+    let reset = packages
+        .clone()
+        .filter_map(|row| date(&row["CycleEndTime"]))
+        .min()
+        .map(format);
+    let expiry = packages
+        .filter(|row| {
+            billing_number(&row["CycleCapacityRemainPrecise"])
+                .or_else(|| billing_number(&row["CycleRemainCapacity"]))
+                .or_else(|| {
+                    Some(
+                        billing_number(&row["CycleTotalCapacity"])?
+                            - billing_number(&row["CycleUsedCapacity"])?,
+                    )
+                })
+                .is_some_and(|remaining| remaining > 0.0)
+        })
+        .filter_map(|row| date(&row["DeductionEndTime"]))
+        .min()
+        .map(format);
+    (reset, expiry)
+}
+
+pub(super) async fn quota(account: &Account) -> Result<QuotaObservation, String> {
     let mut quota = parse_google_quota(account.provider, &Value::Null);
     let enterprise = !account.workbuddy.enterprise.is_empty();
     let path = if enterprise {
@@ -541,13 +609,14 @@ pub(super) async fn quota(
         "/billing/meter/get-user-resource-summary"
     };
     let value = account_request(account, Method::POST, path, Some(json!({}))).await?;
-    let number = |v: &Value| {
-        v.as_f64()
-            .or_else(|| v.as_str()?.trim().parse().ok())
-            .filter(|n| n.is_finite() && *n >= 0.0)
-    };
+    let (reset_at, credits_expires_at) = quota_dates(
+        account.provider,
+        enterprise,
+        &value,
+        chrono::Utc::now().timestamp(),
+    );
     let amounts = if enterprise {
-        number(&value["credit"]).zip(number(&value["limitNum"]))
+        billing_number(&value["credit"]).zip(billing_number(&value["limitNum"]))
     } else {
         ["CreditGroups", "Packages"].into_iter().find_map(|key| {
             value[key]
@@ -555,8 +624,8 @@ pub(super) async fn quota(
                 .iter()
                 .filter_map(|row| {
                     Some((
-                        number(&row["CycleUsedCapacity"])?,
-                        number(&row["CycleTotalCapacity"])?,
+                        billing_number(&row["CycleUsedCapacity"])?,
+                        billing_number(&row["CycleTotalCapacity"])?,
                     ))
                 })
                 .reduce(|(used, total), (u, t)| (used + u, total + t))
@@ -568,12 +637,15 @@ pub(super) async fn quota(
         quota.tiers.push(crate::services::subscription::QuotaTier {
             name: "credits".into(),
             utilization: (used / total * 100.0).clamp(0.0, 100.0),
-            resets_at: None,
+            resets_at: reset_at,
             used_value_usd: None,
             max_value_usd: None,
         });
     }
-    Ok(quota)
+    Ok(QuotaObservation {
+        quota,
+        credits_expires_at,
+    })
 }
 
 #[cfg(test)]

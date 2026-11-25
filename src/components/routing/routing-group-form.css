@@ -687,6 +687,20 @@
   flex: 1;
   max-width: 520px;
 }
+.rt-group-form .rt-template-member-expiry {
+  display: grid;
+  gap: 3px;
+  max-width: 42%;
+  padding-inline: 4px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: end;
+}
+.rt-group-form .rt-template-member-expiry time {
+  color: var(--mp-control);
+  font-variant-numeric: tabular-nums;
+}
 .rt-group-form .rt-template-member:hover:not(:disabled),
 .rt-group-form .rt-template-member-add:hover:not(:disabled) {
   border-color: var(--mp-muted);

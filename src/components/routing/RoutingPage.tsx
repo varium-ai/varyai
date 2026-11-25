@@ -27,6 +27,10 @@ type Row = RoutingTrace;
 const backgroundPurposes = new Set([
   "kind:thread_title",
   "kind:thread_description",
+  "kind:memory_consolidation",
+  "kind:composer_predictions",
+  "kind:ambient_suggestions",
+  "kind:guardian",
   "kind:provider_test",
   "kind:api_detect",
   "kind:model_list",

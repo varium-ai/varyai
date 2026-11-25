@@ -183,6 +183,8 @@ export function IntentRoutingPanel({
 }) {
   const { t } = useTranslation();
   const client = useQueryClient();
+  const [draft, setDraft] = useState<RoutingGroup | null>(null);
+  const [draftTemplate, setDraftTemplate] = useState<RoutingTemplate["key"]>();
   const groups = useQuery({
     queryKey: ["intent-routing-groups"],
     queryFn: intentRoutingApi.list,
@@ -190,6 +192,9 @@ export function IntentRoutingPanel({
   const providers = useQuery({
     queryKey: ["intent-routing-providers"],
     queryFn: intentRoutingApi.providers,
+    // The catalog fills expiry observations in the background.
+    refetchInterval:
+      draft && draftTemplate === "templateExpiry" ? 10_000 : false,
   });
   const discovery = useQuery({
     queryKey: ["routing-catalog-discovery"],
@@ -228,8 +233,6 @@ export function IntentRoutingPanel({
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [pickingClassifier, setPickingClassifier] = useState(false);
   const [patternInput, setPatternInput] = useState("");
-  const [draft, setDraft] = useState<RoutingGroup | null>(null);
-  const [draftTemplate, setDraftTemplate] = useState<RoutingTemplate["key"]>();
   const patternsChanged =
     !!draft &&
     (JSON.stringify(draft.match) !==
@@ -667,7 +670,9 @@ export function IntentRoutingPanel({
           draftTemplate === "templateSmart" &&
           (draft.rules.length > 0 || draft.members.length > 3)
             ? withSmartRuleMembers({ ...draft, template: draftTemplate })
-            : draft;
+            : draft.quotaOrder
+              ? withDraftMemberOrder(draft, draft.members)
+              : draft;
         await saveGroup({
           ...group,
           name: draft.name.trim(),
@@ -1223,6 +1228,7 @@ export function IntentRoutingPanel({
                 <RoutingTemplateMemberPicker
                   providers={providers.data ?? []}
                   members={draft.members}
+                  showExpiry={draftTemplate === "templateExpiry"}
                   disabled={pending}
                   onChange={(members) =>
                     edit(withDraftMemberOrder(draft, members))
