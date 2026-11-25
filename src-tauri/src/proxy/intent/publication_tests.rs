@@ -284,3 +284,91 @@ async fn stale_codex_publications_reject_before_forwarding_and_recover_with_the_
     upstream.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn on_demand_refresher_recovers_stale_catalog_without_503(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::Database;
+    use std::sync::atomic::Ordering;
+    let db = Arc::new(Database::memory()?);
+    let runtime = Arc::new(Runtime::default());
+    let menu = Arc::new(Menu {
+        token: "test-token".into(),
+        models: HashMap::new(),
+        default_model: None,
+        omitted_entries: 0,
+        context_settings: crate::services::intent_routing::context::Settings::default(),
+        groups: HashMap::new(),
+    });
+    let (global_calls, menu_calls) = (
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    );
+    {
+        let db = db.clone();
+        let runtime_weak = Arc::downgrade(&runtime);
+        let menu = menu.clone();
+        let calls = global_calls.clone();
+        runtime.set_global_refresher(Arc::new(move || {
+            let db = db.clone();
+            let runtime_weak = runtime_weak.clone();
+            let menu = menu.clone();
+            let calls = calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let rt = runtime_weak.upgrade().ok_or("dropped")?;
+                rt.set_global((*menu).clone(), db.routing_generation())
+            })
+        }));
+    }
+    {
+        let db = db.clone();
+        let runtime_weak = Arc::downgrade(&runtime);
+        let menu = menu.clone();
+        let calls = menu_calls.clone();
+        runtime.set_menu_refresher(Some(Arc::new(move || {
+            let db = db.clone();
+            let runtime_weak = runtime_weak.clone();
+            let menu = menu.clone();
+            let calls = calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let rt = runtime_weak.upgrade().ok_or("dropped")?;
+                rt.set_menu(PublishedMenu::new(menu, db.routing_generation()))?;
+                Ok(())
+            })
+        })));
+    }
+    runtime.set_global((*menu).clone(), db.routing_generation())?;
+    runtime.set_menu(PublishedMenu::new(menu.clone(), db.routing_generation()))?;
+    db.invalidate_routing_resources();
+    assert!(!runtime.global_current(db.routing_generation()));
+    assert!(runtime.ensure_global_current(&db).await);
+    assert!(runtime.ensure_menu_current(&db).await);
+    assert_eq!(global_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(menu_calls.load(Ordering::SeqCst), 1);
+    assert!(runtime.global_current(db.routing_generation()));
+    Ok(())
+}
+
+#[test]
+fn side_request_follows_active_session_model() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "x-codex-turn-metadata",
+        http::HeaderValue::from_static(r#"{"thread_source":"thread_title"}"#),
+    );
+    assert!(trace::is_side_request(&headers));
+
+    let runtime = Runtime::default();
+    runtime.record_session_model("agent:codex", Some("conv-1"), "vary-auto/active-group");
+    assert_eq!(
+        runtime.side_session_alias("agent:codex", Some("conv-1")).as_deref(),
+        Some("vary-auto/active-group")
+    );
+    // Falls back to the consumer's most recent model when the side request omits session id.
+    assert_eq!(
+        runtime.side_session_alias("agent:codex", None).as_deref(),
+        Some("vary-auto/active-group")
+    );
+}

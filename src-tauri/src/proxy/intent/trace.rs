@@ -497,24 +497,8 @@ impl Request {
     pub(crate) fn purpose(&self, headers: &http::HeaderMap, compact: bool) {
         let kind = if compact {
             Some("compact")
-        } else if let Some(marker) = headers
-            .get("x-openai-subagent")
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty())
-        {
-            Some(known_kind(marker).unwrap_or("unknown"))
         } else {
-            #[derive(serde::Deserialize)]
-            struct Metadata {
-                thread_source: Option<String>,
-            }
-            headers
-                .get("x-codex-turn-metadata")
-                .filter(|value| value.as_bytes().len() <= 8192)
-                .and_then(|value| serde_json::from_slice::<Metadata>(value.as_bytes()).ok())
-                .and_then(|metadata| metadata.thread_source)
-                .filter(|source| !matches!(source.as_str(), "" | "user" | "subagent"))
-                .map(|source| known_kind(&source).unwrap_or("unknown"))
+            detect_kind(headers)
         };
         self.update(|row| row.kind = kind.map(str::to_owned));
     }
@@ -677,6 +661,41 @@ impl Request {
             history.save(row);
         }
     }
+}
+
+fn detect_kind(headers: &http::HeaderMap) -> Option<&'static str> {
+    if let Some(marker) = headers
+        .get("x-openai-subagent")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(known_kind(marker).unwrap_or("unknown"));
+    }
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        thread_source: Option<String>,
+    }
+    headers
+        .get("x-codex-turn-metadata")
+        .filter(|value| value.as_bytes().len() <= 8192)
+        .and_then(|value| serde_json::from_slice::<Metadata>(value.as_bytes()).ok())
+        .and_then(|metadata| metadata.thread_source)
+        .filter(|source| !matches!(source.as_str(), "" | "user" | "subagent"))
+        .map(|source| known_kind(&source).unwrap_or("unknown"))
+}
+
+pub(crate) fn is_side_request(headers: &http::HeaderMap) -> bool {
+    matches!(
+        detect_kind(headers),
+        Some(
+            "thread_title"
+                | "thread_title_reconsideration"
+                | "title_generation"
+                | "title"
+                | "thread_description"
+                | "composer_predictions"
+        )
+    )
 }
 
 // Keep only catalog tokens, never arbitrary client metadata or header text.

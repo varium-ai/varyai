@@ -759,16 +759,27 @@ export function AgentConnectionsPage({
             ? "common.loading"
             : "agentConnections.nativeUnavailable",
         );
+    const isOpaqueInternalModel =
+      !!state?.model &&
+      (state.model.startsWith("vary-provider/") ||
+        state.model.startsWith("vary-auto/") ||
+        state.model.startsWith("auto/"));
+    const matchedCatalogName =
+      catalog.data?.find((model) => model.id === state?.model)?.name ??
+      savedRoutingGroups.data?.groups.find(
+        (group) =>
+          (group.modelAlias ?? `vary-auto/${group.id}`) === state?.model,
+      )?.name;
     const currentModel =
       needsModelControl(app) && (!enabled || !modelControl?.authorized)
         ? t("agentConnections.nativeDefault")
         : enabled
-          ? (catalog.data?.find((model) => model.id === state?.model)?.name ??
-            savedRoutingGroups.data?.groups.find(
-              (group) =>
-                (group.modelAlias ?? `vary-auto/${group.id}`) === state?.model,
-            )?.name ??
-            state?.model ??
+          ? (matchedCatalogName ??
+            (isOpaqueInternalModel
+              ? catalog.isPending || savedRoutingGroups.isFetching
+                ? t("common.loading")
+                : t("agentConnections.pickModel")
+              : state?.model) ??
             t("agentConnections.pickModel"))
           : nativeLabel;
     const detailsId = `${pageId}-${app}-details`;

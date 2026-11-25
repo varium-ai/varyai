@@ -958,3 +958,32 @@ async fn pi_restores_sensitive_tokens_across_native_protocols() {
     server.stop().await.expect("stop");
     upstream.abort();
 }
+
+#[tokio::test]
+async fn upstream_context_length_and_payload_too_large_are_normalized() {
+    use axum::body::to_bytes;
+    let openai = error_with_type(
+        Protocol::Chat,
+        StatusCode::BAD_REQUEST,
+        "invalid_request_error",
+        "context_length_exceeded",
+        "context_length_exceeded",
+    );
+    assert_eq!(openai.status(), StatusCode::BAD_REQUEST);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(openai.into_body(), 4096).await.expect("body"))
+            .expect("json");
+    assert_eq!(body["error"]["code"], "context_length_exceeded");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+
+    let large = error(
+        Protocol::Anthropic,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "request_too_large",
+    );
+    assert_eq!(large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(large.into_body(), 4096).await.expect("body"))
+            .expect("json");
+    assert_eq!(body["error"]["type"], "request_too_large");
+}
