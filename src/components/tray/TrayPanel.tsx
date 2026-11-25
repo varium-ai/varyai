@@ -2,10 +2,12 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowUp, ExternalLink, RefreshCw, Settings } from "lucide-react";
+import { toast } from "sonner";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { GlobalSecurityToggle } from "@/components/security/GlobalSecurityToggle";
 import {
+  securityEventName,
   securityEventResultLabel,
   securityEventRiskLabel,
 } from "@/components/security/securityEventLabels";
@@ -61,30 +63,33 @@ export function TrayPanel() {
     enabled: active,
     refetchInterval: active ? 5000 : false,
   });
-  async function refresh() {
+  async function refresh(notify = false) {
     if (refreshing) return;
     setRefreshing(true);
     try {
       if (tab === "usage") {
         await client.invalidateQueries({ queryKey: trayUsageKey });
-        return;
+      } else {
+        const roots =
+          tab === "agents"
+            ? [
+                "agent-connections",
+                "agent-installations",
+                "agent-native-models",
+                "agent-model-catalog",
+                "agent-cli-version",
+                "agent-desktop-versions",
+              ]
+            : tab === "quota"
+              ? quotaRoots
+              : ["security", "securityEvents", "proxyStatus"];
+        await Promise.all(
+          roots.map((root) => client.invalidateQueries({ queryKey: [root] })),
+        );
       }
-      const roots =
-        tab === "agents"
-          ? [
-              "agent-connections",
-              "agent-installations",
-              "agent-native-models",
-              "agent-model-catalog",
-              "agent-cli-version",
-              "agent-desktop-versions",
-            ]
-          : tab === "quota"
-            ? quotaRoots
-            : ["security", "securityEvents", "proxyStatus"];
-      await Promise.all(
-        roots.map((root) => client.invalidateQueries({ queryKey: [root] })),
-      );
+      if (notify) toast.success(t("settings.autoReload"));
+    } catch {
+      if (notify) toast.error(t("trayPanel.failed"));
     } finally {
       setRefreshing(false);
     }
@@ -165,7 +170,7 @@ export function TrayPanel() {
           aria-label={t("trayPanel.refresh")}
           disabled={refreshBusy}
           aria-busy={refreshBusy}
-          onClick={() => void refresh()}
+          onClick={() => void refresh(true)}
         >
           <RefreshCw
             size={14}
@@ -294,6 +299,27 @@ export function TrayPanel() {
   );
 }
 
+function formatTrayEventTime(timestamp: number, language: string): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  if (isToday) {
+    return date.toLocaleTimeString(language, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  return date.toLocaleString(language, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function TraySecurity() {
   const { t, i18n } = useTranslation();
   const settings = useQuery({
@@ -339,28 +365,38 @@ function TraySecurity() {
         ) : !events.data?.items.length ? (
           <p className="tray-empty">{t("trayPanel.noEvents")}</p>
         ) : (
-          events.data.items.map((event) => (
-            <div key={event.key}>
-              <span
-                className="tray-dot"
-                data-result={event.result}
-                aria-hidden="true"
-              />
-              <span>
-                <b>{securityEventResultLabel(t, event)}</b>
-                <small>
-                  {event.appType ?? "—"} ·{" "}
-                  {securityEventRiskLabel(t, event.riskLevel, true)}
-                </small>
-              </span>
-              <time>
-                {new Date(event.timestamp).toLocaleTimeString(i18n.language, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </time>
-            </div>
-          ))
+          events.data.items.map((event) => {
+            const eventName = securityEventName(t, event);
+            const detail = [
+              event.appType ?? "—",
+              securityEventRiskLabel(t, event.riskLevel, true),
+              eventName,
+            ].join(" · ");
+            const summary =
+              event.triggerCount > 1
+                ? `${detail} ×${event.triggerCount}`
+                : detail;
+            return (
+              <div key={event.key}>
+                <span
+                  className="tray-dot"
+                  data-result={event.result}
+                  aria-hidden="true"
+                />
+                <span>
+                  <b>{securityEventResultLabel(t, event)}</b>
+                  <small title={summary}>{summary}</small>
+                </span>
+                <time
+                  title={new Date(event.timestamp).toLocaleString(
+                    i18n.language,
+                  )}
+                >
+                  {formatTrayEventTime(event.timestamp, i18n.language)}
+                </time>
+              </div>
+            );
+          })
         )}
       </div>
     </section>

@@ -1,4 +1,4 @@
-import { Fragment, useId, useRef, useState } from "react";
+import { Fragment, useId, useMemo, useRef, useState } from "react";
 import {
   useMutation,
   useMutationState,
@@ -53,6 +53,8 @@ import { agentRewardsApi, hasAgentRewards } from "@/lib/api/agent-rewards";
 import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
 import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
 import { intentRoutingApi } from "@/lib/api/intentRouting";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
+import { withUpstreamIcons } from "@/components/providers/UpstreamIcon";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { isMac, isWindows } from "@/lib/platform";
@@ -228,6 +230,15 @@ export function AgentConnectionsPage({
     queryKey: ["agent-model-catalog"],
     queryFn: agentConnectionsApi.models,
   });
+  const upstreams = useQuery({
+    queryKey: ["routing-upstreams"],
+    queryFn: routingUpstreamsApi.list,
+    staleTime: 30000,
+  });
+  const catalogModels = useMemo(
+    () => withUpstreamIcons(catalog.data ?? [], upstreams.data),
+    [catalog.data, upstreams.data],
+  );
   const savedRoutingGroups = useQuery({
     queryKey: ["intent-routing-groups"],
     queryFn: intentRoutingApi.list,
@@ -885,7 +896,7 @@ export function AgentConnectionsPage({
           })}
         >
           <SharedModelPicker
-            models={catalog.isError ? [] : (catalog.data ?? [])}
+            models={catalog.isError ? [] : catalogModels}
             selected={catalog.data?.map((model) => model.id) ?? []}
             readOnly
             title={t("agentConnections.modelListTitle", {
@@ -1265,7 +1276,7 @@ export function AgentConnectionsPage({
                       app={app}
                       name={name(app)}
                       connected={enabled}
-                      models={catalog.data ?? []}
+                      models={catalogModels}
                       disabled={
                         (!!operation && operation !== "visibility") ||
                         updates.isBusy(app) ||
@@ -1318,7 +1329,7 @@ export function AgentConnectionsPage({
                               },
                             ]
                           : []),
-                        ...(catalog.isError ? [] : (catalog.data ?? [])).filter(
+                        ...(catalog.isError ? [] : catalogModels).filter(
                           (model) =>
                             app !== "claude-desktop" ||
                             (!!desktopVisibility.data &&
@@ -1993,7 +2004,7 @@ export function AgentConnectionsPage({
                     ? t("agentConnections.traeStartingModelHint")
                     : undefined
                 }
-                models={catalog.data ?? []}
+                models={catalogModels}
                 selected={[selected]}
                 onPick={setSelected}
               />

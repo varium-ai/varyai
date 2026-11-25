@@ -48,6 +48,11 @@ vi.mock("@/lib/query", () => ({ useSettingsQuery: () => ({ data: null }) }));
 vi.mock("@/lib/trayPanel", () => ({
   trayPanelApi: { navigation: async () => null },
 }));
+vi.mock("@/lib/api/routingUpstreams", () => ({
+  routingUpstreamsApi: {
+    list: vi.fn(async () => []),
+  },
+}));
 
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
