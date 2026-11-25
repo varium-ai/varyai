@@ -81,9 +81,10 @@ const TabsList = React.forwardRef<
     <TabsPrimitive.List
       ref={setListRef}
       className={cn(
-        "relative isolate inline-flex items-center justify-center gap-1 rounded-md bg-muted p-1 text-muted-foreground",
+        "vary-segmented relative isolate inline-flex items-center justify-center",
         className,
       )}
+      data-sliding-indicator={slidingIndicator ? "" : undefined}
       {...props}
     >
       {slidingIndicator !== false && (
@@ -91,7 +92,7 @@ const TabsList = React.forwardRef<
           ref={indicatorRef}
           aria-hidden="true"
           data-testid="tabs-list-indicator"
-          className="pointer-events-none absolute left-0 top-0 z-0 rounded-sm bg-card transition-[transform,width] duration-300 ease-out motion-reduce:transition-none"
+          className="vary-segmented-indicator pointer-events-none absolute left-0 top-0 z-0 transition-[transform,width] duration-300 ease-out motion-reduce:transition-none"
           style={{ visibility: "hidden" }}
         />
       )}
@@ -108,7 +109,7 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "relative z-10 inline-flex min-h-9 min-w-[120px] items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-[13px] font-medium text-secondary-foreground ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:text-[var(--disabled-foreground)] data-[state=active]:bg-card data-[state=active]:text-primary data-[state=inactive]:hover:bg-card",
+      "relative z-10 inline-flex min-h-9 min-w-[120px] items-center justify-center whitespace-nowrap px-3 py-1.5 text-[13px] font-medium transition-colors disabled:pointer-events-none",
       className,
     )}
     {...props}

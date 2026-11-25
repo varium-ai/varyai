@@ -31,7 +31,7 @@ export function ThemeSettings() {
         onValueChange={(value) => setTheme(value)}
         options={options}
         indicatorVariant="surface"
-        className="max-w-full border-0 bg-muted"
+        className="max-w-full"
         buttonClassName="h-[30px] px-2 text-xs"
         ariaLabel={t("settings.theme")}
       />

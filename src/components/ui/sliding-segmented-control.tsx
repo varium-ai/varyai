@@ -43,13 +43,20 @@ export function SlidingSegmentedControl<Value extends string>({
   const count = Math.max(options.length, 1);
   const currentIndex = options.findIndex((option) => option.value === value);
   const selectedIndex = Math.max(currentIndex, 0);
+  const surface = indicatorVariant === "surface";
+  const inset =
+    indicatorInset === "padded" ? "var(--segmented-inset, 4px)" : "0px";
 
   return (
     <div
       role={role}
       aria-label={ariaLabel}
+      data-sliding-indicator={surface ? "" : undefined}
       className={cn(
-        "relative inline-grid rounded-md border border-border-default bg-background p-1",
+        "relative inline-grid gap-0",
+        surface
+          ? "vary-segmented"
+          : "rounded-md border border-border-default bg-background p-1",
         className,
       )}
       style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
@@ -58,19 +65,17 @@ export function SlidingSegmentedControl<Value extends string>({
         aria-hidden="true"
         data-testid={indicatorTestId}
         className={cn(
-          "pointer-events-none absolute z-0 rounded-sm transition-transform duration-300 ease-out motion-reduce:transition-none",
-          indicatorInset === "padded" ? "inset-y-1 left-1" : "inset-0",
-          indicatorVariant === "primary"
-            ? "bg-blue-500 dark:bg-blue-600 [:root[data-renderer=application]_&]:bg-primary"
-            : "bg-card",
+          "pointer-events-none absolute z-0 transition-transform duration-300 ease-out motion-reduce:transition-none",
+          surface
+            ? "vary-segmented-indicator"
+            : "rounded-sm bg-blue-500 dark:bg-blue-600 [:root[data-renderer=application]_&]:bg-primary",
           indicatorClassName,
         )}
         style={
           {
-            width:
-              indicatorInset === "padded"
-                ? `calc((100% - 0.5rem) / ${count})`
-                : `${100 / count}%`,
+            insetBlock: inset,
+            insetInlineStart: inset,
+            width: `calc((100% - 2 * ${inset}) / ${count})`,
             transform: `translateX(${selectedIndex * 100}%)`,
             visibility: currentIndex < 0 ? "hidden" : undefined,
           } as CSSProperties
@@ -78,10 +83,6 @@ export function SlidingSegmentedControl<Value extends string>({
       />
       {options.map((option) => {
         const selected = option.value === value;
-        const activeTextClass =
-          indicatorVariant === "primary"
-            ? "!text-white hover:!text-white dark:!text-white"
-            : "text-blue-600 hover:!text-blue-600 dark:text-blue-400 dark:hover:!text-blue-400 [:root[data-renderer=application]_&]:!text-primary";
 
         return (
           <Button
@@ -99,9 +100,10 @@ export function SlidingSegmentedControl<Value extends string>({
             onClick={() => onValueChange(option.value)}
             className={cn(
               "relative z-10 w-full min-w-0 justify-center whitespace-nowrap",
-              selected
-                ? `${activeTextClass} hover:!bg-transparent dark:hover:!bg-transparent`
-                : "text-muted-foreground hover:text-foreground hover:bg-muted",
+              !surface &&
+                (selected
+                  ? "!text-white hover:!text-white dark:!text-white hover:!bg-transparent dark:hover:!bg-transparent"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"),
               buttonClassName,
             )}
           >

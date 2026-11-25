@@ -31,27 +31,15 @@
 .mp-long-segments {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--long-border);
-  border-radius: 7px;
-  background: var(--mp-pill, hsl(var(--muted)));
 }
 .mp-long-segments > button {
   padding: 5px 9px;
-  border-radius: 4px;
-  color: var(--mp-muted, hsl(var(--muted-foreground)));
-}
-.mp-long-segments > button[aria-checked="true"] {
-  background: var(--mp-card, hsl(var(--background)));
-  color: var(--mp-fg, hsl(var(--foreground)));
 }
 .mp-long-segments > button:disabled,
 .mp-long-threshold:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
-.mp-long-segments > button:focus-visible,
 .mp-long-threshold:focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
