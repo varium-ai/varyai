@@ -663,9 +663,7 @@ export function RoutingUpstreamsPanel({
     if (
       saved?.source.kind !== "api" ||
       saved.revision !== (copyFrom?.revision ?? draft.revision) ||
-      saved.source.baseUrl !== draft.source.baseUrl ||
-      saved.source.apiFormat !== draft.source.apiFormat ||
-      saved.source.authType !== draft.source.authType
+      saved.source.baseUrl !== draft.source.baseUrl
     )
       throw new Error("unavailable");
     return saved;
@@ -674,7 +672,14 @@ export function RoutingUpstreamsPanel({
     if (!draft || draft.source.kind !== "api") throw new Error("unavailable");
     if (!apiKey) {
       const saved = savedCredentialSource();
-      return routingUpstreamsApi.probe(saved.id, saved.revision, model);
+      const authChanged =
+        saved.source.kind === "api" &&
+        saved.source.authType !== draft.source.authType;
+      return authChanged
+        ? routingUpstreamsApi.probe(saved.id, saved.revision, model, {
+            authType: draft.source.authType,
+          })
+        : routingUpstreamsApi.probe(saved.id, saved.revision, model);
     }
     return detectProviderProtocols({
       baseUrl: draft.source.baseUrl,
@@ -713,7 +718,18 @@ export function RoutingUpstreamsPanel({
     if (!draft || draft.source.kind !== "api") return [];
     if (!apiKey) {
       const saved = savedCredentialSource();
-      return routingUpstreamsApi.discover(saved.id, saved.revision);
+      const apiFormat = catalogFormat ?? draft.source.apiFormat;
+      const formatChanged =
+        saved.source.kind === "api" && saved.source.apiFormat !== apiFormat;
+      const authChanged =
+        saved.source.kind === "api" &&
+        saved.source.authType !== draft.source.authType;
+      return formatChanged || authChanged
+        ? routingUpstreamsApi.discover(saved.id, saved.revision, {
+            ...(formatChanged ? { apiFormat } : {}),
+            ...(authChanged ? { authType: draft.source.authType } : {}),
+          })
+        : routingUpstreamsApi.discover(saved.id, saved.revision);
     }
     const source = draft.source;
     const apiFormat = catalogFormat ?? source.apiFormat;

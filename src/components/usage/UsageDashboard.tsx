@@ -27,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import {
   usageKeys,
   useModelStats,
@@ -90,6 +90,7 @@ export function UsageDashboard({
 }: UsageDashboardProps = {}) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const usageFetching = useIsFetching({ queryKey: usageKeys.all }) > 0;
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
   const [appType, setAppType] = useState<string>(initialAppType);
   const [selectedSource, setSelectedSource] = useState<UsageSourceOption>();
@@ -442,7 +443,9 @@ export function UsageDashboard({
             aria-label={t("usage.refreshInterval")}
           >
             <span className="flex items-center gap-2">
-              <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+              <RefreshCw
+                className={`h-3.5 w-3.5 shrink-0 ${usageFetching ? "animate-spin" : ""}`}
+              />
               <SelectValue />
             </span>
           </SelectTrigger>

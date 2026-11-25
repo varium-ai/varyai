@@ -164,10 +164,16 @@ export const routingUpstreamsApi = {
       account,
       model,
     }),
-  discover: (id: string, revision: number) =>
+  discover: (
+    id: string,
+    revision: number,
+    options?: { apiFormat?: string; authType?: string },
+  ) =>
     invoke<FetchedModel[]>("discover_routing_upstream_models", {
       id,
       revision,
+      ...(options?.apiFormat ? { apiFormat: options.apiFormat } : {}),
+      ...(options?.authType ? { authType: options.authType } : {}),
     }),
   list: () => invoke<RoutingUpstream[]>("list_routing_upstreams"),
   save: (
@@ -187,11 +193,17 @@ export const routingUpstreamsApi = {
       ...(originalId ? { originalId } : {}),
     });
   },
-  probe: (id: string, revision: number, model: string) =>
+  probe: (
+    id: string,
+    revision: number,
+    model: string,
+    options?: { authType?: string },
+  ) =>
     invoke<ProtocolDetection[]>("probe_routing_upstream", {
       id,
       revision,
       model,
+      ...(options?.authType ? { authType: options.authType } : {}),
     }),
   remove: (id: string, revision: number) =>
     invoke<void>("delete_routing_upstream", { id, revision }),

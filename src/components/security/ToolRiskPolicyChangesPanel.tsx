@@ -123,11 +123,14 @@ export function ToolRiskPolicyChangesPanel({
             size="sm"
             variant="outline"
             disabled={busy}
+            aria-busy={isFetching || isRefreshing}
             onClick={() => {
               void refresh();
             }}
           >
-            <RefreshCw className="mr-1 h-4 w-4" />
+            <RefreshCw
+              className={`mr-1 h-4 w-4 ${isFetching || isRefreshing ? "animate-spin" : ""}`}
+            />
             {t("common.refresh")}
           </Button>
           <Button

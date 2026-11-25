@@ -243,7 +243,7 @@ fn projection_keeps_openai_login_visible_without_using_it_for_forwarding() {
                 .parse()
                 .expect("installed toml");
             let provider = &installed["model_providers"][PROVIDER];
-            assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
+            assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
             assert_eq!(
                 provider["experimental_bearer_token"].as_str(),
                 Some("synthetic-local-token")
@@ -315,7 +315,10 @@ fn projection_refresh_repairs_legacy_flag_and_tracks_file_login_changes() {
         json!({"tokens":{"access_token":"synthetic-oauth"}}).to_string(),
     )
     .expect("login fixture");
-    for expected in [true, false] {
+    for remove_auth in [false, true] {
+        if remove_auth {
+            fs::remove_file(&auth).expect("simulate native logout");
+        }
         manager
             .write_projection(&[group()], token, base)
             .expect("refresh owned projection");
@@ -325,21 +328,18 @@ fn projection_refresh_repairs_legacy_flag_and_tracks_file_login_changes() {
             .expect("toml");
         assert_eq!(
             installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-            Some(expected)
+            Some(false)
         );
-        if expected {
-            fs::remove_file(&auth).expect("simulate native logout");
-        }
     }
 }
 
 #[test]
 fn projection_respects_auth_storage_instead_of_assuming_file_login() {
     for (store, previous, expected) in [
-        ("file", false, true),
+        ("file", false, false),
         ("ephemeral", true, false),
-        ("auto", true, true),
-        ("keyring", true, true),
+        ("auto", true, false),
+        ("keyring", true, false),
         ("keyring", false, false),
     ] {
         let (dir, manager) = setup();
@@ -368,6 +368,30 @@ fn projection_respects_auth_storage_instead_of_assuming_file_login() {
             installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
             Some(expected),
             "{store}"
+        );
+    }
+}
+
+#[test]
+fn unauthenticated_default_openai_config_does_not_require_chatgpt_login() {
+    for original in ["", "model_provider='openai'\nmodel='gpt-5.4'\n"] {
+        let (_dir, manager) = setup();
+        fs::write(&manager.config, original).expect("config fixture");
+        manager
+            .write_projection(
+                &[group()],
+                "synthetic-local-token",
+                "http://127.0.0.1:1234/intent/v1",
+            )
+            .expect("publish");
+        let installed: toml::Value = fs::read_to_string(&manager.config)
+            .expect("config")
+            .parse()
+            .expect("toml");
+        assert_eq!(
+            installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
+            Some(false),
+            "original={original:?}"
         );
     }
 }
@@ -1106,7 +1130,7 @@ fn explicit_reconnect_repairs_partial_menu_without_modifying_login(
     );
     assert_eq!(
         installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-        Some(true)
+        Some(false)
     );
     let catalog = installed["model_catalog_json"]
         .as_str()
