@@ -2802,7 +2802,7 @@ async fn execute(
                     )
                     .await;
                 }
-                super::group_forward::forward(
+                Box::pin(super::group_forward::forward(
                     &state,
                     protocol,
                     upstream,
@@ -2814,7 +2814,7 @@ async fn execute(
                     conversation.as_deref(),
                     scoped.history.clone(),
                     scoped.shadow.clone(),
-                )
+                ))
                 .await
             };
             let forwarded = match wait_for_attempt(attempt_deadline, forward).await {
@@ -2874,7 +2874,7 @@ async fn execute(
                     let sibling = sibling_native_target(target, protocol);
                     let fallback_result = if let Some((native_url, native_upstream)) = sibling {
                         if dlp_request.is_some() {
-                            super::group_forward::forward(
+                            Box::pin(super::group_forward::forward(
                                 &state,
                                 protocol,
                                 &native_upstream,
@@ -2886,7 +2886,7 @@ async fn execute(
                                 conversation.as_deref(),
                                 scoped.history.clone(),
                                 scoped.shadow.clone(),
-                            )
+                            ))
                             .await
                             .ok()
                             .filter(|r| r.status().is_success())
