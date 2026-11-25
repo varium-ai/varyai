@@ -640,7 +640,10 @@ impl DlpForwardError {
                 self.code(),
                 crate::proxy::error_i18n::dlp_routed_message("dlp_blocked"),
             ),
-            Self::RestoreUnsupported => return Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint).into_app_response(app_type),
+            Self::RestoreUnsupported => {
+                return Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint)
+                    .into_app_response(app_type)
+            }
             other => return other.into_app_response(app_type),
         };
         log::warn!(

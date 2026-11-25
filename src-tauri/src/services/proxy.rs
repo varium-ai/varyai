@@ -3015,9 +3015,13 @@ impl ProxyService {
         let db_for_catalog = db.clone();
         let (groups, stand_ins, current, context_settings) =
             tokio::task::spawn_blocking(move || {
-                let catalog = db_for_catalog.intent_routing_catalog_with_providers(Some(discovery))?;
-                let current = crate::settings::get_effective_current_provider(&db_for_catalog, &AppType::Codex)
-                    .map_err(|_| "intentRouting.failed")?;
+                let catalog =
+                    db_for_catalog.intent_routing_catalog_with_providers(Some(discovery))?;
+                let current = crate::settings::get_effective_current_provider(
+                    &db_for_catalog,
+                    &AppType::Codex,
+                )
+                .map_err(|_| "intentRouting.failed")?;
                 Ok::<_, String>((
                     catalog.groups,
                     catalog.stand_ins,
@@ -3043,7 +3047,9 @@ impl ProxyService {
             return Err("intentRouting.conflict".into());
         }
         let published = crate::proxy::intent::PublishedMenu::new(Arc::new(prepared), generation);
-        intent_runtime.native.refresh_published_menu(published.clone());
+        intent_runtime
+            .native
+            .refresh_published_menu(published.clone());
         intent_runtime.set_menu(published)?;
         Ok(())
     }

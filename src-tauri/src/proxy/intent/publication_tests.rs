@@ -363,7 +363,9 @@ fn side_request_follows_active_session_model() {
     let runtime = Runtime::default();
     runtime.record_session_model("agent:codex", Some("conv-1"), "vary-auto/active-group");
     assert_eq!(
-        runtime.side_session_alias("agent:codex", Some("conv-1")).as_deref(),
+        runtime
+            .side_session_alias("agent:codex", Some("conv-1"))
+            .as_deref(),
         Some("vary-auto/active-group")
     );
     // Falls back to the consumer's most recent model when the side request omits session id.
