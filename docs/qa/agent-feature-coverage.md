@@ -1,5 +1,87 @@
 # Agent feature coverage
 
+## Routing-group visibility in Agent model pickers
+
+The routing-group publication switch controls the catalog used by connected
+Agents on macOS and Windows. The VaryAI route picker uses the global snapshot.
+Codex also publishes the same group visibility through its Responses catalogs.
+
+| Agent ID           | Model picker and routing adapter                                        | Verification                                                            |
+| ------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `claude`           | Claude Code Messages menu                                               | Shared catalog projection                                               |
+| `claude-desktop`   | Claude Desktop Messages menu                                            | Shared catalog projection                                               |
+| `codex`            | ChatGPT App native Responses catalog and standalone Codex model catalog | Compare both catalogs with the global snapshot after toggling one group |
+| `gemini`           | Gemini CLI native model menu                                            | Shared catalog projection                                               |
+| `grokbuild`        | Grok Build Responses menu                                               | Shared catalog projection                                               |
+| `opencode`         | OpenCode managed model menu                                             | Shared catalog projection                                               |
+| `openclaw`         | OpenClaw managed model menu                                             | Shared catalog projection                                               |
+| `hermes`           | Hermes managed model menu                                               | Shared catalog projection                                               |
+| `pi`               | Pi managed model menu                                                   | Shared catalog projection                                               |
+| `workbuddy`        | WorkBuddy China Chat menu                                               | User confirmed the toggle in WorkBuddy                                  |
+| `workbuddy-ai`     | WorkBuddy international Chat menu                                       | Shared catalog projection                                               |
+| `qoder`            | Qoder CN managed model menu                                             | Shared catalog projection                                               |
+| `doubaowork`       | Official audit-only connection                                          | No VaryAI routing-group picker                                          |
+| `trae`             | TRAE CN bridge model menu                                               | Shared catalog projection                                               |
+| `trae-intl`        | TRAE international bridge model menu                                    | Shared catalog projection                                               |
+| `kimi`             | Kimi Code managed model menu                                            | Shared catalog projection                                               |
+| `qwen`             | Qwen Code managed model menu                                            | Shared catalog projection                                               |
+| `zcode`            | ZCode managed model menu                                                | Shared catalog projection                                               |
+| `deepseek-harness` | DeepSeek Harness managed model menu                                     | Shared catalog projection                                               |
+| `t3code`           | T3 Code managed model menu                                              | Shared catalog projection                                               |
+
+Native client and Windows acceptance remain pending, with the WorkBuddy self-test recorded above.
+
+## Visible conversation history after routing membership changes
+
+This fix is scoped to managed WorkBuddy and DeepSeek Harness connections. The
+existing connection and route picker continue to identify the same group. The
+shared proxy must handle a member being disabled and re-enabled on macOS and
+Windows while preserving provider-owned conversation state.
+
+| Agent ID           | Entry point and wire adapter                              | Runtime and verification                                                                                            |
+| ------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `workbuddy`        | Managed desktop and CLI, Chat Completions                 | Synthetic HTTP replay across member removal and re-enablement. Installed-client acceptance pending.                 |
+| `workbuddy-ai`     | Managed desktop and CLI, Chat Completions                 | Synthetic HTTP replay across member removal and re-enablement. Installed-client acceptance pending.                 |
+| `deepseek-harness` | Managed desktop, Chat Completions, Messages and Responses | Synthetic HTTP replay across member removal and re-enablement on each adapter. Installed-client acceptance pending. |
+| `claude`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `claude-desktop`   | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `codex`            | Existing adapters and routing entry points                | Codex Responses retains its independent replay policy.                                                              |
+| `gemini`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `grokbuild`        | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `opencode`         | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `openclaw`         | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `hermes`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `pi`               | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `qoder`            | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `doubaowork`       | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `trae`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `trae-intl`        | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `kimi`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `qwen`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `zcode`            | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `t3code`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+
+Retained tool ownership, opaque state, and incompatible destination replacement
+remain subject to the existing continuation checks. No native client restart
+or UI interaction is needed for a visible-history request to observe the saved
+member list.
+
+The saved Harness Chat regression also covers an older conversation with a
+completed tool call after reloading durable state. It checks that an exact
+surviving owner can receive the original call and result after a membership
+change. Unknown calls and a removed owner remain conflicts. This recovery uses
+the managed Harness Chat entry point on both platforms. The other Agent rows
+retain their existing tool-history policies.
+
+For per-turn groups, the Harness Chat regression distinguishes a tool result
+that still needs its assistant reply from a later user message after that
+reply. The result stays with its observed owner. The later message must use
+the group's current order and preserve the completed history.
+The regression also removes the last responder and the historical tool
+owner in separate catalog updates. A new user message can still use a
+surviving member. A tool result that still needs its reply remains bound
+to its observed owner.
+
 ## Shared API provider catalog discovery and selection (macOS and Windows)
 
 Assessment against `APP_IDS`, `AppType`, the shared connection inventory and
@@ -1959,13 +2041,15 @@ Pre-implementation review found T3 Code absent from the desktop restart registry
 | TRAE International | Separate bridge and bundle                 | Separate bridge and executable               | Shared restart status and native selection readback                                         |
 | Kimi Code          | Verified desktop bundle; CLI also exists   | Native desktop lifecycle absent              | Desktop/CLI runtime distinction remains necessary                                           |
 | Qwen Code          | CLI                                        | CLI                                          | Reload/reopen CLI; no desktop process restart                                               |
-| ZCode              | Verified bundle                            | Native lifecycle absent                      | Shared restart status on macOS; Windows gap explicit                                        |
-| DeepSeek Harness   | Verified bundle                            | Native lifecycle absent                      | Shared restart status; stopped/native-reloaded states have no stale-running-instance prompt |
+| ZCode              | Verified bundle                            | Verified executable paths                    | Default selection carries a supported reasoning option. Native acceptance pending.          |
+| DeepSeek Harness   | Verified bundle                            | Verified executable paths                    | Confirmed manual restart for current or stopped desktop. Native acceptance pending.         |
 | T3 Code            | Missing before this change                 | Missing before this change                   | Add verified bundle/native executable lifecycle and honor backend restart status            |
 
 Session-label assessment: existing Agent identities remain unchanged. Pi's existing display normalization is extended to T3 Code so both historical raw IDs and new prefixed IDs display exactly one `t3code_` prefix in the event list and details. Missing IDs stay missing; filtering and persisted identity are not rewritten.
 
-T3 Code now registers `com.t3tools.t3code` on macOS and standard Windows main/Alpha/Beta executable identities for freshness detection and explicit quit/reopen. Shared restart controls honor the backend flag independently of recovery state; configuration repair remains a separate action. No client was launched, restarted or reconfigured during this inspection. CLI-only agents still have no desktop restart adapter. Harness's stopped/unknown/native-reloaded cases are not established as fixed by these changes; its reported switch requires native retest while the desktop instance is running.
+T3 Code now registers `com.t3tools.t3code` on macOS and standard Windows main/Alpha/Beta executable identities for freshness detection and explicit quit/reopen. Shared restart controls honor the backend flag independently of recovery state; configuration repair remains a separate action. No client was launched, restarted or reconfigured during this inspection. CLI-only agents still have no desktop restart adapter.
+
+The November 24 follow-up registers per-user and per-machine Windows Harness executable paths and exposes a confirmed manual restart on macOS and Windows. Stale processes continue to show the pending configuration badge. The shared and direct ZCode projections now write a default reasoning option supported by the selected model. Installed client acceptance on both platforms remains pending.
 
 Verification for the final uncommitted restart-control and T3 session-label follow-up over `1c53f58f`, on the same macOS 26.6.2 / arm64, Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3 host: `pnpm typecheck`, `cargo check --tests --manifest-path src-tauri/Cargo.toml`, targeted Prettier checks, `cargo fmt --check --manifest-path src-tauri/Cargo.toml` and `git diff --check` passed. This supersedes the interrupted compilation recorded above for the earlier snapshot, including compilation of the prior WorkBuddy freshness and T3 session repairs. The existing unrelated `quota_panel::Manager::expiring` dead-code warning remains. Added regressions cover all UI Agent identifiers' backend restart requirement, T3 Windows installation identity boundaries and historical/already-prefixed T3 event labels in both list and details. Tests were compiled but not executed, as requested; Windows/Linux native builds, native restart/model-switch acceptance and full CI acceptance remain pending. No commit or push was made; Codex routing remains untouched.
 

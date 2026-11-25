@@ -266,7 +266,7 @@ export function SecurityCenterPage({
       className="security-center"
     >
       <header className="sc-header">
-        <div className="space-y-1">
+        <div>
           <h1 className="vary-page-title">{t("primaryNav.security")}</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
             {activeTab === "records"
@@ -304,9 +304,8 @@ export function SecurityCenterPage({
           role="tablist"
           itemRole="tab"
           indicatorVariant="surface"
-          className="max-w-full rounded-lg border-border bg-muted"
-          buttonClassName="min-h-9 rounded-sm px-3 text-[13px] font-medium"
-          indicatorClassName="rounded-md"
+          className="max-w-full"
+          buttonClassName="min-h-9 px-3 text-[13px] font-medium"
           indicatorTestId="security-tabs-indicator"
         />
       </div>

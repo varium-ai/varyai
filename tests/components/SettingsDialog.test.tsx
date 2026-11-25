@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   render,
   screen,
@@ -281,6 +282,18 @@ const renderSettingsPage = (
 };
 
 describe("SettingsPage Component", () => {
+  it("shows a localized description on the general settings page", () => {
+    renderSettingsPage({ globalResourcesOnly: true });
+    expect(screen.getByText("settings.statusNotice")).toBeVisible();
+
+    for (const locale of ["en", "ja", "zh", "zh-TW"]) {
+      const translations = JSON.parse(
+        readFileSync(`src/i18n/locales/${locale}.json`, "utf8"),
+      );
+      expect(translations.settings.statusNotice).toMatch(/\S/);
+    }
+  });
+
   it("groups preferences and keeps the workspace footer switch accessible without legacy agent controls", () => {
     renderSettingsPage({ globalResourcesOnly: true });
     expect(

@@ -105,9 +105,176 @@
 .settings-advanced-description {
   font-weight: 400;
 }
-.settings-advanced-content {
+.settings-advanced-list .settings-advanced-content {
   padding: 16px var(--list-padding-inline);
   border-top: 1px solid hsl(var(--border));
+}
+.settings-advanced-section,
+.settings-directory-form,
+.settings-directory-section,
+.settings-advanced-heading,
+.settings-directory-list,
+.settings-directory-row {
+  display: grid;
+  min-width: 0;
+}
+.settings-advanced-section,
+.settings-directory-form {
+  gap: var(--workspace-module-gap);
+}
+.settings-directory-section,
+.settings-directory-list {
+  gap: 12px;
+}
+.settings-directory-section + .settings-directory-section {
+  padding-top: var(--workspace-module-gap);
+  border-top: 1px solid hsl(var(--border));
+}
+.settings-advanced-heading {
+  gap: var(--page-title-description-gap);
+}
+.settings-advanced-heading h3,
+.settings-advanced-subtitle {
+  font-size: var(--list-title-size);
+  line-height: var(--list-title-line-height);
+  font-weight: 500;
+}
+.settings-advanced-heading p,
+.settings-advanced-help {
+  color: hsl(var(--muted-foreground));
+  font-size: var(--supporting-text-size);
+  line-height: var(--supporting-text-line-height);
+  text-wrap: pretty;
+}
+.settings-advanced-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(176px, 100%), 1fr));
+  gap: var(--workspace-module-gap);
+}
+.settings-advanced-field,
+.settings-sync-field {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+.settings-advanced-field > label,
+.settings-sync-field > label,
+.settings-sync-toggle > label,
+.settings-directory-row > label,
+.settings-log-options label {
+  font-size: var(--control-font-size);
+  line-height: var(--control-line-height);
+  font-weight: 500;
+}
+.settings-directory-row {
+  gap: 8px;
+}
+.settings-directory-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(2, var(--compact-control-height));
+  align-items: center;
+  gap: 8px;
+}
+.settings-directory-controls > input {
+  min-width: 0;
+  font-family: var(--code-font);
+  font-size: var(--supporting-text-size);
+}
+.settings-directory-controls > input:not(:focus) {
+  text-overflow: ellipsis;
+}
+@container (min-width: 860px) {
+  .settings-directory-list {
+    gap: 0;
+  }
+  .settings-directory-row {
+    grid-template-columns: 176px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 16px;
+    padding-block: 8px;
+  }
+  .settings-directory-row + .settings-directory-row {
+    border-top: 1px solid hsl(var(--border));
+  }
+}
+.settings-advanced-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.settings-advanced-divider {
+  border-top: 1px solid hsl(var(--border));
+  padding-top: var(--workspace-module-gap);
+}
+.settings-backup-list {
+  max-height: calc(3 * (var(--table-row-height) + 1px) + 1px);
+  overflow-y: auto;
+}
+.settings-backup-list > .setting-row {
+  padding-block: 8px;
+}
+.settings-backup-list > .setting-row:hover {
+  background: var(--row-hover);
+}
+.settings-backup-actions {
+  margin-inline-start: auto;
+}
+.settings-sync-section {
+  --settings-sync-label-width: 176px;
+}
+.settings-sync-config {
+  display: grid;
+  gap: var(--workspace-module-gap);
+}
+.settings-sync-fields {
+  display: grid;
+  gap: 12px;
+}
+.settings-sync-field > :is(input, button[role="combobox"]) {
+  min-width: 0;
+}
+.settings-sync-field > label > .settings-advanced-help,
+.settings-sync-toggle > label > .settings-advanced-help {
+  display: block;
+  font-weight: 400;
+  margin-top: 4px;
+}
+.settings-sync-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border));
+}
+.settings-sync-toggle > div {
+  flex: none;
+}
+@container (min-width: 520px) {
+  .settings-sync-field {
+    grid-template-columns: var(--settings-sync-label-width) minmax(0, 1fr);
+    align-items: center;
+    column-gap: 16px;
+  }
+  .settings-sync-help {
+    margin-inline-start: calc(var(--settings-sync-label-width) + 16px);
+  }
+}
+.settings-log-guide {
+  display: grid;
+  gap: 8px;
+  padding: 12px var(--list-padding-inline);
+  background: hsl(var(--muted) / 40%);
+}
+@container (max-width: 760px) {
+  .settings-advanced-actions > .settings-log-export {
+    inline-size: var(--button-height);
+    padding: 0;
+  }
+  .settings-log-export > span {
+    display: none;
+  }
 }
 .settings-advanced-footer {
   display: flex;
@@ -130,8 +297,8 @@
   }
 }
 
-.settings-header p {
+.settings-header > p {
   font-size: 14px;
   line-height: 20px;
-  margin-top: 8px;
+  margin-top: var(--page-title-description-gap);
 }
