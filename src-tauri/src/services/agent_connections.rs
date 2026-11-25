@@ -387,7 +387,14 @@ fn replace_checked(
     expected: Option<&str>,
     replacement: Option<&str>,
 ) -> Result<(), String> {
-    if read(path)?.as_deref() != expected {
+    let live = read(path)?;
+    if live.as_deref() != expected {
+        log::warn!(
+            "[AgentConnections] replace_checked CONFLICT at initial-read: path={:?} expected_len={:?} live_len={:?}",
+            path,
+            expected.map(str::len),
+            live.as_deref().map(str::len),
+        );
         return Err(CONFLICT.into());
     }
     if expected == replacement {
@@ -403,13 +410,32 @@ fn replace_checked(
     }
     let result = (|| {
         if expected.is_some() {
-            fs::rename(path, &held).map_err(|_| CONFLICT)?;
-            if read(&held)?.as_deref() != expected {
+            fs::rename(path, &held).map_err(|e| {
+                log::warn!(
+                    "[AgentConnections] replace_checked CONFLICT at rename: path={:?} err={:?}",
+                    path,
+                    e
+                );
+                CONFLICT
+            })?;
+            let held_text = read(&held)?;
+            if held_text.as_deref() != expected {
+                log::warn!(
+                    "[AgentConnections] replace_checked CONFLICT at held-verify: path={:?} expected_len={:?} held_len={:?}",
+                    path,
+                    expected.map(str::len),
+                    held_text.as_deref().map(str::len),
+                );
                 let _ = fs::hard_link(&held, path).map(|_| fs::remove_file(&held));
                 return Err(CONFLICT.into());
             }
         }
         if replacement.is_some() && fs::hard_link(&staged, path).is_err() {
+            log::warn!(
+                "[AgentConnections] replace_checked CONFLICT at hard_link: path={:?} staged={:?}",
+                path,
+                staged,
+            );
             if expected.is_some() {
                 let _ = fs::hard_link(&held, path).map(|_| fs::remove_file(&held));
             }
@@ -593,6 +619,10 @@ impl FileEdit {
             return Ok(());
         }
         if self.installed["sessionHeader"] != session::entry(&self.path)? {
+            log::warn!(
+                "[AgentConnections] ensure_harness_session CONFLICT: sessionHeader mismatch for {:?}",
+                self.path,
+            );
             return Err(CONFLICT.into());
         }
         let path = session::path(&self.path);
@@ -601,6 +631,12 @@ impl FileEdit {
             .as_deref()
             .is_some_and(|source| source != session::SOURCE)
         {
+            log::warn!(
+                "[AgentConnections] ensure_harness_session CONFLICT: session file content mismatch for {:?} (len={:?} vs SOURCE len={})",
+                path,
+                original.as_deref().map(str::len),
+                session::SOURCE.len(),
+            );
             return Err(CONFLICT.into());
         }
         replace_checked(&path, original.as_deref(), Some(session::SOURCE))
@@ -1047,6 +1083,10 @@ impl Manager {
     pub fn install(&self, mut receipt: Receipt) -> Result<(), String> {
         let path = self.path(&receipt.app)?;
         if read(&path)?.is_some() {
+            log::warn!(
+                "[AgentConnections] install CONFLICT: receipt already exists at {:?}",
+                path,
+            );
             return Err(CONFLICT.into());
         }
         desktop_config::adopt(&mut receipt);

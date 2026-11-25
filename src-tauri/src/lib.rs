@@ -1468,7 +1468,6 @@ pub fn run() {
                 }
             }
 
-
             Ok(())
         })
         .invoke_handler(telemetry::guard_invoke_handler(tauri::generate_handler![
