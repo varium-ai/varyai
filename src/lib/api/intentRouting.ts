@@ -87,6 +87,7 @@ export interface RoutingProviderOption {
   appType?: string;
   taskEligible: boolean;
   classifierEligible: boolean;
+  relayExpiry?: number;
   models?: Array<{
     id: string;
     name: string;

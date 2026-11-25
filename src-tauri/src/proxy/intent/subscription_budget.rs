@@ -1,4 +1,4 @@
-//! Quota preferences for the expiry template. Observations never block forwarding.
+//! Quota eligibility for the expiry template. Observations never block forwarding.
 
 use super::{scheduling::Health, Session, Target};
 use crate::services::{
@@ -9,7 +9,7 @@ use crate::services::{
     },
     subscription_provider,
 };
-use std::{cmp::Reverse, time::Duration};
+use std::time::Duration;
 use tokio::sync::Semaphore;
 
 const FIVE_HOURS: i64 = 5 * 3600;
@@ -104,35 +104,12 @@ pub(super) fn claude_budget(
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Priority {
-    RelayExpiry(i64),
-    Subscription(Reverse<u64>),
-    Unknown,
-    Cooling,
-}
-
-fn priority(budget: Budget) -> Option<Priority> {
-    match budget {
-        // Scores are finite and positive, so their bits preserve numeric order.
-        Budget::Pace(pace) => Some(Priority::Subscription(Reverse(pace.to_bits()))),
-        Budget::Unknown => Some(Priority::Unknown),
-        Budget::Exhausted => None,
-    }
-}
-
-fn rank(
-    target: &Target,
-    health: &Health,
-    client: &reqwest::Client,
-    compare: bool,
-    now: i64,
-) -> Option<Priority> {
+fn budget(target: &Target, health: &Health, client: &reqwest::Client, now: i64) -> Budget {
     let binding = target
         .upstream
         .as_ref()
         .and_then(subscription_provider::binding);
-    let budget = if target.official && target.effort.free != Some(true) {
+    if target.official && target.effort.free != Some(true) {
         if let Some(credentials) = target.credentials.as_ref() {
             refresh(target, now, || {
                 let credentials = credentials.clone();
@@ -168,27 +145,7 @@ fn rank(
         health.claude_budget(&target.model, now)
     } else {
         Budget::Unknown
-    };
-
-    let priority = priority(budget)?;
-    if health.cooling(now) {
-        return Some(Priority::Cooling);
     }
-    if compare
-        && !target.official
-        && binding.is_none()
-        && target.upstream.is_some()
-        && !target.scheduling.exhausted(now)
-    {
-        if let Some(expiry) = crate::services::routing_provider_quota::observe_expiry(
-            &target.url,
-            &target.headers,
-            now,
-        ) {
-            return Some(Priority::RelayExpiry(expiry));
-        }
-    }
-    Some(priority)
 }
 
 fn refresh<F>(target: &Target, now: i64, start: impl FnOnce() -> F)
@@ -208,26 +165,24 @@ where
     });
 }
 
-/// Remove accounts with a known exhausted window, then stably order usable candidates.
-pub(super) fn prioritize(
+/// Remove accounts with a known exhausted window in the saved candidate order.
+pub(super) fn filter_exhausted(
     session: &Session,
     candidates: &mut Vec<usize>,
     states: &[Health],
     now: i64,
 ) -> bool {
-    let compare = candidates.len() > 1;
-    let mut ranked = candidates
-        .iter()
-        .filter_map(|&index| {
-            let target = session.targets.get(index)?;
-            rank(target, states.get(index)?, &session.client, compare, now).map(|key| (index, key))
-        })
-        .collect::<Vec<_>>();
-    let exhausted = ranked.len() < candidates.len();
-    ranked.sort_by_key(|(_, key)| *key);
-    candidates.clear();
-    candidates.extend(ranked.into_iter().map(|(index, _)| index));
-    exhausted
+    let before = candidates.len();
+    candidates.retain(|&index| {
+        session
+            .targets
+            .get(index)
+            .zip(states.get(index))
+            .is_some_and(|(target, health)| {
+                budget(target, health, &session.client, now) != Budget::Exhausted
+            })
+    });
+    candidates.len() < before
 }
 #[cfg(test)]
 mod tests {
@@ -299,7 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn template_ranks_codex_and_claude_from_separate_account_observations(
+    async fn template_keeps_available_codex_and_claude_in_saved_order(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::services::native_subscription::ClaudeRoutingQuota;
         use serde_json::json;
@@ -357,30 +312,16 @@ mod tests {
                 .map(|t| t.scheduling.snapshot())
                 .collect::<Vec<_>>()
         };
-        assert!(!prioritize(session, &mut order, &snapshots(), now));
-        assert_eq!(order, [2, 1, 0]);
-        // An expired sample must not outrank the configured order.
-        session.targets[2]
-            .scheduling
-            .claim_budget_refresh(now + 301);
-        let mut order = vec![0, 1, 2];
-        assert!(!prioritize(session, &mut order, &snapshots(), now + 301));
+        assert!(!filter_exhausted(session, &mut order, &snapshots(), now));
         assert_eq!(order, [0, 1, 2]);
+        session.targets[1].scheduling.observe_event(
+            &json!({"type":"codex.rate_limits","rate_limits":{
+                "primary":{"window_minutes":300,"used_percent":100,"reset_at":now+10}
+            }}),
+            now + 1,
+        );
+        assert!(filter_exhausted(session, &mut order, &snapshots(), now + 1));
+        assert_eq!(order, [0, 2]);
         Ok(())
-    }
-
-    #[test]
-    fn mixed_groups_keep_deadline_and_pace_in_separate_orders() {
-        let mut order = [
-            (0, Priority::Unknown),
-            (1, Priority::Subscription(Reverse(5.0_f64.to_bits()))),
-            (2, Priority::RelayExpiry(4_000)),
-            (3, Priority::Subscription(Reverse(10.0_f64.to_bits()))),
-            (4, Priority::RelayExpiry(2_000)),
-            (5, Priority::Cooling),
-            (6, Priority::Unknown),
-        ];
-        order.sort_by_key(|(_, priority)| *priority);
-        assert_eq!(order.map(|(id, _)| id), [4, 2, 3, 1, 0, 6, 5]);
     }
 }

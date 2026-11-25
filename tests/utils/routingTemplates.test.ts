@@ -128,6 +128,32 @@ it("creates four ordinary group drafts with distinct defaults", () => {
   }
 });
 
+it("uses known expiry for the draft and explicit recommendation", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const options = [
+    ...providers,
+    ...["later", "earlier", "expired"].map((id, index) => ({
+      id,
+      name: id,
+      taskEligible: true,
+      classifierEligible: false,
+      relayExpiry: now + [7200, 3600, -3600][index],
+      models: [{ id: `${id}-model`, name: id }],
+    })),
+  ];
+  const expiry = routingTemplates(options)[3].group;
+  expect(
+    expiry.members.slice(0, 2).map(({ providerId }) => providerId),
+  ).toEqual(["earlier", "later"]);
+  expect(
+    recommendRoutingMemberOrder(
+      [...expiry.members].reverse(),
+      options,
+      "templateExpiry",
+    ).map(({ id }) => id),
+  ).toEqual(expiry.members.map(({ id }) => id));
+});
+
 it("keeps the speed template's strongest candidates within Magpie's price ceiling", () => {
   const speed = routingTemplates([
     {

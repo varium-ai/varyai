@@ -18,13 +18,18 @@ export function routingSourceKey(row: RoutingTrace) {
 
 export function liveRoutingSources(rows: RoutingTrace[], now: number) {
   const finishedAt = (row: RoutingTrace) => row.startedAt + row.durationMs;
+  const latestFinished = new Map<string, RoutingTrace>();
+  for (const row of rows) {
+    if (routeInProgress(row)) continue;
+    const latest = latestFinished.get(row.agent);
+    if (!latest || row.startedAt > latest.startedAt) {
+      latestFinished.set(row.agent, row);
+    }
+  }
   const ordered = [
     ...rows.filter(routeInProgress),
-    ...rows
-      .filter(
-        (row) =>
-          !routeInProgress(row) && finishedAt(row) > now - SOURCE_LINGER_MS,
-      )
+    ...[...latestFinished.values()]
+      .filter((row) => finishedAt(row) > now - SOURCE_LINGER_MS)
       .sort((first, second) => finishedAt(second) - finishedAt(first)),
   ];
   const sources = new Map<string, RoutingTrace>();

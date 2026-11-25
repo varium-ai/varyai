@@ -731,6 +731,44 @@ function sourceRequest(agent: string, overrides: Partial<RoutingTrace> = {}) {
   };
 }
 
+it("shows the latest finished request on a seat shared with an earlier flight", async () => {
+  const now = Date.now();
+  const older = sourceRequest("codex", {
+    id: "older-flight",
+    startedAt: now - 2_000,
+    candidates: [route.candidates[0]],
+  });
+  snapshot([older]);
+  const client = new QueryClient();
+  show(client);
+  await screen.findByText("Synthetic primary");
+  const latest = sourceRequest("codex", {
+    id: "latest-reply",
+    startedAt: now - 1_000,
+    state: "completed",
+    durationMs: 1_000,
+    candidates: older.candidates,
+  });
+  snapshot([
+    latest,
+    {
+      ...older,
+      state: "failed",
+      durationMs: 2_000,
+      steps: [
+        ...older.steps,
+        { kind: "failed", candidate: 0, atMs: 2_000, status: 502 },
+      ],
+    },
+  ]);
+  await client.invalidateQueries({ queryKey: ["routing-trace"] });
+  await waitFor(() =>
+    expect(document.querySelector(".rt-accts")).toHaveTextContent(
+      "routingPage.seatAnswered",
+    ),
+  );
+});
+
 function snapshot(requests: RoutingTrace[]) {
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
     requests,
@@ -815,28 +853,37 @@ it("attributes concurrent Codex requests to their quota and automatic routes", a
   );
 });
 
-it("keeps a background request from becoming the live routing group", async () => {
-  const background = sourceRequest("codex", {
-    id: "title-request",
-    kind: "thread_title",
-    model: "vary-provider/auxiliary",
-    candidates: [{ ...route.candidates[0], model: "synthetic-title-model" }],
-  });
-  const chat = sourceRequest("codex", {
-    model: "vary-auto/synthetic-group",
-    groupName: "Synthetic chat group",
-    candidates: [{ ...route.candidates[0], model: "synthetic-group-model" }],
-  });
-  snapshot([background, chat]);
-  show();
-  await screen.findByText("synthetic-group-model");
-  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
-    "synthetic-title-model",
-  );
-  expect(document.querySelector(".rt-what")).toHaveTextContent(
-    "Synthetic chat group",
-  );
-});
+it.each([
+  "thread_title",
+  "memory_consolidation",
+  "composer_predictions",
+  "ambient_suggestions",
+  "auto_review",
+])(
+  "keeps the %s background request out of the live routing group",
+  async (kind) => {
+    const background = sourceRequest("codex", {
+      id: "title-request",
+      kind,
+      model: "vary-provider/auxiliary",
+      candidates: [{ ...route.candidates[0], model: "synthetic-title-model" }],
+    });
+    const chat = sourceRequest("codex", {
+      model: "vary-auto/synthetic-group",
+      groupName: "Synthetic chat group",
+      candidates: [{ ...route.candidates[0], model: "synthetic-group-model" }],
+    });
+    snapshot([background, chat]);
+    show();
+    await screen.findByText("synthetic-group-model");
+    expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+      "synthetic-title-model",
+    );
+    expect(document.querySelector(".rt-what")).toHaveTextContent(
+      "Synthetic chat group",
+    );
+  },
+);
 
 it("keeps recent completions for twelve seconds and caps the stage at four Agents", async () => {
   const now = Date.now();

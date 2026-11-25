@@ -104,6 +104,34 @@ test("sets and verifies new-session selections once per supported native Agent l
   assert.deepEqual(f.sessions, { existing: { modelId: "original" } });
 });
 
+test("waits for the native catalog and saved selection before writing the startup model", async () => {
+  const f = fixture();
+  let loaded = false;
+  let restored = false;
+  f.port.modelHostService = {
+    ensureModelsLoaded: async () => loaded,
+    isModelSelectionReady: () => restored,
+  };
+
+  await assert.rejects(
+    f.adapter.select("native-a"),
+    /starting_model_unavailable/,
+  );
+  loaded = true;
+  await assert.rejects(
+    f.adapter.select("native-a"),
+    /starting_model_unavailable/,
+  );
+  assert.deepEqual(f.calls, []);
+
+  f.recent.agent = { modelId: "previous", mode: 0 };
+  restored = true;
+  await f.adapter.select("native-a");
+  assert.equal(f.recent.agent.modelId, "agent:native-a");
+  assert.equal(f.recent.solo_agent.modelId, "solo_agent:native-a");
+  assert.deepEqual(f.sessions, { existing: { modelId: "original" } });
+});
+
 test("rejects missing, ambiguous, restricted and unselectable native models before writing", async () => {
   for (const mutate of [
     (f) => {
