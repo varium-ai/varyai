@@ -39,9 +39,6 @@ fn catalog_names(
         .iter()
         .map(|model| model.id.clone())
         .collect::<BTreeSet<_>>();
-    if matches!(picker_ids, PickerIds::CurrentLabels) {
-        model_map.retain(|_, alias| reserved.contains(alias));
-    }
     let labels = catalog
         .iter()
         .map(|model| &model.name)
@@ -77,8 +74,10 @@ fn catalog_names(
         .to_owned();
         let mut name = base.clone();
         let mut duplicate = 2;
-        while model_map.get(&name).is_some_and(|alias| alias != &internal)
-            || (reserved.contains(&name) && name != internal)
+        while model_map.get(&name).is_some_and(|alias| {
+            alias != &internal
+                && (reserved.contains(alias) || !matches!(picker_ids, PickerIds::CurrentLabels))
+        }) || (reserved.contains(&name) && name != internal)
             || (name != base && labels.contains(&name))
         {
             name = format!("{base} ({duplicate})");
@@ -86,9 +85,6 @@ fn catalog_names(
         }
         if internal == selected {
             chosen = name.clone();
-        }
-        if matches!(picker_ids, PickerIds::CurrentLabels) {
-            model_map.retain(|_, alias| alias != &internal);
         }
         model_map.insert(name.clone(), internal);
         model.id = name;
