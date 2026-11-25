@@ -117,6 +117,14 @@ pub(super) fn prepare(profile: &Path, token: &str) -> Result<FileEdit, String> {
             .is_some_and(|key| key.as_str() != Some(token))
             && !references_local_gateway(profile)?
         {
+            log::warn!(
+                "[AgentConnections] harness_credentials prepare CONFLICT: profile={:?} existing_key={:?} new_token_len={}",
+                profile,
+                value["refs"].get(KEY).and_then(|k| k.as_str()).map(|s| {
+                    if s.len() > 8 { format!("{}...", &s[..8]) } else { "<short>".into() }
+                }),
+                token.len(),
+            );
             return Err(CONFLICT.into());
         }
         put(value, &["refs".into(), KEY.into()], Some(json!(token)))

@@ -955,6 +955,9 @@ pub(crate) async fn set_native_connection(
             .await
             .map_err(|_| FAILED)?
             .is_some();
+    log::warn!(
+        "[AgentConnections] set_native_connection: app={app} enabled={enabled} legacy_enabled={legacy_enabled} legacy={legacy}"
+    );
     let info = state.proxy_service.start().await?;
     state.proxy_service.ensure_global_routing().await?;
     let menu = state
@@ -977,10 +980,14 @@ pub(crate) async fn set_native_connection(
     let origin = format!("http://127.0.0.1:{}", info.port);
     if legacy {
         if manager.owns(&app) {
+            log::warn!(
+                "[AgentConnections] set_native_connection LEGACY CONFLICT: manager.owns({app}) is true"
+            );
             return Err(agent_connections::CONFLICT.into());
         }
         {
             let manager = manager.clone();
+            let app_name = app.clone();
             let app = app.clone();
             let menu = menu.clone();
             let origin = origin.clone();
@@ -988,28 +995,44 @@ pub(crate) async fn set_native_connection(
             tokio::task::spawn_blocking(move || manager.build(&app, &menu, &origin, &selected))
                 .await
                 .map_err(|_| FAILED)?
-                .map_err(|_| agent_connections::CONFLICT)?;
+                .map_err(|e| {
+                    log::warn!(
+                        "[AgentConnections] set_native_connection LEGACY CONFLICT: build({app_name}) failed: {e}"
+                    );
+                    agent_connections::CONFLICT
+                })?;
         }
         state
             .proxy_service
             .release_legacy_agent_connection(&app)
             .await
-            .map_err(|_| agent_connections::CONFLICT)?;
+            .map_err(|e| {
+                log::warn!(
+                    "[AgentConnections] set_native_connection LEGACY CONFLICT: release_legacy_agent_connection({app}) failed: {e}"
+                );
+                agent_connections::CONFLICT
+            })?;
     }
     let runtime = state.proxy_service.intent_runtime.clone();
+    let app_name = app.clone();
     let result = tokio::task::spawn_blocking(move || {
         if manager.load(&app)?.is_some() {
+            log::warn!("[AgentConnections] set_native_connection: receipt exists for {app}, calling update()");
             let receipt = manager
                 .update(&app, &menu, &origin, Some(&selected))?
                 .ok_or(FAILED)?;
             return runtime.connections.install(&receipt);
         }
+        log::warn!("[AgentConnections] set_native_connection: no receipt for {app}, calling build()+install()");
         let receipt = manager.build(&app, &menu, &origin, &selected)?;
         manager.install(receipt.clone())?;
         runtime.connections.install(&receipt)
     })
     .await
     .map_err(|_| FAILED)?;
+    if let Err(e) = &result {
+        log::warn!("[AgentConnections] set_native_connection FAILED for {app_name}: {e}");
+    }
     // The shared catalog has not changed; other adapters and bridges are unrelated.
     result
 }

@@ -1688,4 +1688,115 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn deepseek_real_world_empty_patch_layer_and_grant_credentials_round_trip() -> Result<(), String>
+    {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let profile_dir = root.path().join("profiles").join("desktop");
+        std::fs::create_dir_all(&profile_dir).map_err(|_| FAILED)?;
+        let path = profile_dir.join("cordis.patch.yml");
+        // Exact real-world content: 3 comment lines + empty YAML array.
+        let cordis_source = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n";
+        std::fs::write(&path, cordis_source).map_err(|_| FAILED)?;
+        // Exact real-world credentials: version + records, no refs key.
+        let cred_path = root.path().join(".credentials.yaml");
+        let cred_source = "version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: synthetic-test-secret\n";
+        std::fs::write(&cred_path, cred_source).map_err(|_| FAILED)?;
+        // Session helper must match SOURCE exactly.
+        let session_path = crate::services::deepseek_harness::session::path(&path);
+        std::fs::write(
+            &session_path,
+            crate::services::deepseek_harness::session::SOURCE,
+        )
+        .map_err(|_| FAILED)?;
+
+        let catalog = vec![Model {
+            api: "openai-completions",
+            native_model: None,
+            output_tokens: None,
+            cost: None,
+            icon: None,
+            id: "vary-provider/model-test123".into(),
+            name: "Test Model · Supplier · VaryAI".into(),
+            context_window: Some(128000),
+            compact_at: None,
+            group: "supplier".into(),
+            reasoning_levels: vec!["none".into()],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+        }];
+
+        // Use full projections::build path with test config override.
+        crate::services::agent_clients::with_test_config(&path, || {
+            let mut receipt = Receipt {
+                app: "deepseek-harness".into(),
+                token: "synthetic-test-token".into(),
+                model: catalog[0].id.clone(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: Some(chrono::Utc::now().timestamp_millis()),
+            };
+            build(
+                "deepseek-harness",
+                &catalog,
+                "http://127.0.0.1:1/connections/deepseek-harness",
+                "synthetic-test-token",
+                &catalog[0].id,
+                &mut receipt,
+                None,
+            )
+            .map_err(|e| format!("projections::build failed: {e}"))
+            .unwrap();
+
+            // Now install via Manager (receipt write + file writes).
+            let manager = super::super::Manager {
+                root: root.path().join("receipts"),
+            };
+            std::fs::create_dir_all(&manager.root)
+                .map_err(|_| FAILED)
+                .unwrap();
+            manager
+                .install(receipt)
+                .map_err(|e| format!("install failed: {e}"))
+                .unwrap();
+        });
+
+        // Verify the cordis file was updated correctly.
+        let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
+        assert!(live.starts_with("# Your patch layer"), "comments preserved");
+        let doc = crate::services::deepseek_harness::parse(&live)?;
+        assert_eq!(
+            doc["sessionHeader"],
+            crate::services::deepseek_harness::session::entry(&path)?
+        );
+        assert!(
+            doc["providers"]
+                .as_object()
+                .ok_or(FAILED)?
+                .contains_key("varyai-provider-shared-catalog"),
+            "provider registered"
+        );
+
+        // Verify the credentials file was updated correctly.
+        let cred_live = std::fs::read_to_string(&cred_path).map_err(|_| FAILED)?;
+        assert!(
+            cred_live.contains("VARYAI_HARNESS_GATEWAY_KEY"),
+            "refs key added"
+        );
+        assert!(cred_live.contains("synthetic-test-token"), "token written");
+
+        // Verify the session file still matches SOURCE.
+        let session_live = std::fs::read_to_string(&session_path).map_err(|_| FAILED)?;
+        assert_eq!(
+            session_live,
+            crate::services::deepseek_harness::session::SOURCE,
+            "session file unchanged"
+        );
+
+        Ok(())
+    }
 }

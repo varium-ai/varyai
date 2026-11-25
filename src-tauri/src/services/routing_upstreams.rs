@@ -629,6 +629,41 @@ pub(crate) fn resolve_provider(record: &RoutingUpstream) -> Result<Provider, Str
     }
 }
 
+fn apply_transport_endpoint(
+    variant: &mut Provider,
+    endpoint: &str,
+    token: &str,
+    format: &str,
+    auth_type: Option<&str>,
+) {
+    let settings = executable_settings(endpoint, token, format, auth_type, vec![]);
+    if let (Some(next), Some(source)) = (
+        variant.settings_config.as_object_mut(),
+        settings.as_object(),
+    ) {
+        for field in ["env", "auth", "apiFormat", "authType", "config"] {
+            next.insert(field.into(), source[field].clone());
+        }
+    }
+    variant.meta.get_or_insert_with(Default::default).api_format = Some(format.into());
+}
+
+fn additional_endpoints<'a>(
+    transport: &'a ImportedTransport,
+    primary_format: &str,
+) -> Vec<(&'a str, &'a str)> {
+    transport
+        .endpoints
+        .iter()
+        .filter(|(format, endpoint)| {
+            format.as_str() != primary_format
+                && valid_format(format.as_str())
+                && valid_url(endpoint.as_str())
+        })
+        .map(|(format, endpoint)| (format.as_str(), endpoint.as_str()))
+        .collect()
+}
+
 pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
     let mut variants = crate::services::codex_provider::variants(provider);
     let Some(transport) = provider
@@ -638,7 +673,7 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
     else {
         return variants;
     };
-    let (_, primary) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    let (base, primary) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let mut enabled_keys = std::collections::BTreeSet::new();
     if !transport.primary_off && !primary.is_empty() {
         enabled_keys.insert(primary.as_str());
@@ -654,6 +689,11 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
             .map(str::to_owned)
             .unwrap_or_else(|| masked_key(key))
     };
+    let primary_format = provider.settings_config["apiFormat"]
+        .as_str()
+        .unwrap_or("openai_chat");
+    let auth_type = provider.settings_config["authType"].as_str();
+    let extra_endpoints = additional_endpoints(&transport, primary_format);
     // Each execution snapshot contains just its own credential, never the pool.
     for variant in &mut variants {
         if let Some(settings) = variant.settings_config.as_object_mut() {
@@ -672,51 +712,56 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
     }
     if transport.primary_off {
         variants.clear();
+    } else if transport.primary_protocol.is_none()
+        && !extra_endpoints.is_empty()
+        && !primary.is_empty()
+    {
+        let base_variants = variants.clone();
+        for (format, endpoint) in &extra_endpoints {
+            for base_variant in &base_variants {
+                let mut extra = base_variant.clone();
+                apply_transport_endpoint(&mut extra, endpoint, &primary, format, auth_type);
+                variants.push(extra);
+            }
+        }
     }
-    let (base, _) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
-    let primary_format = provider.settings_config["apiFormat"]
-        .as_str()
-        .unwrap_or("openai_chat");
+    let mut preferred_insert_at = 0;
     for key in transport.keys.iter().filter(|key| key.enabled) {
         let Some(token) = &key.key else {
             continue;
         };
-        let mut variant = provider.clone();
-        let format = key.api_format.as_deref().unwrap_or(primary_format);
-        let endpoint = transport
+        let mut key_formats: Vec<(&str, &str)> = Vec::new();
+        let primary_key_format = key.api_format.as_deref().unwrap_or(primary_format);
+        let primary_endpoint = transport
             .endpoints
-            .get(format)
+            .get(primary_key_format)
             .map(String::as_str)
             .unwrap_or(&base);
-        let settings = executable_settings(
-            endpoint,
-            token,
-            format,
-            provider.settings_config["authType"].as_str(),
-            vec![],
-        );
-        if let (Some(next), Some(source)) = (
-            variant.settings_config.as_object_mut(),
-            settings.as_object(),
-        ) {
-            next.remove("routingImportedTransport");
-            next.remove(KEY_LABEL);
-            next.remove(KEY_MODELS);
-            if let Some(models) = &key.models {
-                next.insert(KEY_MODELS.into(), json!(models));
-            }
-            if shared {
-                next.insert(KEY_LABEL.into(), json!(key_label(token, Some(&key.name))));
-            }
-            for field in ["env", "auth", "apiFormat", "authType", "config"] {
-                next.insert(field.into(), source[field].clone());
-            }
+        key_formats.push((primary_key_format, primary_endpoint));
+        if key.api_format.is_none() {
+            key_formats.extend(extra_endpoints.iter().copied());
         }
-        variant.meta.get_or_insert_with(Default::default).api_format = Some(format.into());
-        if transport.preferred_key.as_ref() == Some(&key.id) {
-            variants.insert(0, variant);
-        } else {
-            variants.push(variant);
+        let is_preferred = transport.preferred_key.as_ref() == Some(&key.id);
+        for (format, endpoint) in key_formats {
+            let mut variant = provider.clone();
+            if let Some(next) = variant.settings_config.as_object_mut() {
+                next.remove("routingImportedTransport");
+                next.remove(KEY_LABEL);
+                next.remove(KEY_MODELS);
+                if let Some(models) = &key.models {
+                    next.insert(KEY_MODELS.into(), json!(models));
+                }
+                if shared {
+                    next.insert(KEY_LABEL.into(), json!(key_label(token, Some(&key.name))));
+                }
+            }
+            apply_transport_endpoint(&mut variant, endpoint, token, format, auth_type);
+            if is_preferred {
+                variants.insert(preferred_insert_at, variant);
+                preferred_insert_at += 1;
+            } else {
+                variants.push(variant);
+            }
         }
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -1095,5 +1140,53 @@ mod tests {
             models[0]["modelPreferences"]["images"] = json!("invalid");
         }
         assert_eq!(record.validate(), Err(INVALID_MODEL_CONFIG.into()));
+    }
+    #[test]
+    fn multi_endpoint_transport_expands_primary_and_unpinned_keys() {
+        let record: RoutingUpstream = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "id": "multi",
+            "name": "Multi",
+            "revision": 1,
+            "hasApiKey": false,
+            "source": {
+                "kind": "api",
+                "baseUrl": "https://synthetic.invalid/v1",
+                "apiFormat": "openai_chat",
+                "apiKey": "synthetic-primary",
+                "models": ["gpt-6.2-sol"]
+            },
+            "transport": {
+                "endpoints": {
+                    "openai_chat": "https://synthetic.invalid/v1",
+                    "openai_responses": "https://synthetic.invalid/v1"
+                },
+                "fullUrl": false,
+                "keys": [
+                    {
+                        "id": "pinned-chat",
+                        "name": "Pinned Chat",
+                        "enabled": true,
+                        "key": "synthetic-pinned",
+                        "apiFormat": "openai_chat"
+                    }
+                ]
+            }
+        }))
+        .expect("multi-endpoint record");
+        let resolved = resolve_provider(&record).expect("resolved");
+        let expanded = variants(&resolved);
+        let formats: Vec<_> = expanded
+            .iter()
+            .map(|p| p.meta.as_ref().and_then(|m| m.api_format.as_deref()))
+            .collect();
+        assert_eq!(
+            formats,
+            vec![
+                Some("openai_chat"),
+                Some("openai_responses"),
+                Some("openai_chat"),
+            ]
+        );
     }
 }
