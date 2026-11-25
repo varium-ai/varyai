@@ -577,6 +577,7 @@ impl SkillService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -648,6 +649,7 @@ impl SkillService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -722,6 +724,7 @@ impl SkillService {
                     | AppType::Qwen
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
+                    | AppType::Glm
                     | AppType::Trae
                     | AppType::TraeIntl
                     | AppType::T3Code
@@ -1090,6 +1093,7 @@ impl SkillService {
                                 | AppType::Qwen
                                 | AppType::ZCode
                                 | AppType::DeepSeekHarness
+                                | AppType::Glm
                                 | AppType::Trae
                                 | AppType::TraeIntl
                                 | AppType::T3Code
@@ -1744,6 +1748,7 @@ impl SkillService {
                     | AppType::Qwen
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
+                    | AppType::Glm
                     | AppType::Trae
                     | AppType::TraeIntl
                     | AppType::T3Code
@@ -1960,6 +1965,7 @@ impl SkillService {
                     | AppType::Qwen
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
+                    | AppType::Glm
                     | AppType::Trae
                     | AppType::TraeIntl
                     | AppType::T3Code
@@ -2046,6 +2052,7 @@ impl SkillService {
                     | AppType::Qwen
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
+                    | AppType::Glm
                     | AppType::Trae
                     | AppType::TraeIntl
                     | AppType::T3Code
@@ -2577,6 +2584,7 @@ impl SkillService {
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::Trae
                 | AppType::TraeIntl
                 | AppType::T3Code
@@ -3601,6 +3609,7 @@ impl SkillService {
                     | AppType::Qwen
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
+                    | AppType::Glm
                     | AppType::Trae
                     | AppType::TraeIntl
                     | AppType::T3Code
@@ -4354,6 +4363,7 @@ pub fn migrate_skills_to_ssot(db: &Arc<Database>) -> Result<usize> {
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::Trae
                 | AppType::TraeIntl
                 | AppType::T3Code

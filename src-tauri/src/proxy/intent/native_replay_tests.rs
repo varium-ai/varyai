@@ -24,6 +24,8 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
     security::runtime::set_security_runtime_for_test(Default::default());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let captured = seen.clone();
+    let summaries = Arc::new(Mutex::new(Vec::new()));
+    let captured_summaries = summaries.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let upstream = tokio::spawn(async move {
@@ -52,6 +54,12 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
             let summary = body["instructions"]
                 .as_str()
                 .is_some_and(|text| text.contains("continuation summary"));
+            if summary {
+                captured_summaries
+                    .lock()
+                    .expect("fixture summaries")
+                    .push(body.clone());
+            }
             let reply = if body["stream"] == true && !summary {
                 let event = json!({"type":"response.completed","response":reply});
                 (
@@ -241,9 +249,7 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
         {"id":"compact", "name":"Compaction", "enabled":true, "description":"",
          "targetMemberId":"backup", "conditions":{"compact":true}}
     ]))?;
-    runtime
-        .native
-        .publish_menu(Arc::new(menu), json!({"models":[]}), Default::default())?;
+    publish(&menu)?;
     let compact: Value = client
         .post(format!("{url}/compact"))
         .bearer_auth("synthetic-native-token")
@@ -258,10 +264,56 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
         seen.lock().expect("fixture requests").last(),
         Some(&second.model)
     );
-    let checkpoint = compact["output"][0]["encrypted_content"]
+    let legacy_checkpoint = compact["output"][0]["encrypted_content"]
         .as_str()
         .ok_or("missing synthetic checkpoint")?;
-    assert!(checkpoint.starts_with("varyai1:"));
+    assert!(legacy_checkpoint.starts_with("varyai1:"));
+
+    let page_context = json!({"type":"function_call_output","id":"synthetic-page-context",
+        "name":"codex_apps_selected_page_part_1_of_1","namespace":"agent",
+        "output":"Synthetic selected page content"});
+    let inline_history = json!([
+        {"role":"user","content":"Synthetic opening"},
+        {"role":"assistant","content":"Synthetic previous answer"},
+        page_context,
+        {"type":"compaction_trigger"}
+    ]);
+    let trigger = |input: &Value| {
+        client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .header("session_id", "synthetic-routing-session")
+            .json(&json!({"model":alias,"input":input}))
+            .send()
+    };
+    let response = trigger(&inline_history)
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&second.model),
+        "inline browser context must not pin a compaction summary"
+    );
+    {
+        let summaries = summaries.lock().map_err(|_| "fixture summaries")?;
+        let summary = summaries.last().ok_or("missing summary request")?;
+        assert_eq!(
+            summary["input"],
+            json!(&inline_history.as_array().ok_or("fixture history")?[..3])
+        );
+        assert_eq!(summary["tools"], json!([]));
+    }
+    let checkpoint = response
+        .lines()
+        .find_map(|line| {
+            let event: Value = serde_json::from_str(line.strip_prefix("data: ")?).ok()?;
+            event["response"]["output"][0]["encrypted_content"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .ok_or("missing trigger checkpoint")?;
     client
         .post(&url)
         .bearer_auth("synthetic-native-token")
@@ -278,6 +330,33 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
     assert_eq!(
         seen.lock().expect("fixture requests").last(),
         Some(&first.model)
+    );
+
+    let mut unresolved = inline_history.clone();
+    unresolved[2]["call_id"] = json!("synthetic-unresolved-call");
+    trigger(&unresolved)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&first.model),
+        "an actual tool output keeps its original session binding"
+    );
+
+    let current = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("fixture route")?);
+    current.group.rules[0].enabled = false;
+    publish(&menu)?;
+    trigger(&inline_history)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&first.model),
+        "disabling the compaction rule preserves the session binding"
     );
     server.stop().await?;
     upstream.abort();

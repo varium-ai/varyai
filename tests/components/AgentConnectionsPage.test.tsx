@@ -496,15 +496,22 @@ describe("desktop Agent directory", () => {
     for (const app of APP_IDS) {
       const name = `apps.${app}`;
       const row = within(within(tabPanel).getByRole("article", { name }));
-      expect(row.getByRole("switch", { name })).toBeInTheDocument();
+      const toggle = row.getByRole("switch", { name });
       expect(
         row.getByRole("button", { name: "agentConnections.sorting.handle" }),
       ).toBeInTheDocument();
-      expect(
-        app === "doubaowork"
-          ? row.getByRole("note", { name: /^agentConnections\.modelList / })
-          : row.getByRole("button", { name: /^agentConnections\.model / }),
-      ).toBeInTheDocument();
+      if (app === "glm") {
+        expect(toggle).toBeDisabled();
+        expect(
+          row.queryByRole("button", { name: /^agentConnections\.model / }),
+        ).not.toBeInTheDocument();
+      } else {
+        expect(
+          app === "doubaowork"
+            ? row.getByRole("note", { name: /^agentConnections\.modelList / })
+            : row.getByRole("button", { name: /^agentConnections\.model / }),
+        ).toBeInTheDocument();
+      }
     }
   });
 
@@ -898,6 +905,18 @@ beforeEach(() => {
   });
   vi.mocked(agentConnectionsApi.setModelVisibility).mockResolvedValue();
 });
+it("lists GLM without an unverified website or installer", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({ glm: false });
+  mount();
+  await userEvent.click(
+    screen.getByRole("tab", {
+      name: /^agentConnections.directory.notInstalled/,
+    }),
+  );
+  const row = within(await screen.findByRole("group", { name: "apps.glm" }));
+  expect(row.queryByRole("button")).not.toBeInTheDocument();
+});
+
 describe("installation rescan feedback", () => {
   it.each(["connect", "reapply"])(
     "offers a confirmed restart after a stale desktop %s",
@@ -2691,7 +2710,11 @@ describe("Agent connections", () => {
         const row = await screen.findByRole("article", { name: `apps.${app}` });
         const status = within(row).getByRole("status");
         await waitFor(() =>
-          expect(status).toHaveTextContent("agentConnections.states.off"),
+          expect(status).toHaveTextContent(
+            app === "glm"
+              ? "agentConnections.states.unavailable"
+              : "agentConnections.states.off",
+          ),
         );
         const restart = within(row).queryByRole("button", {
           name: "agentConnections.restart",
@@ -6465,14 +6488,26 @@ it.each(APP_IDS)(
     ]);
     mount();
     const row = await screen.findByRole("article", { name: `apps.${app}` });
-    expect(
-      await within(row).findByRole("button", {
-        name:
-          app === "doubaowork"
-            ? "homeAudit.doubaoLaunch"
-            : "agentConnections.restart",
-      }),
-    ).toBeEnabled();
+    if (app === "glm") {
+      expect(within(row).getByRole("switch")).toBeDisabled();
+      for (const action of [
+        "agentConnections.restart",
+        "agentConnections.reapply",
+      ]) {
+        expect(
+          within(row).queryByRole("button", { name: action }),
+        ).not.toBeInTheDocument();
+      }
+    } else {
+      expect(
+        await within(row).findByRole("button", {
+          name:
+            app === "doubaowork"
+              ? "homeAudit.doubaoLaunch"
+              : "agentConnections.restart",
+        }),
+      ).toBeEnabled();
+    }
     expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
   },
 );

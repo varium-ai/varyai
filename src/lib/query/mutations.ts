@@ -101,6 +101,7 @@ export const useAddProviderMutation = (appId: AppId) => {
           "qwen",
           "zcode",
           "deepseek-harness",
+          "glm",
         ].includes(appId)
           ? false
           : addToLive,

@@ -538,6 +538,7 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
@@ -624,6 +625,7 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
@@ -695,6 +697,7 @@ fn apply_common_config_to_settings(
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
@@ -1562,6 +1565,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
@@ -1825,6 +1829,7 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::Trae
                 | AppType::TraeIntl
                 | AppType::T3Code
@@ -1876,6 +1881,7 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
 pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
     match app_type {
         AppType::T3Code | AppType::DoubaoWork | AppType::TraeIntl => Ok(serde_json::json!({})),
+        AppType::Glm => Err(crate::services::agent_clients::glm_native_config_unsupported()),
         app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness | AppType::Trae) => Ok(crate::services::agent_clients::Document::read(app.as_str(),&crate::services::agent_clients::config_path(app.as_str())?)?.value),
         AppType::Codex => {
             let mut result = crate::codex_config::read_codex_live_settings()?;
@@ -2132,6 +2138,7 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code

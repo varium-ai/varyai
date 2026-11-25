@@ -407,6 +407,7 @@ mod tests {
             AppType::Qwen,
             AppType::ZCode,
             AppType::DeepSeekHarness,
+            AppType::Glm,
             AppType::Trae,
             AppType::TraeIntl,
             AppType::Hermes,

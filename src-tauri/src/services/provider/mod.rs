@@ -4997,6 +4997,9 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Glm && add_to_live {
+            return Err(crate::services::agent_clients::glm_native_config_unsupported());
+        }
         if agent_clients::is_agent(&app_type) {
             return agent_clients::add(state, app_type.as_str(), provider);
         }
@@ -6380,6 +6383,7 @@ impl ProviderService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -6409,6 +6413,7 @@ impl ProviderService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -7078,6 +7083,7 @@ impl ProviderService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl => {
                 if provider.category.as_deref() != Some("official") {
@@ -7425,6 +7431,7 @@ impl ProviderService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code

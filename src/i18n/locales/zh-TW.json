@@ -1348,6 +1348,7 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
+    "glm": "GLM",
     "t3code": "T3 Code"
   },
   "pi": {
@@ -2755,6 +2756,7 @@
       "savedContent": "還原已儲存的內容",
       "noContent": "未儲存指令檔案",
       "nativeLoginOnly": "原生登入由用戶端管理，沒有可切換的供應商設定",
+      "nativeConfigUnsupported": "此代理程式未提供受支援的本機供應商設定。",
       "configureFirst": "請先新增供應商設定",
       "clientSyncHint": "TRAE：方案可離線切換。用戶端同步獨立進行；請保持 Vary AI 執行，TRAE 連線後將自動同步。",
       "clientSyncPending": "供應商選擇已儲存，TRAE CN 連線後將自動生效，請保持 Vary AI 執行。",
@@ -4477,6 +4479,7 @@
     "saveFailed": "第三方模型儲存失敗：{{error}}"
   },
   "managedAgent": {
+    "storedConfigDescription": "將 GLM 供應商設定儲存至 VaryAI。目前無法在原生用戶端啟用。",
     "description": "儲存供應商後，點擊「改用這個」並重啟 {{app}}，在用戶端選擇模型。官方登入由用戶端保留。",
     "baseUrl": "Base URL",
     "apiKey": "API Key",

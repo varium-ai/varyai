@@ -361,4 +361,28 @@ describe("managed app sorting", () => {
       screen.queryByRole("button", { name: "WorkBuddy" }),
     ).not.toBeInTheDocument();
   });
+
+  it("defaults GLM visibility to off and displays it after opt-in", () => {
+    const onAppChange = vi.fn();
+    const { rerender } = render(
+      <ManagedAppTabs
+        activeApp="codex"
+        visibleApps={{ ...visibleApps, glm: undefined }}
+        onAppChange={onAppChange}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "GLM" }),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <ManagedAppTabs
+        activeApp="codex"
+        visibleApps={{ ...visibleApps, glm: true }}
+        onAppChange={onAppChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "GLM" }));
+    expect(onAppChange).toHaveBeenCalledWith("glm");
+  });
 });

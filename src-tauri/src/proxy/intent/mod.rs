@@ -1948,7 +1948,8 @@ async fn execute(
             && (inline_new_turn
                 || (completed
                     && length::portable_ignoring(&projection, |item| {
-                        responses_replay && compact.is_none() && codex_replay::is_page_context(item)
+                        // Codex sends inline browser context in both turns and summaries.
+                        responses_replay && codex_replay::is_page_context(item)
                     })))
         {
             match session.group.affinity.as_str() {

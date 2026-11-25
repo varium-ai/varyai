@@ -37,7 +37,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   qwen: "qwen-code",
   zcode: "zcode",
   "deepseek-harness": "deepseek",
-  glm: "deepseek",
+  glm: "chatglm",
 
   t3code: "t3code",
 };
@@ -138,7 +138,6 @@ export const TAKEOVER_APP_IDS = [
   "qwen",
   "zcode",
   "deepseek-harness",
-  "glm",
 ] as const;
 
 /** Applications controlled by the settings routing switches, including Pi's custom provider. */
@@ -152,20 +151,7 @@ export function isRoutingAppId(
 
 export function isTakeoverAppId(
   appId: string,
-): appId is
-  | ProxyAppId
-  | "claude-desktop"
-  | "workbuddy"
-  | "workbuddy-ai"
-  | "qoder"
-  | "doubaowork"
-  | "trae"
-  | "trae-intl"
-  | "kimi"
-  | "qwen"
-  | "zcode"
-  | "deepseek-harness"
-  | "glm" {
+): appId is (typeof TAKEOVER_APP_IDS)[number] {
   return (TAKEOVER_APP_IDS as readonly string[]).includes(appId);
 }
 
@@ -188,7 +174,6 @@ export type AdditiveAppId = Extract<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
-  | "glm"
 >;
 
 export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
@@ -205,7 +190,6 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "qwen",
   "zcode",
   "deepseek-harness",
-  "glm",
 ];
 
 export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
@@ -427,7 +411,7 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   },
   glm: {
     label: "GLM",
-    icon: <ProviderIcon icon="glm" name="GLM" size={14} showFallback={false} />,
+    icon: <ProviderIcon icon={APP_ICON_NAME.glm} name="GLM" size={14} />,
     activeClass:
       "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
     badgeClass:

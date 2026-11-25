@@ -1400,6 +1400,7 @@ impl ProxyService {
             qwen: self.native_agent_active("qwen").await,
             zcode: self.native_agent_active("zcode").await,
             deepseek_harness: self.native_agent_active("deepseek-harness").await,
+            glm: self.native_agent_active("glm").await,
             trae,
             trae_intl: self.intent_runtime.connections.active("trae-intl"),
             pi: self.pi_routing.enabled()?,
@@ -2068,6 +2069,9 @@ impl ProxyService {
             return Ok(());
         }
         if super::agent_clients::supported(app_type) {
+            if enabled && app_type == "glm" {
+                return Err(super::agent_clients::glm_native_config_unsupported().to_string());
+            }
             let _guard = self.switch_locks.lock_for_app(app_type).await;
             if enabled {
                 if !self.is_running().await {

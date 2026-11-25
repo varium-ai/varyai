@@ -27,6 +27,7 @@ Codex also publishes the same group visibility through its Responses catalogs.
 | `qwen`             | Qwen Code managed model menu                                            | Shared catalog projection                                               |
 | `zcode`            | ZCode managed model menu                                                | Shared catalog projection                                               |
 | `deepseek-harness` | DeepSeek Harness managed model menu                                     | Shared catalog projection                                               |
+| `glm`              | GLM settings path. Shared model-menu projection missing                 | Source assessment. Installed-client acceptance pending                  |
 | `t3code`           | T3 Code managed model menu                                              | Shared catalog projection                                               |
 
 Native client and Windows acceptance remain pending, with the WorkBuddy self-test recorded above.
@@ -59,6 +60,7 @@ Windows while preserving provider-owned conversation state.
 | `kimi`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
 | `qwen`             | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
 | `zcode`            | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
+| `glm`              | Transparent provider ingress with an existing route receipt | Outside WorkBuddy and Harness replay scope. Installed-client acceptance pending.                                    |
 | `t3code`           | Existing adapters and routing entry points                | Existing history policies remain in effect.                                                                         |
 
 Retained tool ownership, opaque state, and incompatible destination replacement
@@ -124,6 +126,19 @@ Harness Chat regression passed in the broader routing run. The independent
 GLM Agent's transparent Responses fixture already returned HTTP 400 before
 this fix. Whole-worktree acceptance and installed Codex testing on both
 platforms remain pending; the running application was not replaced.
+
+### Codex compaction routing with inline history
+
+The scope is the Codex adapter's validated legacy and Responses-v2 compaction
+requests. Desktop and CLI share this backend on macOS and Windows when using
+native Codex compatibility. The synthetic native HTTP test passed on macOS
+arm64. It covers the compaction rule enabled and disabled, inline browser
+context preserved in the summary request, an unresolved tool output kept on
+its owner, and the subsequent answer's checkpoint owner. The existing route
+picker, rule editor and trace UI use the same state and events. The standalone Responses adapter keeps its
+existing behavior. Every other Agent listed in the matrix above uses its own
+existing adapter and does not enter this Codex compaction path, including
+T3 Code and Grok Build. Installed-client verification is pending.
 
 The follow-up switch-back fixture reproduces a 409 with text emitted before
 a call result, an inline reasoning-effort update, and an interrupted native
@@ -227,6 +242,7 @@ a new draft and retry in a saved provider. This is the form's error state.
 | `qwen`             | Shared supplier or managed provider form                 |
 | `zcode`            | Shared supplier or managed provider form                 |
 | `deepseek-harness` | Shared supplier or managed provider form                 |
+| `glm`              | Shared supplier editor. Native projection missing        |
 | `t3code`           | Shared supplier model menu                               |
 
 Loopback regressions cover both Gemini format names, native success and
@@ -269,6 +285,7 @@ its original response frames. The same Rust decoder runs on both platforms.
 | `qwen`             | Managed custom-provider route                                | Shared protocol fixture               |
 | `zcode`            | Managed custom-provider route                                | Shared protocol fixture               |
 | `deepseek-harness` | Managed Chat bridge                                          | Synthetic Chat output and errors      |
+| `glm`              | Transparent Responses ingress with an existing route receipt   | Synthetic replay; installed-client acceptance pending |
 | `t3code`           | Managed model menu and native route                          | Shared protocol fixture               |
 
 The shared stream suite passed 15 tests. The Responses fixture covers an empty
@@ -310,6 +327,7 @@ paths.
 | `qwen`             | Managed or legacy native custom-provider routing         | Shared catalog and binding inventory      |
 | `zcode`            | Managed or legacy native custom-provider routing         | Shared catalog and binding inventory      |
 | `deepseek-harness` | Managed provider-scoped Chat routing                     | Shared catalog and binding inventory      |
+| `glm`              | Gateway Agents directory without a GLM binding adapter   | Source assessment. Binding unsupported    |
 | `t3code`           | Managed model-menu and native route                      | Shared catalog and binding inventory      |
 
 Selected-model list follow-up coverage uses the same entry points in the table
@@ -384,6 +402,7 @@ availability metadata, native adapters, and runtime commands own behavior.
 | `qwen`             | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
 | `zcode`            | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
 | `deepseek-harness` | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
+| `glm`              | Shared profile picker displays GLM as unavailable | Native setting schema and profile activation unavailable on macOS / Windows    |
 | `t3code`           | Selectable when reported available | Synthetic picker passed; native macOS / Windows pending |
 
 The application picker fixture verified all 20 displayed entries. Renderer
@@ -533,6 +552,7 @@ entries before selecting one.
 | `qwen`             | CLI install/update PATH; shared connection switch; installer, taskbar and tray panel               | Synthetic regression passed; native installer and live Agent acceptance pending     |
 | `zcode`            | Desktop detection; shared connection switch; installer, taskbar and tray panel                      | Synthetic regression passed; native installed-client acceptance pending             |
 | `deepseek-harness` | Validated profile writes; shared connection switch; installer, taskbar and tray panel              | Synthetic regression passed; native installed-client acceptance pending             |
+| `glm`              | Shared installer, taskbar and tray UI. No GLM discovery or connection adapter                     | Source assessment. Native installed-client acceptance pending                       |
 | `t3code`           | Desktop detection; shared connection switch; installer, taskbar and tray panel                      | Synthetic regression passed; native installed-client acceptance pending             |
 
 ## WorkBuddy subscription upstreams
@@ -565,6 +585,7 @@ protocol and retains the existing routing and security decisions.
 | `qwen`             | Qwen CLI                      | Native connection and Chat                                            | Pending / Pending                   |
 | `zcode`            | ZCode desktop                 | Native connection and gateway protocol projection                     | Pending / Pending                   |
 | `deepseek-harness` | DeepSeek Harness              | Native connection and Responses or Chat                               | Pending / Pending                   |
+| `glm`              | GLM                           | Shared subscription editor. GLM consumer adapter missing              | Pending / Pending                   |
 | `t3code`           | T3 Code                       | Published gateway provider and Responses                              | Pending / Pending                   |
 
 The renderer fixture covers account binding and catalog discovery for each
@@ -739,6 +760,7 @@ Vary AI editor change.
 | `qwen`             | Qwen Code CLI / shared gateway                               | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
 | `zcode`            | ZCode desktop / native adapter and shared gateway            | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
 | `deepseek-harness` | DeepSeek Harness desktop / native adapter and shared gateway | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
+| `glm`              | Shared group editor without a GLM catalog adapter            | Template UI available. Native group publication unsupported                  | Source assessment. Native testing pending        |
 | `t3code`           | T3 Code desktop / managed Codex Responses                    | Shared group chooser and candidate planner                                   | Synthetic gateway passed; native testing pending |
 
 The synthetic gateway matrix exercises Messages, Chat, Responses and Gemini
@@ -1006,6 +1028,7 @@ depends on each provider's usage events and stream timing.
 | `qwen`             | Qwen Code CLI                      | Short reference                                     | Renderer passed, native pending |
 | `zcode`            | ZCode desktop                      | Short reference                                     | Renderer passed, native pending |
 | `deepseek-harness` | DeepSeek Harness desktop           | Short reference                                     | Renderer passed, native pending |
+| `glm`              | Shared routing source cards        | No GLM native title reader or routing source        | Source review. Native pending   |
 | `t3code`           | T3 Code desktop                    | Short reference                                     | Renderer passed, native pending |
 
 The conversation and rate changes were checked on the working tree over
@@ -1107,6 +1130,7 @@ sortable desktop Agent row on macOS and Windows.
 | `qwen`             | Shared connection, Qwen Code CLI                      | Shared                                          |
 | `zcode`            | Shared connection, ZCode desktop                      | Shared                                          |
 | `deepseek-harness` | Shared connection, DeepSeek Harness desktop           | Shared                                          |
+| `glm`              | GLM in shared Agent list inventory                    | Installed row lacks backend presence and connection data |
 | `t3code`           | Shared connection, T3 Code desktop                    | Shared                                          |
 
 All 20 rows rendered with synthetic connection fixtures in Chromium on macOS.
@@ -1456,6 +1480,7 @@ and Linux CLI discovery must retain their existing behavior.
 | `qwen`             | Shared presence; Windows CLI candidates and effective PATH | Retain CLI presence                                                  | Existing CLI regressions; native unverified                                        |
 | `zcode`            | Shared presence/version; desktop                           | Missing Windows desktop discovery                                    | Synthetic adapter passed on Windows; native unverified                             |
 | `deepseek-harness` | Shared presence/version; desktop                           | Missing Windows desktop discovery                                    | Synthetic adapter passed on Windows; native unverified                             |
+| `glm`              | GLM omitted from shared presence and version inventory     | No GLM Windows installation or version entry                         | Source assessment. Native discovery pending                                        |
 | `t3code`           | Shared presence/version; stable/alpha/beta desktop         | Fixed default roots miss custom installation                         | Synthetic adapter passed on Windows; native unverified                             |
 
 Implementation, comparison sources and check results are recorded in
@@ -1492,6 +1517,7 @@ change does not add native credential support. Verification is recorded in
 | `qwen`             | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
 | `zcode`            | Shared reward panel; separate plan adapter          | Unaffected                                                                                                | Existing regressions; no native retest                                                                                    |
 | `deepseek-harness` | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
+| `glm`              | No reward panel or Qoder adapter                    | Qoder reward-date handling is inapplicable                                                                | Source assessment                                                                                                         |
 | `t3code`           | No reward panel or Qoder adapter                    | Unaffected                                                                                                | Inventory assessed; no native retest                                                                                      |
 
 ## Agent status-line restart feedback and update verification recovery
@@ -1545,6 +1571,7 @@ pending on macOS and Windows.
 | `qwen`             | Existing session/service adapter; no desktop restart; CLI version observer                                                                      | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
 | `zcode`            | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
 | `deepseek-harness` | macOS/Windows native restart phase mapping; macOS desktop updater; Windows/Linux automatic desktop updates remain unsupported                   | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
+| `glm`              | Shared status-line UI without a GLM version or restart adapter                                                                                  | GLM has no native launch, restart or update state in this view                      | Source assessment. Native unverified                                                            |
 | `t3code`           | Existing adapter; no desktop restart; desktop version observation only (no update feed)                                                         | Per-Agent status-line capsule and update-verification controls; protocols unchanged | Status-line synthetic passed; native unverified                                                 |
 
 See [status-line feedback verification](2026-11-18-agent-status-line-feedback.md) for the latest placement checks; [feedback and update verification](2026-11-18-agent-feedback-and-updates.md) records the unchanged native and update paths.
@@ -1582,6 +1609,7 @@ protocol adapters, requests and responses are unchanged on every platform.
 | `qwen`             | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
 | `zcode`            | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
 | `deepseek-harness` | Existing desktop restart/native adapter                                | Neutral manual-restart guidance; existing macOS/Windows runtime and Linux unsupported adapter retained                                   | Synthetic passed: macOS/Windows, main/compact, connected/restored, failed/unsupported/malformed; native unverified |
+| `glm`              | No GLM desktop restart adapter                                         | Only the shared presentation applies. GLM has no native restart path                                                                     | Source assessment. Native unverified                                                                               |
 | `t3code`           | Existing CLI/session or service adapter; desktop restart not supported | Existing entry points, session guidance and error styling retained                                                                       | Inventory and existing component suite passed; native unverified                                                   |
 
 See [restart guidance verification](2026-11-18-restart-guidance.md) for results
@@ -1623,6 +1651,7 @@ logic applies on macOS, Windows and Linux where the existing adapter is supporte
 | `qwen`             | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
 | `zcode`            | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
 | `deepseek-harness` | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
+| `glm`              | Shared log export and GLM operation ID registry         | GLM connection operations remain unsupported   | Source assessment. Native unverified                                |
 | `t3code`           | Shared connection/native adapter; existing controls     | Operation events; current application log only | Shared lifecycle event regression passed (macOS); native unverified |
 
 Application export uses the actual device log directory, a blocking worker and a
@@ -1674,6 +1703,7 @@ Responses item references; no native acceptance is implied by shared routing.
 | `qwen`             | Native provider Responses/Chat and shared connection; CLI    | Shared named-item recovery; native `/v1` suffix and UI preserved                | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
 | `zcode`            | Native provider Responses and shared connection; desktop     | Shared named-item recovery; native projection/UI unchanged                      | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
 | `deepseek-harness` | Native/shared provider-selected Responses/Chat/Messages      | Native/shared Responses recovery; existing picker                               | Shared/native-adapter HTTP passed (macOS); native unverified                                     |
+| `glm`              | Transparent Responses ingress with an existing route receipt | Bounded retry on upstream reasoning-item rejection                              | Synthetic HTTP fixture; installed-client acceptance pending                           |
 | `t3code`           | Responses through managed Codex; desktop                     | Responses refusal recovery where this adapter uses Responses; existing picker   | Shared Responses HTTP passed (macOS); native unverified                                          |
 
 The independent native HTTP send adapter is also covered: `kimi`, `qwen`,
@@ -1733,6 +1763,7 @@ and Windows/Linux runtime acceptance remain unverified.
 | `qwen`             | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
 | `zcode`            | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
 | `deepseek-harness` | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
+| `glm`              | Tray Security event history | No verified GLM native event producer                | Shared rendering for returned records                    | Source assessment. Native unverified      |
 | `t3code`           | Tray Security event history | Existing adapters unchanged; render returned records | Localized result/risk; outcome colors; protection on/off | Synthetic passed (macOS); native untested |
 
 Verification on 2026-11-17 uses the working-tree changes to `TrayPanel.tsx`,
@@ -1812,6 +1843,7 @@ not claimed as accepted.
 | `qwen`             | Statistics; CLI                   | Unchanged Chat adapter and accounting                     | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
 | `zcode`            | Statistics; desktop               | Unchanged native protocol projection and accounting       | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
 | `deepseek-harness` | Statistics                        | Unchanged Chat/Responses/Messages adapters and accounting | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
+| `glm`              | Statistics dashboard              | GLM usage ID recognized. Native forwarding unverified     | Shared panel removal and scan controls                      | Source assessment. Native unverified      |
 | `t3code`           | Statistics; desktop               | Unchanged Responses/managed Codex adapter and accounting  | Remove both panels; retain scan controls                    | Synthetic passed (macOS); native untested |
 
 Verification on 2026-11-17 used the working-tree changes to `UsageDashboard.tsx`,
@@ -1864,6 +1896,7 @@ supported. Native application acceptance is separate from synthetic HTTP tests.
 | `hermes`           | Shared connection; Chat; CLI                                   | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
 | `zcode`            | Shared connection; native protocol projection; desktop         | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
 | `deepseek-harness` | Shared connection; Chat/Responses/Messages; native credentials | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
+| `glm`              | Shared catalog editor without a GLM publication adapter        | GLM continuation ownership has no verified native path                               | Source assessment. Native unverified                         |
 | `t3code`           | Shared connection; Responses; managed Codex instance           | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native unverified               |
 | `trae`             | Native bridge to shared Chat; China edition                    | Observed call/payload ownership still depends on target identity                     | HTTP refresh/restart passed; native macOS/Windows unverified |
 | `trae-intl`        | Native bridge to shared Chat; international edition            | Strict continuation ownership uses shared target identity                            | HTTP refresh/restart passed; native macOS/Windows unverified |
@@ -1901,6 +1934,7 @@ returns the recognized deferred outcome.
 | `hermes`           | Tools version row; existing CLI/native adapter                          | Preserve CLI update eligibility and genuine error handling on supported macOS/Windows/Linux paths                 | Source assessment and shared update regressions passed; native not rechecked               |
 | `zcode`            | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
 | `deepseek-harness` | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
+| `glm`              | Shared version UI without a GLM desktop updater                         | No GLM updater can return the deferred-exit result                                                                | Source assessment. Native unverified                                                       |
 | `t3code`           | Existing version row and native/regional adapter                        | No existing automatic desktop update path; retain unsupported/absent behavior on every platform                   | Source assessment and shared update regressions passed; native not rechecked               |
 | `trae`             | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
 | `trae-intl`        | Tools version row; existing macOS desktop updater and publisher adapter | Implemented deferred outcome and local neutral feedback; kernel exit detection; Windows/Linux updater unsupported | 88 frontend and 13 backend scoped tests passed on macOS; native install/quit not exercised |
@@ -1934,6 +1968,7 @@ adapter runs in shared Rust on macOS and Windows; native acceptance is separate.
 | `hermes`           | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
 | `zcode`            | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
 | `deepseek-harness` | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
+| `glm`              | Native ingress guard without a Claude Desktop probe adapter                              | Claude Desktop startup probe compatibility is inapplicable                                                                            | Source assessment. Native unverified                                                                                                                                                                                                                    |
 | `t3code`           | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
 | `trae`             | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
 | `trae-intl`        | Existing shared/native connection; CLI/desktop and regional variant as inventoried above | No Desktop startup probe marker; preserve request/response and UI behavior on supported platforms                                     | Source assessment and shared-ingress isolation regressions passed on macOS; native paths not rechecked                                                                                                                                                  |
@@ -1963,6 +1998,7 @@ The full feature remains incomplete. Gateway connectivity and DLP text inspectio
 | `hermes`           | Hermes                  | Registered native `terminal` string-command schema on shared routes                                                                            | User confirmed native tool-warning and session-ID acceptance passed on 2026-11-17; scheduled/delegated scope and other platforms remain unverified                                                                                                                |
 | `zcode`            | ZCode                   | Registered native `Bash` string-command schema on shared routes                                                                                | User confirmed the instructed native tool-risk acceptance passed on 2026-11-17; automated regressions remain unexecuted                                                                                                                                           |
 | `deepseek-harness` | DeepSeek Harness        | Registered native `bash`; added a native request-header extension and validated session-header extraction                                      | User confirmed native warning and session-ID acceptance passed on 2026-11-17; PowerShell/interactive variants remain unverified                                                                                                                                   |
+| `glm`              | GLM                     | No registered GLM tool schema or supported native observation path                                                                             | Native structured calls, risk evaluation, persistence, session correlation and notifications remain unverified                                                                                                                                                    |
 | `t3code`           | T3 Code                 | Registered `exec_command`/`cmd` and `shell_command`/`command` for the managed Codex driver, including Responses routing                        | User confirmed completion of native tool-warning testing on 2026-11-17; the session-header and prefix repairs are implemented, but final session-ID appearance was not separately confirmed; regressions remain unexecuted and other T3 drivers remain unverified |
 | `trae`             | TRAE CN                 | Native `PreToolUse` / `RunCommand` observer with edition-bound authentication, supplied session identity and asynchronous risk persistence     | User confirmed native warning delivery after enabling Configured Hooks on 2026-11-17; `trae_cn_` session-prefix correction is implemented, awaiting new-record retest                                                                                             |
 | `trae-intl`        | TRAE International      | Separate native `PreToolUse` / `RunCommand` observer; existing user hooks and permissions preserved                                            | User reported routing_unknown_continuation / 409 after a tool call on 2026-11-17; edition-parity continuation repair is implemented, awaiting new-build retest; native warning delivery remains unverified                                                        |
@@ -2136,6 +2172,7 @@ Source assessment covers every entry point. Native acceptance below is pending f
 | `qwen`             | Shared receipt release, rebuild and install                                                           | Not rechecked                                                             |
 | `zcode`            | Shared release with native rule-envelope repair, rebuild and install                                  | Not rechecked                                                             |
 | `deepseek-harness` | Native credential-aware release, rebuild and install                                                  | Not rechecked                                                             |
+| `glm`              | GLM settings path registered. Shared receipt and native apply adapters missing                        | Pending                                                                   |
 | `t3code`           | Shared receipt release, rebuild and install                                                           | Not rechecked                                                             |
 | `trae`             | Explicit configuration/retry requests native managed-model replacement; failures retain the intention | Read-only saved/native catalog match passed; new replacement path pending |
 | `trae-intl`        | Explicit configuration/retry requests native managed-model replacement; failures retain the intention | Read-only saved/native catalog match passed; new replacement path pending |
@@ -2264,6 +2301,7 @@ applications. Native per-Agent acceptance remains pending on every platform.
 | `hermes`           | Shared API routing; provider discovery                                                   | CLI session; no desktop restart action                                               | Shared TLS fixtures; native client not rechecked                   |
 | `zcode`            | Shared API routing; provider discovery                                                   | macOS desktop bundle; Windows/Linux restart unsupported                              | Synthetic macOS orchestration/TLS; native pending                  |
 | `deepseek-harness` | Shared API routing; provider discovery                                                   | macOS desktop bundle; Windows/Linux restart unsupported                              | Synthetic macOS orchestration/TLS; native pending                  |
+| `glm`              | Shared provider discovery and transparent forwarding from an existing route receipt                             | No GLM desktop lifecycle adapter                                                     | Source assessment. Native pending                                  |
 | `t3code`           | Shared API routing; provider discovery                                                   | No native desktop lifecycle adapter                                                  | Shared TLS fixtures; native client not rechecked                   |
 | `trae`             | Existing native integration and shared provider discovery                                | Agents confirmation; domestic macOS bundle and Windows image; Linux unsupported      | Synthetic lifecycle/TLS; native integration not rechecked          |
 | `trae-intl`        | Existing native integration and shared provider discovery                                | Agents confirmation; international macOS bundle and Windows image; Linux unsupported | Synthetic lifecycle/TLS; native integration not rechecked          |
@@ -2312,6 +2350,7 @@ to macOS, Windows and Linux; native integration support remains as recorded abov
 | `qwen`             | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
 | `zcode`            | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
 | `deepseek-harness` | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
+| `glm`              | Shared cached list and explicit catalog sync                             | No per-client GLM publication adapter                                    | Shared Routing page controls assessed in source                              | Pending                      |
 | `t3code`           | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
 | `trae`             | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
 | `trae-intl`        | Shared cached list and explicit catalog sync; existing publication queue | Existing adapter and platform support retained                           | Shared UI, timeout, cached-fallback and queue progression regressions passed | Not exercised in this change |
@@ -2444,6 +2483,7 @@ The workspace and tray use the same WorkBuddy China card. On macOS and Windows, 
 | `qwen`             | Qwen Code CLI                                      | Unavailable                                      | Source inspection                                                           |
 | `zcode`            | ZCode rewards card                                 | Separate account picker                          | Source inspection                                                           |
 | `deepseek-harness` | DeepSeek Harness                                   | Unavailable                                      | Source inspection                                                           |
+| `glm`              | GLM has no WorkBuddy China reward source           | Unavailable                                      | Source assessment                                                           |
 | `t3code`           | T3 Code                                            | Unavailable                                      | Source inspection                                                           |
 
 ## November 23 tray and provider regressions
@@ -2650,6 +2690,7 @@ selection and historical aliases retain their existing roles.
 | `qwen`             | Qwen Code / CLI model settings                                              | Separate native projection                                                                             |
 | `zcode`            | ZCode / Desktop registry                                                    | Separate native projection                                                                             |
 | `deepseek-harness` | DeepSeek Harness / native registry                                          | Separate native projection                                                                             |
+| `glm`              | GLM settings path without a Codex catalog projection                        | Codex picker descriptions are inapplicable. Native GLM picker unverified                               |
 | `t3code`           | T3 Code / independent Codex instance and Responses                          | Full description in the instance catalog and full name in custom model settings. Native checks pending |
 
 On macOS, Codex CLI 0.171.0 ran against a temporary configuration and
@@ -2689,6 +2730,28 @@ library run passed 7,897 tests and reproduced two existing GLM adapter and
 Agent diagnostics failures. The frontend baseline still reports GLM type
 errors and unrelated Agent picker failures. The installed client, real
 classifier and Windows runtime were not exercised.
+
+### GLM Agent registration and transparent routing
+
+GLM uses the canonical application ID across the renderer, transparent proxy,
+DLP, diagnostics, and usage. The shared UI supports visibility and stored
+provider records. The managed connection getter reports a read-only status.
+An existing transparent route receipt can forward requests and report its
+own status. The repository provides a settings path but no verified native
+settings schema. Native configuration changes, managed model publication,
+and profile activation are unavailable. The synthetic Chat fixture covers
+redaction, preserved request fields, disabled-route refusal and attributed
+usage. The existing Responses fixture covers bounded retry and preserved tool
+history. Installed-client verification on macOS and Windows is pending.
+
+The follow-up working tree based on `0761e631` passed Rust formatting,
+Cargo check, strict Clippy, and `cargo test --locked --no-fail-fast` on macOS
+26.6.2 arm64 with Rust 1.98.1. The library run passed 7,901 tests with 21
+ignored, and the integration suites passed. This includes the previously
+failing transparent Responses and Agent diagnostics regressions. With Node
+20.20.2 and pnpm 10.12.3, renderer type checking, formatting, the build, and
+all 5,006 tests across 338 files passed. The development helpers and production
+dependency audit also passed.
 
 The shared Agent picker consumes canonical IDs and catalog labels. Gemini's
 native footer reads the configured model ID, and Grok Build's native default
@@ -2923,6 +2986,7 @@ and all 4,857 renderer tests passed. Installed WebView verification is pending.
 | `qwen`             | Qwen Code CLI, JSONC model registry and shared runtime                | Shared classifier tests. Native pending                                                                                                   |
 | `zcode`            | ZCode desktop, native model registry and shared runtime               | Shared classifier tests. Native pending                                                                                                   |
 | `deepseek-harness` | DeepSeek Harness, CLI model and credentials registry                  | Shared classifier tests. Native pending                                                                                                   |
+| `glm`              | Shared group editor includes GLM in the Agent-condition selector      | Shared editor and rule configuration apply. Native GLM classifier routing is pending                                                      |
 | `t3code`           | T3 Code desktop, independent Codex backend and shared runtime         | Shared classifier tests. Native pending                                                                                                   |
 
 The projection and classifier paths are shared on macOS and Windows.
@@ -3034,6 +3098,7 @@ the confirmed claim in the shared cache. Installed-client acceptance is pending.
 | `qwen`             | Qwen Code CLI, shared first-run wizard                                                         | Shared first-run fixtures passed. Installed client pending                               |
 | `zcode`            | ZCode desktop, native rewards credentials and account identity                                 | Native identity fixtures and check-in renderer tests passed. Installed client pending    |
 | `deepseek-harness` | DeepSeek Harness CLI, shared first-run wizard                                                  | Shared first-run fixtures passed. Installed client pending                               |
+| `glm`              | Shared application settings without a GLM reward adapter                                       | Source assessment. Native GLM sign-in and check-in unverified                            |
 | `t3code`           | T3 Code desktop, shared first-run wizard                                                       | Shared first-run fixtures passed. Installed client pending                               |
 
 Verified the working tree based on `868cf24b` on macOS 26.6.2 arm64 with
@@ -3088,6 +3153,7 @@ secrets. All changes are platform-independent across macOS and Windows.
 | `qwen`             | Qwen Code CLI (shared Chat/Responses IR builder and Intent rejection logging)                                  | Shared IR and Intent regressions passed. Installed client pending                                     |
 | `zcode`            | ZCode desktop (shared Intent routing and diagnostics export redaction)                                         | Shared diagnostics and IR regressions passed. Installed client pending                                |
 | `deepseek-harness` | DeepSeek Harness CLI (shared Chat/Responses IR builder and Intent rejection logging)                           | Shared IR and Intent regressions passed. Installed client pending                                     |
+| `glm`              | Shared diagnostics export and canonical GLM Agent identity                                             | Codex ambient context is inapplicable. Native GLM tool-media and trace verification pending           |
 | `t3code`           | T3 Code desktop (shared Intent routing and diagnostics export redaction)                                       | Shared diagnostics and IR regressions passed. Installed client pending                                |
 
 Verified the working tree based on `a8d0e03e` on macOS 15.3.1 (`24D70`)
