@@ -166,6 +166,7 @@ pub(crate) struct Manager {
     path: PathBuf,
     db: Arc<crate::database::Database>,
     lock: Mutex<()>,
+    settings_lock: Mutex<()>,
     #[cfg(target_os = "macos")]
     native_cache: Arc<std::sync::Mutex<qoder_native::Cache>>,
 }
@@ -221,6 +222,7 @@ impl Manager {
             path,
             db,
             lock: Mutex::new(()),
+            settings_lock: Mutex::new(()),
             #[cfg(target_os = "macos")]
             native_cache: Arc::new(std::sync::Mutex::new(qoder_native::Cache::default())),
         }
@@ -240,6 +242,11 @@ impl Manager {
         })
         .await
         .map_err(|_| STORAGE.to_owned())?
+    }
+    async fn save_observation(&self, store: &mut Store) -> Result<(), String> {
+        let _guard = self.settings_lock.lock().await;
+        store.enabled = self.read().await?.enabled;
+        self.save(store).await
     }
     async fn helper(&self, app: &str, mut input: Value) -> Result<Value, String> {
         valid_app(app)?;
@@ -450,19 +457,19 @@ impl Manager {
             changed = true;
         }
         if changed {
-            self.save(store).await?;
+            self.save_observation(store).await?;
         }
         Ok(())
     }
     pub(crate) async fn status(&self, app: &str) -> Result<Status, String> {
         valid_app(app)?;
         let _guard = self.lock.lock().await;
-        let mut store = self.read().await?;
         let native = match self.observe(app, None).await {
             Ok(native) => native,
             Err(error) if error == STORAGE => return Err(error),
             Err(_) => Observation::outcome(Outcome::Failed),
         };
+        let mut store = self.read().await?;
         self.remember_confirmed(app, &mut store, &native).await?;
         Ok(Self::snapshot(app, &store, &native))
     }
@@ -486,7 +493,7 @@ impl Manager {
         enabled: bool,
     ) -> Result<Status, String> {
         valid_app(app)?;
-        let _guard = self.lock.lock().await;
+        let _guard = self.settings_lock.lock().await;
         let mut store = self.read().await?;
         let value = self.helper(app, json!({"mode":"identity"})).await?;
         let native = serde_json::from_value::<Observation>(value)
@@ -544,7 +551,7 @@ impl Manager {
                     window: result.window_key.clone(),
                 },
             );
-            self.save(store).await?;
+            self.save_observation(store).await?;
         }
         Ok(Self::snapshot(app, store, &result))
     }
@@ -608,6 +615,7 @@ impl Manager {
             return Err(ERROR.into());
         }
         let _guard = self.lock.lock().await;
+        let _settings = self.settings_lock.lock().await;
         let mut store = self.read().await?;
         let value = self
             .helper(app, json!({"mode":"forget","expectedAccountId":id}))
@@ -632,6 +640,7 @@ impl Manager {
             let Ok(native) = self.observe(app, None).await else {
                 continue;
             };
+            store.enabled = self.read().await?.enabled;
             let Some(id) = native
                 .account_id
                 .clone()
@@ -658,6 +667,33 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_in_flight_reward_write_keeps_the_latest_check_in_preference() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let manager = Manager::new(
+            dir.path().join("rewards.json"),
+            Arc::new(crate::database::Database::memory().expect("database")),
+        );
+        let id = key("qoder", "synthetic-account");
+        let mut observation = manager.read().await.expect("initial state");
+        let mut preference = manager.read().await.expect("preference state");
+        preference.enabled.insert(id.clone(), true);
+        manager.save(&preference).await.expect("save preference");
+        observation
+            .qoder_dates
+            .entry(id.clone())
+            .or_default()
+            .insert("2026-11-17".into());
+        manager
+            .save_observation(&mut observation)
+            .await
+            .expect("save observation");
+        let saved = manager.read().await.expect("saved state");
+        assert_eq!(saved.enabled.get(&id), Some(&true));
+        assert!(saved.qoder_dates[&id].contains("2026-11-17"));
+    }
+
     #[tokio::test]
     async fn qoder_dates_persist_per_account_without_inventing_legacy_history() {
         let dir = tempfile::tempdir().unwrap();

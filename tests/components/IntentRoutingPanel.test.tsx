@@ -19,6 +19,8 @@ import {
 } from "vitest";
 import { IntentRoutingPanel } from "@/components/routing/IntentRoutingPanel";
 import { intentRoutingApi, type RoutingGroup } from "@/lib/api/intentRouting";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
+import { nativeSubscriptionApi } from "@/lib/api/nativeSubscription";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { routingTemplates } from "@/lib/routingGroupTransfer";
@@ -26,6 +28,15 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), message: vi.fn() } }));
 
 vi.mock("@/components/routing/RoutingClient", () => ({
   RoutingClient: () => null,
+}));
+vi.mock("@/lib/api/routingUpstreams", () => ({
+  routingUpstreamsApi: {
+    list: vi.fn(async () => []),
+    codexQuota: vi.fn(),
+  },
+}));
+vi.mock("@/lib/api/nativeSubscription", () => ({
+  nativeSubscriptionApi: { quota: vi.fn() },
 }));
 vi.mock("@/lib/api/intentRouting", () => ({
   intentRoutingApi: {
@@ -49,6 +60,7 @@ vi.mock("@/lib/api/intentRouting", () => ({
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
+    i18n: { language: "en" },
     t: (key: string, values?: { budgetMs?: number }) =>
       values?.budgetMs === undefined ||
       !key.startsWith("intentRouting.trialOutcome.timeout")
@@ -1384,12 +1396,14 @@ describe("IntentRoutingPanel", () => {
   it.each(["templateSmart", "templateSpeed", "templateExpiry"] as const)(
     "also hides advanced settings when editing legacy %s groups saved without a template field",
     async (key) => {
+      const expiry = Math.floor(Date.now() / 1000) + 86_400;
       const providers = [
         {
           id: "a",
           name: "Synthetic A",
           taskEligible: true,
           classifierEligible: true,
+          relayExpiry: expiry,
           models: [
             { id: "large", name: "Large", outputPrice: 15, maker: true },
             { id: "mini", name: "Mini", outputPrice: 1, maker: true },
@@ -1430,14 +1444,143 @@ describe("IntentRoutingPanel", () => {
       expect(
         within(dialog).getByText(`routingPage.${key}RuleHint`),
       ).toBeVisible();
+      if (key === "templateExpiry") {
+        expect(dialog.querySelector("time")).toHaveAttribute(
+          "datetime",
+          new Date(expiry * 1000).toISOString(),
+        );
+        expect(
+          within(dialog).getByText("routingPage.memberExpiryUnknown"),
+        ).toBeVisible();
+      } else {
+        expect(dialog.querySelector("time")).toBeNull();
+      }
     },
   );
-  it("restores the expiry template's suggested order without replacing selected members", async () => {
+  it("shows actual account reset windows and WorkBuddy credit expiry in the expiry editor", async () => {
+    const date = (hours: number) =>
+      new Date(Date.now() + hours * 3_600_000).toISOString();
+    const fiveHour = date(4);
+    const sevenDay = date(36);
+    const creditsReset = date(24);
+    const creditsExpiry = date(72);
+    const quota = {
+      tool: "fixture",
+      credentialStatus: "valid" as const,
+      credentialMessage: null,
+      success: true,
+      tiers: [],
+      extraUsage: null,
+      error: null,
+      queriedAt: null,
+    };
+    const providers = ["codex", "gemini", "workbuddy"].map((id) => ({
+      id,
+      name: id,
+      taskEligible: true,
+      classifierEligible: false,
+      models: [{ id: `${id}-model`, name: id }],
+    }));
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValueOnce([
+      {
+        schemaVersion: 1,
+        id: "codex",
+        name: "codex",
+        revision: 1,
+        hasApiKey: false,
+        source: { kind: "codex" },
+        codexSettings: {
+          accounts: ["fixture-codex-account"],
+          mode: "vendor",
+          models: [],
+          groupsOnly: false,
+        },
+      },
+      {
+        schemaVersion: 1,
+        id: "gemini",
+        name: "gemini",
+        revision: 1,
+        hasApiKey: false,
+        source: {
+          kind: "api",
+          baseUrl: "https://gemini.example",
+          apiFormat: "gemini_native",
+          mode: "vendor",
+          models: [],
+          catalog: [],
+          groupsOnly: false,
+        },
+      },
+      {
+        schemaVersion: 1,
+        id: "workbuddy",
+        name: "workbuddy",
+        revision: 1,
+        hasApiKey: false,
+        source: {
+          kind: "subscription",
+          provider: "workbuddy",
+          accountId: "fixture-workbuddy-account",
+          mode: "vendor",
+          models: [],
+          catalog: [],
+          groupsOnly: false,
+        },
+      },
+    ]);
+    vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValueOnce({
+      ...quota,
+      tiers: [
+        { name: "five_hour", utilization: 20, resetsAt: fiveHour },
+        { name: "seven_day", utilization: 25, resetsAt: sevenDay },
+      ],
+    });
+    vi.mocked(nativeSubscriptionApi.quota).mockResolvedValueOnce({
+      ...quota,
+      creditsExpiresAt: creditsExpiry,
+      tiers: [{ name: "credits", utilization: 10, resetsAt: creditsReset }],
+    });
+    mount();
+    const user = userEvent.setup();
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    drawTemplateSuggestions(create);
+    await user.click(
+      screen.getByRole("button", { name: "routingPage.templateExpiry" }),
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: "routingPage.templateExpiry",
+    });
+    const [codex, gemini, workbuddy] = within(dialog).getAllByRole("listitem");
+    await waitFor(() => {
+      expect(
+        [...codex.querySelectorAll("time")].map((item) => item.dateTime),
+      ).toEqual([fiveHour, sevenDay]);
+      expect(
+        [...workbuddy.querySelectorAll("time")].map((item) => item.dateTime),
+      ).toEqual([creditsExpiry, creditsReset]);
+      expect(
+        within(gemini).getByText("routingPage.memberExpiryUnknown"),
+      ).toBeVisible();
+    });
+    expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith(
+      "fixture-codex-account",
+    );
+    expect(nativeSubscriptionApi.quota).toHaveBeenCalledWith(
+      "workbuddy",
+      "fixture-workbuddy-account",
+    );
+  });
+  it("saves the expiry template in the visible order after the user overrides the recommendation", async () => {
+    const expiry = Math.floor(Date.now() / 1000) + 86_400;
     const providers = ["first", "middle", "last"].map((id) => ({
       id,
       name: id,
       taskEligible: true,
       classifierEligible: false,
+      ...(id === "first" ? { relayExpiry: expiry } : {}),
       models: [{ id: `${id}-model`, name: id }],
     }));
     vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
@@ -1453,6 +1596,13 @@ describe("IntentRoutingPanel", () => {
       name: "routingPage.templateExpiry",
     });
     const rows = () => within(dialog).getAllByRole("listitem");
+    expect(rows()[0].querySelector("time")).toHaveAttribute(
+      "datetime",
+      new Date(expiry * 1000).toISOString(),
+    );
+    expect(
+      within(rows()[1]).getByText("routingPage.memberExpiryUnknown"),
+    ).toBeVisible();
     await user.click(
       within(rows()[1]).getByRole("button", {
         name: "intentRouting.moveUp middle",
@@ -1466,19 +1616,26 @@ describe("IntentRoutingPanel", () => {
     );
     expect(rows()[0]).toHaveTextContent("first");
     await user.click(
+      within(rows()[1]).getByRole("button", {
+        name: "intentRouting.moveUp middle",
+      }),
+    );
+    expect(rows()[0]).toHaveTextContent("middle");
+    await user.click(
       within(dialog).getByRole("button", { name: "common.save" }),
     );
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
     expect(saved.members.map(({ providerId }) => providerId)).toEqual([
-      "first",
       "middle",
+      "first",
       "last",
     ]);
     expect(saved.defaultMemberId).toBe(saved.members[0].id);
-    expect(saved.fallbackMemberIds).toEqual(
-      saved.members.slice(1).map(({ id }) => id),
-    );
+    expect(saved.fallbackMemberIds).toEqual([
+      saved.members[1].id,
+      saved.members[2].id,
+    ]);
     expect(saved.quotaOrder).toBe("earliest_expiry");
   });
   it("chooses smart rule targets independently from the full task catalog", async () => {

@@ -794,6 +794,7 @@ function templateCandidates(providers: RoutingProviderOption[]) {
     "highspeed",
   ]);
   const seen = new Set<string>();
+  const now = Math.floor(Date.now() / 1000);
   return providers
     .filter((provider) => provider.taskEligible)
     .flatMap((provider) =>
@@ -806,6 +807,10 @@ function templateCandidates(providers: RoutingProviderOption[]) {
         return {
           provider,
           model,
+          relayExpiry:
+            provider.relayExpiry != null && provider.relayExpiry > now
+              ? provider.relayExpiry
+              : Infinity,
           modelKey: sameModel(model.sameAs ?? model.id) || model.id,
           out:
             typeof model.outputPrice === "number" &&
@@ -853,6 +858,12 @@ function compareTemplateCandidates(a: TemplateCandidate, b: TemplateCandidate) {
     compareTemplatePriority(a, b) ||
     (b.model.released ?? "").localeCompare(a.model.released ?? "")
   );
+}
+
+function compareExpiryCandidates(a: TemplateCandidate, b: TemplateCandidate) {
+  return a.relayExpiry === b.relayExpiry
+    ? compareTemplateCandidates(a, b)
+    : a.relayExpiry - b.relayExpiry;
 }
 
 function compareSpeedCandidates(a: TemplateCandidate, b: TemplateCandidate) {
@@ -936,7 +947,7 @@ export function recommendRoutingMemberOrder(
     template === "templateExpiry"
       ? selected.sort(
           (a, b) =>
-            compareTemplateCandidates(a, b) || a.catalogIndex - b.catalogIndex,
+            compareExpiryCandidates(a, b) || a.catalogIndex - b.catalogIndex,
         )
       : rankCapabilityCandidates(
           selected.sort((a, b) => a.catalogIndex - b.catalogIndex),
@@ -1093,7 +1104,7 @@ export function routingTemplates(
       ? smartCandidates.find(distinctFallback)
       : undefined) ??
     otherSuppliers.find((candidate) => candidate !== economy);
-  const recommended = pick(strongest);
+  const expiryRecommended = pick([...strongest].sort(compareExpiryCandidates));
   // The speed template has a $100/M output ceiling and one model per supplier.
   const speedEligible = strongest
     .filter((candidate) => candidate.out == null || candidate.out <= 100)
@@ -1129,7 +1140,7 @@ export function routingTemplates(
         ? pick(rankCapabilityCandidates(strongest))
         : key === "templateSpeed"
           ? speedRecommended
-          : recommended;
+          : expiryRecommended;
     group.members = selected.map(({ provider, model }) => ({
       id: crypto.randomUUID(),
       providerId: provider.id,

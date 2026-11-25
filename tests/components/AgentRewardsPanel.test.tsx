@@ -497,3 +497,25 @@ it("shows progress while saving the automatic check-in preference and restores i
   expect(toggle).not.toBeChecked();
   expect(screen.queryByText("common.saving")).toBeNull();
 });
+
+it("saves Qoder automatic check-in during a slow reward refresh", async () => {
+  mount();
+  const toggle = await screen.findByRole("switch", {
+    name: "agentRewards.autoLabel",
+  });
+  await waitFor(() => expect(toggle).toBeEnabled());
+  vi.mocked(agentRewardsApi.status).mockImplementationOnce(
+    () => new Promise(() => {}),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "agentRewards.refresh" }));
+  await waitFor(() => expect(agentRewardsApi.status).toHaveBeenCalledTimes(2));
+  expect(toggle).toBeEnabled();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle).toBeChecked());
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(agentRewardsApi.setAuto).toHaveBeenCalledWith(
+    "qoder",
+    initial.accountId,
+    true,
+  );
+});

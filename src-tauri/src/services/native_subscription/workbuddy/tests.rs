@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn workbuddy_quota_separates_credit_expiry_from_window_reset() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-25T02:00:00Z")
+        .unwrap()
+        .timestamp();
+    let value = json!({"Packages":[
+        {"CycleCapacityRemainPrecise":"0","DeductionEndTime":"2026-11-25 12:00:00"},
+        {"CycleCapacityRemainPrecise":"8","DeductionEndTime":"2026-11-26 12:00:00","CycleEndTime":"2026-11-28 14:00:00"},
+        {"CycleTotalCapacity":"5","CycleUsedCapacity":"1","DeductionEndTime":"2026-11-27T04:00:00Z","CycleEndTime":"2026-11-27T06:00:00Z"},
+        {"CycleRemainCapacity":"1","DeductionEndTime":"2026-11-24T04:00:00Z"}
+    ]});
+    let (reset, expiry) = quota_dates(SubscriptionProvider::Workbuddy, false, &value, now);
+    assert_eq!(reset.as_deref(), Some("2026-11-27T06:00:00+00:00"));
+    assert_eq!(expiry.as_deref(), Some("2026-11-26T04:00:00+00:00"));
+    let (reset, expiry) = quota_dates(
+        SubscriptionProvider::WorkbuddyAi,
+        true,
+        &json!({"cycleResetTime":"2026-11-26T13:00:00+08:00"}),
+        now,
+    );
+    assert_eq!(reset.as_deref(), Some("2026-11-26T05:00:00+00:00"));
+    assert_eq!(expiry, None);
+}
+
+#[test]
 fn regional_catalog_keeps_cli_and_enterprise_models_only() -> Result<(), String> {
     let fixture = json!({"agents":[{"name":"ide","models":["private"]},{"name":"cli","models":["glm-5.3","glm-5.3","claude-fixture"]}],"models":[
         {"id":"private","apiKey":"synthetic"},

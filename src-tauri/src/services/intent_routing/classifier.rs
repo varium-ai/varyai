@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 const MAX_RESPONSE: usize = 64 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
+const MAX_OUTPUT_TOKENS: u32 = 4_096;
 static TRIAL_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 #[derive(Serialize)]
@@ -179,19 +180,19 @@ fn prepare_payload(
     let model = &target.model_id;
     let payload = match protocol {
         Protocol::Chat => json!({
-            "model":model, "stream":false, "max_tokens":128,
+            "model":model, "stream":false, "max_tokens":MAX_OUTPUT_TOKENS,
             "messages":[{"role":"system","content":instructions},{"role":"user","content":task}]
         }),
         Protocol::Responses => json!({
-            "model":model, "stream":false, "store":false, "max_output_tokens":1024,
+            "model":model, "stream":false, "store":false, "max_output_tokens":MAX_OUTPUT_TOKENS,
             "instructions":instructions, "input":task
         }),
         Protocol::Anthropic => json!({
-            "model":model, "stream":false, "max_tokens":128,
+            "model":model, "stream":false, "max_tokens":MAX_OUTPUT_TOKENS,
             "system":instructions, "messages":[{"role":"user","content":task}]
         }),
         Protocol::Gemini => {
-            let mut generation = json!({"maxOutputTokens":1024});
+            let mut generation = json!({"maxOutputTokens":MAX_OUTPUT_TOKENS});
             if let Some(level) = thinking_level {
                 generation["thinkingConfig"] = json!({"thinkingLevel":level});
             }
@@ -208,7 +209,7 @@ fn prepare_payload(
     Ok(payload)
 }
 
-fn chat_text(value: &Value) -> Option<&str> {
+fn chat_text(value: &Value) -> Option<String> {
     let [choice] = value["choices"].as_array()?.as_slice() else {
         return None;
     };
@@ -223,12 +224,23 @@ fn chat_text(value: &Value) -> Option<&str> {
     {
         return None;
     }
-    message["content"].as_str()
+    let content = &message["content"];
+    if let Some(text) = content.as_str() {
+        return Some(text.to_owned());
+    }
+    let mut text = String::new();
+    for part in content.as_array()? {
+        if part["type"] != "text" {
+            return None;
+        }
+        text.push_str(part["text"].as_str()?);
+    }
+    Some(text)
 }
 
 fn native_text(protocol: Protocol, value: &Value) -> Option<String> {
     let (parts, text_type, ignored) = match protocol {
-        Protocol::Chat => return chat_text(value).map(str::to_owned),
+        Protocol::Chat => return chat_text(value),
         Protocol::Responses => {
             if value["status"] != "completed" {
                 return None;
@@ -326,7 +338,7 @@ fn decode_result(
             let json = content
                 .split_once('\n')
                 .filter(|(fence, _)| matches!(fence.trim_end_matches('\r'), "```json" | "```"))
-                .and_then(|(_, body)| body.strip_suffix("\n```"))
+                .and_then(|(_, body)| body.strip_suffix("\n```").map(str::trim_end))
                 .unwrap_or(content);
             group.parse_classification(json).ok()
         }) {
@@ -639,6 +651,7 @@ mod tests {
         let payload = task.await.unwrap();
         assert_eq!(payload["model"], "classifier-model");
         assert_eq!(payload["stream"], false);
+        assert_eq!(payload["max_tokens"], 4096);
         assert!(payload.get("thinking").is_none());
         assert!(payload.get("tools").is_none());
         assert_eq!(payload["messages"].as_array().unwrap().len(), 2);
@@ -681,6 +694,7 @@ mod tests {
                         assert_eq!(headers["authorization"], "Bearer synthetic-key");
                         assert_eq!(payload["model"], "classifier-model");
                         assert_eq!(payload["store"], false);
+                        assert_eq!(payload["max_output_tokens"], 4096);
                         (payload["input"].as_str(), json!({"status":"completed","output":[
                             {"type":"reasoning","summary":[]},
                             {"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}
@@ -690,6 +704,7 @@ mod tests {
                         assert_eq!(headers["x-api-key"], "synthetic-key");
                         assert_eq!(headers["anthropic-version"], "2023-06-01");
                         assert_eq!(payload["model"], "classifier-model");
+                        assert_eq!(payload["max_tokens"], 4096);
                         (payload["messages"][0]["content"].as_str(), json!({"stop_reason":"end_turn","content":[
                             {"type":"thinking","thinking":"Synthetic thought"},{"type":"text","text":answer}
                         ]}))
@@ -698,6 +713,7 @@ mod tests {
                         assert_eq!(headers["x-goog-api-key"], "synthetic-key");
                         assert!(payload["systemInstruction"]["parts"][0]["text"].is_string());
                         assert!(payload["generationConfig"]["thinkingConfig"].is_null());
+                        assert_eq!(payload["generationConfig"]["maxOutputTokens"], 4096);
                         (payload["contents"][0]["parts"][0]["text"].as_str(), json!({"candidates":[
                             {"finishReason":"STOP","content":{"parts":[{"thought":true,"text":"Synthetic thought"},{"text":answer}]}}
                         ]}))
@@ -952,6 +968,24 @@ mod tests {
                 (None, "invalid_output")
             );
         }
+    }
+
+    #[test]
+    fn compatible_chat_text_parts_accept_a_single_fenced_result() {
+        let group = group();
+        let mut value = json!({"choices":[{"finish_reason":"stop","message":{"content":[
+            {"type":"text","text":"```json\r\n"},
+            {"type":"text","text":"{\"intentId\":\"debug\"}\r\n```"}
+        ]}}]});
+        assert_eq!(
+            decode_result(&group, Protocol::Chat, &value),
+            (Some("debug".into()), "matched")
+        );
+        value["choices"][0]["message"]["content"][0]["type"] = json!("refusal");
+        assert_eq!(
+            decode_result(&group, Protocol::Chat, &value),
+            (None, "invalid_output")
+        );
     }
 
     #[test]

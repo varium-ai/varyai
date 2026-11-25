@@ -50,14 +50,14 @@ function CalendarCheckinProgress({
   totalDays,
   day,
   checkinDates,
-  partialHistory = false,
+  localHistory = false,
   hint = "dailyCheckin.calendarHint",
   currentLabel = "dailyCheckin.today",
 }: {
   totalDays?: number | null;
   day?: string;
   checkinDates?: string[] | null;
-  partialHistory?: boolean;
+  localHistory?: boolean;
   hint?: string;
   currentLabel?: string;
 }) {
@@ -65,13 +65,28 @@ function CalendarCheckinProgress({
   const today = day ? new Date(`${day}T00:00:00Z`) : null;
   const known = checkinDates != null;
   const dates = new Set(checkinDates);
+  const displayedDates = Array.from(
+    { length: 7 },
+    (_, index) => today && new Date(today.getTime() - (6 - index) * 86400000),
+  );
+  const total = localHistory
+    ? displayedDates.filter(
+        (date) => date && dates.has(date.toISOString().slice(0, 10)),
+      ).length || undefined
+    : totalDays;
   return (
     <div className="mp-checkin-progress">
       <div className="mp-checkin-streak">
-        <h4>{t("dailyCheckin.campaignTotal")}</h4>
-        <p className="mp-checkin-streak-value" data-known={totalDays != null}>
-          {totalDays != null
-            ? t("dailyCheckin.days", { count: totalDays })
+        <h4>
+          {t(
+            localHistory
+              ? "agentRewards.qoderConfirmed"
+              : "dailyCheckin.campaignTotal",
+          )}
+        </h4>
+        <p className="mp-checkin-streak-value" data-known={total != null}>
+          {total != null
+            ? t("dailyCheckin.days", { count: total })
             : t("dailyCheckin.noData")}
         </p>
         <p className="mp-checkin-muted">{day}</p>
@@ -84,16 +99,14 @@ function CalendarCheckinProgress({
           </span>
         </h4>
         <ol aria-label={t("dailyCheckin.calendar")}>
-          {Array.from({ length: 7 }, (_, index) => {
-            const date =
-              today && new Date(today.getTime() - (6 - index) * 86400000);
+          {displayedDates.map((date, index) => {
             const iso = date?.toISOString().slice(0, 10);
             const state =
               !known || !iso
                 ? "unknown"
                 : dates.has(iso)
                   ? "complete"
-                  : partialHistory
+                  : localHistory
                     ? "unknown"
                     : "pending";
             return (
@@ -148,7 +161,7 @@ export function QoderCheckinProgress({
     <CalendarCheckinProgress
       day={current}
       checkinDates={confirmedDates}
-      partialHistory
+      localHistory
       hint="agentRewards.qoderCalendarHint"
       currentLabel="agentRewards.currentWindow"
     />

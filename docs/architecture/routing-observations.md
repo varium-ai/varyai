@@ -41,9 +41,11 @@ navigation, and reduced-motion settings suppress control and stage movement.
   waiting for first content. Reduced motion keeps a static accent border.
   Quota indicators are unchanged.
   The workspace creates one source card per recorded Agent ID and gives active
-  sources priority. Each Agent's latest completion can linger for 12 seconds,
-  measured from finish time. The stage keeps the latest recorded request as
-  the overview when traffic is idle. Different models or sessions can share a
+  sources priority. The latest-started finished request for an Agent can linger
+  for 12 seconds, measured from finish time. Recorded background requests such as title generation,
+  memory consolidation and automatic reviews stay out of the workspace stage.
+  The stage keeps the latest conversation request as the overview when traffic
+  is idle. Different models or sessions can share a
   source card while their active requests keep separate animations. The header
   shows a live overview when multiple routes are displayed. Its footer retains
   request, fallback and Agent error counts as read-only summaries. Decision

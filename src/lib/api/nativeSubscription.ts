@@ -22,10 +22,11 @@ export interface SubscriptionLogin {
 }
 export const nativeSubscriptionApi = {
   quota: (provider: NativeSubscriptionProvider, id: string) =>
-    invoke<import("@/types/subscription").SubscriptionQuota>(
-      "native_subscription_quota",
-      { provider, id },
-    ),
+    invoke<
+      import("@/types/subscription").SubscriptionQuota & {
+        creditsExpiresAt?: string;
+      }
+    >("native_subscription_quota", { provider, id }),
   accounts: (provider: NativeSubscriptionProvider) =>
     invoke<SubscriptionAccount[]>("native_subscription_accounts", { provider }),
   start: (

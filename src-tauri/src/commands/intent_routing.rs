@@ -135,6 +135,8 @@ pub(crate) struct ProviderOption {
     app_type: Option<String>,
     task_eligible: bool,
     classifier_eligible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay_expiry: Option<i64>,
     models: Vec<ModelOption>,
 }
 
@@ -215,6 +217,22 @@ pub(crate) async fn list_intent_routing_providers(
         } else {
             false
         };
+        let models = provider.map(model_options).unwrap_or_default();
+        let relay_expiry = provider
+            .filter(|p| {
+                task_eligible && crate::services::subscription_provider::binding(p).is_none()
+            })
+            .zip(models.first())
+            .and_then(|(p, model)| {
+                let (url, headers) =
+                    crate::services::intent_routing::execution::static_transport(p, &model.id)
+                        .ok()?;
+                crate::services::routing_provider_quota::observe_expiry(
+                    &reqwest::Url::parse(&url).ok()?,
+                    &headers,
+                    chrono::Utc::now().timestamp(),
+                )
+            });
         options.push(ProviderOption {
             icon: picker_icon(
                 record
@@ -231,7 +249,8 @@ pub(crate) async fn list_intent_routing_providers(
             name: record.name,
             task_eligible,
             classifier_eligible: provider.is_some_and(|p| eligible_provider(p, true)),
-            models: provider.map(model_options).unwrap_or_default(),
+            relay_expiry,
+            models,
         });
     }
     options.sort_by(|a, b| (&a.app_type, &a.name, &a.id).cmp(&(&b.app_type, &b.name, &b.id)));
