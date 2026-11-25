@@ -220,7 +220,8 @@ export function RoutingStage({
           chosenCandidate(trace) === index &&
           (!isAnswering(previous.trace) ||
             chosenCandidate(previous.trace) !== previous.index)) ||
-        (!live(previous.trace) && live(trace))
+        (!live(previous.trace) &&
+          (live(trace) || trace.startedAt > previous.trace.startedAt))
       )
         seats.set(key, { candidate, trace, index });
     }

@@ -2227,7 +2227,7 @@ async fn execute(
     if !count_tokens
         && pinned.is_none()
         && session.group.quota_order.is_some()
-        && subscription_budget::prioritize(
+        && subscription_budget::filter_exhausted(
             &session,
             &mut candidates,
             &states,

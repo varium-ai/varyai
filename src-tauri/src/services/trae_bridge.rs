@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 21;
+const HELPER_REVISION: u64 = 22;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 static CHINA_HELPER_START: Mutex<()> = Mutex::new(());
 static INTERNATIONAL_HELPER_START: Mutex<()> = Mutex::new(());

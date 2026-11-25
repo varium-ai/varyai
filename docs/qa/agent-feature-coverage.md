@@ -789,6 +789,12 @@ compilation disabled. The locked desktop prevented a native editor recheck.
 
 ## Live routing source cards
 
+For the Agent inventory in this section, the workspace stage filters recorded
+background activity before selecting conversation sources. The shared UI uses
+the existing kind supplied by each adapter. Request history keeps those traces.
+Renderer verification covers simultaneous background and chat traffic. Native
+clients and Windows WebView acceptance remain pending.
+
 The Routing workspace derives its source cards
 from the existing gateway trace snapshot on macOS and Windows. `Trace` below
 means one card per recorded Agent and active route, independent request
@@ -2356,6 +2362,18 @@ use the existing per-Agent adapters. The external OpenClaw row has no managed
 key status. Synthetic coverage includes both TRAE editions, Gemini, Codex, and
 the other policy-capable rows. Native acceptance is tracked separately.
 
+TRAE startup selection is applied after the native model catalog and saved
+selection are ready. The durable retry handles a window that is still loading.
+The Agent page continues to show pending selection until native confirmation.
+
+| Agent              | Entry point and adapter                                                                          | macOS and Windows verification                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| TRAE CN            | Agent starting-model picker, native IDE and Agent window adapters                                | Model readiness and retry fixtures, installed-client acceptance pending  |
+| TRAE International | Agent starting-model picker, separate edition bridge with the same IDE and Agent window adapters | Shared readiness and retry fixtures, installed-client acceptance pending |
+
+Other Agents use the entry points listed below and do not use the TRAE
+starting-model adapter.
+
 The November 23 gateway publication check covers the same Agent inventory
 through its existing native routes. The publication flag controls the external
 key-authenticated gateway catalog and inference for Chat, Messages, Responses
@@ -2524,6 +2542,23 @@ route. Doubao Work retains its audit-only path. Renderer fixtures cover the
 editor and saved order on the shared macOS and Windows code path. Native
 verification remains separate for the adapters listed below.
 
+The expiry template uses the recommendation when creating or explicitly
+reordering a draft. The shared editor saves the visible order, and the group
+planner reads that order even for older definitions with different fallback
+IDs. The shared runtime excludes accounts with confirmed exhausted quota.
+This applies to every executable adapter below on macOS and Windows. Doubao
+Work stays on its audit path. The renderer regression saves a manual reorder.
+Loopback fixtures exercise saved order, exhausted accounts, native wire
+preservation and continuations. Native acceptance remains pending.
+
+For every executable Agent listed below, the shared expiry-template creation
+and edit dialogs show the provider-reported subscription expiry beside each
+model on macOS and Windows. The same editor shows the observed reset dates
+for configured quota windows and the nearest observed WorkBuddy credit expiry.
+Missing observations show an unknown date.
+The detail is read from the shared catalog, separate from the native adapters
+and candidate execution. Renderer fixtures verify both editor entry points.
+
 The routing group model count uses the shared workspace table for each
 Agent listed below on macOS and Windows. It includes a separately
 configured classifier once per supplier and model. The existing Agent
@@ -2663,6 +2698,12 @@ Windows. Chat classification uses the provider's supported reasoning switch.
 An explicit output-limit response has its own fallback reason on each of
 the four classifier protocols. Verification for this change uses synthetic
 classifier responses and renderer tests. Native Agent acceptance is pending.
+The same tests cover compatible Chat providers that return an array of text
+parts, including CRLF-fenced JSON and rejection of non-text parts. The editor
+trial and live route use the same decoder for every applicable row.
+The shared request builder sets the classifier output budget to 4,096 tokens
+for every executable row in the matrix. Loopback fixtures cover the budget
+field sent by Chat, Responses, Messages, and Gemini. Native acceptance is pending.
 
 For each Agent below on macOS and Windows, refreshing a managed ChatGPT
 account catalog invalidates the shared default-model menu. Forgetting a
@@ -2784,6 +2825,13 @@ reward observation until the next refresh. These paths are shared by macOS
 and Windows, with Qoder's native account adapter on macOS and browser
 authorization available on both platforms. The entries with only the shared
 wizard have no automatic check-in adapter.
+
+The Qoder CN calendar summarizes locally confirmed dates for the selected
+native or browser account in the shared main and tray panel. The settings
+command for Qoder CN, TRAE CN, and ZCode persists a verified account's
+preference independently of an in-flight reward observation. The store merge
+preserves preferences changed during a reward request. The coverage rows
+below identify the native paths. Installed-client acceptance is pending.
 
 | Agent ID           | Entry point and adapter                                                                        | Verification scope                                                                       |
 | ------------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |

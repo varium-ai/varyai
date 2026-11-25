@@ -399,16 +399,24 @@ impl RoutingGroup {
             ),
             None => None,
         };
-        let preferred = rule.map_or(&self.default_member_id, |rule| &rule.target_member_id);
+        let use_member_order = self.quota_order.is_some();
+        let preferred = rule
+            .map(|rule| &rule.target_member_id)
+            .or_else(|| (!use_member_order).then_some(&self.default_member_id));
         let mut seen = HashSet::new();
         let mut candidates = Vec::new();
-        for id in std::iter::once(preferred)
+        for id in preferred
+            .into_iter()
             .chain(
                 rule.into_iter()
                     .flat_map(|rule| rule.fallback_member_ids.iter()),
             )
-            .chain(self.fallback_member_ids.iter())
-            .chain(std::iter::once(&self.default_member_id))
+            .chain(
+                self.fallback_member_ids
+                    .iter()
+                    .chain(std::iter::once(&self.default_member_id))
+                    .filter(|_| !use_member_order),
+            )
             .chain(self.members.iter().map(|member| &member.id))
         {
             if !self.off.contains(id) && seen.insert(id) {

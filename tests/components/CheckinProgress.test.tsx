@@ -114,12 +114,15 @@ it("distinguishes an empty official history from unavailable history", () => {
   expect(days.every((day) => day.dataset.state === "pending")).toBe(true);
 });
 
-it("uses the WorkBuddy calendar layout for Qoder without inventing a campaign total", () => {
+it("summarizes only Qoder confirmations within the displayed reward windows", () => {
   render(
-    <QoderCheckinProgress day="2026-11-16" confirmedDates={["2026-11-16"]} />,
+    <QoderCheckinProgress
+      day="2026-11-16"
+      confirmedDates={["2026-11-01", "2026-11-16", "2026-11-16"]}
+    />,
   );
-  expect(screen.getByText("dailyCheckin.campaignTotal")).toBeVisible();
-  expect(screen.getByText("dailyCheckin.noData")).toBeVisible();
+  expect(screen.getByText("agentRewards.qoderConfirmed")).toBeVisible();
+  expect(screen.getByText("dailyCheckin.days 1")).toBeVisible();
   expect(
     screen.getByRole("list", { name: "dailyCheckin.calendar" }),
   ).toBeVisible();

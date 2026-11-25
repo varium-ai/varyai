@@ -1824,11 +1824,29 @@ fn parse_google_quota(
         queried_at: Some(chrono::Utc::now().timestamp_millis()),
     }
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QuotaObservation {
+    #[serde(flatten)]
+    pub quota: super::subscription::SubscriptionQuota,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits_expires_at: Option<String>,
+}
+
+impl From<super::subscription::SubscriptionQuota> for QuotaObservation {
+    fn from(quota: super::subscription::SubscriptionQuota) -> Self {
+        Self {
+            quota,
+            credits_expires_at: None,
+        }
+    }
+}
+
 /// Query only the explicitly selected managed account; never fall back to a native login.
 pub(crate) async fn quota(
     provider: SubscriptionProvider,
     id: &str,
-) -> Result<super::subscription::SubscriptionQuota, String> {
+) -> Result<QuotaObservation, String> {
     use super::subscription::{CredentialStatus, SubscriptionQuota};
     let account = match resolve(provider, id).await {
         Ok(account) => account,
@@ -1837,7 +1855,8 @@ pub(crate) async fn quota(
                 "subscription",
                 CredentialStatus::Expired,
                 EXPIRED.into(),
-            ))
+            )
+            .into())
         }
         Err(_) => return Err(FAILED.into()),
     };
@@ -1882,11 +1901,11 @@ pub(crate) async fn quota(
                     tier.name = gemini_shown_model(&flags, &tier.name).into();
                 }
             }
-            return Ok(quota);
+            return Ok(quota.into());
         }
         if provider == SubscriptionProvider::Claude {
             if let Some(quota) = claude_cli_usage(&account).await {
-                return Ok(quota);
+                return Ok(quota.into());
             }
             let credentials = claude_usage_credentials(&account).await?;
             observe_plan(
@@ -1895,20 +1914,19 @@ pub(crate) async fn quota(
             )
             .await;
             let usage = claude_oauth_usage(&credentials).await?;
-            return Ok(super::subscription::parse_claude_quota(&usage));
+            return Ok(super::subscription::parse_claude_quota(&usage).into());
         }
         // Sign in with ChatGPT does not expose a separate allowance endpoint.
-        Ok(parse_google_quota(provider, &Value::Null))
+        Ok(parse_google_quota(provider, &Value::Null).into())
     }
     .await;
     match result {
         Err(error) if error == EXPIRED => {
             observe_rejection(&account).await;
-            Ok(SubscriptionQuota::error(
-                "subscription",
-                CredentialStatus::Expired,
-                EXPIRED.into(),
-            ))
+            Ok(
+                SubscriptionQuota::error("subscription", CredentialStatus::Expired, EXPIRED.into())
+                    .into(),
+            )
         }
         other => other,
     }

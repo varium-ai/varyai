@@ -1,6 +1,9 @@
 import { act, renderHook } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { useRoutingFlights } from "@/components/routing/useRoutingFlights";
+import {
+  liveRoutingSources,
+  useRoutingFlights,
+} from "@/components/routing/useRoutingFlights";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 
 const request = (
@@ -17,6 +20,21 @@ const request = (
   durationMs: 10000,
   candidates: [],
   steps: [],
+});
+
+it("keeps the newer reply when an older request finishes with an error afterward", () => {
+  const now = Date.now();
+  const reply = {
+    ...request("reply", "completed"),
+    startedAt: now - 4_000,
+    durationMs: 2_000,
+  };
+  const lateFailure = {
+    ...request("late-failure", "failed"),
+    startedAt: now - 9_000,
+    durationMs: 8_000,
+  };
+  expect(liveRoutingSources([reply, lateFailure], now)).toEqual([reply]);
 });
 
 it("keeps a known response until its flight ends and never replays it on polling", () => {

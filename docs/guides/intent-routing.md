@@ -167,15 +167,15 @@ one model per supplier.
 - **Fastest first.** Choose models whose outputs you can use. Recent time to
   first content and output speed drive new selections. Without measurements,
   the model order provides the starting point.
-- **Expiring allowance first.** Try ready Sub2API accounts with a confirmed
-  positive allowance in earliest expiry order. Next try ready Codex and Claude
-  accounts in descending order of weekly allowance percentage left per hour
-  until reset. When there is no weekly allowance, a confirmed 5-hour-only
-  account uses the same calculation for its short window. A full 5-hour
-  window makes the account unavailable for new selections. Select **Apply
-  recommended order** to restore the template's catalog-based fallback
-  order for the models already selected. Live quota still determines
-  request priority.
+- **Expiring allowance first.** The recommendation puts confirmed Sub2API
+  expiry dates in earliest-first order and uses catalog ranking where expiry
+  is unknown. Each row shows observed subscription or credit expiry and quota
+  reset dates in local time, when available. For multiple configured accounts,
+  the earliest observed reset per window is shown. Select **Apply recommended order** to reorder the chosen
+  models, then drag them into the order you want. New requests follow the
+  saved list. The gateway skips Codex and Claude accounts with a confirmed
+  exhausted quota window. Continuations that require the same upstream keep
+  their original destination.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
@@ -303,6 +303,8 @@ This operation makes no network calls. It does not classify arbitrary user messa
 Open **Live classification trial** under the intent model in the hard/easy template, or under **Advanced settings** in a Custom group. Select an API-key classifier or a model from a bound WorkBuddy account, enter synthetic task text, review the displayed provider/model and check outbound consent before running. The call may incur charges. Saving never sends text. Editing group fields or test text revokes consent and invalidates late results.
 
 The trial and live routing use the group's **Classification budget (ms)**. New hard/easy drafts start at 10,000 ms and new Custom drafts start at 2,000 ms. Saved groups keep their configured deadline. If a trial times out, raise the deadline up to 15,000 ms or select a faster classifier. An invalid deadline displays the allowed range beside the input and disables the trial until corrected. Chat classifiers request reasoning off when the configured provider supports that option. Gemini 3 classifiers use their lowest declared native thinking level to reduce classification latency. During live routing, the stage displays whether classification matched, timed out, or produced another outcome. The routing trace records the fixed outcome without storing task text or model output.
+
+VaryAI requests an output budget of 4,096 tokens for classifier calls over OpenAI Chat, OpenAI Responses, Anthropic Messages, and Gemini.
 
 Only test text and enabled rule descriptions are sent with the classifier's own credentials. The trial never reads conversation history, activates routing, switches accounts, changes client files or forwards tasks. Official/OAuth task members may appear in the proposed plan: this is not transport readiness validation. The offline validator remains unchanged.
 

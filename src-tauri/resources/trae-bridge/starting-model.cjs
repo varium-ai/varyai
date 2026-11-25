@@ -24,11 +24,17 @@ function createStartingModelAdapter(req) {
           persistence = di.resolve(Symbol.for("ModelPersistenceService")),
           app = di.resolve(Symbol.for("ModelAppService")),
           port = req(8594).XT.tryResolve(Symbol.for("ModelSelectPort")),
-          policy = port?.getHostContext?.()?.modelSelectionPolicy,
+          host = port?.modelHostService,
           models = req(58660),
           labelFor = req(87327).qR,
           targets = new Map();
-        await port?.modelHostService?.ensureModelsLoaded?.();
+        // The native host restores recent selections separately from loading models.
+        if (
+          (await host?.ensureModelsLoaded?.()) === false ||
+          host?.isModelSelectionReady?.() === false
+        )
+          throw Error();
+        const policy = port?.getHostContext?.()?.modelSelectionPolicy;
         // Enumerate native Agent types; only modes exposing this exact custom model participate.
         for (const type of new Set(Object.values(req(73916).Eo))) {
           const label = labelFor(type, policy);

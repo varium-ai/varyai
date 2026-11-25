@@ -60,9 +60,9 @@ pub(crate) async fn native_subscription_models(
 pub(crate) async fn native_subscription_quota(
     provider: SubscriptionProvider,
     id: String,
-) -> Result<crate::services::subscription::SubscriptionQuota, String> {
-    let mut quota = accounts::quota(provider, &id).await?;
-    quota.error = None;
-    quota.credential_message = None;
-    Ok(quota)
+) -> Result<accounts::QuotaObservation, String> {
+    let mut observation = accounts::quota(provider, &id).await?;
+    observation.quota.error = None;
+    observation.quota.credential_message = None;
+    Ok(observation)
 }
