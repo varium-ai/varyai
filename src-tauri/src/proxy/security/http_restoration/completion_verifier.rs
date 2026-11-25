@@ -14,7 +14,7 @@ use super::super::{
     protocol_adapters::responses::{OriginalXaiArguments, RestoreError, SseRestorationState},
     restoration_contract::{ClientProtocol, ProtocolPair},
     restoration_core::{AttemptProvenance, OriginalSseProtocol},
-    restore_diagnostics::RestoreStage,
+    restore_diagnostics::{RestoreReason, RestoreStage},
 };
 
 struct XaiOriginalEvidence {
@@ -262,7 +262,10 @@ impl SseCompletionVerifier {
                     .map_err(|error| (error, RestoreStage::SseSnapshot))?;
             }
         }
-        if !self.native.permits_completion() || !self.transport.permits_completion() {
+        if let Some(reason) = self.native.failure_reason() {
+            return Err((RestoreError::FailedBecause(reason), stage));
+        }
+        if !self.transport.permits_completion() {
             return Err((RestoreError::RestoreFailed, stage));
         }
         Ok(VerifiedCompletion {
@@ -482,6 +485,12 @@ impl JsonCompletionVerifier {
                     inspection,
                 })
             })()
+        } else if matches_protocol && matches!(protocol, JsonCompletionProtocol::NativeResponses) {
+            Err(RestoreError::FailedBecause(
+                completion
+                    .native_failure_reason()
+                    .unwrap_or(RestoreReason::NativeEvidenceInvalid),
+            ))
         } else if matches_protocol && completion.has_unsupported_carrier() {
             Err(RestoreError::RestoreUnsupported)
         } else {

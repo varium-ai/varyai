@@ -31,6 +31,7 @@ import {
   routingGroupHasReadyMember,
   routingMemberKey,
   selectRoutingMembers,
+  withRoutingMembers,
   withSmartRuleMembers,
 } from "@/lib/routingMemberSelection";
 import { ModelPickerPopoverContent } from "@/components/models/ModelPickerPopoverContent";
@@ -149,8 +150,7 @@ function resolveGroupTemplate(
 
 function withDraftMemberOrder(group: RoutingGroup, members: RoutingMember[]) {
   return {
-    ...group,
-    members,
+    ...withRoutingMembers(group, members),
     defaultMemberId: members[0]?.id ?? "",
     fallbackMemberIds: members.slice(1).map(({ id }) => id),
   };
@@ -670,7 +670,7 @@ export function IntentRoutingPanel({
           draftTemplate === "templateSmart" &&
           (draft.rules.length > 0 || draft.members.length > 3)
             ? withSmartRuleMembers({ ...draft, template: draftTemplate })
-            : draft.quotaOrder
+            : draftTemplate === "templateCapability" || draft.quotaOrder
               ? withDraftMemberOrder(draft, draft.members)
               : draft;
         await saveGroup({

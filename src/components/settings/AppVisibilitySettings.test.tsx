@@ -11,6 +11,22 @@ vi.mock("@/components/ProviderIcon", () => ({
   ProviderIcon: () => null,
 }));
 
+it("can opt in to GLM visibility from older settings", () => {
+  const onChange = vi.fn();
+  render(
+    <AppVisibilitySettings
+      settings={{} as SettingsFormState}
+      onChange={onChange}
+    />,
+  );
+  const glm = screen.getByRole("button", { name: "apps.glm" });
+  expect(glm).toHaveAttribute("aria-pressed", "false");
+  fireEvent.click(glm);
+  expect(onChange).toHaveBeenCalledWith({
+    visibleApps: expect.objectContaining({ glm: true }),
+  });
+});
+
 describe("AppVisibilitySettings profile switcher", () => {
   it.each([undefined, true, false])(
     "preserves the visible-by-default setting and saves changes from %s",

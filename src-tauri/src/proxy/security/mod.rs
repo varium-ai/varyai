@@ -447,6 +447,7 @@ pub(crate) fn audit_session_id(
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::OpenCode
                 | AppType::Hermes
         ) {

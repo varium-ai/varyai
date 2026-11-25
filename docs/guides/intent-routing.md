@@ -124,9 +124,14 @@ shows their priority during creation and editing, including for capability
 presets saved before the template key was stored. Drag the grip at the left
 of a row to move it, or focus the grip and press Alt+↑/↓. The move buttons
 are also available. Escape
-cancels an active drag without closing the editor. **Add model** appends another
+cancels an active drag without closing the editor. Capability and expiry groups
+use the saved row order for new requests, including older groups whose stored
+fallback IDs disagree with the list. **Add model** appends another
 eligible model, including another model from the same provider, without
-rearranging existing members. The three-model
+rearranging existing members. Use the **Remove model** button on a row to
+remove it from the draft. The first remaining model becomes the default.
+Save applies the new list and order to the routing group. An empty draft
+requires a model or a valid membership pattern before saving. The three-model
 limit applies only to the initial suggestions. Use **Custom** to edit advanced
 settings or run a classification trial. Cancel discards
 the draft. The chooser waits for the initial model catalog load before opening
@@ -179,9 +184,10 @@ one model per supplier.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
-When a WorkBuddy subscription account explicitly reports that it lacks access
-to a selected model, an unpinned request can try the next eligible group
-member. Requests pinned to a destination retain the subscription error.
+When a WorkBuddy subscription reports missing access to a selected model, an
+account restriction, or exhausted quota, an unpinned request can try the next
+eligible group member. Requests pinned to a destination retain the
+subscription error.
 
 In **Advanced settings → Rules**, select the information icon to see how match
 conditions work. Select **Add rule** beside it to start editing a rule. Each
@@ -252,6 +258,33 @@ The live routing graph explains when a request must continue at the same
 upstream, or when conversation affinity gives the previous upstream priority.
 Its candidate count describes the current request.
 
+With per-turn routing, Codex can use the latest group order in the same
+conversation when its new user message carries self-contained inline text and
+closed function-call/result pairs. A completed assistant reply closes the tool
+round; an explicit Codex interruption can also close it when every call has
+its inline result and the next message is in a distinct Codex turn. Older
+closed pairs stay in the forwarded history but do not select the upstream for
+the new turn. A tool-result submission in the active turn still goes to its
+owner. A response cursor, sealed history, or unfinished tool round still uses
+the existing continuation checks. If a per-turn Codex request has conflicting
+known owners, the gateway rejects it rather than guessing a destination.
+Selecting a built-in Codex model is a separate native request, not a
+reordering of a VaryAI group. On return to the group, inline text from earlier
+models and the model picker's reasoning-effort setting do not bind a new turn
+to their old provider. Assistant text emitted alongside a tool call is not a
+final reply: its output must still arrive, followed by a final reply or an
+explicit interruption after the tools have finished. When a first-choice
+provider is re-enabled, the next independent turn uses the current routing
+order. A tool result already owed to the backup still goes to that backup.
+An earlier official model's completed text reply can include empty
+`annotations` and `logprobs` arrays. The replay planner treats that text as
+inline history when a new first-choice model is added or reordered.
+
+On the protected native Responses path, a reasoning item may encode its
+optional content as JSON null. This does not change the response sent to
+Codex. An invalid reasoning object or incomplete response still fails
+validation; switching models never disables restoration checks.
+
 Expiry sorting is optional group configuration. It applies when the gateway
 can select a new destination. A fresh, positive Sub2API subscription allowance
 with a confirmed expiry ranks by date. Codex and Claude accounts with known
@@ -318,7 +351,7 @@ summaries from prior turns are omitted from the classifier input. Opaque
 continuations still use their existing ownership. The classifier response
 may include null tool fields or an empty tool-call array.
 
-The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
+The Responses extractor excludes instructions, attachments, tool payloads and unknown continuations. Codex browser context sent as recognized, unsolicited text output does not prevent live classification. Only the latest user text is sent to the classifier. The selected task model still receives the browser context. Temporary execution uses it only for unbound initial classification; bound continuations do not trigger classification.
 
 ## Storage and safety
 
@@ -453,7 +486,7 @@ Native loopback forwarding does not require a credential snapshot, token fingerp
 
 Native model discovery shares an account-scoped official catalog for one minute. Stale data returns immediately while one background fetch refreshes it. Cold callers wait at most three seconds; the shared fetch continues for up to thirty seconds. Ordinary upstream HTTP 401/403 responses reach Codex for renewal. An explicitly revoked sign-in falls back to the available catalog so managed models remain visible, and the next discovery can retry with a new sign-in. Unknown client versions are forwarded using their original metadata. WebSocket handshakes currently receive HTTP 426 for the existing HTTP fallback; there is no general WebSocket bridge or unknown-path passthrough.
 
-Compaction is independent of transport fallback. Legacy `/responses/compact` and Responses-v2 terminal `compaction_trigger` have separate validated envelopes. Native compaction stays on a compatible official target; opaque output is pinned to its producer. Other targets summarize through the existing selected-target execution, inspection and usage path with tools disabled. A compaction rule can select a different summary model after a completed turn with self-contained replayable history. For an existing conversation, the checkpoint keeps the original answer destination. A successful bounded summary becomes a `varyai1:` authenticated-encrypted checkpoint, bound to the native request account scope, alias and exact destination. The private checkpoint key remains in VaryAI's configuration directory on ordinary disconnect so an eligible checkpoint can resume after restart. Only this gateway decodes the marker into conversation context; it is never sent upstream as OpenAI ciphertext. Malformed, wrong-identity, wrong-destination or unavailable-key checkpoints fail locally. These checkpoints are not portable to the official backend when takeover is disabled. No conversation database, rollout or auth file is rewritten.
+Compaction is independent of transport fallback. Legacy `/responses/compact` and Responses-v2 terminal `compaction_trigger` have separate validated envelopes. Native compaction stays on a compatible official target; opaque output is pinned to its producer. Other targets summarize through the existing selected-target execution, inspection and usage path with tools disabled. A compaction rule can select a different summary model after a completed turn with self-contained replayable history. Inline Codex browser context, such as selected page text or the browser tab list, is part of that history. For an existing conversation, the checkpoint keeps the original answer destination. A successful bounded summary becomes a `varyai1:` authenticated-encrypted checkpoint, bound to the native request account scope, alias and exact destination. The private checkpoint key remains in VaryAI's configuration directory on ordinary disconnect so an eligible checkpoint can resume after restart. Only this gateway decodes the marker into conversation context; it is never sent upstream as OpenAI ciphertext. Malformed, wrong-identity, wrong-destination or unavailable-key checkpoints fail locally. These checkpoints are not portable to the official backend when takeover is disabled. No conversation database, rollout or auth file is rewritten.
 
 Unknown pre-takeover response/tool IDs, encrypted reasoning and foreign compaction state are initially forwarded intact to the selected upstream. Empty reasoning summaries and null optional encryption fields do not require a local ownership record, including in brand-new conversations. An explicit upstream encrypted-state refusal can trigger the bounded same-destination recovery above; native compaction/checkpoints remain protected. Conflicting known ownership still fails locally. Once a request is ambiguously submitted or output starts, it is not replayed at another destination.
 

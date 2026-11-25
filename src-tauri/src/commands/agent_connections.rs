@@ -214,6 +214,21 @@ pub(crate) async fn get_agent_connection(
         .await
         .map_err(|_| FAILED)?;
     }
+    if app == "glm" {
+        return Ok(Status {
+            app,
+            enabled: false,
+            configured: false,
+            recovery_pending: false,
+            recovery_reason: None,
+            model: None,
+            restart_required: false,
+            reload_state: None,
+            desktop_state: None,
+            native_compatibility: None,
+            configuration_issue: None,
+        });
+    }
     if Edition::parse(&app).is_none() && !agent_connections::APPS.contains(&app.as_str()) {
         return Err(FAILED.into());
     }
@@ -854,6 +869,9 @@ async fn set_agent_connection_inner(
             state.proxy_service.sync_shared_trae(false).await;
         }
         return Ok(());
+    }
+    if app == "glm" {
+        return Err(crate::services::agent_clients::glm_native_config_unsupported().to_string());
     }
     if !agent_connections::APPS.contains(&app.as_str()) {
         return Err(FAILED.into());

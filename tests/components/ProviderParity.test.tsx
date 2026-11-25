@@ -1,4 +1,5 @@
 import {
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -6,7 +7,7 @@ import {
   within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { fetchModelsForConfig } from "@/lib/api/model-fetch";
@@ -33,6 +34,12 @@ beforeEach(() => {
     { id: "second", ownedBy: "" },
   ]);
 });
+afterEach(async () => {
+  cleanup();
+  // Radix restores focus in a timer. Let it finish in the same jsdom document.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+});
+
 async function custom() {
   render(
     <QueryClientProvider

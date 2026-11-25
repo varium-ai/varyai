@@ -3,23 +3,10 @@ import { FolderSearch, Undo2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
-import type { AppId } from "@/lib/api";
-import type { ResolvedDirectories } from "@/hooks/useSettings";
-
-type DirectoryAppId = Exclude<
-  AppId,
-  | "claude-desktop"
-  | "workbuddy-ai"
-  | "qoder"
-  | "doubaowork"
-  | "trae"
-  | "trae-intl"
-  | "kimi"
-  | "qwen"
-  | "zcode"
-  | "deepseek-harness"
-  | "t3code"
->;
+import type {
+  DirectoryAppId,
+  ResolvedDirectories,
+} from "@/hooks/useDirectorySettings";
 
 interface DirectorySettingsProps {
   appConfigDir?: string;

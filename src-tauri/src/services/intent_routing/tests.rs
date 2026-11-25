@@ -16,6 +16,27 @@ pub(super) fn fixture() -> RoutingGroup {
     })).expect("synthetic group")
 }
 
+#[test]
+fn capability_template_uses_saved_member_order_with_legacy_fallback_ids() {
+    let mut group = fixture();
+    group.template = Some(RoutingTemplate::Capability);
+    group.rules.clear();
+    group.members.reverse();
+    let preview = group.preview(None).expect("valid group");
+    assert_eq!(
+        preview
+            .candidates
+            .iter()
+            .map(|member| member.id.as_str())
+            .collect::<Vec<_>>(),
+        ["strong", "balanced"],
+    );
+
+    group.template = None;
+    let preview = group.preview(None).expect("valid custom group");
+    assert_eq!(preview.candidates[0].id, "balanced");
+}
+
 #[tokio::test]
 async fn workbuddy_classifiers_use_the_selected_catalog_and_survive_publication(
 ) -> Result<(), Box<dyn std::error::Error>> {

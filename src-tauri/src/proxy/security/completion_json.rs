@@ -12,6 +12,7 @@ use super::{
     payload_buffer::PayloadBuffer,
     payload_json::PayloadJson,
     payload_text::PayloadText,
+    restore_diagnostics::RestoreReason,
     tokenization::TokenError,
 };
 use serde_json::{Number, Value};
@@ -204,24 +205,32 @@ impl NativeSseCompletion {
         }
         if event_name == "response.output_item.done" {
             let item = data.get("item").ok_or(TokenError::RedactionFailed)?;
-            validate_native_output_item(item, budget)?;
+            validate_native_output_item(item, budget).map_err(|_| TokenError::RedactionFailed)?;
         } else if event_name == "response.completed" {
             if self.completed || !NativeCompletionEvent::new(event_name, data).permits_completion()
             {
                 return Err(TokenError::RedactionFailed);
             }
             let response = data.get("response").ok_or(TokenError::RedactionFailed)?;
-            validate_native_response_object(response, budget)?;
+            validate_native_response_object(response, budget)
+                .map_err(|_| TokenError::RedactionFailed)?;
             self.completed = true;
         }
         Ok(())
     }
 
     pub(crate) fn permits_completion(&self) -> bool {
-        self.completed
-            && !self.invalid
-            && self.pending_raw.is_none()
-            && self.pending_event_name.is_none()
+        self.failure_reason().is_none()
+    }
+
+    pub(super) fn failure_reason(&self) -> Option<RestoreReason> {
+        if self.invalid || self.pending_raw.is_some() || self.pending_event_name.is_some() {
+            Some(RestoreReason::NativeEvidenceInvalid)
+        } else if !self.completed {
+            Some(RestoreReason::NativeTerminalMissing)
+        } else {
+            None
+        }
     }
 }
 
@@ -237,6 +246,7 @@ pub(crate) struct JsonCompletion {
     protocol: JsonCompletionProtocol,
     native_chat: bool,
     native_gemini: bool,
+    native_failure: Option<RestoreReason>,
     seen: bool,
     permitted: bool,
     unsupported_carrier: bool,
@@ -248,6 +258,7 @@ impl JsonCompletion {
             protocol,
             native_chat: false,
             native_gemini: false,
+            native_failure: None,
             seen: false,
             permitted: false,
             unsupported_carrier: false,
@@ -274,6 +285,10 @@ impl JsonCompletion {
         self.unsupported_carrier
     }
 
+    pub(super) fn native_failure_reason(&self) -> Option<RestoreReason> {
+        self.native_failure
+    }
+
     pub(super) fn observe_raw_json(&mut self, raw: &str, budget: &PayloadBudget) {
         drop(self.observe_raw_json_scoped(raw, budget));
     }
@@ -291,6 +306,16 @@ impl JsonCompletion {
         self.seen = true;
         let Ok(parsed) = PayloadJson::try_from_str(raw, budget.clone(), budget.limit()) else {
             self.permitted = false;
+            if matches!(self.protocol, JsonCompletionProtocol::NativeResponses) {
+                let start = raw.trim_start();
+                self.native_failure = Some(
+                    if start.starts_with("event:") || start.starts_with("data:") {
+                        RestoreReason::NativeJsonContainsSse
+                    } else {
+                        RestoreReason::NativeJsonInvalid
+                    },
+                );
+            }
             return None;
         };
         let value = parsed.as_value();
@@ -299,7 +324,8 @@ impl JsonCompletion {
         } else {
             match self.protocol {
                 JsonCompletionProtocol::NativeResponses => {
-                    validate_native_response_object(value, budget).is_ok()
+                    self.native_failure = validate_native_response_object(value, budget).err();
+                    self.native_failure.is_none()
                 }
                 JsonCompletionProtocol::ChatCompletions => validate_chat_json_response(
                     value,
@@ -332,39 +358,51 @@ fn valid_external_id(id: &str) -> bool {
 fn validate_native_response_object(
     response: &Value,
     budget: &PayloadBudget,
-) -> Result<(), TokenError> {
-    let obj = response.as_object().ok_or(TokenError::RedactionFailed)?;
-    let id = obj
+) -> Result<(), RestoreReason> {
+    let obj = response
+        .as_object()
+        .ok_or(RestoreReason::NativeResponseEnvelope)?;
+    if obj.get("error").is_some_and(|value| !value.is_null()) {
+        return Err(RestoreReason::NativeResponseError);
+    }
+    if !obj
         .get("id")
         .and_then(Value::as_str)
-        .filter(|id| valid_external_id(id))
-        .ok_or(TokenError::RedactionFailed)?;
-    let _ = id;
+        .is_some_and(valid_external_id)
+    {
+        return Err(RestoreReason::NativeResponseEnvelope);
+    }
     if obj.get("status").and_then(Value::as_str) != Some("completed")
-        || obj.get("error").is_some_and(|v| !v.is_null())
         || obj.get("incomplete_details").is_some_and(|v| !v.is_null())
     {
-        return Err(TokenError::RedactionFailed);
+        return Err(RestoreReason::NativeResponseTerminal);
     }
     let output = obj
         .get("output")
         .and_then(Value::as_array)
-        .ok_or(TokenError::RedactionFailed)?;
+        .ok_or(RestoreReason::NativeResponseOutput)?;
     for item in output {
         validate_native_output_item(item, budget)?;
     }
     Ok(())
 }
 
-fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(), TokenError> {
-    let obj = item.as_object().ok_or(TokenError::RedactionFailed)?;
+// Responses may encode the absence of optional reasoning content as JSON null.
+// Return every other value unchanged so callers still reject malformed carriers.
+pub(super) fn output_parts_field<'a>(item: &'a Value, field: &str) -> Option<&'a Value> {
+    item.get(field)
+        .filter(|value| !(value.is_null() && field == "content" && item["type"] == "reasoning"))
+}
+
+fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(), RestoreReason> {
+    let obj = item.as_object().ok_or(RestoreReason::NativeOutputType)?;
     let kind = obj
         .get("type")
         .and_then(Value::as_str)
-        .ok_or(TokenError::RedactionFailed)?;
+        .ok_or(RestoreReason::NativeOutputType)?;
     if let Some(status) = obj.get("status").and_then(Value::as_str) {
         if status != "completed" {
-            return Err(TokenError::RedactionFailed);
+            return Err(RestoreReason::NativeOutputStatus);
         }
     }
     match kind {
@@ -375,25 +413,25 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
                 .is_some_and(valid_external_id)
                 || obj.get("role").and_then(Value::as_str) != Some("assistant")
             {
-                return Err(TokenError::RedactionFailed);
+                return Err(RestoreReason::NativeMessage);
             }
             let content = obj
                 .get("content")
                 .and_then(Value::as_array)
-                .ok_or(TokenError::RedactionFailed)?;
+                .ok_or(RestoreReason::NativeMessage)?;
             for part in content {
                 match part.get("type").and_then(Value::as_str) {
                     Some("output_text") => {
                         if !part.get("text").is_some_and(Value::is_string) {
-                            return Err(TokenError::RedactionFailed);
+                            return Err(RestoreReason::NativeMessage);
                         }
                     }
                     Some("refusal") => {
                         if !part.get("refusal").is_some_and(Value::is_string) {
-                            return Err(TokenError::RedactionFailed);
+                            return Err(RestoreReason::NativeMessage);
                         }
                     }
-                    _ => return Err(TokenError::RedactionFailed),
+                    _ => return Err(RestoreReason::NativeMessage),
                 }
             }
         }
@@ -403,24 +441,24 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
                 .and_then(Value::as_str)
                 .is_some_and(valid_external_id)
             {
-                return Err(TokenError::RedactionFailed);
+                return Err(RestoreReason::NativeReasoning);
             }
             for (field, expected_kind) in
                 [("summary", "summary_text"), ("content", "reasoning_text")]
             {
-                if let Some(parts) = obj.get(field) {
-                    for part in parts.as_array().ok_or(TokenError::RedactionFailed)? {
+                if let Some(parts) = output_parts_field(item, field) {
+                    for part in parts.as_array().ok_or(RestoreReason::NativeReasoning)? {
                         if part.get("type").and_then(Value::as_str) != Some(expected_kind)
                             || !part.get("text").is_some_and(Value::is_string)
                         {
-                            return Err(TokenError::RedactionFailed);
+                            return Err(RestoreReason::NativeReasoning);
                         }
                     }
                 }
             }
             if let Some(enc) = obj.get("encrypted_content") {
                 if !enc.is_null() && !enc.as_str().is_some_and(|s| !s.is_empty()) {
-                    return Err(TokenError::RedactionFailed);
+                    return Err(RestoreReason::NativeReasoning);
                 }
             }
         }
@@ -434,16 +472,17 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
                     .and_then(Value::as_str)
                     .is_some_and(valid_external_id)
             {
-                return Err(TokenError::RedactionFailed);
+                return Err(RestoreReason::NativeToolCall);
             }
             let args = obj
                 .get("arguments")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
-                .ok_or(TokenError::RedactionFailed)?;
-            let parsed = PayloadJson::try_from_str(args, budget.clone(), budget.limit())?;
+                .ok_or(RestoreReason::NativeToolCall)?;
+            let parsed = PayloadJson::try_from_str(args, budget.clone(), budget.limit())
+                .map_err(|_| RestoreReason::NativeToolCall)?;
             if !parsed.as_value().is_object() {
-                return Err(TokenError::RedactionFailed);
+                return Err(RestoreReason::NativeToolCall);
             }
         }
         "custom_tool_call" => {
@@ -457,10 +496,10 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
                     .is_some_and(valid_external_id)
                 || !obj.get("input").is_some_and(Value::is_string)
             {
-                return Err(TokenError::RedactionFailed);
+                return Err(RestoreReason::NativeToolCall);
             }
         }
-        _ => return Err(TokenError::RedactionFailed),
+        _ => return Err(RestoreReason::NativeOutputType),
     }
     Ok(())
 }

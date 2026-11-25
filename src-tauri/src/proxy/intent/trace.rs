@@ -341,6 +341,18 @@ impl Store {
         strategy: &str,
         started: Instant,
     ) -> Request {
+        self.begin_with_kind(agent, model, group_name, strategy, started, None)
+    }
+
+    pub(crate) fn begin_with_kind(
+        self: &Arc<Self>,
+        agent: &str,
+        model: &str,
+        group_name: &str,
+        strategy: &str,
+        started: Instant,
+        kind: Option<&'static str>,
+    ) -> Request {
         let id = uuid::Uuid::new_v4().to_string();
         if let Ok(mut rows) = self.rows.try_write() {
             rows.push_front(Route {
@@ -349,7 +361,7 @@ impl Store {
                     .timestamp_millis()
                     .saturating_sub(started.elapsed().as_millis() as i64),
                 agent: label(agent),
-                kind: None,
+                kind: kind.map(str::to_owned),
                 session: None,
                 native_session: None,
                 model: label(model),
@@ -481,10 +493,6 @@ impl Request {
         self.update(|row| row.classification_outcome = Some(outcome.into()));
     }
 
-    pub(crate) fn auxiliary_purpose(&self, kind: &'static str) {
-        self.update(|row| row.kind = Some(kind.into()));
-    }
-
     fn update(&self, update: impl FnOnce(&mut Route)) {
         if let Ok(mut rows) = self.store.rows.try_write() {
             if let Some(row) = rows.iter_mut().find(|row| row.id == self.id) {
@@ -492,31 +500,6 @@ impl Request {
                 update(row);
             }
         }
-    }
-
-    pub(crate) fn purpose(&self, headers: &http::HeaderMap, compact: bool) {
-        let kind = if compact {
-            Some("compact")
-        } else if let Some(marker) = headers
-            .get("x-openai-subagent")
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty())
-        {
-            Some(known_kind(marker).unwrap_or("unknown"))
-        } else {
-            #[derive(serde::Deserialize)]
-            struct Metadata {
-                thread_source: Option<String>,
-            }
-            headers
-                .get("x-codex-turn-metadata")
-                .filter(|value| value.as_bytes().len() <= 8192)
-                .and_then(|value| serde_json::from_slice::<Metadata>(value.as_bytes()).ok())
-                .and_then(|metadata| metadata.thread_source)
-                .filter(|source| !matches!(source.as_str(), "" | "user" | "subagent"))
-                .map(|source| known_kind(&source).unwrap_or("unknown"))
-        };
-        self.update(|row| row.kind = kind.map(str::to_owned));
     }
 
     pub(crate) fn session(&self, session: &str, consumer: &str) {
@@ -677,6 +660,30 @@ impl Request {
             history.save(row);
         }
     }
+}
+
+pub(super) fn request_kind(headers: &http::HeaderMap, compact: bool) -> Option<&'static str> {
+    if compact {
+        return Some("compact");
+    }
+    if let Some(marker) = headers
+        .get("x-openai-subagent")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(known_kind(marker).unwrap_or("unknown"));
+    }
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        thread_source: Option<String>,
+    }
+    headers
+        .get("x-codex-turn-metadata")
+        .filter(|value| value.as_bytes().len() <= 8192)
+        .and_then(|value| serde_json::from_slice::<Metadata>(value.as_bytes()).ok())
+        .and_then(|metadata| metadata.thread_source)
+        .filter(|source| !matches!(source.as_str(), "" | "user" | "subagent"))
+        .map(|source| known_kind(&source).unwrap_or("unknown"))
 }
 
 // Keep only catalog tokens, never arbitrary client metadata or header text.

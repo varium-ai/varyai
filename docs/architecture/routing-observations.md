@@ -44,6 +44,8 @@ navigation, and reduced-motion settings suppress control and stage movement.
   sources priority. The latest-started finished request for an Agent can linger
   for 12 seconds, measured from finish time. Recorded background requests such as title generation,
   memory consolidation and automatic reviews stay out of the workspace stage.
+  The request purpose is attached when the trace is created, so the first
+  poll can apply the same filter during request startup.
   The stage keeps the latest conversation request as the overview when traffic
   is idle. Different models or sessions can share a
   source card while their active requests keep separate animations. The header
@@ -239,8 +241,9 @@ unavailable history reader reports a generic error without filesystem paths.
 Missing history directories are empty only when their nearest existing ancestor
 is a directory. A regular-file ancestor remains unavailable on every platform,
 including Windows where that filesystem failure is reported as `NotFound`.
-Live request cards display the conversation title when a local client supplies
-an explicit identifier that matches a native title. The snapshot command reads
+Live request cards label the conversation title when a local client supplies
+an explicit identifier that matches a native title. The label identifies the
+conversation independently of the current turn. The snapshot command reads
 title metadata on a blocking worker and caches matches for 15 seconds.
 Missing titles are checked again after two seconds so new sessions can appear
 soon after the native client publishes their titles. Unmatched

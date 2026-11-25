@@ -205,7 +205,9 @@ export function ManagedAgentProviderForm({
       }}
     >
       <p className="text-sm text-muted-foreground">
-        {t("managedAgent.description", { app: t(`apps.${appId}`) })}
+        {appId === "glm"
+          ? t("managedAgent.storedConfigDescription")
+          : t("managedAgent.description", { app: t(`apps.${appId}`) })}
       </p>
       {appId === "kimi" && (
         <p className="text-sm text-muted-foreground">

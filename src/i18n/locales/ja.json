@@ -1347,6 +1347,7 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
+    "glm": "GLM",
     "t3code": "T3 Code"
   },
   "pi": {
@@ -2754,6 +2755,7 @@
       "savedContent": "保存した内容を復元",
       "noContent": "保存した指示ファイルなし",
       "nativeLoginOnly": "ネイティブログインはクライアントが管理し、切替可能なプロバイダー設定はありません",
+      "nativeConfigUnsupported": "このエージェントには対応するローカルプロバイダー設定がありません。",
       "configureFirst": "先にプロバイダーを追加してください",
       "clientSyncHint": "TRAE：オフラインでもプロファイルを切り替えられます。クライアント同期は別に行われます。Vary AI を起動したままにすると、TRAE の接続後に自動同期されます。",
       "clientSyncPending": "選択をローカルに保存しました。TRAE が接続されると自動同期されます。Vary AI を起動したままにしてください。",
@@ -4476,6 +4478,7 @@
     "saveFailed": "サードパーティモデルを保存できませんでした: {{error}}"
   },
   "managedAgent": {
+    "storedConfigDescription": "GLM のプロバイダー設定を VaryAI に保存します。ネイティブクライアントでの有効化には対応していません。",
     "description": "保存後に適用して {{app}} を再起動し、クライアント内でモデルを選択してください。公式ログインはクライアントが保持します。",
     "baseUrl": "Base URL",
     "apiKey": "API Key",

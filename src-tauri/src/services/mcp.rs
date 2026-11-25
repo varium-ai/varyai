@@ -153,6 +153,7 @@ impl McpService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -201,6 +202,7 @@ impl McpService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -261,6 +263,7 @@ impl McpService {
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::Trae
                 | AppType::TraeIntl
                 | AppType::T3Code

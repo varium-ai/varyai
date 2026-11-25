@@ -275,9 +275,18 @@ describe("Agent installation shortcuts", () => {
     expect(
       within(open).queryByRole("button", { name: "agentConnections.connect" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: "agentInstall.install" }),
-    ).toHaveLength(APP_IDS.length);
+    for (const app of APP_IDS) {
+      const agent = within(
+        screen.getByRole("group", {
+          name: app === "claude" ? "Claude Code" : `apps.${app}`,
+        }),
+      );
+      const install = agent.queryByRole("button", {
+        name: "agentInstall.install",
+      });
+      if (app === "glm") expect(install).not.toBeInTheDocument();
+      else expect(install).toBeEnabled();
+    }
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
   });
   it("requires install consent, guards duplicate clicks, refreshes detection and version, and never connects automatically", async () => {

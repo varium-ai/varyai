@@ -389,7 +389,6 @@ fn request_purpose_uses_explicit_markers_without_retaining_other_metadata(
         ),
         (Some("thread_title"), None, true, Some("compact")),
     ] {
-        let trace = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
         let mut headers = http::HeaderMap::new();
         if let Some(marker) = marker {
             headers.insert("x-openai-subagent", marker.parse()?);
@@ -402,7 +401,14 @@ fn request_purpose_uses_explicit_markers_without_retaining_other_metadata(
             "Bearer synthetic-private-credential".parse()?,
         );
         let original = headers.clone();
-        trace.purpose(&headers, compact);
+        let _trace = store.begin_with_kind(
+            "codex",
+            "fixture",
+            "Fixture",
+            "ordered",
+            Instant::now(),
+            request_kind(&headers, compact),
+        );
         assert_eq!(headers, original);
         let row = serde_json::to_value(&store.snapshot()[0])?;
         assert_eq!(
@@ -419,10 +425,16 @@ fn request_purpose_uses_explicit_markers_without_retaining_other_metadata(
         "ambient_suggestion_safety",
         "agent_job",
     ] {
-        let trace = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
         let mut headers = http::HeaderMap::new();
         headers.insert("x-openai-subagent", marker.parse()?);
-        trace.purpose(&headers, false);
+        let _trace = store.begin_with_kind(
+            "codex",
+            "fixture",
+            "Fixture",
+            "ordered",
+            Instant::now(),
+            request_kind(&headers, false),
+        );
         assert_eq!(serde_json::to_value(&store.snapshot()[0])?["kind"], marker);
     }
     Ok(())
@@ -432,7 +444,6 @@ fn request_purpose_uses_explicit_markers_without_retaining_other_metadata(
 fn request_purpose_observation_is_bounded_and_nonblocking() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = Arc::new(Store::default());
-    let trace = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
     let mut headers = http::HeaderMap::new();
     headers.insert(
         "x-codex-turn-metadata",
@@ -442,17 +453,31 @@ fn request_purpose_observation_is_bounded_and_nonblocking() -> Result<(), Box<dy
         )
         .parse()?,
     );
-    trace.purpose(&headers, false);
-    assert!(serde_json::to_value(&store.snapshot()[0])?
-        .get("kind")
-        .is_none());
+    assert_eq!(request_kind(&headers, false), None);
     headers.insert("x-openai-subagent", "thread_title".parse()?);
-    let lock = store.rows.write().map_err(|_| "synthetic lock failed")?;
-    trace.purpose(&headers, false);
+    let lock = store.rows.read().map_err(|_| "synthetic lock failed")?;
+    let kind = request_kind(&headers, false);
+    assert_eq!(kind, Some("thread_title"));
+    let unrecorded = store.begin_with_kind(
+        "codex",
+        "fixture",
+        "Fixture",
+        "ordered",
+        Instant::now(),
+        kind,
+    );
     drop(lock);
-    assert!(serde_json::to_value(&store.snapshot()[0])?
-        .get("kind")
-        .is_none());
+    drop(unrecorded);
+    assert!(store.snapshot().is_empty());
+    let _trace = store.begin_with_kind(
+        "codex",
+        "fixture",
+        "Fixture",
+        "ordered",
+        Instant::now(),
+        kind,
+    );
+    assert_eq!(store.snapshot()[0].kind.as_deref(), Some("thread_title"));
     Ok(())
 }
 
@@ -1220,14 +1245,14 @@ fn completed_gateway_history_survives_a_new_store_with_decisions_and_safe_metada
     let store = Arc::new(Store::with_history(dir.path().join("history"))?);
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
     let target = observed_target("synthetic-private-key")?;
-    let request = store.begin(
+    let request = store.begin_with_kind(
         "codex",
         "group/research",
         "Research",
         "ordered",
         Instant::now(),
+        Some("compact"),
     );
-    request.purpose(&http::HeaderMap::new(), true);
     request.session("synthetic-private-session", "codex");
     request.plan(vec![store.candidate(&target)], Some(100));
     request.step(Kind::Attempt, Some(0), None);

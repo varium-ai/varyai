@@ -11,6 +11,15 @@ use std::sync::Mutex;
 #[serial_test::serial]
 async fn codex_rule_groups_classify_new_turns_and_keep_opaque_continuations_bound(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::security;
+    struct RestoreSecurity(security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*security::get_security_runtime()).clone());
+    security::runtime::set_security_runtime_for_test(Default::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -51,6 +60,19 @@ async fn codex_rule_groups_classify_new_turns_and_keep_opaque_continuations_boun
                     "/responses",
                     post(|Json(body): Json<Value>| async move {
                         let model = &body["model"];
+                        if body["previous_response_id"].is_null() && model == "arithmetic-model" {
+                            let items = body["input"]
+                                .as_array()
+                                .expect("forwarded Responses history");
+                            assert_eq!(
+                                items.get(3).and_then(|item| item["output"].as_str()),
+                                Some("Synthetic browser URL")
+                            );
+                            assert_eq!(
+                                items.get(4).and_then(|item| item["output"].as_str()),
+                                Some("Synthetic page text")
+                            );
+                        }
                         Json(json!({
                             "id":format!("synthetic-{}",model.as_str().expect("model")),
                             "model":model,"status":"completed","output":[]
@@ -133,9 +155,11 @@ async fn codex_rule_groups_classify_new_turns_and_keep_opaque_continuations_boun
         json!({"role":"assistant","content":[{"type":"output_text","text":"Synthetic historical reply"}]}),
     ];
     let mut arithmetic = history.to_vec();
-    arithmetic.push(
+    arithmetic.extend([
+        json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic browser URL"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic page text"}),
         json!({"role":"user","content":[{"type":"input_text","text":"Synthetic arithmetic"}]}),
-    );
+    ]);
     for (mut body, expected, step) in [
         (
             json!({"input":"Synthetic translation"}),
@@ -154,16 +178,16 @@ async fn codex_rule_groups_classify_new_turns_and_keep_opaque_continuations_boun
         ),
     ] {
         body["model"] = json!("vary-auto/synthetic-intents");
-        let reply: Value = client
+        let response = client
             .post(&url)
             .bearer_auth(&token)
             .header("session-id", "synthetic-classifier-session")
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?
-            .json()
             .await?;
+        let status = response.status();
+        let reply: Value = response.json().await?;
+        assert_eq!(status, StatusCode::OK, "expected {expected}: {reply}");
         assert_eq!(reply["model"], expected);
         assert!(runtime.traces.snapshot()[0]
             .steps

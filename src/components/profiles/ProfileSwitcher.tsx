@@ -118,15 +118,19 @@ export function ProfileSwitcher({
   );
   const agents =
     data?.agents ??
-    APP_IDS.map((app) => ({
-      app,
-      available: app !== "doubaowork",
-      reason: null,
-      mcp: false,
-      skills: false,
-      instructions: false,
-      provider: app !== "doubaowork",
-    }));
+    APP_IDS.map((app) => {
+      const available = app !== "doubaowork" && app !== "glm";
+      return {
+        app,
+        available,
+        reason:
+          app === "glm" ? "profiles.bundle.nativeConfigUnsupported" : null,
+        mcp: false,
+        skills: false,
+        instructions: false,
+        provider: available,
+      };
+    });
   const captureApps = agents
     .filter(
       (agent) =>

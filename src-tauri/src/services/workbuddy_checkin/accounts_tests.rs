@@ -3,12 +3,12 @@ use axum::{extract::Request, response::IntoResponse, Json, Router};
 use serde_json::json;
 use std::sync::{Arc, Mutex as StdMutex};
 
-fn grant(uid: &str) -> ManagedAccount {
+fn grant(uid: &str, label: &str) -> ManagedAccount {
     serde_json::from_value(json!({
         "uid":uid,"accessToken":format!("synthetic-{uid}"),
         "refreshToken":format!("synthetic-refresh-{uid}"),
         "domain":"copilot.tencent.com","expiresAt":4102444800000_i64,
-        "label":format!("Account {uid}"),"enterpriseId":""
+        "label":label,"enterpriseId":""
     }))
     .expect("synthetic grant")
 }
@@ -65,8 +65,8 @@ async fn account_selection_and_auto_flags_never_claim_for_another_account() {
     let task = tokio::spawn(async move { axum::serve(listener, app).await.expect("server") });
     let mut manager = Manager::with_paths(dir.path().join("checkin.json"), auth.clone());
     manager.endpoint = format!("http://{address}");
-    let first = grant("first");
-    let second = grant("second");
+    let first = grant("first", "Account first");
+    let second = grant("second", "  ");
     let first_id = first.account().key();
     let second_id = second.account().key();
     manager
@@ -77,10 +77,23 @@ async fn account_selection_and_auto_flags_never_claim_for_another_account() {
         .await
         .expect("managed grants");
 
-    assert_eq!(
-        manager.accounts().await.expect("accounts").accounts.len(),
-        3
-    );
+    let list = serde_json::to_value(manager.accounts().await.expect("accounts"))
+        .expect("public account list");
+    let accounts = list["accounts"].as_array().expect("accounts array");
+    assert_eq!(accounts.len(), 3);
+    let native_id = manager.account().await.expect("native account").key();
+    for (id, label, source) in [
+        (native_id.as_str(), &native_id[..6], "native"),
+        (first_id.as_str(), "Account first", "browser"),
+        (second_id.as_str(), &second_id[..6], "browser"),
+    ] {
+        let entry = accounts
+            .iter()
+            .find(|entry| entry["id"] == id)
+            .expect("account entry");
+        assert_eq!(entry["label"], label);
+        assert_eq!(entry["source"], source);
+    }
     manager
         .set_auto_for(&second_id, true)
         .await

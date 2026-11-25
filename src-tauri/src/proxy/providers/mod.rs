@@ -220,6 +220,7 @@ impl ProviderType {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -287,6 +288,7 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code

@@ -86,7 +86,7 @@ import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import "./agent-directory.css";
 
-const supported: readonly AppId[] = APP_IDS;
+const supported: readonly AppId[] = APP_IDS.filter((app) => app !== "glm");
 const orderStorageKey = "vary-agent-order";
 
 function readAgentOrder(): AppId[] {
@@ -115,7 +115,7 @@ const modelControlApps = ["workbuddy", "workbuddy-ai", "qoder"] as const;
 const needsModelControl = (app: AppId | null) =>
   modelControlApps.some((known) => known === app);
 const isTrae = (app: AppId | null) => app === "trae" || app === "trae-intl";
-const websites: Record<AppId, string> = {
+const websites: Record<AppId, string | null> = {
   t3code: "https://t3.codes/",
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
@@ -136,6 +136,7 @@ const websites: Record<AppId, string> = {
   qwen: "https://qwenlm.github.io/qwen-code-docs/",
   zcode: "https://zcode.z.ai/",
   "deepseek-harness": "https://www.deepseek.com/harness/",
+  glm: null,
 };
 export function AgentConnectionsPage({
   onAddProvider,
@@ -612,6 +613,7 @@ export function AgentConnectionsPage({
     void client.invalidateQueries({ queryKey: ["agent-model-catalog"] });
   }
   function connect(app: AppId) {
+    if (!supported.includes(app)) return;
     const state = states.data?.find((entry) => entry.app === app);
     if (
       !state?.enabled &&
@@ -698,7 +700,39 @@ export function AgentConnectionsPage({
       position: shown.indexOf(overId as AppId) + 1,
       count: shown.length,
     });
+  function installButton(app: AppId) {
+    const website = websites[app];
+    const canInstall =
+      updates.installing === app ||
+      (!installations.isError && installations.data?.[app] === false);
+    return website && canInstall ? (
+      <AgentInstallButton
+        app={app}
+        updates={updates}
+        disabled={rowBusy(app)}
+        onSelect={() => updates.requestInstall(app, website)}
+      />
+    ) : null;
+  }
+  function websiteButton(app: AppId) {
+    const website = websites[app];
+    return website ? (
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => {
+          void settingsApi
+            .openExternal(website)
+            .catch(() => setError(app, "agentConnections.failed"));
+        }}
+      >
+        <ExternalLink className="mr-2 h-3 w-3" />
+        {t("agentConnections.website")}
+      </Button>
+    ) : null;
+  }
   function row(app: AppId) {
+    const supportsConnection = supported.includes(app);
     const operation = rowOperation(app);
     const connection = connections[APP_IDS.indexOf(app)];
     const state = connection.data;
@@ -736,6 +770,7 @@ export function AgentConnectionsPage({
         state?.reloadState === "failed" ||
         state?.reloadState === "waiting_for_idle");
     const canRestart =
+      supportsConnection &&
       app !== "doubaowork" &&
       !!state &&
       (enabled
@@ -751,7 +786,10 @@ export function AgentConnectionsPage({
         ? native?.model?.replace(/^[^/]+\//, "")
         : native?.model;
     const hasNativeModelQuery =
-      !nativePicker(app) && !needsModelControl(app) && !isTrae(app);
+      supportsConnection &&
+      !nativePicker(app) &&
+      !needsModelControl(app) &&
+      !isTrae(app);
     const nativeLabel = nativeAvailable
       ? (nativeModel ?? t("agentConnections.nativeDefault"))
       : t(
@@ -829,14 +867,17 @@ export function AgentConnectionsPage({
                               ? "auditWaiting"
                               : "recovery"
                           : "gatewayStopped"
-                      : "off";
+                      : supportsConnection
+                        ? "off"
+                        : "unavailable";
     const restartNotice = restartFeedback.messages[app];
     const bypassed = status === "recovery";
     const ready =
       !compact &&
       !operation &&
       (status === "configured" || status === "auditConnected");
-    const reapplyButton = state?.recoveryPending &&
+    const reapplyButton = supportsConnection &&
+      state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(
         state.recoveryReason ?? "",
       ) &&
@@ -1039,15 +1080,7 @@ export function AgentConnectionsPage({
             {t("agentConnections.auditOnly")}
           </span>
         )}
-        {(updates.installing === app ||
-          (!installations.isError && installations.data?.[app] === false)) && (
-          <AgentInstallButton
-            app={app}
-            updates={updates}
-            disabled={rowBusy(app)}
-            onSelect={() => updates.requestInstall(app, websites[app])}
-          />
-        )}
+        {installButton(app)}
         {!bypassed && reapplyButton}
         {app === "codex" && (
           <CodexProxyWarning
@@ -1192,7 +1225,7 @@ export function AgentConnectionsPage({
               <span>{t("agentConnections.officialModels")}</span>
             </span>
           )}
-          {!nativePicker(app) && (
+          {supportsConnection && !nativePicker(app) && (
             <Popover
               open={picking === app}
               onOpenChange={(open) => {
@@ -1387,6 +1420,7 @@ export function AgentConnectionsPage({
             checked={enabled}
             aria-busy={connection.isPending || !!operation}
             disabled={
+              !supportsConnection ||
               rowBusy(app) ||
               connection.isPending ||
               connection.isError ||
@@ -1675,16 +1709,7 @@ export function AgentConnectionsPage({
             )}
           </div>
           <div className="mp-agent-install-actions">
-            {(updates.installing === app ||
-              (!installations.isError &&
-                installations.data?.[app] === false)) && (
-              <AgentInstallButton
-                app={app}
-                updates={updates}
-                disabled={rowBusy(app)}
-                onSelect={() => updates.requestInstall(app, websites[app])}
-              />
-            )}
+            {installButton(app)}
             {supported.includes(app) && installations.data?.[app] === true && (
               <Button
                 size="sm"
@@ -1695,18 +1720,7 @@ export function AgentConnectionsPage({
                 {t("agentConnections.connect")}
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                void settingsApi
-                  .openExternal(websites[app])
-                  .catch(() => setError(app, "agentConnections.failed"));
-              }}
-            >
-              <ExternalLink className="mr-2 h-3 w-3" />
-              {t("agentConnections.website")}
-            </Button>
+            {websiteButton(app)}
           </div>
           {errorMessage(app)}
         </div>

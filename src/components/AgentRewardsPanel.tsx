@@ -40,8 +40,10 @@ export function AgentRewardsPanel({
     staleTime: 60_000,
     refetchInterval: 60_000,
   });
-  const update = (value: AgentRewardStatus) =>
+  const update = async (value: AgentRewardStatus) => {
+    await client.cancelQueries({ queryKey });
     client.setQueryData(queryKey, value);
+  };
   const claim = useMutation({
     mutationFn: (id: string) => agentRewardsApi.claim(app, id),
     onSuccess: update,

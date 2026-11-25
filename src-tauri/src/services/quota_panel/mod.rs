@@ -460,6 +460,7 @@ impl Manager {
         .await
         .map_err(|_| FAILED.into())
     }
+    #[cfg(not(test))]
     async fn expiring(self: &Arc<Self>, identity: &str, entry: &Entry) -> Result<(), String> {
         let context = self.context(&entry.account).await?;
         if context.quota_identity().as_deref() != Some(identity) {

@@ -84,6 +84,7 @@ const createDefaultProviders = (): ProvidersByApp => ({
   qwen: {},
   zcode: {},
   "deepseek-harness": {},
+  glm: {},
 
   t3code: {},
 });
@@ -108,6 +109,7 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   qwen: "",
   zcode: "",
   "deepseek-harness": "",
+  glm: "",
 
   t3code: "",
 });
@@ -234,6 +236,7 @@ let mcpConfigs: McpConfigState = {
   qwen: {},
   zcode: {},
   "deepseek-harness": {},
+  glm: {},
 
   t3code: {},
 };
@@ -316,6 +319,7 @@ export const resetProviderState = () => {
     qwen: {},
     zcode: {},
     "deepseek-harness": {},
+    glm: {},
 
     t3code: {},
   };

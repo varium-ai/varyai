@@ -2,24 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { homeDir, join } from "@tauri-apps/api/path";
-import { settingsApi, type AppId } from "@/lib/api";
+import { settingsApi } from "@/lib/api";
 import type { SettingsFormState } from "./useSettingsForm";
 
-export type DirectoryAppId = Exclude<
-  AppId,
-  | "claude-desktop"
-  | "workbuddy-ai"
-  | "doubaowork"
-  | "qoder"
-  | "trae"
-  | "trae-intl"
-  | "kimi"
-  | "qwen"
-  | "zcode"
-  | "deepseek-harness"
-  | "t3code"
->;
-type AppDirectoryKey =
+export type DirectoryAppId =
   | "claude"
   | "codex"
   | "gemini"
@@ -29,6 +15,7 @@ type AppDirectoryKey =
   | "hermes"
   | "pi"
   | "workbuddy";
+type AppDirectoryKey = DirectoryAppId;
 type DirectoryKey = "appConfig" | AppDirectoryKey;
 
 export interface ResolvedDirectories {

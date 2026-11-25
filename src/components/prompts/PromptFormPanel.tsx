@@ -45,6 +45,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
     qwen: "",
     zcode: "",
     "deepseek-harness": "",
+    glm: "",
 
     t3code: "",
   };

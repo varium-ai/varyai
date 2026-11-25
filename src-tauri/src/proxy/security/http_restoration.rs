@@ -3758,11 +3758,7 @@ impl DlpPreparedAttempt {
             );
         }
         let (mut parts, body) = response.into_parts();
-        let is_sse = parts
-            .headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("text/event-stream"));
+        let is_sse = super::upstream_guard::is_sse(&parts.headers);
         let encoded = parts
             .headers
             .get(header::CONTENT_ENCODING)

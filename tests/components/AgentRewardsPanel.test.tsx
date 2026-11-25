@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { AgentRewardsPanel } from "@/components/AgentRewardsPanel";
 import {
@@ -474,6 +480,58 @@ it.each(["native", "browser"] as const)(
     expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
   },
 );
+
+it("keeps the confirmed Qoder dot when an older refresh finishes after a claim", async () => {
+  const status = { ...initial, rewardDay: "2026-11-17", confirmedDates: [] };
+  const claimed = {
+    ...status,
+    outcome: "claimed" as const,
+    confirmedDates: ["2026-11-17"],
+  };
+  let finishClaim!: (value: AgentRewardStatus) => void;
+  let finishRefresh!: (value: AgentRewardStatus) => void;
+  vi.mocked(agentRewardsApi.status)
+    .mockResolvedValueOnce(status)
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+  vi.mocked(agentRewardsApi.claim).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishClaim = resolve;
+      }),
+  );
+  const client = mount();
+  const claim = await screen.findByRole("button", {
+    name: "agentRewards.claim",
+  });
+  await waitFor(() => expect(claim).toBeEnabled());
+  fireEvent.click(claim);
+  await waitFor(() => expect(finishClaim).toBeTypeOf("function"));
+  const refresh = client.invalidateQueries({
+    queryKey: ["agentRewards", "qoder"],
+  });
+  await waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
+  finishClaim(claimed);
+  await waitFor(() =>
+    expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+      "data-state",
+      "complete",
+    ),
+  );
+  await act(async () => {
+    finishRefresh(status);
+    await refresh;
+  });
+  expect(client.getQueryData(["agentRewards", "qoder"])).toEqual(claimed);
+  expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+    "data-state",
+    "complete",
+  );
+});
 
 it("shows progress while saving the automatic check-in preference and restores it on failure", async () => {
   let fail!: (reason: Error) => void;

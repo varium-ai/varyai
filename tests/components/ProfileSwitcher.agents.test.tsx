@@ -8,7 +8,10 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import i18n from "i18next";
+import en from "@/i18n/locales/en.json";
+import ja from "@/i18n/locales/ja.json";
 import zh from "@/i18n/locales/zh.json";
+import zhTW from "@/i18n/locales/zh-TW.json";
 import { APP_IDS } from "@/config/appConfig";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { toast } from "sonner";
@@ -35,6 +38,10 @@ vi.mock("@/lib/api/providers", () => ({
     updateTrayMenu: vi.fn().mockResolvedValue(undefined),
   },
 }));
+const availableApps: AppId[] = APP_IDS.filter(
+  (app) => app !== "doubaowork" && app !== "glm",
+);
+
 function mount(app: AppId, selectedApps: AppId[] = APP_IDS, compact = false) {
   render(
     <QueryClientProvider
@@ -60,12 +67,17 @@ beforeEach(() => {
     currentIds: { claude: null, claudeDesktop: null, codex: null },
     agents: APP_IDS.map((app) => ({
       app,
-      available: app !== "doubaowork",
-      provider: app !== "doubaowork",
+      available: availableApps.includes(app),
+      provider: availableApps.includes(app),
       mcp: false,
       skills: false,
       instructions: false,
-      reason: app === "doubaowork" ? "profiles.bundle.nativeLoginOnly" : null,
+      reason:
+        app === "doubaowork"
+          ? "profiles.bundle.nativeLoginOnly"
+          : app === "glm"
+            ? "profiles.bundle.nativeConfigUnsupported"
+            : null,
     })),
   });
 });
@@ -332,7 +344,7 @@ describe("Profile entry for added agents", () => {
   );
 });
 
-it.each(APP_IDS.filter((app) => app !== "doubaowork"))(
+it.each(availableApps)(
   "captures only the current agent by default from %s",
   async (app) => {
     mount(app, [app, "codex", "kimi"]);
@@ -517,7 +529,21 @@ it.each([
   },
 );
 
-it.each(APP_IDS.filter((app) => app !== "doubaowork"))(
+it.each([
+  ["en", en],
+  ["ja", ja],
+  ["zh", zh],
+  ["zh-TW", zhTW],
+] as const)(
+  "provides labels for the complete Agent inventory in %s",
+  (_language, locale) => {
+    for (const app of APP_IDS) {
+      expect(locale.apps, app).toHaveProperty(app, expect.stringMatching(/\S/));
+    }
+  },
+);
+
+it.each(availableApps)(
   "captures %s directly through the application single-Agent picker",
   async (app) => {
     mount("claude");
@@ -531,9 +557,12 @@ it.each(APP_IDS.filter((app) => app !== "doubaowork"))(
     expect(options.map((option) => option.textContent)).toEqual(
       APP_IDS.map((app) => zh.apps[app]),
     );
-    expect(
-      screen.getByRole("option", { name: zh.apps.doubaowork }),
-    ).toHaveAttribute("aria-disabled", "true");
+    for (const label of [zh.apps.doubaowork, zh.apps.glm]) {
+      expect(screen.getByRole("option", { name: label })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
+    }
     fireEvent.click(screen.getByRole("option", { name: zh.apps[app] }));
     expect(
       screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
@@ -557,9 +586,9 @@ it("keeps the compact profile picker native and unavailable Agents disabled", as
   fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
   const select = screen.getByLabelText(zh.profiles.bundle.singleAgent);
   expect(select).toBeInstanceOf(HTMLSelectElement);
-  expect(
-    screen.getByRole("option", { name: zh.apps.doubaowork }),
-  ).toBeDisabled();
+  for (const label of [zh.apps.doubaowork, zh.apps.glm]) {
+    expect(screen.getByRole("option", { name: label })).toBeDisabled();
+  }
 });
 
 it("does not flash duplicate-name error after saving a new profile while post-create refresh is in flight", async () => {
@@ -598,7 +627,9 @@ it("does not flash duplicate-name error after saving a new profile while post-cr
   });
   fireEvent.click(screen.getByRole("button", { name: zh.common.confirm }));
 
-  await waitFor(() => expect(providersApi.updateTrayMenu).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(providersApi.updateTrayMenu).toHaveBeenCalledTimes(1),
+  );
   expect(screen.queryByText(zh.profiles.nameExists)).toBeNull();
 
   await act(async () => {
