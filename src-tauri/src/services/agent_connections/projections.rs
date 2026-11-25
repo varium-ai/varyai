@@ -525,6 +525,16 @@ fn edit(
                         }
                     }
                 }
+                if app == "zcode" {
+                    let preferred = catalog
+                        .iter()
+                        .find(|model| model.id == selected)
+                        .and_then(|model| model.default_reasoning_level.as_deref());
+                    crate::services::agent_clients::complete_zcode_default_selection(
+                        value, preferred,
+                    )
+                    .map_err(|_| FAILED)?;
+                }
                 // Kimi requires a positive local ceiling even when upstream capacity
                 // is unknown. Optional ZCode metadata can remain absent.
                 for m in catalog.iter().filter(|m| m.context_window.is_none()) {
@@ -1385,10 +1395,51 @@ mod tests {
                     );
                 }
                 "qwen" => assert_eq!(installed["model"]["name"], catalog[0].name),
-                "zcode" => assert_eq!(
-                    installed["config"]["defaultModelSelection"]["modelId"],
-                    catalog[0].name
-                ),
+                "zcode" => {
+                    let selection = &installed["config"]["defaultModelSelection"];
+                    assert_eq!(selection["modelId"], catalog[0].name);
+                    assert_eq!(selection["options"]["reasoningLevel"], "low");
+                    for (saved, expected) in [(None, "low"), (Some("high"), "high")] {
+                        let mut prior = receipt.clone();
+                        let selection = prior.files[0].installed["config"]["defaultModelSelection"]
+                            .as_object_mut()
+                            .ok_or(FAILED)?;
+                        if let Some(level) = saved {
+                            selection.insert("options".into(), json!({"reasoningLevel":level}));
+                        } else {
+                            selection.remove("options");
+                        }
+                        let mut refreshed = receipt.clone();
+                        super::super::selection::preserve(&prior, &mut refreshed)?;
+                        assert_eq!(
+                            refreshed.files[0].installed["config"]["defaultModelSelection"]
+                                ["options"]["reasoningLevel"],
+                            expected
+                        );
+                    }
+                    let without_levels = edit(
+                        app,
+                        path.clone(),
+                        &catalog,
+                        "http://127.0.0.1:1/connections/test",
+                        "synthetic-token",
+                        &catalog[1].id,
+                    )?;
+                    assert_eq!(
+                        without_levels.installed["config"]["defaultModelSelection"]["options"]
+                            ["reasoningLevel"],
+                        "disabled"
+                    );
+                    let rows = without_levels.installed["config"]["modelConfigRules"]
+                        ["providerModelRules"]
+                        .as_array()
+                        .ok_or(FAILED)?;
+                    assert!(rows.iter().any(|row| {
+                        row["modelId"] == catalog[1].id
+                            && row["config"]["optionSpecs"]["reasoningLevel"]["values"]
+                                == json!(["disabled"])
+                    }));
+                }
                 _ => unreachable!(),
             }
             receipt.files[0].write()?;

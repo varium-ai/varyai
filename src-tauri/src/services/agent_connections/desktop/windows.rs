@@ -61,6 +61,7 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
             "trae" => &[r"Trae CN\Trae CN.exe"],
             "trae-intl" => &[r"Trae\Trae.exe"],
             "zcode" => &[r"ZCode\ZCode.exe"],
+            "deepseek-harness" => &[r"DeepSeek Harness\DeepSeek Harness.exe"],
             _ => &[],
         };
         images.extend(relative.iter().map(|path| format!(r"{programs}\{path}")));
@@ -72,6 +73,7 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
             "trae-intl" => Some(r"Programs\Trae\Trae.exe"),
             "claude-desktop" => Some(r"AnthropicClaude\claude.exe"),
             "zcode" => Some(r"Programs\ZCode\ZCode.exe"),
+            "deepseek-harness" => Some(r"Programs\DeepSeek Harness\DeepSeek Harness.exe"),
             _ => None,
         };
         if let Some(path) = relative {
@@ -83,7 +85,7 @@ fn installed_images(app: &str, local: &str, programs: &str) -> Vec<String> {
 
 fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
     let image = normalize(image);
-    if matches!(app, "t3code" | "zcode") {
+    if matches!(app, "t3code" | "zcode" | "deepseek-harness") {
         return installed_images(app, local, programs)
             .iter()
             .any(|path| normalize(path) == image);
@@ -370,7 +372,7 @@ pub(super) fn recover_codex(valid: impl Fn() -> bool) -> Result<(), String> {
     recover_with(&native::Native { app: "codex" }, valid)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub(super) fn supported(app: &str) -> bool {
     // Only apps with verified Windows process identity can restart here.
     // Other desktop agents keep macOS support via bundle identifiers.
@@ -385,6 +387,7 @@ pub(super) fn supported(app: &str) -> bool {
             | "trae-intl"
             | "t3code"
             | "zcode"
+            | "deepseek-harness"
     )
 }
 #[cfg(target_os = "windows")]
@@ -641,6 +644,34 @@ mod tests {
         ] {
             assert!(!matches_image("zcode", image, local, programs));
         }
+    }
+
+    #[test]
+    fn deepseek_harness_restart_requires_a_verified_stale_desktop() {
+        let local = r"C:\Users\synthetic\AppData\Local";
+        let programs = r"C:\Program Files";
+        assert!(supported("deepseek-harness"));
+        let images = installed_images("deepseek-harness", local, programs);
+        assert_eq!(images.len(), 2);
+        for image in images {
+            assert!(matches_image("deepseek-harness", &image, local, programs));
+            let mut running = process();
+            running.image = image;
+            assert_eq!(freshness(&[running], Some(2000)), State::RestartRequired);
+        }
+        assert!(!matches_image(
+            "deepseek-harness",
+            r"C:\Downloads\DeepSeek Harness.exe",
+            local,
+            programs,
+        ));
+        assert!(!matches_image(
+            "deepseek-harness",
+            r"C:\Program Files\DeepSeek Harness\dsh.exe",
+            local,
+            programs,
+        ));
+        assert_eq!(freshness(&[], Some(2000)), State::Stopped);
     }
 
     #[test]
