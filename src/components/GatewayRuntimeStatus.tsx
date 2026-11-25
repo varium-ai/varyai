@@ -1,4 +1,11 @@
+import { CircleAlert, CircleCheck, CircleStop } from "lucide-react";
 import { useTranslation } from "react-i18next";
+
+const statusIcons = {
+  running: CircleCheck,
+  stopped: CircleStop,
+  unavailable: CircleAlert,
+};
 
 export function GatewayRuntimeStatus({
   running,
@@ -9,10 +16,11 @@ export function GatewayRuntimeStatus({
 }) {
   const { t } = useTranslation();
   const status = unavailable ? "unavailable" : running ? "running" : "stopped";
+  const Icon = statusIcons[status];
 
   return (
     <span className="gateway-runtime-status" data-status={status}>
-      <span className="gateway-runtime-dot" aria-hidden="true" />
+      <Icon className="gateway-runtime-icon" aria-hidden="true" />
       {t(
         status === "unavailable"
           ? "workspaceNav.gatewayUnavailable"

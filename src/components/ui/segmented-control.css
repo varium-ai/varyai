@@ -1,0 +1,74 @@
+.vary-segmented {
+  --segmented-inset: 3px;
+  gap: var(--segmented-inset);
+  padding: var(--segmented-inset);
+  border: 1px solid color-mix(in srgb, hsl(var(--border)) 70%, hsl(var(--card)));
+  border-radius: 10px;
+  background: color-mix(in srgb, hsl(var(--card)) 50%, hsl(var(--muted)));
+}
+
+.vary-segmented > :is([role="tab"], [role="radio"], [aria-pressed]) {
+  border-radius: var(--select-radius);
+  color: hsl(var(--secondary-foreground));
+}
+
+.vary-segmented
+  > :is([role="tab"], [role="radio"], [aria-pressed]):hover:not(
+    :disabled,
+    [aria-selected="true"],
+    [aria-checked="true"],
+    [aria-pressed="true"]
+  ) {
+  background: var(--hover-surface);
+  color: hsl(var(--foreground));
+}
+
+.vary-segmented
+  > :is(
+    [aria-selected="true"],
+    [aria-checked="true"],
+    [aria-pressed="true"]
+  ):not(:disabled) {
+  color: hsl(var(--link-foreground));
+}
+
+.vary-segmented
+  > :is(
+    [aria-selected="true"],
+    [aria-checked="true"],
+    [aria-pressed="true"]
+  ):not(:disabled)
+  > svg {
+  color: inherit;
+}
+
+.vary-segmented:not([data-sliding-indicator])
+  > :is(
+    [aria-selected="true"],
+    [aria-checked="true"],
+    [aria-pressed="true"]
+  ):not(:disabled),
+.vary-segmented-indicator {
+  background: hsl(var(--card));
+  box-shadow: var(--mp-edge);
+}
+
+.vary-segmented[data-sliding-indicator]
+  > :is([aria-selected="true"], [aria-pressed="true"]):not(:disabled) {
+  background: transparent;
+}
+
+.vary-segmented-indicator {
+  border-radius: var(--select-radius);
+}
+
+.vary-segmented
+  > :is([role="tab"], [role="radio"], [aria-pressed]):focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+.vary-segmented > :is([role="tab"], [role="radio"], [aria-pressed]):disabled {
+  color: var(--disabled-foreground);
+}

@@ -386,6 +386,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                   { value: "skillssh", label: "skills.sh" },
                 ]}
                 ariaLabel={t("skills.searchSource.repos")}
+                indicatorVariant="surface"
                 className="shrink-0"
                 buttonClassName="min-w-[80px]"
               />

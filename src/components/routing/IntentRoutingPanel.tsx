@@ -1793,7 +1793,7 @@ export function IntentRoutingPanel({
             ) : (
               <Settings size={16} aria-hidden="true" />
             )}
-            <span>
+            <span className="rt-group-action-label">
               {t(selectedGroups ? "common.cancel" : "routingPage.manage")}
             </span>
           </Button>
@@ -1830,7 +1830,9 @@ export function IntentRoutingPanel({
               onClick={() => void reload()}
             >
               <RoutingRefreshIcon refreshing={refreshing} />
-              <span>{t("routingPage.refresh")}</span>
+              <span className="rt-group-action-label">
+                {t("routingPage.refresh")}
+              </span>
             </Button>
             <Button
               variant="ghost"
@@ -1848,7 +1850,9 @@ export function IntentRoutingPanel({
               ) : (
                 <CloudDownload size={16} aria-hidden="true" />
               )}
-              <span>{t("routingPage.syncModels")}</span>
+              <span className="rt-group-action-label">
+                {t("routingPage.syncModels")}
+              </span>
             </Button>
             {showCreateButton && (
               <Button

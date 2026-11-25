@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -18,6 +18,8 @@ const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"] as const;
 
 export function LogConfigPanel() {
   const { t } = useTranslation();
+  const enabledId = useId();
+  const levelId = useId();
   const [config, setConfig] = useState<LogConfig>({
     enabled: true,
     level: "info",
@@ -74,72 +76,88 @@ export function LogConfigPanel() {
     }
   };
 
+  const exportLabel = t(
+    isExporting
+      ? "settings.advanced.logConfig.exporting"
+      : "settings.advanced.logConfig.export",
+  );
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+    <div className="settings-advanced-section">
+      <div className="settings-advanced-actions justify-between">
+        <p className="setting-copy settings-advanced-help">
           {t("settings.advanced.logConfig.exportDescription")}
         </p>
-        <Button variant="outline" disabled={isExporting} onClick={exportLogs}>
+        <Button
+          variant="outline"
+          className="settings-log-export ml-auto shrink-0"
+          aria-label={exportLabel}
+          aria-busy={isExporting}
+          title={exportLabel}
+          disabled={isExporting}
+          onClick={exportLogs}
+        >
           {isExporting ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           ) : (
-            <Download className="mr-2 h-4 w-4" />
+            <Download className="h-4 w-4" aria-hidden="true" />
           )}
-          {t(
-            isExporting
-              ? "settings.advanced.logConfig.exporting"
-              : "settings.advanced.logConfig.export",
-          )}
+          <span>{exportLabel}</span>
         </Button>
       </div>
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
-          <Label>{t("settings.advanced.logConfig.enabled")}</Label>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.advanced.logConfig.enabledDescription")}
-          </p>
+      <div className="settings-list settings-log-options">
+        <div className="setting-row">
+          <div className="setting-copy space-y-1">
+            <Label htmlFor={enabledId}>
+              {t("settings.advanced.logConfig.enabled")}
+            </Label>
+            <p className="settings-advanced-help">
+              {t("settings.advanced.logConfig.enabledDescription")}
+            </p>
+          </div>
+          <Switch
+            id={enabledId}
+            checked={config.enabled}
+            disabled={isLoading}
+            onCheckedChange={(checked) => handleChange({ enabled: checked })}
+          />
         </div>
-        <Switch
-          checked={config.enabled}
-          disabled={isLoading}
-          onCheckedChange={(checked) => handleChange({ enabled: checked })}
-        />
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
-          <Label>{t("settings.advanced.logConfig.level")}</Label>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.advanced.logConfig.levelDescription")}
-          </p>
+        <div className="setting-row">
+          <div className="setting-copy space-y-1">
+            <Label htmlFor={levelId}>
+              {t("settings.advanced.logConfig.level")}
+            </Label>
+            <p className="settings-advanced-help">
+              {t("settings.advanced.logConfig.levelDescription")}
+            </p>
+          </div>
+          <Select
+            value={config.level}
+            disabled={isLoading || !config.enabled}
+            onValueChange={(value) =>
+              handleChange({ level: value as LogConfig["level"] })
+            }
+          >
+            <SelectTrigger id={levelId} className="w-[120px] max-w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LOG_LEVELS.map((level) => (
+                <SelectItem key={level} value={level}>
+                  {t(`settings.advanced.logConfig.levels.${level}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
-        <Select
-          value={config.level}
-          disabled={isLoading || !config.enabled}
-          onValueChange={(value) =>
-            handleChange({ level: value as LogConfig["level"] })
-          }
-        >
-          <SelectTrigger className="w-[120px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {LOG_LEVELS.map((level) => (
-              <SelectItem key={level} value={level}>
-                {t(`settings.advanced.logConfig.levels.${level}`)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
       </div>
 
       {/* Diagnostic log levels. */}
-      <div className="rounded-lg bg-muted/50 p-4 text-xs space-y-1.5">
-        <p className="font-medium text-muted-foreground mb-2">
+      <div className="settings-list settings-log-guide">
+        <p className="settings-advanced-subtitle">
           {t("settings.advanced.logConfig.levelHint")}
         </p>
-        <div className="grid gap-1 text-muted-foreground">
+        <div className="settings-advanced-help grid gap-1">
           <p>
             <span className="font-mono text-destructive">error</span> -{" "}
             {t("settings.advanced.logConfig.levelDesc.error")}
@@ -149,8 +167,10 @@ export function LogConfigPanel() {
             {t("settings.advanced.logConfig.levelDesc.warn")}
           </p>
           <p>
-            <span className="font-mono text-primary">info</span> -{" "}
-            {t("settings.advanced.logConfig.levelDesc.info")}
+            <span className="font-mono text-[hsl(var(--link-foreground))]">
+              info
+            </span>{" "}
+            - {t("settings.advanced.logConfig.levelDesc.info")}
           </p>
           <p>
             <span className="font-mono text-[var(--success)]">debug</span> -{" "}

@@ -709,6 +709,7 @@
     "tabAdvanced": "進階",
     "tabProxy": "路由",
     "categoryLabel": "設定分類",
+    "statusNotice": "設定變更會立即套用，需要重新啟動的項目會在儲存後提示。",
     "statusReady": "設定已就緒",
     "statusSaving": "正在儲存變更",
     "statusRestartRequired": "等待重新啟動生效",

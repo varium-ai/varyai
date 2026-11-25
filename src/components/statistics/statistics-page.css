@@ -32,9 +32,6 @@
   font-size: 12px;
   line-height: 18px;
 }
-.stats-header p {
-  margin-top: 3px;
-}
 .stats-eyebrow {
   margin-bottom: 9px;
   font-size: 13px;
@@ -275,7 +272,7 @@
 .stats-header p {
   font-size: 14px;
   line-height: 20px;
-  margin-top: 8px;
+  margin-top: var(--page-title-description-gap);
 }
 
 .stats-log-table {
