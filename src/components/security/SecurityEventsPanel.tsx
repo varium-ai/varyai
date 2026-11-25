@@ -388,7 +388,7 @@ export function SecurityEventsPanel({
         <div className="sc-record-controls">
           <div className="sc-record-toolbar">
             <div
-              className="sc-view-picker"
+              className="sc-view-picker vary-segmented"
               role="tablist"
               aria-label={t("security.tabRecords")}
             >
@@ -398,8 +398,7 @@ export function SecurityEventsPanel({
                   role="tab"
                   aria-selected={filter.view === view}
                   size="sm"
-                  className="aria-selected:bg-card aria-selected:text-primary"
-                  variant={filter.view === view ? "secondary" : "ghost"}
+                  variant="ghost"
                   onClick={() => switchView(view)}
                 >
                   {t(

@@ -2351,17 +2351,6 @@
   .vary-routing .rt-group-title h3 {
     font-size: 16px;
   }
-
-  .vary-routing .rt-group-tools > button:has(svg) {
-    width: 28px;
-    min-width: 28px;
-    padding: 6px;
-  }
-
-  .vary-routing .rt-group-tools > button:has(svg) > span:not(.rt-refresh-icon) {
-    display: none;
-  }
-
   .vary-routing .rt-group-identity {
     gap: 4px;
   }
@@ -2484,6 +2473,7 @@
 }
 
 .vary-routing .rt-template-actions .primary {
+  justify-content: center;
   height: 32px;
   min-width: 64px;
   padding: 0 12px;
@@ -3302,7 +3292,7 @@
 
 .vary-routing .rt-page-copy {
   display: grid;
-  gap: 8px;
+  row-gap: var(--page-title-description-gap);
   min-width: 0;
 }
 
@@ -3336,12 +3326,6 @@
   .vary-routing .rt-group-panel {
     padding: 0;
     border-radius: var(--panel-radius);
-  }
-
-  .vary-routing .rt-group-tools > button:has(svg) {
-    width: var(--control-height);
-    min-width: var(--control-height);
-    padding: 12px;
   }
 }
 
@@ -3522,6 +3506,19 @@
 }
 
 @container routing-page (max-width: 760px) {
+  .vary-routing
+    :is(.rt-group-title, .rt-group-toolbar-actions)
+    > button:has(> .rt-group-action-label) {
+    flex: none;
+    inline-size: var(--button-height);
+    padding: 0;
+    gap: 0;
+  }
+  .vary-routing .rt-group-action-label {
+    display: none;
+  }
+}
+@container routing-page (max-width: 480px) {
   .vary-routing .rt-group-tools {
     grid-template-columns: minmax(0, 1fr) 132px;
   }

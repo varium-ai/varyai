@@ -251,13 +251,13 @@ export function SettingsPage({
               <TabsList
                 aria-label={t("settings.categoryLabel")}
                 slidingIndicator={false}
-                className="inline-flex h-auto max-w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-muted p-1"
+                className="h-auto max-w-full flex-wrap justify-start"
               >
                 {tabItems.map((tab) => (
                   <TabsTrigger
                     key={tab.value}
                     value={tab.value}
-                    className="min-h-9 min-w-0 rounded-sm px-3 py-1 data-[state=active]:bg-card"
+                    className="min-h-9 min-w-0 px-3 py-1"
                   >
                     {tab.label}
                   </TabsTrigger>

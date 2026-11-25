@@ -709,6 +709,7 @@
     "tabAdvanced": "詳細",
     "tabProxy": "ルーティング",
     "categoryLabel": "設定カテゴリ",
+    "statusNotice": "変更はその場で適用されます。再起動が必要な設定は保存後に通知します。",
     "statusReady": "設定の準備完了",
     "statusSaving": "変更を保存中",
     "statusRestartRequired": "再起動が必要です",
