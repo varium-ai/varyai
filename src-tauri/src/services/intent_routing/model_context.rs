@@ -250,9 +250,10 @@ impl Catalog {
     /// versionless family shape (e.g. `gpt-6.3-sol` from `gpt-6.2-sol`), so new
     /// releases keep effort options even before catalog snapshots catch up.
     fn kin_capability(&self, key: &str) -> Option<&Value> {
+        type KinRank = (String, Vec<u64>, String);
         let shape = versionless(key)?;
         let index = self.kin_capabilities.get_or_init(|| {
-            let mut best: BTreeMap<String, ((String, Vec<u64>, String), Value)> = BTreeMap::new();
+            let mut best: BTreeMap<String, (KinRank, Value)> = BTreeMap::new();
             for (id, cap) in &self.capabilities {
                 let Some(shape) = versionless(id) else {
                     continue;
