@@ -52,11 +52,6 @@
   display: inline-flex;
   max-width: 100%;
   flex-wrap: wrap;
-  gap: 3px;
-  border-radius: 8px;
-  background: hsl(var(--muted));
-  padding: 3px;
-  border: 1px solid hsl(var(--border));
 }
 .sc-record-controls {
   display: grid;
@@ -168,8 +163,8 @@
 .sc-header {
   align-items: flex-start;
 }
-.sc-header > div > p {
-  margin-top: 6px;
+.sc-header > :first-child > p {
+  margin-top: var(--page-title-description-gap);
   font-size: 14px;
   line-height: 20px;
 }

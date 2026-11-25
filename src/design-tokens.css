@@ -82,6 +82,7 @@
   --input: var(--border);
   --ring: var(--primary);
   --radius: 0.5rem;
+  --page-title-description-gap: 12px;
   --page-title-size: 18px;
   --page-title-line-height: 28px;
   --page-title-weight: 500;

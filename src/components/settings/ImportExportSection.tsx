@@ -43,18 +43,14 @@ export function ImportExportSection({
   }, [selectedFile]);
 
   return (
-    <section className="space-y-4">
-      <header className="space-y-1">
-        <h3 className="text-sm font-medium text-foreground">
-          {t("settings.importExport")}
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.importExportHint")}
-        </p>
+    <section className="settings-advanced-section">
+      <header className="settings-advanced-heading">
+        <h3>{t("settings.importExport")}</h3>
+        <p>{t("settings.importExportHint")}</p>
       </header>
 
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="settings-advanced-actions">
           <Button
             type="button"
             variant={selectedFile ? "default" : "outline"}
@@ -80,9 +76,9 @@ export function ImportExportSection({
           </Button>
         </div>
         {selectedFile && (
-          <div className="flex max-w-full items-center gap-2 rounded-md border border-border bg-muted px-3 py-1">
+          <div className="flex min-h-10 max-w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-1">
             <p
-              className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+              className="min-w-0 flex-1 truncate font-mono text-xs text-foreground"
               title={selectedFileName}
             >
               {selectedFileName}
@@ -93,6 +89,7 @@ export function ImportExportSection({
               variant="ghost"
               onClick={onClear}
               aria-label={t("common.clear")}
+              className="shrink-0"
             >
               <X className="h-4 w-4" />
             </Button>
@@ -127,12 +124,14 @@ function ImportStatusMessage({
   }
 
   const baseClass =
-    "flex items-start gap-3 rounded-md border p-3 text-sm leading-5";
+    "flex items-start gap-3 rounded-md border p-3 text-[13px] leading-5";
 
   if (status === "importing") {
     return (
-      <div className={`${baseClass} border-border bg-accent text-primary`}>
-        <Loader2 className="mt-0.5 h-5 w-5 flex-shrink-0 animate-spin" />
+      <div
+        className={`${baseClass} border-border bg-accent text-[hsl(var(--link-foreground))]`}
+      >
+        <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
         <div>
           <p className="font-semibold">{t("settings.importing")}</p>
           <p className="text-xs">{t("common.loading")}</p>
@@ -146,7 +145,7 @@ function ImportStatusMessage({
       <div
         className={`${baseClass} border-border bg-[var(--success-surface)] text-[var(--success)]`}
       >
-        <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0" />
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
         <div className="space-y-1.5">
           <p className="font-semibold">{t("settings.importSuccess")}</p>
           {backupId ? (
@@ -165,7 +164,7 @@ function ImportStatusMessage({
       <div
         className={`${baseClass} border-border bg-[var(--warning-surface)] text-[var(--warning)]`}
       >
-        <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
         <div className="space-y-1.5">
           <p className="font-semibold">{t("settings.importPartialSuccess")}</p>
           <p className="text-xs">{t("settings.importPartialHint")}</p>
@@ -180,10 +179,10 @@ function ImportStatusMessage({
     <div
       className={`${baseClass} border-border bg-[var(--danger-surface)] text-destructive`}
     >
-      <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div className="space-y-1.5">
         <p className="font-semibold">{t("settings.importFailed")}</p>
-        <p className="text-xs">{message}</p>
+        <p className="break-words text-xs">{message}</p>
       </div>
     </div>
   );

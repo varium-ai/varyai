@@ -779,6 +779,7 @@
     "tabAdvanced": "Advanced",
     "tabProxy": "Routing",
     "categoryLabel": "Configuration",
+    "statusNotice": "Changes are applied as you make them. Settings that require a restart will be called out after saving.",
     "statusReady": "Configuration ready",
     "statusSaving": "Saving changes",
     "statusRestartRequired": "Restart required",

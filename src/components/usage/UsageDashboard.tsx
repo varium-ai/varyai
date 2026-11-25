@@ -488,24 +488,15 @@ export function UsageDashboard({
           <div className="flex items-center justify-between mb-4">
             <TabsList
               slidingIndicator={false}
-              className="h-auto max-w-full flex-wrap justify-start rounded-lg border border-border bg-muted"
+              className="h-auto max-w-full flex-wrap justify-start"
             >
-              <TabsTrigger
-                value="logs"
-                className="min-h-8 min-w-0 data-[state=active]:bg-card data-[state=active]:shadow-sm"
-              >
+              <TabsTrigger value="logs" className="min-h-8 min-w-0">
                 {t("usage.requestLogs")}
               </TabsTrigger>
-              <TabsTrigger
-                value="providers"
-                className="min-h-8 min-w-0 data-[state=active]:bg-card data-[state=active]:shadow-sm"
-              >
+              <TabsTrigger value="providers" className="min-h-8 min-w-0">
                 {t("usage.providerStats")}
               </TabsTrigger>
-              <TabsTrigger
-                value="models"
-                className="min-h-8 min-w-0 data-[state=active]:bg-card data-[state=active]:shadow-sm"
-              >
+              <TabsTrigger value="models" className="min-h-8 min-w-0">
                 {t("usage.modelStats")}
               </TabsTrigger>
             </TabsList>

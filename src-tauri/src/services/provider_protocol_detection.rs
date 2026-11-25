@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+#[cfg(test)]
 const MARKER: &str = "VARYAI_PROTOCOL_OK";
 // Reasoning models may spend the first few hundred output tokens before answering.
 const OUTPUT_TOKEN_LIMIT: u32 = 1024;
@@ -98,7 +99,7 @@ fn request_spec(
 ) -> Result<(url::Url, Value, HeaderMap), ProbeOutcome> {
     let mut url = base.clone();
     let base_path = base.path().trim_end_matches('/');
-    let prompt = format!("Reply with exactly {MARKER}.");
+    let prompt = "hi";
     let mut headers = HeaderMap::new();
     let auth = if format == "anthropic"
         && config.anthropic_auth_field.as_deref() != Some("ANTHROPIC_AUTH_TOKEN")
@@ -230,11 +231,11 @@ async fn probe(
             return Err(http_error(response.status()));
         }
         if stream
-            && !response
+            && response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|h| h.to_str().ok())
-                .is_some_and(|s| s.starts_with("text/event-stream"))
+                .is_some_and(|s| s.starts_with("text/html"))
         {
             return Err(ProbeOutcome::new("invalid_response"));
         }
@@ -255,65 +256,25 @@ async fn probe(
         Err(_) => ProbeOutcome::new("timeout"),
     }
 }
-fn message_text(format: &str, body: &Value) -> String {
-    let mut text = String::new();
-    match format {
-        "openai_chat" => {
-            if let Some(content) = body
-                .pointer("/choices/0/message/content")
-                .and_then(Value::as_str)
-            {
-                text.push_str(content);
-            }
-        }
-        "openai_responses" => {
-            for item in body["output"].as_array().into_iter().flatten() {
-                for part in item["content"].as_array().into_iter().flatten() {
-                    if part["type"] == "output_text" {
-                        text.push_str(part["text"].as_str().unwrap_or_default());
-                    }
-                }
-            }
-        }
-        "anthropic" => {
-            for part in body["content"].as_array().into_iter().flatten() {
-                if part["type"] == "text" {
-                    text.push_str(part["text"].as_str().unwrap_or_default());
-                }
-            }
-        }
-        _ => {
-            for part in body
-                .pointer("/candidates/0/content/parts")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if part["thought"] != true {
-                    text.push_str(part["text"].as_str().unwrap_or_default());
-                }
-            }
-        }
-    }
-    text
-}
 fn valid_message(format: &str, body: &Value) -> bool {
     if body.get("error").is_some() {
         return false;
     }
-    let finished = match format {
-        "openai_chat" => body.pointer("/choices/0/finish_reason") == Some(&json!("stop")),
-        "openai_responses" => body["status"] == "completed",
-        "anthropic" => body["stop_reason"] == "end_turn",
-        _ => body.pointer("/candidates/0/finishReason") == Some(&json!("STOP")),
-    };
-    finished && message_text(format, body).trim() == MARKER
+    match format {
+        "openai_chat" => body["choices"].as_array().is_some_and(|c| !c.is_empty()),
+        "openai_responses" => {
+            body["status"].as_str() != Some("failed")
+                && (body["output"].as_array().is_some()
+                    || body["id"].is_string()
+                    || body["status"].is_string())
+        }
+        "anthropic" => body["content"].as_array().is_some() || body["type"] == "message",
+        _ => body["candidates"].as_array().is_some_and(|c| !c.is_empty()),
+    }
 }
 pub(crate) fn valid_stream(format: &str, source: &str) -> bool {
     let normalized = source.replace("\r\n", "\n");
-    let mut text = String::new();
-    let mut finished = false;
-    let mut anthropic_end_turn = false;
+    let mut saw_event = false;
     for frame in normalized.split("\n\n") {
         let data = frame
             .lines()
@@ -335,36 +296,27 @@ pub(crate) fn valid_stream(format: &str, source: &str) -> bool {
         {
             return false;
         }
-        match format {
-            "openai_chat" => {
-                for choice in body["choices"].as_array().into_iter().flatten() {
-                    text.push_str(choice["delta"]["content"].as_str().unwrap_or_default());
-                    finished |= choice["finish_reason"] == "stop";
-                }
-            }
-            "openai_responses" => {
-                if body["type"] == "response.output_text.delta" {
-                    text.push_str(body["delta"].as_str().unwrap_or_default());
-                }
-                finished |= body["type"] == "response.completed"
-                    && body["response"]["status"] == "completed";
-            }
-            "anthropic" => {
-                if body["type"] == "content_block_delta" && body["delta"]["type"] == "text_delta" {
-                    text.push_str(body["delta"]["text"].as_str().unwrap_or_default());
-                }
-                if body["type"] == "message_delta" {
-                    anthropic_end_turn = body["delta"]["stop_reason"] == "end_turn";
-                }
-                finished |= body["type"] == "message_stop" && anthropic_end_turn;
-            }
-            _ => {
-                text.push_str(&message_text(format, &body));
-                finished |= body.pointer("/candidates/0/finishReason") == Some(&json!("STOP"));
-            }
-        }
+        let matched = match format {
+            "openai_chat" => body["choices"].as_array().is_some(),
+            "openai_responses" => body["type"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("response.")),
+            "anthropic" => matches!(
+                body["type"].as_str(),
+                Some(
+                    "message_start"
+                        | "content_block_start"
+                        | "content_block_delta"
+                        | "content_block_stop"
+                        | "message_delta"
+                        | "message_stop"
+                )
+            ),
+            _ => body["candidates"].as_array().is_some(),
+        };
+        saw_event |= matched;
     }
-    finished && text.trim() == MARKER
+    saw_event
 }
 
 #[cfg(test)]
@@ -384,10 +336,10 @@ mod tests {
         )
     }
     #[test]
-    fn stream_validation_requires_answer_completion_and_no_error() {
+    fn stream_validation_accepts_protocol_events_and_rejects_errors() {
         let good = chat_stream();
         assert!(valid_stream("openai_chat", &good));
-        assert!(!valid_stream(
+        assert!(valid_stream(
             "openai_chat",
             good.split("data: {\"choices\":[{\"delta\":{}")
                 .next()
@@ -399,24 +351,24 @@ mod tests {
         ));
         assert!(!valid_stream("openai_chat", "data: [DONE]\n\n"));
         assert!(!valid_message("openai_chat", &json!({"message":MARKER})));
-        assert!(!valid_message(
+        assert!(valid_message(
             "openai_chat",
-            &json!({"choices":[{"message":{"content":MARKER},"finish_reason":"length"}]})
+            &json!({"choices":[{"message":{"content":"Hi there!"},"finish_reason":"length"}]})
         ));
         let anthropic = format!(
             "data: {}\n\ndata: {}\n\ndata: {}\n\n",
-            json!({"type":"content_block_delta","delta":{"type":"text_delta","text":MARKER}}),
+            json!({"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi!"}}),
             json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"}}),
             json!({"type":"message_stop"})
         );
-        assert!(!valid_stream("anthropic", &anthropic));
+        assert!(valid_stream("anthropic", &anthropic));
         for format in FORMATS {
             assert!(!valid_stream(format, "data: {invalid}\n\n"));
         }
     }
 
     #[tokio::test]
-    async fn oversized_and_truncated_responses_cannot_verify() {
+    async fn oversized_responses_cannot_verify_while_valid_events_succeed() {
         let mock = Router::new().fallback(post(|req: axum::extract::Request| async move {
             let chat = req.uri().path().ends_with("/chat/completions");
             axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
@@ -425,7 +377,7 @@ mod tests {
                     [("content-type", "text/event-stream")],
                     format!(
                         "data: {}\n\n",
-                        json!({"choices":[{"delta":{"content":MARKER}}]})
+                        json!({"choices":[{"delta":{"content":"Hi!"}}]})
                     ),
                 )
             } else {
@@ -454,7 +406,7 @@ mod tests {
             probe(&client, &config, &base, "openai_chat", true)
                 .await
                 .status,
-            "invalid_response"
+            "verified"
         );
         assert_eq!(
             probe(&client, &config, &base, "openai_responses", false)

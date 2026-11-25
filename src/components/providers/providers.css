@@ -802,26 +802,15 @@
 .pv-editor .pv-protocols {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px;
   width: fit-content;
   max-width: 100%;
-  padding: 3px;
-  border-radius: 7px;
-  background: var(--mp-pill);
 }
 .pv-editor .pv-protocols > button {
   height: 24px;
   padding: 0 8px;
   border: 0;
-  border-radius: 5px;
-  color: var(--mp-muted);
   font-size: 11.5px;
   white-space: nowrap;
-}
-.pv-editor .pv-protocols > button[aria-checked="true"] {
-  background: var(--mp-card);
-  color: var(--mp-fg);
-  box-shadow: var(--mp-edge);
 }
 .pv-editor .pv-models {
   min-width: 0;
@@ -1355,11 +1344,6 @@
 }
 .pv-provider-dialog .pv-editor input[readonly] {
   color: var(--mp-muted);
-}
-.pv-provider-dialog .pv-protocols {
-  gap: 2px;
-  padding: 3px;
-  border-radius: 8px;
 }
 .pv-provider-dialog .pv-protocols > button {
   height: 24px;
@@ -2270,11 +2254,6 @@
   width: 100%;
   font-size: 12px;
 }
-.pv-provider-dialog .pv-protocols button[aria-pressed="true"] {
-  background: var(--mp-card, white);
-  color: var(--mp-text, #242428);
-  box-shadow: 0 1px 3px #0001;
-}
 .pv-provider-dialog .pv-model-chips {
   display: flex;
   gap: 4px;
@@ -2349,11 +2328,7 @@
 .pv-import-tabs {
   display: flex;
   flex: none;
-  gap: 3px;
   margin: 0 16px 12px;
-  padding: 3px;
-  background: var(--mp-pill);
-  border-radius: 10px;
   overflow-x: auto;
 }
 .pv-import-tabs > button {
@@ -2363,15 +2338,8 @@
   align-items: center;
   gap: 6px;
   padding: 6px 6px;
-  border-radius: 7px;
-  color: var(--mp-muted);
   white-space: nowrap;
   font-size: 12px;
-}
-.pv-import-tabs > button[aria-selected="true"] {
-  background: var(--mp-card);
-  color: var(--mp-fg);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
 }
 .pv-import-count {
   border-radius: 8px;
@@ -3003,7 +2971,7 @@
   font-weight: 500;
 }
 .vary-providers .pv-sheet .pv-add-copy p {
-  margin-top: 8px;
+  margin-top: var(--page-title-description-gap);
   font-size: 14px;
   line-height: 20px;
   color: var(--mp-muted);
@@ -3130,7 +3098,7 @@
 }
 .vary-providers .pv-page-head > .pv-page-copy {
   display: grid;
-  gap: 8px;
+  row-gap: var(--page-title-description-gap);
 }
 .vary-providers .pv-page-copy .mp-page-heading,
 .vary-providers .pv-page-copy .mp-lead {

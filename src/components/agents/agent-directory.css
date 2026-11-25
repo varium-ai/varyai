@@ -86,41 +86,19 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   align-items: center;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--mp-line);
-  border-radius: 10px;
-  background: var(--mp-card-2);
 }
 
 .agent-directory-tabs [role="tab"] {
   gap: 7px;
   min-width: 0;
-
   padding: 0 12px;
-
-  color: var(--mp-fg-2);
-
   transition:
     background-color var(--interaction-duration) var(--interaction-easing),
     color var(--interaction-duration) var(--interaction-easing);
   min-height: 36px;
-  border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
   line-height: 20px;
-}
-
-.agent-directory-tabs [role="tab"][aria-selected="false"]:hover {
-  background-color: var(--mp-hover);
-  color: var(--mp-fg);
-}
-
-.agent-directory-tabs [role="tab"][aria-selected="true"] {
-  background: var(--mp-card);
-  color: var(--mp-link);
-  font-weight: 500;
-  box-shadow: none;
 }
 
 .agent-directory-tabs [role="tab"] > svg {

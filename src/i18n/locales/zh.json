@@ -779,6 +779,7 @@
     "tabAdvanced": "高级",
     "tabProxy": "路由",
     "categoryLabel": "配置分类",
+    "statusNotice": "设置变更会即时应用，需要重启的项目会在保存后提示。",
     "statusReady": "配置已就绪",
     "statusSaving": "正在保存更改",
     "statusRestartRequired": "等待重启生效",

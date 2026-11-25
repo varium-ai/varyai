@@ -159,11 +159,11 @@ export function BackupListSection({
   const retainValue = String(backupRetainCount ?? 10);
 
   return (
-    <div className="space-y-4">
+    <div className="settings-advanced-section">
       {/* Backup policy settings */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label className="text-sm">
+      <div className="settings-advanced-fields">
+        <div className="settings-advanced-field">
+          <Label>
             {t("settings.backupManager.intervalLabel", {
               defaultValue: "Auto-backup Interval",
             })}
@@ -174,7 +174,7 @@ export function BackupListSection({
               onSettingsChange({ backupIntervalHours: Number(v) })
             }
           >
-            <SelectTrigger className="h-[var(--select-height)]">
+            <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -217,8 +217,8 @@ export function BackupListSection({
           </Select>
         </div>
 
-        <div className="space-y-2">
-          <Label className="text-sm">
+        <div className="settings-advanced-field">
+          <Label>
             {t("settings.backupManager.retainLabel", {
               defaultValue: "Backup Retention",
             })}
@@ -229,7 +229,7 @@ export function BackupListSection({
               onSettingsChange({ backupRetainCount: Number(v) })
             }
           >
-            <SelectTrigger className="h-[var(--select-height)]">
+            <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -244,9 +244,9 @@ export function BackupListSection({
       </div>
 
       {/* Backup list */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <h4 className="text-sm font-medium">
+      <div className="settings-advanced-divider space-y-3">
+        <div className="settings-advanced-actions justify-between">
+          <h4 className="settings-advanced-subtitle">
             {t("settings.backupManager.title", {
               defaultValue: "Database Backups",
             })}
@@ -254,7 +254,6 @@ export function BackupListSection({
           <Button
             variant="outline"
             size="sm"
-            className="h-7 px-2 text-xs"
             disabled={isCreating || isRestoring}
             onClick={async () => {
               try {
@@ -274,7 +273,7 @@ export function BackupListSection({
               }
             }}
           >
-            <Download className="h-3 w-3 mr-1" />
+            <Download size={16} aria-hidden="true" />
             {isCreating
               ? t("settings.backupManager.creating", {
                   defaultValue: "Backing up...",
@@ -286,23 +285,25 @@ export function BackupListSection({
         </div>
 
         {isLoading ? (
-          <div className="text-sm text-muted-foreground py-2">Loading...</div>
+          <div className="settings-list settings-advanced-help px-4 py-4">
+            Loading...
+          </div>
         ) : backups.length === 0 ? (
-          <div className="text-sm text-muted-foreground py-2">
+          <div className="settings-list settings-advanced-help px-4 py-4">
             {t("settings.backupManager.empty", {
               defaultValue: "No backups yet",
             })}
           </div>
         ) : (
-          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+          <div className="settings-list settings-backup-list">
             {backups.map((backup) => (
               <div
                 key={backup.filename}
-                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors text-sm"
+                className="setting-row transition-colors"
               >
-                <div className="flex-1 min-w-0">
+                <div className="setting-copy">
                   {editingFilename === backup.filename ? (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-2">
                       <Input
                         value={editValue}
                         onChange={(e) => setEditValue(e.target.value)}
@@ -310,7 +311,7 @@ export function BackupListSection({
                           if (e.key === "Enter") handleConfirmRename();
                           if (e.key === "Escape") handleCancelRename();
                         }}
-                        className="h-[var(--control-height)] text-[13px]"
+                        className="min-w-0"
                         placeholder={t(
                           "settings.backupManager.namePlaceholder",
                           { defaultValue: "Enter new name" },
@@ -321,28 +322,28 @@ export function BackupListSection({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-6 w-6 shrink-0"
+                        className="shrink-0"
                         onClick={handleConfirmRename}
                         disabled={isRenaming || !editValue.trim()}
                       >
-                        <Check className="h-3.5 w-3.5" />
+                        <Check aria-hidden="true" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-6 w-6 shrink-0"
+                        className="shrink-0"
                         onClick={handleCancelRename}
                         disabled={isRenaming}
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <X aria-hidden="true" />
                       </Button>
                     </div>
                   ) : (
                     <>
-                      <div className="font-mono text-xs truncate">
+                      <div className="truncate text-[13px] font-medium tabular-nums">
                         {getDisplayName(backup.filename)}
                       </div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="settings-advanced-help mt-0.5 tabular-nums">
                         {formatBackupDate(backup.createdAt)} &middot;{" "}
                         {formatBytes(backup.sizeBytes)}
                       </div>
@@ -350,39 +351,37 @@ export function BackupListSection({
                   )}
                 </div>
                 {editingFilename !== backup.filename && (
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="settings-advanced-actions settings-backup-actions">
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
                       onClick={() => handleStartRename(backup.filename)}
                       disabled={isRestoring || isRenaming || isDeleting}
                       title={t("settings.backupManager.rename", {
                         defaultValue: "Rename",
                       })}
                     >
-                      <Pencil className="h-3 w-3" />
+                      <Pencil aria-hidden="true" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-destructive hover:text-destructive"
+                      className="text-destructive hover:text-destructive"
                       onClick={() => setDeleteFilename(backup.filename)}
                       disabled={isRestoring || isDeleting}
                       title={t("settings.backupManager.delete", {
                         defaultValue: "Delete",
                       })}
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 aria-hidden="true" />
                     </Button>
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
-                      className="h-7 px-2 text-xs"
                       disabled={isRestoring || isDeleting}
                       onClick={() => setConfirmFilename(backup.filename)}
                     >
-                      <RotateCcw className="h-3 w-3 mr-1" />
+                      <RotateCcw size={16} aria-hidden="true" />
                       {isRestoring
                         ? t("settings.backupManager.restoring", {
                             defaultValue: "Restoring...",

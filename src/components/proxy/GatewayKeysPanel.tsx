@@ -424,40 +424,40 @@ export function GatewayKeysPanel({
   ) : null;
   return (
     <section className="gateway-keys">
-      <header className="gateway-keys-header">
-        <div>
-          <h2>{t("gatewayKeys.title")}</h2>
+      <header className="gateway-keys-header gateway-keys-surface">
+        <div className="gateway-header-copy">
+          <div className="gateway-header-title">
+            <h2>{t("gatewayKeys.title")}</h2>
+            <GatewayRuntimeStatus
+              running={running}
+              unavailable={statusUnavailable}
+            />
+          </div>
           <p className="gateway-supporting-text">
             {t("gatewayKeys.description")}
           </p>
         </div>
-        <div className="gateway-header-actions">
-          <GatewayRuntimeStatus
-            running={running}
-            unavailable={statusUnavailable}
-          />
-          {!running && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={pending}
-              onClick={() =>
-                void run(async () => {
-                  await proxyApi.startProxyServer();
-                  await client.invalidateQueries({
-                    queryKey: proxyKeys.status,
-                  });
-                })
-              }
-            >
-              {t("gatewayKeys.startRouting")}
-            </Button>
-          )}
-        </div>
+        {!running && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() =>
+              void run(async () => {
+                await proxyApi.startProxyServer();
+                await client.invalidateQueries({
+                  queryKey: proxyKeys.status,
+                });
+              })
+            }
+          >
+            {t("gatewayKeys.startRouting")}
+          </Button>
+        )}
       </header>
       <div className="gateway-keys-toolbar">
         <div
-          className="gateway-tabs"
+          className="gateway-tabs vary-segmented"
           role="tablist"
           aria-label={t("gatewayKeys.title")}
         >
@@ -466,7 +466,7 @@ export function GatewayKeysPanel({
               key={tab}
               role="tab"
               aria-selected={view === tab}
-              variant={view === tab ? "secondary" : "ghost"}
+              variant="ghost"
               size="sm"
               disabled={pending}
               onClick={() => {
