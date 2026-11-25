@@ -481,12 +481,20 @@ fn backup_keys_use_their_own_protocol_endpoint_and_do_not_copy_pool_secrets(
     let saved = db.list_routing_upstreams()?.remove(0);
     let provider = db.routing_discovery_provider(&saved.id, saved.revision)?;
     let variants = crate::services::routing_upstreams::variants(&provider);
-    assert_eq!(variants.len(), 2);
+    assert_eq!(variants.len(), 3);
     assert!(variants
         .iter()
         .all(|p| p.settings_config.get("routingImportedTransport").is_none()));
-    assert_eq!(variants[1].settings_config["apiFormat"], "anthropic");
-    let (base, token) = variants[1].resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    let backup = variants
+        .iter()
+        .find(|p| {
+            p.resolve_usage_credentials(&crate::app_config::AppType::Codex)
+                .1
+                == "synthetic-backup"
+        })
+        .ok_or("missing backup variant")?;
+    assert_eq!(backup.settings_config["apiFormat"], "anthropic");
+    let (base, token) = backup.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     assert_eq!(base, "https://relay.example/anthropic");
     assert!(token == "synthetic-backup");
     Ok(())
@@ -1522,10 +1530,9 @@ fn opencode_import_reads_enabled_reasoning_variants_and_the_saved_default(
         .iter()
         .find(|row| row["model"] == "toggle")
         .ok_or("missing model")?;
-    assert!(
-        crate::services::intent_routing::effort::Capability::parse(toggle)
-            .levels
-            .is_empty()
+    assert_eq!(
+        crate::services::intent_routing::effort::Capability::parse(toggle).levels,
+        ["none", "low", "medium", "high", "xhigh", "max"]
     );
     Ok(())
 }

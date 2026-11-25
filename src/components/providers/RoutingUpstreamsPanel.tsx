@@ -384,11 +384,26 @@ export function RoutingUpstreamsPanel({
     if (draft?.source.kind !== "api") return;
     const source = draft.source;
     protocolUrls.current[source.apiFormat] = source.baseUrl;
-    const baseUrl = protocolUrls.current[format] ?? source.baseUrl;
+    const baseUrl =
+      draft.transport?.endpoints?.[format] ??
+      protocolUrls.current[format] ??
+      source.baseUrl;
     protocolUrls.current[format] = baseUrl;
     setDraft({
       ...draft,
       source: { ...source, apiFormat: format, baseUrl, catalog: [] },
+      ...(draft.transport
+        ? {
+            transport: {
+              ...draft.transport,
+              endpoints: {
+                ...draft.transport.endpoints,
+                [source.apiFormat]: source.baseUrl,
+                [format]: baseUrl,
+              },
+            },
+          }
+        : {}),
     });
     setDiscovered([]);
   }
@@ -574,6 +589,28 @@ export function RoutingUpstreamsPanel({
           return;
         }
       }
+      const trimmedBaseUrl = source.baseUrl.trim();
+      const rawEndpoints = draft.transport?.endpoints ?? {};
+      const nextEndpoints = Object.fromEntries(
+        Object.entries({
+          ...rawEndpoints,
+          ...(Object.keys(rawEndpoints).length > 0
+            ? { [source.apiFormat]: trimmedBaseUrl }
+            : {}),
+        })
+          .map(([k, v]) => [k, typeof v === "string" ? v.trim() : ""])
+          .filter(([, v]) => v.length > 0),
+      );
+      const nextTransport =
+        Object.keys(nextEndpoints).length > 1 || draft.transport
+          ? {
+              ...(draft.transport ?? { fullUrl: false, keys: [] }),
+              endpoints: {
+                ...nextEndpoints,
+                [source.apiFormat]: trimmedBaseUrl,
+              },
+            }
+          : draft.transport;
       const value = {
         ...draft,
         id:
@@ -581,9 +618,10 @@ export function RoutingUpstreamsPanel({
             ? draft.id
             : providerIdSlug(draft.id) || loadedRecord?.id || draft.id,
         name: draft.name.trim(),
+        ...(nextTransport !== undefined ? { transport: nextTransport } : {}),
         source: {
           ...source,
-          baseUrl: source.baseUrl.trim(),
+          baseUrl: trimmedBaseUrl,
           models: parsed,
           mode: !draft.revision
             ? parsed.some((row) => !isImageGenerationModel(row))

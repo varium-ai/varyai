@@ -187,6 +187,8 @@ export function ProviderEditorDialog({
   const [modelPage, setModelPage] = useState(0);
   const [modelSearch, setModelSearch] = useState("");
   const modelList = useRef<HTMLDivElement>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const source = draft.source.kind === "api" ? draft.source : null;
   const preset = globalProviderPresets.find(
     (value) => value.id === draft.presetId,
@@ -378,8 +380,42 @@ export function ProviderEditorDialog({
       }
       if (!model) throw new Error("unavailable");
       const detected = await onProbe(model);
-      if (probeRequest.current === request)
+      if (probeRequest.current === request) {
         setResults([{ model, results: detected }]);
+        const verifiedFormats = detected.filter(
+          (entry) => entry.text.status === "verified",
+        );
+        if (verifiedFormats.length > 0) {
+          const latestDraft = draftRef.current;
+          const latestSource =
+            latestDraft.source.kind === "api" ? latestDraft.source : source;
+          const nextEndpoints: Partial<Record<Format, string>> = {
+            ...(latestDraft.transport?.endpoints ?? {}),
+            [latestSource.apiFormat]: latestSource.baseUrl,
+          };
+          const trimmed = latestSource.baseUrl.trim().replace(/\/+$/, "");
+          for (const entry of verifiedFormats) {
+            const fmt = entry.format as Format;
+            if (nextEndpoints[fmt]?.trim()) continue;
+            if (fmt === "anthropic") {
+              nextEndpoints[fmt] = trimmed.replace(/\/v1$/, "");
+            } else if (fmt === "gemini_native") {
+              nextEndpoints[fmt] = /\/v1$/.test(trimmed)
+                ? `${trimmed}beta`
+                : trimmed;
+            } else {
+              nextEndpoints[fmt] = latestSource.baseUrl;
+            }
+          }
+          onDraftChange({
+            ...latestDraft,
+            transport: {
+              ...(latestDraft.transport ?? { fullUrl: false, keys: [] }),
+              endpoints: nextEndpoints,
+            },
+          });
+        }
+      }
     } catch {
       if (probeRequest.current === request) setProbeFailed(true);
     } finally {
@@ -763,13 +799,25 @@ export function ProviderEditorDialog({
                             disabled={disabled}
                             value={source.baseUrl}
                             onChange={(event) => {
+                              const nextUrl = event.target.value;
                               setResults([]);
                               onDraftChange({
                                 ...draft,
                                 source: {
                                   ...source,
-                                  baseUrl: event.target.value,
+                                  baseUrl: nextUrl,
                                 },
+                                ...(draft.transport
+                                  ? {
+                                      transport: {
+                                        ...draft.transport,
+                                        endpoints: {
+                                          ...draft.transport.endpoints,
+                                          [source.apiFormat]: nextUrl,
+                                        },
+                                      },
+                                    }
+                                  : {}),
                               });
                             }}
                           />

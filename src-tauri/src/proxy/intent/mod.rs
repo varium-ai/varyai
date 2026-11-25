@@ -69,6 +69,7 @@ pub(crate) struct Runtime {
     conversations: scopes::Conversations,
     pub(crate) native: native::Native,
     continuations: RwLock<Option<Arc<continuation::Store>>>,
+    native_protocol_preferred: RwLock<std::collections::HashSet<(String, String, &'static str)>>,
 }
 pub(crate) const TEMPORARY_SESSION_TTL: Duration = Duration::from_secs(3600);
 struct TemporarySession {
@@ -2321,7 +2322,11 @@ async fn execute(
                         crate::services::quota_panel::credits(&id, target.scheduling.exhausted(now))
                             == crate::services::quota_panel::CreditsMode::Last
                     });
-            (states[*index].cooling(now), credits_last)
+            (
+                states[*index].cooling(now),
+                credits_last,
+                target_output_protocol(target) != protocol,
+            )
         });
     }
     trace.plan(
@@ -2467,13 +2472,29 @@ async fn execute(
             }
             continue;
         }
-        let output = target
-            .upstream
-            .as_ref()
-            .and_then(|provider| provider.meta.as_ref())
-            .and_then(|meta| meta.api_format.as_deref())
-            .and_then(Protocol::from_format)
-            .unwrap_or(Protocol::Responses);
+        let raw_output = target_output_protocol(target);
+        let preferred_native = if protocol != raw_output
+            && state
+                .intent_runtime
+                .native_protocol_preferred
+                .read()
+                .ok()
+                .is_some_and(|set| {
+                    set.contains(&(
+                        target.provider_id.clone(),
+                        target.model.clone(),
+                        protocol.format(),
+                    ))
+                }) {
+            sibling_native_target(target, protocol)
+        } else {
+            None
+        };
+        let output = if preferred_native.is_some() {
+            protocol
+        } else {
+            raw_output
+        };
         let workbuddy_upstream = target
             .upstream
             .as_ref()
@@ -2710,7 +2731,11 @@ async fn execute(
             || specialized
             || (protocol != output && !official_conversion)
         {
-            let Some(upstream) = resolved_subscription.as_ref().or(target.upstream.as_ref()) else {
+            let Some(upstream) = resolved_subscription
+                .as_ref()
+                .or(preferred_native.as_ref().map(|(_, u)| u))
+                .or(target.upstream.as_ref())
+            else {
                 return fail(StatusCode::BAD_GATEWAY, "routing_conversion_misconfigured");
             };
             let mut bridge_body = match super::pi::json::parse(&payload) {
@@ -2731,6 +2756,24 @@ async fn execute(
                 &parts.headers,
                 &mut caller_headers,
             );
+            let mut observation_extensions = parts.extensions.clone();
+            if let Some(request) = &dlp_request {
+                observation_extensions.insert(super::group_forward::RoutedRestoration {
+                    request: request.clone(),
+                    actor: agent,
+                    gateway: state.restoration_gateway.clone(),
+                });
+            }
+            observation_extensions.insert(super::tool_observation::mount::ClientToolSession(
+                tool_session_id.clone(),
+            ));
+            if !external {
+                observation_extensions.insert(
+                    super::tool_observation::mount::ClientToolObservation(
+                        consumer_app.unwrap_or("codex"),
+                    ),
+                );
+            }
             let forward = async {
                 if specialized && dlp_request.is_some() {
                     // A subscription upstream wraps the request in its own provider
@@ -2759,25 +2802,7 @@ async fn execute(
                     )
                     .await;
                 }
-                let mut observation_extensions = parts.extensions.clone();
-                if let Some(request) = &dlp_request {
-                    observation_extensions.insert(super::group_forward::RoutedRestoration {
-                        request: request.clone(),
-                        actor: agent,
-                        gateway: state.restoration_gateway.clone(),
-                    });
-                }
-                observation_extensions.insert(super::tool_observation::mount::ClientToolSession(
-                    tool_session_id.clone(),
-                ));
-                if !external {
-                    observation_extensions.insert(
-                        super::tool_observation::mount::ClientToolObservation(
-                            consumer_app.unwrap_or("codex"),
-                        ),
-                    );
-                }
-                super::group_forward::forward(
+                Box::pin(super::group_forward::forward(
                     &state,
                     protocol,
                     upstream,
@@ -2789,7 +2814,7 @@ async fn execute(
                     conversation.as_deref(),
                     scoped.history.clone(),
                     scoped.shadow.clone(),
-                )
+                ))
                 .await
             };
             let forwarded = match wait_for_attempt(attempt_deadline, forward).await {
@@ -2839,6 +2864,89 @@ async fn execute(
                     };
                     refused_models.insert((target.provider_id.clone(), target.model.clone()));
                     continue;
+                }
+                Err(super::ProxyError::UpstreamError { status, body })
+                    if protocol != output
+                        && !specialized
+                        && matches!(status, 400 | 404 | 410 | 422 | 500 | 502 | 503 | 504)
+                        && sibling_native_target(target, protocol).is_some() =>
+                {
+                    let sibling = sibling_native_target(target, protocol);
+                    let fallback_result = if let Some((native_url, native_upstream)) = sibling {
+                        if dlp_request.is_some() {
+                            Box::pin(super::group_forward::forward(
+                                &state,
+                                protocol,
+                                &native_upstream,
+                                &parts.method,
+                                &endpoint,
+                                &bridge_body,
+                                &caller_headers,
+                                &observation_extensions,
+                                conversation.as_deref(),
+                                scoped.history.clone(),
+                                scoped.shadow.clone(),
+                            ))
+                            .await
+                            .ok()
+                            .filter(|r| r.status().is_success())
+                        } else {
+                            let mut req = session
+                                .client
+                                .post(native_url)
+                                .headers(headers.clone())
+                                .body(payload.clone());
+                            if !streaming {
+                                req = req.timeout(super::http_client::UPSTREAM_HEADER_WAIT);
+                            }
+                            super::http_client::send_with_header_timeout(
+                                req,
+                                super::http_client::UPSTREAM_HEADER_WAIT,
+                            )
+                            .await
+                            .ok()
+                            .map(super::hyper_client::ProxyResponse::Reqwest)
+                            .filter(|r| r.status().is_success())
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(resp) = fallback_result {
+                        if let Ok(mut set) = state.intent_runtime.native_protocol_preferred.write()
+                        {
+                            set.insert((
+                                target.provider_id.clone(),
+                                target.model.clone(),
+                                protocol.format(),
+                            ));
+                        }
+                        resp
+                    } else {
+                        let bytes = body.as_deref().unwrap_or_default().as_bytes();
+                        if retry_converted_rejection(
+                            upstream,
+                            status,
+                            bytes,
+                            pinned,
+                            !attempts.is_empty(),
+                        ) {
+                            record_retryable_rejection(&mut transient, status);
+                            continue;
+                        }
+                        let code =
+                            super::native_subscription::rejection_code(upstream, status, bytes)
+                                .unwrap_or_else(|| {
+                                    super::protocol_bridge::grok::rejection_code(bytes)
+                                });
+                        let hints = super::protocol_bridge::grok::rejection_hints(bytes);
+                        log::warn!(
+                            "[Intent] Upstream rejected converted call: status={status}, code={code}, hints={hints:?}"
+                        );
+                        return fail(
+                            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                            code,
+                        );
+                    }
                 }
                 Err(super::ProxyError::UpstreamError { status, ref body })
                     if retry_converted_rejection(
@@ -2922,7 +3030,10 @@ async fn execute(
                         )
                     }
                 },
-                None => target.url.clone(),
+                None => preferred_native
+                    .as_ref()
+                    .map(|(url, _)| url.clone())
+                    .unwrap_or_else(|| target.url.clone()),
             };
             if count_tokens {
                 let Some(base) = url.path().strip_suffix("/messages") else {
@@ -3471,6 +3582,45 @@ async fn execute(
         return fail(StatusCode::BAD_REQUEST, "context_length_exceeded");
     }
     fail(StatusCode::BAD_GATEWAY, "routing_candidates_unavailable")
+}
+
+fn target_output_protocol(target: &Target) -> Protocol {
+    target
+        .upstream
+        .as_ref()
+        .and_then(|provider| provider.meta.as_ref())
+        .and_then(|meta| meta.api_format.as_deref())
+        .and_then(Protocol::from_format)
+        .unwrap_or(Protocol::Responses)
+}
+
+fn sibling_native_target(
+    target: &Target,
+    protocol: Protocol,
+) -> Option<(reqwest::Url, crate::provider::Provider)> {
+    if target.official {
+        return None;
+    }
+    let upstream = target.upstream.as_ref()?;
+    if upstream.meta.as_ref().and_then(|m| m.is_full_url) == Some(true) {
+        return None;
+    }
+    let current = target_output_protocol(target);
+    let (from_suffix, to_suffix) = match (current, protocol) {
+        (Protocol::Chat, Protocol::Responses) => ("/chat/completions", "/responses"),
+        (Protocol::Responses, Protocol::Chat) => ("/responses", "/chat/completions"),
+        _ => return None,
+    };
+    let prefix = target.url.path().strip_suffix(from_suffix)?;
+    let mut url = target.url.clone();
+    url.set_path(&format!("{prefix}{to_suffix}"));
+    let mut next_upstream = upstream.clone();
+    next_upstream
+        .meta
+        .get_or_insert_with(Default::default)
+        .api_format = Some(protocol.format().into());
+    next_upstream.settings_config["apiFormat"] = json!(protocol.format());
+    Some((url, next_upstream))
 }
 
 fn retry_converted_rejection(

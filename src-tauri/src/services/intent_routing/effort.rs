@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 const LEVELS: &[&str] = &[
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
+const DEFAULT_REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 
 pub(crate) fn valid_member_level(level: &str) -> bool {
     LEVELS.contains(&level) && level != "ultra"
@@ -268,7 +269,7 @@ impl Capability {
             .or_else(|| entry.get("supported_reasoning_levels"))
             .and_then(Value::as_array)
             .or_else(|| (!options.is_empty()).then_some(&options));
-        let levels = LEVELS
+        let mut levels = LEVELS
             .iter()
             .filter(|level| {
                 listed.is_some_and(|items| {
@@ -281,11 +282,19 @@ impl Capability {
             })
             .map(|s| (*s).to_owned())
             .collect::<Vec<_>>();
+        let reasoning = entry
+            .get("reasoning")
+            .or_else(|| entry.get("supports_reasoning"))
+            .or_else(|| entry.get("supportsReasoning"))
+            .and_then(Value::as_bool);
+        if levels.is_empty() && reasoning == Some(true) && !reasonless {
+            levels = DEFAULT_REASONING_LEVELS
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect();
+        }
         // An absent/empty list is unknown, not evidence that reasoning is disabled.
-        let quiet = entry.get("reasoning") == Some(&Value::Bool(false))
-            || entry.get("supports_reasoning") == Some(&Value::Bool(false))
-            || entry.get("supportsReasoning") == Some(&Value::Bool(false))
-            || levels == ["none"];
+        let quiet = reasoning == Some(false) || levels == ["none"];
         let images = entry
             .get("inputModalities")
             .or_else(|| entry.get("input_modalities"))
@@ -360,11 +369,7 @@ impl Capability {
             levels,
             quiet,
             declared: Self::has_reasoning_declaration(entry),
-            reasoning: entry
-                .get("reasoning")
-                .or_else(|| entry.get("supports_reasoning"))
-                .or_else(|| entry.get("supportsReasoning"))
-                .and_then(Value::as_bool),
+            reasoning,
             default_level: entry
                 .get("defaultReasoningLevel")
                 .or_else(|| entry.get("default_reasoning_level"))
