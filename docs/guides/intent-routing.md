@@ -124,9 +124,14 @@ shows their priority during creation and editing, including for capability
 presets saved before the template key was stored. Drag the grip at the left
 of a row to move it, or focus the grip and press Alt+↑/↓. The move buttons
 are also available. Escape
-cancels an active drag without closing the editor. **Add model** appends another
+cancels an active drag without closing the editor. Capability and expiry groups
+use the saved row order for new requests, including older groups whose stored
+fallback IDs disagree with the list. **Add model** appends another
 eligible model, including another model from the same provider, without
-rearranging existing members. The three-model
+rearranging existing members. Use the **Remove model** button on a row to
+remove it from the draft. The first remaining model becomes the default.
+Save applies the new list and order to the routing group. An empty draft
+requires a model or a valid membership pattern before saving. The three-model
 limit applies only to the initial suggestions. Use **Custom** to edit advanced
 settings or run a classification trial. Cancel discards
 the draft. The chooser waits for the initial model catalog load before opening
@@ -179,9 +184,10 @@ one model per supplier.
 - **Custom.** Use the regular group editor to select models and set a default
   member or rules in Advanced settings.
 
-When a WorkBuddy subscription account explicitly reports that it lacks access
-to a selected model, an unpinned request can try the next eligible group
-member. Requests pinned to a destination retain the subscription error.
+When a WorkBuddy subscription reports missing access to a selected model, an
+account restriction, or exhausted quota, an unpinned request can try the next
+eligible group member. Requests pinned to a destination retain the
+subscription error.
 
 In **Advanced settings → Rules**, select the information icon to see how match
 conditions work. Select **Add rule** beside it to start editing a rule. Each
@@ -251,6 +257,33 @@ Both modes apply the ready/resting partition after rule, affinity, and cost prio
 The live routing graph explains when a request must continue at the same
 upstream, or when conversation affinity gives the previous upstream priority.
 Its candidate count describes the current request.
+
+With per-turn routing, Codex can use the latest group order in the same
+conversation when its new user message carries self-contained inline text and
+closed function-call/result pairs. A completed assistant reply closes the tool
+round; an explicit Codex interruption can also close it when every call has
+its inline result and the next message is in a distinct Codex turn. Older
+closed pairs stay in the forwarded history but do not select the upstream for
+the new turn. A tool-result submission in the active turn still goes to its
+owner. A response cursor, sealed history, or unfinished tool round still uses
+the existing continuation checks. If a per-turn Codex request has conflicting
+known owners, the gateway rejects it rather than guessing a destination.
+Selecting a built-in Codex model is a separate native request, not a
+reordering of a VaryAI group. On return to the group, inline text from earlier
+models and the model picker's reasoning-effort setting do not bind a new turn
+to their old provider. Assistant text emitted alongside a tool call is not a
+final reply: its output must still arrive, followed by a final reply or an
+explicit interruption after the tools have finished. When a first-choice
+provider is re-enabled, the next independent turn uses the current routing
+order. A tool result already owed to the backup still goes to that backup.
+An earlier official model's completed text reply can include empty
+`annotations` and `logprobs` arrays. The replay planner treats that text as
+inline history when a new first-choice model is added or reordered.
+
+On the protected native Responses path, a reasoning item may encode its
+optional content as JSON null. This does not change the response sent to
+Codex. An invalid reasoning object or incomplete response still fails
+validation; switching models never disables restoration checks.
 
 Expiry sorting is optional group configuration. It applies when the gateway
 can select a new destination. A fresh, positive Sub2API subscription allowance

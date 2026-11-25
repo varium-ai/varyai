@@ -1549,8 +1549,7 @@ fn colliding_upstream_ids_and_unknown_tool_types_are_not_rerouted() {
 }
 
 #[test]
-fn missing_workbuddy_model_entitlement_allows_only_an_unpinned_fallback() {
-    let entitlement = br#"{"error":{"code":"11158"}}"#;
+fn workbuddy_account_or_model_unavailability_allows_only_an_unpinned_fallback() {
     for service in ["workbuddy", "workbuddy-ai", "github_copilot"] {
         let provider = crate::provider::Provider::with_id(
             "fixture".into(),
@@ -1558,24 +1557,26 @@ fn missing_workbuddy_model_entitlement_allows_only_an_unpinned_fallback() {
             json!({"routingSubscription":{"provider":service,"accountId":"fixture"}}),
             None,
         );
-        assert_eq!(
-            retry_converted_rejection(&provider, 400, entitlement, None, true),
-            service != "github_copilot"
-        );
-        assert!(!retry_converted_rejection(
-            &provider,
-            400,
-            entitlement,
-            Some(0),
-            true
-        ));
-        assert!(!retry_converted_rejection(
-            &provider,
-            400,
-            entitlement,
-            None,
-            false
-        ));
+        for rejection in [
+            br#"{"error":{"code":"11158"}}"#.as_slice(),
+            br#"{"error":{"code":"11140"}}"#,
+            br#"{"error":{"code":"14018"}}"#,
+        ] {
+            assert_eq!(
+                retry_converted_rejection(&provider, 400, rejection, None, true),
+                service != "github_copilot"
+            );
+            assert!(!retry_converted_rejection(
+                &provider,
+                400,
+                rejection,
+                Some(0),
+                true
+            ));
+            assert!(!retry_converted_rejection(
+                &provider, 400, rejection, None, false
+            ));
+        }
         assert!(!retry_converted_rejection(
             &provider,
             400,
@@ -1586,7 +1587,7 @@ fn missing_workbuddy_model_entitlement_allows_only_an_unpinned_fallback() {
         assert!(!retry_converted_rejection(
             &provider,
             404,
-            entitlement,
+            br#"{"error":{"code":"11158"}}"#,
             None,
             true
         ));

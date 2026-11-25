@@ -1612,6 +1612,64 @@ fn reversible_completion_tool_owners_enforce_limits_and_release_on_cancel_or_fai
 }
 
 #[test]
+fn reversible_completion_native_json_reports_fixed_failure_reasons() {
+    use super::{
+        completion_json::{JsonCompletion, JsonCompletionProtocol},
+        payload_budget::PayloadBudget,
+        restore_diagnostics::RestoreReason as R,
+    };
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    for (raw, expected) in [
+        ("{not JSON", R::NativeJsonInvalid),
+        (
+            "event: response.completed\ndata: {}\n\n",
+            R::NativeJsonContainsSse,
+        ),
+        (r#"{"id":"one","id":"two"}"#, R::NativeJsonInvalid),
+        (
+            r#"{"error":{"message":"Synthetic private error"}}"#,
+            R::NativeResponseError,
+        ),
+        (
+            r#"{"id":"resp_test","status":"incomplete","output":[]}"#,
+            R::NativeResponseTerminal,
+        ),
+        (
+            r#"{"status":"completed","output":[]}"#,
+            R::NativeResponseEnvelope,
+        ),
+        (
+            r#"{"id":"resp_test","status":"completed","output":null}"#,
+            R::NativeResponseOutput,
+        ),
+        (
+            r#"{"id":"resp_test","status":"completed","output":[{"type":"unsupported"}]}"#,
+            R::NativeOutputType,
+        ),
+        (
+            r#"{"id":"resp_test","status":"completed","output":[{"type":"reasoning","id":"rs_test","content":{}}]}"#,
+            R::NativeReasoning,
+        ),
+        (
+            r#"{"id":"resp_test","status":"completed","output":[{"type":"function_call","call_id":"call_test","name":"fixture","arguments":"[]"}]}"#,
+            R::NativeToolCall,
+        ),
+    ] {
+        let mut completion = JsonCompletion::new(JsonCompletionProtocol::NativeResponses);
+        completion.observe_raw_json(raw, &budget);
+        assert_eq!(completion.native_failure_reason(), Some(expected));
+        assert!(!completion.permits_completion());
+    }
+    let mut success = JsonCompletion::new(JsonCompletionProtocol::NativeResponses);
+    success.observe_raw_json(
+        r#"{"id":"resp_test","status":"completed","output":[]}"#,
+        &budget,
+    );
+    assert!(success.permits_completion());
+    assert_eq!(success.native_failure_reason(), None);
+}
+
+#[test]
 fn reversible_completion_native_sse_json_compact_and_normalizations_enforce_strict_rules() {
     use super::{
         completion_evidence::CompletionObservation as O,

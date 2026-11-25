@@ -34,7 +34,9 @@ async fn official_native_requests_restore_without_a_routing_alias(
                 let text = body["input"].as_str().unwrap_or_default();
                 let id = uuid::Uuid::new_v4().simple().to_string();
                 let item = json!({"id":format!("msg_{id}"),"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text,"annotations":[]}]});
-                let response = json!({"id":format!("resp_{id}"),"object":"response","status":"completed","output":[item],"model":"gpt-synthetic"});
+                let malformed = headers.contains_key("x-malformed-reasoning");
+                let reasoning = json!({"id":format!("rs_{id}"),"type":"reasoning","summary":[],"content":if malformed { json!({"unexpected":true}) } else { Value::Null },"encrypted_content":"synthetic-seal"});
+                let response = json!({"id":format!("resp_{id}"),"object":"response","status":"completed","output":[reasoning,item],"model":body["model"]});
                 let stream = body["stream"] == true;
                 let mode = headers.get("x-fixture-mode").and_then(|h| h.to_str().ok()).unwrap_or_default().to_owned();
                 let _ = tx.send((headers, body)).await;
@@ -46,9 +48,18 @@ async fn official_native_requests_restore_without_a_routing_alias(
                         .header(header::LOCATION,"/redirect-target").body(Body::empty()).unwrap();
                 }
                 if stream {
+                    let done = json!({"type":"response.output_item.done","output_index":0,"item":reasoning});
                     let event = json!({"type":"response.completed","response":response});
-                    Response::builder().header(header::CONTENT_TYPE,"text/event-stream")
-                        .body(Body::from(format!("event: response.completed\ndata: {event}\n\n"))).unwrap()
+                    let media_type = if mode == "mixed-case-sse" {
+                        "Text/Event-Stream; charset=utf-8"
+                    } else {
+                        "text/event-stream"
+                    };
+                    let mut reply = Response::builder();
+                    if mode != "missing-sse-type" {
+                        reply = reply.header(header::CONTENT_TYPE, media_type);
+                    }
+                    reply.body(Body::from(format!("event: response.output_item.done\ndata: {done}\n\nevent: response.completed\ndata: {event}\n\n"))).unwrap()
                 } else { Json(response).into_response() }
             }
         }))).await
@@ -65,7 +76,12 @@ async fn official_native_requests_restore_without_a_routing_alias(
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     let identity = "110101199001010015";
-    for stream in [false, true] {
+    for (stream, mode) in [
+        (false, "json"),
+        (true, "sse"),
+        (true, "mixed-case-sse"),
+        (true, "missing-sse-type"),
+    ] {
         for input in [
             format!("Synthetic identity: {identity}"),
             "Ordinary follow-up".to_owned(),
@@ -73,11 +89,21 @@ async fn official_native_requests_restore_without_a_routing_alias(
             let response = client.post(format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port))
                 .bearer_auth("synthetic-native-auth").header("session_id",format!("synthetic-official-{stream}"))
                 .header("chatgpt-account-id","synthetic-account")
-                .json(&json!({"model":"gpt-synthetic","input":input,"stream":stream,"store":false,"reasoning":{"effort":"high"}}))
+                .header("x-fixture-mode", mode)
+                .json(&json!({"model":"gpt-6.2-sol","input":input,"stream":stream,"store":false,"reasoning":{"effort":"high"}}))
                 .send().await?;
-            assert_eq!(response.status(), StatusCode::OK, "stream={stream}");
+            assert_eq!(response.status(), StatusCode::OK, "mode={mode}");
+            if stream {
+                let media_type = response.headers()[header::CONTENT_TYPE].to_str()?;
+                assert!(media_type
+                    .split(';')
+                    .next()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("text/event-stream")));
+            }
             let text = response.text().await?;
             assert!(text.contains(&input));
+            assert!(text.contains("\"content\":null") && text.contains("synthetic-seal"));
+            assert!(!text.contains("response.failed"));
             assert!(!text.contains("rredact-"));
             let (headers, sent) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
                 .await?
@@ -88,9 +114,30 @@ async fn official_native_requests_restore_without_a_routing_alias(
             );
             assert_eq!(headers["chatgpt-account-id"], "synthetic-account");
             assert_eq!(sent["reasoning"]["effort"], "high");
-            assert_eq!(sent["model"], "gpt-synthetic");
+            assert_eq!(sent["model"], "gpt-6.2-sol");
             assert!(!sent.to_string().contains(identity));
         }
+    }
+    for (stream, mode) in [(false, "json"), (true, "sse"), (true, "missing-sse-type")] {
+        let response = client.post(format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port))
+            .bearer_auth("synthetic-native-auth").header("x-malformed-reasoning", "yes")
+            .header("x-fixture-mode", mode)
+            .json(&json!({"model":"gpt-6.2-sol","input":format!("Synthetic identity: {identity}"),"stream":stream}))
+            .send().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        if stream {
+            assert!(text.contains("response.failed") && !text.contains("response.completed"));
+        } else {
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        assert!(!text.contains(identity) && !text.contains("rredact-"));
+        let (_, sent) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await?
+            .ok_or("missing malformed-response fixture request")?;
+        assert!(sent["input"]
+            .as_str()
+            .is_some_and(|s| s.contains("rredact-cn_id_card-") && !s.contains(identity)));
     }
     for mode in ["error", "redirect"] {
         let response = client.post(format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port))

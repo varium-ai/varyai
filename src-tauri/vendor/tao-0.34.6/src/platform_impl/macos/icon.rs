@@ -4,8 +4,9 @@
 
 use crate::icon::{BadIcon, RgbaIcon};
 
+// Retain the validated payload for Clone and Debug on macOS.
 #[derive(Debug, Clone)]
-pub struct PlatformIcon(RgbaIcon);
+pub struct PlatformIcon(#[allow(dead_code)] RgbaIcon);
 
 impl PlatformIcon {
   pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, BadIcon> {

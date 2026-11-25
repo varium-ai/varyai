@@ -1573,6 +1573,54 @@ describe("IntentRoutingPanel", () => {
       "fixture-workbuddy-account",
     );
   });
+  it("saves the visible capability order when older default and fallback IDs disagree", async () => {
+    const providers = ["first", "second"].map((id) => ({
+      id,
+      name: id,
+      taskEligible: true,
+      classifierEligible: false,
+      models: [{ id: `${id}-model`, name: id }],
+    }));
+    const template = routingTemplates(providers).find(
+      ({ key }) => key === "templateCapability",
+    )!.group;
+    const [first, second] = template.members;
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [
+        {
+          ...template,
+          id: "saved-capability",
+          name: "Saved capability",
+          revision: 1,
+          members: [second, first],
+        },
+      ],
+      autoCreate: false,
+      omittedGroups: 0,
+    });
+    mount();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "common.edit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getAllByRole("listitem")[0]).toHaveTextContent(
+      second.providerId,
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "common.save" }),
+    );
+    await waitFor(() =>
+      expect(intentRoutingApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          members: [second, first],
+          defaultMemberId: second.id,
+          fallbackMemberIds: [first.id],
+        }),
+      ),
+    );
+  });
   it("saves the expiry template in the visible order after the user overrides the recommendation", async () => {
     const expiry = Math.floor(Date.now() / 1000) + 86_400;
     const providers = ["first", "middle", "last"].map((id) => ({
@@ -2096,6 +2144,53 @@ describe("IntentRoutingPanel", () => {
     },
   );
 
+  it.each(["templateCapability", "templateSpeed", "templateExpiry"] as const)(
+    "removes the first model from %s and saves the remaining order",
+    async (key) => {
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue(
+        ["a", "b", "c"].map((id) => ({
+          id,
+          name: `Provider ${id}`,
+          taskEligible: true,
+          classifierEligible: false,
+          models: [{ id: `${id}-main`, name: `${id} main`, outputPrice: 20 }],
+        })),
+      );
+      mount();
+      const create = screen.getByRole("button", {
+        name: "intentRouting.create",
+      });
+      await waitFor(() => expect(create).toBeEnabled());
+      drawTemplateSuggestions(create);
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", { name: `routingPage.${key}` }),
+      );
+      const dialog = screen.getByRole("dialog", { name: `routingPage.${key}` });
+      const rows = () => within(dialog).getAllByRole("listitem");
+      expect(rows()).toHaveLength(3);
+      await user.click(
+        within(rows()[0]).getByRole("button", {
+          name: /^routingPage.removeRuleModel /,
+        }),
+      );
+      expect(rows()).toHaveLength(2);
+      expect(rows()[0]).toHaveTextContent("b main");
+      expect(intentRoutingApi.save).not.toHaveBeenCalled();
+      await user.click(
+        within(dialog).getByRole("button", { name: "common.save" }),
+      );
+      await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+      const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+      expect(saved.members.map(({ modelId }) => modelId)).toEqual([
+        "b-main",
+        "c-main",
+      ]);
+      expect(saved.defaultMemberId).toBe(saved.members[0].id);
+      expect(saved.fallbackMemberIds).toEqual([saved.members[1].id]);
+    },
+  );
+
   it("draws again on a new creation and saves the models shown in the chooser", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [],
@@ -2174,7 +2269,7 @@ describe("IntentRoutingPanel", () => {
       screen.getByRole("button", { name: "routingPage.templateCapability" }),
     );
     expect(
-      screen.getAllByRole("button", { name: /Fixture provider/ }),
+      screen.getAllByRole("button", { name: /^Model \d+ · Fixture provider$/ }),
     ).toHaveLength(3);
     const order = within(
       screen.getByRole("list", { name: "routingPage.modelOrder" }),

@@ -787,7 +787,10 @@ export function RoutingStage({
                     ? trace.sessionTitle?.trim()
                     : undefined;
                   const sessionLabel = sessionTitle
-                    ? accountText(sessionTitle)
+                    ? t("routingPage.sessionTitleLabel", {
+                        defaultValue: "Conversation title: {{title}}",
+                        title: accountText(sessionTitle),
+                      })
                     : showResponse &&
                         trace.session &&
                         /^[a-f0-9]{64}$/.test(trace.session)

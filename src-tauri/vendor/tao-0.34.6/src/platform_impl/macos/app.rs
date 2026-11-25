@@ -35,7 +35,7 @@ extern "C" fn send_event(this: &NSApplication, _sel: Sel, event: &NSEvent) {
     // but that doesn't really matter here.
     let event_type = event.r#type();
     let modifier_flags = event.modifierFlags();
-    if event_type == appkit::NSKeyUp
+    if event_type == NSEventType::KeyUp
       && util::has_flag(modifier_flags, appkit::NSEventModifierFlags::Command)
     {
       if let Some(key_window) = this.keyWindow() {

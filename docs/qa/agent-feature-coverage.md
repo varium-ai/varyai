@@ -82,6 +82,108 @@ owner in separate catalog updates. A new user message can still use a
 surviving member. A tool result that still needs its reply remains bound
 to its observed owner.
 
+## Codex per-turn routing after inline tool history (macOS and Windows)
+
+The same routing-group editor, model picker, and trace UI remain in place.
+The change is in the Rust Codex Responses request planner. It does not alter
+structured tool authorization, tool results, request payloads, native model
+selection, or any Agent-specific configuration files.
+
+| Agent ID           | Entry point and adapter                           | Runtime and verification scope                                            |
+| ------------------ | ------------------------------------------------- | ------------------------------------------------------------------------- |
+| `codex`            | Desktop native Responses; standalone and CLI menus | Test same-thread reorder and tool-owner continuation through both ingresses. Verify official model dispatch separately. Installed clients pending. |
+| `deepseek-harness` | Managed Chat, Responses and Messages              | Existing replay policies remain unchanged. Rerun the managed Chat regression. |
+| `claude`           | Claude Code Messages                              | Existing planner and picker unchanged.                                    |
+| `claude-desktop`   | Claude Desktop Messages                           | Existing planner and picker unchanged.                                    |
+| `gemini`           | Gemini CLI native                                 | Existing planner and picker unchanged.                                    |
+| `grokbuild`        | Grok Build Responses                              | Existing planner and picker unchanged.                                    |
+| `opencode`         | OpenCode managed model registry                   | Existing planner and picker unchanged.                                    |
+| `openclaw`         | OpenClaw managed model registry                   | Existing planner and picker unchanged.                                    |
+| `hermes`           | Hermes managed model registry                     | Existing planner and picker unchanged.                                    |
+| `pi`               | Pi managed model registry                         | Existing planner and picker unchanged.                                    |
+| `workbuddy`        | WorkBuddy China desktop and CLI, Chat             | Existing planner and picker unchanged.                                    |
+| `workbuddy-ai`     | WorkBuddy international desktop and CLI, Chat     | Existing planner and picker unchanged.                                    |
+| `qoder`            | Qoder China managed Responses                     | Existing planner and picker unchanged.                                    |
+| `doubaowork`       | Official audit-only connection                    | No routing-group selection.                                               |
+| `trae`             | TRAE China bridge, Chat                           | Existing planner and picker unchanged.                                    |
+| `trae-intl`        | TRAE international bridge, Chat                   | Existing planner and picker unchanged.                                    |
+| `kimi`             | Kimi Code managed connection                      | Existing planner and picker unchanged.                                    |
+| `qwen`             | Qwen Code managed connection                      | Existing planner and picker unchanged.                                    |
+| `zcode`            | ZCode managed connection                          | Existing planner and picker unchanged.                                    |
+| `glm`              | GLM managed connection                            | Existing planner and picker unchanged; a GLM upstream is distinct from the GLM Agent. |
+| `t3code`           | T3 Code independent Codex backend                 | Separate Agent identity; existing planner and picker unchanged.           |
+
+On macOS 26.6.2 arm64 with Rust 1.98.1, the new HTTP regression first
+reproduced the stale owner, then passed after the fix. The final focused run
+passed the HTTP regression and both history-classifier tests. The HTTP
+fixture covers the native and standalone routes, a completed turn and a
+recognized interrupted turn, a second reorder before an active tool result,
+and rejection of conflicting owners without an upstream send. The native
+fixture separately confirms explicit built-in model dispatch. The existing
+Harness Chat regression passed in the broader routing run. The independent
+GLM Agent's transparent Responses fixture already returned HTTP 400 before
+this fix. Whole-worktree acceptance and installed Codex testing on both
+platforms remain pending; the running application was not replaced.
+
+The follow-up switch-back fixture reproduces a 409 with text emitted before
+a call result, an inline reasoning-effort update, and an interrupted native
+turn. It checks the original group, a different group, and a single-model
+alias on the same native thread. The protected native-model fixture tests
+optional null reasoning content in JSON and SSE, including failure for
+malformed content. The shared native Responses validator uses the same
+field rule for any entry point that uses that response format; this does not
+change other Agents' model selection or establish installed-client acceptance.
+Neither fixture captures a live provider response.
+
+The provider reactivation regression exercises a first-choice provider
+removed from the native catalog and then enabled again. The backup owns the
+outstanding tool result after the catalog changes. The next user turn replays
+the earlier assistant text and closed tool pair and selects the restored first
+choice. The same planner applies to Codex Desktop, CLI, and the standalone
+Codex Responses route; the reactivation fixture runs through native ingress.
+The final macOS focused run passed 103 tests, including the reactivation and
+switch-back regressions, protected JSON/SSE responses, strict completion
+validation, and the existing Harness Chat tool-history regression. On the
+working tree based on `0ef3154c`, Rust check, strict Clippy, formatting, the
+renderer build, helper tests, and the production dependency audit passed.
+The full Rust library run passed 7,890 tests and reproduced the existing GLM
+adapter and operation-diagnostics failures. Frontend type checking and the
+full frontend suite still fail on the current Agent inventory changes. Rust
+integration tests were not rebuilt with 2.4 GiB remaining on the local disk.
+Installed Codex testing and Windows verification are pending.
+
+A later retry through the macOS development build still returned HTTP 500
+for an official model. The new regression runs through protected Codex native
+Responses with canonical, mixed-case, and omitted SSE media types. The
+missing-type fallback is specific to the official native Codex route shared
+by Desktop and CLI. Authenticated standalone and managed Agent routes share
+case-insensitive SSE detection and native Responses JSON diagnostics when
+they enter that restoration wrapper. Other response protocols keep their own
+completion checks. The original bytes still require verified terminal evidence.
+On macOS 26.6.2 arm64 with Rust 1.98.1, mixed-case SSE reproduced HTTP 500
+before the fix. After the fix, 114 targeted tests passed, including both
+media-type variants, strict completion and transport checks, Codex routing,
+and Harness Chat. A separate nine-test run passed the shared routed DLP and
+native parity tests. The live upstream media type and body were unavailable
+for confirmation. A follow-up native HTTP regression confirmed that omitting
+Content-Type still rejects malformed reasoning with response.failed and
+without a completed event or protected text. The running development build
+was left in place.
+
+A subsequent native Codex transcript contained an official completed text
+reply with an empty logprobs array. The two user requests made after changing
+the saved first choice retained the previous target. A comparison using the
+sanitized transcript structure reproduced the rejected replay classification
+on both requests before the fix and classified both as new turns after it.
+Eight targeted Rust tests passed on macOS, including the native HTTP
+regression for adding a first-choice target and promoting an existing member
+on the same thread. This uses the existing Codex planner
+and picker across Desktop and CLI. The replay classifier remains scoped to
+Codex Responses, including the standalone Codex route, and requires the
+same owner checks for active or opaque state. A nonempty logprobs array
+remains outside the inline portability allowlist. Installed-client retesting
+and Windows verification are pending.
+
 ## Shared API provider catalog discovery and selection (macOS and Windows)
 
 Assessment against `APP_IDS`, `AppType`, the shared connection inventory and
@@ -484,6 +586,15 @@ changes. Platform CI and native acceptance remain pending.
 
 ## Routing group creation templates
 
+Member removal uses the shared capability, speed, and expiry editors for
+every applicable Agent in the matrix on macOS and Windows. Saving publishes
+the surviving IDs through the existing global group contract. The task-classification
+editor derives membership from rule targets. The custom editor supports deselection.
+On macOS, all 142 routing editor tests passed, including removal and save
+for each of the three templates. The renderer build passed. Existing GLM
+Agent type errors still block the worktree type check. Native Windows UI
+verification is pending.
+
 Pre-implementation assessment against `APP_IDS`, `AppType`, the shared Agent
 registry and the separate native integrations. Creation, editing and tray state
 are shared on macOS and Windows. The template builds a normal global group.
@@ -788,6 +899,12 @@ The Rust build and test checks ran with debug information and incremental
 compilation disabled. The locked desktop prevented a native editor recheck.
 
 ## Live routing source cards
+
+For each entry below, the shared request recorder includes the known purpose
+when publishing the first snapshot on macOS and Windows. The shared renderer
+labels native conversation names on request cards. The recorder fixture covers
+startup under reader contention, and the renderer fixtures cover each Agent
+entry and concurrent labeled cards. Native acceptance remains pending.
 
 For the Agent inventory in this section, the workspace stage filters recorded
 background activity before selecting conversation sources. The shared UI uses
@@ -2302,6 +2419,33 @@ Checked working-tree changes over `f010e2b3` on macOS arm64, Rust 1.98.1, Node 2
 
 The initial full Rust run found a fixture pinned to TRAE helper revision 19 after the production helper moved to 20. The fixture now reads the bundled revision and retains its assertion that configuration synchronization must not enable auditing. The initial frontend run found an outdated generic Doubao restart-button expectation; the all-Agent recovery test now expects Doubao's dedicated audit launcher, while the other Agents retain generic restart expectations. Full frontend regression passed after that correction. Final `cargo check`, `cargo fmt --check`, `cargo clippy -- -D warnings` and full `cargo test` (all with `--manifest-path src-tauri/Cargo.toml`) passed: 7,904 tests passed and 21 intentionally ignored, including 7,739 library tests passed. The existing test-only unused-method and macOS unwind-table linker warnings remain. Native new-build notifications, Windows/Linux CI and installer acceptance are not inferred from local checks. Earlier no-test notes above describe earlier revisions, not this final verification run.
 
+## WorkBuddy China check-in account labels
+
+The workspace and tray use the same WorkBuddy China card. On macOS and Windows, the current desktop login and browser grants use the same account list. Standalone WorkBuddy CLI sessions have no separate rewards account source.
+
+| Agent ID           | Connection or rewards source                       | WorkBuddy China account picker                   | Verification                                                                |
+| ------------------ | -------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------- |
+| `claude`           | Claude Code CLI                                    | Unavailable                                      | Source inspection                                                           |
+| `claude-desktop`   | Claude Desktop                                     | Unavailable                                      | Source inspection                                                           |
+| `codex`            | Codex desktop and CLI                              | Unavailable                                      | Source inspection                                                           |
+| `gemini`           | Gemini CLI                                         | Unavailable                                      | Source inspection                                                           |
+| `grokbuild`        | Grok Build CLI                                     | Unavailable                                      | Source inspection                                                           |
+| `opencode`         | OpenCode                                           | Unavailable                                      | Source inspection                                                           |
+| `openclaw`         | OpenClaw                                           | Unavailable                                      | Source inspection                                                           |
+| `hermes`           | Hermes                                             | Unavailable                                      | Source inspection                                                           |
+| `pi`               | Pi                                                 | Unavailable                                      | Source inspection                                                           |
+| `workbuddy`        | China desktop login and independent browser grants | Six-character account reference for blank labels | Account list and renderer fixtures passed. Native macOS and Windows pending |
+| `workbuddy-ai`     | WorkBuddy international                            | Unavailable                                      | Source inspection                                                           |
+| `qoder`            | Qoder CN rewards card                              | Separate account picker                          | Source inspection                                                           |
+| `doubaowork`       | Doubao Work rewards card                           | Separate account picker                          | Source inspection                                                           |
+| `trae`             | TRAE CN rewards card                               | Separate account picker                          | Source inspection                                                           |
+| `trae-intl`        | TRAE International                                 | Unavailable                                      | Source inspection                                                           |
+| `kimi`             | Kimi Code desktop and CLI                          | Unavailable                                      | Source inspection                                                           |
+| `qwen`             | Qwen Code CLI                                      | Unavailable                                      | Source inspection                                                           |
+| `zcode`            | ZCode rewards card                                 | Separate account picker                          | Source inspection                                                           |
+| `deepseek-harness` | DeepSeek Harness                                   | Unavailable                                      | Source inspection                                                           |
+| `t3code`           | T3 Code                                            | Unavailable                                      | Source inspection                                                           |
+
 ## November 23 tray and provider regressions
 
 The tray reads persisted Security Events without changing collection, policies,
@@ -2541,6 +2685,17 @@ executable adapter consumes those saved IDs through the existing group
 route. Doubao Work retains its audit-only path. Renderer fixtures cover the
 editor and saved order on the shared macOS and Windows code path. Native
 verification remains separate for the adapters listed below.
+
+For each executable entry below, the capability editor and shared planner
+use the visible saved member order if older default and fallback IDs differ.
+The same planning path runs on macOS and Windows. The fixtures cover editing
+and runtime plan selection. Native acceptance remains pending.
+
+For each executable entry below, the shared conversion path on macOS and
+Windows can advance an unpinned attempt after a WorkBuddy China or WorkBuddy
+AI subscription reports account restriction or exhausted quota. The fixture
+covers both subscriptions, a different provider, pinned requests, missing
+fallbacks, and other request errors. Native acceptance remains pending.
 
 The expiry template uses the recommendation when creating or explicitly
 reordering a draft. The shared editor saves the visible order, and the group
@@ -2832,6 +2987,11 @@ command for Qoder CN, TRAE CN, and ZCode persists a verified account's
 preference independently of an in-flight reward observation. The store merge
 preserves preferences changed during a reward request. The coverage rows
 below identify the native paths. Installed-client acceptance is pending.
+
+The Qoder CN, TRAE CN, and ZCode cards share the same main and tray mutation
+path on macOS and Windows. A completed claim supersedes an in-flight status
+refresh. The renderer regression checks the Qoder CN calendar dot as well as
+the confirmed claim in the shared cache. Installed-client acceptance is pending.
 
 | Agent ID           | Entry point and adapter                                                                        | Verification scope                                                                       |
 | ------------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |

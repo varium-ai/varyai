@@ -112,7 +112,7 @@ describe("WorkBuddy daily check-in", () => {
   it("adds an independently authorized account without claiming or enabling automation", async () => {
     const native = {
       id: "native-account",
-      label: "Native account",
+      label: "a1b2c3",
       source: "native" as const,
       status: initial,
     };
@@ -138,7 +138,11 @@ describe("WorkBuddy daily check-in", () => {
     });
     vi.mocked(settingsApi.openExternal).mockResolvedValue();
     mount();
-    await screen.findByText("workbuddy.checkin.outcomes.not_checked");
+    await waitFor(() =>
+      expect(screen.getByRole("combobox")).toHaveTextContent(
+        "a1b2c3 (workbuddy.checkin.nativeAccount)",
+      ),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "workbuddy.checkin.addAccount" }),
     );

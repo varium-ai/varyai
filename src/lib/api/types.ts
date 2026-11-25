@@ -19,4 +19,5 @@ export type AppId =
   | "qwen"
   | "zcode"
   | "deepseek-harness"
-  | "t3code";
+  | "t3code"
+  | "glm";

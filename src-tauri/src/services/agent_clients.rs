@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode", "deepseek-harness"];
+pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode", "deepseek-harness", "glm"];
 pub(crate) fn supported(app: &str) -> bool {
     APPS.contains(&app)
 }
@@ -53,6 +53,10 @@ pub(crate) fn config_path(app: &str) -> Result<PathBuf, AppError> {
             Ok(zcode_config_path(&home, override_path))
         }
         "deepseek-harness" => Ok(super::deepseek_harness::config_path()),
+        "glm" => Ok(std::env::var_os("GLM_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".glm"))
+            .join("settings.json")),
         _ => Err(invalid()),
     }
 }

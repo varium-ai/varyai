@@ -37,6 +37,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   qwen: "qwen-code",
   zcode: "zcode",
   "deepseek-harness": "deepseek",
+  glm: "deepseek",
 
   t3code: "t3code",
 };
@@ -61,6 +62,7 @@ export const APP_IDS: AppId[] = [
   "qwen",
   "zcode",
   "deepseek-harness",
+  "glm",
 
   "t3code",
 ];
@@ -85,6 +87,7 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   qwen: false,
   zcode: false,
   "deepseek-harness": false,
+  glm: false,
 
   t3code: false,
 };
@@ -104,6 +107,7 @@ export const SKILLS_APP_IDS: Exclude<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
+  | "glm"
   | "t3code"
 >[] = ["claude", "codex", "gemini", "grokbuild", "opencode", "hermes", "pi"];
 
@@ -134,6 +138,7 @@ export const TAKEOVER_APP_IDS = [
   "qwen",
   "zcode",
   "deepseek-harness",
+  "glm",
 ] as const;
 
 /** Applications controlled by the settings routing switches, including Pi's custom provider. */
@@ -159,7 +164,8 @@ export function isTakeoverAppId(
   | "kimi"
   | "qwen"
   | "zcode"
-  | "deepseek-harness" {
+  | "deepseek-harness"
+  | "glm" {
   return (TAKEOVER_APP_IDS as readonly string[]).includes(appId);
 }
 
@@ -182,6 +188,7 @@ export type AdditiveAppId = Extract<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
+  | "glm"
 >;
 
 export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
@@ -198,6 +205,7 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "qwen",
   "zcode",
   "deepseek-harness",
+  "glm",
 ];
 
 export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
@@ -220,6 +228,7 @@ export type McpAppId = Exclude<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
+  | "glm"
   | "t3code"
 >;
 export const MCP_APP_IDS: McpAppId[] = [
@@ -411,6 +420,14 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
         size={14}
       />
     ),
+    activeClass:
+      "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
+    badgeClass:
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 border-0 gap-1.5",
+  },
+  glm: {
+    label: "GLM",
+    icon: <ProviderIcon icon="glm" name="GLM" size={14} showFallback={false} />,
     activeClass:
       "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
     badgeClass:

@@ -265,12 +265,16 @@ it("renders each concurrent response's localized title and measured rate on its 
   const [first, second] = view.container.querySelectorAll(
     ".rt-seat-status.has-response",
   );
-  expect(first).toHaveTextContent(/正在回答.*合成测试会话 · 42\.5 tok\/s/);
+  expect(first).toHaveTextContent(
+    /正在回答.*会话名称：合成测试会话 · 42\.5 tok\/s/,
+  );
   expect(first?.closest("li")).toHaveAttribute(
     "title",
-    expect.stringContaining("合成测试会话 · 42.5 tok/s"),
+    expect.stringContaining("会话名称：合成测试会话 · 42.5 tok/s"),
   );
-  expect(second).toHaveTextContent(/正在回答.*另一条测试会话 · 17\.1 tok\/s/);
+  expect(second).toHaveTextContent(
+    /正在回答.*会话名称：另一条测试会话 · 17\.1 tok\/s/,
+  );
 });
 
 it.each([0, -3, Infinity, NaN, undefined])(

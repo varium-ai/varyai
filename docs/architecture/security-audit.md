@@ -56,6 +56,14 @@ Native Chat error-detail preparation is optional. Large tool catalogs can exceed
 
 Official Codex requests through the native gateway use the existing Responses restoration owner, including auxiliary requests that select an official model independently of the chat model. The owner binds the actual upstream URL and account credentials, prepares the outbound body, sanitizes upstream failures, and verifies completion before publishing restoration context. Redirects cannot inherit that authority. Requests without active restoration retain the native byte-preserving relay.
 
+On a successful protected official Responses request with `stream: true`,
+VaryAI treats a missing response media type as SSE and verifies the original
+frames. The response guard and final wrapper use the same case-insensitive
+SSE media-type check. A declared JSON response still requires a valid completed
+JSON object. Fixed log reasons distinguish JSON parsing, event framing, the
+completed response envelope, and supported output items. Those reasons are
+local diagnostics. Codex continues to receive the generic processing error.
+
 Prepared Responses-to-Chat conversion retains the ordinary bridge's Grok tool-schema compatibility before final outbound validation. Local schema references are expanded by the same bounded normalizer; enabling reversible redaction must not send a different, incompatible tool schema to the same upstream.
 
 Native shared requests have a separate `Shared` ingress namespace in both token identity and delivered-evidence authentication. Shared Responses use a separate per-Agent namespace. Equal session identifiers cannot reuse direct or other-Agent recovery records. The ordinary direct/gateway admission functions retain their existing route checks; client headers cannot grant shared authority.

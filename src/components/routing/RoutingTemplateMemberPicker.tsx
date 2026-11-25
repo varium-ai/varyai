@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, GripVertical, Plus } from "lucide-react";
+import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AccountLabel } from "@/components/AccountLabel";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -139,6 +139,7 @@ export function RoutingTemplateMemberPicker({
           {members.map((member, index) => {
             const { provider, modelName, unavailable } = summary(member);
             const label = `${modelName} · ${provider?.name ?? member.providerId}`;
+            const removeModel = t("routingPage.removeRuleModel");
             return (
               <li
                 className="rt-template-member-row"
@@ -258,6 +259,21 @@ export function RoutingTemplateMemberPicker({
                       </Button>
                     );
                   })}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0"
+                  disabled={disabled}
+                  aria-label={`${removeModel} ${label}`}
+                  title={removeModel}
+                  onClick={() => {
+                    setOpenIndex(null);
+                    onChange(members.filter(({ id }) => id !== member.id));
+                  }}
+                >
+                  <X size={13} aria-hidden />
+                </Button>
               </li>
             );
           })}

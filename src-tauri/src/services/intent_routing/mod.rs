@@ -399,7 +399,8 @@ impl RoutingGroup {
             ),
             None => None,
         };
-        let use_member_order = self.quota_order.is_some();
+        let use_member_order =
+            self.quota_order.is_some() || self.template == Some(RoutingTemplate::Capability);
         let preferred = rule
             .map(|rule| &rule.target_member_id)
             .or_else(|| (!use_member_order).then_some(&self.default_member_id));
