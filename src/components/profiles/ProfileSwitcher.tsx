@@ -58,7 +58,7 @@ import type {
   Profile,
 } from "@/lib/api/profiles";
 import { useQueryClient } from "@tanstack/react-query";
-import { APP_IDS } from "@/config/appConfig";
+import { MANAGED_APP_IDS } from "@/config/appConfig";
 import { profilesApi, type ProfileUndo } from "@/lib/api/profiles";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { toast } from "sonner";
@@ -116,21 +116,20 @@ export function ProfileSwitcher({
   const profiles = (data?.profiles ?? []).filter(
     (p) => scope || p.payload.bundle,
   );
-  const agents =
-    data?.agents ??
-    APP_IDS.map((app) => {
-      const available = app !== "doubaowork" && app !== "glm";
-      return {
-        app,
-        available,
-        reason:
-          app === "glm" ? "profiles.bundle.nativeConfigUnsupported" : null,
-        mcp: false,
-        skills: false,
-        instructions: false,
-        provider: available,
-      };
-    });
+  const agents = data?.agents
+    ? data.agents.filter(({ app }) => MANAGED_APP_IDS.includes(app))
+    : MANAGED_APP_IDS.map((app) => {
+        const available = app !== "doubaowork";
+        return {
+          app,
+          available,
+          reason: null,
+          mcp: false,
+          skills: false,
+          instructions: false,
+          provider: available,
+        };
+      });
   const captureApps = agents
     .filter(
       (agent) =>

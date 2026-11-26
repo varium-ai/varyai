@@ -15,7 +15,7 @@ import { SettingsPage } from "@/components/settings/SettingsPage";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { GatewayRuntimeStatus } from "@/components/GatewayRuntimeStatus";
-import { APP_IDS } from "@/config/appConfig";
+import { MANAGED_APP_IDS } from "@/config/appConfig";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { useSettingsQuery } from "@/lib/query";
 import { proxyApi } from "@/lib/api/proxy";
@@ -73,7 +73,7 @@ export default function App() {
     enabled: showProfiles,
     refetchInterval: showProfiles ? 5000 : false,
   });
-  const selectedApps = APP_IDS.filter((app) =>
+  const selectedApps = MANAGED_APP_IDS.filter((app) =>
     connections.data?.some(
       (connection) => connection.enabled && connection.app === app,
     ),

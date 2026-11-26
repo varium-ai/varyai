@@ -38,6 +38,25 @@ async fn workbuddy_chat_wire_preserves_tools_and_model() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn workbuddy_chat_keeps_codex_tool_reasoning_with_its_call() -> Result<(), ProxyError> {
+    use crate::proxy::protocol_bridge::ir;
+
+    let body = json!({"model":"deepseek-v4-pro","input":[
+        {"role":"user","content":"Synthetic question"},
+        {"type":"function_call","call_id":"call-a","name":"lookup","arguments":"{}"},
+        {"type":"reasoning","summary":[{"type":"summary_text","text":"Synthetic thought"}]},
+        {"type":"function_call_output","call_id":"call-a","output":"Synthetic result"}
+    ]});
+    let parsed = ir::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+    let (wire, _) = prepare(ir::build::request(&parsed, Protocol::Chat)?, Protocol::Chat)?;
+    assert_eq!(wire["messages"].as_array().map(Vec::len), Some(4));
+    assert_eq!(wire["messages"][2]["reasoning"], "Synthetic thought");
+    assert_eq!(wire["messages"][2]["tool_calls"][0]["id"], "call-a");
+    assert_eq!(wire["messages"][3]["tool_call_id"], "call-a");
+    Ok(())
+}
+
+#[test]
 fn workbuddy_messages_keeps_signed_thinking_and_parameters() -> Result<(), ProxyError> {
     let mut input = json!({"model":"claude-fixture","system":[{"type":"text","text":"fixture instructions"}],
         "messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign"},{"type":"thinking","thinking":"local","signature":"fixture"}]}],

@@ -286,10 +286,10 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
             .json(&json!({"model":alias,"input":input}))
             .send()
     };
-    let response = trigger(&inline_history)
+    trigger(&inline_history)
         .await?
         .error_for_status()?
-        .text()
+        .bytes()
         .await?;
     assert_eq!(
         seen.lock().map_err(|_| "fixture requests")?.last(),
@@ -305,6 +305,34 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
         );
         assert_eq!(summary["tools"], json!([]));
     }
+    let mut portable_tools = inline_history.clone();
+    let items = portable_tools.as_array_mut().ok_or("fixture history")?;
+    items.splice(1..2, [
+        json!({"type":"function_call","call_id":"synthetic-call-a","name":"read_fixture","arguments":"{}"}),
+        json!({"type":"function_call","call_id":"synthetic-call-b","name":"read_fixture","arguments":"{}"}),
+        json!({"type":"message","role":"assistant","phase":"commentary","content":"Synthetic progress"}),
+        json!({"type":"reasoning","summary":[{"type":"summary_text","text":"Synthetic plan"}],"encrypted_content":null}),
+        json!({"type":"function_call_output","call_id":"synthetic-call-a","output":[{"type":"input_text","text":"Synthetic first result"}]}),
+        json!({"type":"function_call_output","call_id":"synthetic-call-b","output":"Synthetic second result"}),
+    ]);
+    // The previous upstream request ended with a call, so the gateway has not
+    // marked the turn complete. The inline results already make it portable.
+    trigger(&json!([{"role":"user","content":"Synthetic tool opening"}]))
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    let response = trigger(&portable_tools)
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&second.model),
+        "a complete tool batch can use the compaction rule before the final reply"
+    );
+
     let checkpoint = response
         .lines()
         .find_map(|line| {
@@ -382,6 +410,9 @@ async fn codex_reorder_replays_closed_tool_turns_without_moving_active_outputs(
                 Some(last) if last["content"] == "Synthetic first" || last["content"] == "Synthetic second" || last["content"] == "Synthetic steering" => json!([{
                     "type":"function_call","id":format!("fc-{model}"),"call_id":format!("call-{model}"),
                     "name":"synthetic_tool","arguments":"{}","status":"completed"
+                },{
+                    "type":"message","id":"msg_1","role":"assistant","status":"completed",
+                    "content":[{"type":"output_text","text":"Synthetic progress","annotations":[]}]
                 }]),
                 _ => json!([{"type":"message","id":format!("msg-{}", requests.len()),
                     "role":"assistant","status":"completed","content":[{"type":"output_text","text":"Synthetic answer"}]
@@ -575,7 +606,12 @@ async fn codex_reorder_replays_closed_tool_turns_without_moving_active_outputs(
         reordered.group.default_member_id = reordered.group.members[0].id.clone();
         reordered.group.fallback_member_ids = vec![reordered.group.members[1].id.clone()];
         publish(&menu)?;
-        history.extend([tool(&second.model), result(&second.model)]);
+        history.extend([
+            tool(&second.model),
+            json!({"type":"message","id":"msg_1","role":"assistant","status":"completed",
+                "content":[{"type":"output_text","text":"Synthetic progress","annotations":[]}]}),
+            result(&second.model),
+        ]);
         let active = request(history.clone());
         send(active.clone())
             .await?

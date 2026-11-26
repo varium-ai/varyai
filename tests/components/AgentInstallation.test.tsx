@@ -12,7 +12,7 @@ import { updatePromptState } from "@/components/agents/updatePrompts";
 import { settingsApi } from "@/lib/api/settings";
 import { proxyApi } from "@/lib/api/proxy";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
-import { APP_IDS } from "@/config/appConfig";
+import { MANAGED_APP_IDS } from "@/config/appConfig";
 
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
@@ -102,7 +102,7 @@ beforeEach(() => {
   updatePromptState.visible = true;
   vi.clearAllMocks();
   vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
-  detected = Object.fromEntries(APP_IDS.map((app) => [app, false]));
+  detected = Object.fromEntries(MANAGED_APP_IDS.map((app) => [app, false]));
   vi.mocked(proxyApi.getAgentInstallations).mockImplementation(async () => ({
     ...detected,
   }));
@@ -275,7 +275,7 @@ describe("Agent installation shortcuts", () => {
     expect(
       within(open).queryByRole("button", { name: "agentConnections.connect" }),
     ).not.toBeInTheDocument();
-    for (const app of APP_IDS) {
+    for (const app of MANAGED_APP_IDS) {
       const agent = within(
         screen.getByRole("group", {
           name: app === "claude" ? "Claude Code" : `apps.${app}`,
@@ -284,8 +284,7 @@ describe("Agent installation shortcuts", () => {
       const install = agent.queryByRole("button", {
         name: "agentInstall.install",
       });
-      if (app === "glm") expect(install).not.toBeInTheDocument();
-      else expect(install).toBeEnabled();
+      expect(install).toBeEnabled();
     }
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
   });

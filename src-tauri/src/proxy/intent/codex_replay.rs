@@ -113,6 +113,49 @@ pub(super) fn inline_tool_history(body: &Value) -> Option<InlineReplay> {
     })
 }
 
+/// A tools-disabled summary can consume inline calls as history once every
+/// call has its result. It does not need the next assistant reply.
+pub(super) fn portable_compaction_tools(body: &Value) -> bool {
+    if body["_group_projection_incomplete"] == true
+        || !body["previous_response_id"].is_null()
+        || !body["conversation"].is_null()
+    {
+        return false;
+    }
+    let Some(items) = body["input"].as_array() else {
+        return false;
+    };
+    let mut calls = HashMap::new();
+    for item in items {
+        if visible_message(item)
+            || super::length::visible_reasoning(item)
+            || super::length::empty_reasoning(item)
+            || is_page_context(item)
+            || reasoning_preference(item)
+        {
+            continue;
+        }
+        let Some(id) = call_id(item) else {
+            return false;
+        };
+        match item["type"].as_str() {
+            Some("function_call") if full_call(item) => {
+                if calls.len() >= 4096 || calls.insert(id, true).is_some() {
+                    return false;
+                }
+            }
+            Some("function_call_output") if full_output(item) => {
+                let Some(open @ true) = calls.get_mut(id) else {
+                    return false;
+                };
+                *open = false;
+            }
+            _ => return false,
+        }
+    }
+    !calls.is_empty() && calls.values().all(|open| !open)
+}
+
 // Codex can include the model picker's reasoning preference in the transcript.
 // Only this exact, inline shape has no provider-owned continuation state.
 fn reasoning_preference(item: &Value) -> bool {
@@ -201,6 +244,13 @@ fn completed(item: &Value) -> bool {
     item["status"].is_null() || item["status"] == "completed"
 }
 
+pub(super) fn legacy_inline_assistant_id(item: &Value, id: &str) -> bool {
+    id.strip_prefix("msg_")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+        && item["role"] == "assistant"
+        && visible_message(item)
+}
+
 fn visible_message(item: &Value) -> bool {
     (item["type"].is_null() || item["type"] == "message")
         && matches!(
@@ -270,6 +320,35 @@ mod tests {
         let active = inline_tool_history(&body).expect("older history is closed");
         assert_eq!(active.current_turn_start, 5);
         assert!(!active.new_user_turn);
+    }
+
+    #[test]
+    fn compaction_accepts_complete_inline_tools_without_moving_opaque_state() {
+        let mut body = closed();
+        let items = body["input"].as_array_mut().expect("fixture history");
+        items.truncate(4);
+        assert!(portable_compaction_tools(&body));
+
+        let mut duplicate = body.clone();
+        duplicate["input"]
+            .as_array_mut()
+            .expect("fixture history")
+            .push(body["input"][2].clone());
+        assert!(!portable_compaction_tools(&duplicate));
+
+        let mut opaque = body.clone();
+        opaque["input"][3]["encrypted_content"] = json!("synthetic-seal");
+        assert!(!portable_compaction_tools(&opaque));
+
+        let mut referenced = body.clone();
+        referenced["previous_response_id"] = json!("synthetic-response");
+        assert!(!portable_compaction_tools(&referenced));
+
+        body["input"]
+            .as_array_mut()
+            .expect("fixture history")
+            .remove(2);
+        assert!(!portable_compaction_tools(&body));
     }
 
     #[test]

@@ -670,6 +670,170 @@ async fn expiring_subscription_template_preserves_native_wire_and_continuations(
 
 #[tokio::test]
 #[serial_test::serial]
+async fn mixed_protocol_routes_keep_the_template_candidate_order() -> TestResult {
+    use crate::services::intent_routing::{QuotaOrder, RoutingStrategy, RoutingTemplate};
+
+    let _security = Security((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}", listener.local_addr()?);
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let upstream = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            Router::new().fallback(post(
+                move |OriginalUri(uri): OriginalUri, Json(body): Json<Value>| {
+                    let sent = sent.clone();
+                    async move {
+                        let protocol = match uri.path() {
+                            "/v1/chat/completions" => Protocol::Chat,
+                            "/v1/responses" => Protocol::Responses,
+                            "/v1/messages" => Protocol::Anthropic,
+                            _ => Protocol::Gemini,
+                        };
+                        let streaming = body["stream"] == true
+                            || uri.path().ends_with(":streamGenerateContent");
+                        let _ = sent.send(protocol);
+                        response(protocol, "synthetic-ordered-call", streaming)
+                    }
+                },
+            )),
+        )
+        .await;
+    });
+
+    for protocol in [
+        Protocol::Responses,
+        Protocol::Chat,
+        Protocol::Anthropic,
+        Protocol::Gemini,
+    ] {
+        let first_protocol = if protocol == Protocol::Responses {
+            Protocol::Chat
+        } else {
+            Protocol::Responses
+        };
+        for template in [
+            RoutingTemplate::Smart,
+            RoutingTemplate::Capability,
+            RoutingTemplate::Speed,
+            RoutingTemplate::Expiry,
+        ] {
+            let root = tempfile::tempdir()?;
+            let mut menu = global_tests::menu(&format!(
+                "{base}{}",
+                endpoint(first_protocol, "exact-model", false)
+            ));
+            let route = Arc::make_mut(menu.groups.values_mut().next().ok_or("missing route")?);
+            route.group.levels.clear();
+            route.group.template = Some(template);
+            route.group.affinity = "turn".into();
+            if template == RoutingTemplate::Speed {
+                route.group.routing = RoutingStrategy::Fastest;
+            }
+            if template == RoutingTemplate::Expiry {
+                route.group.quota_order = Some(QuotaOrder::EarliestExpiry);
+            }
+            let mut member = route.group.members[0].clone();
+            member.id = "native-backup".into();
+            member.provider_id = "native-backup".into();
+            route.group.fallback_member_ids.push(member.id.clone());
+            route.group.members.push(member);
+            let mut backup = route.targets[0].clone();
+            backup.provider_id = "native-backup".into();
+            backup.scheduling = Arc::default();
+            backup.url = format!("{base}{}", endpoint(protocol, "exact-model", false)).parse()?;
+            route.targets.push(backup);
+            for (target, output) in route.targets.iter_mut().zip([first_protocol, protocol]) {
+                let mut provider = crate::provider::Provider::with_id(
+                    target.provider_id.clone(),
+                    "Synthetic".into(),
+                    json!({"base_url":format!("{base}/v1"),"auth":{"OPENAI_API_KEY":"synthetic-upstream"},"apiFormat":output.format()}),
+                    None,
+                );
+                provider.meta = Some(crate::provider::ProviderMeta {
+                    api_format: Some(output.format().into()),
+                    ..Default::default()
+                });
+                target.upstream = Some(provider);
+            }
+            let same_model_variant = template == RoutingTemplate::Capability;
+            if same_model_variant {
+                let mut native = route.targets[1].clone();
+                native.provider_id = route.targets[0].provider_id.clone();
+                if let Some(upstream) = native.upstream.as_mut() {
+                    upstream.id = native.provider_id.clone();
+                }
+                native.scheduling = Arc::default();
+                route.targets.insert(1, native);
+            }
+            let alias = route.group.alias();
+            menu.models.insert(
+                "fixture".into(),
+                MenuModel {
+                    alias: alias.clone(),
+                    label: "Synthetic model".into(),
+                    description: "VaryAI routing group",
+                    order: 0,
+                },
+            );
+            let (proxy, runtime, port) = server(menu, root.path()).await?;
+            // Fastest learns from each reply. Check its saved-order behavior before sampling.
+            let case_count = if template == RoutingTemplate::Speed {
+                1
+            } else {
+                usize::MAX
+            };
+            for case in cases(protocol, &alias)
+                .into_iter()
+                .filter(|case| case.stream && case.named)
+                .take(case_count)
+            {
+                let reply = case
+                    .request(&client, port, protocol)
+                    .json(&case.body)
+                    .send()
+                    .await?;
+                let status = reply.status();
+                let text = reply.text().await?;
+                let traces = runtime.traces.snapshot();
+                let row = traces.first().ok_or("missing route trace")?;
+                let context = (case.app, protocol, template);
+                let providers: Vec<_> = row
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.provider_id.as_str())
+                    .collect();
+                let (expected_order, expected_protocol): (&[&str], Protocol) = if same_model_variant
+                {
+                    (&["fixture", "fixture", "native-backup"], protocol)
+                } else {
+                    (&["fixture", "native-backup"], first_protocol)
+                };
+                assert_eq!(providers, expected_order, "{context:?}");
+                assert_eq!(status, StatusCode::OK, "{context:?}");
+                assert_eq!(received.try_recv()?, expected_protocol, "{context:?}");
+                assert!(received.try_recv().is_err(), "{context:?}");
+                assert!(text.contains("synthetic_tool"), "{context:?}");
+                assert_eq!(row.state, trace::State::Completed, "{context:?}");
+                let attempts: Vec<_> = row
+                    .steps
+                    .iter()
+                    .filter(|step| step.kind == trace::Kind::Attempt)
+                    .map(|step| step.candidate)
+                    .collect();
+                assert_eq!(attempts, [Some(0)], "{context:?}");
+            }
+            proxy.stop().await?;
+        }
+    }
+    upstream.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn responses_model_switch_named_item_recovery_all_connection_entries() -> TestResult {
     use crate::proxy::security::{self, runtime::CompiledCustomRule, AuditAction, RiskLevel};
     let _security = Security((*security::get_security_runtime()).clone());

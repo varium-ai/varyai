@@ -950,7 +950,14 @@ impl Bindings {
                     merge(self.calls.get(&continuation::hash("call", id)).copied())?;
                 }
                 if let Some(id) = item["id"].as_str() {
-                    merge(self.items.get(&continuation::hash("item", id)).copied())?;
+                    let owner = self.items.get(&continuation::hash("item", id)).copied();
+                    // Old bridge IDs used only an output index. An ambiguous ID
+                    // on fully inline text is not a server-side reference.
+                    if owner != Some(usize::MAX)
+                        || !codex_replay::legacy_inline_assistant_id(item, id)
+                    {
+                        merge(owner)?;
+                    }
                 }
                 if let Some(seal) = item["encrypted_content"].as_str() {
                     merge(
@@ -2007,6 +2014,9 @@ async fn execute(
                         }
                 })
         });
+    let compact_inline_tools = route_compaction
+        && responses_replay
+        && codex_replay::portable_compaction_tools(&projection);
     let portable_reroutable = length::portable(&projection)
         && !opaque_continuation(protocol, &original)
         && !native_request
@@ -2077,9 +2087,15 @@ async fn execute(
             bindings.resolve_replay_from(
                 &projection,
                 conversation.as_deref(),
-                codex_inline_replay
-                    .as_ref()
-                    .map_or(0, |history| history.current_turn_start),
+                if compact_inline_tools {
+                    // All tool data is inline. Only the conversation's answer
+                    // owner is relevant to the new checkpoint.
+                    projection["input"].as_array().map_or(0, Vec::len)
+                } else {
+                    codex_inline_replay
+                        .as_ref()
+                        .map_or(0, |history| history.current_turn_start)
+                },
             )
         } else {
             bindings.resolve(&projection, conversation.as_deref())
@@ -2109,6 +2125,7 @@ async fn execute(
         if (compact.is_none() || route_compaction)
             && !opaque_continuation(protocol, &original)
             && (inline_new_turn
+                || compact_inline_tools
                 || (completed
                     && length::portable_ignoring(&projection, |item| {
                         // Codex sends inline browser context in both turns and summaries.
@@ -2512,6 +2529,17 @@ async fn execute(
         }
     }
     if pinned.is_none() && !count_tokens {
+        // Prefer a matching transport within each member's candidate run.
+        for variants in candidates.chunk_by_mut(|left, right| {
+            let left = &session.targets[*left];
+            let right = &session.targets[*right];
+            left.provider_id == right.provider_id
+                && left.model == right.model
+                && left.fixed_effort == right.fixed_effort
+        }) {
+            variants
+                .sort_by_key(|index| target_output_protocol(&session.targets[*index]) != protocol);
+        }
         let now = chrono::Utc::now().timestamp();
         candidates.sort_by_key(|index| {
             let target = &session.targets[*index];
@@ -2524,11 +2552,7 @@ async fn execute(
                         crate::services::quota_panel::credits(&id, target.scheduling.exhausted(now))
                             == crate::services::quota_panel::CreditsMode::Last
                     });
-            (
-                states[*index].cooling(now),
-                credits_last,
-                target_output_protocol(target) != protocol,
-            )
+            (states[*index].cooling(now), credits_last)
         });
     }
     trace.plan(
@@ -3387,6 +3411,13 @@ async fn execute(
                 );
                 let error_bytes = match wait_for_attempt(attempt_deadline, read_error).await {
                     Ok(Ok(Ok(bytes))) => bytes,
+                    _ if pinned.is_none() && failover_status(status.as_u16()) => {
+                        break super::hyper_client::ProxyResponse::buffered(
+                            status,
+                            response_headers,
+                            Default::default(),
+                        );
+                    }
                     _ => return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected"),
                 };
                 let allow_compaction = compact.is_none()
@@ -3422,10 +3453,7 @@ async fn execute(
         target
             .scheduling
             .observe_headers(response.headers(), chrono::Utc::now().timestamp());
-        if matches!(
-            status.as_u16(),
-            401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
-        ) {
+        if failover_status(status.as_u16()) {
             if status.as_u16() == 429 {
                 target
                     .scheduling
@@ -3436,12 +3464,7 @@ async fn execute(
                 .failed(response.headers(), chrono::Utc::now().timestamp());
         }
         trace.observe_account(candidate, &target.scheduling);
-        if pinned.is_none()
-            && matches!(
-                status.as_u16(),
-                401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
-            )
-        {
+        if pinned.is_none() && failover_status(status.as_u16()) {
             if matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) {
                 transient.push((candidate, index));
             }
@@ -3864,6 +3887,10 @@ fn sibling_native_target(
     Some((url, next_upstream))
 }
 
+fn failover_status(status: u16) -> bool {
+    matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
+}
+
 fn retry_converted_rejection(
     upstream: &crate::provider::Provider,
     status: u16,
@@ -3872,7 +3899,7 @@ fn retry_converted_rejection(
     has_fallback: bool,
 ) -> bool {
     pinned.is_none()
-        && (matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
+        && (failover_status(status)
             || (status == 400
                 && has_fallback
                 && matches!(

@@ -1,9 +1,7 @@
 //! Incremental vendor wire decoders and encoders connected through semantic events.
 use super::super::ByteStream;
 use super::{reply, Event, Part, Protocol, Reply, Usage};
-use crate::proxy::providers::transform_codex_chat::{
-    response_tool_call_item_from_chat_name, CodexToolContext,
-};
+use crate::proxy::providers::transform_codex_chat::CodexToolContext;
 use crate::proxy::{
     sse::{append_utf8_safe_observed, strip_sse_field, take_sse_block},
     ProxyError,
@@ -876,6 +874,7 @@ struct Encoder {
     started: bool,
     ended: bool,
     sequence: u64,
+    response_ids: Option<reply::ResponseItemIds>,
 }
 impl Encoder {
     fn new(protocol: Protocol) -> Self {
@@ -900,28 +899,13 @@ impl Encoder {
             started: false,
             ended: false,
             sequence: 0,
+            response_ids: (protocol == Protocol::Responses).then(reply::ResponseItemIds::new),
         }
     }
     fn response_part(&self, part: &Part, index: usize) -> Option<Value> {
-        if let Part::ToolCall {
-            id,
-            name,
-            arguments,
-            ..
-        } = part
-        {
-            Some(response_tool_call_item_from_chat_name(
-                &format!("fc_{index}"),
-                "completed",
-                id,
-                name,
-                &arguments.to_string(),
-                None,
-                &self.context,
-            ))
-        } else {
-            reply::part(Protocol::Responses, part, index)
-        }
+        self.response_ids
+            .as_ref()?
+            .part(part, index, Some(&self.context))
     }
     fn chat(&self, delta: Value, finish: Value) -> Value {
         json!({"id":self.reply.id,"object":"chat.completion.chunk","created":chrono::Utc::now().timestamp(),"model":self.reply.model,"choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
@@ -976,9 +960,10 @@ impl Encoder {
                 }
             }
             Protocol::Responses => {
+                let ids = self.response_ids.as_ref().ok_or_else(invalid)?;
                 let item = if matches!(&part, Part::Thinking { sealed: None, .. }) {
                     Some(
-                        json!({"id":format!("rs_{index}"),"type":"reasoning","status":"in_progress","summary":[]}),
+                        json!({"id":ids.id("rs",index),"type":"reasoning","status":"in_progress","summary":[]}),
                     )
                 } else {
                     self.response_part(&part, index)
@@ -998,9 +983,9 @@ impl Encoder {
                     }
                     out.push(response_frame(json!({"type":"response.output_item.added","output_index":index,"item":item}), &mut self.sequence));
                     if matches!(part, Part::Text { .. }) {
-                        out.push(response_frame(json!({"type":"response.content_part.added","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"part":{"type":"output_text","text":"","annotations":[]}}), &mut self.sequence));
+                        out.push(response_frame(json!({"type":"response.content_part.added","output_index":index,"content_index":0,"item_id":item["id"],"part":{"type":"output_text","text":"","annotations":[]}}), &mut self.sequence));
                     } else if matches!(part, Part::Thinking { .. }) {
-                        out.push(response_frame(json!({"type":"response.reasoning_summary_part.added","output_index":index,"summary_index":0,"item_id":format!("rs_{index}"),"part":{"type":"summary_text","text":""}}), &mut self.sequence));
+                        out.push(response_frame(json!({"type":"response.reasoning_summary_part.added","output_index":index,"summary_index":0,"item_id":item["id"],"part":{"type":"summary_text","text":""}}), &mut self.sequence));
                     }
                 }
             }
@@ -1038,14 +1023,14 @@ impl Encoder {
             Protocol::Responses => {
                 if let Some(item) = self.response_part(part, index) {
                     match part {
-                        Part::Text{text,..}=>{out.push(response_frame(json!({"type":"response.output_text.done","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"text":text}), &mut self.sequence));out.push(response_frame(json!({"type":"response.content_part.done","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"part":{"type":"output_text","text":text,"annotations":[]}}), &mut self.sequence));},
-                        Part::Thinking{text,..}=>out.push(response_frame(json!({"type":"response.reasoning_summary_text.done","output_index":index,"summary_index":0,"item_id":format!("rs_{index}"),"text":text}), &mut self.sequence)),
+                        Part::Text{text,..}=>{out.push(response_frame(json!({"type":"response.output_text.done","output_index":index,"content_index":0,"item_id":item["id"],"text":text}), &mut self.sequence));out.push(response_frame(json!({"type":"response.content_part.done","output_index":index,"content_index":0,"item_id":item["id"],"part":{"type":"output_text","text":text,"annotations":[]}}), &mut self.sequence));},
+                        Part::Thinking{text,..}=>out.push(response_frame(json!({"type":"response.reasoning_summary_text.done","output_index":index,"summary_index":0,"item_id":item["id"],"text":text}), &mut self.sequence)),
                         Part::ToolCall{arguments,..}=>{
                             if item["type"]=="custom_tool_call" {
                                 let input=item["input"].as_str().unwrap_or_default();
-                                out.push(response_frame(json!({"type":"response.custom_tool_call_input.delta","output_index":index,"item_id":format!("fc_{index}"),"delta":input}), &mut self.sequence));
-                                out.push(response_frame(json!({"type":"response.custom_tool_call_input.done","output_index":index,"item_id":format!("fc_{index}"),"input":input}), &mut self.sequence));
-                            }else if item["type"]=="function_call"{out.push(response_frame(json!({"type":"response.function_call_arguments.done","output_index":index,"item_id":format!("fc_{index}"),"arguments":arguments.to_string()}), &mut self.sequence));}
+                                out.push(response_frame(json!({"type":"response.custom_tool_call_input.delta","output_index":index,"item_id":item["id"],"delta":input}), &mut self.sequence));
+                                out.push(response_frame(json!({"type":"response.custom_tool_call_input.done","output_index":index,"item_id":item["id"],"input":input}), &mut self.sequence));
+                            }else if item["type"]=="function_call"{out.push(response_frame(json!({"type":"response.function_call_arguments.done","output_index":index,"item_id":item["id"],"arguments":arguments.to_string()}), &mut self.sequence));}
                         },_=>{}
                     }
                     out.push(response_frame(json!({"type":"response.output_item.done","output_index":index,"item":item}), &mut self.sequence));
@@ -1113,7 +1098,7 @@ impl Encoder {
                     match self.protocol{
                     Protocol::Chat=>out.push(frame(&self.chat(if thinking{json!({"reasoning_content":text})}else{json!({"content":text})},Value::Null))),
                     Protocol::Anthropic=>out.push(named(&json!({"type":"content_block_delta","index":n,"delta":if thinking{json!({"type":"thinking_delta","thinking":text})}else{json!({"type":"text_delta","text":text})}}))),
-                    Protocol::Responses=>out.push(response_frame(if thinking{json!({"type":"response.reasoning_summary_text.delta","output_index":n,"summary_index":0,"item_id":format!("rs_{n}"),"delta":text})}else{json!({"type":"response.output_text.delta","output_index":n,"content_index":0,"item_id":format!("msg_{n}"),"delta":text})}, &mut self.sequence)),
+                    Protocol::Responses=>{let ids=self.response_ids.as_ref().ok_or_else(invalid)?;out.push(response_frame(if thinking{json!({"type":"response.reasoning_summary_text.delta","output_index":n,"summary_index":0,"item_id":ids.id("rs",n),"delta":text})}else{json!({"type":"response.output_text.delta","output_index":n,"content_index":0,"item_id":ids.id("msg",n),"delta":text})}, &mut self.sequence));},
                     Protocol::Gemini=>out.push(frame(&self.gemini(vec![if thinking{json!({"text":text,"thought":true})}else{json!({"text":text})}]))),
                 }
                 }
@@ -1144,7 +1129,7 @@ impl Encoder {
                 match self.protocol {
                     Protocol::Chat=>{let ti=*self.tool_indices.get(&i).ok_or_else(invalid)?;out.push(frame(&self.chat(json!({"tool_calls":[{"index":ti,"function":{"arguments":args}}]}),Value::Null)));},
                     Protocol::Anthropic=>out.push(named(&json!({"type":"content_block_delta","index":n,"delta":{"type":"input_json_delta","partial_json":args}}))),
-                    Protocol::Responses=>{if self.parts.get(&i).and_then(|part|self.response_part(part,n)).is_some_and(|item|item["type"]=="function_call"){out.push(response_frame(json!({"type":"response.function_call_arguments.delta","output_index":n,"item_id":format!("fc_{n}"),"delta":args}), &mut self.sequence));}},Protocol::Gemini=>{}
+                    Protocol::Responses=>{if let Some(item)=self.parts.get(&i).and_then(|part|self.response_part(part,n)).filter(|item|item["type"]=="function_call"){out.push(response_frame(json!({"type":"response.function_call_arguments.delta","output_index":n,"item_id":item["id"],"delta":args}), &mut self.sequence));}},Protocol::Gemini=>{}
                 }
             }
             Event::Signature {
@@ -1365,9 +1350,13 @@ impl Encoder {
                         out.push(named(&json!({"type":"message_stop"})));
                     }
                     Protocol::Responses => {
-                        let full =
-                            reply::render_with_context(self.protocol, &self.reply, &self.context)
-                                .map_err(|_| invalid())?;
+                        let mut ordered = self.parts.iter().collect::<Vec<_>>();
+                        ordered.sort_unstable_by_key(|(index, _)| self.wire_indices.get(index));
+                        self.reply.parts =
+                            ordered.into_iter().map(|(_, part)| part.clone()).collect();
+                        let ids = self.response_ids.as_ref().ok_or_else(invalid)?;
+                        let full = reply::render_scoped_responses(&self.reply, &self.context, ids)
+                            .map_err(|_| invalid())?;
                         let kind = if full["status"] == "incomplete" {
                             "response.incomplete"
                         } else {
@@ -1537,6 +1526,47 @@ pub(crate) fn from_reply_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_responses_ids_are_unique_and_consistent_through_json_and_sse() {
+        let source = json!({"id":"synthetic-reused-upstream-id","model":"synthetic","choices":[{
+            "message":{"role":"assistant","content":"Synthetic commentary",
+                "reasoning_content":"Synthetic reasoning","tool_calls":[{
+                    "id":"synthetic-call","type":"function","function":{"name":"lookup","arguments":"{}"}
+                }]},"finish_reason":"tool_calls"}]});
+        let reply = reply::parse(Protocol::Chat, &source).unwrap();
+        let mut output_ids = std::collections::HashSet::new();
+        for _ in 0..2 {
+            let bytes = from_reply(&reply, Protocol::Responses).unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            let events: Vec<Value> = text
+                .lines()
+                .filter_map(|line| strip_sse_field(line, "data"))
+                .map(|data| serde_json::from_str(data).unwrap())
+                .collect();
+            let output = events.last().unwrap()["response"]["output"]
+                .as_array()
+                .unwrap();
+            assert_eq!(output.len(), 3);
+            for item in output {
+                assert!(output_ids.insert(item["id"].as_str().unwrap().to_owned()));
+            }
+            for event in &events {
+                let Some(index) = event["output_index"].as_u64() else {
+                    continue;
+                };
+                let id = event.get("item_id").unwrap_or(&event["item"]["id"]);
+                assert_eq!(id, &output[index as usize]["id"]);
+            }
+            let rendered = reply::render(Protocol::Responses, &reply).unwrap();
+            for item in rendered["output"].as_array().unwrap() {
+                assert!(output_ids.insert(item["id"].as_str().unwrap().to_owned()));
+            }
+            assert!(output
+                .iter()
+                .any(|item| item["call_id"] == "synthetic-call"));
+        }
+    }
+
     fn assert_responses_sequence(bytes: &[u8]) {
         #[derive(serde::Deserialize)]
         struct ResponseEvent {
@@ -1847,9 +1877,10 @@ mod tests {
             .iter()
             .any(|v| v["type"] == "response.custom_tool_call_input.done"
                 && v["input"] == "synthetic line one\nline two"));
-        assert!(!events.iter().any(
-            |v| v["item_id"] == "fc_1" && v["type"] == "response.function_call_arguments.delta"
-        ));
+        assert!(!events
+            .iter()
+            .any(|v| v["item_id"] == final_reply["output"][1]["id"]
+                && v["type"] == "response.function_call_arguments.delta"));
     }
     #[tokio::test]
     async fn native_anthropic_signed_and_sealed_reasoning_stays_in_its_api() {

@@ -72,7 +72,7 @@ import {
 } from "./AgentUpdates";
 import {
   APP_ICON_NAME,
-  APP_IDS,
+  MANAGED_APP_IDS,
   getWorkspaceAgentLabel,
 } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -86,7 +86,6 @@ import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import "./agent-directory.css";
 
-const supported: readonly AppId[] = APP_IDS.filter((app) => app !== "glm");
 const orderStorageKey = "vary-agent-order";
 
 function readAgentOrder(): AppId[] {
@@ -95,13 +94,15 @@ function readAgentOrder(): AppId[] {
       localStorage.getItem(orderStorageKey) ?? "null",
     );
     if (Array.isArray(saved)) {
-      const known = saved.filter((app): app is AppId => APP_IDS.includes(app));
-      return [...new Set([...known, ...APP_IDS])];
+      const known = saved.filter((app): app is AppId =>
+        MANAGED_APP_IDS.includes(app),
+      );
+      return [...new Set([...known, ...MANAGED_APP_IDS])];
     }
   } catch {
     // Unavailable storage and invalid saved values use the default order.
   }
-  return [...APP_IDS];
+  return [...MANAGED_APP_IDS];
 }
 
 type ConnectionOperation =
@@ -156,7 +157,7 @@ export function AgentConnectionsPage({
   const name = (app: AppId) => getWorkspaceAgentLabel(t, app);
   const client = useQueryClient();
   const connections = useQueries({
-    queries: APP_IDS.map((app) => ({
+    queries: MANAGED_APP_IDS.map((app) => ({
       queryKey: ["agent-connections", app],
       queryFn: () => agentConnectionsApi.get(app),
       refetchInterval: 5000,
@@ -195,7 +196,7 @@ export function AgentConnectionsPage({
     (!doubaoCheckin.data?.connected
       ? doubaoCheckin.data?.accounts[0]
       : undefined);
-  const rewardApps = APP_IDS.filter(hasAgentRewards);
+  const rewardApps = MANAGED_APP_IDS.filter(hasAgentRewards);
   const rewards = useQueries({
     queries: rewardApps.map((app) => ({
       queryKey: ["agentRewards", app],
@@ -280,7 +281,7 @@ export function AgentConnectionsPage({
   });
   const [codexProxyIssue, setCodexProxyIssue] =
     useState<CodexProxyIssue | null>(null);
-  const codexConnection = connections[APP_IDS.indexOf("codex")];
+  const codexConnection = connections[MANAGED_APP_IDS.indexOf("codex")];
   const codexProxyDiagnosticEnabled =
     !!codexConnection.data?.enabled &&
     !!codexConnection.data.configured &&
@@ -335,7 +336,7 @@ export function AgentConnectionsPage({
   } | null>(null);
   const [authorizingModel, setAuthorizingModel] = useState(false);
   const updates = useAgentUpdates(
-    APP_IDS.filter((app) => installations.data?.[app]),
+    MANAGED_APP_IDS.filter((app) => installations.data?.[app]),
   );
   // Mutation-cache state survives navigation while native operations continue.
   const pendingDisconnects = useMutationState({
@@ -416,7 +417,7 @@ export function AgentConnectionsPage({
       ].map((key) => client.invalidateQueries({ queryKey: [key] })),
     );
     if (applied && applied !== "doubaowork") {
-      void connections[APP_IDS.indexOf(applied)]
+      void connections[MANAGED_APP_IDS.indexOf(applied)]
         .refetch({ cancelRefetch: false })
         .then(({ data, isSuccess }) => {
           if (
@@ -614,7 +615,7 @@ export function AgentConnectionsPage({
     void client.invalidateQueries({ queryKey: ["agent-model-catalog"] });
   }
   function connect(app: AppId) {
-    if (!supported.includes(app)) return;
+    if (!MANAGED_APP_IDS.includes(app)) return;
     const state = states.data?.find((entry) => entry.app === app);
     if (
       !state?.enabled &&
@@ -653,11 +654,11 @@ export function AgentConnectionsPage({
       (installations.data?.[app] || hasSavedConnection(app)),
   );
   const connectionRank = (app: AppId) => {
-    const query = connections[APP_IDS.indexOf(app)];
+    const query = connections[MANAGED_APP_IDS.indexOf(app)];
     return query.data?.enabled ? 2 : query.isPending || query.isError ? 1 : 0;
   };
   if (compact) shown.sort((a, b) => connectionRank(b) - connectionRank(a));
-  const other = APP_IDS.filter((app) => !shown.includes(app));
+  const other = MANAGED_APP_IDS.filter((app) => !shown.includes(app));
   const searchTerm = search.trim().toLocaleLowerCase();
   const filtered = !compact && searchTerm !== "";
   const matchesName = (app: AppId) =>
@@ -668,7 +669,7 @@ export function AgentConnectionsPage({
   const sortableVisible =
     !compact && !filtered
       ? visible.filter((app) => {
-          const query = connections[APP_IDS.indexOf(app)];
+          const query = connections[MANAGED_APP_IDS.indexOf(app)];
           return !query.isPending || query.data !== undefined;
         })
       : [];
@@ -733,9 +734,9 @@ export function AgentConnectionsPage({
     ) : null;
   }
   function row(app: AppId) {
-    const supportsConnection = supported.includes(app);
+    const supportsConnection = MANAGED_APP_IDS.includes(app);
     const operation = rowOperation(app);
-    const connection = connections[APP_IDS.indexOf(app)];
+    const connection = connections[MANAGED_APP_IDS.indexOf(app)];
     const state = connection.data;
     const enabled = !!state?.enabled;
     const orphaned = app === "codex" && state?.recoveryReason === "orphaned";
@@ -1053,8 +1054,13 @@ export function AgentConnectionsPage({
     );
     const canRestartHarnessManually =
       app === "deepseek-harness" &&
-      !state?.recoveryPending &&
-      (state?.desktopState === "current" || state?.desktopState === "stopped");
+      !!state &&
+      !state.recoveryPending &&
+      (state.desktopState === "current" ||
+        state.desktopState === "stopped" ||
+        ((state.desktopState == null || state.desktopState === "unknown") &&
+          !!installations.data?.[app] &&
+          (isMac() || isWindows())));
     const restartButton = app !== "doubaowork" &&
       (operation === "restarting" ||
         ((canRestart || canRestartHarnessManually) && !connection.isError)) && (
@@ -1629,7 +1635,7 @@ export function AgentConnectionsPage({
               </div>
             )}
           {visible.map((app, index) => {
-            const connection = connections[APP_IDS.indexOf(app)];
+            const connection = connections[MANAGED_APP_IDS.indexOf(app)];
             return (
               <Fragment key={app}>
                 {compact &&
@@ -1718,13 +1724,14 @@ export function AgentConnectionsPage({
             </span>
             {app === "codex" &&
               ["failed", "stale_catalog"].includes(
-                connections[APP_IDS.indexOf(app)].data?.reloadState ?? "",
+                connections[MANAGED_APP_IDS.indexOf(app)].data?.reloadState ??
+                  "",
               ) && (
                 <span className="mp-agent-status bad" role="status">
                   {t(
                     `agentConnections.states.${
-                      connections[APP_IDS.indexOf(app)].data?.reloadState ===
-                      "failed"
+                      connections[MANAGED_APP_IDS.indexOf(app)].data
+                        ?.reloadState === "failed"
                         ? "reloadFailed"
                         : "catalogStale"
                     }`,
@@ -1741,16 +1748,17 @@ export function AgentConnectionsPage({
           </div>
           <div className="mp-agent-install-actions">
             {installButton(app)}
-            {supported.includes(app) && installations.data?.[app] === true && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!installations.data?.[app] || rowBusy(app)}
-                onClick={() => connect(app)}
-              >
-                {t("agentConnections.connect")}
-              </Button>
-            )}
+            {MANAGED_APP_IDS.includes(app) &&
+              installations.data?.[app] === true && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!installations.data?.[app] || rowBusy(app)}
+                  onClick={() => connect(app)}
+                >
+                  {t("agentConnections.connect")}
+                </Button>
+              )}
             {websiteButton(app)}
           </div>
           {errorMessage(app)}
@@ -1987,7 +1995,9 @@ export function AgentConnectionsPage({
             {t("agentConnections.codexDisconnectNote")}
           </p>
         )}
-        {(disconnecting === "codex" || disconnecting === "claude") && (
+        {(disconnecting === "codex" ||
+          disconnecting === "claude" ||
+          disconnecting === "gemini") && (
           <p className="text-sm text-muted-foreground">
             {t("agentConnections.disconnectReopenNote", {
               app: name(disconnecting),

@@ -431,6 +431,36 @@ fn codex_magpie_replay_uses_observed_affinity_not_a_local_id_allowlist() {
 }
 
 #[test]
+fn codex_replays_legacy_inline_message_id_collisions_with_the_tool_owner() {
+    let mut bindings = Bindings::default();
+    bindings.bind_session("synthetic-session", 1);
+    remember(&mut bindings.calls, "call", "synthetic-call", 1);
+    remember(&mut bindings.items, "item", "msg_1", 0);
+    remember(&mut bindings.items, "item", "msg_1", 1);
+    let mut body = json!({"input":[
+        {"type":"message","id":"msg_1","role":"assistant","status":"completed",
+         "content":[{"type":"output_text","text":"Synthetic commentary","annotations":[]}]},
+        {"type":"function_call_output","call_id":"synthetic-call","output":"Synthetic result"}
+    ]});
+    assert_eq!(
+        bindings.resolve_replay(&body, Some("synthetic-session")),
+        Ok(Some(1))
+    );
+
+    body["input"][0] = json!({"type":"item_reference","id":"msg_1"});
+    assert!(bindings
+        .resolve_replay(&body, Some("synthetic-session"))
+        .is_err());
+
+    body["input"][0] =
+        json!({"type":"message","id":"msg_1","role":"assistant","content":"Synthetic text"});
+    remember(&mut bindings.calls, "call", "synthetic-call", 0);
+    assert!(bindings
+        .resolve_replay(&body, Some("synthetic-session"))
+        .is_err());
+}
+
+#[test]
 fn unknown_or_conflicting_continuations_fail_closed() {
     let mut bindings = Bindings::default();
     assert!(bindings
@@ -1019,7 +1049,7 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
     task.abort();
 }
 
-struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+pub(super) struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
 
 impl Drop for SecurityRuntimeRestore {
     fn drop(&mut self) {
@@ -1027,7 +1057,7 @@ impl Drop for SecurityRuntimeRestore {
     }
 }
 
-fn synthetic_security_runtime() -> SecurityRuntimeRestore {
+pub(super) fn synthetic_security_runtime() -> SecurityRuntimeRestore {
     let restore = SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
     crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     restore

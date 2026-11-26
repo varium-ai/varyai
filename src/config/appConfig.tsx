@@ -67,6 +67,9 @@ export const APP_IDS: AppId[] = [
   "t3code",
 ];
 
+// Keep the GLM ID for existing data and proxy records, outside Agent management.
+export const MANAGED_APP_IDS: AppId[] = APP_IDS.filter((app) => app !== "glm");
+
 export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   claude: true,
   "claude-desktop": true,

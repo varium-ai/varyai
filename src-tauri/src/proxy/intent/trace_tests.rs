@@ -966,6 +966,7 @@ async fn deterministic_conditions_route_and_fail_over_in_rule_order_with_fitted_
 #[serial_test::serial]
 async fn first_content_timeout_withholds_the_slow_reply_and_patience_retries_only_transient_failures(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = super::tests::synthetic_security_runtime();
     use super::{scheduling, RoutingGroup, Runtime, Session, Target};
     use crate::{
         database::Database,
@@ -986,6 +987,9 @@ async fn first_content_timeout_withholds_the_slow_reply_and_patience_retries_onl
             let transient = observed.clone();
             let slow = slow_observed.clone();
             async move {
+                if body["model"] == "model-a" && body["input"] == "oversized-gateway-error" {
+                    return (http::StatusCode::BAD_GATEWAY, "x".repeat(64 * 1024 + 1)).into_response();
+                }
                 if body["input"] == "retry" && transient.fetch_add(1, Ordering::SeqCst) < 2 {
                     return (http::StatusCode::SERVICE_UNAVAILABLE, [(http::header::RETRY_AFTER, "1")], "synthetic").into_response();
                 }
@@ -1021,6 +1025,7 @@ async fn first_content_timeout_withholds_the_slow_reply_and_patience_retries_onl
         ("timeout", vec![], 2),
         ("headers", vec![], 2),
         ("off", vec!["a"], 1),
+        ("oversized-gateway-error", vec![], 2),
         ("retry", vec![], 4),
     ] {
         let group: RoutingGroup = serde_json::from_value(json!({
@@ -1071,7 +1076,7 @@ async fn first_content_timeout_withholds_the_slow_reply_and_patience_retries_onl
                 .send(),
         )
         .await??;
-        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.status(), http::StatusCode::OK, "{input}");
         let bytes = response.bytes().await?;
         let text = std::str::from_utf8(&bytes)?;
         assert!(text.contains("synthetic-fast"));
@@ -1085,6 +1090,11 @@ async fn first_content_timeout_withholds_the_slow_reply_and_patience_retries_onl
             expected_attempts
         );
         assert_eq!(row.state, State::Completed);
+        if input == "oversized-gateway-error" {
+            assert!(row.steps.iter().any(|step| {
+                step.kind == Kind::Rejected && step.candidate == Some(0) && step.status == Some(502)
+            }));
+        }
     }
     assert_eq!(slow.load(Ordering::SeqCst), 3);
     server.stop().await?;
