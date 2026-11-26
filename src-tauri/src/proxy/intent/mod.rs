@@ -831,7 +831,14 @@ impl Bindings {
                     merge(self.calls.get(&continuation::hash("call", id)).copied())?;
                 }
                 if let Some(id) = item["id"].as_str() {
-                    merge(self.items.get(&continuation::hash("item", id)).copied())?;
+                    let owner = self.items.get(&continuation::hash("item", id)).copied();
+                    // Old bridge IDs used only an output index. An ambiguous ID
+                    // on fully inline text is not a server-side reference.
+                    if owner != Some(usize::MAX)
+                        || !codex_replay::legacy_inline_assistant_id(item, id)
+                    {
+                        merge(owner)?;
+                    }
                 }
                 if let Some(seal) = item["encrypted_content"].as_str() {
                     merge(
@@ -1852,6 +1859,9 @@ async fn execute(
                         }
                 })
         });
+    let compact_inline_tools = route_compaction
+        && responses_replay
+        && codex_replay::portable_compaction_tools(&projection);
     let codex_per_turn = responses_replay
         && compact.is_none()
         && named_conversation
@@ -1918,9 +1928,15 @@ async fn execute(
             bindings.resolve_replay_from(
                 &projection,
                 conversation.as_deref(),
-                codex_inline_replay
-                    .as_ref()
-                    .map_or(0, |history| history.current_turn_start),
+                if compact_inline_tools {
+                    // All tool data is inline. Only the conversation's answer
+                    // owner is relevant to the new checkpoint.
+                    projection["input"].as_array().map_or(0, Vec::len)
+                } else {
+                    codex_inline_replay
+                        .as_ref()
+                        .map_or(0, |history| history.current_turn_start)
+                },
             )
         } else {
             bindings.resolve(&projection, conversation.as_deref())
@@ -1947,6 +1963,7 @@ async fn execute(
         if (compact.is_none() || route_compaction)
             && !opaque_continuation(protocol, &original)
             && (inline_new_turn
+                || compact_inline_tools
                 || (completed
                     && length::portable_ignoring(&projection, |item| {
                         // Codex sends inline browser context in both turns and summaries.

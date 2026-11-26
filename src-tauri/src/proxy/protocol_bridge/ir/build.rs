@@ -549,12 +549,58 @@ fn tool_result_chat_content(
     Ok(text_chunks.join("\n"))
 }
 
+// Responses emits text, reasoning, and each call as separate items. Chat
+// expects one assistant tool-call batch immediately before its tool results.
+fn responses_chat_messages(mut tail: &[Message]) -> Vec<std::borrow::Cow<'_, Message>> {
+    use std::borrow::Cow;
+    let mut messages = Vec::with_capacity(tail.len());
+    while let Some((message, rest)) = tail.split_first() {
+        if message.role != "assistant" {
+            messages.push(Cow::Borrowed(message));
+            tail = rest;
+            continue;
+        }
+        let count = 1 + rest.iter().take_while(|m| m.role == "assistant").count();
+        let (assistants, next) = tail.split_at(count);
+        let first_result = next
+            .first()
+            .and_then(|message| match message.parts.first() {
+                Some(Part::ToolResult { call_id, .. }) if message.role == "tool" => Some(call_id),
+                _ => None,
+            });
+        let parts = assistants.iter().flat_map(|m| &m.parts);
+        if count > 1
+            && first_result.is_some_and(|call_id| {
+                parts
+                    .clone()
+                    .any(|part| matches!(part, Part::ToolCall { id, .. } if id == call_id))
+            })
+        {
+            messages.push(Cow::Owned(Message {
+                role: message.role.clone(),
+                parts: parts.cloned().collect(),
+            }));
+        } else {
+            messages.extend(assistants.iter().map(Cow::Borrowed));
+        }
+        tail = next;
+    }
+    messages
+}
+
 fn chat(r: &Request) -> Result<Value, ProxyError> {
     let mut messages = Vec::new();
     let mut system = openai_parts(&r.system, false, false)?;
     let mut replied = false;
     let mut pending_tool_media: Vec<Value> = Vec::new();
-    for m in &r.messages {
+    let responses_messages;
+    let history: Box<dyn Iterator<Item = &Message>> = if r.source == Protocol::Responses {
+        responses_messages = responses_chat_messages(&r.messages);
+        Box::new(responses_messages.iter().map(std::borrow::Cow::as_ref))
+    } else {
+        Box::new(r.messages.iter())
+    };
+    for m in history {
         replied |= m.role == "assistant"
             || m.parts.iter().any(|part| {
                 matches!(
@@ -1381,6 +1427,35 @@ mod tests {
     }
 
     #[test]
+    fn responses_chat_keeps_parallel_tool_calls_and_reasoning_before_their_results(
+    ) -> Result<(), ProxyError> {
+        let body = json!({"model":"synthetic", "input":[
+            {"role":"user","content":"Synthetic question"},
+            {"type":"function_call","call_id":"call-a","name":"lookup","arguments":"{}"},
+            {"type":"function_call","call_id":"call-b","name":"lookup","arguments":"{}"},
+            {"role":"assistant","content":"Synthetic progress"},
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"Synthetic thought"}]},
+            {"type":"function_call_output","call_id":"call-a","output":"Synthetic first result"},
+            {"type":"function_call_output","call_id":"call-b","output":"Synthetic second result"},
+            {"role":"assistant","content":"Synthetic answer"}
+        ]});
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Chat)?;
+        assert_eq!(wire["messages"].as_array().map(Vec::len), Some(5));
+        assert_eq!(wire["messages"][1]["content"], "Synthetic progress");
+        assert_eq!(
+            wire["messages"][1]["reasoning_content"],
+            "Synthetic thought"
+        );
+        assert_eq!(wire["messages"][1]["tool_calls"][0]["id"], "call-a");
+        assert_eq!(wire["messages"][1]["tool_calls"][1]["id"], "call-b");
+        assert_eq!(wire["messages"][2]["tool_call_id"], "call-a");
+        assert_eq!(wire["messages"][3]["tool_call_id"], "call-b");
+        assert_eq!(wire["messages"][4]["content"], "Synthetic answer");
+        Ok(())
+    }
+
+    #[test]
     fn chat_single_text_uses_plain_content_and_keeps_multi_part_content() {
         for (parts, plain) in [
             (json!([{"type":"input_text","text":"Synthetic text"}]), true),
@@ -1879,30 +1954,35 @@ mod tests {
                 .unwrap();
         let built = request(&parsed, Protocol::Chat).unwrap();
         let messages = built["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 8);
-        assert!(messages[0..3].iter().all(|m| m["role"] == "assistant"));
-        assert_eq!(messages[3]["role"], "tool");
-        assert_eq!(messages[3]["tool_call_id"], "call-1");
-        let c1 = messages[3]["content"].as_str().unwrap();
+        assert_eq!(messages.len(), 6);
+        assert_eq!(messages[0]["role"], "assistant");
+        let calls = messages[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 3);
+        for (call, id) in calls.iter().zip(["call-1", "call-2", "call-3"]) {
+            assert_eq!(call["id"], id);
+        }
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "call-1");
+        let c1 = messages[1]["content"].as_str().unwrap();
         assert!(c1.contains("Page summary"));
         assert!(c1.contains(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER));
-        assert_eq!(messages[4]["role"], "tool");
-        assert_eq!(messages[4]["tool_call_id"], "call-2");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "call-2");
         assert_eq!(
-            messages[4]["content"].as_str(),
+            messages[2]["content"].as_str(),
             Some(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER)
         );
-        assert_eq!(messages[5]["role"], "tool");
-        assert_eq!(messages[5]["tool_call_id"], "call-3");
-        assert_eq!(messages[5]["content"].as_str(), Some("plain text"));
-        assert_eq!(messages[6]["role"], "user");
-        let media_msg = messages[6].to_string();
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "call-3");
+        assert_eq!(messages[3]["content"].as_str(), Some("plain text"));
+        assert_eq!(messages[4]["role"], "user");
+        let media_msg = messages[4].to_string();
         assert!(media_msg.contains("[cc-switch: media output of tool call call-1]"));
         assert!(media_msg.contains("data:image/png;base64,img1"));
         assert!(media_msg.contains("[cc-switch: media output of tool call call-2]"));
         assert!(media_msg.contains("data:image/png;base64,img2"));
-        assert_eq!(messages[7]["role"], "user");
-        assert!(messages[7].to_string().contains("Continue"));
+        assert_eq!(messages[5]["role"], "user");
+        assert!(messages[5].to_string().contains("Continue"));
 
         // Mixed Anthropic user message: [tool_result(image), text] flushes media before text user msg.
         let anthropic_mixed = json!({

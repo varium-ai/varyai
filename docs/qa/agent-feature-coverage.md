@@ -86,6 +86,15 @@ to its observed owner.
 
 ## Codex per-turn routing after inline tool history (macOS and Windows)
 
+The response item ID follow-up covers generated IDs and consistent references
+in the shared Responses JSON and SSE adapters. This applies to the Agents in
+the inventory below when they use those adapters, including managed Responses
+clients and Codex desktop/CLI on macOS and Windows. Native pass-through keeps
+provider-issued IDs, and the existing UI consumes the same protocol events.
+Synthetic macOS arm64 fixtures verify JSON and SSE IDs, legacy text ID
+collisions through both Codex HTTP entry points, and rejection of genuine
+ownership conflicts. Installed-client and Windows verification are pending.
+
 The same routing-group editor, model picker, and trace UI remain in place.
 The change is in the Rust Codex Responses request planner. It does not alter
 structured tool authorization, tool results, request payloads, native model
@@ -139,6 +148,19 @@ picker, rule editor and trace UI use the same state and events. The standalone R
 existing behavior. Every other Agent listed in the matrix above uses its own
 existing adapter and does not enter this Codex compaction path, including
 T3 Code and Grok Build. Installed-client verification is pending.
+
+The tool-heavy follow-up reproduces a stale owner in the native HTTP fixture
+before the fix. On macOS 26.6.2 arm64 with Rust 1.98.1, the fixture passes with
+completed inline call/result batches, selects the configured summary model,
+and resumes the original answer owner. Pending and unmatched calls and opaque
+state stay subject to the existing ownership checks.
+
+The shared Responses-to-Chat adapter groups inline tool calls with their
+assistant text and reasoning before rendering. The shared wire fixture and
+the WorkBuddy DeepSeek request-preparation fixture pass on macOS. Every
+Responses client in the Agent inventory uses this adapter when converting to
+Chat. Existing pickers and trace UI consume the same events. Installed Codex,
+Windows, and live Grok, Gemini, and WorkBuddy verification remain pending.
 
 The follow-up switch-back fixture reproduces a 409 with text emitted before
 a call result, an inline reasoning-effort update, and an interrupted native

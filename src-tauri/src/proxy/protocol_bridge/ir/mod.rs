@@ -161,6 +161,7 @@ pub(crate) struct NativeOptions {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Request {
+    pub source: Protocol,
     pub model: String,
     pub system: Vec<Part>,
     pub messages: Vec<Message>,

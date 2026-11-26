@@ -777,41 +777,96 @@ pub(super) fn part(protocol: Protocol, p: &Part, index: usize) -> Option<Value> 
     }
 }
 
+pub(super) struct ResponseItemIds(uuid::Uuid);
+
+impl ResponseItemIds {
+    pub(super) fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+
+    pub(super) fn id(&self, prefix: &str, index: usize) -> String {
+        format!("{prefix}_{}_{index}", self.0.simple())
+    }
+
+    pub(super) fn part(
+        &self,
+        p: &Part,
+        index: usize,
+        context: Option<&CodexToolContext>,
+    ) -> Option<Value> {
+        if let (
+            Part::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            },
+            Some(context),
+        ) = (p, context)
+        {
+            return Some(response_tool_call_item_from_chat_name(
+                &self.id("fc", index),
+                "completed",
+                id,
+                name,
+                &arguments.to_string(),
+                None,
+                context,
+            ));
+        }
+        let mut item = part(Protocol::Responses, p, index)?;
+        let prefix = match p {
+            Part::Text { .. } => "msg",
+            Part::Thinking {
+                source: Protocol::Responses,
+                sealed: Some(_),
+                ..
+            } => return Some(item),
+            Part::Thinking { .. } => "rs",
+            Part::ToolCall { .. } => "fc",
+            Part::Image { .. } => "ig",
+            _ => return Some(item),
+        };
+        item["id"] = json!(self.id(prefix, index));
+        Some(item)
+    }
+}
+
 pub(crate) fn render_with_context(
     protocol: Protocol,
     reply: &Reply,
     context: &CodexToolContext,
 ) -> Result<Value, ProxyError> {
-    let mut rendered = render(protocol, reply)?;
-    if protocol == Protocol::Responses {
-        let mut position = 0;
-        for (index, p) in reply.parts.iter().enumerate() {
-            if part(protocol, p, index).is_none() {
-                continue;
-            }
-            if let Part::ToolCall {
-                id,
-                name,
-                arguments,
-                ..
-            } = p
-            {
-                rendered["output"][position] = response_tool_call_item_from_chat_name(
-                    &format!("fc_{index}"),
-                    "completed",
-                    id,
-                    name,
-                    &arguments.to_string(),
-                    None,
-                    context,
-                );
-            }
-            position += 1;
-        }
-    }
-    Ok(rendered)
+    render_scoped(protocol, reply, Some(context))
 }
+
 pub(crate) fn render(protocol: Protocol, reply: &Reply) -> Result<Value, ProxyError> {
+    render_scoped(protocol, reply, None)
+}
+
+pub(super) fn render_scoped_responses(
+    reply: &Reply,
+    context: &CodexToolContext,
+    ids: &ResponseItemIds,
+) -> Result<Value, ProxyError> {
+    render_reply(Protocol::Responses, reply, Some(context), Some(ids))
+}
+
+fn render_scoped(
+    protocol: Protocol,
+    reply: &Reply,
+    context: Option<&CodexToolContext>,
+) -> Result<Value, ProxyError> {
+    let ids = (protocol == Protocol::Responses).then(ResponseItemIds::new);
+    render_reply(protocol, reply, context, ids.as_ref())
+}
+
+fn render_reply(
+    protocol: Protocol,
+    reply: &Reply,
+    context: Option<&CodexToolContext>,
+    ids: Option<&ResponseItemIds>,
+) -> Result<Value, ProxyError> {
     if reply.parts.iter().any(|part| {
         matches!(
             part,
@@ -825,7 +880,10 @@ pub(crate) fn render(protocol: Protocol, reply: &Reply) -> Result<Value, ProxyEr
         .parts
         .iter()
         .enumerate()
-        .filter_map(|(i, p)| part(protocol, p, i))
+        .filter_map(|(i, p)| match ids {
+            Some(ids) => ids.part(p, i, context),
+            None => part(protocol, p, i),
+        })
         .collect();
     Ok(match protocol {
         Protocol::Anthropic => {

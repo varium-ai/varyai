@@ -34,6 +34,7 @@ pub(crate) fn request(
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| invalid("Missing request model"))?;
     let mut request = Request {
+        source: protocol,
         model,
         system: Vec::new(),
         messages: Vec::new(),
