@@ -42,6 +42,13 @@ Enable the agent's local route below the key panel and restart the client when i
 
 Budget policies do not turn an observational audit bridge into a forwarding gateway. Non-chat image/search operations on a bound Codex route are refused as `gateway_operation_not_supported` rather than escaping the policy without accounting. Model-list and token-count probes do not consume the generation budget.
 
+For a bound local Agent, permissions apply to exact provider/model pairs.
+Selecting a model in **Allowed models** authorizes direct use and use through
+any published group that contains it. Selecting a published group authorizes
+its currently available member models, including direct use. A group's
+membership changes take effect when its published catalog updates. Initial
+attempts, fallbacks and classifiers use only authorized provider/model pairs.
+
 Codex group and direct model-menu requests use their published alias as the policy's request model ID. Their usage records retain that alias and the exact selected upstream model separately. Temporary Codex group sessions use the same Codex binding; their session token does not bypass it.
 
 ## External client connection
