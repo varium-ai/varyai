@@ -746,6 +746,13 @@ export function GatewayKeysPanel({
                     <OptionSelect
                       id={`gateway-agent-${app}`}
                       disabled={pending}
+                      title={
+                        bound
+                          ? bound.revoked
+                            ? `${bound.policy.name} (${t("gatewayKeys.revoked")})`
+                            : bound.policy.name
+                          : undefined
+                      }
                       value={bound?.id ?? ""}
                       onValueChange={(value) =>
                         void run(() => gatewayApi.bind(app, value || null))

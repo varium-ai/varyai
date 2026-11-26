@@ -112,6 +112,7 @@ type ConnectionOperation =
   | "restarting"
   | "visibility";
 const nativePicker = (app: AppId | null) => app === "doubaowork";
+const defaultModelUnsupported = (app: AppId | null) => app === "zcode";
 const modelControlApps = ["workbuddy", "workbuddy-ai", "qoder"] as const;
 const needsModelControl = (app: AppId | null) =>
   modelControlApps.some((known) => known === app);
@@ -789,6 +790,7 @@ export function AgentConnectionsPage({
     const hasNativeModelQuery =
       supportsConnection &&
       !nativePicker(app) &&
+      !defaultModelUnsupported(app) &&
       !needsModelControl(app) &&
       !isTrae(app);
     const nativeLabel = nativeAvailable
@@ -809,8 +811,9 @@ export function AgentConnectionsPage({
         (group) =>
           (group.modelAlias ?? `vary-auto/${group.id}`) === state?.model,
       )?.name;
-    const currentModel =
-      needsModelControl(app) && (!enabled || !modelControl?.authorized)
+    const currentModel = defaultModelUnsupported(app)
+      ? t("agentConnections.defaultModelUnsupported")
+      : needsModelControl(app) && (!enabled || !modelControl?.authorized)
         ? t("agentConnections.nativeDefault")
         : enabled
           ? (matchedCatalogName ??
@@ -1237,195 +1240,212 @@ export function AgentConnectionsPage({
               <span>{t("agentConnections.officialModels")}</span>
             </span>
           )}
-          {supportsConnection && !nativePicker(app) && (
-            <Popover
-              open={picking === app}
-              onOpenChange={(open) => {
-                setPicking(open ? app : null);
-                setManagingDesktopModels(false);
-              }}
+          {supportsConnection && defaultModelUnsupported(app) && (
+            <button
+              type="button"
+              className="mp-agent-start"
+              disabled
+              aria-label={`${t("agentConnections.model")} ${name(app)}`}
+              title={t("agentConnections.defaultModelUnsupportedHint")}
             >
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="mp-agent-start"
-                  disabled={
-                    rowBusy(app) ||
-                    connection.isPending ||
-                    connection.isError ||
-                    (app === "claude-desktop" &&
-                      (desktopVisibility.isPending ||
-                        desktopVisibility.isError)) ||
-                    (!!state?.recoveryPending &&
-                      !orphaned &&
-                      !inactiveCodexIntent &&
-                      !(
-                        isTrae(app) &&
-                        ["bridge_pending", "bridge_selection_pending"].includes(
-                          state.recoveryReason ?? "",
-                        )
-                      )) ||
-                    (enabled &&
-                      (catalog.isPending ||
-                        catalog.isError ||
-                        !catalog.data?.length))
-                  }
-                  aria-label={`${t("agentConnections.model")} ${name(app)}`}
-                  title={
-                    needsModelControl(app)
-                      ? t(
-                          app === "qoder"
-                            ? "agentConnections.modelControlHint"
-                            : "agentConnections.workbuddyModelControlHint",
-                        )
-                      : !enabled
-                        ? `${nativeLabel}\n${t(
-                            nativeAvailable
-                              ? native.model
-                                ? "agentConnections.nativeModelHint"
-                                : "agentConnections.nativeDefaultHint"
-                              : "agentConnections.nativeUnavailable",
-                          )}`
-                        : currentModel
-                  }
-                >
-                  {!enabled && nativeAvailable && (
-                    <span className="mp-agent-model-icon" aria-hidden="true">
-                      <ProviderIcon
-                        icon={APP_ICON_NAME[app]}
-                        name={name(app)}
-                        size={14}
-                      />
-                    </span>
-                  )}
-                  <span>{currentModel}</span>
-                  <ChevronDown size={11} />
-                </button>
-              </PopoverTrigger>
-              <ModelPickerPopoverContent
-                data-variant="agent"
-                onDismiss={() => setPicking(null)}
-                aria-label={`${t("agentConnections.model")} ${name(app)}`}
+              <span>{t("agentConnections.defaultModelUnsupported")}</span>
+            </button>
+          )}
+          {supportsConnection &&
+            !nativePicker(app) &&
+            !defaultModelUnsupported(app) && (
+              <Popover
+                open={picking === app}
+                onOpenChange={(open) => {
+                  setPicking(open ? app : null);
+                  setManagingDesktopModels(false);
+                }}
               >
-                {app === "claude-desktop" && managingDesktopModels ? (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setManagingDesktopModels(false)}
-                    >
-                      {t("agentConnections.backToModels")}
-                    </Button>
-                    <AgentModelVisibility
-                      inline
-                      app={app}
-                      name={name(app)}
-                      connected={enabled}
-                      models={catalogModels}
-                      disabled={
-                        (!!operation && operation !== "visibility") ||
-                        updates.isBusy(app) ||
-                        !!state?.recoveryPending ||
-                        connection.isPending ||
-                        connection.isError ||
-                        catalog.isPending ||
-                        catalog.isError
-                      }
-                      onBusyChange={(value) =>
-                        value
-                          ? beginOperation(app, "visibility")
-                          : endOperation(app)
-                      }
-                    />
-                  </>
-                ) : (
-                  <>
-                    <SharedModelPicker
-                      variant="agent"
-                      description={
-                        orphaned
-                          ? t("agentConnections.orphanReconnectHint")
-                          : isTrae(app)
-                            ? t("agentConnections.traeStartingModelHint")
-                            : app === "deepseek-harness"
-                              ? t("agentConnections.deepseekStartingModelHint")
-                              : needsModelControl(app)
-                                ? t(
-                                    app === "qoder"
-                                      ? "agentConnections.modelControlHint"
-                                      : "agentConnections.workbuddyModelControlHint",
-                                  )
-                                : app === "claude-desktop"
-                                  ? t(
-                                      "agentConnections.desktopStartingModelHint",
-                                    )
-                                  : undefined
-                      }
-                      disabled={rowBusy(app)}
-                      models={[
-                        ...(!enabled && nativeAvailable
-                          ? [
-                              {
-                                id: `native-current/${app}`,
-                                name: nativeLabel,
-                                source: "native" as const,
-                                logo: APP_ICON_NAME[app],
-                                disabled: true,
-                              },
-                            ]
-                          : []),
-                        ...(catalog.isError ? [] : catalogModels).filter(
-                          (model) =>
-                            app !== "claude-desktop" ||
-                            (!!desktopVisibility.data &&
-                              desktopVisibility.data.ids.includes(model.id) ===
-                                desktopVisibility.data.only),
-                        ),
-                      ]}
-                      selected={
-                        enabled &&
-                        state?.model &&
-                        (!needsModelControl(app) || modelControl?.authorized)
-                          ? [state.model]
-                          : nativeAvailable
-                            ? [`native-current/${app}`]
-                            : []
-                      }
-                      onPick={(model) => void pickModel(app, model)}
-                      onDismiss={() => setPicking(null)}
-                      onDisconnect={
-                        enabled || orphaned || inactiveCodexIntent
-                          ? () => {
-                              setPicking(null);
-                              setDisconnecting(app);
-                            }
-                          : undefined
-                      }
-                      disconnectLabel={
-                        orphaned || inactiveCodexIntent
-                          ? t("agentConnections.disconnectOnly")
-                          : undefined
-                      }
-                    />
-                    {app === "claude-desktop" && (
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="mp-agent-start"
+                    disabled={
+                      rowBusy(app) ||
+                      connection.isPending ||
+                      connection.isError ||
+                      (app === "claude-desktop" &&
+                        (desktopVisibility.isPending ||
+                          desktopVisibility.isError)) ||
+                      (!!state?.recoveryPending &&
+                        !orphaned &&
+                        !inactiveCodexIntent &&
+                        !(
+                          isTrae(app) &&
+                          [
+                            "bridge_pending",
+                            "bridge_selection_pending",
+                          ].includes(state.recoveryReason ?? "")
+                        )) ||
+                      (enabled &&
+                        (catalog.isPending ||
+                          catalog.isError ||
+                          !catalog.data?.length))
+                    }
+                    aria-label={`${t("agentConnections.model")} ${name(app)}`}
+                    title={
+                      needsModelControl(app)
+                        ? t(
+                            app === "qoder"
+                              ? "agentConnections.modelControlHint"
+                              : "agentConnections.workbuddyModelControlHint",
+                          )
+                        : !enabled
+                          ? `${nativeLabel}\n${t(
+                              nativeAvailable
+                                ? native.model
+                                  ? "agentConnections.nativeModelHint"
+                                  : "agentConnections.nativeDefaultHint"
+                                : "agentConnections.nativeUnavailable",
+                            )}`
+                          : currentModel
+                    }
+                  >
+                    {!enabled && nativeAvailable && (
+                      <span className="mp-agent-model-icon" aria-hidden="true">
+                        <ProviderIcon
+                          icon={APP_ICON_NAME[app]}
+                          name={name(app)}
+                          size={14}
+                        />
+                      </span>
+                    )}
+                    <span>{currentModel}</span>
+                    <ChevronDown size={11} />
+                  </button>
+                </PopoverTrigger>
+                <ModelPickerPopoverContent
+                  data-variant="agent"
+                  onDismiss={() => setPicking(null)}
+                  aria-label={`${t("agentConnections.model")} ${name(app)}`}
+                >
+                  {app === "claude-desktop" && managingDesktopModels ? (
+                    <>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setManagingDesktopModels(true)}
+                        onClick={() => setManagingDesktopModels(false)}
                       >
-                        {t("agentConnections.manageVisibleModels")}
+                        {t("agentConnections.backToModels")}
                       </Button>
-                    )}
-                  </>
-                )}
-                {(!catalog.data?.length || catalog.isError) && (
-                  <p role="note" className="mp-am-menu-note">
-                    {t("agentConnections.noModels")}
-                  </p>
-                )}
-              </ModelPickerPopoverContent>
-            </Popover>
-          )}
+                      <AgentModelVisibility
+                        inline
+                        app={app}
+                        name={name(app)}
+                        connected={enabled}
+                        models={catalogModels}
+                        disabled={
+                          (!!operation && operation !== "visibility") ||
+                          updates.isBusy(app) ||
+                          !!state?.recoveryPending ||
+                          connection.isPending ||
+                          connection.isError ||
+                          catalog.isPending ||
+                          catalog.isError
+                        }
+                        onBusyChange={(value) =>
+                          value
+                            ? beginOperation(app, "visibility")
+                            : endOperation(app)
+                        }
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <SharedModelPicker
+                        variant="agent"
+                        description={
+                          orphaned
+                            ? t("agentConnections.orphanReconnectHint")
+                            : isTrae(app)
+                              ? t("agentConnections.traeStartingModelHint")
+                              : app === "deepseek-harness"
+                                ? t(
+                                    "agentConnections.deepseekStartingModelHint",
+                                  )
+                                : needsModelControl(app)
+                                  ? t(
+                                      app === "qoder"
+                                        ? "agentConnections.modelControlHint"
+                                        : "agentConnections.workbuddyModelControlHint",
+                                    )
+                                  : app === "claude-desktop"
+                                    ? t(
+                                        "agentConnections.desktopStartingModelHint",
+                                      )
+                                    : undefined
+                        }
+                        disabled={rowBusy(app)}
+                        models={[
+                          ...(!enabled && nativeAvailable
+                            ? [
+                                {
+                                  id: `native-current/${app}`,
+                                  name: nativeLabel,
+                                  source: "native" as const,
+                                  logo: APP_ICON_NAME[app],
+                                  disabled: true,
+                                },
+                              ]
+                            : []),
+                          ...(catalog.isError ? [] : catalogModels).filter(
+                            (model) =>
+                              app !== "claude-desktop" ||
+                              (!!desktopVisibility.data &&
+                                desktopVisibility.data.ids.includes(
+                                  model.id,
+                                ) === desktopVisibility.data.only),
+                          ),
+                        ]}
+                        selected={
+                          enabled &&
+                          state?.model &&
+                          (!needsModelControl(app) || modelControl?.authorized)
+                            ? [state.model]
+                            : nativeAvailable
+                              ? [`native-current/${app}`]
+                              : []
+                        }
+                        onPick={(model) => void pickModel(app, model)}
+                        onDismiss={() => setPicking(null)}
+                        onDisconnect={
+                          enabled || orphaned || inactiveCodexIntent
+                            ? () => {
+                                setPicking(null);
+                                setDisconnecting(app);
+                              }
+                            : undefined
+                        }
+                        disconnectLabel={
+                          orphaned || inactiveCodexIntent
+                            ? t("agentConnections.disconnectOnly")
+                            : undefined
+                        }
+                      />
+                      {app === "claude-desktop" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setManagingDesktopModels(true)}
+                        >
+                          {t("agentConnections.manageVisibleModels")}
+                        </Button>
+                      )}
+                    </>
+                  )}
+                  {(!catalog.data?.length || catalog.isError) && (
+                    <p role="note" className="mp-am-menu-note">
+                      {t("agentConnections.noModels")}
+                    </p>
+                  )}
+                </ModelPickerPopoverContent>
+              </Popover>
+            )}
           <Switch
             className="mp-switch"
             aria-label={t(`apps.${app}`)}
@@ -2021,7 +2041,9 @@ export function AgentConnectionsPage({
               <p>{t("agentConnections.traeHooksSetup")}</p>
             </div>
           )}
-          {!nativePicker(setup) && !needsModelControl(setup) ? (
+          {!nativePicker(setup) &&
+          !defaultModelUnsupported(setup) &&
+          !needsModelControl(setup) ? (
             <fieldset disabled={rowBusy(setup)} className="space-y-3">
               <legend className="mb-2 text-sm">
                 {t("agentConnections.model")}
@@ -2039,7 +2061,11 @@ export function AgentConnectionsPage({
             </fieldset>
           ) : (
             <p className="text-sm text-muted-foreground">
-              {t("agentConnections.nativePicker")}
+              {t(
+                defaultModelUnsupported(setup)
+                  ? "agentConnections.defaultModelUnsupportedHint"
+                  : "agentConnections.nativePicker",
+              )}
             </p>
           )}
           {(!catalog.data?.length || catalog.isError) && (
