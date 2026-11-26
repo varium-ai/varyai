@@ -441,15 +441,23 @@ export function AgentConnectionsPage({
       await agentConnectionsApi.reapply(app);
       applied = true;
     } catch (cause) {
-      setError(
-        app,
-        typeof cause === "string" &&
-          ["agentConnections.noModels", "agentConnections.conflict"].includes(
-            cause,
-          )
+      const reason =
+        cause === "agentConnections.noModels" ||
+        cause === "agentConnections.conflict"
           ? cause
-          : "agentConnections.failed",
-      );
+          : "agentConnections.failed";
+      if (app === "deepseek-harness") {
+        const message =
+          reason === "agentConnections.conflict"
+            ? "agentConnections.deepseekRecoveryHint"
+            : reason;
+        toast.error(`${name(app)}: ${t(message)}`, {
+          closeButton: true,
+          duration: 8000,
+        });
+      } else {
+        setError(app, reason);
+      }
     } finally {
       refreshConnectionViews(true, applied ? app : undefined);
       endOperation(app);
@@ -1196,12 +1204,6 @@ export function AgentConnectionsPage({
             {!enabled && restartButton}
             {bypassed && reapplyButton}
           </p>
-          {app === "deepseek-harness" &&
-            state?.recoveryReason === "configuration_changed" && (
-              <p className="text-xs text-muted-foreground">
-                {t("agentConnections.deepseekRecoveryHint")}
-              </p>
-            )}
         </div>
         {compact && (
           <span className="mp-agent-summary-model" title={currentModel}>

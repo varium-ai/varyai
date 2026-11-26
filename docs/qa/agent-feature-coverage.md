@@ -1,5 +1,12 @@
 # Agent feature coverage
 
+## Harness reconnect feedback
+
+| Agent IDs | Entry points and adapters | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| `deepseek-harness` | Main and tray Agents views, reconnect button and connection switch; shared Harness Desktop profile on Windows and macOS | Keep the recovery status and action in the row; show sanitized feedback once when an explicit reconnect fails, not during polling. When both managed entries are gone, rebuild from the current native files without first deleting the connection record. No forwarding or CLI protocol change. | Renderer failures and synthetic two-file reconnect, retry and disconnect regressions; native acceptance pending on both platforms. |
+| `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `t3code`, historical `glm` | Existing entry points and native adapters in the inventory below | No Harness-specific toast or change in routing, configuration or UI | Unchanged; no new native acceptance claimed. |
+
 ## Routing failover after an unreadable Codex rejection
 
 The change is scoped to an explicit retryable HTTP rejection on the native

@@ -117,14 +117,7 @@ pub(super) fn prepare(profile: &Path, token: &str) -> Result<FileEdit, String> {
             .is_some_and(|key| key.as_str() != Some(token))
             && !references_local_gateway(profile)?
         {
-            log::warn!(
-                "[AgentConnections] harness_credentials prepare CONFLICT: profile={:?} existing_key={:?} new_token_len={}",
-                profile,
-                value["refs"].get(KEY).and_then(|k| k.as_str()).map(|s| {
-                    if s.len() > 8 { format!("{}...", &s[..8]) } else { "<short>".into() }
-                }),
-                token.len(),
-            );
+            log::warn!("Harness gateway credential ownership could not be verified");
             return Err(CONFLICT.into());
         }
         put(value, &["refs".into(), KEY.into()], Some(json!(token)))
@@ -204,6 +197,66 @@ pub(super) fn upgrades(before: &Receipt, after: &Receipt) -> bool {
         })
 }
 
+/// A native reset can remove both managed entries while leaving account settings
+/// intact. In this case there is nothing to release: journal the new baseline
+/// before writing either file, so an interrupted reconnect remains retryable.
+pub(super) fn rebuild_stripped(
+    manager: &Manager,
+    old: &Receipt,
+    build: impl FnOnce() -> Result<Receipt, String>,
+) -> Result<Option<Receipt>, String> {
+    let [profile, store] = old.files.as_slice() else {
+        return Ok(None);
+    };
+    if !matches!(profile.format, Format::Cordis)
+        || !matches!(store.format, Format::HarnessCredentials)
+        || path(&profile.path)? != store.path
+        || store.installed["refs"][KEY].as_str() != Some(old.token.as_str())
+    {
+        return Ok(None);
+    }
+    let cordis = read(&profile.path)?;
+    let native = profile.format.parse(cordis.as_deref())?;
+    if !native["providers"]
+        .as_object()
+        .is_some_and(|providers| providers.is_empty())
+        || native.get("sessionHeader").is_some()
+        || crate::services::deepseek_harness::selection(&native)["provider"]
+            .as_str()
+            .is_some_and(|provider| provider.starts_with("varyai-"))
+    {
+        return Ok(None);
+    }
+    let credentials = read(&store.path)?;
+    if parse(credentials.as_deref())?["refs"].get(KEY).is_some() {
+        return Ok(None);
+    }
+    if references_gateway_key(&native) {
+        return Err(CONFLICT.into());
+    }
+    let next = build()?;
+    let [next_profile, next_store] = next.files.as_slice() else {
+        return Err(CONFLICT.into());
+    };
+    if next_profile.path != profile.path
+        || next_store.path != store.path
+        || next_profile.original != cordis
+        || next_store.original != credentials
+    {
+        return Err(CONFLICT.into());
+    }
+    // The journal contains the exact pre-repair contents of both native files.
+    atomic_write_private(
+        &manager.path(&old.app)?,
+        &serde_json::to_vec(&next).map_err(|_| FAILED)?,
+    )
+    .map_err(|_| FAILED)?;
+    for file in &next.files {
+        file.write()?;
+    }
+    manager.remember_model(&next.app, Some(&next.model));
+    Ok(Some(next))
+}
 pub(super) fn release(manager: &Manager, receipt: &Receipt) -> Result<(), String> {
     let profile = receipt
         .files
