@@ -5310,6 +5310,8 @@
     "more": "更多",
     "traeStartingModelHint": "设为支持此模型的 TRAE 模式的新会话首选模型；已有会话保留自己的选择。TRAE 未连接时，选择会等待桥接同步。",
     "nativePicker": "Vary 会把全局模型目录加入此工具。重启后，请在工具内选择模型。",
+    "defaultModelUnsupported": "不支持默认模型",
+    "defaultModelUnsupportedHint": "ZCode 不支持通过 Vary 设置默认模型。Vary 会把共享模型目录写入配置，请在 ZCode 内选择模型。",
     "disconnectTitle": "断开 {{app}} 与 Vary 的连接？",
     "disconnectHint": "Vary 会移除写入 {{app}} 配置的端点、密钥、模型和推理强度，并恢复 {{app}} 连接前的设置。Vary 的供应商和账户保持不变。",
     "codexDisconnectNote": "保留 Vary 的供应商配置，以便继续打开使用 Vary 模型创建的会话。",
