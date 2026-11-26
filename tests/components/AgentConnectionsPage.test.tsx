@@ -5275,6 +5275,13 @@ describe("Agent connections", () => {
           true,
         ),
       );
+      await waitFor(() =>
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        ).not.toBeInTheDocument(),
+      );
     },
   );
   it.each([
@@ -5332,9 +5339,108 @@ describe("Agent connections", () => {
             true,
           ),
         );
+        await waitFor(() =>
+          expect(
+            within(row).queryByRole("button", {
+              name: "agentConnections.restart",
+            }),
+          ).not.toBeInTheDocument(),
+        );
       } finally {
         os.mockRestore();
       }
+    },
+  );
+  it.each(["model change", "disconnect"] as const)(
+    "keeps a successful Harness restart acknowledged until a %s",
+    async (change) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const app = "deepseek-harness";
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          model: "vary-auto/previous",
+          desktopState: "current",
+          restartRequired: false,
+          recoveryPending: false,
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.restart).mockRejectedValueOnce(
+        "agentConnections.restartOpenFailed",
+      );
+      const view = mount(false, client);
+      const rowName = { name: `apps.${app}` };
+      const tools = within(await screen.findByRole("article", rowName));
+      const restartButton = { name: "agentConnections.restart" };
+      const confirmRestart = async () => {
+        fireEvent.click(await tools.findByRole("button", restartButton));
+        fireEvent.click(
+          within(screen.getByRole("dialog")).getByRole("button", restartButton),
+        );
+      };
+      await confirmRestart();
+      await screen.findByText("agentConnections.restartOpenFailed");
+      await waitFor(() =>
+        expect(tools.getByRole("button", restartButton)).toBeEnabled(),
+      );
+      await confirmRestart();
+      await waitFor(() =>
+        expect(
+          tools.queryByRole("button", restartButton),
+        ).not.toBeInTheDocument(),
+      );
+      view.unmount();
+      mount(true, client);
+      const compactTools = within(await screen.findByRole("article", rowName));
+      expect(
+        compactTools.queryByRole("button", restartButton),
+      ).not.toBeInTheDocument();
+      fireEvent.click(
+        compactTools.getByRole("button", {
+          name: `agentConnections.details apps.${app}`,
+        }),
+      );
+      if (change === "model change") {
+        fireEvent.click(
+          compactTools.getByRole("button", {
+            name: `agentConnections.model apps.${app}`,
+          }),
+        );
+        fireEvent.click(
+          await screen.findByRole("radio", { name: /Shared group/ }),
+        );
+        await waitFor(() =>
+          expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+            app,
+            true,
+            "vary-auto/shared",
+          ),
+        );
+      } else {
+        fireEvent.click(compactTools.getByRole("switch", rowName));
+        fireEvent.click(
+          within(screen.getByRole("dialog")).getByRole("button", {
+            name: "agentConnections.disconnectRestore",
+          }),
+        );
+        await waitFor(() =>
+          expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+            app,
+            false,
+            null,
+          ),
+        );
+      }
+      expect(
+        await compactTools.findByRole("button", restartButton),
+      ).toBeEnabled();
     },
   );
   it("keeps the Harness restart hidden on an unsupported desktop platform", async () => {

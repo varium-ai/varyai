@@ -43,6 +43,14 @@ pub(super) fn title_session(
     {
         return None;
     }
+    if agent == "zcode" {
+        let mut values = headers.get_all("x-session-id").iter();
+        let id = values.next()?.to_str().ok()?;
+        if values.next().is_some() {
+            return None;
+        }
+        return crate::proxy::tool_observation::types::normalized_session_id(Some(id));
+    }
     let session = crate::proxy::session::extract_client_session_id(headers, body, agent)?;
     let id = match agent {
         "codex" => session.session_id.strip_prefix("codex_")?,

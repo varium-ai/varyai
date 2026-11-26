@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use providers::{
-    claude, codex, deepseek_harness, gemini, grokbuild, hermes, openclaw, opencode, pi,
+    claude, codex, deepseek_harness, gemini, grokbuild, hermes, openclaw, opencode, pi, zcode,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,12 +104,17 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 }
 
 pub(crate) fn has_named_sessions(agent: &str) -> bool {
-    agent == "codex" || named_session_reader(agent).is_some()
+    matches!(agent, "codex" | "zcode") || named_session_reader(agent).is_some()
 }
 
 pub(crate) fn named_session_titles(agent: &str) -> Vec<(String, String)> {
     if agent == "codex" {
         return codex::load_thread_titles().into_iter().collect();
+    }
+    if agent == "zcode" {
+        return zcode::load_task_titles(
+            &crate::config::get_home_dir().join(".zcode/v2/tasks-index.sqlite"),
+        );
     }
     named_session_reader(agent).map_or_else(Vec::new, |read| {
         let mut titles = Vec::new();

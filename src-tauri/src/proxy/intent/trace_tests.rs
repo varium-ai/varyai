@@ -2,6 +2,32 @@ use super::trace::*;
 use std::{sync::Arc, time::Instant};
 
 #[test]
+fn zcode_live_title_requires_one_local_native_session_header() {
+    let body = serde_json::json!({"metadata": {"session_id": "synthetic-session"}});
+    let mut headers = http::HeaderMap::new();
+    let title_session = |headers: &http::HeaderMap, local| {
+        super::identity::title_session("zcode", headers, &body, local)
+    };
+    assert_eq!(title_session(&headers, true), None);
+
+    headers.insert(
+        "x-session-id",
+        http::HeaderValue::from_static("synthetic-session"),
+    );
+    assert_eq!(
+        title_session(&headers, true).as_deref(),
+        Some("synthetic-session")
+    );
+    assert_eq!(title_session(&headers, false), None);
+
+    headers.append(
+        "x-session-id",
+        http::HeaderValue::from_static("different-session"),
+    );
+    assert_eq!(title_session(&headers, true), None);
+}
+
+#[test]
 fn live_session_titles_are_exact_cached_and_excluded_from_history(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;

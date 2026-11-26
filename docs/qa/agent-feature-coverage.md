@@ -40,6 +40,10 @@ or Windows can offer its confirmed restart action after connection status loads
 even when desktop freshness is missing or unknown. The existing bundle or
 process identity checks still control the native action. Recovery-pending and
 unsupported states suppress this fallback. The CLI starts a new session.
+The renderer records confirmed restart success for the current workspace and
+hides the fallback until another successful configuration change. A failed
+restart stays retryable, and fresh restart requirements from the native state
+still take precedence.
 
 The other Agent rows in the inventory above retain their own restart or new
 session entry points and native adapters. The test plan checks macOS, Windows,
@@ -1135,6 +1139,11 @@ suites and native client acceptance were not repeated for this follow-up.
 All entries below share per-request rate measurements and both stage layouts.
 The macOS and Windows paths use the same session readers and protocol observer.
 Native title lookup requires an explicit local identity and an exact match.
+For the ZCode routing graph report, the desktop task index supplies the
+title. ZCode removes the `sess_` prefix before sending the native session
+header. The shared stage matches the remaining identifier to a local task
+and retains the short reference for missing or ambiguous titles. The other
+Agent rows below document their existing sources and fallbacks.
 Gemini derives its session list title from message content. It uses the same
 short opaque reference as clients that lack a verified native title reader.
 The reference appears when a route has a session digest. Rate availability
@@ -1159,7 +1168,7 @@ depends on each provider's usage events and stream timing.
 | `trae-intl`        | TRAE International connection      | Short reference                                     | Renderer passed, native pending |
 | `kimi`             | Kimi Code CLI and desktop          | Short reference                                     | Renderer passed, native pending |
 | `qwen`             | Qwen Code CLI                      | Short reference                                     | Renderer passed, native pending |
-| `zcode`            | ZCode desktop                      | Short reference                                     | Renderer passed, native pending |
+| `zcode`            | ZCode desktop on macOS and Windows | Native title from the local task index on exact ID match | macOS SQLite and stage regressions passed. Installed clients pending. |
 | `deepseek-harness` | DeepSeek Harness desktop           | Short reference                                     | Renderer passed, native pending |
 | `glm`              | Shared routing source cards        | No GLM native title reader or routing source        | Source review. Native pending   |
 | `t3code`           | T3 Code desktop                    | Short reference                                     | Renderer passed, native pending |

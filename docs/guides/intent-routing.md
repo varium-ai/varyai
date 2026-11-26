@@ -87,7 +87,9 @@ Click the group name, member summary, blank row space or **Edit** to open its ed
 Custom drafts start with an editable, distinct group name. The publication
 switch also works for automatically discovered groups and retains discovery
 as their membership source. The live stage labels the session's name as the
-conversation title.
+conversation title. For a local ZCode request, the stage reads the title from
+the desktop task index using the request's exact session identifier. The stage
+shows a short reference while a matching title is unavailable.
 
 When an Agent sends requests to different routes at the same time, each
 route has its own source and attempted upstream cards. The cards show the
