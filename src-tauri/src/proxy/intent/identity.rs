@@ -31,7 +31,7 @@ pub(super) fn named(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
-pub(super) fn title_session(
+pub(in crate::proxy) fn title_session(
     agent: &str,
     headers: &HeaderMap,
     body: &Value,
@@ -51,6 +51,39 @@ pub(super) fn title_session(
         }
         return crate::proxy::tool_observation::types::normalized_session_id(Some(id));
     }
+    let sources: Option<(&[&str], &[&str])> = match agent {
+        "trae" | "trae-intl" => Some((
+            &["x-session-id", "x-conversation-id"],
+            &["/chat_session_id", "/session_id", "/metadata/session_id"],
+        )),
+        "workbuddy" | "workbuddy-ai" => Some((&["x-conversation-id"], &["/metadata/session_id"])),
+        _ => None,
+    };
+    if let Some((names, fields)) = sources {
+        let mut id = None;
+        for raw in names
+            .iter()
+            .flat_map(|name| {
+                headers
+                    .get_all(*name)
+                    .iter()
+                    .map(|value| value.to_str().ok())
+            })
+            .chain(
+                fields
+                    .iter()
+                    .filter_map(|field| body.pointer(field))
+                    .map(Value::as_str),
+            )
+        {
+            let value = crate::proxy::tool_observation::types::normalized_session_id(raw)?;
+            if id.as_ref().is_some_and(|id| id != &value) {
+                return None;
+            }
+            id = Some(value);
+        }
+        return id;
+    }
     let session = crate::proxy::session::extract_client_session_id(headers, body, agent)?;
     let id = match agent {
         "codex" => session.session_id.strip_prefix("codex_")?,
@@ -62,6 +95,61 @@ pub(super) fn title_session(
         _ => &session.session_id,
     };
     crate::proxy::tool_observation::types::normalized_session_id(Some(id))
+}
+
+pub(in crate::proxy) fn trae_title_turn(
+    agent: &str,
+    headers: &HeaderMap,
+    body: &Value,
+) -> Option<[u8; 32]> {
+    if !matches!(agent, "trae" | "trae-intl")
+        || ["x-session-id", "x-conversation-id"]
+            .iter()
+            .any(|name| headers.contains_key(*name))
+        || ["/chat_session_id", "/session_id", "/metadata/session_id"]
+            .iter()
+            .any(|path| body.pointer(path).is_some())
+    {
+        return None;
+    }
+    let input = body.get("messages").or_else(|| body.get("input"))?;
+    let digest = crate::session_manager::providers::trae::turn_digest;
+    let content = if input.is_string() {
+        input
+    } else {
+        &input
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|item| item["role"] == "user")?["content"]
+    };
+    if let Some(text) = content.as_str() {
+        return digest(trae_wrapped_input(text).unwrap_or(text));
+    }
+    let mut parts = content.as_array()?.iter().filter_map(|part| {
+        matches!(part["type"].as_str(), Some("input_text" | "text"))
+            .then(|| part["text"].as_str())
+            .flatten()
+    });
+    let first = parts.next()?;
+    let mut remaining = parts.peekable();
+    if remaining.peek().is_none() {
+        return digest(trae_wrapped_input(first).unwrap_or(first));
+    }
+    let mut wrapped = std::iter::once(first)
+        .chain(remaining)
+        .filter_map(trae_wrapped_input);
+    let text = wrapped.next()?;
+    if wrapped.next().is_some() {
+        return None;
+    }
+    digest(text)
+}
+
+fn trae_wrapped_input(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("<user_input>")?;
+    let (query, suffix) = rest.split_once("</user_input>")?;
+    (!query.contains("<user_input>") && !suffix.contains("<user_input>")).then_some(query)
 }
 
 pub(super) fn affinity(headers: &HeaderMap, body: &[u8]) -> String {
@@ -413,7 +501,7 @@ mod tests {
             );
         }
         let body = serde_json::json!({"metadata":{"session_id":id}});
-        for agent in ["openclaw", "deepseek-harness"] {
+        for agent in ["openclaw", "deepseek-harness", "trae", "trae-intl"] {
             assert_eq!(
                 title_session(agent, &HeaderMap::new(), &body, true).as_deref(),
                 Some(id),
@@ -423,12 +511,8 @@ mod tests {
         for agent in [
             "claude-desktop",
             "gemini",
-            "workbuddy",
-            "workbuddy-ai",
             "qoder",
             "doubaowork",
-            "trae",
-            "trae-intl",
             "kimi",
             "qwen",
             "zcode",

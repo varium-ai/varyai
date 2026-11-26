@@ -82,12 +82,12 @@ async fn trae_stream_opens_before_slow_upstream_headers_and_keeps_wire_chunks(
         Arc::new(Database::memory()?),
         None,
     )
-    .with_intent_runtime(runtime);
+    .with_intent_runtime(runtime.clone());
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
     let request = client.post(format!("http://127.0.0.1:{}/connections/trae/v1/chat/completions", info.port))
         .bearer_auth("synthetic-trae")
-        .json(&json!({"model":super::global_tests::group().alias(),"stream":true,"messages":[{"role":"user","content":"synthetic slow fixture"}]}))
+        .json(&json!({"model":super::global_tests::group().alias(),"stream":true,"metadata":{"session_id":"synthetic-chat"},"messages":[{"role":"user","content":"synthetic slow fixture"}]}))
         .send();
     let response = tokio::time::timeout(Duration::from_secs(8), request).await;
     if response.is_err() {
@@ -102,6 +102,16 @@ async fn trae_stream_opens_before_slow_upstream_headers_and_keeps_wire_chunks(
         .await??
         .ok_or("missing heartbeat")?;
     assert_eq!(heartbeat.as_ref(), b": varyai-waiting\n\n");
+    let live = runtime
+        .traces
+        .live_requests(runtime.traces.snapshot(), |agent| {
+            assert_eq!(agent, "trae");
+            vec![("synthetic-chat".into(), "Synthetic title".into())]
+        });
+    assert_eq!(
+        serde_json::to_value(live)?[0]["sessionTitle"],
+        "Synthetic title"
+    );
     release.notify_one();
     let remaining = response.bytes().await?;
     assert_eq!(remaining.as_ref(), b"data: {\"id\":\"synthetic-slow\",\"choices\":[{\"delta\":{\"content\":\"synthetic answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
@@ -406,6 +416,11 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
             async move {
                 let _ = tx.send(body.clone()).await;
                 let followup = body["messages"].as_array().is_some_and(|messages| messages.iter().any(|m| m["role"] == "tool"));
+                if (!followup && body["model"] == "other-exact-model")
+                    || (body["reject_bound"] == true && body["model"] == "exact-model")
+                {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic upstream detail"}}))).into_response();
+                }
                 let call = if body["stream"] == true { "synthetic-stream-call" } else { "synthetic-json-call" };
                 let arguments = if body["stream"] == true { r#"{"transport":"stream"}"# } else { r#"{"transport":"json"}"# };
                 if body["stream"] == true {
@@ -426,7 +441,17 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
     let db = Arc::new(Database::memory()?);
     let runtime = Arc::new(Runtime::default());
     runtime.prepare_continuations(path.clone()).await;
-    runtime.set_global(catalog(address)?, 0)?;
+    let mut published = catalog(address)?;
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing fixture")?,
+    );
+    session.group.default_member_id = "b".into();
+    session.group.fallback_member_ids = vec!["a".into()];
+    runtime.set_global(published, 0)?;
     for app in ["trae", "trae-intl"] {
         runtime.connections.install(&receipt(app))?;
     }
@@ -460,8 +485,20 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
             .send()
             .await?;
         assert_eq!(response.status(), StatusCode::OK);
-        let _ = response.bytes().await?;
-        let _ = rx.recv().await.ok_or("missing first request")?;
+        assert!(response.text().await?.contains("read_fixture"));
+        let first = rx.recv().await.ok_or("missing first request")?;
+        let next = rx.recv().await.ok_or("missing fallback request")?;
+        assert_eq!(first["model"], "other-exact-model");
+        assert_eq!(next["model"], "exact-model");
+        for field in ["messages", "tools", "temperature", "vendor_extension"] {
+            assert_eq!(next[field], first[field]);
+        }
+        let traces = runtime.traces.snapshot();
+        assert!(traces.iter().any(|row| row.agent == app
+            && row
+                .steps
+                .iter()
+                .any(|step| { step.kind == trace::Kind::Rejected && step.status == Some(400) })));
     }
     runtime.flush_continuations().await;
     server.stop().await?;
@@ -566,6 +603,21 @@ async fn trae_tools_without_session_resume_exact_observed_owner_after_restart(
             assert_eq!(response.status(), StatusCode::OK);
             let _ = rx.recv().await.ok_or("missing forwarded continuation")?;
         }
+        body["reject_bound"] = json!(true);
+        let response = client
+            .post(format!("{root}/{app}/v1/chat/completions"))
+            .bearer_auth(format!("synthetic-{app}"))
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(!response.text().await?.contains("Synthetic upstream detail"));
+        let rejected = rx.recv().await.ok_or("missing owner request")?;
+        assert_eq!(rejected["model"], "exact-model");
+        assert!(
+            rx.try_recv().is_err(),
+            "a bound request reached the fallback"
+        );
     }
     server.stop().await?;
     task.abort();

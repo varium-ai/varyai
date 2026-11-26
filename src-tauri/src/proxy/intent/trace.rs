@@ -34,6 +34,22 @@ pub(crate) struct Candidate {
     pub(super) scheduling: Weak<super::scheduling::Scheduling>,
 }
 
+impl Candidate {
+    pub(crate) fn direct(provider: &crate::provider::Provider, model: &str) -> Self {
+        Self {
+            key_id: None,
+            provider_id: provider.id.clone(),
+            source_provider_id: None,
+            provider_name: provider.name.clone(),
+            model: model.to_owned(),
+            fixed_effort: None,
+            context_window: None,
+            account: None,
+            scheduling: Weak::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -84,6 +100,8 @@ pub(crate) struct Route {
     pub session: Option<String>,
     #[serde(skip)]
     native_session: Option<[u8; 32]>,
+    #[serde(skip)]
+    trae_title_turn: Option<[u8; 32]>,
     pub model: String,
     pub group_name: String,
     pub strategy: String,
@@ -364,6 +382,7 @@ impl Store {
                 kind: kind.map(str::to_owned),
                 session: None,
                 native_session: None,
+                trae_title_turn: None,
                 model: label(model),
                 group_name: label(group_name),
                 strategy: label(strategy),
@@ -418,6 +437,36 @@ impl Store {
             hash.update(part.as_bytes());
         }
         hash.finalize().into()
+    }
+
+    pub(crate) fn attach_trae_sessions(&self, requests: &mut [Route]) {
+        use crate::{
+            services::trae_bridge::shared::Edition, session_manager::providers::trae::session_turns,
+        };
+
+        for edition in Edition::ALL {
+            let routes = requests.iter_mut().filter(|route| {
+                route.agent == edition.app()
+                    && route.trae_title_turn.is_some()
+                    && route.native_session.is_none()
+            });
+            let mut turns = None;
+            for route in routes {
+                let turns = turns.get_or_insert_with(|| session_turns(edition));
+                let mut matches = turns.iter().filter(|turn| {
+                    Some(turn.prompt) == route.trae_title_turn
+                        // TRAE sends additional provider requests during the same turn.
+                        && (0..=30_000).contains(&route.started_at.saturating_sub(turn.started_at))
+                });
+                let Some(first) = matches.next() else {
+                    continue;
+                };
+                if matches.all(|turn| turn.session_id == first.session_id) {
+                    route.native_session =
+                        Some(self.native_session_digest(&route.agent, &first.session_id));
+                }
+            }
+        }
     }
 
     pub(crate) fn live_requests(
@@ -512,10 +561,18 @@ impl Request {
         self.update(|row| row.session = Some(digest));
     }
 
-    pub(super) fn native_session(&self, id: &str) {
+    pub(in crate::proxy) fn native_session(&self, id: &str) {
         self.update(|row| {
             if row.kind.is_none() {
                 row.native_session = Some(self.store.native_session_digest(&row.agent, id));
+            }
+        });
+    }
+
+    pub(in crate::proxy) fn trae_title_turn(&self, digest: [u8; 32]) {
+        self.update(|row| {
+            if row.kind.is_none() {
+                row.trae_title_turn = Some(digest);
             }
         });
     }

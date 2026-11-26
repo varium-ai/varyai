@@ -145,7 +145,7 @@ fn ingress_diagnostic(request: &Request) -> String {
     let fetch_site = request.headers().contains_key("sec-fetch-site");
     format!("peer={peer} method={method} route={route} origin={origin} fetch_site={fetch_site}")
 }
-fn local_client(request: &Request) -> bool {
+pub(super) fn local_client(request: &Request) -> bool {
     let peer = request.extensions().get::<std::net::SocketAddr>();
     if peer.is_some_and(|peer| !peer.ip().is_loopback()) {
         return false;
@@ -169,6 +169,13 @@ fn local_client(request: &Request) -> bool {
             &http::Method::POST,
             "/connections/trae/v1/chat/completions" | "/connections/trae-intl/v1/chat/completions",
         ) => origin.is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app"),
+        (&http::Method::POST, path)
+            if (path.starts_with("/upstream/trae/providers/")
+                || path.starts_with("/upstream/trae-intl/providers/"))
+                && path.ends_with("/v1/responses") =>
+        {
+            origin.is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app")
+        }
         (&http::Method::GET, "/connections/claude-desktop/v1/models")
         | (&http::Method::POST, "/connections/claude-desktop/v1/messages") => {
             origin.is_none_or(|origin| matches!(origin.as_bytes(), b"null" | b"app://localhost"))

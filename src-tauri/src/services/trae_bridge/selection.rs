@@ -1,8 +1,28 @@
 //! Persist TRAE selection independently of delivery to a connected client.
+use super::shared::{Client, Edition};
 use crate::{database::Database, error::AppError, provider::Provider};
 
 pub(crate) const PENDING_KEY: &str = "profile_trae_sync_pending";
 pub(crate) const ROUTE_PENDING_KEY: &str = "trae_responses_route_pending";
+
+pub(crate) fn route_pending_key(edition: Edition) -> &'static str {
+    match edition {
+        Edition::China => ROUTE_PENDING_KEY,
+        Edition::International => "trae_intl_responses_route_pending",
+    }
+}
+
+fn managed_responses(provider: &Provider) -> bool {
+    provider.meta.as_ref().and_then(|m| m.live_config_managed) == Some(true)
+        && crate::services::upstream_protocol::trae_native_responses(provider)
+}
+
+pub(crate) fn has_managed_responses(db: &Database, edition: Edition) -> Result<bool, AppError> {
+    Ok(db
+        .get_all_providers(edition.app())?
+        .values()
+        .any(managed_responses))
+}
 
 pub(crate) fn select(db: &Database, target: &Provider) -> Result<(), AppError> {
     let official = target.category.as_deref() == Some("official");
@@ -20,6 +40,9 @@ pub(crate) fn select(db: &Database, target: &Provider) -> Result<(), AppError> {
         db.save_provider("trae", &provider)?;
     }
     db.set_current_provider("trae", &target.id)?;
+    if crate::services::upstream_protocol::trae_native_responses(target) {
+        db.set_setting(ROUTE_PENDING_KEY, "true")?;
+    }
     db.set_setting(PENDING_KEY, "true")
 }
 
@@ -68,35 +91,41 @@ pub(crate) fn sync(db: &Database) -> bool {
     }
 }
 
-pub(crate) fn sync_response_route(db: &Database) -> bool {
-    sync_response_route_with(db, |provider| {
-        // Reattach to a user-opened client even when a pending route removal
-        // no longer requests inspection. Do not enable auditing or launch TRAE.
-        if !db.get_bool_flag(crate::services::trae_bridge::CONSENT_KEY)? {
+pub(crate) fn sync_response_route(db: &Database, edition: Edition) -> bool {
+    sync_response_route_with(db, edition, |provider| {
+        if !db.get_bool_flag(edition.consent_key())? {
             return Err(super::unavailable());
         }
-        super::ensure_ready()?;
-        super::apply_connected(provider)
+        let client = Client(edition);
+        client.reconnect()?;
+        if client.matches(provider) == Some(true) {
+            return Ok(());
+        }
+        client.apply(provider)
     })
 }
 
 fn sync_response_route_with(
     db: &Database,
+    edition: Edition,
     mut apply: impl FnMut(&Provider) -> Result<(), AppError>,
 ) -> bool {
+    let app = match edition {
+        Edition::China => crate::app_config::AppType::Trae,
+        Edition::International => crate::app_config::AppType::TraeIntl,
+    };
     let mut operation = || -> Result<(), AppError> {
-        for provider in db.get_all_providers("trae")?.into_values().filter(|p| {
-            p.meta.as_ref().and_then(|m| m.live_config_managed) == Some(true)
-                && crate::services::upstream_protocol::trae_native_responses(p)
-        }) {
+        for provider in db
+            .get_all_providers(edition.app())?
+            .into_values()
+            .filter(managed_responses)
+        {
             // Update owned models in place so existing conversations keep their IDs.
             apply(&crate::services::upstream_protocol::project(
-                db,
-                &crate::app_config::AppType::Trae,
-                &provider,
+                db, &app, &provider,
             )?)?;
         }
-        db.set_setting(ROUTE_PENDING_KEY, "false")
+        db.set_setting(route_pending_key(edition), "false")
     };
     if operation().is_ok() {
         true
@@ -115,6 +144,8 @@ mod route_tests {
     fn response_route_sync_preserves_selection_and_retries_delivery_without_auditing(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let db = Database::memory()?;
+        let edition = Edition::China;
+        let intl_pending = route_pending_key(Edition::International);
         db.update_security_settings(&crate::database::SecurityAuditSettings { enabled: false })?;
         let mut provider = Provider::with_id(
             "fixture".into(),
@@ -131,14 +162,17 @@ mod route_tests {
             .live_config_managed = Some(true);
         db.save_provider("trae", &provider)?;
         db.set_current_provider("trae", &provider.id)?;
+        db.save_provider("trae-intl", &provider)?;
+        db.set_current_provider("trae-intl", &provider.id)?;
+        db.set_setting(intl_pending, "true")?;
         db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "true")?;
         db.set_setting(ROUTE_PENDING_KEY, "true")?;
-        assert!(!sync_response_route_with(&db, |_| Err(AppError::Config(
-            "synthetic unavailable".into()
-        ))));
+        assert!(!sync_response_route_with(&db, edition, |_| Err(
+            AppError::Config("synthetic unavailable".into())
+        )));
         assert!(db.get_bool_flag(ROUTE_PENDING_KEY)?);
         let mut delivered = Vec::new();
-        assert!(sync_response_route_with(&db, |p| {
+        assert!(sync_response_route_with(&db, edition, |p| {
             delivered.push(p.clone());
             Ok(())
         }));
@@ -148,11 +182,11 @@ mod route_tests {
         assert!(!db.get_bool_flag(ROUTE_PENDING_KEY)?);
         db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "false")?;
         db.set_setting(ROUTE_PENDING_KEY, "true")?;
-        assert!(sync_response_route_with(&db, |p| {
+        assert!(sync_response_route_with(&db, edition, |p| {
             delivered.push(p.clone());
             Ok(())
         }));
-        assert_eq!(delivered[1].settings_config, provider.settings_config);
+        assert_eq!(delivered[1].settings_config, delivered[0].settings_config);
         assert_eq!(db.get_current_provider("trae")?, Some(provider.id.clone()));
         assert_eq!(
             db.get_provider_by_id(&provider.id, "trae")?
@@ -161,15 +195,27 @@ mod route_tests {
             provider.settings_config
         );
         assert!(!db.get_security_settings()?.enabled);
+        assert!(db.get_bool_flag(intl_pending)?);
+        assert!(sync_response_route_with(&db, Edition::International, |p| {
+            assert!(p.settings_config["baseUrl"]
+                .as_str()
+                .is_some_and(|url| url.contains("/upstream/trae-intl/providers/fixture/v1")));
+            Ok(())
+        }));
+        assert!(!db.get_bool_flag(intl_pending)?);
+        assert_eq!(
+            db.get_current_provider("trae-intl")?,
+            Some(provider.id.clone())
+        );
         provider.category = Some("official".into());
         db.save_provider("trae", &provider)?;
-        assert!(sync_response_route_with(&db, |_| panic!(
+        assert!(sync_response_route_with(&db, edition, |_| panic!(
             "official model must remain untouched"
         )));
         provider.category = None;
         provider.meta.as_mut().unwrap().live_config_managed = Some(false);
         db.save_provider("trae", &provider)?;
-        assert!(sync_response_route_with(&db, |_| panic!(
+        assert!(sync_response_route_with(&db, edition, |_| panic!(
             "inactive model must remain untouched"
         )));
         Ok(())

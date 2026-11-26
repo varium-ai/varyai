@@ -1688,6 +1688,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_connects_with_256_visible_models_and_a_compatibility_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let oauth = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut source = provider("a");
+        source.settings_config["modelCatalog"]["models"] = json!((0..255)
+            .map(|i| json!({"model":format!("model-{i:03}")}))
+            .collect::<Vec<_>>());
+        let mut stand_in = direct_group(&source, "model-254");
+        stand_in.id = "historical".into();
+        let alias = stand_in.alias();
+        let menu = prepare_with_stand_ins(oauth, vec![source], vec![], None, vec![stand_in])
+            .await
+            .unwrap();
+        assert_eq!(menu.groups.len(), 257);
+        assert_eq!(menu.listed_aliases().count(), 256);
+        assert_eq!(menu.groups[&alias].targets[0].model, "model-254");
+
+        let config = dir.path().join("config.toml");
+        let original = "model='original'\n";
+        std::fs::write(&config, original).unwrap();
+        let manager = super::super::client::Manager::new(
+            config,
+            dir.path().join("receipt.json"),
+            Arc::new(crate::proxy::intent::Runtime::default()),
+        );
+        manager
+            .activate_menu(Arc::new(menu), "http://127.0.0.1:1/intent/v1")
+            .unwrap();
+        assert!(manager.status().unwrap().enabled);
+        manager.restore().unwrap();
+        super::super::client::tests::assert_restored_config(&manager, original);
+    }
+
+    #[tokio::test]
     async fn large_provider_catalog_keeps_group_members_and_bounds_the_published_menu() {
         let dir = tempfile::tempdir().unwrap();
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));

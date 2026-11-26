@@ -58,6 +58,25 @@ pub(crate) fn extract_user_text(body: &Value, codex_responses: bool) -> Option<S
         return None;
     }
     let last = items.iter().rfind(|item| !is_page_context(item))?;
+    user_message_text(last)
+}
+
+/// The router has already checked that preceding tool rounds are closed.
+pub(crate) fn extract_user_text_after_closed_tools(
+    body: &Value,
+    codex_responses: bool,
+) -> Option<String> {
+    let items = body["input"].as_array()?;
+    if items.len() > 1024 {
+        return None;
+    }
+    let last = items
+        .iter()
+        .rfind(|item| !codex_responses || !crate::proxy::intent::is_codex_page_context(item))?;
+    user_message_text(last)
+}
+
+fn user_message_text(last: &Value) -> Option<String> {
     if last.get("role")?.as_str()? != "user" {
         return None;
     }

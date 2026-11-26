@@ -626,6 +626,10 @@ function createBridge(
     apply: serial(apply),
     replace: serial(replace),
     remove: serial(remove),
+    needsSelection(id, model) {
+      const owned = loadOwned(id).filter((row) => row.model === model);
+      return owned.length !== 1 || startingModel.needsSelection(owned[0].id);
+    },
     select: serial(async (id, model) => {
       const owned = loadOwned(id).filter((row) => row.model === model);
       if (owned.length !== 1 || !startingModel)

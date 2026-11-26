@@ -74,14 +74,17 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
     let denied_requests = Arc::new(AtomicUsize::new(0));
     let permitted_requests = Arc::new(AtomicUsize::new(0));
     let fail_permitted = Arc::new(AtomicBool::new(false));
+    let reject_primary = Arc::new(AtomicBool::new(false));
     let denied = denied_requests.clone();
     let permitted = permitted_requests.clone();
     let fail = fail_permitted.clone();
+    let reject = reject_primary.clone();
     let task = tokio::spawn(async move {
         let app = Router::new().route("/*path", post(move |uri: http::Uri| {
             let denied = denied.clone();
             let permitted = permitted.clone();
             let fail = fail.clone();
+            let reject = reject.clone();
             async move {
                 if uri.path() == "/permitted/responses" {
                     permitted.fetch_add(1, Ordering::SeqCst);
@@ -90,6 +93,9 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
                     }
                 } else {
                     denied.fetch_add(1, Ordering::SeqCst);
+                    if reject.load(Ordering::SeqCst) {
+                        return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic upstream detail"}})));
+                    }
                 }
                 (StatusCode::OK, Json(json!({"id":"synthetic-response","object":"response","status":"completed","model":"exact-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic response"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}})))
             }
@@ -325,6 +331,68 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
         send("deepseek-harness", &alias).await?.status(),
         StatusCode::OK
     );
+    reject_primary.store(true, Ordering::SeqCst);
+    let counts = || {
+        (
+            denied_requests.load(Ordering::SeqCst),
+            permitted_requests.load(Ordering::SeqCst),
+        )
+    };
+    let (primary_before, fallback_before) = counts();
+    let routes = apps
+        .into_iter()
+        .map(|app| {
+            (
+                format!("/connections/{app}/v1/responses"),
+                "synthetic-agent-token",
+                alias.as_str(),
+            )
+        })
+        .chain(
+            codex_ingress
+                .into_iter()
+                .map(|(path, token)| (path.to_owned(), token, "synthetic-wire-group")),
+        )
+        .chain(std::iter::once((
+            "/gateway/v1/responses".to_owned(),
+            key.secret.as_str(),
+            alias.as_str(),
+        )));
+    for (path, token, model) in routes {
+        assert_eq!(
+            client
+                .post(format!("{local}{path}"))
+                .bearer_auth(token)
+                .json(&json!({"model":model,"input":format!("Synthetic fallback request {path}")}))
+                .send()
+                .await?
+                .status(),
+            StatusCode::OK,
+            "{path}"
+        );
+    }
+    let expected_attempts = apps.len() + codex_ingress.len() + 1;
+    let after_failover = counts();
+    assert_eq!(
+        after_failover,
+        (
+            primary_before + expected_attempts,
+            fallback_before + expected_attempts
+        )
+    );
+    assert_eq!(
+        client
+            .post(format!("{local}/connections/trae/v1/responses"))
+            .bearer_auth("synthetic-agent-token")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body("{")
+            .send()
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(counts(), after_failover);
+    reject_primary.store(false, Ordering::SeqCst);
     let forbidden_count = denied_requests.load(Ordering::SeqCst);
     assert_eq!(
         send("deepseek-harness", &overlapping_alias).await?.status(),
@@ -1250,7 +1318,9 @@ async fn native_gateway_formats_preserve_wire_extensions_and_gemini_stream_url(
             let tx=tx.clone();
             async move {
                 tx.send((uri.clone(), headers, bytes)).await.unwrap();
-                if uri.path().ends_with(":streamGenerateContent") {
+                if uri.path().starts_with("/reject/") {
+                    (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic upstream detail"}}))).into_response()
+                } else if uri.path().ends_with(":streamGenerateContent") {
                     ([(header::CONTENT_TYPE,"text/event-stream")],"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"synthetic\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1}}\n\n").into_response()
                 } else { Json(json!({"id":"native-fixture","content":[],"choices":[],"candidates":[],"usage":{"input_tokens":1,"output_tokens":1},"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}})).into_response() }
             }
@@ -1294,6 +1364,20 @@ async fn native_gateway_formats_preserve_wire_extensions_and_gemini_stream_url(
             ..Default::default()
         });
         session.targets[0].upstream = Some(provider);
+        let mut primary = session.targets[0].clone();
+        primary.model = "rejected-model".into();
+        primary.url = format!(
+            "http://{address}/reject{}",
+            path.replace("exact-model", "rejected-model")
+        )
+        .parse()?;
+        let mut primary_member = session.group.members[0].clone();
+        primary_member.id = "primary".into();
+        primary_member.model_id = primary.model.clone();
+        session.group.members.insert(0, primary_member);
+        session.group.default_member_id = "primary".into();
+        session.group.fallback_member_ids = vec!["a".into()];
+        session.targets.insert(0, primary);
         published
             .groups
             .insert(session.group.alias(), Arc::new(session.clone()));
@@ -1340,6 +1424,8 @@ async fn native_gateway_formats_preserve_wire_extensions_and_gemini_stream_url(
             .await?;
         assert_eq!(response.status(), StatusCode::OK, "{protocol:?}");
         let _: Value = response.json().await?;
+        let (rejected_uri, _, _) = rx.recv().await.ok_or("primary request missing")?;
+        assert!(rejected_uri.path().starts_with("/reject/"));
         let (uri, _, bytes) = rx.recv().await.ok_or("native request missing")?;
         let upstream: Value = serde_json::from_slice(&bytes)?;
         assert_eq!(upstream["vendor_extension"], body["vendor_extension"]);
@@ -1356,6 +1442,11 @@ async fn native_gateway_formats_preserve_wire_extensions_and_gemini_stream_url(
     let response=client.post(format!("http://127.0.0.1:{}/gateway/v1beta/models/vary-auto/native-3:streamGenerateContent?alt=sse",info.port)).bearer_auth(&key.secret).json(&fixtures[3].2).send().await?;
     assert_eq!(response.status(), StatusCode::OK);
     let _ = response.text().await?;
+    let (rejected_uri, _, _) = rx.recv().await.ok_or("primary stream request missing")?;
+    assert_eq!(
+        rejected_uri.path(),
+        "/reject/v1beta/models/rejected-model:streamGenerateContent"
+    );
     let (uri, _, _) = rx.recv().await.ok_or("stream request missing")?;
     assert_eq!(
         uri.path(),
@@ -3051,17 +3142,27 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
 #[serial_test::serial]
 async fn codex_grok_chat_normalizes_tool_schema_patterns() -> Result<(), Box<dyn std::error::Error>>
 {
-    codex_grok_chat_fixture(false).await
+    codex_grok_chat_fixture(false, false).await
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn codex_grok_chat_preserves_rejection_status_without_private_body(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    codex_grok_chat_fixture(true).await
+    codex_grok_chat_fixture(true, false).await
 }
 
-async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_converted_chat_bad_request_advances_to_next_model(
+) -> Result<(), Box<dyn std::error::Error>> {
+    codex_grok_chat_fixture(false, true).await
+}
+
+async fn codex_grok_chat_fixture(
+    reject: bool,
+    failover: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
     impl Drop for RestoreSecurity {
@@ -3076,12 +3177,18 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
-        axum::serve(listener, Router::new().route("/*path", post(move |Json(body): Json<Value>| {
+        axum::serve(listener, Router::new().route("/*path", post(move |uri: http::Uri, Json(body): Json<Value>| {
             let tx = tx.clone();
             async move {
+                if failover && uri.path().ends_with("/responses") {
+                    return (StatusCode::NOT_FOUND, Json(json!({"error":{"message":"Synthetic format unavailable"}})));
+                }
                 let _ = tx.send(body.clone()).await;
                 if reject {
                     return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error":{"message":"synthetic-private-upstream-echo"}})));
+                }
+                if failover && body["model"] == "synthetic-rejected" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"synthetic-private-upstream-echo"}})));
                 }
                 (StatusCode::OK, Json(json!({"id":"synthetic-reply","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})))
             }
@@ -3110,6 +3217,17 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
         ..Default::default()
     });
     session.targets[0].upstream = Some(provider);
+    if failover {
+        let mut primary = session.targets[0].clone();
+        primary.model = "synthetic-rejected".into();
+        let mut member = session.group.members[0].clone();
+        member.id = "primary".into();
+        member.model_id = primary.model.clone();
+        session.targets.insert(0, primary);
+        session.group.members.insert(0, member);
+        session.group.default_member_id = "primary".into();
+        session.group.fallback_member_ids = vec!["a".into()];
+    }
     runtime.set_menu(Arc::new(published))?;
     let server = ProxyServer::new(
         ProxyConfig {
@@ -3144,6 +3262,13 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
             },
             "synthetic response: {text}"
         );
+        if failover {
+            let primary = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await?
+                .ok_or("missing rejected request")?;
+            assert_eq!(primary["model"], "synthetic-rejected");
+            assert!(!text.contains("synthetic-private-upstream-echo"));
+        }
         let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await?
             .ok_or("missing upstream request")?;
@@ -3155,6 +3280,7 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
         } else {
             assert_eq!(status, StatusCode::OK);
             assert!(text.contains("Synthetic answer"));
+            assert_eq!(sent["model"], "grok-4.5");
             let schema = &sent["tools"][0]["function"]["parameters"];
             assert_eq!(
                 schema["properties"]["selector"]["allOf"][1]["pattern"],

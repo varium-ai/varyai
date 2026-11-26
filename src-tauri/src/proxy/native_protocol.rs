@@ -1,7 +1,7 @@
 //! Explicit upstream overrides for clients with dedicated native routes.
 use super::{
-    forwarder::RequestForwarder, protocol_bridge::Protocol, qoder_usage::Job, server::ProxyState,
-    ProxyError,
+    forwarder::RequestForwarder, intent::trace, protocol_bridge::Protocol, qoder_usage::Job,
+    server::ProxyState, ProxyError,
 };
 use crate::{app_config::AppType, provider::Provider};
 use axum::{
@@ -9,7 +9,11 @@ use axum::{
     response::Response,
 };
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Instant;
+
+#[derive(Clone)]
+pub(super) struct ProviderTrace(pub Arc<trace::Request>);
 
 fn invalid() -> ProxyError {
     ProxyError::ConfigError("Invalid native upstream protocol configuration".into())
@@ -41,23 +45,28 @@ pub(super) async fn handle(
             "Invalid local routing credential".into(),
         ));
     }
+    let started = Instant::now();
     let db = state.db.clone();
-    let (provider, routing) = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::error::AppError>((
-            db.get_provider_by_id(&id, &app)?,
-            db.get_bool_flag(crate::services::trae_bridge::ENABLED_KEY)?,
-        ))
-    })
-    .await
-    .map_err(|_| invalid())?
-    .map_err(|_| invalid())?;
+    let provider = tokio::task::spawn_blocking(move || db.get_provider_by_id(&id, &app))
+        .await
+        .map_err(|_| invalid())?
+        .map_err(|_| invalid())?;
     let provider = provider
         .filter(|p| p.category.as_deref() != Some("official"))
         .ok_or_else(invalid)?;
-    let responses_route = app_type == AppType::Trae
-        && routing
+    let responses_route = matches!(app_type, AppType::Trae | AppType::TraeIntl)
         && path == "v1/responses"
         && crate::services::upstream_protocol::trae_native_responses(&provider);
+    if responses_route
+        && (!super::connections::local_client(&request)
+            || provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.live_config_managed)
+                != Some(true))
+    {
+        return Err(invalid());
+    }
     if !responses_route && !needs_conversion(&provider, request.uri())? {
         return Err(invalid());
     }
@@ -78,15 +87,62 @@ pub(super) async fn handle(
     {
         return Err(invalid());
     }
+    if responses_route {
+        let trace = state.intent_runtime.traces.begin(
+            app_type.as_str(),
+            &model,
+            &provider.name,
+            "ordered",
+            started,
+        );
+        if let Some(id) = super::intent::identity::title_session(
+            app_type.as_str(),
+            &parts.headers,
+            &payload,
+            true,
+        ) {
+            trace.native_session(&id);
+        } else if let Some(digest) =
+            super::intent::identity::trae_title_turn(app_type.as_str(), &parts.headers, &payload)
+        {
+            trace.trae_title_turn(digest);
+        }
+        trace.plan(vec![trace::Candidate::direct(&provider, &model)], None);
+        match super::security::inspect_with_context(
+            &app_type,
+            &app_type,
+            &provider.id,
+            Some(&trace.id),
+            &mut payload,
+            &parts.headers,
+        ) {
+            Ok(Some(blocked)) => {
+                trace.finish(blocked.status().as_u16(), trace::State::Failed);
+                return Ok(blocked);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                trace.finish(502, trace::State::Failed);
+                return Err(error);
+            }
+        }
+        trace.step(trace::Kind::Attempt, Some(0), None);
+        let trace = Arc::new(trace);
+        parts.extensions.insert(ProviderTrace(trace.clone()));
+        return match forward_trae_responses(&provider, parts, payload).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                trace.finish(502, trace::State::Failed);
+                Err(error)
+            }
+        };
+    }
     if let Some(blocked) = super::security::inspect_and_intercept_mut_with_headers(
         &app_type,
         &mut payload,
         &parts.headers,
     )? {
         return Ok(blocked);
-    }
-    if responses_route {
-        return forward_trae_responses(&provider, parts, payload).await;
     }
     let job = Job {
         app_type: app_type.as_str().into(),
@@ -333,7 +389,7 @@ pub(super) async fn forward(
         }
     }
     // Collect usage from the converted client response, using the original agent attribution.
-    super::qoder::relay_response(response, job, start, None).await
+    super::qoder::relay_response(response, job, start, None, None).await
 }
 
 #[cfg(test)]
@@ -374,6 +430,15 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn trae_responses_preserves_multi_turn_history_with_auditing_disabled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for edition in crate::services::trae_bridge::shared::Edition::ALL {
+            assert_trae_responses_after_restart(edition.app()).await?;
+        }
+        Ok(())
+    }
+
+    async fn assert_trae_responses_after_restart(
+        app: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         use super::super::security::{
             runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
@@ -427,7 +492,8 @@ mod tests {
             let _ = axum::serve(listener, upstream).await;
         });
         let db = Arc::new(Database::memory()?);
-        db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "true")?;
+        db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "false")?;
+        let runtime = Arc::new(super::super::intent::Runtime::default());
         let server = ProxyServer::new(
             ProxyConfig {
                 listen_port: 0,
@@ -435,10 +501,11 @@ mod tests {
             },
             db.clone(),
             None,
-        );
+        )
+        .with_intent_runtime(runtime.clone());
         let info = server.start().await?;
         let url = format!(
-            "http://127.0.0.1:{}/upstream/trae/providers/fixture/v1/responses?client=kept",
+            "http://127.0.0.1:{}/upstream/{app}/providers/fixture/v1/responses?client=kept",
             info.port
         );
         let client = reqwest::Client::new();
@@ -462,7 +529,7 @@ mod tests {
             ("/api/v1/responses", 429, false),
             ("", 502, true),
         ] {
-            let provider = Provider::with_id(
+            let mut provider = Provider::with_id(
                 "fixture".into(),
                 "Fixture".into(),
                 json!({
@@ -471,7 +538,11 @@ mod tests {
                 }),
                 None,
             );
-            db.save_provider("trae", &provider)?;
+            provider
+                .meta
+                .get_or_insert_with(Default::default)
+                .live_config_managed = Some(true);
+            db.save_provider(app, &provider)?;
             status.store(code, Ordering::Relaxed);
             let mut request = payload.clone();
             request["stream"] = json!(streaming);
@@ -488,6 +559,16 @@ mod tests {
             assert_eq!(response.status().as_u16(), code);
             assert_eq!(response.headers()["x-fixture-response"], "kept");
             assert_eq!(response.text().await?, response_bytes);
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while runtime.traces.snapshot()[0].status.is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            let traces = runtime.traces.snapshot();
+            assert_eq!(traces[0].status, Some(code));
+            assert_eq!(traces[0].candidates[0].provider_id, "fixture");
+            assert_eq!(traces[0].agent, app);
             let rows = observed.lock().unwrap();
             let (uri, headers, actual) = rows.last().unwrap();
             assert_eq!(
@@ -528,7 +609,7 @@ mod tests {
             .status()
             .is_success());
         assert!(!client
-            .post(url.replace("/trae/", "/hermes/"))
+            .post(url.replace(&format!("/{app}/"), "/hermes/"))
             .bearer_auth("varyai-local")
             .json(&payload)
             .send()
@@ -543,17 +624,64 @@ mod tests {
             .await?
             .status()
             .is_success());
-        db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "false")?;
+        assert_eq!(observed.lock().unwrap().len(), count);
+        server.stop().await?;
+
+        let runtime = Arc::new(super::super::intent::Runtime::default());
+        let restarted = ProxyServer::new(
+            ProxyConfig {
+                listen_port: info.port,
+                ..Default::default()
+            },
+            db.clone(),
+            None,
+        )
+        .with_intent_runtime(runtime.clone());
+        restarted.start().await?;
+        status.store(200, Ordering::Relaxed);
+        let response = client
+            .post(&url)
+            .bearer_auth("varyai-local")
+            .json(&payload)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        response.bytes().await?;
+        assert_eq!(observed.lock().unwrap().len(), count + 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while runtime.traces.snapshot()[0].status.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(runtime.traces.snapshot()[0].state, trace::State::Completed);
+        assert!(!db.get_bool_flag(crate::services::trae_bridge::ENABLED_KEY)?);
+
+        let mut policy = SecurityRuntimeConfig::default();
+        policy.builtin_action_overrides.insert(
+            "chinese_phone_number".into(),
+            super::super::security::AuditAction::Block,
+        );
+        set_security_runtime_for_test(policy);
+        let response = client
+            .post(&url)
+            .bearer_auth("varyai-local")
+            .json(&json!({"model":"fixture","input":"Synthetic test phone 13800138000"}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(!client
             .post(&url)
             .bearer_auth("varyai-local")
+            .header("origin", "https://fixture.invalid")
             .json(&payload)
             .send()
             .await?
             .status()
             .is_success());
-        assert_eq!(observed.lock().unwrap().len(), count);
-        server.stop().await?;
+        assert_eq!(observed.lock().unwrap().len(), count + 1);
+        assert_eq!(runtime.traces.snapshot()[0].state, trace::State::Failed);
+        restarted.stop().await?;
         task.abort();
         Ok(())
     }

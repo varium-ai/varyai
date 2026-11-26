@@ -104,10 +104,26 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 }
 
 pub(crate) fn has_named_sessions(agent: &str) -> bool {
-    matches!(agent, "codex" | "zcode") || named_session_reader(agent).is_some()
+    matches!(
+        agent,
+        "codex" | "zcode" | "trae" | "trae-intl" | "workbuddy" | "workbuddy-ai"
+    ) || named_session_reader(agent).is_some()
 }
 
 pub(crate) fn named_session_titles(agent: &str) -> Vec<(String, String)> {
+    if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(agent) {
+        return providers::trae::session_titles(edition);
+    }
+    if agent == "workbuddy" {
+        return providers::workbuddy::load_titles(
+            &crate::workbuddy_config::get_workbuddy_dir().join("workbuddy.db"),
+        );
+    }
+    if agent == "workbuddy-ai" {
+        return providers::workbuddy::load_titles(
+            &crate::workbuddy_config::get_workbuddy_ai_config_path().with_file_name("workbuddy.db"),
+        );
+    }
     if agent == "codex" {
         return codex::load_thread_titles().into_iter().collect();
     }

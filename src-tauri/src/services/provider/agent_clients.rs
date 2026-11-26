@@ -15,11 +15,13 @@ fn switch_international(state: &AppState, provider: &Provider) -> Result<(), App
             "Authorize TRAE International local control from Tools / Agent first".into(),
         ));
     }
-    if state
-        .proxy_service
-        .agent_connections
-        .bridge_for(edition)
-        .bridge_owned()
+    let native_responses = crate::services::upstream_protocol::trae_native_responses(provider);
+    if !native_responses
+        && state
+            .proxy_service
+            .agent_connections
+            .bridge_for(edition)
+            .bridge_owned()
     {
         return Err(AppError::Message(
             "Disconnect the shared TRAE International catalog before switching a legacy provider"
@@ -57,6 +59,11 @@ fn switch_international(state: &AppState, provider: &Provider) -> Result<(), App
         state.db.save_provider(edition.app(), &other)?;
     }
     state.db.set_current_provider(edition.app(), &provider.id)?;
+    if native_responses {
+        state
+            .db
+            .set_setting(trae_selection::route_pending_key(edition), "true")?;
+    }
     Ok(())
 }
 

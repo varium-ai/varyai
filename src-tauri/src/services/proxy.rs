@@ -1213,6 +1213,7 @@ impl ProxyService {
 
         // 5. 保存服务器实例
         *self.server.write().await = Some(server);
+        self.queue_trae_responses();
 
         if self.pi_routing.enabled().unwrap_or(false) {
             if let Err(code) = self
@@ -1767,6 +1768,7 @@ impl ProxyService {
                 }
             }
         }
+        self.refresh_trae_responses().await;
         self.sync_shared_trae_intl(false).await;
         if self.agent_connections.bridge_owned() {
             self.sync_shared_trae(false).await;
@@ -1802,22 +1804,37 @@ impl ProxyService {
                         .await;
             }
         }
-        let pending = super::trae_bridge::selection::ROUTE_PENDING_KEY;
-        if !self.agent_connections.bridge_owned() && self.db.get_bool_flag(pending).unwrap_or(false)
-        {
-            let _guard = self.lock_switch_for_app("trae").await;
-            if self.db.get_bool_flag(pending).unwrap_or(false) {
+    }
+
+    fn queue_trae_responses(&self) {
+        use super::trae_bridge::{selection, shared::Edition};
+        for edition in Edition::ALL {
+            if selection::has_managed_responses(&self.db, edition).unwrap_or(false)
+                && self
+                    .db
+                    .set_setting(selection::route_pending_key(edition), "true")
+                    .is_err()
+            {
+                log::warn!(
+                    "Could not queue the Responses endpoint refresh for {}",
+                    edition.app()
+                );
+            }
+        }
+    }
+
+    async fn refresh_trae_responses(&self) {
+        use super::trae_bridge::{selection, shared::Edition};
+        for edition in Edition::ALL {
+            let pending = selection::route_pending_key(edition);
+            if !self.is_running().await || !self.db.get_bool_flag(pending).unwrap_or(false) {
+                continue;
+            }
+            let _guard = self.lock_switch_for_app(edition.app()).await;
+            if self.is_running().await && self.db.get_bool_flag(pending).unwrap_or(false) {
                 let db = self.db.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    if super::trae_bridge::selection::sync_response_route(&db)
-                        && !db
-                            .get_bool_flag(super::trae_bridge::ENABLED_KEY)
-                            .unwrap_or(true)
-                    {
-                        // Preserve the existing connection setup until an offline
-                        // client's native endpoint has been restored.
-                        let _ = super::trae_bridge::finish_disconnect();
-                    }
+                    selection::sync_response_route(&db, edition)
                 })
                 .await;
             }
@@ -1849,9 +1866,6 @@ impl ProxyService {
                 .map_err(|_| super::agent_connections::FAILED)?
                 .map_err(|_| super::agent_connections::CONFLICT)?;
             self.db
-                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
-                .map_err(|_| super::agent_connections::FAILED)?;
-            self.db
                 .set_setting(super::trae_bridge::ENABLED_KEY, "false")
                 .map_err(|_| super::agent_connections::FAILED)?;
         }
@@ -1861,13 +1875,32 @@ impl ProxyService {
             .map_err(|_| super::agent_connections::FAILED)?
     }
 
+    pub(crate) async fn finish_shared_trae_connection(
+        &self,
+        edition: super::trae_bridge::shared::Edition,
+        enabled: bool,
+    ) {
+        use super::trae_bridge::shared::Edition;
+        if enabled {
+            if !self.intent_runtime.connections.active(edition.app()) {
+                self.prepare_shared_trae(edition).await;
+            }
+            // The periodic worker delivers the saved model and publishes its acknowledgement.
+            return;
+        }
+        match edition {
+            Edition::China => self.sync_shared_trae(false).await,
+            Edition::International => self.sync_shared_trae_intl(false).await,
+        }
+    }
+
     pub(crate) async fn prepare_shared_trae(
         &self,
         edition: super::trae_bridge::shared::Edition,
     ) -> bool {
         let _guard = self.lock_switch_for_app(edition.app()).await;
         if !self.is_running().await
-            || !self.agent_connections.bridge_for(edition).bridge_owned()
+            || !self.agent_connections.bridge_for(edition).bridge_enabled()
             || !self
                 .db
                 .get_bool_flag(edition.consent_key())
@@ -1905,6 +1938,11 @@ impl ProxyService {
         let menu = running
             .then(|| self.intent_runtime.global_snapshot().ok().flatten())
             .flatten();
+        // A paused catalog worker or a startup refresh may have no snapshot.
+        // Shared models remain valid references in open TRAE chats until explicit cleanup.
+        if !suspend && menu.is_none() && self.agent_connections.bridge_enabled() {
+            return;
+        }
         let port = self.get_status().await.map(|s| s.port).unwrap_or(0);
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
@@ -1945,6 +1983,10 @@ impl ProxyService {
         let menu = running
             .then(|| self.intent_runtime.global_snapshot().ok().flatten())
             .flatten();
+        if !suspend && menu.is_none() && self.agent_connections.bridge_for(edition).bridge_enabled()
+        {
+            return;
+        }
         let port = self
             .get_status()
             .await
@@ -2098,9 +2140,15 @@ impl ProxyService {
                     if enabled { "true" } else { "false" },
                 )
                 .map_err(|e| e.to_string())?;
-            self.db
-                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
-                .map_err(|e| e.to_string())?;
+            if !enabled
+                && !super::trae_bridge::selection::has_managed_responses(
+                    &self.db,
+                    super::trae_bridge::shared::Edition::China,
+                )
+                .map_err(|e| e.to_string())?
+            {
+                let _ = tokio::task::spawn_blocking(super::trae_bridge::finish_disconnect).await;
+            }
             drop(_guard);
             self.refresh_trae_takeover().await;
             return Ok(());
@@ -2816,6 +2864,14 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
+        self.stop_inner(false).await
+    }
+
+    pub(crate) async fn stop_before_exit(&self) -> Result<(), String> {
+        self.stop_inner(true).await
+    }
+
+    async fn stop_inner(&self, keep_trae_catalogs: bool) -> Result<(), String> {
         // A late catalog writer must not undo a client's shutdown restoration.
         // Writers recheck this flag while holding their own configuration lock.
         self.catalog_sync.pause_clients(true);
@@ -2837,7 +2893,9 @@ impl ProxyService {
         } else {
             Ok(())
         };
-        let shared_cleanup = self.restore_shared_connections(true).await;
+        let shared_cleanup = self
+            .restore_shared_connections(true, keep_trae_catalogs)
+            .await;
         self.doubaowork.disable().await;
         if let Some(server) = self.server.write().await.take() {
             if let Ok(mut snapshot) = self.pi_routing.runtime.catalog.write() {
@@ -2871,7 +2929,11 @@ impl ProxyService {
         }
     }
 
-    async fn restore_shared_connections(&self, preserve_intent: bool) -> Result<(), String> {
+    async fn restore_shared_connections(
+        &self,
+        preserve_intent: bool,
+        keep_trae_catalogs: bool,
+    ) -> Result<(), String> {
         // Each adapter owns separate files and a separate switch lock. A slow
         // desktop bridge must not delay restoration of unrelated clients.
         let results = futures::future::join_all(
@@ -2880,7 +2942,9 @@ impl ProxyService {
                 .copied()
                 .filter(|app| *app != "codex")
                 .chain(["trae", "trae-intl"])
-                .map(|app| self.restore_shared_connection(app, preserve_intent)),
+                .map(|app| {
+                    self.restore_shared_connection(app, preserve_intent, keep_trae_catalogs)
+                }),
         )
         .await;
         results
@@ -2893,8 +2957,12 @@ impl ProxyService {
         &self,
         app: &'static str,
         preserve_intent: bool,
+        keep_trae_catalogs: bool,
     ) -> Result<(), String> {
-        use super::{agent_connections::CONFLICT, trae_bridge::shared::Edition};
+        use super::{
+            agent_connections::CONFLICT,
+            trae_bridge::shared::{Client, Edition},
+        };
         if !self.agent_connections.owns(app) {
             return Ok(());
         }
@@ -2905,6 +2973,13 @@ impl ProxyService {
         self.intent_runtime.connections.revoke(app);
         let manager = self.agent_connections.clone();
         if let Some(edition) = Edition::parse(app) {
+            if keep_trae_catalogs && manager.bridge_for(edition).bridge_enabled() {
+                // Restore the launch preferences without removing model IDs from open chats.
+                return tokio::task::spawn_blocking(move || Client(edition).restore())
+                    .await
+                    .map_err(|_| CONFLICT.to_owned())?
+                    .map_err(|_| CONFLICT.to_owned());
+            }
             if !preserve_intent {
                 tokio::task::spawn_blocking(move || match edition {
                     Edition::China => manager.bridge_select(false),
@@ -3617,7 +3692,7 @@ impl ProxyService {
         // 2. 恢复原始 Live 配置
         self.restore_live_configs().await?;
 
-        self.restore_shared_connections(false).await?;
+        self.restore_shared_connections(false, false).await?;
         let manager = self.agent_connections.clone();
         tokio::task::spawn_blocking(move || manager.set_codex_intent(None, false))
             .await
@@ -3690,7 +3765,7 @@ impl ProxyService {
     /// 用于程序正常退出时，保留代理状态以便下次启动时自动恢复
     pub async fn stop_with_restore_keep_state(&self) -> Result<(), String> {
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
-        if let Err(e) = self.stop().await {
+        if let Err(e) = self.stop_before_exit().await {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
         }
 
@@ -4165,6 +4240,11 @@ impl ProxyService {
             let pending = self
                 .db
                 .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                .unwrap_or(true)
+                || super::trae_bridge::selection::has_managed_responses(
+                    &self.db,
+                    super::trae_bridge::shared::Edition::China,
+                )
                 .unwrap_or(true);
             match tokio::task::spawn_blocking(move || {
                 if pending {
@@ -6199,6 +6279,7 @@ impl ProxyService {
             }
 
             *server_guard = Some(new_server);
+            self.queue_trae_responses();
             log::info!("代理配置已更新，服务器已自动重启应用最新配置");
 
             // 如果当前存在任意 app 的 Live 接管，需要同步更新 Live 中的代理地址（否则客户端仍指向旧端口）。
@@ -6622,7 +6703,9 @@ mod tests {
                 let held = service.lock_switch_for_app(busy_app).await;
                 let cloned = service.clone();
                 let worker = tokio::spawn(async move {
-                    cloned.restore_shared_connections(preserve_intent).await
+                    cloned
+                        .restore_shared_connections(preserve_intent, false)
+                        .await
                 });
                 let ready = tokio::time::timeout(std::time::Duration::from_secs(1), async {
                     while service
@@ -6664,7 +6747,7 @@ mod tests {
             let held = service.lock_switch_for_app(app).await;
             let restored = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                service.restore_shared_connections(true),
+                service.restore_shared_connections(true, false),
             )
             .await;
             drop(held);
@@ -6696,6 +6779,94 @@ mod tests {
             .is_err(),
             "audit toggles and reconnects must still serialize with each other"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn trae_exit_keeps_the_catalog_bound_to_open_chats_in_both_editions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::trae_bridge::shared::{Client, Edition};
+        let home = TempHome::new();
+        let db = Arc::new(Database::memory()?);
+        let service = ProxyService::new(db.clone());
+        let mut published = Vec::new();
+        let original = "{\"synthetic\":true}";
+        let applied = "{\"synthetic\":true,\"remote-debugging-port\":\"0\"}";
+        for edition in Edition::ALL {
+            db.set_setting(edition.consent_key(), "true")?;
+            service
+                .agent_connections
+                .bridge_for(edition)
+                .bridge_select_model(true, Some("synthetic".into()))?;
+            let file = service
+                .agent_connections
+                .root
+                .join(format!("{}-shared.json", edition.app()));
+            let mut outbox: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+            outbox["delivered"] = json!(true);
+            let bytes = serde_json::to_vec(&outbox)?;
+            std::fs::write(&file, &bytes)?;
+            let client = Client(edition);
+            let argv = client.argv_path()?;
+            let backup = client.directory()?.join("launch-backup.json");
+            assert!(argv.starts_with(home.dir.path()));
+            assert!(backup.starts_with(home.dir.path()));
+            std::fs::create_dir_all(argv.parent().ok_or("missing launch settings directory")?)?;
+            std::fs::create_dir_all(backup.parent().ok_or("missing launch backup directory")?)?;
+            std::fs::write(&argv, applied)?;
+            std::fs::write(
+                &backup,
+                serde_json::to_vec(&json!({ "original": original, "applied": applied }))?,
+            )?;
+            published.push((file, bytes, argv, backup));
+        }
+        service.catalog_sync.pause_clients(true);
+        service.restore_shared_connections(true, true).await?;
+        service.sync_shared_trae(false).await;
+        service.sync_shared_trae_intl(false).await;
+        for (file, bytes, argv, backup) in &published {
+            assert_eq!(&std::fs::read(file)?, bytes);
+            assert_eq!(std::fs::read_to_string(argv)?, original);
+            assert!(!backup.exists());
+        }
+        service.restore_shared_connections(false, false).await?;
+        for edition in Edition::ALL {
+            assert!(!service
+                .agent_connections
+                .bridge_for(edition)
+                .bridge_enabled());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn trae_active_model_switch_does_not_wait_for_another_delivery(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::trae_bridge::shared::Edition;
+        let _home = TempHome::new();
+        let service = ProxyService::new(Arc::new(Database::memory()?));
+        for edition in [Edition::China, Edition::International] {
+            service.intent_runtime.connections.install(
+                &super::super::agent_connections::Receipt {
+                    app: edition.app().into(),
+                    token: "synthetic".into(),
+                    model: "synthetic".into(),
+                    model_map: Default::default(),
+                    visible_models: None,
+                    files: vec![],
+                    suspended: false,
+                    applied_at_ms: None,
+                },
+            )?;
+            let _delivery = service.lock_switch_for_app(edition.app()).await;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                service.finish_shared_trae_connection(edition, true),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     #[tokio::test]

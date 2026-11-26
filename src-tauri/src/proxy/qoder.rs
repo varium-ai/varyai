@@ -342,6 +342,9 @@ pub(crate) async fn send_with_dlp(
         .extensions
         .get::<super::gateway::GatewayUpstreamModel>()
         .cloned();
+    let provider_trace = parts
+        .extensions
+        .remove::<super::native_protocol::ProviderTrace>();
     strip_hop_headers(&mut parts.headers);
     parts.headers.remove(header::CONTENT_LENGTH);
     let uri: http::Uri = target.parse().map_err(|_| invalid())?;
@@ -445,7 +448,7 @@ pub(crate) async fn send_with_dlp(
     } else {
         response
     };
-    let result = relay_response(response, job, start, gateway_model).await?;
+    let result = relay_response(response, job, start, gateway_model, provider_trace).await?;
     Ok(match dlp_attempt {
         Some(attempt)
             if attempt.is_native_chat()
@@ -472,7 +475,9 @@ pub(super) async fn relay_response(
     mut job: Option<Job>,
     start: Instant,
     gateway_model: Option<super::gateway::GatewayUpstreamModel>,
+    provider_trace: Option<super::native_protocol::ProviderTrace>,
 ) -> Result<Response, ProxyError> {
+    use super::intent::trace::{Kind, State};
     let status = response.status();
     if status.is_success() {
         if let (Some(trace), Some(item)) = (&gateway_model, &job) {
@@ -487,6 +492,15 @@ pub(super) async fn relay_response(
             "Qoder upstream returned a redirect; configure its final API URL".into(),
         ));
     }
+    if let Some(trace) = &provider_trace {
+        if status.is_success() {
+            trace
+                .0
+                .step(Kind::Connected, Some(0), Some(status.as_u16()));
+        } else {
+            trace.0.finish(status.as_u16(), State::Failed);
+        }
+    }
     let mut upstream = response.bytes_stream();
     use futures::StreamExt;
     let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -499,16 +513,25 @@ pub(super) async fn relay_response(
                         collector.push(&bytes);
                     }
                     if tx.send(Ok::<_, std::io::Error>(bytes)).await.is_err() {
+                        if let Some(trace) = &provider_trace {
+                            trace.0.finish(499, State::Cancelled);
+                        }
                         break;
                     }
                 }
                 Err(_) => {
+                    if let Some(trace) = &provider_trace {
+                        trace.0.finish(status.as_u16(), State::Failed);
+                    }
                     let _ = tx
                         .send(Err(std::io::Error::other("Qoder upstream stream failed")))
                         .await;
                     break;
                 }
             }
+        }
+        if let Some(trace) = provider_trace {
+            trace.0.finish(status.as_u16(), State::Completed);
         }
         if let Some(mut item) = job.take() {
             collector.finish();

@@ -39,6 +39,25 @@ loop reconnects previously authorized desktops outside catalog switch locks.
 Offline deliveries remain pending until acknowledged. See
 [live save diagnosis](../qa/2026-11-12-routing-save-live-followup.md).
 
+TRAE CN and TRAE International provider profiles that use native OpenAI Responses send requests
+through VaryAI's local provider endpoint. On startup the gateway refreshes
+the endpoint for the models it manages in each already open client,
+while preserving their native model IDs. The route graph shows the selected
+provider, and the gateway applies the configured text audit policy. The
+official-session audit switch controls inspection of official TRAE CN sessions.
+
+The live route graph displays local conversation titles when an authenticated
+TRAE or WorkBuddy request supplies an exact matching session ID. For TRAE
+requests without a session ID, the graph can match the latest user text to a
+single session in recent local turn metadata for the same edition. It compares
+in-memory digests and uses current and rotated renderer logs for titles.
+WorkBuddy reads each edition's local database and prefers user-set titles.
+Requests without an unambiguous match keep the session reference.
+On normal VaryAI exit, enabled TRAE connections keep their published model
+IDs while VaryAI restores any launch settings it changed. Open chats can use
+the same models after VaryAI restarts. Disconnecting the client explicitly
+removes its published models.
+
 ## External consumers
 
 Start the loopback gateway explicitly and configure a gateway key under **Settings → Routing → Local routing**. Give restricted keys the group's public alias, not its concrete member model. Authenticated `GET /gateway/v1/models` lists only executable published groups permitted by that key. Use the same alias on `/gateway/v1/responses`, `/gateway/v1/chat/completions`, `/gateway/v1/messages`, or the Gemini generate/streamGenerateContent route. See [gateway keys](gateway-keys.md) for headers, budgets and manual connection setup. This version does not automatically take over every agent.
@@ -263,6 +282,13 @@ For an unbound Codex request, an explicit retryable status such as HTTP 502
 can advance to the next member even when the upstream error body is too large
 or cannot be read. The routing trace uses the status from the upstream headers.
 
+An upstream HTTP 400 can also advance an unbound inference request to the next
+eligible member before any model output is returned. This applies to all routing
+templates and custom groups through native and converted protocols. The live
+route records the original 400 on the rejected member. An invalid local request
+or a security block stops before forwarding, and an active continuation stays
+with its upstream owner.
+
 The live routing graph explains when a request must continue at the same
 upstream, or when conversation affinity gives the previous upstream priority.
 Its candidate count describes the current request.
@@ -457,6 +483,14 @@ Before dispatch, supported text and tool schemas are estimated at four UTF-8 byt
 An observed, successfully completed plain-history turn has soft affinity: as its replayable history grows it may move to a larger member. Capability groups with per-turn affinity use the current priority on the next replayable turn, including after a member is re-enabled or reordered. Requests with response references, tool state, encrypted reasoning or checkpoints remain bound to their producer; ambiguous submission, interrupted output and pending tool calls do not become portable. A restart conservatively restores hard affinity until another complete plain turn is observed. Codex Responses can recover from an explicit upstream encrypted-state refusal using the bounded same-destination cleanup described below; initial requests retain their state. Capacity-only refreshes preserve unchanged static transport identity. Existing Codex conversations can retain their initial metadata; reload/reconnect and start a new conversation to observe the new catalog. Synthetic tests do not establish real-account or installed-client acceptance.
 
 Managed WorkBuddy and DeepSeek Harness requests with self-contained visible history can continue in the same conversation when group members are removed or restored. Remaining destinations retain their exact ownership. Per-turn affinity can reselect the preferred member after an observed completed turn. Requests that depend on upstream response IDs, tool state or encrypted reasoning still require their original binding.
+
+For every Agent using a per-turn intent group, Chat Completions, Messages,
+Responses and Gemini Native use the same turn and model selection rules.
+The classifier receives the new user message after the transcript includes the
+observed calls, their results, and the assistant's closing reply. Forwarding
+retains the complete transcript. A tool result for the active turn goes to its
+observed owner. Provider-signed state and server-side response references
+continue to require their original destination.
 
 Managed Harness Chat also resumes a saved conversation with a completed tool transcript after a membership change when the gateway can match the calls to their original, still available destination. This check also applies to observations restored from disk after a gateway restart.
 

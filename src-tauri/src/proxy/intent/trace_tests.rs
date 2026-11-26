@@ -28,6 +28,121 @@ fn zcode_live_title_requires_one_local_native_session_header() {
 }
 
 #[test]
+fn trae_live_graph_pairs_native_session_updates_with_the_request(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::session_manager::providers::trae::TitleLogs;
+    let dir = tempfile::tempdir()?;
+    let store = Arc::new(Store::default());
+    let mut requests = Vec::new();
+    for (agent, product) in [("trae", "Trae CN"), ("trae-intl", "Trae")] {
+        let window = dir.path().join(product).join("20261126T101112/window2");
+        std::fs::create_dir_all(&window)?;
+        let mut lines = String::new();
+        let logger = if agent == "trae" {
+            "ai-chat/v2"
+        } else {
+            "trae-chat-core"
+        };
+        for (id, body) in [
+            (
+                "session-one",
+                serde_json::json!({"chat_session_id":"session-one"}),
+            ),
+            (
+                "session-two",
+                serde_json::json!({"metadata":{"session_id":"session-two", "user_id":"user_session_session-one"}}),
+            ),
+        ] {
+            let request = store.begin(agent, "fixture", "Fixture", "ordered", Instant::now());
+            let explicit =
+                super::identity::title_session(agent, &http::HeaderMap::new(), &body, true)
+                    .ok_or("missing session")?;
+            request.native_session(&explicit);
+            let title = format!("{product} {id}");
+            let payload = serde_json::json!({"chat_session_id":id,"updated_at":1,"title":title});
+            lines.push_str(&format!("2026-11-26T03:00:00Z [info] [{logger}] [RealtimeEventService] Session updated: {id} active {payload}\n"));
+            requests.push((request, title));
+            assert!(
+                super::identity::title_session(agent, &http::HeaderMap::new(), &body, false)
+                    .is_none()
+            );
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-session-id", "session-one".parse()?);
+        for body in [
+            serde_json::Value::Null,
+            serde_json::json!({"session_id":"session-one"}),
+        ] {
+            assert_eq!(
+                super::identity::title_session(agent, &headers, &body, true).as_deref(),
+                Some("session-one")
+            );
+        }
+        let conflicting = serde_json::json!({"chat_session_id":"session-two"});
+        assert_eq!(
+            super::identity::title_session(agent, &headers, &conflicting, true),
+            None
+        );
+        for body in [
+            serde_json::json!({"metadata":{"user_id":"user_session_session-one"}}),
+            serde_json::json!({"chat_session_id":"session-one","metadata":{"session_id":"session-two"}}),
+            serde_json::json!({"chat_session_id":false}),
+            serde_json::json!({"previous_response_id":"session-one"}),
+        ] {
+            assert!(
+                super::identity::title_session(agent, &http::HeaderMap::new(), &body, true)
+                    .is_none()
+            );
+        }
+        std::fs::write(window.join("renderer.1.log"), lines)?;
+        std::fs::write(window.join("renderer.log"), "unrelated current log\n")?;
+    }
+    let live = store.live_requests(store.snapshot(), |agent| {
+        let product = if agent == "trae" { "Trae CN" } else { "Trae" };
+        TitleLogs::default().read(&dir.path().join(product))
+    });
+    let rows = serde_json::to_value(live)?;
+    for (request, expected) in &requests {
+        let row = rows
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == request.id))
+            .ok_or("missing route")?;
+        assert_eq!(row["sessionTitle"], expected.as_str());
+    }
+    Ok(())
+}
+
+#[test]
+fn workbuddy_live_graph_accepts_only_an_explicit_conversation_for_each_edition() {
+    let id = "synthetic-workbuddy-conversation";
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-conversation-request-id", id.parse().expect("header"));
+    for agent in ["workbuddy", "workbuddy-ai"] {
+        let title_session = |headers: &http::HeaderMap, body: &serde_json::Value, local| {
+            super::identity::title_session(agent, headers, body, local)
+        };
+        assert_eq!(
+            title_session(&headers, &serde_json::Value::Null, true),
+            None
+        );
+        let body = serde_json::json!({"metadata":{"session_id":id}});
+        assert_eq!(title_session(&headers, &body, true).as_deref(), Some(id));
+        let mut native = headers.clone();
+        native.insert("x-conversation-id", id.parse().expect("header"));
+        assert_eq!(
+            title_session(&native, &serde_json::Value::Null, true).as_deref(),
+            Some(id)
+        );
+        assert_eq!(title_session(&native, &body, false), None);
+        native.append(
+            "x-conversation-id",
+            "another-session".parse().expect("header"),
+        );
+        assert_eq!(title_session(&native, &body, true), None);
+    }
+}
+
+#[test]
 fn live_session_titles_are_exact_cached_and_excluded_from_history(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;

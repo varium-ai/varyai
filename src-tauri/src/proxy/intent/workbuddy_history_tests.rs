@@ -127,9 +127,37 @@ impl Fixture {
             let sent = smart_requests.clone();
             async move {
                 let unavailable = body["model"] == "synthetic-expiring-primary";
+                let stream = body["stream"] == true;
+                let model = body["model"].clone();
+                let tool = body["messages"].as_array().and_then(|messages| {
+                    let last = messages.last()?;
+                    (body["tools"].is_array() && last["role"] == "user").then(|| {
+                        if last["content"] == "Synthetic hard task" {
+                            call(FIRST_ID, 1)
+                        } else {
+                            call(SECOND_ID, 2)
+                        }
+                    })
+                });
                 let _ = sent.send(body).await;
                 if unavailable {
                     return (StatusCode::BAD_GATEWAY, "synthetic upstream rejection").into_response();
+                }
+                if !stream {
+                    let (message, finish) = match tool {
+                        Some(tool) => (json!({"role":"assistant","tool_calls":[tool]}), "tool_calls"),
+                        None => (json!({"role":"assistant","content":"Synthetic answer"}), "stop"),
+                    };
+                    return Json(json!({"id":"synthetic-smart-reply","object":"chat.completion",
+                        "model":model,"choices":[{"index":0,"message":message,"finish_reason":finish}]}))
+                        .into_response();
+                }
+                if let Some(mut tool) = tool {
+                    tool["index"] = json!(0);
+                    let chunk = json!({"choices":[{"index":0,"delta":{"tool_calls":[tool]}}]});
+                    return ([(header::CONTENT_TYPE,"text/event-stream")], format!(
+                        "data: {chunk}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
+                    )).into_response();
                 }
                 ([(header::CONTENT_TYPE,"text/event-stream")], concat!(
                     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Synthetic answer\"}}]}\n\n",
@@ -705,7 +733,7 @@ async fn harness_saved_tool_history_follows_priority_after_the_tool_round(
 
 #[tokio::test]
 #[serial_test::serial]
-async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_before_deadline(
+async fn shared_smart_template_classifies_each_user_turn_after_closed_tool_history(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _security = security();
     let mut fixture = Fixture::with_targets("openai_chat", 2).await?;
@@ -816,8 +844,27 @@ async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_befo
             .get_or_insert_with(Default::default)
             .api_format = Some("openai_chat".into());
     }
+    fixture.runtime.set_menu(Arc::new(menu.clone()))?;
     fixture.runtime.set_global(menu, 0)?;
-    for agent in ["workbuddy", "workbuddy-ai"] {
+    for agent in crate::services::agent_connections::APPS
+        .iter()
+        .copied()
+        .filter(|agent| *agent != "codex")
+        .chain(["trae", "trae-intl"])
+    {
+        fixture
+            .runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: agent.into(),
+                token: TOKEN.into(),
+                model: fixture.grok_alias.clone(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
         let mut messages = vec![json!({"role":"user","content":"Synthetic hard task"})];
         for expected in ["grok-4.5", "glm-synthetic"] {
             let body = fixture
@@ -853,6 +900,190 @@ async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_befo
                 json!({"role":"assistant","content":"Synthetic answer"}),
                 json!({"role":"user","content":"Synthetic easy task"}),
             ]);
+        }
+
+        let mut messages = vec![json!({"role":"user","content":"Synthetic hard task"})];
+        let send = |messages: &[Value], tools: bool| {
+            let mut body = json!({"model":fixture.grok_alias,"stream":true,"messages":messages,
+                "metadata":{"session_id":"synthetic-smart-tools"}});
+            if tools {
+                body["tools"] = json!([
+                    {"type":"function","function":{"name":"synthetic_tool_1"}},
+                    {"type":"function","function":{"name":"synthetic_tool_2"}}
+                ]);
+            }
+            let request = fixture
+                .client
+                .post(fixture.root.replace("/workbuddy/", &format!("/{agent}/")))
+                .bearer_auth(TOKEN);
+            let request = match agent {
+                "workbuddy-ai" => request,
+                "deepseek-harness" => {
+                    request.header("x-vary-harness-session-id", "synthetic-smart-tools")
+                }
+                _ => request.header("x-conversation-id", "synthetic-smart-tools"),
+            };
+            request.json(&body).send()
+        };
+        for (expected, id, index) in [("grok-4.5", FIRST_ID, 1), ("glm-synthetic", SECOND_ID, 2)] {
+            let response = send(&messages, true)
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            assert!(response.contains(id), "{agent}: {expected}");
+            let forwarded = fixture.requests.recv().await.ok_or("missing user turn")?;
+            assert_eq!(forwarded["model"], expected, "{agent}: user turn");
+            assert_eq!(forwarded["messages"], json!(messages));
+            let traces = fixture.runtime.traces.snapshot();
+            assert_eq!(traces[0].classification_outcome.as_deref(), Some("matched"));
+
+            messages.extend([
+                json!({"role":"assistant","content":null,"tool_calls":[call(id,index)]}),
+                json!({"role":"tool","tool_call_id":id,"content":"Synthetic tool result"}),
+            ]);
+            if id == SECOND_ID {
+                let mut mismatched = messages.clone();
+                mismatched.last_mut().ok_or("missing tool result")?["tool_call_id"] =
+                    json!(FIRST_ID);
+                assert_eq!(
+                    send(&mismatched, true).await?.status(),
+                    StatusCode::CONFLICT
+                );
+            }
+            let response = send(&messages, true)
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            assert!(response.contains("Synthetic answer"), "{agent}: {expected}");
+            let forwarded = fixture
+                .requests
+                .recv()
+                .await
+                .ok_or("missing tool continuation")?;
+            assert_eq!(forwarded["model"], expected, "{agent}: tool continuation");
+            assert_eq!(forwarded["messages"], json!(messages));
+            let traces = fixture.runtime.traces.snapshot();
+            assert_eq!(traces[0].classification_outcome, None);
+            messages.extend([
+                json!({"role":"assistant","content":"Synthetic answer"}),
+                json!({"role":"user","content":"Synthetic easy task"}),
+            ]);
+        }
+        messages.last_mut().ok_or("missing third question")?["content"] =
+            json!("Synthetic hard task");
+        send(&messages, false)
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        let forwarded = fixture.requests.recv().await.ok_or("missing third turn")?;
+        assert_eq!(forwarded["model"], "grok-4.5", "{agent}: third user turn");
+        assert_eq!(forwarded["messages"], json!(messages));
+        let traces = fixture.runtime.traces.snapshot();
+        assert_eq!(traces[0].classification_outcome.as_deref(), Some("matched"));
+    }
+
+    let origin = fixture
+        .root
+        .strip_suffix("/connections/workbuddy/v1/chat/completions")
+        .ok_or("unexpected synthetic endpoint")?;
+    for (agent, protocol) in [
+        ("claude", Protocol::Anthropic),
+        ("claude-desktop", Protocol::Anthropic),
+        ("deepseek-harness", Protocol::Anthropic),
+        ("deepseek-harness", Protocol::Responses),
+        ("codex", Protocol::Responses),
+        ("grokbuild", Protocol::Responses),
+        ("t3code", Protocol::Responses),
+        ("trae", Protocol::Responses),
+        ("trae-intl", Protocol::Responses),
+        ("gemini", Protocol::Gemini),
+    ] {
+        let (path, field, transcript, tools) = match protocol {
+            Protocol::Anthropic => (
+                "/v1/messages".to_owned(),
+                "messages",
+                json!([
+                    {"role":"user","content":"Synthetic hard task"},
+                    {"role":"assistant","content":[{"type":"tool_use","id":FIRST_ID,"name":"synthetic_tool_1","input":arguments(1)}]},
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":FIRST_ID,"content":"Synthetic tool result"}]},
+                    {"role":"assistant","content":"Synthetic answer"},
+                    {"role":"user","content":"Synthetic easy task"}
+                ]),
+                json!([{"name":"synthetic_tool_1","input_schema":{"type":"object"}}]),
+            ),
+            Protocol::Responses => (
+                "/v1/responses".to_owned(),
+                "input",
+                json!([
+                    {"role":"user","content":"Synthetic hard task"},
+                    {"type":"function_call","call_id":FIRST_ID,"name":"synthetic_tool_1","arguments":arguments(1).to_string()},
+                    {"type":"function_call_output","call_id":FIRST_ID,"output":"Synthetic tool result"},
+                    {"role":"assistant","content":"Synthetic answer"},
+                    {"role":"user","content":"Synthetic easy task"}
+                ]),
+                json!([{"type":"function","name":"synthetic_tool_1","parameters":{"type":"object"}}]),
+            ),
+            Protocol::Gemini => (
+                format!("/v1beta/models/{}:generateContent", fixture.grok_alias),
+                "contents",
+                json!([
+                    {"role":"user","parts":[{"text":"Synthetic hard task"}]},
+                    {"role":"model","parts":[{"functionCall":{"id":FIRST_ID,"name":"synthetic_tool_1","args":arguments(1)}}]},
+                    {"role":"user","parts":[{"functionResponse":{"id":FIRST_ID,"name":"synthetic_tool_1","response":{"text":"Synthetic tool result"}}}]},
+                    {"role":"model","parts":[{"text":"Synthetic answer"}]},
+                    {"role":"user","parts":[{"text":"Synthetic easy task"}]}
+                ]),
+                json!([{"functionDeclarations":[{"name":"synthetic_tool_1","parameters":{"type":"object"}}]}]),
+            ),
+            Protocol::Chat => unreachable!("the managed Chat matrix runs above"),
+        };
+        let (prefix, token) = if agent == "codex" {
+            ("/intent".to_owned(), "synthetic-menu")
+        } else {
+            (format!("/connections/{agent}"), TOKEN)
+        };
+        let transcript = transcript
+            .as_array()
+            .ok_or("missing synthetic transcript")?;
+        for (len, expected, outcome) in [
+            (1, "grok-4.5", Some("matched")),
+            (3, "grok-4.5", None),
+            (5, "glm-synthetic", Some("matched")),
+        ] {
+            let mut body = json!({"model":fixture.grok_alias});
+            if protocol == Protocol::Anthropic {
+                body["max_tokens"] = json!(128);
+            }
+            if len == 1 {
+                body["tools"] = tools.clone();
+            }
+            body[field] = json!(&transcript[..len]);
+            fixture
+                .client
+                .post(format!("{origin}{prefix}{path}"))
+                .bearer_auth(token)
+                .header("x-session-id", format!("synthetic-smart-{field}"))
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            let sent = fixture
+                .requests
+                .recv()
+                .await
+                .ok_or("missing native-protocol request")?;
+            assert_eq!(sent["model"], expected, "{agent}: {field}");
+            let traces = fixture.runtime.traces.snapshot();
+            assert_eq!(
+                traces[0].classification_outcome.as_deref(),
+                outcome,
+                "{agent}: {field}"
+            );
         }
     }
     fixture.stop().await
@@ -924,6 +1155,74 @@ async fn workbuddy_expiring_groups_fail_over_after_an_explicit_chat_502(
         assert_eq!(route.state, trace::State::Completed);
         fixture.stop().await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn workbuddy_live_graph_uses_the_native_database_title_for_each_edition(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    let root = tempfile::tempdir()?;
+    let fixture = Fixture::new("openai_chat").await?;
+    let id = "synthetic-native-conversation";
+    for agent in ["workbuddy", "workbuddy-ai"] {
+        let path = root.path().join(agent);
+        let db = rusqlite::Connection::open(&path)?;
+        db.execute_batch(
+            "CREATE TABLE sessions (id TEXT, title TEXT, custom_title TEXT, deleted_at INTEGER)",
+        )?;
+        db.execute(
+            "INSERT INTO sessions VALUES (?1, 'Automatic title', ?2, NULL),
+             ('deleted', 'Deleted conversation', NULL, 1),
+             ('blank', ' ', '', NULL), ('default', ' Generated title ', ' ', NULL)",
+            rusqlite::params![id, format!("Synthetic {agent} title")],
+        )?;
+        fixture
+            .runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: agent.into(),
+                token: TOKEN.into(),
+                model: fixture.grok_alias.clone(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+        let response = fixture
+            .client
+            .post(fixture.root.replace("/workbuddy/", &format!("/{agent}/")))
+            .bearer_auth(TOKEN)
+            .header("x-conversation-id", id)
+            .json(&json!({"model":fixture.grok_alias,"stream":false,
+                "messages":[{"role":"user","content":"Synthetic opening"}]}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK, "{agent}");
+        assert!(response.text().await?.contains("Synthetic Grok answer"));
+    }
+    let live = fixture
+        .runtime
+        .traces
+        .live_requests(fixture.runtime.traces.snapshot(), |agent| {
+            let titles =
+                crate::session_manager::providers::workbuddy::load_titles(&root.path().join(agent));
+            assert_eq!(
+                titles.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+                ["default", id]
+            );
+            titles
+        });
+    let rows = serde_json::to_value(live)?;
+    let rows = rows.as_array().ok_or("missing live routes")?;
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        let agent = row["agent"].as_str().ok_or("missing agent")?;
+        assert_eq!(row["sessionTitle"], format!("Synthetic {agent} title"));
+    }
+    fixture.stop().await?;
     Ok(())
 }
 

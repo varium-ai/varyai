@@ -2198,7 +2198,7 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
         // 非接管模式：代理在运行则仅停止代理
         if proxy_service.is_running().await {
             log::info!("检测到代理服务器正在运行，开始停止...");
-            if let Err(e) = proxy_service.stop().await {
+            if let Err(e) = proxy_service.stop_before_exit().await {
                 log::error!("退出时停止代理失败: {e}");
             }
             log::info!("代理服务器清理完成");
@@ -2350,9 +2350,21 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
     let shared = tokio::task::spawn_blocking(move || shared_connections_need_resume(&manager))
         .await
         .unwrap_or(false);
-    if shared {
+    let trae_responses = services::trae_bridge::shared::Edition::ALL
+        .into_iter()
+        .any(|edition| {
+            state
+                .db
+                .get_bool_flag(edition.consent_key())
+                .unwrap_or(false)
+                && services::trae_bridge::selection::has_managed_responses(&state.db, edition)
+                    .unwrap_or(false)
+        });
+    if shared || trae_responses {
         if state.proxy_service.start().await.is_ok() {
-            state.proxy_service.sync_shared_agent_catalogs().await;
+            if shared {
+                state.proxy_service.sync_shared_agent_catalogs().await;
+            }
         } else {
             log::warn!("Shared Agent connections could not resume");
         }

@@ -9,7 +9,7 @@ const { createBridge, workbenchServices } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 const { createTraeRewards } = require("./rewards.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 22;
+const REVISION = 23;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 const MODEL_OPERATION_TIMEOUT = 300_000;
@@ -588,13 +588,28 @@ async function run(endpoint, directory) {
       return invoke(first, "matches", command.id, command.config);
     if (command.op === "apply")
       return invoke(first, "apply", command.id, command.name, command.config);
-    if (command.op === "select") {
+    if (command.op === "selection_pending") {
       if (sessions.size !== expected) throw Error("chat_window_unavailable");
-      await Promise.all(
+      const windows = await Promise.all(
         [...sessions.keys()].map((s) =>
-          invoke(s, "select", command.id, command.model),
+          invoke(s, "needsSelection", command.id, command.model),
         ),
       );
+      return windows.some((pending) => pending === true);
+    }
+    if (command.op === "select") {
+      if (sessions.size !== expected) throw Error("chat_window_unavailable");
+      let success = true;
+      for (const session of [...sessions.keys()]) {
+        const applied = await invoke(
+          session,
+          "select",
+          command.id,
+          command.model,
+        ).catch(() => false);
+        if (applied !== true) success = false;
+      }
+      if (!success) throw Error("starting_model_unavailable");
       return true;
     }
     if (command.op === "replace")
