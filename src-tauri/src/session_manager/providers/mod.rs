@@ -8,3 +8,4 @@ pub mod openclaw;
 pub mod opencode;
 pub mod pi;
 mod utils;
+pub(crate) mod zcode;
