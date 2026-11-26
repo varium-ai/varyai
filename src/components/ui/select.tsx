@@ -16,14 +16,17 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-[var(--select-height)] w-full items-center justify-between gap-2 whitespace-nowrap rounded-sm border border-border bg-card px-3 py-1.5 text-[13px] leading-5 font-normal text-foreground transition-colors hover:border-[var(--border-strong)] focus:border-primary focus:outline-none focus:ring-0 focus:border-2 focus:px-[11px] focus:py-[5px] data-[state=open]:border-primary data-[state=open]:border-2 data-[state=open]:px-[11px] data-[state=open]:py-[5px] disabled:cursor-not-allowed disabled:bg-muted disabled:text-[var(--disabled-foreground)]",
+      "flex h-[var(--select-height)] w-full min-w-0 items-center justify-between gap-2 overflow-hidden whitespace-nowrap rounded-sm border border-border bg-card px-3 py-1.5 text-[13px] leading-5 font-normal text-foreground transition-colors hover:border-[var(--border-strong)] focus:border-primary focus:outline-none focus:ring-0 focus:border-2 focus:px-[11px] focus:py-[5px] data-[state=open]:border-primary data-[state=open]:border-2 data-[state=open]:px-[11px] data-[state=open]:py-[5px] disabled:cursor-not-allowed disabled:bg-muted disabled:text-[var(--disabled-foreground)] [&>span]:min-w-0 [&>span]:truncate",
       className,
     )}
     {...props}
   >
     {children}
     <SelectPrimitive.Icon asChild>
-      <ControlIcon name="chevron-down" className="text-muted-foreground" />
+      <ControlIcon
+        name="chevron-down"
+        className="shrink-0 text-muted-foreground"
+      />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ));
