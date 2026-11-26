@@ -8076,10 +8076,13 @@ mod tests {
         edited["env"]["ANTHROPIC_BASE_URL"] = json!("https://synthetic-external.invalid");
         edited["env"]["USER_SETTING"] = json!("keep-external");
         std::fs::write(&path, edited.to_string())?;
-        assert!(service
+        // Passive refresh silently merges external changes back instead of
+        // surfacing a conflict.
+        service
             .agent_connections
             .refresh("claude", &menu, "http://127.0.0.1:1234")
-            .is_err());
+            .map_err(|error| format!("synthetic Claude passive refresh: {error}"))?;
+        assert!(service.agent_connections.status("claude")?.configured);
         service
             .reapply_agent_connection("claude")
             .await
