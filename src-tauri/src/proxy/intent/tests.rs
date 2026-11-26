@@ -1049,7 +1049,7 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
     task.abort();
 }
 
-struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+pub(super) struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
 
 impl Drop for SecurityRuntimeRestore {
     fn drop(&mut self) {
@@ -1057,7 +1057,7 @@ impl Drop for SecurityRuntimeRestore {
     }
 }
 
-fn synthetic_security_runtime() -> SecurityRuntimeRestore {
+pub(super) fn synthetic_security_runtime() -> SecurityRuntimeRestore {
     let restore = SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
     crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     restore

@@ -3411,6 +3411,13 @@ async fn execute(
                 );
                 let error_bytes = match wait_for_attempt(attempt_deadline, read_error).await {
                     Ok(Ok(Ok(bytes))) => bytes,
+                    _ if pinned.is_none() && failover_status(status.as_u16()) => {
+                        break super::hyper_client::ProxyResponse::buffered(
+                            status,
+                            response_headers,
+                            Default::default(),
+                        );
+                    }
                     _ => return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected"),
                 };
                 let allow_compaction = compact.is_none()
@@ -3446,10 +3453,7 @@ async fn execute(
         target
             .scheduling
             .observe_headers(response.headers(), chrono::Utc::now().timestamp());
-        if matches!(
-            status.as_u16(),
-            401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
-        ) {
+        if failover_status(status.as_u16()) {
             if status.as_u16() == 429 {
                 target
                     .scheduling
@@ -3460,12 +3464,7 @@ async fn execute(
                 .failed(response.headers(), chrono::Utc::now().timestamp());
         }
         trace.observe_account(candidate, &target.scheduling);
-        if pinned.is_none()
-            && matches!(
-                status.as_u16(),
-                401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
-            )
-        {
+        if pinned.is_none() && failover_status(status.as_u16()) {
             if matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) {
                 transient.push((candidate, index));
             }
@@ -3888,6 +3887,10 @@ fn sibling_native_target(
     Some((url, next_upstream))
 }
 
+fn failover_status(status: u16) -> bool {
+    matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
+}
+
 fn retry_converted_rejection(
     upstream: &crate::provider::Provider,
     status: u16,
@@ -3896,7 +3899,7 @@ fn retry_converted_rejection(
     has_fallback: bool,
 ) -> bool {
     pinned.is_none()
-        && (matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
+        && (failover_status(status)
             || (status == 400
                 && has_fallback
                 && matches!(

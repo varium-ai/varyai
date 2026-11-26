@@ -1054,8 +1054,13 @@ export function AgentConnectionsPage({
     );
     const canRestartHarnessManually =
       app === "deepseek-harness" &&
-      !state?.recoveryPending &&
-      (state?.desktopState === "current" || state?.desktopState === "stopped");
+      !!state &&
+      !state.recoveryPending &&
+      (state.desktopState === "current" ||
+        state.desktopState === "stopped" ||
+        ((state.desktopState == null || state.desktopState === "unknown") &&
+          !!installations.data?.[app] &&
+          (isMac() || isWindows())));
     const restartButton = app !== "doubaowork" &&
       (operation === "restarting" ||
         ((canRestart || canRestartHarnessManually) && !connection.isError)) && (
@@ -1990,7 +1995,9 @@ export function AgentConnectionsPage({
             {t("agentConnections.codexDisconnectNote")}
           </p>
         )}
-        {(disconnecting === "codex" || disconnecting === "claude") && (
+        {(disconnecting === "codex" ||
+          disconnecting === "claude" ||
+          disconnecting === "gemini") && (
           <p className="text-sm text-muted-foreground">
             {t("agentConnections.disconnectReopenNote", {
               app: name(disconnecting),

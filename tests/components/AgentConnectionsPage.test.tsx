@@ -2728,7 +2728,7 @@ describe("Agent connections", () => {
     },
   );
 
-  it.each(["claude", "codex", "pi"] as const)(
+  it.each(["claude", "codex", "gemini", "pi"] as const)(
     "puts the reopen note in the %s disconnect confirmation only where applicable",
     async (app) => {
       vi.mocked(agentConnectionsApi.list).mockResolvedValue([
@@ -5277,6 +5277,94 @@ describe("Agent connections", () => {
       );
     },
   );
+  it.each([
+    {
+      userAgent: "Macintosh",
+      enabled: true,
+      compact: false,
+      desktopState: "unknown",
+    },
+    {
+      userAgent: "Windows NT 10.0",
+      enabled: false,
+      compact: true,
+      desktopState: undefined,
+    },
+  ] as const)(
+    "offers a confirmed Harness desktop restart without freshness on $userAgent",
+    async ({ userAgent, enabled, compact, desktopState }) => {
+      const os = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(userAgent);
+      try {
+        vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+          "deepseek-harness": true,
+        });
+        vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+          {
+            app: "deepseek-harness",
+            enabled,
+            configured: enabled,
+            model: "vary-auto/shared",
+            desktopState,
+            restartRequired: false,
+            recoveryPending: false,
+          },
+        ]);
+        mount(compact);
+        const row = await screen.findByRole("article", {
+          name: "apps.deepseek-harness",
+        });
+        fireEvent.click(
+          await within(row).findByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+        fireEvent.click(
+          within(screen.getByRole("dialog")).getByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        );
+        await waitFor(() =>
+          expect(agentConnectionsApi.restart).toHaveBeenCalledWith(
+            "deepseek-harness",
+            true,
+          ),
+        );
+      } finally {
+        os.mockRestore();
+      }
+    },
+  );
+  it("keeps the Harness restart hidden on an unsupported desktop platform", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      "deepseek-harness": true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "deepseek-harness",
+        enabled: false,
+        configured: false,
+        model: "vary-auto/shared",
+        desktopState: "unsupported",
+        restartRequired: false,
+        recoveryPending: false,
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", {
+      name: "apps.deepseek-harness",
+    });
+    await waitFor(() =>
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.off",
+      ),
+    );
+    expect(
+      within(row).queryByRole("button", { name: "agentConnections.restart" }),
+    ).not.toBeInTheDocument();
+  });
   it("explains how to recover DeepSeek Harness and retries from its switch", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
       "deepseek-harness": true,
@@ -5299,6 +5387,9 @@ describe("Agent connections", () => {
     expect(
       within(row).getByText("agentConnections.deepseekRecoveryHint"),
     ).toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", { name: "agentConnections.restart" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(within(row).getByRole("switch"));
     await waitFor(() =>
       expect(agentConnectionsApi.reapply).toHaveBeenCalledWith(

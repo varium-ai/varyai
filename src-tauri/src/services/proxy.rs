@@ -16354,8 +16354,12 @@ experimental_bearer_token = "PROXY_MANAGED"
             .await
             .expect("released config")
             .listen_port;
-        let _competing_listener =
-            std::net::TcpListener::bind(("127.0.0.1", released_port)).expect("claim released port");
+        let _competing_listener = match std::net::TcpListener::bind(("127.0.0.1", released_port)) {
+            Ok(listener) => Some(listener),
+            // A parallel test may already have created the intended contention.
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => None,
+            Err(error) => panic!("claim released port: {error}"),
+        };
         db.update_proxy_config(config.clone())
             .await
             .expect("fresh ephemeral re-enable port");

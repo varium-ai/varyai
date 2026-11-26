@@ -126,11 +126,15 @@ impl Fixture {
         let app = Router::new().route("/smart-chat-completions", post(move |Json(body): Json<Value>| {
             let sent = smart_requests.clone();
             async move {
+                let unavailable = body["model"] == "synthetic-expiring-primary";
                 let _ = sent.send(body).await;
+                if unavailable {
+                    return (StatusCode::BAD_GATEWAY, "synthetic upstream rejection").into_response();
+                }
                 ([(header::CONTENT_TYPE,"text/event-stream")], concat!(
                     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Synthetic answer\"}}]}\n\n",
                     "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
-                ))
+                )).into_response()
             }
         })).route("/*path", post(move |uri: http::Uri, Json(body): Json<Value>| {
             let tx = tx.clone(); let count = count.clone();
@@ -852,6 +856,75 @@ async fn workbuddy_smart_template_routes_easy_text_when_classifier_finishes_befo
         }
     }
     fixture.stop().await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn workbuddy_expiring_groups_fail_over_after_an_explicit_chat_502(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    for agent in ["workbuddy", "workbuddy-ai"] {
+        let mut fixture = Fixture::with_targets("openai_chat", 2).await?;
+        let mut menu = (*fixture.runtime.global_snapshot()?.ok_or("missing menu")?).clone();
+        let group = Arc::make_mut(
+            menu.groups
+                .get_mut(&fixture.grok_alias)
+                .ok_or("missing group")?,
+        );
+        group.group.template = Some(crate::services::intent_routing::RoutingTemplate::Expiry);
+        group.group.quota_order = Some(crate::services::intent_routing::QuotaOrder::EarliestExpiry);
+        group.group.members[0].model_id = "synthetic-expiring-primary".into();
+        group.targets[0].model = group.group.members[0].model_id.clone();
+        for target in &mut group.targets {
+            target.url.set_path("/smart-chat-completions");
+            target
+                .upstream
+                .as_mut()
+                .ok_or("missing provider")?
+                .meta
+                .get_or_insert_with(Default::default)
+                .api_format = Some("openai_chat".into());
+        }
+        fixture.runtime.set_global(menu, 0)?;
+        fixture
+            .runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: agent.into(),
+                token: TOKEN.into(),
+                model: fixture.grok_alias.clone(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+        let response = fixture
+            .client
+            .post(fixture.root.replace("/workbuddy/", &format!("/{agent}/")))
+            .bearer_auth(TOKEN)
+            .json(&json!({"model":fixture.grok_alias, "stream":true,
+                "messages":[{"role":"user","content":"Synthetic opening"}]}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK, "{agent}");
+        assert!(response.text().await?.contains("Synthetic answer"));
+        for model in ["synthetic-expiring-primary", "grok-synthetic-1"] {
+            let sent = fixture.requests.recv().await.ok_or("missing attempt")?;
+            assert_eq!(sent["model"], model, "{agent}");
+            assert_eq!(sent["messages"][0]["content"], "Synthetic opening");
+        }
+        let routes = fixture.runtime.traces.snapshot();
+        let route = routes.first().ok_or("missing trace")?;
+        assert_eq!(route.agent, agent);
+        assert!(route
+            .steps
+            .iter()
+            .any(|step| step.kind == trace::Kind::Rejected && step.status == Some(502)));
+        assert_eq!(route.state, trace::State::Completed);
+        fixture.stop().await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]

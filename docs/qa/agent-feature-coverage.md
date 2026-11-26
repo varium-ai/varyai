@@ -1,5 +1,116 @@
 # Agent feature coverage
 
+## Routing failover after an unreadable Codex rejection
+
+The change is scoped to an explicit retryable HTTP rejection on the native
+Codex Responses path when reading its error body fails. The existing attempt
+plan applies to unpinned requests. The gateway keeps the original status and
+rate-limit headers for scheduling. Pinned continuations retain their existing
+failure handling. No Agent picker or native configuration adapter changes.
+
+| Agent ID | Entry point and native adapter | Runtime and UI | Verification plan on macOS and Windows |
+| --- | --- | --- | --- |
+| `claude` | Shared Messages route and CLI settings | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `claude-desktop` | Dedicated Messages ingress and Desktop profile | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `codex` | Desktop/CLI managed and temporary Responses routes | Unpinned retries retain the rejection status when the body cannot be read. Pinned continuations retain their owner. | New loopback regression, existing replay fixtures, native pending |
+| `gemini` | Shared Gemini ingress and CLI settings | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `grokbuild` | CLI shared provider-selected ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `opencode` | CLI shared model catalog and provider-selected ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `openclaw` | Native provider and model registry or external gateway | Existing fallback on external gateway | Existing gateway fixtures, native pending |
+| `hermes` | Shared Chat ingress and CLI profile | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `pi` | Shared provider-scoped ingress and CLI model registry | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `workbuddy` | China Desktop shared and native Chat ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `workbuddy-ai` | International Desktop shared Chat ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `qoder` | China Desktop shared and native gateway | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `doubaowork` | Native audit integration | Dedicated audit UI | Source review, outside this forwarding path |
+| `trae` | China Desktop bridge and shared ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `trae-intl` | International Desktop bridge and shared ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `kimi` | Native provider projection and shared ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `qwen` | CLI model settings and shared ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `zcode` | Desktop model catalog and shared ingress | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `deepseek-harness` | Native model catalog and shared protocol routes | Existing fallback and route trace | Existing gateway fixtures, native pending |
+| `glm` | Historical app identity retained for existing data and proxy records | No managed picker or affected Responses path | Source review, outside this forwarding path |
+| `t3code` | Desktop managed Codex instances and shared ingress | Existing T3 Code route and trace | Existing gateway fixtures, native pending |
+
+## DeepSeek Harness restart with unknown freshness
+
+DeepSeek Harness has a desktop-only installation indicator and separate CLI
+entry point. In the main and tray Agents view, an installed desktop on macOS
+or Windows can offer its confirmed restart action after connection status loads
+even when desktop freshness is missing or unknown. The existing bundle or
+process identity checks still control the native action. Recovery-pending and
+unsupported states suppress this fallback. The CLI starts a new session.
+
+The other Agent rows in the inventory above retain their own restart or new
+session entry points and native adapters. The test plan checks macOS, Windows,
+unsupported hosts, and both layouts in the renderer. Native acceptance remains
+pending on both desktop platforms.
+
+## Gemini CLI disconnect guidance
+
+Gemini CLI's main and tray Agents views explain that an existing terminal
+session loads the restored configuration when reopened. Its native environment
+and settings restoration continue through the existing Gemini projection on
+macOS and Windows. The other Agents in the inventory above retain their
+current disconnect guidance and adapters. The dialog test exercises Gemini,
+Claude Code, Codex, and Pi. The affected Gemini terminal session is unverified.
+
+## November 26 bug tracker follow-up
+
+The open Chrome view contained 17 reports. Row numbers below refer to the
+observed flat list order. Older reports are compared with the current branch
+before deciding whether another change is needed.
+
+| Row | Report | Current evidence and acceptance |
+| --- | --- | --- |
+| 1 | Key that permits a group rejects direct member requests | The policy authorizes exact published route IDs. Authorizing a group does not grant its members' direct routes. The desired permissions change needs a product decision. |
+| 2 | Key that permits a direct model rejects a group containing it | The group alias needs separate authorization under the same policy. A group may route to any eligible member. The desired permissions change needs a product decision. |
+| 3 | DeepSeek Harness has no restart button after connection or model changes | Reproduced missing action when freshness is unknown or absent. Added the installed-desktop fallback with confirmation and unchanged identity checks. Native retest pending. |
+| 4 | ZCode starts with a different default model after restart | The recording shows a direct model in the restarted task composer while VaryAI shows a routing group. The installed build has a managed default and a matching rule on disk. Native new-chat readback with the reported configuration is pending. |
+| 5 | TRAE CN stays in the waiting state after restart with an incomplete catalog | Existing bridge delivery and native starting-model retry are present. The failed window/catalog state has not been reproduced in the reported client. |
+| 6 | TRAE CN produces no risk prompt or event | Current source provides the consented native RunCommand hook. Existing synthetic fixtures and historical acceptance cover specific hook paths. The reported client's hook load, accepted event, and notification are pending. |
+| 7 | TRAE CN first opens with the wrong default model | The existing startup selection retry waits for the native catalog and restored selection. The reported first-open path still needs a native retest. |
+| 8 | TRAE CN model connection is slow | Current source separates bridge reconnect work from the local switch lock. A timing trace from the affected operation is missing. |
+| 9 | TRAE CN routing graph lacks conversation titles | The live title resolver has no TRAE reader. Read-only metadata inspection found no verified native title index for the routed session IDs. Implementation is open. |
+| 10 | Gemini appears disconnected in VaryAI while the existing CLI displays its old model | The two screenshots show a disconnected VaryAI row and an open CLI model label. Added the existing restart guidance to Gemini's disconnect confirmation. The terminal's effective route remains unverified. |
+| 11 | Codex started at system login has a stale model and catalog | Current source has a separate desktop refresh and catalog cache lifecycle. The reported system-login startup sequence is unreproduced. |
+| 12 | Qoder CN calendar misses a successful daily claim | The existing campaign-window parser and cache-update repair covers the reported November 17 date pattern. Native verification with the reporter's account is pending. |
+| 13 | Qoder CN automatic check-in toggle is slow | Existing account-identity and settings-write changes separate preference persistence from reward observation. Native latency after the repair remains unmeasured. |
+| 14 | Easy and hard prompts use the hard-task member | Existing classifier fixtures verify both choices and deadline behavior for both WorkBuddy editions. The reported group and classifier outcome need a native retest. |
+| 15 | Compaction does not use the configured member | This branch already includes Codex compaction-rule and inline-history fixes. Installed-client retest of the original case is pending. |
+| 16 | Quota routing shows an unconfigured initial model | This branch already restricts matching-protocol preference to variants of the approved member. The original recording still needs correlation with an actual upstream attempt. |
+| 17 | Expiring-allowance group stops after a displayed 502 | The attachment identifies WorkBuddy AI and shows the final gateway error. The upstream status and continuation ownership are unknown. The explicit Chat HTTP 502 loopback regression passes for both WorkBuddy editions. A separate Codex regression reproduces and repairs failover when the rejection body cannot be read. The original WorkBuddy case remains open. |
+
+Checked working tree over `25427309` on macOS 26.6.2 arm64 with Rust 1.98.1,
+Node 20.20.2, and pnpm 10.12.3. The missing Harness actions, missing Gemini
+disconnect guidance, and premature Codex HTTP 502 failures reproduced before
+their changes. Focused regressions passed afterward.
+
+Type checking, renderer build, frontend formatting, 5,009 renderer tests, CI
+helper checks, Agent-rewards helper checks, and the production dependency audit
+passed. Cargo check, Rust formatting, strict Clippy, `cargo test --lib`, and
+`cargo test --no-fail-fast` passed against the `src-tauri` manifest. The library
+suite passed 7,925 tests. The full Cargo run passed 8,092 tests with 21 ignored
+and no failures. The macOS linker's compact-unwind warning was nonfatal. Native
+desktop acceptance, Windows/Linux execution, and remote CI are pending.
+
+On PR #103 at `094e9831`, the macOS WorkBuddy takeover test failed while
+claiming a released ephemeral port. `AddrInUse` already establishes the
+contention the fixture is trying to create. Accept that result while still
+holding the listener when the fixture binds it successfully. Other bind
+errors still fail the test. The restoration and shared-gateway assertions
+remain in place. A separate loopback fixture forced `AddrInUse` and confirmed
+that the original bind panicked and the updated bind continued.
+[GitHub Actions job](https://github.com/varium-ai/varyai/actions/runs/45754488994/job/139689828902)
+
+For the combined changes over `094e9831`, the same macOS arm64 toolchain
+passed the focused takeover test, `pnpm typecheck`, `pnpm format:check`,
+`pnpm build:renderer`, `pnpm test:unit` (5,010 tests), the development helper
+suite, and `pnpm audit --prod`. Rust formatting, `cargo check`, Clippy with
+`-D warnings`, `cargo test --lib` (7,925 passed, 21 ignored), and
+`cargo test --no-fail-fast` (8,092 passed, 21 ignored) passed against the
+`src-tauri` manifest. Native desktop acceptance remains pending.
+
 ## Routing-group visibility in Agent model pickers
 
 The routing-group publication switch controls the catalog used by connected

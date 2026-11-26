@@ -53,6 +53,14 @@ the native connection status. A failure releases the controls, reports a
 sanitized error for that Agent and allows another explicitly confirmed attempt.
 The operation is never retried automatically.
 
+Gemini CLI loads restored model and gateway settings after the running terminal
+session is closed and reopened. The disconnect confirmation explains when the
+open session will pick up those settings.
+
+The installed DeepSeek Harness desktop on macOS and Windows offers a confirmed
+restart even when its configuration freshness is unknown. The native adapter
+verifies the application identity when processing the restart.
+
 Codex provider changes also reconcile conversation ownership. Paginated history
 is updated in SQLite using one connection per database and transactions of at
 most 64 quiet threads. Each transition batch is journaled durably before its

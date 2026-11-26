@@ -254,6 +254,10 @@ The runtime supports two scheduling modes:
 
 Both modes apply the ready/resting partition after rule, affinity, and cost priorities. Only approved candidates participate. An intent rule's selected ready member takes priority over other ready members. Continuation/account binding overrides scheduling. A matching API format takes priority among adjacent endpoint variants of the same provider, model and reasoning effort. The routing policy determines the order between models. The gateway uses the selected endpoint's API format and converts the request as needed. Ambiguous failures and bound requests are never replayed at another account.
 
+For an unbound Codex request, an explicit retryable status such as HTTP 502
+can advance to the next member even when the upstream error body is too large
+or cannot be read. The routing trace uses the status from the upstream headers.
+
 The live routing graph explains when a request must continue at the same
 upstream, or when conversation affinity gives the previous upstream priority.
 Its candidate count describes the current request.
