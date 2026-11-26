@@ -114,21 +114,18 @@ impl Native {
     pub(crate) fn policy_model(
         &self,
         model: &str,
-    ) -> Result<(Option<String>, String), &'static str> {
+    ) -> Result<(Option<Arc<super::Session>>, String), &'static str> {
         let projection = self.projection.read().map_err(|_| FAILED)?;
-        let Some((projection, mapped)) = projection
-            .as_ref()
-            .and_then(|p| p.model_map.get(model).map(|mapped| (p, mapped)))
-        else {
+        let Some(projection) = projection.as_ref() else {
             return Ok((None, model.to_owned()));
         };
+        let mapped = projection
+            .model_map
+            .get(model)
+            .map_or(model, String::as_str);
         Ok((
-            projection
-                .menu
-                .groups
-                .contains_key(mapped)
-                .then(|| mapped.clone()),
-            mapped.clone(),
+            projection.menu.groups.get(mapped).cloned(),
+            mapped.to_owned(),
         ))
     }
     pub fn clear_menu(&self) {
@@ -782,6 +779,15 @@ pub(crate) async fn handle(
         .and_then(|menu| menu.groups.get(model))
         .cloned()
     else {
+        if parts
+            .extensions
+            .get::<super::super::gateway::GroupMemberPolicy>()
+            .is_some()
+        {
+            return super::super::gateway::policy_error(
+                super::super::gateway::GatewayError::Forbidden,
+            );
+        }
         if super::native_gateway::is_vary_alias(model) {
             return super::error(
                 StatusCode::NOT_FOUND,

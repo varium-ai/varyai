@@ -67,8 +67,8 @@ before deciding whether another change is needed.
 
 | Row | Report | Current evidence and acceptance |
 | --- | --- | --- |
-| 1 | Key that permits a group rejects direct member requests | The policy authorizes exact published route IDs. Authorizing a group does not grant its members' direct routes. The desired permissions change needs a product decision. |
-| 2 | Key that permits a direct model rejects a group containing it | The group alias needs separate authorization under the same policy. A group may route to any eligible member. The desired permissions change needs a product decision. |
+| 1 | Key that permits a group rejects direct member requests | A selected published group grants its available exact provider/model routes to bound local Agents, including direct selection. Native retest pending. |
+| 2 | Key that permits a direct model rejects a group containing it | Bound local Agents can use a published group with the key's allowed provider/model routes. The policy applies to initial attempts, fallback and the classifier. Native retest pending. |
 | 3 | DeepSeek Harness has no restart button after connection or model changes | Reproduced missing action when freshness is unknown or absent. Added the installed-desktop fallback with confirmation and unchanged identity checks. Native retest pending. |
 | 4 | ZCode starts with a different default model after restart | The recording shows a direct model in the restarted task composer while VaryAI shows a routing group. The installed build has a managed default and a matching rule on disk. Native new-chat readback with the reported configuration is pending. |
 | 5 | TRAE CN stays in the waiting state after restart with an incomplete catalog | Existing bridge delivery and native starting-model retry are present. The failed window/catalog state has not been reproduced in the reported client. |
@@ -473,6 +473,26 @@ catalog names, removes entries by exact route ID, and preserves saved IDs absent
 from the catalog. Existing native adapters and policy enforcement consume the
 same policy format. Renderer checks cover creation, editing, removal and the
 existing binding inventory. Installed-client verification remains pending.
+
+For bound local Agents in this matrix, a selected model grants its exact
+provider/model route directly and inside published groups. Selecting a group
+grants each available member route. The resulting permissions apply to initial
+attempts, retries, opaque continuations and separately configured classifiers.
+The same picker saves the catalog selection on macOS and Windows. OpenClaw and
+GLM have no local binding. Audit-only and legacy provider-scoped requests
+without a shared model route retain their existing handling. Authenticated
+external gateway requests continue to use the external route allowlist.
+The macOS loopback regression (26.6.2 arm64, Rust 1.98.1, working tree over
+`2071adf4`) exercises the 17 bound managed connection entries over Responses
+and the Codex menu and native Responses entry points. It verifies both
+selection directions, same-name provider isolation, membership withdrawal,
+failover and budget exhaustion. Rust check, formatting and Clippy passed, as did
+7,928 library tests and 167 integration tests. The library suite reported 21
+ignored tests. With Node 20.20.2 and pnpm 10.12.3, TypeScript, the renderer
+build, formatting and 28 focused renderer tests passed. The full renderer run
+reported 5,012 passes and two notarization fixture timeouts. All 21 tests in
+that file passed on an isolated rerun. Installed-client and Windows verification
+are pending.
 
 Synthetic regressions passed for catalog identity, exact policy saves,
 historical IDs absent from the picker, external connection examples and the

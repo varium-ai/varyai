@@ -8,7 +8,10 @@ use axum::{
     Json,
 };
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
 #[cfg(test)]
 mod admission_tests;
@@ -436,8 +439,22 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         && super::native_protocol::normalize_trae_responses(&mut body);
     let db = state.db.clone();
     let policy_model = alias.clone();
+    let catalog = match super::gateway::agent_policy_catalog(&state).await {
+        Ok(catalog) => catalog,
+        Err(error) => return super::gateway::policy_error(error),
+    };
     let grant = match tokio::task::spawn_blocking(move || {
-        db.authorize_gateway_agent(app, &policy_model, chrono::Utc::now().timestamp())
+        let route = catalog
+            .as_ref()
+            .and_then(|menu| menu.groups.get(&policy_model));
+        db.authorize_gateway_agent_model(
+            app,
+            &policy_model,
+            None,
+            route.map(Arc::as_ref),
+            catalog.as_ref(),
+            chrono::Utc::now().timestamp(),
+        )
     })
     .await
     {
@@ -480,6 +497,9 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
     }
     if let Some(grant) = &grant {
         parts.extensions.insert(grant.upstream_model.clone());
+        if let Some(group_members) = &grant.group_members {
+            parts.extensions.insert(group_members.clone());
+        }
     }
     for name in [
         "authorization",

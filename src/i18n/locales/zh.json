@@ -4708,7 +4708,7 @@
     "failed": "网关密钥操作失败",
     "nameExample": "例如：Desktop 测试、项目 A",
     "allModels": "允许全部模型",
-    "modelsHint": "要用此密钥调用路由组，请单独勾选该组。只勾选组内模型时，只能直接调用这些模型。在「本机 agent」中绑定此密钥。",
+    "modelsHint": "对于绑定此密钥的本机 Agent，勾选模型后可直接使用，也可通过包含它的路由组使用。勾选路由组后，组内可用的成员模型均可直接使用。在「本机 agent」中绑定此密钥。",
     "searchModels": "搜索模型、供应商或路由组",
     "catalogFailed": "加载模型目录失败。",
     "noModels": "暂无可用的共享模型或路由组。",
@@ -5627,8 +5627,7 @@
       "no_user_text": "没有可用于分类的用户文本"
     },
     "templateSmart": "难题给强模型，简单任务给便宜模型",
-    "templateSmartHint": "困难或不明确的任务优先用强模型。意图分类器可将简单任务交给更便宜的模型。组内其他模型仍可作为后备。",
-    "templateSmartSameModelHint": "可手动选择各规则的模型和意图判断模型，配置任务分流。",
+    "templateSmartHint": "压缩和难题优先用强模型，简单任务优先用低价模型。价格未知或相同时也会随机预选模型，保存前可以更换。",
     "templateCapability": "能力强的优先使用",
     "templateCapabilityHint": "按型号档位、同系列版本和目录信息推荐顺序，保存前可手动调整。",
     "templateSpeed": "速度快的优先使用",

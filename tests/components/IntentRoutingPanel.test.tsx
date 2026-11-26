@@ -1881,15 +1881,15 @@ describe("IntentRoutingPanel", () => {
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
-    expect(saved.members).toEqual([
-      expect.objectContaining({ id: saved.defaultMemberId, modelId: "second" }),
-    ]);
-    expect(saved.rules).toEqual([
-      expect.objectContaining({
-        name: "Hard task",
-        targetMemberId: saved.defaultMemberId,
-        enabled: true,
-      }),
+    const first = saved.members.find(({ modelId }) => modelId === "first");
+    const second = saved.members.find(({ modelId }) => modelId === "second");
+    expect(second?.id).toBe(saved.defaultMemberId);
+    expect(
+      saved.rules.map(({ name, targetMemberId }) => [name, targetMemberId]),
+    ).toEqual([
+      ["Compaction", first?.id],
+      ["Hard task", saved.defaultMemberId],
+      ["Easy task", second?.id],
     ]);
   });
   it.each([true, false])(

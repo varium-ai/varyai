@@ -150,13 +150,14 @@ exact supplier and model ID. When distinct choices are scarce, another
 supplier can serve the same model as a fallback. The speed template still uses
 one model per supplier.
 
-- **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
-  the suggested primary, fallback and cheaper model. Image requests with
-  explicit capability differences and high reasoning use the strong model.
-  The intent classifier helps identify simple tasks. Unclear results use the
-  primary order. Other members can still serve as backups. If catalog prices
-  do not identify a cheaper model, the draft has no automatic task split. You
-  can still choose each rule's model and the classifier without catalog prices.
+- **Strong models for hard tasks, cheaper models for easy tasks.** New drafts
+  prefill the compaction and hard-task rules with the suggested strong model.
+  The easy-task rule prefers a model with a lower known output price. When
+  prices are missing or tied, the template draws another available task model
+  if possible. The classifier is drawn from eligible models, with preference
+  for non-reasoning models and lower known prices. You can change all four
+  choices before saving. If the catalog has no eligible classifier, the
+  draft shows a prompt and leaves intent recognition off.
   Automatic suggestions skip the Codex automatic approval review model.
   Set the classification deadline and test the selected intent model in
   the same editor. New drafts use a 10,000 ms deadline.
