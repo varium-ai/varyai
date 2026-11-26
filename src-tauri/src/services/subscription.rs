@@ -62,6 +62,40 @@ pub struct CodexQuotaDetails {
     pub reset_credits: Option<CodexResetCredits>,
     pub spend_control: Option<CodexSpendControl>,
 }
+
+impl CodexQuotaDetails {
+    /// Whether the ChatGPT account is held by the Codex app (rate limit disallowed,
+    /// no usable credits, and no remaining workspace spend allowance).
+    pub(crate) fn is_held(&self) -> bool {
+        let disallowed = self.allowed == Some(false) || self.limit_reached == Some(true);
+        if !disallowed {
+            return false;
+        }
+        let has_usable_credits = self.credits.as_ref().is_some_and(|c| {
+            c.unlimited == Some(true)
+                || (c.has_credits == Some(true)
+                    && c.overage_limit_reached != Some(true)
+                    && c.balance
+                        .as_deref()
+                        .and_then(|b| b.parse::<f64>().ok())
+                        .is_some_and(|n| n > 0.0))
+        });
+        if has_usable_credits {
+            return false;
+        }
+        let within_spend_control = self
+            .spend_control
+            .as_ref()
+            .is_some_and(|s| s.reached == Some(false));
+        !within_spend_control
+    }
+}
+
+pub(crate) fn parse_codex_usage_details(raw: &[u8]) -> Option<CodexQuotaDetails> {
+    serde_json::from_slice::<CodexUsageResponse>(raw)
+        .ok()
+        .map(|body| body.details())
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodexModelUsage {
     pub available: Option<bool>,
@@ -1986,6 +2020,21 @@ mod subscription_controls_tests {
         let details = body.details();
         assert_eq!(details.allowed, Some(false));
         assert_eq!(details.limit_reached, Some(true));
+        assert!(!details.is_held(), "positive credits keep account unheld");
+        let no_credits = CodexQuotaDetails {
+            credits: None,
+            ..details.clone()
+        };
+        assert!(no_credits.is_held());
+        let within_overage = CodexQuotaDetails {
+            credits: None,
+            spend_control: Some(CodexSpendControl {
+                reached: Some(false),
+                individual_limit: Some(100.0),
+            }),
+            ..details.clone()
+        };
+        assert!(!within_overage.is_held());
         assert_eq!(
             details.credits.as_ref().and_then(|c| c.balance.as_deref()),
             Some("62500.0")

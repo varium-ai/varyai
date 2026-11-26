@@ -207,8 +207,12 @@ impl Manager {
                     .as_ref()
                     .map(|m| m.token.clone())
                     .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-                let provider =
-                    provider_table(base, &token, requires_openai_auth(&self.config, &doc), None)?;
+                let provider = provider_table(
+                    base,
+                    &token,
+                    requires_openai_auth(&self.config, &doc, self.runtime.native.codex_used_up()),
+                    None,
+                )?;
                 let parsed: toml::Value = provider.to_string().parse().map_err(|_| FAILED)?;
                 if !parsed.as_table().is_some_and(recognized_orphan_provider) {
                     return Err(CONFLICT.into());

@@ -236,8 +236,31 @@ pub(crate) async fn send_with_header_timeout(
 ) -> Result<reqwest::Response, super::ProxyError> {
     tokio::time::timeout(wait, request.send())
         .await
-        .map_err(|_| super::ProxyError::Timeout("Upstream response headers timed out".into()))?
-        .map_err(|_| super::ProxyError::ForwardFailed("Upstream request failed".into()))
+        .map_err(|_| {
+            log::warn!(
+                "[Proxy] Upstream response headers timed out after {}s",
+                wait.as_secs()
+            );
+            super::ProxyError::Timeout("Upstream response headers timed out".into())
+        })?
+        .map_err(|err| {
+            log::warn!(
+                "[Proxy] Upstream send failed: connect={} timeout={} request={} body={} status={:?}",
+                err.is_connect(),
+                err.is_timeout(),
+                err.is_request(),
+                err.is_body(),
+                err.status()
+            );
+            super::ProxyError::ForwardFailed(
+                if err.is_connect() {
+                    "connect_failed"
+                } else {
+                    "Upstream request failed"
+                }
+                .into(),
+            )
+        })
 }
 
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {

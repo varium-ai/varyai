@@ -31,7 +31,8 @@ pub(crate) fn error(err: GatewayError) -> Response {
             None,
         ),
     };
-    let mut body = json!({"error":{"code":code,"message":err.to_string(),"resets_at":reset}});
+    let message = crate::proxy::error_i18n::gateway_message(code);
+    let mut body = json!({"error":{"code":code,"message":message,"resets_at":reset}});
     let exhausted = matches!(err, GatewayError::Exhausted(_));
     if exhausted {
         body["error"]["type"] = json!("insufficient_quota");
@@ -91,10 +92,7 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
                 Ok(Err(err)) => return error(err),
                 Err(_) => return error(GatewayError::Storage),
             };
-        if !state
-            .intent_runtime
-            .global_current(state.db.routing_generation())
-        {
+        if !state.intent_runtime.ensure_global_current(&state.db).await {
             return crate::proxy::intent::catalog_stale();
         }
         let menu = match state.intent_runtime.global_snapshot() {

@@ -65,6 +65,9 @@ pub(crate) struct Native {
     status: RwLock<Option<&'static str>>,
     checkpoints: RwLock<Option<Arc<super::checkpoint::Store>>>,
     projection: RwLock<Option<Projection>>,
+    codex_used_up: std::sync::atomic::AtomicBool,
+    codex_config_path: RwLock<Option<std::path::PathBuf>>,
+    last_usage_probe: std::sync::Mutex<Option<Instant>>,
 }
 #[derive(Clone)]
 struct Projection {
@@ -140,6 +143,13 @@ impl Native {
             .clone()
             .ok_or(FAILED)
     }
+    pub(crate) fn refresh_published_menu(&self, menu: super::PublishedMenu) {
+        if let Ok(mut slot) = self.projection.write() {
+            if let Some(projection) = slot.as_mut() {
+                projection.menu = menu;
+            }
+        }
+    }
     #[cfg(test)]
     pub(crate) fn menu(&self) -> Result<(Arc<super::Menu>, Value), &'static str> {
         self.projection()
@@ -191,6 +201,97 @@ impl Native {
     pub fn reset_status(&self) {
         self.set_status("disabled");
     }
+    pub(crate) fn codex_used_up(&self) -> bool {
+        self.codex_used_up
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub(crate) fn set_codex_used_up(&self, used_up: bool) -> bool {
+        self.codex_used_up
+            .swap(used_up, std::sync::atomic::Ordering::AcqRel)
+            != used_up
+    }
+    pub(crate) fn set_codex_config_path(&self, path: &Path) {
+        if let Ok(mut slot) = self.codex_config_path.write() {
+            *slot = Some(path.to_path_buf());
+        }
+    }
+    pub(crate) fn should_probe_codex_recovery(&self, min_interval: std::time::Duration) -> bool {
+        if !self.codex_used_up() {
+            return false;
+        }
+        let Ok(mut guard) = self.last_usage_probe.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        if guard.is_some_and(|prev| now.duration_since(prev) < min_interval) {
+            return false;
+        }
+        *guard = Some(now);
+        true
+    }
+    pub(crate) async fn probe_codex_recovery_with_url(
+        &self,
+        usage_url: &str,
+        client: &reqwest::Client,
+    ) -> Option<bool> {
+        let config_path = self.codex_config_path.read().ok()?.clone()?;
+        let (token, account_id) =
+            crate::services::intent_routing::client::read_chatgpt_access_token(&config_path)?;
+        let mut req = client
+            .get(usage_url)
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(5));
+        if let Some(account_id) = account_id {
+            req = req.header("ChatGPT-Account-Id", account_id);
+        }
+        let resp = req.send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = resp.bytes().await.ok()?;
+        let details = crate::services::subscription::parse_codex_usage_details(&bytes)?;
+        let held = details.is_held();
+        let changed = self.set_codex_used_up(held);
+        Some(changed && !held)
+    }
+}
+
+async fn observe_native_passthrough_response(
+    runtime: &super::Runtime,
+    response: axum::response::Response,
+) -> axum::response::Response {
+    if response.status().is_success() {
+        runtime.native.observed();
+        if runtime.native.set_codex_used_up(false) {
+            runtime.trigger_menu_refresh();
+        }
+        return response;
+    }
+    if response.status() != StatusCode::TOO_MANY_REQUESTS {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(bytes) => {
+            if is_codex_usage_limit_reached(&bytes) && runtime.native.set_codex_used_up(true) {
+                runtime.trigger_menu_refresh();
+            }
+            axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+        }
+        Err(_) => super::error(
+            StatusCode::BAD_GATEWAY,
+            "routing_upstream_connection_failed",
+        ),
+    }
+}
+
+fn is_codex_usage_limit_reached(bytes: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    let error = &value["error"];
+    error.get("type").and_then(Value::as_str) == Some("usage_limit_reached")
+        || error.get("code").and_then(Value::as_str) == Some("usage_limit_reached")
 }
 fn read_private(path: &Path) -> Result<Option<String>, &'static str> {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -606,13 +707,22 @@ pub(crate) async fn handle(
     {
         return super::error(StatusCode::UPGRADE_REQUIRED, "routing_native_use_http");
     }
-    let projection = state.intent_runtime.native.projection().ok();
+    let mut projection = state.intent_runtime.native.projection().ok();
     if models {
         if projection
             .as_ref()
             .is_some_and(|p| !p.menu.current(state.db.routing_generation()))
         {
-            return super::catalog_stale();
+            if !state.intent_runtime.ensure_menu_current(&state.db).await {
+                return super::catalog_stale();
+            }
+            projection = state.intent_runtime.native.projection().ok();
+            if projection
+                .as_ref()
+                .is_some_and(|p| !p.menu.current(state.db.routing_generation()))
+            {
+                return super::catalog_stale();
+            }
         }
         let catalog = projection
             .as_ref()
@@ -715,10 +825,7 @@ pub(crate) async fn handle(
                         )
                     }
                 };
-                if response.status().is_success() {
-                    state.intent_runtime.native.observed();
-                }
-                return response;
+                return observe_native_passthrough_response(&state.intent_runtime, response).await;
             }
             Err(super::super::error::ProxyError::DlpForward(error)) => {
                 return error.into_codex_response()
@@ -738,16 +845,24 @@ pub(crate) async fn handle(
         };
         let response =
             super::native_gateway::forward(endpoint, parts.headers, bytes, parts.uri.query()).await;
-        if response.status().is_success() {
-            state.intent_runtime.native.observed();
-        }
-        return response;
+        return observe_native_passthrough_response(&state.intent_runtime, response).await;
     };
     if menu
         .as_ref()
         .is_some_and(|menu| !menu.current(state.db.routing_generation()))
     {
-        return super::catalog_stale();
+        if !state.intent_runtime.ensure_menu_current(&state.db).await {
+            return super::catalog_stale();
+        }
+        let refreshed = state
+            .intent_runtime
+            .menu_publication()
+            .ok()
+            .flatten()
+            .filter(|m| m.current(state.db.routing_generation()));
+        if refreshed.is_none() {
+            return super::catalog_stale();
+        }
     }
     let generation = menu.as_ref().and_then(|menu| menu.generation);
     let operation = match super::compaction::operation(&original, legacy) {
@@ -2064,5 +2179,114 @@ mod tests {
         server.stop().await?;
         task.abort();
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn observe_native_passthrough_response_tracks_codex_usage_limit_reached() {
+        let runtime = super::super::Runtime::default();
+        let refresh_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = refresh_count.clone();
+        runtime.set_menu_refresher(Some(Arc::new(move || {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        })));
+
+        // Non-quota 429 must not mark codex_used_up.
+        let transient_429 = axum::response::Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .body(axum::body::Body::from(
+                r#"{"error":{"type":"rate_limit_exceeded","message":"slow down"}}"#,
+            ))
+            .expect("429");
+        let _ = observe_native_passthrough_response(&runtime, transient_429).await;
+        assert!(!runtime.native.codex_used_up());
+
+        // usage_limit_reached 429 marks codex_used_up and triggers menu refresh.
+        let quota_429 = axum::response::Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .body(axum::body::Body::from(
+                r#"{"error":{"type":"usage_limit_reached","message":"quota exhausted"}}"#,
+            ))
+            .expect("429");
+        let res = observe_native_passthrough_response(&runtime, quota_429).await;
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(runtime.native.codex_used_up());
+        tokio::task::yield_now().await;
+        assert_eq!(refresh_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // 200 OK clears codex_used_up and triggers menu refresh again.
+        let ok_res = axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .body(axum::body::Body::from("{}"))
+            .expect("200");
+        let _ = observe_native_passthrough_response(&runtime, ok_res).await;
+        assert!(!runtime.native.codex_used_up());
+        tokio::task::yield_now().await;
+        assert_eq!(refresh_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn probe_codex_recovery_restores_when_wham_usage_has_room() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_srv = calls.clone();
+        let app = axum::Router::new().route(
+            "/wham/usage",
+            axum::routing::get(move || {
+                let n = calls_srv.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n == 0 {
+                        axum::Json(serde_json::json!({
+                            "rate_limit": {"allowed": false, "limit_reached": true}
+                        }))
+                    } else {
+                        axum::Json(serde_json::json!({
+                            "rate_limit": {"allowed": true, "limit_reached": false}
+                        }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let srv = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(
+            dir.path().join("auth.json"),
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"tok-1","account_id":"acc-1"}}"#,
+        )
+        .expect("auth");
+        let native = Native::default();
+        native.set_codex_config_path(&dir.path().join("config.toml"));
+        native.set_codex_used_up(true);
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/wham/usage");
+
+        assert!(native.should_probe_codex_recovery(std::time::Duration::from_secs(60)));
+        // Throttled immediately after first probe.
+        assert!(!native.should_probe_codex_recovery(std::time::Duration::from_secs(60)));
+
+        // First call returns held -> codex_used_up remains true, recovered=false.
+        assert_eq!(
+            native.probe_codex_recovery_with_url(&url, &client).await,
+            Some(false)
+        );
+        assert!(native.codex_used_up());
+
+        // Second call returns allowed=true -> codex_used_up flips to false, recovered=true.
+        assert_eq!(
+            native.probe_codex_recovery_with_url(&url, &client).await,
+            Some(true)
+        );
+        assert!(!native.codex_used_up());
+        srv.abort();
     }
 }

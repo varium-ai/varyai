@@ -686,6 +686,19 @@ pub(super) fn request_kind(headers: &http::HeaderMap, compact: bool) -> Option<&
         .map(|source| known_kind(&source).unwrap_or("unknown"))
 }
 
+pub(crate) fn is_side_request(headers: &http::HeaderMap) -> bool {
+    matches!(
+        request_kind(headers, false),
+        Some(
+            "thread_title"
+                | "thread_title_reconsideration"
+                | "title_generation"
+                | "title"
+                | "thread_description"
+                | "composer_predictions"
+        )
+    )
+}
 // Keep only catalog tokens, never arbitrary client metadata or header text.
 fn known_kind(marker: &str) -> Option<&'static str> {
     match marker {

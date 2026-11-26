@@ -179,27 +179,62 @@ fn read(path: &Path) -> Result<Option<String>, String> {
         Err(_) => Err(FAILED.into()),
     }
 }
-/// Standalone `[model_providers.varyai]` authenticates via `experimental_bearer_token`,
-/// matching magpie so Codex Desktop never blocks on a ChatGPT login screen.
-fn requires_openai_auth(_config: &Path, _doc: &DocumentMut) -> bool {
-    false
+fn own_no_auth(doc: &DocumentMut) -> bool {
+    doc.get("model_providers")
+        .and_then(|providers| providers.get(PROVIDER))
+        .and_then(|provider| provider.get("requires_openai_auth"))
+        .and_then(|value| value.as_bool())
+        == Some(false)
+}
+
+/// Keep `requires_openai_auth = true` while Codex is signed in to ChatGPT with
+/// available quota so Codex Desktop retains its Work chats and projects.
+/// When the ChatGPT account is used up or absent, omit `requires_openai_auth`
+/// so Send does not grey out, while preserving a user-written `false`.
+fn requires_openai_auth(config: &Path, doc: &DocumentMut, codex_used_up: bool) -> Option<bool> {
+    if own_no_auth(doc) {
+        return Some(false);
+    }
+    match chatgpt_sign_in(config, doc) {
+        Some(true) => (!codex_used_up).then_some(true),
+        Some(false) => None,
+        None => doc
+            .get("model_providers")
+            .and_then(|providers| providers.get(PROVIDER))
+            .and_then(|provider| provider.get("requires_openai_auth"))
+            .and_then(|value| value.as_bool()),
+    }
+}
+
+fn chatgpt_tokens_from_auth(auth: &Value) -> Option<(String, Option<String>)> {
+    let object = auth.as_object()?;
+    let mode = object.get("auth_mode").and_then(Value::as_str);
+    if !matches!(mode, None | Some("chatgpt" | "chatgptAuthTokens"))
+        || !object.get("OPENAI_API_KEY").is_none_or(Value::is_null)
+    {
+        return None;
+    }
+    let token = auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())?
+        .to_owned();
+    let account_id = auth
+        .pointer("/tokens/account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    Some((token, account_id))
 }
 
 fn has_chatgpt_tokens(auth: &Value) -> bool {
-    let Some(object) = auth.as_object() else {
-        return false;
-    };
-    let mode = object.get("auth_mode").and_then(Value::as_str);
-    matches!(mode, None | Some("chatgpt" | "chatgptAuthTokens"))
-        && object.get("OPENAI_API_KEY").is_none_or(Value::is_null)
-        && auth
-            .pointer("/tokens/access_token")
-            .and_then(Value::as_str)
-            .is_some_and(|token| !token.trim().is_empty())
+    chatgpt_tokens_from_auth(auth).is_some()
 }
 
 #[cfg(target_os = "macos")]
-fn keychain_chatgpt_sign_in(config: &Path) -> Option<bool> {
+fn keychain_chatgpt_auth(config: &Path) -> Option<Value> {
     let home = config.parent()?;
     let canonical = home.canonicalize().unwrap_or_else(|_| home.to_owned());
     use sha2::{Digest, Sha256};
@@ -227,8 +262,17 @@ fn keychain_chatgpt_sign_in(config: &Path) -> Option<bool> {
     if trimmed.is_empty() {
         return None;
     }
-    let auth: Value = serde_json::from_str(trimmed).ok()?;
-    Some(has_chatgpt_tokens(&auth))
+    serde_json::from_str(trimmed).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_chatgpt_auth(_config: &Path) -> Option<Value> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_chatgpt_sign_in(config: &Path) -> Option<bool> {
+    keychain_chatgpt_auth(config).map(|auth| has_chatgpt_tokens(&auth))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -243,6 +287,28 @@ fn file_chatgpt_sign_in(config: &Path) -> Option<bool> {
     };
     let auth: Value = serde_json::from_str(&text).ok()?;
     Some(has_chatgpt_tokens(&auth))
+}
+
+pub(crate) fn read_chatgpt_access_token(config: &Path) -> Option<(String, Option<String>)> {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+    let doc = read(config).ok().flatten().unwrap_or_default();
+    let mode = codex_config_auth_store_mode(&doc);
+    let file_tokens = || {
+        let path = config.parent()?.join("auth.json");
+        let text = read(&path).ok().flatten()?;
+        let auth: Value = serde_json::from_str(&text).ok()?;
+        chatgpt_tokens_from_auth(&auth)
+    };
+    match mode {
+        CodexAuthStoreMode::File => file_tokens(),
+        CodexAuthStoreMode::Keyring => {
+            keychain_chatgpt_auth(config).and_then(|auth| chatgpt_tokens_from_auth(&auth))
+        }
+        CodexAuthStoreMode::Auto => keychain_chatgpt_auth(config)
+            .and_then(|auth| chatgpt_tokens_from_auth(&auth))
+            .or_else(file_tokens),
+        CodexAuthStoreMode::Ephemeral | CodexAuthStoreMode::Unknown => None,
+    }
 }
 
 /// Unknown reads preserve the installed mode while Codex rotates its login file.
@@ -280,8 +346,14 @@ fn openai_mode(doc: &toml::Value) -> bool {
         == "openai"
 }
 
-fn beside_sign_in(config: &Path, doc: &DocumentMut, old: Option<&Receipt>, native: bool) -> bool {
-    if !native {
+fn beside_sign_in(
+    config: &Path,
+    doc: &DocumentMut,
+    old: Option<&Receipt>,
+    native: bool,
+    codex_used_up: bool,
+) -> bool {
+    if !native || codex_used_up {
         return false;
     }
     // A user's named provider remains standalone; an OpenAI mirror can join sign-in.
@@ -326,14 +398,16 @@ fn beside_sign_in(config: &Path, doc: &DocumentMut, old: Option<&Receipt>, nativ
 fn provider_table(
     base: &str,
     token: &str,
-    keep_login: bool,
+    keep_login: Option<bool>,
     previous: Option<&toml_edit::Item>,
 ) -> Result<toml_edit::Table, String> {
     let mut provider = toml_edit::Table::new();
     provider["name"] = toml_edit::value("VaryAI models and routing groups");
     provider["base_url"] = toml_edit::value(base);
     provider["wire_api"] = toml_edit::value("responses");
-    provider["requires_openai_auth"] = toml_edit::value(keep_login);
+    if let Some(keep_login) = keep_login {
+        provider["requires_openai_auth"] = toml_edit::value(keep_login);
+    }
     provider["experimental_bearer_token"] = toml_edit::value(token);
     provider["supports_websockets"] = toml_edit::value(false);
     provider["supports_standalone_web_search"] = toml_edit::value(false);
@@ -1065,7 +1139,15 @@ impl Manager {
         };
         let previous_catalog = read(&catalog_path)?;
         let catalog_changed = previous_catalog.as_deref() != Some(catalog_text.as_str());
-        let native_mode = beside_sign_in(&self.config, &doc, old.as_ref(), native.is_some());
+        self.runtime.native.set_codex_config_path(&self.config);
+        let codex_used_up = self.runtime.native.codex_used_up();
+        let native_mode = beside_sign_in(
+            &self.config,
+            &doc,
+            old.as_ref(),
+            native.is_some(),
+            codex_used_up,
+        );
         let current_model = doc.get("model").and_then(|v| v.as_str()).unwrap_or("");
         let keep_native_model = native_mode
             && !current_model.is_empty()
@@ -1093,7 +1175,7 @@ impl Manager {
                 .unwrap_or(first_alias);
             doc["model"] = toml_edit::value(default);
         }
-        let keep_login = requires_openai_auth(&self.config, &doc);
+        let keep_login = requires_openai_auth(&self.config, &doc, codex_used_up);
         if native_mode {
             doc.as_table_mut().remove("model_provider");
             doc.as_table_mut().remove("model_catalog_json");
@@ -1367,8 +1449,7 @@ fn menu_provider_signature(table: &toml::map::Map<String, toml::Value>, path: &s
         && table.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
         && table
             .get("requires_openai_auth")
-            .and_then(toml::Value::as_bool)
-            .is_some()
+            .is_none_or(|value| value.as_bool().is_some())
         && ["supports_websockets", "supports_standalone_web_search"]
             .iter()
             .all(|key| {
@@ -1647,6 +1728,29 @@ fn references_projection(value: &toml::Value) -> bool {
         _ => false,
     }
 }
+fn provider_table_owned(current: Option<&toml::Value>, installed: Option<&toml::Value>) -> bool {
+    let (Some(toml::Value::Table(cur)), Some(toml::Value::Table(inst))) = (current, installed)
+    else {
+        return current == installed;
+    };
+    if cur == inst {
+        return true;
+    }
+    // Preserve user-written `requires_openai_auth = false` on the owned provider table.
+    if cur
+        .get("requires_openai_auth")
+        .and_then(toml::Value::as_bool)
+        != Some(false)
+    {
+        return false;
+    }
+    let mut cur_norm = cur.clone();
+    let mut inst_norm = inst.clone();
+    cur_norm.remove("requires_openai_auth");
+    inst_norm.remove("requires_openai_auth");
+    cur_norm == inst_norm
+}
+
 fn projection_owned(current: &str, installed: &str) -> bool {
     let (Ok(current), Ok(installed)) = (
         current.parse::<toml::Value>(),
@@ -1659,10 +1763,12 @@ fn projection_owned(current: &str, installed: &str) -> bool {
             || (installed.get("openai_base_url").is_some()
                 && current.get("openai_base_url") == installed.get("openai_base_url")))
         && current.get("model_catalog_json") == installed.get("model_catalog_json")
-        && current.get("model_providers").and_then(|v| v.get(PROVIDER))
-            == installed
+        && provider_table_owned(
+            current.get("model_providers").and_then(|v| v.get(PROVIDER)),
+            installed
                 .get("model_providers")
-                .and_then(|v| v.get(PROVIDER))
+                .and_then(|v| v.get(PROVIDER)),
+        )
 }
 fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<String>, String> {
     let Some(current) = current else {

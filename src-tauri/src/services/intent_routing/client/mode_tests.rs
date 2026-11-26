@@ -685,8 +685,10 @@ fn user_provider_and_api_only_sign_in_keep_standalone_catalog(
     manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;
     let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
     assert_eq!(
-        doc["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-        Some(false)
+        doc["model_providers"][PROVIDER]
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool),
+        None
     );
     Ok(())
 }
@@ -713,17 +715,101 @@ fn incomplete_auth_read_does_not_switch_an_existing_chatgpt_connection(
     );
     assert!(doc.get("model_catalog_json").is_none());
     assert_eq!(
-        doc["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-        Some(false)
+        doc["model_providers"][PROVIDER]
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool),
+        Some(true)
     );
     fs::remove_file(dir.path().join("auth.json"))?;
     manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;
     let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
     assert_eq!(doc["model_provider"].as_str(), Some(PROVIDER));
     assert_eq!(
-        doc["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-        Some(false)
+        doc["model_providers"][PROVIDER]
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool),
+        None
     );
+    Ok(())
+}
+
+#[test]
+fn codex_used_up_takes_over_without_requires_openai_auth_and_preserves_user_false(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = tests::setup();
+    sign_in(&manager)?;
+    manager.write_projection_with_native(
+        &[tests::group()],
+        "synthetic-local",
+        BASE,
+        Some(NATIVE),
+    )?;
+    let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert!(doc.get("model_provider").is_none());
+    assert_eq!(
+        doc["model_providers"][PROVIDER]
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+
+    // Quota exhausted: switch to standalone provider and omit requires_openai_auth.
+    manager.runtime.native.set_codex_used_up(true);
+    manager.write_projection_with_native(
+        &[tests::group()],
+        "synthetic-local",
+        BASE,
+        Some(NATIVE),
+    )?;
+    let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert_eq!(doc["model_provider"].as_str(), Some(PROVIDER));
+    assert!(doc.get("model_catalog_json").is_some());
+    assert_eq!(
+        doc["model_providers"][PROVIDER]
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool),
+        None
+    );
+    assert!(manager.status()?.configuration_owned);
+
+    // Quota available again: return beside sign-in and restore requires_openai_auth = true.
+    manager.runtime.native.set_codex_used_up(false);
+    manager.write_projection_with_native(
+        &[tests::group()],
+        "synthetic-local",
+        BASE,
+        Some(NATIVE),
+    )?;
+    let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+    assert!(doc.get("model_provider").is_none());
+    assert_eq!(
+        doc["model_providers"][PROVIDER]
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+
+    // User-written requires_openai_auth = false is preserved across used-up transitions.
+    let mut edited: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    edited["model_providers"][PROVIDER]["requires_openai_auth"] = toml_edit::value(false);
+    fs::write(&manager.config, edited.to_string())?;
+    for used_up in [false, true, false] {
+        manager.runtime.native.set_codex_used_up(used_up);
+        manager.write_projection_with_native(
+            &[tests::group()],
+            "synthetic-local",
+            BASE,
+            Some(NATIVE),
+        )?;
+        let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+        assert_eq!(
+            doc["model_providers"][PROVIDER]
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            Some(false),
+            "used_up={used_up}"
+        );
+    }
     Ok(())
 }
 

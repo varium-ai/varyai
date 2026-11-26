@@ -58,6 +58,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) type CatalogRefresher = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 #[derive(Default)]
 pub(crate) struct Runtime {
     pub(crate) codex_activity: Arc<super::client_activity::Activity>,
@@ -67,8 +73,11 @@ pub(crate) struct Runtime {
     menu: RwLock<Option<PublishedMenu>>,
     global: RwLock<Option<Arc<Menu>>>,
     global_generation: std::sync::atomic::AtomicU64,
+    global_refresher: std::sync::OnceLock<CatalogRefresher>,
+    menu_refresher: RwLock<Option<CatalogRefresher>>,
     reserved: RwLock<std::collections::HashSet<String>>,
     conversations: scopes::Conversations,
+    session_models: RwLock<HashMap<(String, String), String>>,
     pub(crate) native: native::Native,
     continuations: RwLock<Option<Arc<continuation::Store>>>,
     native_protocol_preferred: RwLock<std::collections::HashSet<(String, String, &'static str)>>,
@@ -549,6 +558,116 @@ impl Runtime {
                     .load(std::sync::atomic::Ordering::Acquire)
                     == generation
         })
+    }
+    pub(crate) fn record_session_model(&self, consumer: &str, named: Option<&str>, alias: &str) {
+        let Ok(mut map) = self.session_models.write() else {
+            return;
+        };
+        if map.len() >= 2048 {
+            map.clear();
+        }
+        if let Some(id) = named.filter(|id| !id.is_empty()) {
+            map.insert((consumer.to_owned(), id.to_owned()), alias.to_owned());
+        }
+        map.insert((consumer.to_owned(), String::new()), alias.to_owned());
+    }
+    pub(crate) fn side_session_alias(&self, consumer: &str, named: Option<&str>) -> Option<String> {
+        let map = self.session_models.read().ok()?;
+        if let Some(id) = named.filter(|id| !id.is_empty()) {
+            if let Some(alias) = map.get(&(consumer.to_owned(), id.to_owned())) {
+                return Some(alias.clone());
+            }
+        }
+        map.get(&(consumer.to_owned(), String::new())).cloned()
+    }
+    pub(crate) fn set_global_refresher(&self, refresher: CatalogRefresher) {
+        let _ = self.global_refresher.set(refresher);
+    }
+    pub(crate) fn set_menu_refresher(&self, refresher: Option<CatalogRefresher>) {
+        if let Ok(mut slot) = self.menu_refresher.write() {
+            *slot = refresher;
+        }
+    }
+    pub(crate) fn trigger_menu_refresh(&self) {
+        let refresher = self
+            .menu_refresher
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let Some(refresher) = refresher else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(err) = refresher().await {
+                    log::warn!("[Routing] Codex menu refresh failed: {err}");
+                }
+            });
+        }
+    }
+    pub(crate) fn maybe_probe_codex_recovery(self: &Arc<Self>) {
+        if !self
+            .native
+            .should_probe_codex_recovery(std::time::Duration::from_secs(60))
+        {
+            return;
+        }
+        let runtime = Arc::clone(self);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let client = super::http_client::get();
+                if runtime
+                    .native
+                    .probe_codex_recovery_with_url(
+                        "https://chatgpt.com/backend-api/wham/usage",
+                        &client,
+                    )
+                    .await
+                    == Some(true)
+                {
+                    runtime.trigger_menu_refresh();
+                }
+            });
+        }
+    }
+    pub(crate) async fn ensure_global_current(&self, db: &crate::database::Database) -> bool {
+        if self.global_current(db.routing_generation()) {
+            return true;
+        }
+        let Some(refresher) = self.global_refresher.get().cloned() else {
+            return false;
+        };
+        if let Err(err) = refresher().await {
+            log::warn!("[Routing] On-demand global catalog refresh failed: {err}");
+        }
+        self.global_current(db.routing_generation())
+    }
+    pub(crate) async fn ensure_menu_current(&self, db: &crate::database::Database) -> bool {
+        let stale = self
+            .menu
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|m| !m.current(db.routing_generation())))
+            .unwrap_or(false);
+        if !stale {
+            return true;
+        }
+        let refresher = self
+            .menu_refresher
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let Some(refresher) = refresher else {
+            return false;
+        };
+        if let Err(err) = refresher().await {
+            log::warn!("[Routing] On-demand menu catalog refresh failed: {err}");
+        }
+        self.menu
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|m| m.current(db.routing_generation())))
+            .unwrap_or(true)
     }
     pub(crate) fn set_global(&self, mut menu: Menu, generation: u64) -> Result<(), String> {
         self.reserve_global_aliases(menu.groups.keys().cloned())?;
@@ -1397,33 +1516,18 @@ fn conversion_failure_reason(error: &super::ProxyError) -> &'static str {
 }
 
 fn error(status: StatusCode, code: &'static str) -> Response {
-    let message = match code {
-        "routing_model_unavailable" => {
-            "This conversation's saved model is unavailable in VaryAI. Select a model from the current list in this conversation, then retry."
-        }
-        "routing_native_select_published_model" => {
-            "The selected model is unavailable in Vary AI. If it is a routing group, enable a usable member in Vary AI, or select another available model in Codex."
-        }
-        "routing_request_conversion_failed" => {
-            "VaryAI could not convert the request for the selected API format. Try a route that supports the client's API format."
-        }
-        "routing_conversion_misconfigured" => {
-            "VaryAI cannot convert requests for this route. Check the selected provider and its API format in VaryAI."
-        }
-        "routing_response_conversion_failed" => {
-            "VaryAI received an upstream reply it could not convert. Check that the route's API format matches the upstream endpoint."
-        }
-        "routing_upstream_channel_restricted" => {
-            "The upstream subscription endpoint rejected this request because its channel policy only accepts approved clients. See the WorkBuddy provider guide for the channel requirements."
-        }
-        "routing_upstream_invalid_parameters_rejected" => {
-            "The upstream subscription endpoint rejected the request parameters. Check that the conversation's tools use names and parameter schemas the provider supports."
-        }
-        _ => code,
-    };
-    let error_type = match code {
-        "routing_conversion_misconfigured" | "routing_response_conversion_failed" => "server_error",
-        _ => "invalid_request_error",
+    let message = super::error_i18n::routing_message(code);
+    let error_type = if status == StatusCode::TOO_MANY_REQUESTS {
+        "rate_limit_error"
+    } else if status.is_server_error()
+        || matches!(
+            code,
+            "routing_conversion_misconfigured" | "routing_response_conversion_failed"
+        )
+    {
+        "server_error"
+    } else {
+        "invalid_request_error"
     };
     let mut response = Response::new(Body::from(
         json!({"error":{"type":error_type,"code":code,"message":message}}).to_string(),
@@ -1455,11 +1559,14 @@ pub(crate) async fn handle(
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
-    let menu = state.intent_runtime.menu.read().ok().and_then(|slot| {
+    let mut menu = state.intent_runtime.menu.read().ok().and_then(|slot| {
         slot.as_ref()
             .filter(|m| token == Some(m.token.as_str()))
             .cloned()
     });
+    if menu.is_some() {
+        state.intent_runtime.maybe_probe_codex_recovery();
+    }
     let session = state
         .intent_runtime
         .sessions
@@ -1474,7 +1581,20 @@ pub(crate) async fn handle(
         .as_ref()
         .is_some_and(|menu| !menu.current(state.db.routing_generation()))
     {
-        return catalog_stale();
+        if !state.intent_runtime.ensure_menu_current(&state.db).await {
+            return catalog_stale();
+        }
+        menu = state.intent_runtime.menu.read().ok().and_then(|slot| {
+            slot.as_ref()
+                .filter(|m| token == Some(m.token.as_str()))
+                .cloned()
+        });
+        if menu
+            .as_ref()
+            .is_some_and(|menu| !menu.current(state.db.routing_generation()))
+        {
+            return catalog_stale();
+        }
     }
     let generation = menu.as_ref().and_then(|menu| menu.generation);
     crate::codex_client::observe(request.headers());
@@ -1527,15 +1647,33 @@ pub(crate) async fn handle(
     if super::gateway::codex_model_changed(&parts.extensions, &original) {
         return catalog_stale();
     }
-    let session = menu
-        .as_ref()
-        .and_then(|m| {
-            original["model"]
-                .as_str()
-                .and_then(|id| m.groups.get(id))
-                .cloned()
-        })
-        .or(session);
+    let session = if trace::is_side_request(&parts.headers) {
+        let side_alias = state
+            .intent_runtime
+            .side_session_alias("local-codex", identity::named(&parts.headers));
+        side_alias
+            .as_deref()
+            .and_then(|alias| menu.as_ref().and_then(|m| m.groups.get(alias)).cloned())
+            .or_else(|| {
+                menu.as_ref()
+                    .and_then(|m| {
+                        original["model"]
+                            .as_str()
+                            .and_then(|id| m.groups.get(id))
+                            .cloned()
+                    })
+                    .or(session.clone())
+            })
+    } else {
+        menu.as_ref()
+            .and_then(|m| {
+                original["model"]
+                    .as_str()
+                    .and_then(|id| m.groups.get(id))
+                    .cloned()
+            })
+            .or(session)
+    };
     let requested_model = original["model"].as_str().filter(|model| !model.is_empty());
     let Some(session) = session else {
         return match requested_model {
@@ -1592,14 +1730,23 @@ pub(crate) async fn handle_global(
     alias: &str,
     ingress: RequestIngress,
 ) -> Response {
-    let generation = state.db.routing_generation();
-    if !state.intent_runtime.global_current(generation) {
+    if !state.intent_runtime.ensure_global_current(&state.db).await {
         return error(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
     }
+    let generation = state.db.routing_generation();
+    let effective_alias = if trace::is_side_request(request.headers()) {
+        state
+            .intent_runtime
+            .side_session_alias(&consumer, identity::named(request.headers()))
+            .unwrap_or_else(|| alias.to_owned())
+    } else {
+        alias.to_owned()
+    };
     let session = match state.intent_runtime.global_snapshot() {
         Ok(Some(menu)) => menu
             .groups
-            .get(alias)
+            .get(effective_alias.as_str())
+            .or_else(|| menu.groups.get(alias))
             .filter(|session| ingress == RequestIngress::Direct || session.group.enabled)
             .cloned(),
         Ok(None) => None,
@@ -1691,7 +1838,7 @@ async fn execute(
     consumer: String,
     refresh_credentials: bool,
     external: bool,
-    generation: Option<u64>,
+    _generation: Option<u64>,
     started: Instant,
 ) -> Response {
     let agent = parts
@@ -1753,9 +1900,17 @@ async fn execute(
             items.retain(|item| !length::empty_reasoning(item));
         }
     }
-    let named_conversation = identity::named(&parts.headers).is_some();
+    let named_conversation = identity::named(&parts.headers);
     let desktop_probe = desktop_purpose == Some(super::connections::desktop::Purpose::Probe);
     let conversation = (!desktop_probe).then(|| identity::affinity(&parts.headers, &bytes));
+    if !count_tokens && !desktop_probe && !trace::is_side_request(&parts.headers) {
+        state.intent_runtime.record_session_model(
+            &consumer,
+            named_conversation,
+            &session.group.alias(),
+        );
+    }
+    let named_conversation = named_conversation.is_some();
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
     }
@@ -1862,6 +2017,10 @@ async fn execute(
     let compact_inline_tools = route_compaction
         && responses_replay
         && codex_replay::portable_compaction_tools(&projection);
+    let portable_reroutable = length::portable(&projection)
+        && !opaque_continuation(protocol, &original)
+        && !native_request
+        && session.group.affinity != "strict";
     let codex_per_turn = responses_replay
         && compact.is_none()
         && named_conversation
@@ -1945,7 +2104,10 @@ async fn execute(
             Ok(pinned) => pinned,
             // Once a conversation can visit several providers, conflicting
             // known owners are not permission to route opaque state elsewhere.
-            Err(()) if requires_owner || codex_per_turn => {
+            Err(())
+                if (requires_owner && (!portable_reroutable || previous_response_required))
+                    || codex_per_turn =>
+            {
                 return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
             }
             Err(()) => None,
@@ -2006,7 +2168,11 @@ async fn execute(
             })
         })
     }) {
-        return fail(StatusCode::CONFLICT, "routing_continuation_target_disabled");
+        if portable_reroutable {
+            pinned = None;
+        } else {
+            return fail(StatusCode::CONFLICT, "routing_continuation_target_disabled");
+        }
     }
     let mut body = original.clone();
     let consumer_app = parts
@@ -2403,6 +2569,10 @@ async fn execute(
     }
     let mut attempted = false;
     let mut credentials_unavailable = false;
+    let mut connect_failed = false;
+    let mut dlp_restore_unsupported = false;
+    let mut conversion_rejected = false;
+    let mut last_bad_request: Option<&'static str> = None;
     let retry_seconds = match session.group.patience {
         value if value < 0 => 0,
         0 => 60,
@@ -2554,9 +2724,6 @@ async fn execute(
             .and_then(crate::services::subscription_provider::binding)
             .is_some_and(|binding| binding.provider.is_workbuddy());
         if count_tokens && (output != Protocol::Anthropic || workbuddy_upstream) {
-            if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
-                return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
-            }
             let Some(tokens) = estimated_tokens else {
                 return fail(
                     StatusCode::BAD_REQUEST,
@@ -2576,9 +2743,6 @@ async fn execute(
                 StatusCode::BAD_REQUEST,
                 "routing_official_requires_stream_and_store_false",
             );
-        }
-        if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
-            return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
         }
         let mut selected_body = body.clone();
         // Native Gemini selects its exact model in the URL, not in JSON.
@@ -2622,7 +2786,13 @@ async fn execute(
                 target.fixed_effort.as_deref().or(rule_effort),
             ) {
                 Ok(payload) => payload,
-                Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+                Err(code) => {
+                    if pinned.is_none() {
+                        last_bad_request = Some(code);
+                        continue;
+                    }
+                    return fail(StatusCode::BAD_REQUEST, code);
+                }
             }
         };
         let payload = if official_conversion {
@@ -2641,6 +2811,10 @@ async fn execute(
                         "[Intent] Conversion rejected: agent={agent} from={protocol:?} to={output:?} official=true specialized=false reason={}",
                         conversion_failure_reason(&err)
                     );
+                    if pinned.is_none() {
+                        conversion_rejected = true;
+                        continue;
+                    }
                     return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
                 }
             }
@@ -2648,6 +2822,10 @@ async fn execute(
             payload
         };
         if dlp_request.is_some() && (target.upstream.is_none() || official_conversion) {
+            if pinned.is_none() {
+                dlp_restore_unsupported = true;
+                continue;
+            }
             return security_failure(
                 super::security::http_restoration::DlpForwardError::RestoreUnsupported,
             );
@@ -2726,6 +2904,10 @@ async fn execute(
                     );
                 };
                 let Ok(value) = http::HeaderValue::from_str(&format!("Bearer {token}")) else {
+                    credentials_unavailable = true;
+                    if pinned.is_none() {
+                        continue;
+                    }
                     return fail(StatusCode::UNAUTHORIZED, "routing_account_unavailable");
                 };
                 headers.insert(header::AUTHORIZATION, value);
@@ -2745,9 +2927,6 @@ async fn execute(
                 header::ACCEPT,
                 http::HeaderValue::from_static("text/event-stream"),
             );
-        }
-        if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
-            return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
         }
         // Once dispatched, a named conversation cannot move after an ambiguous failure.
         if let Some(key) = conversation
@@ -3166,6 +3345,15 @@ async fn execute(
                 };
                 let response = match dispatched {
                     Ok(response) => super::hyper_client::ProxyResponse::Reqwest(response),
+                    // Connection-establishment failures happen before any bytes are sent upstream,
+                    // so trying another candidate carries no duplicate-execution risk.
+                    Err(super::ProxyError::ForwardFailed(msg))
+                        if msg == "connect_failed" && pinned.is_none() =>
+                    {
+                        connect_failed = true;
+                        trace.step(trace::Kind::Rejected, Some(candidate), Some(502));
+                        continue 'attempts;
+                    }
                     // Ambiguous network failures are never replayed at another account.
                     Err(_) => {
                         return fail(
@@ -3621,6 +3809,23 @@ async fn execute(
         *response.status_mut() = status;
         *response.headers_mut() = response_headers;
         return response;
+    }
+    if dlp_restore_unsupported && !attempted {
+        return security_failure(
+            super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+        );
+    }
+    if conversion_rejected && !attempted {
+        return fail(StatusCode::BAD_REQUEST, "routing_request_conversion_failed");
+    }
+    if let Some(code) = last_bad_request.filter(|_| !attempted) {
+        return fail(StatusCode::BAD_REQUEST, code);
+    }
+    if connect_failed && !attempted {
+        return fail(
+            StatusCode::BAD_GATEWAY,
+            "routing_upstream_connection_failed",
+        );
     }
     if credentials_unavailable && !attempted {
         return fail(

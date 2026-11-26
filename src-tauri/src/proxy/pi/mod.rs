@@ -20,14 +20,42 @@ use std::{
 };
 
 fn error(protocol: Protocol, status: StatusCode, code: &'static str) -> Response {
+    let error_type = match status {
+        StatusCode::UNAUTHORIZED => "authentication_error",
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::NOT_FOUND => "not_found_error",
+        StatusCode::PAYLOAD_TOO_LARGE => "request_too_large",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
+        _ if status.is_server_error() => "server_error",
+        _ => "invalid_request_error",
+    };
+    let message = super::error_i18n::pi_message(code);
+    error_with_type(protocol, status, error_type, code, message)
+}
+
+fn error_with_type(
+    protocol: Protocol,
+    status: StatusCode,
+    error_type: &'static str,
+    code: &'static str,
+    message: &'static str,
+) -> Response {
     let body = match protocol {
         Protocol::Anthropic => {
-            json!({"type":"error","error":{"type":"invalid_request_error","message":code}})
+            json!({"type":"error","error":{"type":error_type,"message":message}})
         }
         Protocol::Gemini => {
-            json!({"error":{"code":status.as_u16(),"status":"INVALID_ARGUMENT","message":code}})
+            let gemini_status = match status {
+                StatusCode::UNAUTHORIZED => "UNAUTHENTICATED",
+                StatusCode::FORBIDDEN => "PERMISSION_DENIED",
+                StatusCode::NOT_FOUND => "NOT_FOUND",
+                StatusCode::TOO_MANY_REQUESTS => "RESOURCE_EXHAUSTED",
+                _ if status.is_server_error() => "UNAVAILABLE",
+                _ => "INVALID_ARGUMENT",
+            };
+            json!({"error":{"code":status.as_u16(),"status":gemini_status,"message":message}})
         }
-        _ => json!({"error":{"type":"invalid_request_error","code":code,"message":code}}),
+        _ => json!({"error":{"type":error_type,"code":code,"message":message}}),
     };
     let mut response = Response::new(Body::from(body.to_string()));
     *response.status_mut() = status;
@@ -388,7 +416,37 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
         return fail(StatusCode::BAD_GATEWAY, "pi_upstream_redirect_rejected");
     }
     // Do not echo upstream error bodies: gateways may include credentials/request payloads.
+    // Classify context-length / payload-too-large safely so agents can auto-compact.
     if !status.is_success() {
+        if status == StatusCode::PAYLOAD_TOO_LARGE {
+            return error_with_type(
+                protocol,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request_too_large",
+                "request_too_large",
+                "request_too_large",
+            );
+        }
+        if matches!(status.as_u16(), 400 | 422) {
+            let err_bytes = response
+                .bytes_with_limit(64 * 1024)
+                .await
+                .unwrap_or_default();
+            if super::intent::length::overflow(status.as_u16(), &err_bytes) {
+                let message = if protocol == Protocol::Anthropic {
+                    "prompt is too long: context_length_exceeded"
+                } else {
+                    "context_length_exceeded"
+                };
+                return error_with_type(
+                    protocol,
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "context_length_exceeded",
+                    message,
+                );
+            }
+        }
         return fail(status, "pi_upstream_error");
     }
     let response = if let Some(attempt) = dlp_attempt.as_mut() {
