@@ -2,7 +2,11 @@
 use super::*;
 use crate::{
     app_config::AppType,
-    proxy::{intent::Menu, server::ProxyState},
+    proxy::{
+        intent::{Menu, PublishedMenu, Session},
+        server::ProxyState,
+    },
+    services::intent_routing::menu::direct_id,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -10,6 +14,57 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+
+#[derive(Clone, Debug)]
+pub(crate) struct GroupMemberPolicy {
+    group_id: String,
+    published_group: bool,
+    catalog_generation: Option<u64>,
+    models: std::collections::HashSet<String>,
+}
+
+fn direct_alias(provider_id: &str, model_id: &str) -> String {
+    format!("vary-provider/{}", direct_id(provider_id, model_id))
+}
+
+impl GroupMemberPolicy {
+    pub(crate) fn allows(&self, provider_id: &str, model_id: &str) -> bool {
+        self.models.contains(&direct_alias(provider_id, model_id))
+    }
+
+    pub(crate) fn permits_session(&self, session: &Session) -> bool {
+        self.published_group == session.group.enabled
+            && self.group_id == session.group.id
+            && session
+                .menu_targets()
+                .any(|target| self.allows(&target.provider_id, &target.model))
+    }
+
+    pub(crate) fn current(&self, generation: u64) -> bool {
+        self.catalog_generation
+            .is_none_or(|used| used == generation)
+    }
+
+    fn allow_members(&mut self, session: &Session) {
+        self.models.extend(
+            session
+                .menu_targets()
+                .map(|target| direct_alias(&target.provider_id, &target.model)),
+        );
+    }
+}
+
+pub(crate) async fn agent_policy_catalog(
+    state: &ProxyState,
+) -> Result<Option<PublishedMenu>, GatewayError> {
+    if !state.intent_runtime.ensure_global_current(&state.db).await {
+        return Err(GatewayError::Storage);
+    }
+    state
+        .intent_runtime
+        .global_publication()
+        .map_err(|_| GatewayError::Storage)
+}
 
 pub(super) fn path_model(path: &str) -> Option<String> {
     let encoded = path.split("/models/").nth(1)?.rsplit_once(':')?.0;
@@ -96,14 +151,16 @@ impl Database {
         model: &str,
         now: i64,
     ) -> Result<Option<Grant>, GatewayError> {
-        self.authorize_gateway_agent_model(app, model, None, now)
+        self.authorize_gateway_agent_model(app, model, None, None, None, now)
     }
 
-    fn authorize_gateway_agent_model(
+    pub(crate) fn authorize_gateway_agent_model(
         &self,
         app: &str,
         model: &str,
         alias: Option<&str>,
+        route: Option<&Session>,
+        catalog: Option<&PublishedMenu>,
         now: i64,
     ) -> Result<Option<Grant>, GatewayError> {
         let conn = self
@@ -134,10 +191,7 @@ impl Database {
             return Err(GatewayError::Unauthorized);
         }
         let policy: KeyPolicy = serde_json::from_str(&raw).map_err(|_| GatewayError::Storage)?;
-        if model.is_empty()
-            || model.len() > 200
-            || (!policy.all_models && !policy.models.iter().any(|m| m == model || alias == Some(m)))
-        {
+        if model.is_empty() || model.len() > 200 {
             return Err(GatewayError::Forbidden);
         }
         let (window, reset) = policy.period.window(now);
@@ -150,6 +204,43 @@ impl Database {
             .optional()
             .map_err(|_| GatewayError::Storage)?
             .unwrap_or(0);
+        drop(conn);
+        let requested = alias.unwrap_or(model);
+        let exact = policy.models.iter().any(|m| m == model || m == requested);
+        let managed = route.filter(|s| s.group.enabled || requested.starts_with("vary-provider/"));
+        let group_members = if policy.all_models {
+            None
+        } else if let Some(session) = managed {
+            let mut allowed = GroupMemberPolicy {
+                group_id: session.group.id.clone(),
+                published_group: session.group.enabled,
+                catalog_generation: catalog.and_then(|menu| menu.generation),
+                models: policy.models.iter().cloned().collect(),
+            };
+            if !allowed.current(self.routing_generation()) {
+                return Err(GatewayError::Storage);
+            }
+            let published_group = |alias: &str| {
+                catalog
+                    .and_then(|menu| menu.groups.get(alias))
+                    .filter(|group| group.group.enabled)
+                    .map(Arc::as_ref)
+            };
+            for group in policy.models.iter().filter_map(|id| published_group(id)) {
+                allowed.allow_members(group);
+            }
+            if exact && session.group.enabled {
+                allowed.allow_members(published_group(requested).unwrap_or(session));
+            }
+            if !allowed.permits_session(session) {
+                return Err(GatewayError::Forbidden);
+            }
+            Some(allowed)
+        } else if exact {
+            None
+        } else {
+            return Err(GatewayError::Forbidden);
+        };
         if policy.token_limit.is_some_and(|limit| used >= limit) {
             return Err(GatewayError::Exhausted(reset));
         }
@@ -157,8 +248,9 @@ impl Database {
             id,
             window,
             agent: app.into(),
-            model: alias.unwrap_or(model).into(),
+            model: requested.into(),
             upstream_model: GatewayUpstreamModel::default(),
+            group_members,
         }))
     }
 
@@ -338,33 +430,60 @@ pub async fn enforce_agent(
                 .and_then(|v| v["model"].as_str().map(str::to_owned))
         })
         .unwrap_or_default();
-    let managed_codex = match path.as_str() {
-        "/backend-api/codex/responses" | "/backend-api/codex/responses/compact" => true,
-        "/intent/v1/responses" => {
-            let token = parts
-                .headers
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "));
-            match state.intent_runtime.menu_publication() {
-                Ok(menu) => menu.is_some_and(|menu| token == Some(menu.token.as_str())),
-                Err(_) => return super::ingress::error(GatewayError::Storage),
-            }
-        }
-        _ => false,
-    };
-    let (alias, expected) = if managed_codex {
-        match state.intent_runtime.native.policy_model(&model) {
-            Ok((alias, resolved)) => (alias, Some(AuthorizedCodexModel(resolved))),
+    let intent_menu = if path == "/intent/v1/responses" {
+        let token = parts
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "));
+        match state.intent_runtime.menu_publication() {
+            Ok(menu) => menu.filter(|menu| token == Some(menu.token.as_str())),
             Err(_) => return super::ingress::error(GatewayError::Storage),
         }
     } else {
-        (None, None)
+        None
+    };
+    let managed_codex = intent_menu.is_some()
+        || matches!(
+            path.as_str(),
+            "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
+        );
+    let (alias, expected, group) = if managed_codex {
+        let (native_group, resolved) = match state.intent_runtime.native.policy_model(&model) {
+            Ok(policy) => policy,
+            Err(_) => return super::ingress::error(GatewayError::Storage),
+        };
+        let group = match intent_menu {
+            Some(menu) => menu.groups.get(&resolved).cloned(),
+            None => native_group,
+        };
+        (
+            group.as_ref().map(|_| resolved.clone()),
+            Some(AuthorizedCodexModel(resolved)),
+            group,
+        )
+    } else {
+        (None, None, None)
+    };
+    let catalog = if group.is_some() {
+        match agent_policy_catalog(&state).await {
+            Ok(catalog) => catalog,
+            Err(err) => return super::ingress::error(err),
+        }
+    } else {
+        None
     };
     let db = state.db.clone();
     let lookup = app.clone();
     let grant = match tokio::task::spawn_blocking(move || {
-        db.authorize_gateway_agent_model(&lookup, &model, alias.as_deref(), Utc::now().timestamp())
+        db.authorize_gateway_agent_model(
+            &lookup,
+            &model,
+            alias.as_deref(),
+            group.as_deref(),
+            catalog.as_ref(),
+            Utc::now().timestamp(),
+        )
     })
     .await
     {
@@ -374,6 +493,9 @@ pub async fn enforce_agent(
     };
     if let Some(grant) = &grant {
         parts.extensions.insert(grant.upstream_model.clone());
+        if let Some(group_members) = &grant.group_members {
+            parts.extensions.insert(group_members.clone());
+        }
         if let Some(expected) = expected {
             parts.extensions.insert(expected);
         }

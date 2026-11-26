@@ -1,5 +1,6 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
 import {
+  skipToken,
   useMutation,
   useMutationState,
   useQueries,
@@ -37,6 +38,7 @@ import {
 } from "lucide-react";
 import {
   agentConnectionsApi,
+  type AgentConnection,
   type CodexProxyIssue,
 } from "@/lib/api/agentConnections";
 import { CodexProxyWarning } from "./CodexProxyWarning";
@@ -87,6 +89,10 @@ import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import "./agent-directory.css";
 
 const orderStorageKey = "vary-agent-order";
+const harnessRestartConfirmationKey = [
+  "agent-restart-confirmed",
+  "deepseek-harness",
+] as const;
 
 const recognizedConnectionErrors = new Set([
   "agentConnections.invalidConfig",
@@ -180,6 +186,11 @@ export function AgentConnectionsPage({
   const [installationTab, setInstallationTab] = useState("installed");
   const name = (app: AppId) => getWorkspaceAgentLabel(t, app);
   const client = useQueryClient();
+  const { data: harnessRestartConfirmed } = useQuery<boolean>({
+    queryKey: harnessRestartConfirmationKey,
+    queryFn: skipToken,
+    gcTime: Infinity,
+  });
   const connections = useQueries({
     queries: MANAGED_APP_IDS.map((app) => ({
       queryKey: ["agent-connections", app],
@@ -457,12 +468,18 @@ export function AgentConnectionsPage({
         });
     }
   }
+  function recordConfigurationChange(app: AppId) {
+    if (app === "deepseek-harness") {
+      client.setQueryData(harnessRestartConfirmationKey, false);
+    }
+  }
   async function reapply(app: AppId) {
     if (!beginOperation(app, "reapplying")) return;
     setError(app, null);
     let applied = false;
     try {
       await agentConnectionsApi.reapply(app);
+      recordConfigurationChange(app);
       applied = true;
     } catch (cause) {
       setError(app, connectionErrorKey(cause));
@@ -481,6 +498,7 @@ export function AgentConnectionsPage({
     let applied = false;
     try {
       await agentConnectionsApi.set(app, enabled, enabled ? model : null);
+      recordConfigurationChange(app);
       applied = enabled;
       if (enabled) {
         toast.success(
@@ -543,6 +561,7 @@ export function AgentConnectionsPage({
     mutationKey: ["agent-disconnect"],
     mutationFn: (app: AppId) => agentConnectionsApi.set(app, false, null),
     retry: false,
+    onSuccess: (_data, app) => recordConfigurationChange(app),
     onError: (cause, app) => {
       const errorKey = connectionErrorKey(cause, {
         includeNoModels: false,
@@ -567,6 +586,17 @@ export function AgentConnectionsPage({
     mutationKey: ["agent-restart"],
     mutationFn: (app: AppId) => agentConnectionsApi.restart(app, true),
     retry: false,
+    onSuccess: async (_data, app) => {
+      if (app !== "deepseek-harness") return;
+      const queryKey = ["agent-connections", app];
+      await client.cancelQueries({ queryKey, exact: true });
+      client.setQueryData(harnessRestartConfirmationKey, true);
+      client.setQueryData<AgentConnection>(queryKey, (state) =>
+        state
+          ? { ...state, restartRequired: false, desktopState: "current" }
+          : state,
+      );
+    },
     onError: (cause: unknown, app) => {
       const allowed = [
         "agentConnections.restartBlocked",
@@ -1065,6 +1095,7 @@ export function AgentConnectionsPage({
     );
     const canRestartHarnessManually =
       app === "deepseek-harness" &&
+      !harnessRestartConfirmed &&
       !!state &&
       !state.recoveryPending &&
       (state.desktopState === "current" ||

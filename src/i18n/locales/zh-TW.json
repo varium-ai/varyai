@@ -4635,7 +4635,7 @@
     "failed": "閘道金鑰操作失敗",
     "nameExample": "例如：Desktop 測試、專案 A",
     "allModels": "允許全部模型",
-    "modelsHint": "若要使用此金鑰呼叫路由群組，請另行勾選該群組。只勾選群組內的模型時，只能直接呼叫這些模型。請在「本機 agent」綁定此金鑰。",
+    "modelsHint": "對於綁定此金鑰的本機 Agent，勾選模型後可直接使用，也可透過包含它的路由群組使用。勾選路由群組後，群組內可用的成員模型皆可直接使用。請在「本機 agent」綁定此金鑰。",
     "searchModels": "搜尋模型、供應商或路由群組",
     "catalogFailed": "載入模型目錄失敗。",
     "noModels": "目前沒有可用的共用模型或路由群組。",
@@ -5556,8 +5556,7 @@
       "no_user_text": "沒有可用於分類的使用者文字"
     },
     "templateSmart": "難題給強模型，簡單任務給便宜模型",
-    "templateSmartHint": "困難或不明確的任務優先使用強模型。意圖分類器可將簡單任務交給較便宜的模型。群組內其他模型仍可作為備援。",
-    "templateSmartSameModelHint": "可手動選擇各規則的模型和意圖判斷模型，設定任務分流。",
+    "templateSmartHint": "壓縮和難題優先使用強模型，簡單任務優先使用低價模型。價格未知或相同時也會隨機預選模型，儲存前可以更換。",
     "templateCapability": "能力強的優先使用",
     "templateCapabilityHint": "依型號等級、同系列版本和目錄資訊建議順序，儲存前可手動調整。",
     "templateSpeed": "速度快的優先使用",

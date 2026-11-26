@@ -4708,7 +4708,7 @@
     "failed": "Gateway key operation failed",
     "nameExample": "For example: Desktop testing or Project A",
     "allModels": "Allow all models",
-    "modelsHint": "Select each routing group you want this key to call, even if its member models are already selected. Bind the key in Local agents.",
+    "modelsHint": "For bound local agents, selecting a model allows it directly and in routing groups. Selecting a routing group allows each of its available member models, including direct use. Bind this key in Local agents.",
     "searchModels": "Search models, suppliers or routing groups",
     "catalogFailed": "Could not load the configured model catalog.",
     "noModels": "No shared models or routing groups are available.",
@@ -5633,8 +5633,7 @@
       "no_user_text": "No user text available for classification"
     },
     "templateSmart": "Strong models for hard tasks, cheaper models for easy tasks",
-    "templateSmartHint": "Use a strong model for difficult or unclear tasks. An intent classifier can send straightforward tasks to a cheaper model. Other group members can still serve as backups.",
-    "templateSmartSameModelHint": "Choose task models and an intent classifier to set up task splitting.",
+    "templateSmartHint": "Compaction and hard tasks use a strong model. Easy tasks prefer a cheaper model. Models are also drawn when prices are unknown or equal. You can change the selections before saving.",
     "templateCapability": "Most capable first",
     "templateCapabilityHint": "Rank selected models by tier, version within their family, and catalog information. Review the order before saving.",
     "templateSpeed": "Fastest first",

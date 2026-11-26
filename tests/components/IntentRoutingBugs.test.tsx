@@ -281,7 +281,7 @@ it.each(["loading", "failed"])(
 );
 
 it.each([undefined, 12])(
-  "shows all smart template controls when model prices are %s",
+  "prefills and saves all four smart template choices when model prices are %s",
   async (outputPrice) => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
       {
@@ -301,30 +301,48 @@ it.each([undefined, 12])(
     fireEvent.click(create);
     const title = await screen.findByText("routingPage.templateSmart");
     const card = title.parentElement!;
-    expect(
-      within(card).getByText("routingPage.templateSmartSameModelHint"),
-    ).toBeVisible();
     const add = within(card).getByRole("button", {
       name: "routingPage.templateSmart",
     });
     expect(add).toBeEnabled();
     fireEvent.click(add);
     const editor = await screen.findByRole("form");
-    for (const rule of ["Compact", "Hard", "Easy"]) {
-      expect(
+    const selectedModel = (button: HTMLElement) => {
+      expect(button).toHaveTextContent(/^(Strong|Alternate) · Synthetic$/);
+      return button.textContent?.startsWith("Strong")
+        ? "synthetic-strong"
+        : "synthetic-alternate";
+    };
+    const ruleModels = ["Compact", "Hard", "Easy"].map((rule) =>
+      selectedModel(
         within(editor).getByRole("button", {
           name: `intentRouting.target routingPage.templateSmart${rule}Rule`,
         }),
-      ).toBeEnabled();
-    }
+      ),
+    );
     const classifier = within(editor).getByRole("button", {
       name: "routingPage.intentToldBy",
     });
-    fireEvent.click(classifier);
-    expect(
-      await screen.findByRole("radio", { name: /Alternate/ }),
-    ).toBeEnabled();
+    const classifierModel = selectedModel(classifier);
     expect(intentRoutingApi.save).not.toHaveBeenCalled();
+    vi.mocked(intentRoutingApi.save).mockImplementationOnce(async (draft) => ({
+      ...draft,
+      revision: 1,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+    const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+    expect(
+      saved.rules.map(
+        (rule) =>
+          saved.members.find(({ id }) => id === rule.targetMemberId)?.modelId,
+      ),
+    ).toEqual(ruleModels);
+    expect(saved.classifierTarget).toEqual({
+      providerId: "synthetic",
+      modelId: classifierModel,
+    });
+    expect(saved.intentRecognitionEnabled).toBe(true);
   },
 );
 

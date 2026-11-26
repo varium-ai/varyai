@@ -52,6 +52,327 @@ pub(super) fn menu(url: &str) -> Menu {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::security::{
+        get_security_runtime, runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
+    };
+    use crate::services::{agent_connections::Receipt, intent_routing::menu::direct_id};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct RestoreSecurity(SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore_security = RestoreSecurity((*get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig::default());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let denied_requests = Arc::new(AtomicUsize::new(0));
+    let permitted_requests = Arc::new(AtomicUsize::new(0));
+    let fail_permitted = Arc::new(AtomicBool::new(false));
+    let denied = denied_requests.clone();
+    let permitted = permitted_requests.clone();
+    let fail = fail_permitted.clone();
+    let task = tokio::spawn(async move {
+        let app = Router::new().route("/*path", post(move |uri: http::Uri| {
+            let denied = denied.clone();
+            let permitted = permitted.clone();
+            let fail = fail.clone();
+            async move {
+                if uri.path() == "/permitted/responses" {
+                    permitted.fetch_add(1, Ordering::SeqCst);
+                    if fail.load(Ordering::SeqCst) {
+                        return (StatusCode::BAD_GATEWAY, Json(json!({"error":{"message":"Synthetic failure"}})));
+                    }
+                } else {
+                    denied.fetch_add(1, Ordering::SeqCst);
+                }
+                (StatusCode::OK, Json(json!({"id":"synthetic-response","object":"response","status":"completed","model":"exact-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic response"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}})))
+            }
+        }));
+        axum::serve(listener, app).await
+    });
+    let mut resource = menu(&format!("http://{address}/permitted/responses"));
+    let alias = group().alias();
+    let permitted_alias = format!("vary-provider/{}", direct_id("fixture", "exact-model"));
+    let session = Arc::make_mut(resource.groups.get_mut(&alias).ok_or("missing group")?);
+    let mut direct = session.clone();
+    direct.group.id = direct_id("fixture", "exact-model");
+    direct.group.enabled = false;
+    direct.group.model_alias = Some(permitted_alias.clone());
+    direct.bindings = Arc::default();
+    let mut forbidden_member = session.group.members[0].clone();
+    forbidden_member.id = "unlisted".into();
+    forbidden_member.provider_id = "other-supplier".into();
+    session.group.members.insert(0, forbidden_member);
+    session.group.default_member_id = "unlisted".into();
+    session.group.fallback_member_ids = vec!["a".into()];
+    let mut forbidden = session.targets[0].clone();
+    forbidden.provider_id = "other-supplier".into();
+    forbidden.url = format!("http://{address}/unlisted/responses").parse()?;
+    session.targets.insert(0, forbidden);
+    let outside_alias = format!("vary-provider/{}", direct_id("outside", "exact-model"));
+    let mut outside = direct.clone();
+    outside.group.id = direct_id("outside", "exact-model");
+    outside.group.model_alias = Some(outside_alias.clone());
+    outside.bindings = Arc::default();
+    outside.group.members[0].provider_id = "outside".into();
+    outside.targets[0].provider_id = "outside".into();
+    outside.targets[0].url = format!("http://{address}/outside/responses").parse()?;
+    let mut overlapping = session.clone();
+    overlapping.group.id = "overlapping-fixture".into();
+    overlapping.bindings = Arc::default();
+    overlapping.group.fallback_member_ids.clear();
+    overlapping.group.members[0].provider_id = "outside".into();
+    overlapping.targets[0] = outside.targets[0].clone();
+    let overlapping_alias = overlapping.group.alias();
+    resource
+        .groups
+        .insert(permitted_alias.clone(), Arc::new(direct));
+    resource
+        .groups
+        .insert(outside_alias.clone(), Arc::new(outside));
+    resource
+        .groups
+        .insert(overlapping_alias.clone(), Arc::new(overlapping));
+
+    let db = Arc::new(Database::memory()?);
+    let mut policy = KeyPolicy {
+        name: "Synthetic member policy".into(),
+        models: vec![permitted_alias.clone()],
+        all_models: false,
+        token_limit: None,
+        period: Period::Never,
+    };
+    let key = db.create_gateway_key(policy.clone())?;
+    let runtime = Arc::new(Runtime::default());
+    let apps = [
+        "claude",
+        "claude-desktop",
+        "gemini",
+        "grokbuild",
+        "opencode",
+        "hermes",
+        "pi",
+        "workbuddy",
+        "workbuddy-ai",
+        "qoder",
+        "trae",
+        "trae-intl",
+        "kimi",
+        "qwen",
+        "zcode",
+        "deepseek-harness",
+        "t3code",
+    ];
+    for app in apps {
+        db.bind_gateway_agent(app, Some(&key.key.id))?;
+        runtime.connections.install(&Receipt {
+            app: app.into(),
+            token: "synthetic-agent-token".into(),
+            model: alias.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    }
+    db.bind_gateway_agent("codex", Some(&key.key.id))?;
+    let native_home = tempfile::tempdir()?;
+    runtime
+        .native
+        .prepare_checkpoints(&native_home.path().join("checkpoint.key"))?;
+    let codex_menu = Arc::new(resource.clone());
+    runtime.set_menu(codex_menu.clone())?;
+    runtime.native.publish_menu(
+        codex_menu,
+        json!({"models":[]}),
+        [
+            ("synthetic-wire-group".to_owned(), alias.clone()),
+            ("synthetic-wire-direct".to_owned(), permitted_alias.clone()),
+        ]
+        .into_iter()
+        .collect(),
+    )?;
+    runtime.set_global(resource, db.routing_generation())?;
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = proxy.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let local = format!("http://127.0.0.1:{}", info.port);
+    let send = |app: &str, model: &str| {
+        client
+            .post(format!("{local}/connections/{app}/v1/responses"))
+            .bearer_auth("synthetic-agent-token")
+            .json(&json!({"model":model,"input":"Synthetic request"}))
+            .send()
+    };
+    let direct_response = send("deepseek-harness", &permitted_alias).await?;
+    let direct_status = direct_response.status();
+    let direct_reply: Value = direct_response.json().await?;
+    assert_eq!(
+        direct_status,
+        StatusCode::OK,
+        "direct error code: {}",
+        direct_reply["error"]["code"]
+    );
+    for app in apps {
+        let response = send(app, &alias).await?;
+        let status = response.status();
+        let reply: Value = response.json().await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{app} policy error code: {}",
+            reply["error"]["code"]
+        );
+    }
+    let codex_ingress = [
+        ("/intent/v1/responses", "synthetic-local-token"),
+        ("/backend-api/codex/responses", "synthetic-codex-token"),
+    ];
+    let send_codex = |path: &str, token: &str, model: &str| {
+        client
+            .post(format!("{local}{path}"))
+            .bearer_auth(token)
+            .json(&json!({"model":model,"input":"Synthetic request"}))
+            .send()
+    };
+    for (path, token) in codex_ingress {
+        let response = send_codex(path, token, "synthetic-wire-group").await?;
+        let status = response.status();
+        let reply: Value = response.json().await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{path} policy error code: {}",
+            reply["error"]["code"]
+        );
+    }
+    fail_permitted.store(true, Ordering::SeqCst);
+    assert_eq!(
+        send("deepseek-harness", &alias).await?.status(),
+        StatusCode::BAD_GATEWAY
+    );
+    assert_eq!(denied_requests.load(Ordering::SeqCst), 0);
+    assert!(permitted_requests.load(Ordering::SeqCst) >= 3);
+
+    let external = client
+        .post(format!(
+            "http://127.0.0.1:{}/gateway/v1/responses",
+            info.port
+        ))
+        .bearer_auth(&key.secret)
+        .json(&json!({"model":&alias,"input":"Synthetic request"}))
+        .send()
+        .await?;
+    assert_eq!(external.status(), StatusCode::FORBIDDEN);
+    policy.token_limit = Some(0);
+    db.update_gateway_key(&key.key.id, policy.clone())?;
+    let used = permitted_requests.load(Ordering::SeqCst);
+    let exhausted = send("deepseek-harness", &alias).await?;
+    assert_eq!(exhausted.status(), StatusCode::PAYMENT_REQUIRED);
+    assert_eq!(permitted_requests.load(Ordering::SeqCst), used);
+
+    policy.token_limit = None;
+    policy.models = vec!["unrelated-model".into()];
+    db.update_gateway_key(&key.key.id, policy)?;
+    let denied = send("deepseek-harness", &alias).await?;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        denied.json::<Value>().await?["error"]["code"],
+        "model_not_allowed"
+    );
+    assert_eq!(denied_requests.load(Ordering::SeqCst), 0);
+
+    fail_permitted.store(false, Ordering::SeqCst);
+    let mut policy = key.key.policy.clone();
+    policy.models = vec![alias.clone()];
+    db.update_gateway_key(&key.key.id, policy.clone())?;
+    for app in apps {
+        let response = send(app, &permitted_alias).await?;
+        let status = response.status();
+        let reply: Value = response.json().await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{app} should be able to select a member model directly: {}",
+            reply["error"]["code"]
+        );
+    }
+    for (path, token) in codex_ingress {
+        assert_eq!(
+            send_codex(path, token, "synthetic-wire-direct")
+                .await?
+                .status(),
+            StatusCode::OK,
+            "{path} should accept a direct member selected by its client alias"
+        );
+    }
+    assert_eq!(
+        send("deepseek-harness", &alias).await?.status(),
+        StatusCode::OK
+    );
+    let forbidden_count = denied_requests.load(Ordering::SeqCst);
+    assert_eq!(
+        send("deepseek-harness", &overlapping_alias).await?.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send("deepseek-harness", &outside_alias).await?.status(),
+        StatusCode::FORBIDDEN
+    );
+    policy.token_limit = Some(0);
+    db.update_gateway_key(&key.key.id, policy.clone())?;
+    assert_eq!(
+        send("deepseek-harness", &permitted_alias).await?.status(),
+        StatusCode::PAYMENT_REQUIRED
+    );
+    assert_eq!(denied_requests.load(Ordering::SeqCst), forbidden_count);
+
+    policy.token_limit = None;
+    db.update_gateway_key(&key.key.id, policy)?;
+    let mut edited = (*runtime.global_snapshot()?.ok_or("missing published menu")?).clone();
+    let selected = Arc::make_mut(
+        edited
+            .groups
+            .get_mut(&alias)
+            .ok_or("missing selected group")?,
+    );
+    selected.group.members.retain(|member| member.id != "a");
+    selected.group.fallback_member_ids.clear();
+    selected
+        .targets
+        .retain(|target| target.provider_id != "fixture");
+    db.invalidate_routing_resources();
+    runtime.set_global(edited, db.routing_generation())?;
+    assert_eq!(
+        send("deepseek-harness", &permitted_alias).await?.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send("deepseek-harness", &overlapping_alias).await?.status(),
+        StatusCode::FORBIDDEN
+    );
+    proxy.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn readable_connection_catalogs_publish_names_and_forward_legacy_ids(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

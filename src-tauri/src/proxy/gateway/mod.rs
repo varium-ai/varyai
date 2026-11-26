@@ -12,7 +12,7 @@ pub use ingress::handle;
 pub(crate) use ingress::{error as policy_error, meter as meter_response};
 mod bindings;
 mod secrets;
-pub(crate) use bindings::{catalog, codex_model_changed};
+pub(crate) use bindings::{agent_policy_catalog, catalog, codex_model_changed, GroupMemberPolicy};
 pub use bindings::{enforce_agent, GatewayCatalog, GatewayUsage};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -103,6 +103,7 @@ pub struct Grant {
     pub agent: String,
     pub model: String,
     pub upstream_model: GatewayUpstreamModel,
+    pub(crate) group_members: Option<GroupMemberPolicy>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -438,6 +439,7 @@ impl Database {
             agent: "external".into(),
             model: model.into(),
             upstream_model: GatewayUpstreamModel::default(),
+            group_members: None,
         })
     }
     pub fn charge_gateway_key(&self, id: &str, window: i64, tokens: u64) -> Result<(), AppError> {

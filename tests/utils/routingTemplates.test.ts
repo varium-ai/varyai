@@ -215,7 +215,19 @@ it("keeps all template drafts editable with no catalog and deduplicates repeated
       expect(group.members).toHaveLength(1);
     }
     expect(group.fallbackMemberIds).toEqual([]);
-    expect(group.classifierTarget).toBeNull();
+    if (template.key === "templateSmart") {
+      expect(group.classifierTarget).toEqual({
+        providerId: only.id,
+        modelId: model.id,
+      });
+      expect(group.rules).toHaveLength(3);
+      for (const rule of group.rules) {
+        expect(rule.targetMemberId).toBe(group.defaultMemberId);
+        expect(rule.fallbackMemberIds).toEqual([]);
+      }
+    } else {
+      expect(group.classifierTarget).toBeNull();
+    }
   }
   expect(
     routingTemplates(
@@ -224,21 +236,48 @@ it("keeps all template drafts editable with no catalog and deduplicates repeated
   ).toBe(true);
 });
 
-it("keeps unknown prices from qualifying a model as cheaper", () => {
-  const templates = routingTemplates([
+it("draws rule targets and a classifier from their eligible catalogs without prices", () => {
+  const catalog = [
     {
       ...providers[0],
+      classifierEligible: false,
       models: [
-        { id: "gemini-pro", name: "Gemini", released: "2026-01-01" },
-        { id: "model-8b", name: "Tiny", released: "2026-03-01" },
-        { id: "model-72b", name: "Small", released: "2026-02-01" },
+        { id: "task-a", name: "A" },
+        { id: "task-b", name: "B" },
+        { id: "task-c", name: "C" },
       ],
     },
-  ]);
-  expect(templates[0].group.members.map((m) => m.modelId)).toEqual([
-    "gemini-pro",
-  ]);
-  expect(templates[0].group.classifierTarget).toBeNull();
+    {
+      ...providers[1],
+      taskEligible: false,
+      models: [
+        { id: "classifier-a", name: "A" },
+        { id: "classifier-b", name: "B" },
+        { id: "codex-auto-review", name: "Automatic review" },
+      ],
+    },
+  ];
+  const choices = [0, 0.999].map((roll) => {
+    const { group, need } = routingTemplates(catalog, () => roll)[0];
+    expect(need).toBeUndefined();
+    expect(group.intentRecognitionEnabled).toBe(true);
+    expect(group.classifierTarget?.providerId).toBe("b");
+    expect(group.classifierTarget?.modelId).toMatch(/^classifier-[ab]$/);
+    expect(group.rules.map(({ name }) => name)).toEqual([
+      "Compaction",
+      "Hard task",
+      "Easy task",
+    ]);
+    const targets = group.rules.map((rule) => {
+      const member = group.members.find(({ id }) => id === rule.targetMemberId);
+      expect(member?.providerId).toBe("a");
+      expect(member?.modelId).toMatch(/^task-[abc]$/);
+      return member?.modelId;
+    });
+    expect(targets[1]).not.toBe(targets[2]);
+    return [...targets, group.classifierTarget?.modelId];
+  });
+  choices[0].forEach((model, role) => expect(model).not.toBe(choices[1][role]));
 });
 
 it("prefers different models across suppliers in all four templates", () => {
@@ -316,7 +355,7 @@ it("keeps a same-model alternate route when models are scarce", () => {
   }
 });
 
-it("uses a distinct smart fallback when there is no cheaper model", () => {
+it("suggests a distinct easy-task target when there is no cheaper model", () => {
   const primary = { id: "fixture-main", name: "Primary", outputPrice: 15 };
   const [smart] = routingTemplates([
     {
@@ -332,7 +371,7 @@ it("uses a distinct smart fallback when there is no cheaper model", () => {
     "fixture-main",
     "fixture-other",
   ]);
-  expect(smart.group.rules).toEqual([]);
+  expect(smart.group.rules[2].targetMemberId).toBe(smart.group.members[1].id);
 });
 
 it("uses configured equivalence before spending a slot on an alias", () => {

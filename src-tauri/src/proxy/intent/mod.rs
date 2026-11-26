@@ -1875,6 +1875,25 @@ async fn execute(
         trace.finish(status.as_u16(), trace::State::Failed);
         error(status, code)
     };
+    let group_policy = parts.extensions.get::<super::gateway::GroupMemberPolicy>();
+    if group_policy.is_some_and(|policy| !policy.current(state.db.routing_generation())) {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
+    }
+    let policy_rejected = || {
+        trace.finish(StatusCode::FORBIDDEN.as_u16(), trace::State::Failed);
+        super::gateway::policy_error(super::gateway::GatewayError::Forbidden)
+    };
+    if group_policy.is_some_and(|policy| !policy.permits_session(&session)) {
+        return policy_rejected();
+    }
+    let target_permitted = |index: usize| {
+        group_policy.is_none_or(|policy| {
+            session
+                .targets
+                .get(index)
+                .is_some_and(|target| policy.allows(&target.provider_id, &target.model))
+        })
+    };
     let native_request = parts.extensions.get::<Arc<native::Context>>().is_some();
     let streaming = !count_tokens
         && (original["stream"] == true
@@ -2161,6 +2180,11 @@ async fn execute(
         }
         pinned = Some(forced.0);
     }
+    if pinned.is_some_and(|index| !target_permitted(index))
+        || checkpoint_owner.is_some_and(|index| !target_permitted(index))
+    {
+        return policy_rejected();
+    }
     if pinned.is_some_and(|index| {
         session.targets.get(index).is_none_or(|target| {
             session.group.members.iter().any(|member| {
@@ -2312,10 +2336,18 @@ async fn execute(
     }
     let classifier_candidates =
         crate::services::intent_routing::rules::classifier_candidates(&session.group, &facts);
+    let classifier_permitted = group_policy.is_none_or(|policy| {
+        session
+            .group
+            .classifier_target
+            .as_ref()
+            .is_some_and(|target| policy.allows(&target.provider_id, &target.model_id))
+    });
     let classified = if inspected_projection["_group_projection_incomplete"] != true
         && desktop_purpose != Some(super::connections::desktop::Purpose::Probe)
         && !count_tokens
         && pinned.is_none()
+        && classifier_permitted
         && session.group.uses_classifier()
         && !classifier_candidates.is_empty()
     {
@@ -2372,7 +2404,7 @@ async fn execute(
             .candidates
             .iter()
             .flat_map(|m| session.target_indices(m))
-            .filter(|index| !is_paused(*index))
+            .filter(|index| target_permitted(*index) && !is_paused(*index))
             .collect::<Vec<_>>(),
         Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_plan"),
     };

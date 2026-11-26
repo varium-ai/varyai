@@ -2280,15 +2280,7 @@ export function IntentRoutingPanel({
           {templates.map((template) => (
             <div key={template.key}>
               <b>{t(`routingPage.${template.key}`)}</b>
-              <p>
-                {t(
-                  template.key === "templateSmart" &&
-                    !template.need &&
-                    !template.group.rules.length
-                    ? "routingPage.templateSmartSameModelHint"
-                    : `routingPage.${template.key}Hint`,
-                )}
-              </p>
+              <p>{t(`routingPage.${template.key}Hint`)}</p>
               <span>
                 {template.need ? (
                   <AccountLabel title>{templateNeed(template)}</AccountLabel>
