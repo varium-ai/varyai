@@ -695,6 +695,120 @@ fn scheduling_observer_ignores_headers_and_hidden_reasoning_and_counts_usage_on_
     );
 }
 
+#[tokio::test]
+async fn dropped_route_stream_keeps_observed_usage_from_the_actual_model(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::database::Database;
+    use crate::proxy::pi::usage::{Collector, Job};
+    use crate::services::pi_routing::catalog::Protocol;
+    use rusqlite::OptionalExtension;
+
+    let db = Arc::new(Database::memory()?);
+    let store = Arc::new(trace::Store::default());
+    let usage_frame = "data: {\"model\":\"synthetic-answer-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3}}\n\n";
+    for (frame, terminal, observed, status) in [
+        (usage_frame, true, true, 200u16),
+        (usage_frame, false, true, 499u16),
+        (
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic answer\"}}]}\n\n",
+            false,
+            false,
+            499u16,
+        ),
+    ] {
+        let started = Instant::now();
+        let request_trace = store.begin(
+            "deepseek-harness",
+            "synthetic-group",
+            "Synthetic group",
+            "ordered",
+            started,
+        );
+        let id = request_trace.id.clone();
+        let mut observation = StreamObservation {
+            observer: Observer::default(),
+            trace: request_trace,
+            collector: Collector::new(Protocol::Chat),
+            job: Some(Job {
+                app_type: "deepseek-harness",
+                db: db.clone(),
+                request_id: id.clone(),
+                provider_id: "synthetic-provider".into(),
+                request_model: "synthetic-target-model".into(),
+                session_id: None,
+                usage: Default::default(),
+                latency_ms: 0,
+                status: 200,
+                streaming: true,
+            }),
+            started,
+            upstream_status: 200,
+            finished: false,
+        };
+        if terminal {
+            observation.observer.push(
+                b"data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
+                &mut Bindings::default(),
+                0,
+            );
+        }
+        observation.collector.push(frame.as_bytes());
+        drop(observation);
+
+        let route = store
+            .snapshot()
+            .into_iter()
+            .find(|route| route.id == id)
+            .ok_or("missing route")?;
+        assert_eq!(route.status, Some(status));
+        assert_eq!(route.output_tokens, observed.then_some(3));
+        let read_usage = || {
+            db.conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT model, request_model, input_tokens, output_tokens, status_code
+                 FROM proxy_request_logs WHERE request_id = ?1",
+                    [&id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u32>(2)?,
+                            row.get::<_, u32>(3)?,
+                            row.get::<_, u16>(4)?,
+                        ))
+                    },
+                )
+                .optional()
+        };
+        if observed {
+            let row = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if let Some(row) = read_usage()? {
+                        return Ok::<_, rusqlite::Error>(row);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await??;
+            assert_eq!(
+                row,
+                (
+                    "synthetic-answer-model".into(),
+                    "synthetic-target-model".into(),
+                    11,
+                    3,
+                    status
+                )
+            );
+        } else {
+            assert!(read_usage()?.is_none());
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn live_decode_rate_requires_usage_and_observed_stream_flow() {
     let start = Instant::now();

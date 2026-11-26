@@ -3584,6 +3584,20 @@ and fail final validation with `400 dlp_redaction_failed`.
 
 ## Shared intent selection after a tool round
 
+The stream accounting follow-up applies to every executable Agent below on
+macOS and Windows. Each wire adapter feeds its actual usage frames through the
+shared route observation and asynchronous usage queue. The live graph and the
+usage dashboard retain the same request identity and observed model. The
+regression covers a client closing after terminal usage, closing with partial
+usage, and closing before any usage. Native acceptance remains pending.
+
+The interrupted-answer follow-up applies to every executable Agent in the
+matrix below through the same shared gate on macOS and Windows. The four
+protocol adapters supply their canonical history, and the existing routing
+graph displays the choice. The follow-up fixtures cover a new user query
+after a complete tool result and an interrupted answer. Native acceptance
+and the synthetic regressions remain pending manual verification.
+
 All Agents that execute a per-turn intent group use the shared turn classifier
 on macOS and Windows. Chat Completions, Messages, Responses and Gemini Native
 project their supported request fields into the shared planner. After a
@@ -3639,3 +3653,72 @@ adapters. It checks hard/easy selection, live tool ownership, repeated
 classification in the same conversation and preservation of the Chat
 transcript. The updated regressions and installed clients remain unverified
 on macOS and Windows at the user's request for manual testing.
+
+The 21:28 macOS Harness session included a paired tool call and result,
+followed by an interrupted assistant reply. The next two user requests
+received local HTTP 409 before any upstream attempt. The shared follow-up
+recognizes the new user boundary once all earlier calls have inline results
+and their recorded owners are known. The managed Chat and native protocol
+fixtures cover the missing final reply. The parser regression also covers
+a repeated question and a missing result. These tests were added for later
+verification and were not run.
+
+## Large routing catalogs and Agent row error layout
+
+The shared catalog is prepared before any native projection, and the Agent
+directory uses one sortable row for all managed Agents on macOS and Windows.
+The catalog regressions exercise the shared list and Codex's native projection.
+The browser check exercises an off-to-error transition for each managed row
+and checks the handle against the switch and the inline alert.
+
+| Agent ID           | Entry point and native adapter                                         | Runtime and UI coverage                                                    |
+| ------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `claude`           | Claude Code CLI, Messages                                              | Shared catalog, starting model, sortable row                               |
+| `claude-desktop`   | Claude Desktop, native Messages                                        | Shared catalog, large model visibility and order persistence, sortable row |
+| `codex`            | Codex CLI and desktop, Responses                                       | Shared catalog, native configuration publication and restore, sortable row |
+| `gemini`           | Gemini CLI, Gemini Native                                              | Shared catalog, starting model, sortable row                               |
+| `grokbuild`        | Grok Build CLI, Responses                                              | Shared catalog, starting model, sortable row                               |
+| `opencode`         | OpenCode CLI and desktop, native provider projection                   | Shared catalog, native picker, sortable row                                |
+| `openclaw`         | OpenClaw, managed Chat                                                 | Shared catalog, starting model, sortable row                               |
+| `hermes`           | Hermes Agent, managed Chat                                             | Shared catalog, starting model, sortable row                               |
+| `pi`               | Pi, native provider projection                                         | Shared catalog, native picker, sortable row                                |
+| `workbuddy`        | WorkBuddy China desktop and CLI, managed Chat                          | Shared catalog, authorized starting model, sortable row                    |
+| `workbuddy-ai`     | WorkBuddy international desktop, managed Chat                          | Shared catalog, authorized starting model, sortable row                    |
+| `qoder`            | Qoder desktop, native provider registry                                | Shared catalog, authorized starting model, sortable row                    |
+| `doubaowork`       | Doubao Work desktop, audit-only                                        | Official models, audit toggle, sortable row                                |
+| `trae`             | TRAE China desktop, managed Chat and Responses                         | Shared catalog, bridge starting model, sortable row                        |
+| `trae-intl`        | TRAE international desktop, managed Chat and Responses                 | Shared catalog, bridge starting model, sortable row                        |
+| `kimi`             | Kimi CLI, managed Chat                                                 | Shared catalog, starting model, sortable row                               |
+| `qwen`             | Qwen CLI, managed Chat                                                 | Shared catalog, starting model, sortable row                               |
+| `zcode`            | ZCode desktop, managed Chat                                            | Shared catalog, unsupported default-model control, sortable row            |
+| `deepseek-harness` | DeepSeek Harness desktop and CLI, managed Chat, Messages and Responses | Shared catalog, starting model, sortable row                               |
+| `t3code`           | T3 Code desktop, managed Responses                                     | Shared catalog, starting model, sortable row                               |
+| `glm`              | Historical GLM identifiers                                             | Inactive connection and excluded from the Agent directory                  |
+
+On macOS 26.6.2 arm64 with Rust 1.98.1, the isolated Codex connection
+reproduced `intentRouting.invalid` with 256 visible models and one hidden
+compatibility alias. The same fixture connected after the fix. The larger
+fixture connected with 302 visible entries and 301 hidden compatibility
+aliases, selected its saved group and restored the original configuration.
+
+Headless Chrome 158 and WebKit 27.2 verified all 20 Agent rows at 1200px and
+660px, including the generic connection error and the no-models action.
+The drag handle stayed to the right of the switch and the alert occupied
+the line below.
+
+Local verification used the working tree based on `bc0dd64b` with Node
+20.20.2 and pnpm 10.12.3. The 24 routing-menu tests passed, and the final
+targeted run passed the two large-catalog regressions and the 302-entry
+Claude Desktop visibility round trip. Type checking, the renderer build,
+all 5,014 frontend unit tests, formatting, the production dependency audit,
+CI helper tests, Cargo check and strict Clippy passed. The full Cargo test
+run was stopped at the user's request. Native application acceptance on macOS
+and Windows remains pending.
+
+The 21:41 macOS Harness record showed a normal HY reply with provider usage
+and a Vary AI trace ending before transport EOF. The trace request ID had
+no usage row. Shared stream observation now finalizes received usage on
+either EOF or close. The focused regression records the upstream model and
+token counts, preserves the terminal status when observed, and covers
+partial and unavailable usage. The regression was added for later manual
+verification and was not run.

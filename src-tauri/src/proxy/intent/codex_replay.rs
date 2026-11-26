@@ -11,7 +11,7 @@ pub(super) struct InlineReplay {
 
 /// Classifies the read-only planner view. All items, including historical tool
 /// pairs, still go through the usual request conversion and inspection.
-pub(super) fn inline_tool_history(body: &Value, include_live_tools: bool) -> Option<InlineReplay> {
+pub(super) fn inline_tool_history(body: &Value, per_turn_intent: bool) -> Option<InlineReplay> {
     if body["_group_projection_incomplete"] == true
         || !body["previous_response_id"].is_null()
         || !body["conversation"].is_null()
@@ -42,11 +42,13 @@ pub(super) fn inline_tool_history(body: &Value, include_live_tools: bool) -> Opt
                 awaiting_reply = false;
                 interrupted_turn = Some(turn);
             } else if is_user(item) {
-                if awaiting_reply
+                if open_calls != 0
+                    || (awaiting_reply && !per_turn_intent)
                     || interrupted_turn.is_some_and(|turn| turn_id(item) == Some(turn))
                 {
                     return None;
                 }
+                awaiting_reply = false;
                 last_user_turn = turn_id(item);
                 closed_reply = false;
             } else if item["role"] == "assistant"
@@ -87,7 +89,7 @@ pub(super) fn inline_tool_history(body: &Value, include_live_tools: bool) -> Opt
     }
     let current = &items[start + 1..];
     let new_user_turn = current.iter().all(is_page_context);
-    let live_tools = include_live_tools
+    let live_tools = per_turn_intent
         && current.iter().any(|item| {
             matches!(
                 item["type"].as_str(),
@@ -97,8 +99,10 @@ pub(super) fn inline_tool_history(body: &Value, include_live_tools: bool) -> Opt
     // Message IDs from a plain completed conversation can also belong to
     // several models. They are not references when the text is present.
     let plain_boundary = new_user_turn && (closed_reply || interrupted_turn.is_some());
+    // A new user message can supersede an interrupted answer once every
+    // earlier call has an inline result. A pending call is still live state.
     if open_calls != 0
-        || awaiting_reply
+        || (awaiting_reply && !per_turn_intent)
         || (calls.is_empty()
             && !page_context
             && !current.iter().any(is_page_context)
@@ -404,6 +408,25 @@ mod tests {
         let active = inline_tool_history(&body, false).expect("older history is closed");
         assert_eq!(active.current_turn_start, 5);
         assert!(!active.new_user_turn);
+    }
+
+    #[test]
+    fn per_turn_intent_accepts_a_new_question_after_an_interrupted_tool_reply() {
+        let mut body = closed();
+        body["input"].as_array_mut().unwrap().remove(4);
+        assert!(inline_tool_history(&body, false).is_none());
+
+        let replay = inline_tool_history(&body, true).unwrap();
+        assert_eq!(replay.current_turn_start, 4);
+        assert!(replay.new_user_turn && replay.closed_tool_calls);
+
+        body["input"].as_array_mut().unwrap().insert(
+            4,
+            json!({"role":"user","content":"Synthetic earlier follow-up without a reply"}),
+        );
+        assert!(inline_tool_history(&body, true).unwrap().new_user_turn);
+        body["input"].as_array_mut().unwrap().remove(2);
+        assert!(inline_tool_history(&body, true).is_none());
     }
 
     #[test]

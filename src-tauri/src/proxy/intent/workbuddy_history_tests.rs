@@ -966,10 +966,11 @@ async fn shared_smart_template_classifies_each_user_turn_after_closed_tool_histo
             assert_eq!(forwarded["messages"], json!(messages));
             let traces = fixture.runtime.traces.snapshot();
             assert_eq!(traces[0].classification_outcome, None);
-            messages.extend([
-                json!({"role":"assistant","content":"Synthetic answer"}),
-                json!({"role":"user","content":"Synthetic easy task"}),
-            ]);
+            if id == FIRST_ID {
+                messages.push(json!({"role":"assistant","content":"Synthetic answer"}));
+            }
+            // The second reply was interrupted after its tool result.
+            messages.push(json!({"role":"user","content":"Synthetic easy task"}));
         }
         messages.last_mut().ok_or("missing third question")?["content"] =
             json!("Synthetic hard task");
@@ -1009,7 +1010,6 @@ async fn shared_smart_template_classifies_each_user_turn_after_closed_tool_histo
                     {"role":"user","content":"Synthetic hard task"},
                     {"role":"assistant","content":[{"type":"tool_use","id":FIRST_ID,"name":"synthetic_tool_1","input":arguments(1)}]},
                     {"role":"user","content":[{"type":"tool_result","tool_use_id":FIRST_ID,"content":"Synthetic tool result"}]},
-                    {"role":"assistant","content":"Synthetic answer"},
                     {"role":"user","content":"Synthetic easy task"}
                 ]),
                 json!([{"name":"synthetic_tool_1","input_schema":{"type":"object"}}]),
@@ -1021,7 +1021,6 @@ async fn shared_smart_template_classifies_each_user_turn_after_closed_tool_histo
                     {"role":"user","content":"Synthetic hard task"},
                     {"type":"function_call","call_id":FIRST_ID,"name":"synthetic_tool_1","arguments":arguments(1).to_string()},
                     {"type":"function_call_output","call_id":FIRST_ID,"output":"Synthetic tool result"},
-                    {"role":"assistant","content":"Synthetic answer"},
                     {"role":"user","content":"Synthetic easy task"}
                 ]),
                 json!([{"type":"function","name":"synthetic_tool_1","parameters":{"type":"object"}}]),
@@ -1033,7 +1032,6 @@ async fn shared_smart_template_classifies_each_user_turn_after_closed_tool_histo
                     {"role":"user","parts":[{"text":"Synthetic hard task"}]},
                     {"role":"model","parts":[{"functionCall":{"id":FIRST_ID,"name":"synthetic_tool_1","args":arguments(1)}}]},
                     {"role":"user","parts":[{"functionResponse":{"id":FIRST_ID,"name":"synthetic_tool_1","response":{"text":"Synthetic tool result"}}}]},
-                    {"role":"model","parts":[{"text":"Synthetic answer"}]},
                     {"role":"user","parts":[{"text":"Synthetic easy task"}]}
                 ]),
                 json!([{"functionDeclarations":[{"name":"synthetic_tool_1","parameters":{"type":"object"}}]}]),
@@ -1051,7 +1049,7 @@ async fn shared_smart_template_classifies_each_user_turn_after_closed_tool_histo
         for (len, expected, outcome) in [
             (1, "grok-4.5", Some("matched")),
             (3, "grok-4.5", None),
-            (5, "glm-synthetic", Some("matched")),
+            (4, "glm-synthetic", Some("matched")),
         ] {
             let mut body = json!({"model":fixture.grok_alias});
             if protocol == Protocol::Anthropic {

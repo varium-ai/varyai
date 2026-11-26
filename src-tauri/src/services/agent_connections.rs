@@ -370,9 +370,13 @@ pub(crate) struct FileEdit {
     #[serde(default)]
     desktop_carried: bool,
 }
+const MAX_CONNECTION_FILE_BYTES: usize = 4 * 1024 * 1024;
+
 fn read(path: &Path) -> Result<Option<String>, String> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() || meta.len() > 4 * 1024 * 1024 => {
+        Ok(meta)
+            if meta.file_type().is_symlink() || meta.len() > MAX_CONNECTION_FILE_BYTES as u64 =>
+        {
             Err(FAILED.into())
         }
         Ok(_) => fs::read_to_string(path)

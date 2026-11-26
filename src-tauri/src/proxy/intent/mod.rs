@@ -1476,6 +1476,53 @@ impl Drop for Observer {
         }
     }
 }
+
+struct StreamObservation {
+    observer: Observer,
+    trace: trace::Request,
+    collector: super::pi::usage::Collector,
+    job: Option<super::pi::usage::Job>,
+    started: Instant,
+    upstream_status: u16,
+    finished: bool,
+}
+
+impl StreamObservation {
+    fn finish(&mut self, status: u16, state: trace::State) {
+        self.collector.finish();
+        if self.collector.observed {
+            self.trace
+                .usage(&self.collector.usage, self.observer.first_content);
+            if let Some(mut job) = self.job.take() {
+                job.usage = std::mem::take(&mut self.collector.usage);
+                job.latency_ms = self.started.elapsed().as_millis() as u64;
+                job.status = status;
+                super::pi::usage::emit(job);
+            }
+        }
+        self.trace.finish(status, state);
+        self.finished = true;
+    }
+}
+
+impl Drop for StreamObservation {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        // Clients can close immediately after receiving the terminal frame,
+        // without polling the upstream body to EOF.
+        let (status, state) = if self.observer.failed {
+            (502, trace::State::Failed)
+        } else if self.observer.completed || self.observer.trace_terminal {
+            (self.upstream_status, trace::State::Completed)
+        } else {
+            (499, trace::State::Cancelled)
+        };
+        self.finish(status, state);
+    }
+}
+
 fn conversion_failure_reason(error: &super::ProxyError) -> &'static str {
     let super::ProxyError::InvalidRequest(message) = error else {
         return "other";
@@ -2100,8 +2147,6 @@ async fn execute(
             && bindings.knows_tool_calls(&bindings.continuation_projection(&consumer, &projection));
         let resolution = if count_tokens || closed_tool_turn {
             Ok(None)
-        } else if harness_chat && bindings.has_archived_call_in_open_turn(&projection) {
-            Err(())
         } else if let Some(replay) = turn_tool_replay
             .as_ref()
             .filter(|replay| !responses_replay && !replay.new_user_turn)
@@ -2114,6 +2159,8 @@ async fn execute(
                 Ok(Some(owner)) => Ok(Some(owner)),
                 _ => return fail(StatusCode::CONFLICT, "routing_unknown_continuation"),
             }
+        } else if harness_chat && bindings.has_archived_call_in_open_turn(&projection) {
+            Err(())
         } else if protocol != Protocol::Responses {
             let pinned = session_owner;
             if !per_turn_intent
@@ -2154,8 +2201,9 @@ async fn execute(
                     // owner is relevant to the new checkpoint.
                     projection["input"].as_array().map_or(0, Vec::len)
                 } else {
-                    codex_inline_replay
+                    turn_tool_replay
                         .as_ref()
+                        .or(codex_inline_replay.as_ref())
                         .map_or(0, |history| history.current_turn_start)
                 },
             )
@@ -3772,13 +3820,13 @@ async fn execute(
         observer.scheduling = Some(target.scheduling.clone());
         observer.started = streaming.then_some(attempt_started);
         observer.first_content = observed_first_content;
-        let mut collector = super::pi::usage::Collector::new(match protocol {
+        let collector = super::pi::usage::Collector::new(match protocol {
             Protocol::Responses => crate::services::pi_routing::catalog::Protocol::Responses,
             Protocol::Chat => crate::services::pi_routing::catalog::Protocol::Chat,
             Protocol::Anthropic => crate::services::pi_routing::catalog::Protocol::Anthropic,
             Protocol::Gemini => crate::services::pi_routing::catalog::Protocol::Gemini,
         });
-        let mut job = super::pi::usage::Job {
+        let job = super::pi::usage::Job {
             app_type: if external {
                 "external"
             } else {
@@ -3820,6 +3868,15 @@ async fn execute(
         )
         .with_session(tool_session_id.clone());
         let account_scheduling = target.scheduling.clone();
+        let mut observation = StreamObservation {
+            observer,
+            trace,
+            collector,
+            job: (!external).then_some(job),
+            started,
+            upstream_status: status.as_u16(),
+            finished: false,
+        };
         let stream = async_stream::stream! {
             let mut content_timed = false;
             let mut last_rate_sample = None;
@@ -3830,29 +3887,31 @@ async fn execute(
                 let Some(next) = next else { break; };
                 match next {
                     Ok(bytes) => {
+                        let observer = &mut observation.observer;
                         let previous_output = observer.output_tokens;
                         if scoped.update(|bindings| observer.push(&bytes, bindings, index)).is_err() {
-                            trace.finish(503, trace::State::Failed);
+                            observation.finish(503, trace::State::Failed);
                             yield Err(std::io::Error::other("Routing state unavailable")); return;
                         }
                         if !content_timed {
                             if let Some(at) = observer.first_content {
-                                trace.first_content(at);
+                                observation.trace.first_content(at);
                                 content_timed = true;
                             }
                         }
                         if let Some((decode_ms, output_tokens)) =
                             observer.live_sample(previous_output, &mut last_rate_sample)
                         {
-                            trace.speed(decode_ms, output_tokens);
+                            observation.trace.speed(decode_ms, output_tokens);
                         }
-                        collector.push(&bytes); yield Ok::<_, std::io::Error>(bytes); }
+                        observation.collector.push(&bytes); yield Ok::<_, std::io::Error>(bytes); }
                     Err(_) => {
-                        trace.finish(502, trace::State::Failed);
+                        observation.finish(502, trace::State::Failed);
                         yield Err(std::io::Error::other("Routing upstream stream failed")); return;
                     }
                 }
             }
+            let observer = &mut observation.observer;
             let updated = scoped.update(|bindings| {
                 observer.finish(bindings, index);
                 if portable_tool_history && observer.completed && !observer.failed && !observer.oversized {
@@ -3872,28 +3931,19 @@ async fn execute(
                 }
             });
             if updated.is_err() {
-                trace.finish(503, trace::State::Failed);
+                observation.finish(503, trace::State::Failed);
                 yield Err(std::io::Error::other("Routing state unavailable")); return;
             }
-            collector.finish();
-            if collector.observed {
-                trace.usage(&collector.usage, observer.first_content);
-            }
             let (_, _, decode_ms, output_tokens) = observer.sample();
-            trace.speed(decode_ms, output_tokens);
-            trace.observe_account(candidate, &account_scheduling);
+            observation.trace.speed(decode_ms, output_tokens);
+            observation.trace.observe_account(candidate, &account_scheduling);
             let trace_failed = observer.failed || (streaming && !observer.completed && !observer.trace_terminal && !observer.oversized);
             if trace_failed { account_scheduling.failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp()); }
             else { account_scheduling.succeeded(); }
-            trace.finish(
+            observation.finish(
                 if trace_failed { 502 } else { status.as_u16() },
                 if trace_failed { trace::State::Failed } else { trace::State::Completed },
             );
-            if collector.observed && !external {
-                job.usage = collector.usage;
-                job.latency_ms = started.elapsed().as_millis() as u64;
-                super::pi::usage::emit(job);
-            }
         };
         let mut response = Response::new(Body::from_stream(
             super::tool_observation::mount::observe_stream(stream, metadata),
@@ -4244,5 +4294,7 @@ mod global_tests;
 mod routed_dlp_agent_matrix;
 #[cfg(test)]
 mod routed_dlp_tests;
+#[cfg(test)]
+mod template_agent_matrix_tests;
 #[cfg(test)]
 mod tests;

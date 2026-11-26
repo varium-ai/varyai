@@ -418,7 +418,7 @@ One dedicated `varyai` provider and one external Codex-native catalog expose bot
 Hover over a VaryAI entry in the Codex desktop picker to read its complete
 label, including the provider or routing suffix and any disambiguation number.
 
-The menu combines **available enabled global provider models and executable routing groups**. Direct entries retain each exact upstream identity; selecting one never silently substitutes a different provider. Group-only model unlisting withdraws a direct entry without removing the group target. Unsupported transports, unavailable credentials and non-executable entries are omitted, with a count in the UI; discovery is not evidence of inference permission. At most 256 entries are published, reserving room for the routing groups. Agents with a starting-model control choose their own default from this shared menu; native-picker applications choose the chat model inside the application. Background catalog refresh preserves the starting choice while explicit selection changes it; provider creation and editing do not select an Agent or change another Agent's default. Existing Codex conversations may retain their earlier native configuration.
+The menu combines **available enabled global provider models and executable routing groups**. Direct entries retain each exact upstream identity; selecting one never silently substitutes a different provider. Group-only model unlisting withdraws a direct entry without removing the group target. Unsupported transports, unavailable credentials and non-executable entries are omitted, with a count in the UI; discovery is not evidence of inference permission. The shared menu and Codex publication accept more than 256 entries. Hidden compatibility aliases keep older sessions routable. Agents with a starting-model control choose their own default from this shared menu; native-picker applications choose the chat model inside the application. Background catalog refresh preserves the starting choice while explicit selection changes it; provider creation and editing do not select an Agent or change another Agent's default. Existing Codex conversations may retain their earlier native configuration.
 
 The shared VaryAI model picker uses readable model names for both rows and hover tooltips. Internal routing aliases remain selection values and are not shown in these tooltips.
 
@@ -486,11 +486,12 @@ Managed WorkBuddy and DeepSeek Harness requests with self-contained visible hist
 
 For every Agent using a per-turn intent group, Chat Completions, Messages,
 Responses and Gemini Native use the same turn and model selection rules.
-The classifier receives the new user message after the transcript includes the
-observed calls, their results, and the assistant's closing reply. Forwarding
-retains the complete transcript. A tool result for the active turn goes to its
-observed owner. Provider-signed state and server-side response references
-continue to require their original destination.
+The classifier receives a new user message once the preceding observed tool
+calls have their results in the transcript. The user can start this turn after
+interrupting the assistant before its final reply. Forwarding retains the
+complete transcript. A tool result for the active turn goes to its observed
+owner. Provider-signed state and server-side response references continue to
+require their original destination.
 
 Managed Harness Chat also resumes a saved conversation with a completed tool transcript after a membership change when the gateway can match the calls to their original, still available destination. This check also applies to observations restored from disk after a gateway restart.
 

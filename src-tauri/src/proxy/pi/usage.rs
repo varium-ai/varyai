@@ -109,9 +109,12 @@ pub(crate) fn emit(job: Job) {
         return;
     };
     if slot.as_ref().is_none_or(|tx| tx.is_closed()) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         *slot = Some({
             let (tx, mut rx) = tokio::sync::mpsc::channel::<Job>(1000);
-            tokio::spawn(async move {
+            runtime.spawn(async move {
                 let mut batch = Vec::with_capacity(50);
                 loop {
                     if rx.recv_many(&mut batch, 50).await == 0 {
