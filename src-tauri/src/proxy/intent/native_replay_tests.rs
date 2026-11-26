@@ -24,6 +24,8 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
     security::runtime::set_security_runtime_for_test(Default::default());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let captured = seen.clone();
+    let summaries = Arc::new(Mutex::new(Vec::new()));
+    let captured_summaries = summaries.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let upstream = tokio::spawn(async move {
@@ -31,16 +33,33 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
             let model = body["model"].as_str().unwrap_or_default().to_owned();
             let mut calls = captured.lock().expect("fixture requests");
             calls.push(model.clone());
+            let note = json!({"type":"message","role":"assistant","status":"completed",
+            "id":format!("message-{}",calls.len()),"content":[
+                {"type":"output_text","text":"Synthetic reply","annotations":[]}
+            ]});
+            let output = if body["input"]
+                .as_array()
+                .and_then(|items| items.last())
+                .is_some_and(|item| item["content"] == "Synthetic tool opening")
+            {
+                json!([{"type":"function_call","name":"synthetic_tool","id":"fixture-call-item",
+                    "call_id":"fixture-call","arguments":"{}","status":"completed"},note])
+            } else {
+                json!([note])
+            };
             let reply = json!({
                 "id":format!("response-{}",calls.len()),"object":"response",
-                "model":model,"status":"completed",
-                "output":[{"type":"message","role":"assistant","content":[
-                    {"type":"output_text","text":"Synthetic reply"}
-                ]}]
+                "model":model,"status":"completed","output":output
             });
             let summary = body["instructions"]
                 .as_str()
                 .is_some_and(|text| text.contains("continuation summary"));
+            if summary {
+                captured_summaries
+                    .lock()
+                    .expect("fixture summaries")
+                    .push(body.clone());
+            }
             let reply = if body["stream"] == true && !summary {
                 let event = json!({"type":"response.completed","response":reply});
                 (
@@ -154,15 +173,83 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
             "{change}"
         );
     }
+    // Repeat the disable/enable sequence with native-style tool history.
+    // Gemini remains the owner of the pending tool result even after the
+    // higher-priority provider is published again.
+    let mut tool_menu = menu.clone();
+    let current = Arc::make_mut(tool_menu.groups.get_mut(&alias).ok_or("fixture route")?);
+    current.bindings = Arc::default();
+    current.group.off = vec![current.group.default_member_id.clone()];
+    current.targets = vec![second.clone()];
+    let publish = |menu: &super::Menu| {
+        runtime.native.publish_menu(
+            Arc::new(menu.clone()),
+            json!({"models":[]}),
+            Default::default(),
+        )
+    };
+    let send = |input: Vec<Value>| {
+        client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .header("session_id", "synthetic-provider-reenable")
+            .json(&json!({"model":alias,"input":input,"stream":false}))
+            .send()
+    };
+    publish(&tool_menu)?;
+    let mut history = vec![json!({"role":"user","content":"Synthetic tool opening"})];
+    let opening: Value = send(history.clone())
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(opening["model"], second.model);
+    history.extend(
+        opening["output"]
+            .as_array()
+            .ok_or("fixture output")?
+            .iter()
+            .cloned(),
+    );
+    runtime.flush_continuations().await;
+    let current = Arc::make_mut(tool_menu.groups.get_mut(&alias).ok_or("fixture route")?);
+    current.bindings = Arc::default();
+    current.group.off.clear();
+    current.targets = vec![first.clone(), second.clone()];
+    publish(&tool_menu)?;
+    history.push(
+        json!({"type":"function_call_output","call_id":"fixture-call","output":"Synthetic result"}),
+    );
+    let tool_reply: Value = send(history.clone())
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        tool_reply["model"], second.model,
+        "active tool result stays on the backup"
+    );
+    history.extend(
+        tool_reply["output"]
+            .as_array()
+            .ok_or("fixture reply")?
+            .iter()
+            .cloned(),
+    );
+    history.push(json!({"role":"user","content":"Synthetic follow-up after reenable"}));
+    let resumed: Value = send(history).await?.error_for_status()?.json().await?;
+    assert_eq!(
+        resumed["model"], first.model,
+        "a new turn uses the reenabled first provider"
+    );
+
     let current = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("fixture route")?);
     current.group.template = Some(crate::services::intent_routing::RoutingTemplate::Smart);
     current.group.rules = serde_json::from_value(json!([
         {"id":"compact", "name":"Compaction", "enabled":true, "description":"",
          "targetMemberId":"backup", "conditions":{"compact":true}}
     ]))?;
-    runtime
-        .native
-        .publish_menu(Arc::new(menu), json!({"models":[]}), Default::default())?;
+    publish(&menu)?;
     let compact: Value = client
         .post(format!("{url}/compact"))
         .bearer_auth("synthetic-native-token")
@@ -177,10 +264,56 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
         seen.lock().expect("fixture requests").last(),
         Some(&second.model)
     );
-    let checkpoint = compact["output"][0]["encrypted_content"]
+    let legacy_checkpoint = compact["output"][0]["encrypted_content"]
         .as_str()
         .ok_or("missing synthetic checkpoint")?;
-    assert!(checkpoint.starts_with("varyai1:"));
+    assert!(legacy_checkpoint.starts_with("varyai1:"));
+
+    let page_context = json!({"type":"function_call_output","id":"synthetic-page-context",
+        "name":"codex_apps_selected_page_part_1_of_1","namespace":"agent",
+        "output":"Synthetic selected page content"});
+    let inline_history = json!([
+        {"role":"user","content":"Synthetic opening"},
+        {"role":"assistant","content":"Synthetic previous answer"},
+        page_context,
+        {"type":"compaction_trigger"}
+    ]);
+    let trigger = |input: &Value| {
+        client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .header("session_id", "synthetic-routing-session")
+            .json(&json!({"model":alias,"input":input}))
+            .send()
+    };
+    let response = trigger(&inline_history)
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&second.model),
+        "inline browser context must not pin a compaction summary"
+    );
+    {
+        let summaries = summaries.lock().map_err(|_| "fixture summaries")?;
+        let summary = summaries.last().ok_or("missing summary request")?;
+        assert_eq!(
+            summary["input"],
+            json!(&inline_history.as_array().ok_or("fixture history")?[..3])
+        );
+        assert_eq!(summary["tools"], json!([]));
+    }
+    let checkpoint = response
+        .lines()
+        .find_map(|line| {
+            let event: Value = serde_json::from_str(line.strip_prefix("data: ")?).ok()?;
+            event["response"]["output"][0]["encrypted_content"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .ok_or("missing trigger checkpoint")?;
     client
         .post(&url)
         .bearer_auth("synthetic-native-token")
@@ -198,6 +331,424 @@ async fn codex_group_rechecks_priority_after_provider_reenable_and_manual_order(
         seen.lock().expect("fixture requests").last(),
         Some(&first.model)
     );
+
+    let mut unresolved = inline_history.clone();
+    unresolved[2]["call_id"] = json!("synthetic-unresolved-call");
+    trigger(&unresolved)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&first.model),
+        "an actual tool output keeps its original session binding"
+    );
+
+    let current = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("fixture route")?);
+    current.group.rules[0].enabled = false;
+    publish(&menu)?;
+    trigger(&inline_history)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(
+        seen.lock().map_err(|_| "fixture requests")?.last(),
+        Some(&first.model),
+        "disabling the compaction rule preserves the session binding"
+    );
+    server.stop().await?;
+    upstream.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_reorder_replays_closed_tool_turns_without_moving_active_outputs(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _policy = RestorePolicy((*security::get_security_runtime()).clone());
+    security::runtime::set_security_runtime_for_test(Default::default());
+    let seen = Arc::new(Mutex::new(Vec::<(bool, Value)>::new()));
+    let captured = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = tokio::spawn(async move {
+        let app = Router::new().fallback(move |uri: axum::extract::OriginalUri, Json(body): Json<Value>| {
+            let mut requests = captured.lock().expect("synthetic observations");
+            requests.push((uri.path() == "/official/responses", body.clone()));
+            let model = body["model"].as_str().unwrap_or_default();
+            let output = match body["input"].as_array().and_then(|items| items.last()) {
+                Some(last) if last["content"] == "Synthetic first" || last["content"] == "Synthetic second" || last["content"] == "Synthetic steering" => json!([{
+                    "type":"function_call","id":format!("fc-{model}"),"call_id":format!("call-{model}"),
+                    "name":"synthetic_tool","arguments":"{}","status":"completed"
+                }]),
+                _ => json!([{"type":"message","id":format!("msg-{}", requests.len()),
+                    "role":"assistant","status":"completed","content":[{"type":"output_text","text":"Synthetic answer"}]
+                }]),
+            };
+            let response = json!({"id":format!("resp-{}",requests.len()),"object":"response",
+                "model":model,"status":"completed","output":output});
+            let event = json!({"type":"response.completed","response":response});
+            std::future::ready(([(header::CONTENT_TYPE, "text/event-stream")],
+                format!("event: response.completed\ndata: {event}\n\n")))
+        });
+        let _ = axum::serve(listener, app).await;
+    });
+    let _origin = native_gateway::set_test_origin(format!("http://{address}/official"));
+    let base_menu = super::global_tests::menu(&format!("http://{address}/responses"));
+    let alias = base_menu
+        .groups
+        .keys()
+        .next()
+        .ok_or("missing synthetic alias")?
+        .clone();
+    let runtime = Arc::new(Runtime::default());
+    let dir = tempfile::tempdir()?;
+    runtime
+        .prepare_continuations(dir.path().join("continuations.json"))
+        .await;
+    runtime
+        .native
+        .prepare_checkpoints(&dir.path().join("checkpoint.key"))?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let publish = |menu: &super::Menu| -> Result<(), Box<dyn std::error::Error>> {
+        let menu = Arc::new(menu.clone());
+        runtime.set_menu(menu.clone())?;
+        runtime
+            .native
+            .publish_menu(menu, json!({"models":[]}), Default::default())?;
+        Ok(())
+    };
+    for (path, thread, interrupted) in [
+        (
+            "/backend-api/codex/responses",
+            "synthetic-native-complete",
+            false,
+        ),
+        (
+            "/backend-api/codex/responses",
+            "synthetic-native-interrupted",
+            true,
+        ),
+        (
+            "/intent/v1/responses",
+            "synthetic-standalone-complete",
+            false,
+        ),
+    ] {
+        let mut menu = base_menu.clone();
+        let session = Arc::make_mut(
+            menu.groups
+                .get_mut(&alias)
+                .ok_or("missing synthetic route")?,
+        );
+        session.group.levels.clear();
+        session.group.affinity = "turn".into();
+        session.bindings = Arc::default();
+        let first = session.targets[0].model.clone();
+        let mut second = session.targets[0].clone();
+        second.provider_id = "synthetic-new-provider".into();
+        second.model = "synthetic-new-model".into();
+        second.scheduling = Arc::default();
+        let mut member = session.group.members[0].clone();
+        member.id = "synthetic-new-member".into();
+        member.provider_id = second.provider_id.clone();
+        member.model_id = second.model.clone();
+        session.group.fallback_member_ids = vec![member.id.clone()];
+        session.group.members.push(member);
+        session.targets.push(second.clone());
+        let token = menu.token.clone();
+        publish(&menu)?;
+        let url = format!("http://127.0.0.1:{}{path}", info.port);
+        let send = |body: Value| {
+            client
+                .post(&url)
+                .bearer_auth(&token)
+                .header("session_id", thread)
+                .json(&body)
+                .send()
+        };
+        let request =
+            |input: Vec<Value>| json!({"model":alias,"input":input,"stream":true,"store":false});
+        let user = |text: &str, turn: &str| {
+            json!({"role":"user","content":text,
+            "internal_chat_message_metadata_passthrough":{"turn_id":turn}})
+        };
+        let tool = |model: &str| {
+            json!({"type":"function_call","id":format!("fc-{model}"),
+            "call_id":format!("call-{model}"),"name":"synthetic_tool","arguments":"{}","status":"completed"})
+        };
+        let result = |model: &str| {
+            json!({"type":"function_call_output","call_id":format!("call-{model}"),
+            "output":"Synthetic result"})
+        };
+        let first_user = user("Synthetic first", "turn-a");
+        send(request(vec![first_user.clone()]))
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        let reordered = Arc::make_mut(
+            menu.groups
+                .get_mut(&alias)
+                .ok_or("missing synthetic route")?,
+        );
+        reordered.bindings = Arc::default();
+        reordered.group.members.swap(0, 1);
+        reordered.targets.swap(0, 1);
+        reordered.group.default_member_id = reordered.group.members[0].id.clone();
+        reordered.group.fallback_member_ids = vec![reordered.group.members[1].id.clone()];
+        publish(&menu)?;
+        let mut history = vec![first_user, tool(&first), result(&first)];
+        if interrupted {
+            // A steering message with the old turn ID must still go to the call owner.
+            let mut steering = history.clone();
+            steering.push(user("Synthetic steering", "turn-a"));
+            send(request(steering))
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            assert_eq!(
+                seen.lock()
+                    .map_err(|_| "fixture observations")?
+                    .last()
+                    .ok_or("missing request")?
+                    .1["model"],
+                first
+            );
+            history.push(json!({"role":"user","content":[{"type":"input_text","text":"<turn_aborted>Synthetic stop</turn_aborted>"}],
+                "internal_chat_message_metadata_passthrough":{"turn_id":"turn-a","content_item_kinds":["generic.turn_aborted"]}}));
+        } else {
+            send(request(history.clone()))
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            assert_eq!(
+                seen.lock()
+                    .map_err(|_| "fixture observations")?
+                    .last()
+                    .ok_or("missing tool result")?
+                    .1["model"],
+                first
+            );
+            history.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic answer","annotations":[]}]}));
+        }
+        if interrupted {
+            history.push(json!({"type":"function_call_output","name":"browser_tabs","namespace":"agent",
+                "output":"Synthetic page context","internal_chat_message_metadata_passthrough":{"turn_id":"turn-b"}}));
+        }
+        history.push(user("Synthetic second", "turn-b"));
+        let new_turn = request(history.clone());
+        send(new_turn.clone())
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        {
+            let seen = seen.lock().map_err(|_| "fixture observations")?;
+            let (_, sent) = seen.last().ok_or("missing new turn")?;
+            assert_eq!(sent["model"], second.model, "{thread}: use the saved order");
+            assert_eq!(sent["input"], new_turn["input"], "history is not rewritten");
+        }
+        runtime.flush_continuations().await;
+        let reordered = Arc::make_mut(
+            menu.groups
+                .get_mut(&alias)
+                .ok_or("missing synthetic route")?,
+        );
+        reordered.bindings = Arc::default();
+        reordered.group.members.swap(0, 1);
+        reordered.targets.swap(0, 1);
+        reordered.group.default_member_id = reordered.group.members[0].id.clone();
+        reordered.group.fallback_member_ids = vec![reordered.group.members[1].id.clone()];
+        publish(&menu)?;
+        history.extend([tool(&second.model), result(&second.model)]);
+        let active = request(history.clone());
+        send(active.clone())
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        {
+            let seen = seen.lock().map_err(|_| "fixture observations")?;
+            let (_, sent) = seen.last().ok_or("missing active result")?;
+            assert_eq!(
+                sent["model"], second.model,
+                "earlier tool pairs cannot veto the active owner"
+            );
+            assert_eq!(sent["input"], active["input"]);
+        }
+        let mut opaque = history.clone();
+        opaque.push(json!({"type":"reasoning","id":"synthetic-sealed-item",
+            "summary":[],"encrypted_content":"synthetic-seal"}));
+        opaque.push(user("Synthetic third", "turn-c"));
+        let before = seen.lock().map_err(|_| "fixture observations")?.len();
+        let reply = send(request(opaque)).await?;
+        assert_eq!(reply.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            seen.lock().map_err(|_| "fixture observations")?.len(),
+            before
+        );
+
+        if path.starts_with("/backend-api/") {
+            // Codex may emit visible assistant text alongside a pending tool
+            // call. Only the later tool output and final reply close that turn.
+            let output = history.pop().ok_or("missing active result")?;
+            let note = json!({"type":"message","role":"assistant","status":"completed",
+                "content":[{"type":"output_text","text":"Synthetic note","annotations":[]}]});
+            history.extend([note.clone(), output, note]);
+            history.push(user("Synthetic native turn", "turn-c"));
+            let mut official = request(history.clone());
+            official["model"] = json!("synthetic-built-in");
+            send(official.clone())
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            {
+                let seen = seen.lock().map_err(|_| "fixture observations")?;
+                let (official_path, sent) = seen.last().ok_or("missing built-in request")?;
+                assert!(*official_path, "built-in selection uses the official path");
+                assert_eq!(sent, &official);
+            }
+            history.extend([
+                json!({"type":"configuration_update","reasoning":{"effort":"high"}}),
+                json!({"role":"user","content":[{"type":"input_text","text":"<turn_aborted>Synthetic stop</turn_aborted>"}],
+                    "internal_chat_message_metadata_passthrough":{"turn_id":"turn-c","content_item_kinds":["generic.turn_aborted"]}}),
+                user("Synthetic return to group", "turn-d"),
+            ]);
+            let returned = request(history);
+            let reply = send(returned.clone()).await?;
+            assert_eq!(
+                reply.status(),
+                StatusCode::OK,
+                "{thread}: switch back to group"
+            );
+            reply.bytes().await?;
+            {
+                let seen = seen.lock().map_err(|_| "fixture observations")?;
+                let (official_path, sent) = seen.last().ok_or("missing return to group")?;
+                assert!(!official_path);
+                assert_eq!(sent["input"], returned["input"]);
+                assert_eq!(sent["model"], first);
+            }
+            // A different published group or single-model alias must not
+            // inherit the old group's target solely from the same thread ID.
+            for (selection, model) in [
+                ("group/other", "other-group-model"),
+                ("vary-provider/single", "single-model"),
+            ] {
+                let mut other = base_menu.groups[&alias].clone();
+                let target = Arc::make_mut(&mut other);
+                target.bindings = Arc::default();
+                target.group.id = selection.to_owned();
+                target.group.members[0].model_id = model.into();
+                target.targets[0].model = model.into();
+                menu.groups.insert(selection.into(), other);
+                publish(&menu)?;
+                let mut next = returned.clone();
+                next["model"] = json!(selection);
+                send(next.clone())
+                    .await?
+                    .error_for_status()?
+                    .bytes()
+                    .await?;
+                let seen = seen.lock().map_err(|_| "fixture observations")?;
+                let (official_path, sent) = seen.last().ok_or("missing alias switch")?;
+                assert!(!official_path);
+                assert_eq!(sent["input"], next["input"]);
+                assert_eq!(sent["model"], model);
+            }
+
+            let mut history = returned["input"]
+                .as_array()
+                .ok_or("missing replay input")?
+                .clone();
+            let mut official = request(history.clone());
+            official["model"] = json!("synthetic-built-in");
+            let reply = send(official).await?.error_for_status()?.text().await?;
+            let data = reply
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .ok_or("missing official response")?;
+            let event: Value = serde_json::from_str(data)?;
+            let mut official_answer = event["response"]["output"][0].clone();
+            official_answer["phase"] = json!("final_answer");
+            official_answer["content"][0]["annotations"] = json!([]);
+            official_answer["content"][0]["logprobs"] = json!([]);
+            history.push(official_answer);
+
+            runtime.flush_continuations().await;
+            let group = Arc::make_mut(
+                menu.groups
+                    .get_mut(&alias)
+                    .ok_or("missing original group")?,
+            );
+            group.bindings = Arc::default();
+            let mut added_target = group.targets[0].clone();
+            added_target.provider_id = "synthetic-added-provider".into();
+            added_target.model = "synthetic-added-model".into();
+            added_target.scheduling = Arc::default();
+            let mut added_member = group.group.members[0].clone();
+            added_member.id = "synthetic-added-member".into();
+            added_member.provider_id = added_target.provider_id.clone();
+            added_member.model_id = added_target.model.clone();
+            group.group.members.insert(0, added_member);
+            group.targets.insert(0, added_target);
+            for (turn, expected) in [
+                ("turn-e", "synthetic-added-model"),
+                ("turn-f", first.as_str()),
+            ] {
+                runtime.flush_continuations().await;
+                let group = Arc::make_mut(
+                    menu.groups
+                        .get_mut(&alias)
+                        .ok_or("missing original group")?,
+                );
+                group.bindings = Arc::default();
+                if turn == "turn-f" {
+                    group.group.members.swap(0, 1);
+                    group.targets.swap(0, 1);
+                }
+                group.group.default_member_id = group.group.members[0].id.clone();
+                group.group.fallback_member_ids = group.group.members[1..]
+                    .iter()
+                    .map(|member| member.id.clone())
+                    .collect();
+                publish(&menu)?;
+                history.push(user("Synthetic question after saving model order", turn));
+                let next = request(history.clone());
+                let response = send(next.clone()).await?.error_for_status()?.text().await?;
+                let data = response
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .ok_or("missing routed response")?;
+                let event: Value = serde_json::from_str(data)?;
+                history.push(event["response"]["output"][0].clone());
+                let seen = seen.lock().map_err(|_| "fixture observations")?;
+                let (official_path, sent) = seen.last().ok_or("missing reordered request")?;
+                assert!(!official_path);
+                assert_eq!(sent["input"], next["input"]);
+                assert_eq!(
+                    sent["model"], expected,
+                    "{thread}: {turn} should use the saved first model"
+                );
+            }
+        }
+    }
     server.stop().await?;
     upstream.abort();
     Ok(())

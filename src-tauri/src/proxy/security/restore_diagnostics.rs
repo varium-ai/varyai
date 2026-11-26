@@ -61,6 +61,19 @@ pub(crate) enum RestoreReason {
     ArgumentsRebuild,
     ArgumentsSerialize,
     ArgumentsCopy,
+    NativeEvidenceInvalid,
+    NativeTerminalMissing,
+    NativeJsonInvalid,
+    NativeJsonContainsSse,
+    NativeResponseError,
+    NativeResponseEnvelope,
+    NativeResponseTerminal,
+    NativeResponseOutput,
+    NativeOutputType,
+    NativeOutputStatus,
+    NativeMessage,
+    NativeReasoning,
+    NativeToolCall,
 }
 
 impl RestoreReason {
@@ -77,6 +90,19 @@ impl RestoreReason {
             Self::ArgumentsRebuild => "arguments_rebuild",
             Self::ArgumentsSerialize => "arguments_serialize",
             Self::ArgumentsCopy => "arguments_copy",
+            Self::NativeEvidenceInvalid => "native_evidence_invalid",
+            Self::NativeTerminalMissing => "native_terminal_missing",
+            Self::NativeJsonInvalid => "native_json_invalid",
+            Self::NativeJsonContainsSse => "native_json_contains_sse",
+            Self::NativeResponseError => "native_response_error",
+            Self::NativeResponseEnvelope => "native_response_envelope",
+            Self::NativeResponseTerminal => "native_response_terminal",
+            Self::NativeResponseOutput => "native_response_output",
+            Self::NativeOutputType => "native_output_type",
+            Self::NativeOutputStatus => "native_output_status",
+            Self::NativeMessage => "native_message",
+            Self::NativeReasoning => "native_reasoning",
+            Self::NativeToolCall => "native_tool_call",
         }
     }
 }

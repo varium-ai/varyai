@@ -58,14 +58,18 @@ fn table(lang: Lang) -> &'static HashMap<String, String> {
 }
 
 pub(crate) fn current_lang() -> Lang {
-    let configured = crate::settings::get_settings().language;
     #[cfg(test)]
-    let raw = configured.unwrap_or_else(|| "en".to_string());
+    {
+        Lang::En
+    }
     #[cfg(not(test))]
-    let raw = configured
-        .or_else(sys_locale::get_locale)
-        .unwrap_or_else(|| "en".to_string());
-    Lang::from_code(&raw)
+    {
+        let raw = crate::settings::get_settings()
+            .language
+            .or_else(sys_locale::get_locale)
+            .unwrap_or_else(|| "en".to_string());
+        Lang::from_code(&raw)
+    }
 }
 
 pub(crate) fn lookup_for(lang: Lang, key: &str) -> Option<&'static str> {
@@ -132,10 +136,13 @@ pub(crate) fn dlp_routed_message(code: &str) -> &'static str {
 
 pub(crate) fn dlp_blocked_message(reason: &str) -> String {
     #[cfg(test)]
-    if crate::settings::get_settings().language.is_none() {
-        return dlp_blocked_message_for(Lang::Zh, reason);
+    {
+        dlp_blocked_message_for(Lang::Zh, reason)
     }
-    dlp_blocked_message_for(current_lang(), reason)
+    #[cfg(not(test))]
+    {
+        dlp_blocked_message_for(current_lang(), reason)
+    }
 }
 
 pub(crate) fn dlp_blocked_message_for(lang: Lang, reason: &str) -> String {

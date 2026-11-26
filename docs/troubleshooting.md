@@ -1394,6 +1394,12 @@ The macOS implementation uses `UNUserNotificationCenter` for permission and deli
 
 Screen sharing or mirroring can suppress notification banners and sound. Check the macOS setting that permits notifications during sharing. In-app warnings are independent of system delivery; a recorded warning does not prove that the user saw a banner.
 
+## Windows notifications
+
+Windows has no notification authorization prompt. Permission status is read from the per-user notification switches: the global toast switch under `HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications` and the per-app `Enabled` switch under `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\<identifier>`, where the key is the same Tauri identifier the notification plugin posts toasts under. An absent switch keeps the Windows default of allowed delivery; only an explicit disable reports the permission as denied. If the switches cannot be read or interpreted, the status stays unknown and the settings panel asks the user to confirm in system settings instead of guessing.
+
+The banner and sound rows are not reported on Windows because no stable API exposes those sub-toggles. Changing the per-app switch requires the system notification settings page; the in-app "Open notification settings" action jumps there. Focus assist, do-not-disturb, and presentation modes can still suppress banners after delivery is allowed.
+
 ## TRAE starting-model selection
 
 The TRAE CN row uses the shared model picker to choose a starting model for new

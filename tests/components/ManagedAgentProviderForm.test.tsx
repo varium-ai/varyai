@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ManagedAgentProviderForm } from "@/components/providers/forms/ManagedAgentProviderForm";
+import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import { fetchModelsForConfig } from "@/lib/api/model-fetch";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 
@@ -19,6 +20,33 @@ vi.mock("@/lib/api/model-fetch", async (original) => ({
 vi.mock("@/lib/api/provider-protocol-detection", () => ({
   detectProviderProtocols: vi.fn().mockResolvedValue([]),
 }));
+
+it("saves GLM through the managed provider entry point", async () => {
+  const onSubmit = vi.fn();
+  const settingsConfig = {
+    baseUrl: "https://fixture.example/v1",
+    apiKey: "synthetic-key",
+    protocol: "anthropic",
+    models: [{ model: "fixture-model", contextWindow: 8192 }],
+  };
+  render(
+    <ProviderForm
+      appId="glm"
+      initialData={{ name: "GLM fixture", category: "custom", settingsConfig }}
+      onSubmit={onSubmit}
+      onCancel={vi.fn()}
+      submitLabel="Save"
+    />,
+  );
+  expect(screen.getByLabelText("managedAgent.models")).toHaveValue(
+    "fixture-model",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+  expect(JSON.parse(onSubmit.mock.calls[0][0].settingsConfig)).toEqual(
+    settingsConfig,
+  );
+});
 
 it("keeps the ZCode probe separate and fills configuration from the discovered catalog", async () => {
   vi.useFakeTimers();

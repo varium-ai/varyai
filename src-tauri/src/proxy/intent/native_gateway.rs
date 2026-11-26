@@ -555,6 +555,23 @@ pub(crate) async fn forward_restored(
             .await
             .to_response());
     }
+    // The official service can omit Content-Type on an SSE reply. Honor the
+    // explicit stream request and send the original bytes through the normal
+    // SSE guard and completion verifier. Keep declared JSON on its own path.
+    let upstream = if matches!(endpoint, Endpoint::Responses)
+        && body["stream"] == true
+        && !upstream.headers().contains_key(header::CONTENT_TYPE)
+    {
+        let status = upstream.status();
+        let mut headers = upstream.headers().clone();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        ProxyResponse::streamed(status, headers, upstream.bytes_stream())
+    } else {
+        upstream
+    };
     let guarded = tokio::time::timeout(timeout, attempt.guard_upstream_response(upstream))
         .await
         .map_err(|_| ProxyError::DlpForward(DlpForwardError::RestoreFailed))?

@@ -135,7 +135,7 @@ mod tests {
             .split("];")
             .next()
             .unwrap();
-        let ids: Vec<_> = inventory
+        let mut ids: Vec<_> = inventory
             .lines()
             .filter_map(|line| {
                 line.trim()
@@ -143,7 +143,11 @@ mod tests {
                     .and_then(|line| line.strip_suffix("\","))
             })
             .collect();
-        assert_eq!(ids.len(), AppType::all().count());
+        ids.sort_unstable();
+        let app_types: Vec<_> = AppType::all().collect();
+        let mut backend_ids: Vec<_> = app_types.iter().map(AppType::as_str).collect();
+        backend_ids.sort_unstable();
+        assert_eq!(ids, backend_ids);
         for app in ids {
             let private_error =
                 "synthetic private configuration /Users/private api_key=synthetic-secret";

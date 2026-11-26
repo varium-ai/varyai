@@ -61,6 +61,9 @@ fn switch_international(state: &AppState, provider: &Provider) -> Result<(), App
 }
 
 pub(super) fn list(state: &AppState, app: &str) -> Result<IndexMap<String, Provider>, AppError> {
+    if app == "glm" {
+        return state.db.get_all_providers(app);
+    }
     let id = format!("{app}-official");
     if !state.db.get_bool_flag(&format!("{app}_official_seeded"))? {
         let label = match app {
@@ -82,13 +85,16 @@ pub(super) fn list(state: &AppState, app: &str) -> Result<IndexMap<String, Provi
     state.db.get_all_providers(app)
 }
 pub(super) fn current(state: &AppState, app: &str) -> Result<String, AppError> {
-    Ok(state
-        .db
-        .get_current_provider(app)?
-        .unwrap_or_else(|| format!("{app}-official")))
+    Ok(state.db.get_current_provider(app)?.unwrap_or_else(|| {
+        if app == "glm" {
+            String::new()
+        } else {
+            format!("{app}-official")
+        }
+    }))
 }
 pub(super) fn add(state: &AppState, app: &str, mut provider: Provider) -> Result<bool, AppError> {
-    if provider.category.as_deref() != Some("official") {
+    if app == "glm" || provider.category.as_deref() != Some("official") {
         native::validate(&provider.settings_config)?;
     }
     ProviderService::set_provider_live_config_managed(&mut provider, false);
@@ -101,7 +107,7 @@ pub(super) fn update(
     mut provider: Provider,
 ) -> Result<bool, AppError> {
     let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app(app));
-    if provider.category.as_deref() != Some("official") {
+    if app == "glm" || provider.category.as_deref() != Some("official") {
         native::validate(&provider.settings_config)?;
     }
     let old = state
@@ -161,6 +167,9 @@ pub(super) fn enable_with_lock(
     id: &str,
     lock_held: bool,
 ) -> Result<SwitchResult, AppError> {
+    if app == "glm" {
+        return Err(native::glm_native_config_unsupported());
+    }
     let _guard = if lock_held {
         None
     } else {
@@ -238,6 +247,9 @@ fn apply_native_provider(
     mut provider: Provider,
     preserve_selection: bool,
 ) -> Result<SwitchResult, AppError> {
+    if app == "glm" {
+        return Err(native::glm_native_config_unsupported());
+    }
     let target_id = provider.id.clone();
     let id = target_id.as_str();
     let official = provider.category.as_deref() == Some("official");
@@ -406,6 +418,13 @@ pub(super) fn remove_with_lock(
             state.proxy_service.lock_switch_for_app(app),
         ))
     };
+    if app == "glm" {
+        return if delete {
+            state.db.delete_provider(app, id)
+        } else {
+            Err(native::glm_native_config_unsupported())
+        };
+    }
     let Some(mut provider) = state.db.get_provider_by_id(id, app)? else {
         return Ok(());
     };
@@ -514,6 +533,7 @@ pub(super) fn is_agent(app: &AppType) -> bool {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
     )
@@ -523,6 +543,54 @@ pub(super) fn is_agent(app: &AppType) -> bool {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn glm_provider_records_do_not_modify_unverified_native_settings() -> Result<(), AppError> {
+        let state = AppState::new(Arc::new(crate::database::Database::memory()?));
+        let root = tempfile::tempdir().expect("temporary GLM configuration");
+        let path = root.path().join("settings.json");
+        let original = "{\n  \"theme\": \"dark\"\n}\n";
+        std::fs::write(&path, original).expect("synthetic settings");
+        native::with_test_config(&path, || {
+            let app: AppType = "glm".parse()?;
+            let mut provider = Provider::with_id(
+                "fixture".into(),
+                "Fixture".into(),
+                json!({
+                    "baseUrl": "https://synthetic.invalid/v1",
+                    "apiKey": "synthetic-api-key",
+                    "protocol": "openai-responses",
+                    "models": [{"model": "fixture-model"}],
+                }),
+                None,
+            );
+            assert!(ProviderService::list(&state, app.clone())?.is_empty());
+            assert!(ProviderService::add(&state, app.clone(), provider.clone(), true).is_err());
+            assert!(ProviderService::add(
+                &state,
+                app.clone(),
+                provider.clone(),
+                false
+            )?);
+            provider.name = "Updated fixture".into();
+            assert!(ProviderService::update(
+                &state,
+                app.clone(),
+                None,
+                provider
+            )?);
+            assert_eq!(
+                ProviderService::list(&state, app.clone())?["fixture"].name,
+                "Updated fixture"
+            );
+            assert!(ProviderService::switch(&state, app.clone(), "fixture").is_err());
+            assert!(ProviderService::current(&state, app.clone())?.is_empty());
+            ProviderService::delete(&state, app.clone(), "fixture")?;
+            assert!(ProviderService::list(&state, app)?.is_empty());
+            assert_eq!(std::fs::read_to_string(&path).expect("settings"), original);
+            Ok(())
+        })
+    }
 
     #[test]
     fn rejected_kimi_switch_keeps_existing_routes_and_selection() {

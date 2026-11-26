@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use super::{
     completed_context::{valid_external_id, ActualAttemptBinding, CompletedCallSpec},
-    completion_json::permits_chat_argument_normalization,
+    completion_json::{output_parts_field, permits_chat_argument_normalization},
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
     payload_json::{JsonStringReplacement, PayloadJson},
@@ -268,6 +268,9 @@ fn check_reasoning_item(item: &Value, lease: &DlpRequestLease) -> Result<(), Res
         check_no_tokens_in_str(key, lease)?;
         match key.as_str() {
             "summary" | "content" => {
+                let Some(value) = output_parts_field(item, key) else {
+                    continue;
+                };
                 let expected = if key == "summary" {
                     "summary_text"
                 } else {
@@ -1124,6 +1127,9 @@ fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), 
             check_no_tokens_in_str(key, lease)?;
             match (kind, key.as_str()) {
                 ("message", "content") | ("reasoning", "summary" | "content") => {
+                    let Some(value) = output_parts_field(item, key) else {
+                        continue;
+                    };
                     let container = if kind == "reasoning" && key == "content" {
                         "reasoning_content"
                     } else {
@@ -1249,7 +1255,7 @@ fn validate_raw_snapshot(
                     if raw["type"] == "message" && field == "summary" {
                         continue;
                     }
-                    match raw.get(field) {
+                    match output_parts_field(raw, field) {
                         Some(value) => {
                             let parts = value.as_array().ok_or(RestoreError::RestoreFailed)?;
                             if added && parts.is_empty() {
@@ -1267,7 +1273,8 @@ fn validate_raw_snapshot(
                             }
                         }
                         None if added
-                            || raw["type"] == "reasoning" && final_item.get(field).is_none() => {}
+                            || raw["type"] == "reasoning"
+                                && raw.get(field) == final_item.get(field) => {}
                         None => return Err(RestoreError::RestoreFailed),
                     }
                 }
@@ -1372,7 +1379,7 @@ fn restore_completed_snapshot(
                         &["content"]
                     };
                 for field in fields {
-                    let Some(parts) = item.get(*field) else {
+                    let Some(parts) = output_parts_field(item, field) else {
                         continue;
                     };
                     for (part_index, part) in parts
@@ -3103,7 +3110,7 @@ impl SseRestorationState {
                     _ => return Err(RestoreError::RestoreFailed),
                 };
                 for field in fields {
-                    let Some(parts) = item.get(*field) else {
+                    let Some(parts) = output_parts_field(item, field) else {
                         if kind == "message" && evt.ends_with(".done") {
                             return Err(RestoreError::RestoreFailed);
                         }
@@ -3301,7 +3308,7 @@ impl SseRestorationState {
                         &["content"]
                     };
                     for field in fields {
-                        let Some(parts) = item.get(*field) else {
+                        let Some(parts) = output_parts_field(item, field) else {
                             if !reasoning {
                                 return Err(RestoreError::RestoreFailed);
                             }

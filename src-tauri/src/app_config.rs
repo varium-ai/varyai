@@ -40,6 +40,7 @@ impl McpApps {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -66,6 +67,7 @@ impl McpApps {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -146,6 +148,7 @@ impl SkillApps {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -172,6 +175,7 @@ impl SkillApps {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -445,6 +449,7 @@ pub enum AppType {
     ZCode,
     #[serde(rename = "deepseek-harness")]
     DeepSeekHarness,
+    Glm,
     Trae,
     #[serde(rename = "trae-intl")]
     TraeIntl,
@@ -472,6 +477,7 @@ impl AppType {
             AppType::Qwen => "qwen",
             AppType::ZCode => "zcode",
             AppType::DeepSeekHarness => "deepseek-harness",
+            AppType::Glm => "glm",
             AppType::Trae => "trae",
             AppType::TraeIntl => "trae-intl",
             AppType::T3Code => "t3code",
@@ -498,6 +504,7 @@ impl AppType {
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::Trae
                 | AppType::TraeIntl
         )
@@ -529,6 +536,7 @@ impl AppType {
             AppType::Qwen,
             AppType::ZCode,
             AppType::DeepSeekHarness,
+            AppType::Glm,
             AppType::Trae,
             AppType::TraeIntl,
             AppType::T3Code,
@@ -560,6 +568,7 @@ impl FromStr for AppType {
             "qwen" => Ok(AppType::Qwen),
             "zcode" => Ok(AppType::ZCode),
             "deepseek-harness" | "deepseek_harness" => Ok(AppType::DeepSeekHarness),
+            "glm" => Ok(AppType::Glm),
             "trae" => Ok(AppType::Trae),
             "trae-intl" => Ok(AppType::TraeIntl),
             "t3code" | "t3-code" => Ok(AppType::T3Code),
@@ -615,6 +624,7 @@ impl CommonConfigSnippets {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -641,6 +651,7 @@ impl CommonConfigSnippets {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -978,6 +989,7 @@ impl MultiAppConfig {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -1033,6 +1045,7 @@ impl MultiAppConfig {
                 | AppType::Qwen
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
+                | AppType::Glm
                 | AppType::Trae
                 | AppType::TraeIntl
                 | AppType::T3Code
@@ -1151,6 +1164,17 @@ mod tests {
     use std::env;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn transparent_agent_registry_round_trips_app_types() {
+        for &app in crate::services::agent_clients::APPS {
+            let kind: AppType = app.parse().expect("registered agent identity");
+            assert_eq!(kind.as_str(), app);
+            assert_eq!(serde_json::to_value(&kind).expect("serialize agent"), app);
+            assert!(AppType::all().any(|candidate| candidate == kind));
+            assert!(kind.is_additive_mode());
+        }
+    }
 
     #[test]
     fn app_type_parses_claude_desktop_aliases() {

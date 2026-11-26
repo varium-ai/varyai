@@ -867,7 +867,7 @@ mod tests {
         );
         super::super::security::runtime::set_security_runtime_for_test(policy);
         let _ = rustls::crypto::ring::default_provider().install_default();
-        for app in ["kimi", "qwen", "zcode", "trae"] {
+        for app in ["kimi", "qwen", "zcode", "glm", "trae"] {
             let calls = Arc::new(AtomicUsize::new(0));
             let counted = calls.clone();
             let upstream=Router::new().route("/v1/chat/completions",post(move |request:Request| {let counted=counted.clone();async move {

@@ -135,6 +135,8 @@ pub struct ProxyTakeoverStatus {
     #[serde(default, rename = "deepseek-harness")]
     pub deepseek_harness: bool,
     #[serde(default)]
+    pub glm: bool,
+    #[serde(default)]
     pub t3code: bool,
     #[serde(default)]
     pub trae: bool,
@@ -179,6 +181,7 @@ impl ProxyTakeoverStatus {
             || self.zcode
             || self.t3code
             || self.deepseek_harness
+            || self.glm
             || self.pi
             || self.trae
             || self.trae_intl
@@ -449,6 +452,7 @@ mod tests {
             "claude-desktop",
             "zcode",
             "deepseek-harness",
+            "glm",
             "kimi",
             "qwen",
             "pi",

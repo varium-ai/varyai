@@ -2041,6 +2041,7 @@ fn native_agent_audit_sessions_have_independent_prefixes_without_fabricated_ids(
         (AppType::Kimi, "kimi"),
         (AppType::Qwen, "qwen"),
         (AppType::ZCode, "zcode"),
+        (AppType::Glm, "glm"),
     ] {
         let body = json!({"metadata":{"session_id":"native-session"}});
         assert_eq!(

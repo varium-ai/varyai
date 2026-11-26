@@ -5,10 +5,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode", "deepseek-harness"];
+/// Agents admitted by the transparent proxy using registered route receipts.
+pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode", "deepseek-harness", "glm"];
 pub(crate) fn supported(app: &str) -> bool {
     APPS.contains(&app)
 }
+
+pub(crate) fn glm_native_config_unsupported() -> AppError {
+    AppError::localized(
+        "agents.glm_native_config_unsupported",
+        "GLM 暂不支持本地供应商配置",
+        "GLM does not expose a supported local provider configuration",
+    )
+}
+
 fn invalid() -> AppError {
     AppError::localized(
         "agents.invalid_config",
@@ -53,6 +63,10 @@ pub(crate) fn config_path(app: &str) -> Result<PathBuf, AppError> {
             Ok(zcode_config_path(&home, override_path))
         }
         "deepseek-harness" => Ok(super::deepseek_harness::config_path()),
+        "glm" => Ok(std::env::var_os("GLM_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".glm"))
+            .join("settings.json")),
         _ => Err(invalid()),
     }
 }
@@ -1301,6 +1315,9 @@ pub(crate) async fn enable(
 ) -> Result<(), AppError> {
     if !supported(app) {
         return Err(invalid());
+    }
+    if app == "glm" {
+        return Err(glm_native_config_unsupported());
     }
     restore(db, app).await?;
     let path = config_path(app)?;

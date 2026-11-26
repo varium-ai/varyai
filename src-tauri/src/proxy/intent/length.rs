@@ -48,6 +48,10 @@ pub(crate) fn visible_reasoning(item: &Value) -> bool {
 }
 
 pub(super) fn portable(body: &Value) -> bool {
+    portable_ignoring(body, |_| false)
+}
+
+pub(super) fn portable_ignoring(body: &Value, ignore: impl Fn(&Value) -> bool) -> bool {
     if body["_group_projection_incomplete"] == true
         || body
             .get("previous_response_id")
@@ -59,7 +63,7 @@ pub(super) fn portable(body: &Value) -> bool {
     match &body["input"] {
         Value::String(_) => true,
         Value::Array(items) => items.iter().all(|item| {
-            if visible_reasoning(item) {
+            if visible_reasoning(item) || ignore(item) {
                 return true;
             }
             matches!(item["type"].as_str(), None | Some("message"))

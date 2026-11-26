@@ -44,6 +44,7 @@ export interface ProxyTakeoverStatus {
   qwen?: boolean;
   zcode?: boolean;
   "deepseek-harness"?: boolean;
+  glm?: boolean;
 
   t3code?: boolean;
   claude: boolean;

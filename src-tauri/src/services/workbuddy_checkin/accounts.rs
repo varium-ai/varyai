@@ -202,7 +202,7 @@ impl Manager {
         let mut append = |account: Account, source| {
             let id = account.key();
             let label = if account.label.trim().is_empty() {
-                format!("WorkBuddy · {}", &id[..6])
+                id[..6].to_owned()
             } else {
                 account.label.clone()
             };

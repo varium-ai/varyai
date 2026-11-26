@@ -407,7 +407,7 @@ fn catalog_covers_every_agent_without_configured_models() {
                 .iter()
                 .find(|agent| agent.id == app.as_str())
                 .map(|agent| agent.local_routing),
-            Some(app != AppType::OpenClaw)
+            Some(!matches!(app, AppType::OpenClaw | AppType::Glm))
         );
     }
 }

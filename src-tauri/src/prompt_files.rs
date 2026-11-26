@@ -20,6 +20,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
+            | AppType::Glm
             | AppType::Trae
             | AppType::TraeIntl
             | AppType::T3Code
@@ -49,6 +50,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
@@ -72,6 +74,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code

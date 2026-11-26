@@ -6,12 +6,14 @@ mod catalog_continuation_http_tests;
 #[cfg(test)]
 mod catalog_continuation_tests;
 mod checkpoint;
+mod codex_replay;
 mod compaction;
 #[cfg(test)]
 mod concurrency_tests;
 mod continuation;
 mod identity;
 pub(super) mod length;
+pub(crate) use codex_replay::is_page_context as is_codex_page_context;
 pub(crate) use length::visible_reasoning;
 pub(crate) mod native;
 mod native_gateway;
@@ -912,6 +914,15 @@ impl Bindings {
     /// Responses replay follows observed affinity. Unknown vendor state is
     /// forwarded intact for the vendor to validate, as in Magpie.
     fn resolve_replay(&self, body: &Value, session: Option<&str>) -> Result<Option<usize>, ()> {
+        self.resolve_replay_from(body, session, 0)
+    }
+
+    fn resolve_replay_from(
+        &self,
+        body: &Value,
+        session: Option<&str>,
+        current_turn_start: usize,
+    ) -> Result<Option<usize>, ()> {
         let mut selected = None;
         let mut merge = |candidate: Option<usize>| -> Result<(), ()> {
             if let Some(candidate) = candidate {
@@ -931,7 +942,7 @@ impl Bindings {
             )?;
         }
         if let Some(items) = body["input"].as_array() {
-            for item in items {
+            for item in items.iter().skip(current_turn_start) {
                 if length::visible_reasoning(item) {
                     continue;
                 }
@@ -1828,7 +1839,15 @@ async fn execute(
         .get::<super::connections::Agent>()
         .map(|agent| agent.0)
         .unwrap_or(if external { "external" } else { "codex" });
-    let trace = state.intent_runtime.traces.begin(
+    let compact = parts.extensions.get::<native::Compact>().copied();
+    let desktop_purpose = parts
+        .extensions
+        .get::<super::connections::desktop::Purpose>()
+        .copied();
+    let kind = desktop_purpose
+        .map(|purpose| purpose.label())
+        .or_else(|| trace::request_kind(&parts.headers, compact.is_some()));
+    let trace = state.intent_runtime.traces.begin_with_kind(
         agent,
         &session
             .group
@@ -1841,18 +1860,10 @@ async fn execute(
             crate::services::intent_routing::RoutingStrategy::Fastest => "fastest",
         },
         started,
+        kind,
     );
-    let compact = parts.extensions.get::<native::Compact>().copied();
     let count_tokens =
         protocol == Protocol::Anthropic && parts.uri.path() == "/v1/messages/count_tokens";
-    trace.purpose(&parts.headers, compact.is_some());
-    let desktop_purpose = parts
-        .extensions
-        .get::<super::connections::desktop::Purpose>()
-        .copied();
-    if let Some(purpose) = desktop_purpose {
-        trace.auxiliary_purpose(purpose.label());
-    }
     let fail = |status: StatusCode, code| {
         trace.finish(status.as_u16(), trace::State::Failed);
         error(status, code)
@@ -2000,6 +2011,13 @@ async fn execute(
         && !opaque_continuation(protocol, &original)
         && !native_request
         && session.group.affinity != "strict";
+    let codex_per_turn = responses_replay
+        && compact.is_none()
+        && named_conversation
+        && matches!(session.group.affinity.as_str(), "off" | "turn");
+    let codex_inline_replay = codex_per_turn
+        .then(|| codex_replay::inline_tool_history(&projection))
+        .flatten();
     let (mut pinned, mut affinity, checkpoint_owner, last_input_tokens) = {
         let bindings = match scoped.bindings.lock() {
             Ok(bindings) => bindings,
@@ -2054,27 +2072,48 @@ async fn execute(
                 Ok(pinned)
             }
         } else if responses_replay {
-            bindings.resolve_replay(&projection, conversation.as_deref())
+            // Inline closed pairs remain on the wire but do not participate in
+            // ownership for the current turn, including its later tool results.
+            bindings.resolve_replay_from(
+                &projection,
+                conversation.as_deref(),
+                codex_inline_replay
+                    .as_ref()
+                    .map_or(0, |history| history.current_turn_start),
+            )
         } else {
             bindings.resolve(&projection, conversation.as_deref())
         };
         let mut pinned = match resolution {
             Ok(pinned) => pinned,
-            Err(()) if requires_owner && (!portable_reroutable || previous_response_required) => {
+            // Once a conversation can visit several providers, conflicting
+            // known owners are not permission to route opaque state elsewhere.
+            Err(())
+                if (requires_owner && (!portable_reroutable || previous_response_required))
+                    || codex_per_turn =>
+            {
                 return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
             }
             Err(()) => None,
         };
         let original_owner = pinned;
         let mut affinity = None;
+        let completed = conversation.as_ref().is_some_and(|key| {
+            bindings
+                .completed_sessions
+                .contains(&continuation::hash("session", key))
+        });
+        let inline_new_turn = codex_inline_replay.as_ref().is_some_and(|history| {
+            history.new_user_turn && (completed || history.follows_interruption)
+        });
         if (compact.is_none() || route_compaction)
-            && length::portable(&projection)
             && !opaque_continuation(protocol, &original)
-            && conversation.as_ref().is_some_and(|key| {
-                bindings
-                    .completed_sessions
-                    .contains(&continuation::hash("session", key))
-            })
+            && (inline_new_turn
+                || (completed
+                    && length::portable_ignoring(&projection, |item| {
+                        // Codex sends inline browser context in both turns and summaries.
+                        responses_replay && codex_replay::is_page_context(item)
+                    })))
         {
             match session.group.affinity.as_str() {
                 "strict" => {}
@@ -2264,7 +2303,7 @@ async fn execute(
         && !classifier_candidates.is_empty()
     {
         match (
-            classifier::extract_user_text(inspected_projection),
+            classifier::extract_user_text(inspected_projection, responses_replay),
             session.classifier.clone(),
         ) {
             (Some(text), Some(provider)) => {
@@ -2978,7 +3017,7 @@ async fn execute(
                     )
                     .await;
                 }
-                super::group_forward::forward(
+                Box::pin(super::group_forward::forward(
                     &state,
                     protocol,
                     upstream,
@@ -2990,7 +3029,7 @@ async fn execute(
                     conversation.as_deref(),
                     scoped.history.clone(),
                     scoped.shadow.clone(),
-                )
+                ))
                 .await
             };
             let forwarded = match wait_for_attempt(attempt_deadline, forward).await {
@@ -3050,7 +3089,7 @@ async fn execute(
                     let sibling = sibling_native_target(target, protocol);
                     let fallback_result = if let Some((native_url, native_upstream)) = sibling {
                         if dlp_request.is_some() {
-                            super::group_forward::forward(
+                            Box::pin(super::group_forward::forward(
                                 &state,
                                 protocol,
                                 &native_upstream,
@@ -3062,7 +3101,7 @@ async fn execute(
                                 conversation.as_deref(),
                                 scoped.history.clone(),
                                 scoped.shadow.clone(),
-                            )
+                            ))
                             .await
                             .ok()
                             .filter(|r| r.status().is_success())
@@ -3836,8 +3875,14 @@ fn retry_converted_rejection(
         && (matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
             || (status == 400
                 && has_fallback
-                && super::native_subscription::rejection_code(upstream, status, body)
-                    == Some("routing_upstream_entitlement_missing")))
+                && matches!(
+                    super::native_subscription::rejection_code(upstream, status, body),
+                    Some(
+                        "routing_upstream_entitlement_missing"
+                            | "routing_upstream_account_restricted"
+                            | "routing_upstream_quota_exhausted"
+                    )
+                )))
 }
 
 enum AttemptWait {

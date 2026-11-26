@@ -38,6 +38,18 @@ fn t3code_is_an_agent_without_legacy_mcp_or_skill_support() {
 }
 
 #[test]
+fn glm_has_its_own_transparent_agent_identity() {
+    let app = AppType::from_str(" GLM ").expect("GLM agent");
+    assert_eq!(app, AppType::Glm);
+    assert_eq!(app.as_str(), "glm");
+    assert_eq!(serde_json::to_value(&app).unwrap(), "glm");
+    assert_eq!(serde_json::from_str::<AppType>(r#""glm""#).unwrap(), app);
+    assert!(AppType::all().any(|candidate| candidate == app));
+    assert!(app.is_additive_mode());
+    assert!(!app.supports_local_proxy());
+}
+
+#[test]
 fn removed_cursor_integrations_are_not_accepted_as_apps() {
     for id in ["cursor", "cursor-cli", "cursor-agent"] {
         assert!(AppType::from_str(id).is_err());

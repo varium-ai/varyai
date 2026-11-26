@@ -38,7 +38,8 @@ async function routeState(
       waiting: false,
     };
   }
-  if (!isRoutingAppId(app)) return { connected: false, waiting: false };
+  if (app !== "glm" && !isRoutingAppId(app))
+    return { connected: false, waiting: false };
   const [status, takeover] = await Promise.all([
     proxyApi.getProxyStatus(),
     proxyApi.getProxyTakeoverStatus(),

@@ -241,7 +241,7 @@ fn content_codings(
     Ok((codings, count))
 }
 
-fn is_sse(headers: &HeaderMap) -> bool {
+pub(super) fn is_sse(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

@@ -281,24 +281,11 @@ const UnifiedSkillsPanel = React.forwardRef<
   };
 
   const handleToggleAll = async (app: AppId, enabled: boolean) => {
-    if (
-      app === "workbuddy" ||
-      app === "workbuddy-ai" ||
-      app === "qoder" ||
-      app === "doubaowork" ||
-      app === "trae" ||
-      app === "trae-intl" ||
-      app === "kimi" ||
-      app === "qwen" ||
-      app === "zcode" ||
-      app === "t3code" ||
-      app === "deepseek-harness"
-    )
-      return;
-    if (!skills || !beginWrite()) return;
+    const skillApp = SKILLS_APP_IDS.find((candidate) => candidate === app);
+    if (!skillApp || !skills || !beginWrite()) return;
 
     const ids = skills
-      .filter((skill) => Boolean(skill.apps[app]) !== enabled)
+      .filter((skill) => Boolean(skill.apps[skillApp]) !== enabled)
       .map((skill) => skill.id);
     if (ids.length === 0) {
       endWrite();
@@ -308,7 +295,7 @@ const UnifiedSkillsPanel = React.forwardRef<
     try {
       const result = await bulkToggleAppMutation.mutateAsync({
         ids,
-        app,
+        app: skillApp,
         enabled,
       });
       if (result.failed.length > 0) {

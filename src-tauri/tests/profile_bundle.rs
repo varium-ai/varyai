@@ -401,13 +401,35 @@ fn pi_bundle_merges_native_model_fields_missing_from_saved_provider_and_can_undo
 }
 
 #[test]
+fn glm_profile_capture_rejects_unverified_native_config_even_with_a_stored_provider() {
+    let _guard = test_guard();
+    let state = seed();
+    let provider = Provider::with_id(
+        "fixture".into(),
+        "Fixture".into(),
+        json!({
+            "baseUrl": "https://synthetic.invalid/v1",
+            "apiKey": "synthetic-api-key",
+            "protocol": "openai",
+            "models": [{"model": "fixture-model"}],
+        }),
+        None,
+    );
+    assert!(ProviderService::add(&state, AppType::Glm, provider, false).unwrap());
+
+    let error = ProfileBundleService::capture(&state, "Unsupported", &["glm".into()], None)
+        .expect_err("GLM native config has no verified profile contract");
+    assert_eq!(error.to_string(), "profiles.bundle.nativeConfigUnsupported");
+}
+
+#[test]
 fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
     let _guard = test_guard();
     support::reset_test_fs();
     let state = support::create_test_state().unwrap();
     // WorkBuddy AI uses shared connection profiles, covered by the shared-catalog lifecycle test.
     let apps: Vec<_> = AppType::all()
-        .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::T3Code))
+        .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::T3Code | AppType::Glm))
         .collect();
     for app in &apps {
         let config = if *app == AppType::Codex {
@@ -1408,6 +1430,7 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
                 app,
                 AppType::DoubaoWork
                     | AppType::T3Code
+                    | AppType::Glm
                     | AppType::Trae
                     | AppType::TraeIntl
                     | AppType::WorkBuddyAi
@@ -1418,7 +1441,7 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
     assert!(apps.contains(&AppType::DeepSeekHarness));
     assert_eq!(
         apps.len(),
-        AppType::all().count() - 5 - usize::from(!cfg!(any(target_os = "macos", windows)))
+        AppType::all().count() - 6 - usize::from(!cfg!(any(target_os = "macos", windows)))
     );
     if apps.contains(&AppType::ClaudeDesktop) {
         let mut official = Provider::with_id(
@@ -1699,7 +1722,9 @@ fn later_custom_suppliers_can_be_captured_without_changing_old_profiles_or_copyi
 #[test]
 fn missing_profile_suppliers_are_skipped_for_every_agent_without_guessing_a_replacement() {
     let _guard = test_guard();
-    for app in AppType::all().filter(|app| !matches!(app, AppType::DoubaoWork | AppType::T3Code)) {
+    for app in AppType::all()
+        .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::T3Code | AppType::Glm))
+    {
         for missing_secondary in [false, true] {
             let state = seed();
             let working = if app == AppType::Claude {

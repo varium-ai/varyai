@@ -1421,6 +1421,7 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
+    "glm": "GLM",
     "t3code": "T3 Code"
   },
   "pi": {
@@ -2828,6 +2829,7 @@
       "savedContent": "Restore saved content",
       "noContent": "No saved instructions file",
       "nativeLoginOnly": "Native sign-in is managed by the client; no provider configuration to switch",
+      "nativeConfigUnsupported": "This agent does not expose a supported local provider configuration.",
       "configureFirst": "Add a provider configuration first",
       "clientSyncHint": "TRAE: profiles can switch offline. Client delivery is separate; keep Vary AI running to sync automatically after TRAE connects.",
       "clientSyncPending": "Selection saved locally. It will sync automatically when TRAE connects; keep Vary AI running.",
@@ -4550,6 +4552,7 @@
     "saveFailed": "Could not save third-party models: {{error}}"
   },
   "managedAgent": {
+    "storedConfigDescription": "Save provider settings for GLM in VaryAI. Native activation is unavailable.",
     "description": "Save a provider, then apply it and restart {{app}}. Choose the model inside the client. Native login stays in the client.",
     "baseUrl": "Base URL",
     "apiKey": "API Key",

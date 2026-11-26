@@ -1857,7 +1857,6 @@ mod tests {
     ) -> Result<(), std::io::Error> {
         let history = CodexChatHistoryStore::default();
         let (owner, used) = payload_owner_fixture()?;
-        let upstream_charge = used();
         history
             .record_response_with_payload_owner(
                 &tokenized_response("resp_owned", "call_owned"),

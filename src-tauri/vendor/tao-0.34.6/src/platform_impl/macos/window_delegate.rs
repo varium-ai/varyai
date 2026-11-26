@@ -423,6 +423,7 @@ extern "C" fn dragging_entered(this: &Object, _: Sel, sender: id) -> BOOL {
   use std::path::PathBuf;
 
   let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
+  #[allow(deprecated)] // Matches the filename-list format registered by the window.
   let filenames =
     unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
 
@@ -457,6 +458,7 @@ extern "C" fn perform_drag_operation(this: &Object, _: Sel, sender: id) -> BOOL 
   use std::path::PathBuf;
 
   let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
+  #[allow(deprecated)] // Matches the filename-list format registered by the window.
   let filenames =
     unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
 

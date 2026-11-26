@@ -63,6 +63,8 @@ pub struct VisibleApps {
     #[serde(default, rename = "deepseek-harness")]
     pub deepseek_harness: bool,
     #[serde(default)]
+    pub glm: bool,
+    #[serde(default)]
     pub trae: bool,
     #[serde(default, rename = "trae-intl")]
     pub trae_intl: bool,
@@ -91,6 +93,7 @@ impl Default for VisibleApps {
             qwen: false,
             zcode: false,
             deepseek_harness: false,
+            glm: false,
             trae: false,
             trae_intl: false,
             doubaowork: false,
@@ -119,6 +122,7 @@ impl VisibleApps {
             AppType::Qwen => self.qwen,
             AppType::ZCode => self.zcode,
             AppType::DeepSeekHarness => self.deepseek_harness,
+            AppType::Glm => self.glm,
             AppType::Trae => self.trae,
             AppType::TraeIntl => self.trae_intl,
             AppType::T3Code => self.t3code,
@@ -1071,6 +1075,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
@@ -1101,6 +1106,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         | AppType::Qwen
         | AppType::ZCode
         | AppType::DeepSeekHarness
+        | AppType::Glm
         | AppType::Trae
         | AppType::TraeIntl
         | AppType::T3Code
