@@ -3106,6 +3106,15 @@ classifier path. Renderer verification exercises the four supported locales
 with saved rules. On macOS, type checking, formatting, the renderer build,
 and all 4,857 renderer tests passed. Installed WebView verification is pending.
 
+For each Agent in the matrix below, macOS and Windows use the same hard/easy
+template editor. Pricing affects automatic suggestions. The editor always
+shows the compaction, hard task, easy task, and classifier controls, including
+for saved groups with missing rules. Choosing a rule target writes the existing
+rule schema through the shared save path. Each listed native adapter consumes
+the saved group through its existing runtime path where routing applies.
+Verification uses renderer fixtures for creation, editing, and saving.
+Installed WebView verification is pending.
+
 Protocol format is part of the selected upstream transport for each executable
 Agent in the following matrix. The shared scheduler on macOS and Windows
 applies protocol priority within a provider, model and reasoning-effort run.

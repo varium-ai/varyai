@@ -99,9 +99,10 @@ Choose one of four templates or **Custom** in **Create group**. Template-created
 groups hide **Advanced settings** during both creation and editing, display the
 template's **Running rules** directly on the dialog, and keep the template's
 preset settings. The
-task-classification draft has no separate member or model-order controls: choose
-a task model directly for each rule, or choose the default model when there is
-no automatic task split. Choose the classifier separately in **Intent told by**.
+task-classification draft has no separate member or model-order controls. Choose
+the **Compaction**, **Hard task**, and **Easy task** models directly in their
+rule rows. The **Hard task** row shows the default task model until a hard task
+rule is configured. Choose the classifier separately in **Intent told by**.
 The **Models** count in the routing group list includes a configured
 classifier when its supplier and model combination is absent from the
 explicit and pattern-matched members. A classifier shared with a task
@@ -152,7 +153,8 @@ one model per supplier.
   explicit capability differences and high reasoning use the strong model.
   The intent classifier helps identify simple tasks. Unclear results use the
   primary order. Other members can still serve as backups. If catalog prices
-  do not identify a cheaper model, the draft has no automatic task split.
+  do not identify a cheaper model, the draft has no automatic task split. You
+  can still choose each rule's model and the classifier without catalog prices.
   Automatic suggestions skip the Codex automatic approval review model.
   Set the classification deadline and test the selected intent model in
   the same editor. New drafts use a 10,000 ms deadline.

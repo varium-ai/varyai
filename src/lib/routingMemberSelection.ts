@@ -138,11 +138,10 @@ export function withSmartRuleMembers(group: RoutingGroup): RoutingGroup {
   const defaultMemberId =
     group.rules.find((rule) => rule.name === "Hard task")?.targetMemberId ??
     group.defaultMemberId;
-  const selected = new Set(
-    group.rules.length
-      ? group.rules.map((rule) => rule.targetMemberId)
-      : [defaultMemberId],
-  );
+  const selected = new Set([
+    defaultMemberId,
+    ...group.rules.map((rule) => rule.targetMemberId),
+  ]);
   const members = group.members.filter(({ id }) => selected.has(id));
   const updated = withRoutingMembers({ ...group, defaultMemberId }, members);
   return {

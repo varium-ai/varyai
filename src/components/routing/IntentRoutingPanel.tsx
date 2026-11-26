@@ -913,7 +913,8 @@ export function IntentRoutingPanel({
     (model) => model.id === selectedClassifier,
   );
   const classifierPicker = draft &&
-    (draft.classifierTarget ||
+    (draftTemplate === "templateSmart" ||
+      draft.classifierTarget ||
       draft.rules.some((rule) => !rule.pause && rule.description.trim())) && (
       <div className="rt-classifier-pick">
         <Popover
