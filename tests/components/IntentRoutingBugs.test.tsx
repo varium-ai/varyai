@@ -280,33 +280,120 @@ it.each(["loading", "failed"])(
   },
 );
 
-it("explains the shared task target when no cheaper model is available", async () => {
+it.each([undefined, 12])(
+  "shows all smart template controls when model prices are %s",
+  async (outputPrice) => {
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue([
+      {
+        id: "synthetic",
+        name: "Synthetic",
+        taskEligible: true,
+        classifierEligible: true,
+        models: [
+          { id: "synthetic-strong", name: "Strong", outputPrice },
+          { id: "synthetic-alternate", name: "Alternate", outputPrice },
+        ],
+      },
+    ]);
+    mount();
+    const create = screen.getByRole("button", { name: "intentRouting.create" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    const title = await screen.findByText("routingPage.templateSmart");
+    const card = title.parentElement!;
+    expect(
+      within(card).getByText("routingPage.templateSmartSameModelHint"),
+    ).toBeVisible();
+    const add = within(card).getByRole("button", {
+      name: "routingPage.templateSmart",
+    });
+    expect(add).toBeEnabled();
+    fireEvent.click(add);
+    const editor = await screen.findByRole("form");
+    for (const rule of ["Compact", "Hard", "Easy"]) {
+      expect(
+        within(editor).getByRole("button", {
+          name: `intentRouting.target routingPage.templateSmart${rule}Rule`,
+        }),
+      ).toBeEnabled();
+    }
+    const classifier = within(editor).getByRole("button", {
+      name: "routingPage.intentToldBy",
+    });
+    fireEvent.click(classifier);
+    expect(
+      await screen.findByRole("radio", { name: /Alternate/ }),
+    ).toBeEnabled();
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+  },
+);
+
+it("configures missing smart rules in a saved group independently of prices", async () => {
+  const savedGroup: RoutingGroup = { ...group, template: "templateSmart" };
+  vi.mocked(intentRoutingApi.list).mockResolvedValue({
+    groups: [savedGroup],
+    autoCreate: false,
+    omittedGroups: 0,
+  });
   vi.mocked(intentRoutingApi.providers).mockResolvedValue([
     {
-      id: "synthetic",
-      name: "Synthetic",
+      id: "provider",
+      name: "Synthetic provider",
       taskEligible: true,
       classifierEligible: true,
       models: [
-        { id: "synthetic-strong", name: "Strong", outputPrice: 12 },
-        { id: "synthetic-alternate", name: "Alternate", outputPrice: 12 },
+        { id: "first", name: "First model" },
+        { id: "removed", name: "Alternate model" },
       ],
     },
   ]);
+  vi.mocked(intentRoutingApi.save).mockImplementationOnce(async (draft) => ({
+    ...draft,
+    revision: draft.revision + 1,
+  }));
   mount();
-  const create = screen.getByRole("button", { name: "intentRouting.create" });
-  await waitFor(() => expect(create).toBeEnabled());
-  fireEvent.click(create);
-  const title = await screen.findByText("routingPage.templateSmart");
-  const card = title.parentElement!;
+  fireEvent.click(await screen.findByRole("button", { name: "common.edit" }));
+  const editor = await screen.findByRole("form");
+  for (const rule of ["Easy", "Compact"]) {
+    fireEvent.click(
+      within(editor).getByRole("button", {
+        name: `intentRouting.target routingPage.templateSmart${rule}Rule`,
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /Alternate model/ }),
+    );
+  }
   expect(
-    within(card).getByText("routingPage.templateSmartSameModelHint"),
-  ).toBeVisible();
-  const add = within(card).getByRole("button", {
-    name: "routingPage.templateSmart",
+    within(editor).getByRole("button", {
+      name: "intentRouting.target routingPage.templateSmartHardRule",
+    }),
+  ).toHaveTextContent("First model");
+  fireEvent.click(
+    within(editor).getByRole("button", { name: "routingPage.intentToldBy" }),
+  );
+  fireEvent.click(await screen.findByRole("radio", { name: /First model/ }));
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+  expect(vi.mocked(intentRoutingApi.save).mock.calls[0][0]).toMatchObject({
+    template: "templateSmart",
+    members: savedGroup.members,
+    defaultMemberId: "first",
+    classifierTarget: { providerId: "provider", modelId: "first" },
+    intentRecognitionEnabled: true,
+    rules: [
+      {
+        name: "Compaction",
+        targetMemberId: "removed",
+        conditions: { compact: true },
+        enabled: true,
+      },
+      {
+        name: "Easy task",
+        targetMemberId: "removed",
+        description: expect.stringContaining("An easy task"),
+        enabled: true,
+      },
+    ],
   });
-  expect(add).toBeEnabled();
-  fireEvent.click(add);
-  expect(await screen.findByRole("dialog")).toBeVisible();
-  expect(intentRoutingApi.save).not.toHaveBeenCalled();
 });
