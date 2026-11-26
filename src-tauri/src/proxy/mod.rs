@@ -10,6 +10,7 @@ pub(crate) mod client_activity;
 pub(crate) mod content_encoding;
 pub mod copilot_optimizer;
 pub mod error;
+pub(crate) mod error_i18n;
 pub mod error_mapper;
 pub(crate) mod failover_switch;
 mod forwarder;

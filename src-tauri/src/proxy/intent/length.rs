@@ -142,7 +142,7 @@ pub(in crate::proxy) fn estimate(projection: &Value, body: &Value) -> Option<u64
     Some(bytes / 4)
 }
 
-pub(super) fn overflow(status: u16, body: &[u8]) -> bool {
+pub(crate) fn overflow(status: u16, body: &[u8]) -> bool {
     if !matches!(status, 400 | 413 | 422) {
         return false;
     }

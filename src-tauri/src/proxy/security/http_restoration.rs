@@ -612,13 +612,34 @@ impl DlpForwardError {
             log::warn!("[DLP] routed_restore_unsupported app={}", app_type.as_str());
         }
         let (code, message) = match self {
-            Self::ContextUnavailable => (self.code(), "Local redaction context is no longer available. Start a new conversation without copying redacted references from the old one."),
-            Self::PolicyConflict => (self.code(), "Local security rules conflict for this request. Review the rules in Security Center before resending."),
-            Self::RedactionFailed => (self.code(), "The local proxy could not safely redact the request. Review Security Center and remove sensitive text from the message or tool results before resending."),
-            Self::CapacityExceeded => (self.code(), "Local security processing reached its capacity limit. Shorten the conversation or tool output before retrying."),
-            Self::Unavailable | Self::TokenCollision => ("dlp_unavailable", "Local security processing is temporarily unavailable. Retry later."),
-            Self::Blocked => (self.code(), "A local security rule blocked this request. Review Security Center and remove the sensitive content before resending."),
-            Self::RestoreUnsupported => return Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint).into_app_response(app_type),
+            Self::ContextUnavailable => (
+                self.code(),
+                crate::proxy::error_i18n::dlp_routed_message("dlp_context_unavailable"),
+            ),
+            Self::PolicyConflict => (
+                self.code(),
+                crate::proxy::error_i18n::dlp_routed_message("dlp_policy_conflict"),
+            ),
+            Self::RedactionFailed => (
+                self.code(),
+                crate::proxy::error_i18n::dlp_routed_message("dlp_redaction_failed"),
+            ),
+            Self::CapacityExceeded => (
+                self.code(),
+                crate::proxy::error_i18n::dlp_routed_message("dlp_capacity_exceeded"),
+            ),
+            Self::Unavailable | Self::TokenCollision => (
+                "dlp_unavailable",
+                crate::proxy::error_i18n::dlp_routed_message("dlp_unavailable"),
+            ),
+            Self::Blocked => (
+                self.code(),
+                crate::proxy::error_i18n::dlp_routed_message("dlp_blocked"),
+            ),
+            Self::RestoreUnsupported => {
+                return Self::RestoreUnsupportedFor(RestoreUnsupportedCause::UnsupportedEndpoint)
+                    .into_app_response(app_type)
+            }
             other => return other.into_app_response(app_type),
         };
         log::warn!(
@@ -673,7 +694,13 @@ impl DlpForwardError {
             AppType::Claude | AppType::ClaudeDesktop => json!({
                 "type": "error",
                 "error": {
-                    "type": if status == StatusCode::BAD_REQUEST { "invalid_request_error" } else { "api_error" },
+                    "type": if status == StatusCode::PAYLOAD_TOO_LARGE {
+                        "request_too_large"
+                    } else if status == StatusCode::BAD_REQUEST {
+                        "invalid_request_error"
+                    } else {
+                        "api_error"
+                    },
                     "message": native_message,
                     "code": code,
                 }

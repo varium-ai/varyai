@@ -243,7 +243,7 @@ fn projection_keeps_openai_login_visible_without_using_it_for_forwarding() {
                 .parse()
                 .expect("installed toml");
             let provider = &installed["model_providers"][PROVIDER];
-            assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+            assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
             assert_eq!(
                 provider["experimental_bearer_token"].as_str(),
                 Some("synthetic-local-token")
@@ -284,8 +284,10 @@ fn projection_does_not_require_a_missing_or_unsupported_login() {
             .parse()
             .expect("installed toml");
         assert_eq!(
-            installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-            Some(false)
+            installed["model_providers"][PROVIDER]
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            None
         );
         assert_eq!(read(&path).expect("auth state"), auth);
     }
@@ -327,7 +329,9 @@ fn projection_refresh_repairs_legacy_flag_and_tracks_file_login_changes() {
             .parse()
             .expect("toml");
         assert_eq!(
-            installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
+            installed["model_providers"][PROVIDER]
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
             Some(false)
         );
     }
@@ -336,11 +340,11 @@ fn projection_refresh_repairs_legacy_flag_and_tracks_file_login_changes() {
 #[test]
 fn projection_respects_auth_storage_instead_of_assuming_file_login() {
     for (store, previous, expected) in [
-        ("file", false, false),
-        ("ephemeral", true, false),
-        ("auto", true, false),
-        ("keyring", true, false),
-        ("keyring", false, false),
+        ("file", false, Some(true)),
+        ("ephemeral", true, None),
+        ("auto", true, Some(true)),
+        ("keyring", true, None),
+        ("keyring", false, None),
     ] {
         let (dir, manager) = setup();
         fs::write(
@@ -365,8 +369,10 @@ fn projection_respects_auth_storage_instead_of_assuming_file_login() {
             .parse()
             .expect("toml");
         assert_eq!(
-            installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-            Some(expected),
+            installed["model_providers"][PROVIDER]
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            expected,
             "{store}"
         );
     }
@@ -389,8 +395,10 @@ fn unauthenticated_default_openai_config_does_not_require_chatgpt_login() {
             .parse()
             .expect("toml");
         assert_eq!(
-            installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
-            Some(false),
+            installed["model_providers"][PROVIDER]
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            None,
             "original={original:?}"
         );
     }

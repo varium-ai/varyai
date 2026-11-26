@@ -486,11 +486,48 @@ impl ProxyService {
             intent_receipt,
             intent_runtime.clone(),
         ));
+        let global_routing_lock: Arc<tokio::sync::Mutex<()>> = Arc::default();
+        {
+            let db = db.clone();
+            let codex_oauth_manager = codex_oauth_manager.clone();
+            let weak_runtime = Arc::downgrade(&intent_runtime);
+            let lock = global_routing_lock.clone();
+            intent_runtime.set_global_refresher(Arc::new(move || {
+                let db = db.clone();
+                let codex_oauth_manager = codex_oauth_manager.clone();
+                let weak_runtime = weak_runtime.clone();
+                let lock = lock.clone();
+                Box::pin(async move {
+                    let Some(runtime) = weak_runtime.upgrade() else {
+                        return Err("intentRouting.failed".into());
+                    };
+                    Self::ensure_global_routing_with(db, codex_oauth_manager, runtime, lock).await
+                })
+            }));
+        }
+        {
+            let db = db.clone();
+            let codex_oauth_manager = codex_oauth_manager.clone();
+            let weak_runtime = Arc::downgrade(&intent_runtime);
+            let menu_lock: Arc<tokio::sync::Mutex<()>> = Arc::default();
+            intent_runtime.set_menu_refresher(Some(Arc::new(move || {
+                let db = db.clone();
+                let codex_oauth_manager = codex_oauth_manager.clone();
+                let weak_runtime = weak_runtime.clone();
+                let menu_lock = menu_lock.clone();
+                Box::pin(async move {
+                    let Some(runtime) = weak_runtime.upgrade() else {
+                        return Err("intentRouting.failed".into());
+                    };
+                    Self::refresh_codex_menu_with(db, codex_oauth_manager, runtime, menu_lock).await
+                })
+            })));
+        }
         Self {
             pi_routing: Arc::new(super::pi_routing::Manager::new(pi_path)),
             intent_runtime,
             agent_connections,
-            global_routing_lock: Arc::default(),
+            global_routing_lock,
             catalog_sync: Arc::default(),
             intent_client,
             native_checkpoint_key,
@@ -2964,47 +3001,126 @@ impl ProxyService {
         self.refresh_global_routing_inner().await
     }
 
+    async fn refresh_codex_menu_with(
+        db: Arc<Database>,
+        codex_oauth_manager: Arc<CodexOAuthManager>,
+        intent_runtime: Arc<crate::proxy::intent::Runtime>,
+        menu_lock: Arc<tokio::sync::Mutex<()>>,
+    ) -> Result<(), String> {
+        use super::intent_routing::{catalog, menu};
+        let _guard = menu_lock.lock().await;
+        if !intent_runtime.menu_active() {
+            return Ok(());
+        }
+        let generation = db.routing_generation();
+        let (providers, _) =
+            catalog::prepare_providers(db.clone(), codex_oauth_manager.clone(), false).await?;
+        let discovery = providers.clone();
+        let db_for_catalog = db.clone();
+        let (groups, stand_ins, current, context_settings) =
+            tokio::task::spawn_blocking(move || {
+                let catalog =
+                    db_for_catalog.intent_routing_catalog_with_providers(Some(discovery))?;
+                let current = crate::settings::get_effective_current_provider(
+                    &db_for_catalog,
+                    &AppType::Codex,
+                )
+                .map_err(|_| "intentRouting.failed")?;
+                Ok::<_, String>((
+                    catalog.groups,
+                    catalog.stand_ins,
+                    current,
+                    catalog.context_settings,
+                ))
+            })
+            .await
+            .map_err(|_| "intentRouting.failed")??;
+        let mut prepared = menu::prepare_with_stand_ins(
+            codex_oauth_manager,
+            providers,
+            groups,
+            current,
+            stand_ins,
+        )
+        .await?;
+        prepared.context_settings = context_settings;
+        if let Some(previous) = intent_runtime.menu_snapshot()? {
+            prepared.preserve_from(&previous);
+        }
+        if db.routing_generation() != generation {
+            return Err("intentRouting.conflict".into());
+        }
+        let published = crate::proxy::intent::PublishedMenu::new(Arc::new(prepared), generation);
+        intent_runtime
+            .native
+            .refresh_published_menu(published.clone());
+        intent_runtime.set_menu(published)?;
+        Ok(())
+    }
+
     pub(crate) async fn ensure_global_routing(&self) -> Result<(), String> {
-        let _guard = self.global_routing_lock.lock().await;
-        if self.intent_runtime.global_snapshot()?.is_some()
-            && self
-                .intent_runtime
-                .global_current(self.db.routing_generation())
+        Self::ensure_global_routing_with(
+            self.db.clone(),
+            self.codex_oauth_manager.clone(),
+            self.intent_runtime.clone(),
+            self.global_routing_lock.clone(),
+        )
+        .await
+    }
+
+    async fn ensure_global_routing_with(
+        db: Arc<Database>,
+        codex_oauth_manager: Arc<CodexOAuthManager>,
+        intent_runtime: Arc<crate::proxy::intent::Runtime>,
+        global_routing_lock: Arc<tokio::sync::Mutex<()>>,
+    ) -> Result<(), String> {
+        let _guard = global_routing_lock.lock().await;
+        if intent_runtime.global_snapshot()?.is_some()
+            && intent_runtime.global_current(db.routing_generation())
         {
             return Ok(());
         }
-        self.refresh_global_routing_inner().await
+        Self::refresh_global_routing_with(db, codex_oauth_manager, intent_runtime).await
     }
 
     async fn refresh_global_routing_inner(&self) -> Result<(), String> {
+        Self::refresh_global_routing_with(
+            self.db.clone(),
+            self.codex_oauth_manager.clone(),
+            self.intent_runtime.clone(),
+        )
+        .await
+    }
+
+    async fn refresh_global_routing_with(
+        db: Arc<Database>,
+        codex_oauth_manager: Arc<CodexOAuthManager>,
+        intent_runtime: Arc<crate::proxy::intent::Runtime>,
+    ) -> Result<(), String> {
         use super::intent_routing::{catalog, menu};
         let started = std::time::Instant::now();
         let result = async {
-            let db = self.db.clone();
-            let generation = self.db.routing_generation();
-            let (providers, _) = catalog::prepare_providers(
-                self.db.clone(),
-                self.codex_oauth_manager.clone(),
-                false,
-            )
-            .await?;
+            let generation = db.routing_generation();
+            let (providers, _) =
+                catalog::prepare_providers(db.clone(), codex_oauth_manager.clone(), false).await?;
             let providers_ready = started.elapsed();
             let discovery = providers.clone();
+            let db_for_catalog = db.clone();
             let (groups, stand_ins) = tokio::task::spawn_blocking(move || {
-                let catalog = db.intent_routing_catalog_with_providers(Some(discovery))?;
+                let catalog =
+                    db_for_catalog.intent_routing_catalog_with_providers(Some(discovery))?;
                 Ok::<_, String>((catalog.groups, catalog.stand_ins))
             })
             .await
             .map_err(|_| "intentRouting.failed")??;
             let catalog_ready = started.elapsed();
-            self.intent_runtime
-                .reserve_global_aliases(groups.iter().map(|g| g.alias()))?;
+            intent_runtime.reserve_global_aliases(groups.iter().map(|g| g.alias()))?;
             if providers.is_empty() && !groups.iter().any(|group| group.enabled) {
-                self.intent_runtime.clear_global();
+                intent_runtime.clear_global();
                 return Ok(());
             }
             let mut prepared = menu::prepare_with_stand_ins(
-                self.codex_oauth_manager.clone(),
+                codex_oauth_manager.clone(),
                 providers,
                 groups,
                 None,
@@ -3017,16 +3133,16 @@ impl ProxyService {
                 catalog_ready.saturating_sub(providers_ready).as_millis(),
                 started.elapsed().saturating_sub(catalog_ready).as_millis()
             );
-            prepared.context_settings = self.db.routing_context_settings()?;
-            if self.db.routing_generation() != generation {
+            prepared.context_settings = db.routing_context_settings()?;
+            if db.routing_generation() != generation {
                 return Err("intentRouting.conflict".into());
             }
-            self.intent_runtime.set_global(prepared, generation)
+            intent_runtime.set_global(prepared, generation)
         }
         .await;
         if result.is_err() {
             // Never leave a previous account or deleted resource executable after a failed refresh.
-            self.intent_runtime.clear_global();
+            intent_runtime.clear_global();
         }
         result
     }
