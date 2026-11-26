@@ -293,7 +293,10 @@ mod tests {
         fs::write(&path, "[]").map_err(|_| FAILED)?;
         assert_eq!(read_selection("claude", &path), Err(FAILED.into()));
         fs::write(&path, "malformed synthetic config").map_err(|_| FAILED)?;
-        assert_eq!(read_selection("claude", &path), Err(FAILED.into()));
+        assert_eq!(
+            read_selection("claude", &path),
+            Err(super::super::INVALID_CONFIG.into())
+        );
         fs::write(
             &path,
             r#"{"model":"https://synthetic.invalid/?key=synthetic-only"}"#,

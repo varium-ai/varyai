@@ -707,9 +707,8 @@ mod tests {
             );
             assert_eq!(manager.disconnect(app), Ok(()));
             assert!(manager.load(app)?.is_none());
-            let after: Value =
-                serde_json::from_str(&fs::read_to_string(&path).map_err(|_| FAILED)?)
-                    .map_err(|_| FAILED)?;
+            let after: Value = json5::from_str(&fs::read_to_string(&path).map_err(|_| FAILED)?)
+                .map_err(|_| FAILED)?;
             assert_eq!(after["token"], json!("synthetic-external-change"));
         }
         Ok(())
