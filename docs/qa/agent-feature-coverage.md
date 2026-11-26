@@ -2995,6 +2995,24 @@ classifier path. Renderer verification exercises the four supported locales
 with saved rules. On macOS, type checking, formatting, the renderer build,
 and all 4,857 renderer tests passed. Installed WebView verification is pending.
 
+Protocol format is part of the selected upstream transport for each executable
+Agent in the following matrix. The shared scheduler on macOS and Windows
+applies protocol priority within a provider, model and reasoning-effort run.
+The shared editor saves the same order and rules, and the existing routing
+stage shows the resulting attempt order. The mixed-protocol loopback
+regression exercises each shared connection, the Codex menu and native
+Responses entry points, and all four API formats. It checks both member
+order and selection of a matching endpoint within a member. Doubao Work has
+audit-only integration. GLM retains a legacy app ID without a managed
+model-routing entry. On the working tree based on `1b00444f`, the loopback
+regression and the four-protocol probe and endpoint fixtures passed on macOS
+26.6.2 arm64 with Rust 1.98.1. Cargo formatting, check, strict Clippy and
+`cargo test --no-fail-fast` passed with 7,924 library and 167 integration
+tests passed and 21 library tests ignored. Renderer type checking, formatting,
+build and 5,005 unit tests passed with Node 20.20.2 and pnpm 10.12.3.
+The development and CI helper suites and `pnpm audit --prod` passed.
+Installed-client and Windows verification for this change are pending.
+
 | Agent ID           | Entry point and native adapter                                        | Verification scope                                                                                                                        |
 | ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `claude`           | Claude Code CLI, Messages catalog and shared runtime                  | Shared classifier tests. Native pending                                                                                                   |

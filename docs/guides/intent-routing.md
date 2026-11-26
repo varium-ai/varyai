@@ -247,12 +247,12 @@ read as **In order**. Original rules, members and execution settings remain
 intact.
 
 Automatic groups and saved groups without a scheduler value use **In order**.
-The runtime supports two scheduling modes plus optional expiry sorting:
+The runtime supports two scheduling modes:
 
 - **In order:** try the configured default and approved fallbacks in order (used by **Strong models for hard tasks, cheaper models for easy tasks**, **Most capable first**, **Expiring allowance first**, and **Custom**).
 - **Speed first (`fastest`):** compare streamed first-content latency plus the estimated time to write 200 tokens (used by **Fastest first**). Output rate excludes hidden reasoning. Buffered bursts and non-streaming replies provide no output rate. Ten-percent bands retain configured order. Every fifth eligible selection rotates a route lacking a first-content measurement, or lacking an output-rate measurement when another candidate has one, to the front. These probes use ordinary user requests. Measurements belong to the exact upstream and model. A test of one account supplies measurements for that account.
 
-Both modes apply the ready/resting partition after rule, affinity, and cost priorities. Only approved candidates participate. An intent rule's selected ready member takes priority over other ready members. Continuation/account binding overrides scheduling. Ambiguous failures and bound requests are never replayed at another account.
+Both modes apply the ready/resting partition after rule, affinity, and cost priorities. Only approved candidates participate. An intent rule's selected ready member takes priority over other ready members. Continuation/account binding overrides scheduling. A matching API format takes priority among adjacent endpoint variants of the same provider, model and reasoning effort. The routing policy determines the order between models. The gateway uses the selected endpoint's API format and converts the request as needed. Ambiguous failures and bound requests are never replayed at another account.
 
 The live routing graph explains when a request must continue at the same
 upstream, or when conversation affinity gives the previous upstream priority.

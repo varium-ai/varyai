@@ -2529,6 +2529,17 @@ async fn execute(
         }
     }
     if pinned.is_none() && !count_tokens {
+        // Prefer a matching transport within each member's candidate run.
+        for variants in candidates.chunk_by_mut(|left, right| {
+            let left = &session.targets[*left];
+            let right = &session.targets[*right];
+            left.provider_id == right.provider_id
+                && left.model == right.model
+                && left.fixed_effort == right.fixed_effort
+        }) {
+            variants
+                .sort_by_key(|index| target_output_protocol(&session.targets[*index]) != protocol);
+        }
         let now = chrono::Utc::now().timestamp();
         candidates.sort_by_key(|index| {
             let target = &session.targets[*index];
@@ -2541,11 +2552,7 @@ async fn execute(
                         crate::services::quota_panel::credits(&id, target.scheduling.exhausted(now))
                             == crate::services::quota_panel::CreditsMode::Last
                     });
-            (
-                states[*index].cooling(now),
-                credits_last,
-                target_output_protocol(target) != protocol,
-            )
+            (states[*index].cooling(now), credits_last)
         });
     }
     trace.plan(
