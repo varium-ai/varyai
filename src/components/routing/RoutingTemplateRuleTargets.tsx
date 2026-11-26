@@ -33,9 +33,6 @@ const templateRules = [
     "routingPage.templateSmartEasyDescription",
   ],
 ] as const;
-const defaultTarget = [
-  [undefined, "intentRouting.defaultTarget", undefined],
-] as const;
 
 export function RoutingTemplateRuleTargets({
   providers,
@@ -81,31 +78,51 @@ export function RoutingTemplateRuleTargets({
     const model = provider?.models?.find(({ id }) => id === member.modelId);
     return `${model?.name || member.modelId} · ${provider?.name || member.providerId}`;
   };
-  const choose = (rule: IntentRule | undefined, id: string) => {
+  const choose = (index: number, rule: IntentRule | undefined, id: string) => {
     const choice = catalog.get(id);
     if (!choice || disabled) return;
+    const [name] = templateRules[index];
     const existing = members.find((member) => routingMemberKey(member) === id);
     const target = existing ?? {
       id: crypto.randomUUID(),
       providerId: choice.providerId,
       modelId: choice.modelId,
     };
-    const nextRules = rules.map((entry) =>
-      entry.id === rule?.id
-        ? {
-            ...entry,
-            targetMemberId: target.id,
-            fallbackMemberIds: (entry.fallbackMemberIds ?? []).filter(
-              (fallback) => fallback !== target.id,
-            ),
-          }
-        : entry,
-    );
+    const nextRule: IntentRule = rule
+      ? {
+          ...rule,
+          targetMemberId: target.id,
+          fallbackMemberIds: (rule.fallbackMemberIds ?? []).filter(
+            (fallback) => fallback !== target.id,
+          ),
+        }
+      : {
+          id: crypto.randomUUID(),
+          name,
+          enabled: true,
+          targetMemberId: target.id,
+          description:
+            name === "Compaction" ? "" : SMART_RULE_DESCRIPTIONS[name],
+          ...(name === "Compaction" ? { conditions: { compact: true } } : {}),
+        };
+    const nextRules = [...rules];
+    if (rule) {
+      nextRules[rules.indexOf(rule)] = nextRule;
+    } else {
+      const following = templateRules.slice(index + 1);
+      const insertBefore = rules.findIndex((entry) =>
+        following.some(([name]) => name === entry.name),
+      );
+      nextRules.splice(
+        insertBefore < 0 ? rules.length : insertBefore,
+        0,
+        nextRule,
+      );
+    }
     onChange(
       withSmartRuleMembers({
         ...group,
         members: existing ? members : [...members, target],
-        defaultMemberId: rule ? group.defaultMemberId : target.id,
         rules: nextRules,
       }),
     );
@@ -113,70 +130,63 @@ export function RoutingTemplateRuleTargets({
   };
   return (
     <div className="rt-template-rule-targets">
-      {(rules.length ? templateRules : defaultTarget).map(
-        ([name, labelKey, descriptionKey], index) => {
-          const rule = rules.find((entry) => entry.name === name);
-          if (name && !rule) return null;
-          const rowId = rule?.id ?? "default";
-          const targetId = rule?.targetMemberId ?? group.defaultMemberId;
-          const target = members.find(({ id }) => id === targetId);
-          const label = t(labelKey);
-          return (
-            <div className="rt-template-rule-target" key={rowId}>
-              <span className="rt-template-rule-number">{index + 1}</span>
-              <span className="rt-template-rule-description">
-                <strong>{label}</strong>
-                {rule && (
-                  <span>
-                    {descriptionKey &&
-                    rule.description === SMART_RULE_DESCRIPTIONS[name]
-                      ? t(descriptionKey)
-                      : rule.description ||
-                        t("routingPage.templateRuleDefault")}
-                  </span>
-                )}
+      {templateRules.map(([name, labelKey, descriptionKey], index) => {
+        const rule = rules.find((entry) => entry.name === name);
+        const targetId =
+          rule?.targetMemberId ??
+          (name === "Hard task" ? group.defaultMemberId : undefined);
+        const target = members.find(({ id }) => id === targetId);
+        const label = t(labelKey);
+        return (
+          <div className="rt-template-rule-target" key={name}>
+            <span className="rt-template-rule-number">{index + 1}</span>
+            <span className="rt-template-rule-description">
+              <strong>{label}</strong>
+              <span>
+                {descriptionKey &&
+                (!rule || rule.description === SMART_RULE_DESCRIPTIONS[name])
+                  ? t(descriptionKey)
+                  : rule?.description || t("routingPage.templateRuleDefault")}
               </span>
-              <Popover
-                modal
-                open={open === rowId}
-                onOpenChange={(next) => setOpen(next ? rowId : null)}
-              >
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className="rt-template-rule-model"
-                    disabled={disabled}
-                    aria-label={
-                      rule ? `${t("intentRouting.target")} ${label}` : label
-                    }
-                  >
-                    <AccountLabel title>
-                      {target
-                        ? memberLabel(target)
-                        : t("agentConnections.pickModel")}
-                    </AccountLabel>
-                    <ChevronDown size={12} aria-hidden />
-                  </button>
-                </PopoverTrigger>
-                <ModelPickerPopoverContent
-                  data-variant="agent"
-                  onDismiss={() => setOpen(null)}
-                  aria-label={label}
+            </span>
+            <Popover
+              modal
+              open={open === name}
+              onOpenChange={(next) => setOpen(next ? name : null)}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="rt-template-rule-model"
+                  disabled={disabled}
+                  aria-label={`${t("intentRouting.target")} ${label}`}
                 >
-                  <SharedModelPicker
-                    variant="agent"
-                    models={models}
-                    selected={target ? [routingMemberKey(target)] : []}
-                    disabled={disabled}
-                    onPick={(id) => choose(rule, id)}
-                    onDismiss={() => setOpen(null)}
-                  />
-                </ModelPickerPopoverContent>
-              </Popover>
-            </div>
-          );
-        },
-      )}
+                  <AccountLabel title>
+                    {target
+                      ? memberLabel(target)
+                      : t("agentConnections.pickModel")}
+                  </AccountLabel>
+                  <ChevronDown size={12} aria-hidden />
+                </button>
+              </PopoverTrigger>
+              <ModelPickerPopoverContent
+                data-variant="agent"
+                onDismiss={() => setOpen(null)}
+                aria-label={label}
+              >
+                <SharedModelPicker
+                  variant="agent"
+                  models={models}
+                  selected={rule && target ? [routingMemberKey(target)] : []}
+                  disabled={disabled}
+                  onPick={(id) => choose(index, rule, id)}
+                  onDismiss={() => setOpen(null)}
+                />
+              </ModelPickerPopoverContent>
+            </Popover>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -1872,7 +1872,9 @@ describe("IntentRoutingPanel", () => {
       screen.getByRole("button", { name: "routingPage.templateSmart" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "intentRouting.defaultTarget" }),
+      screen.getByRole("button", {
+        name: "intentRouting.target routingPage.templateSmartHardRule",
+      }),
     );
     expectModelPickerWheelAllowed();
     await user.click(screen.getByRole("radio", { name: /Second task model/ }));
@@ -1882,7 +1884,13 @@ describe("IntentRoutingPanel", () => {
     expect(saved.members).toEqual([
       expect.objectContaining({ id: saved.defaultMemberId, modelId: "second" }),
     ]);
-    expect(saved.rules).toEqual([]);
+    expect(saved.rules).toEqual([
+      expect.objectContaining({
+        name: "Hard task",
+        targetMemberId: saved.defaultMemberId,
+        enabled: true,
+      }),
+    ]);
   });
   it.each([true, false])(
     "resaves and reopens a smart group without its unselected fallback (template stored: %s)",
