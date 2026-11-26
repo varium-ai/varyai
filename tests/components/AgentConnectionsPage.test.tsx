@@ -52,7 +52,7 @@ vi.mock("@/lib/api/intentRouting", () => ({
       omittedGroups: 0,
     })),
     contextSettings: vi.fn(async () => ({ fullWindow: false })),
-    setContextSettings: vi.fn(async () => {}),
+    setContextSettings: vi.fn(async () => { }),
   },
 }));
 vi.mock("@/lib/api/routingUpstreams", () => ({
@@ -89,14 +89,14 @@ vi.mock("@/lib/api/proxy", () => ({
       pi: true,
     })),
     getProxyStatus: vi.fn(async () => ({ running: true })),
-    launchDoubaoWorkForAudit: vi.fn(async () => {}),
+    launchDoubaoWorkForAudit: vi.fn(async () => { }),
   },
 }));
 vi.mock("@/lib/api/settings", () => ({
   settingsApi: {
     getToolVersions: vi.fn(async () => []),
     getAgentVersions: vi.fn(async () => ({})),
-    openExternal: vi.fn(async () => {}),
+    openExternal: vi.fn(async () => { }),
   },
 }));
 function mount(
@@ -1140,7 +1140,7 @@ describe("tool discovery empty state", () => {
 
   it("does not mistake pending detection for an empty installation", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockReturnValue(
-      new Promise(() => {}),
+      new Promise(() => { }),
     );
     mount();
     expect(
@@ -2235,7 +2235,7 @@ describe("Agent connections", () => {
       });
       vi.mocked(agentRewardsApi.status).mockImplementation(() =>
         state === "pending"
-          ? new Promise(() => {})
+          ? new Promise(() => { })
           : Promise.reject(new Error("synthetic-unavailable-status")),
       );
       mount();
@@ -2270,7 +2270,7 @@ describe("Agent connections", () => {
       );
       expect(
         trigger.compareDocumentPosition(picker) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
+        Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       expect(
         screen.queryByRole("region", { name: "agentRewards.title" }),
@@ -2677,17 +2677,17 @@ describe("Agent connections", () => {
         platform === "Linux"
           ? []
           : [
-              "codex",
-              "claude-desktop",
-              "workbuddy",
-              "workbuddy-ai",
-              "qoder",
-              "trae",
-              "trae-intl",
-              "zcode",
-              "t3code",
-              ...(platform === "Macintosh" ? ["kimi", "deepseek-harness"] : []),
-            ];
+            "codex",
+            "claude-desktop",
+            "workbuddy",
+            "workbuddy-ai",
+            "qoder",
+            "trae",
+            "trae-intl",
+            "zcode",
+            "t3code",
+            ...(platform === "Macintosh" ? ["kimi", "deepseek-harness"] : []),
+          ];
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue(
         Object.fromEntries(APP_IDS.map((app) => [app, true])),
       );
@@ -2916,11 +2916,11 @@ describe("Agent connections", () => {
       );
       const key =
         typeof cause === "string" &&
-        [
-          "agentConnections.restartUnsupported",
-          "agentConnections.restartQuitFailed",
-          "agentConnections.restartOpenFailed",
-        ].includes(cause)
+          [
+            "agentConnections.restartUnsupported",
+            "agentConnections.restartQuitFailed",
+            "agentConnections.restartOpenFailed",
+          ].includes(cause)
           ? cause
           : "agentConnections.restartFailed";
       const guidance = await screen.findByText(key);
@@ -3492,7 +3492,7 @@ describe("Agent connections", () => {
       ).toHaveTextContent("agentConnections.nativeDefault"),
     );
     vi.mocked(agentConnectionsApi.nativeModels).mockImplementationOnce(
-      () => new Promise(() => {}),
+      () => new Promise(() => { }),
     );
     fireEvent.click(toggle);
     await waitFor(() => expect(agentConnectionsApi.set).toHaveBeenCalledOnce());
@@ -5530,7 +5530,9 @@ describe("Agent connections", () => {
   it("shows the saved routing group name while its executable catalog entry is missing", async () => {
     const group = { ...blankRoutingGroup(), id: "named", name: "中文路由组" };
     const model = "vary-auto/named";
-    const apps = APP_IDS.filter((app) => app !== "doubaowork");
+    const apps = APP_IDS.filter(
+      (app) => app !== "doubaowork" && app !== "zcode",
+    );
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue(
       Object.fromEntries(apps.map((app) => [app, true])),
     );
@@ -5567,6 +5569,34 @@ describe("Agent connections", () => {
       ).toHaveAttribute("title", group.name);
       expect(within(row).queryByText(model)).not.toBeInTheDocument();
     }
+  });
+  it("shows a disabled unsupported-default-model selector for ZCode", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      zcode: true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "zcode",
+        enabled: true,
+        configured: true,
+        model: "vary-auto/shared",
+        recoveryPending: false,
+        restartRequired: false,
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.zcode" });
+    const selector = await within(row).findByRole("button", {
+      name: "agentConnections.model apps.zcode",
+    });
+    expect(selector).toBeDisabled();
+    expect(selector).toHaveTextContent("agentConnections.defaultModelUnsupported");
+    expect(selector).toHaveAttribute(
+      "title",
+      "agentConnections.defaultModelUnsupportedHint",
+    );
+    fireEvent.click(selector);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
   it("connects an installed Agent directly from its switch without a model or provider dialog", async () => {
     mount();
@@ -5698,8 +5728,8 @@ describe("per-Agent detection", () => {
       vi.mocked(agentConnectionsApi.get).mockImplementation((app) =>
         app === "codex"
           ? new Promise((resolve) => {
-              finish = resolve;
-            })
+            finish = resolve;
+          })
           : get(app),
       );
       mount(compact);
@@ -5737,7 +5767,7 @@ describe("per-Agent detection", () => {
         const unconfigured = screen.getByText("trayPanel.notConfigured");
         expect(
           codexPlaceholder.compareDocumentPosition(unconfigured) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
+          Node.DOCUMENT_POSITION_FOLLOWING,
         ).toBeTruthy();
       }
       await act(async () =>
@@ -5833,10 +5863,10 @@ describe("per-Agent detection", () => {
       ),
     );
     vi.mocked(agentConnectionsApi.get).mockImplementation(
-      () => new Promise(() => {}),
+      () => new Promise(() => { }),
     );
     vi.mocked(agentConnectionsApi.nativeModel).mockImplementation(
-      () => new Promise(() => {}),
+      () => new Promise(() => { }),
     );
     await act(async () => {
       void client.invalidateQueries({ queryKey: ["agent-connections"] });

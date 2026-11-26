@@ -5268,7 +5268,9 @@
     "restartConfirmationRequired": "請先確認重新啟動此應用程式。",
     "officialModels": "官方模型",
     "nativeCatalogHint": "Vary 提供的共享模型目錄。用戶端載入目錄後，請在用戶端內選擇聊天模型。",
-    "nativeCatalogDisconnectedHint": "共享模型目錄預覽。開啟接入開關後會加入這些模型，再到用戶端內選擇聊天模型。"
+    "nativeCatalogDisconnectedHint": "共享模型目錄預覽。開啟接入開關後會加入這些模型，再到用戶端內選擇聊天模型。",
+    "defaultModelUnsupported": "不支援預設模型",
+    "defaultModelUnsupportedHint": "ZCode 不支援透過 Vary 設定預設模型。Vary 會將共用模型目錄寫入設定，請在 ZCode 內選擇模型。"
   },
   "providerFlow": {
     "region": "地區",

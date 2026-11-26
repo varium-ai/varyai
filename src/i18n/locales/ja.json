@@ -5267,7 +5267,9 @@
     "restartConfirmationRequired": "アプリの再起動を確認してください。",
     "officialModels": "公式モデル",
     "nativeCatalogHint": "Vary が提供する共有モデル一覧です。クライアントで一覧を読み込んだ後、チャットモデルを選択してください。",
-    "nativeCatalogDisconnectedHint": "共有モデル一覧のプレビューです。接続を有効にしてモデルを追加した後、クライアント内でチャットモデルを選択してください。"
+    "nativeCatalogDisconnectedHint": "共有モデル一覧のプレビューです。接続を有効にしてモデルを追加した後、クライアント内でチャットモデルを選択してください。",
+    "defaultModelUnsupported": "デフォルトモデル非対応",
+    "defaultModelUnsupportedHint": "ZCode は Vary からのデフォルトモデル設定に対応していません。Vary は共有モデルカタログを設定に追加するため、ZCode 内でモデルを選択してください。"
   },
   "providerFlow": {
     "region": "地域",

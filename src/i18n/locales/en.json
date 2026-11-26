@@ -5312,6 +5312,8 @@
     "more": "More",
     "traeStartingModelHint": "Use this model for new conversations in TRAE modes that support it. Existing conversations keep their selections. When TRAE is disconnected, the selection waits for bridge synchronization.",
     "nativePicker": "Vary adds the shared catalog to this tool. Choose a model in the tool itself after restarting.",
+    "defaultModelUnsupported": "Default model unsupported",
+    "defaultModelUnsupportedHint": "ZCode does not support setting a default model through Vary. Vary adds the shared catalog to its configuration; choose a model inside ZCode.",
     "disconnectTitle": "Disconnect {{app}} from Vary?",
     "disconnectHint": "Vary takes out everything it wrote into {{app}}’s config — its endpoint, key, models and effort — and puts back the settings {{app}} had before. Vary’s providers and accounts stay as they are.",
     "codexDisconnectNote": "Vary’s provider table stays, so sessions opened on Vary’s models still open.",
