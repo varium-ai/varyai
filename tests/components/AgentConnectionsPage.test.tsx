@@ -5099,7 +5099,7 @@ describe("Agent connections", () => {
       within(row).getByRole("button", {
         name: "agentConnections.model apps.codex",
       }),
-    ).toBeDisabled();
+    ).toBeEnabled();
     expect(
       screen.queryByRole("button", {
         name: "agentConnections.disconnectOnly",
@@ -5142,7 +5142,7 @@ describe("Agent connections", () => {
       within(row).getByRole("button", {
         name: "agentConnections.model apps.codex",
       }),
-    ).toBeDisabled();
+    ).toBeEnabled();
     fireEvent.click(
       within(row).getByRole("switch", {
         name: row.getAttribute("aria-label") ?? undefined,
@@ -6447,6 +6447,93 @@ it("keeps external Desktop configuration conflicts under explicit recovery", asy
   expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
 });
 
+it("allows direct model selection during configuration_changed recovery without forcing reapply first", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+    claude: true,
+  });
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+    {
+      app: "claude",
+      enabled: false,
+      configured: false,
+      recoveryPending: true,
+      recoveryReason: "configuration_changed",
+      restartRequired: false,
+      model: "vary-auto/shared",
+    },
+  ]);
+  mount();
+  const row = await screen.findByRole("article", { name: "apps.claude" });
+  const picker = within(row).getByRole("button", {
+    name: "agentConnections.model Claude Code",
+  });
+  expect(picker).toBeEnabled();
+  fireEvent.click(picker);
+  const option = await screen.findByRole("radio", { name: /Shared group/ });
+  fireEvent.click(option);
+  await waitFor(() =>
+    expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+      "claude",
+      true,
+      "vary-auto/shared",
+    ),
+  );
+  expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+});
+
+it("preserves specific invalidConfig and permissionDenied errors on connect and disconnect", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+    claude: true,
+    codex: true,
+  });
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+    {
+      app: "claude",
+      enabled: false,
+      configured: false,
+      recoveryPending: false,
+      restartRequired: false,
+      model: null,
+    },
+    {
+      app: "codex",
+      enabled: true,
+      configured: true,
+      recoveryPending: false,
+      restartRequired: false,
+      model: "vary-auto/shared",
+    },
+  ]);
+  vi.mocked(agentConnectionsApi.set).mockImplementation(
+    async (app, enabled) => {
+      if (app === "claude" && enabled) {
+        throw "agentConnections.invalidConfig";
+      }
+      if (app === "codex" && !enabled) {
+        throw "agentConnections.permissionDenied";
+      }
+    },
+  );
+  mount();
+  const claudeRow = await screen.findByRole("article", { name: "apps.claude" });
+  fireEvent.click(within(claudeRow).getByRole("switch"));
+  expect(await within(claudeRow).findByRole("alert")).toHaveTextContent(
+    "agentConnections.invalidConfig",
+  );
+
+  const codexRow = screen.getByRole("article", { name: "apps.codex" });
+  fireEvent.click(within(codexRow).getByRole("switch"));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.disconnectRestore",
+    }),
+  );
+  expect(await within(codexRow).findByRole("alert")).toHaveTextContent(
+    "agentConnections.permissionDenied",
+  );
+});
+
 it("reports a failed explicit Desktop connection without exposing the backend error or retrying on render", async () => {
   vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
     "claude-desktop": true,
@@ -6619,3 +6706,32 @@ it.each(MANAGED_APP_IDS)(
     expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
   },
 );
+
+it("allows connecting supported agents even when installation detection returns false", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+    claude: true,
+    gemini: false,
+  });
+  mount();
+  await screen.findByRole("article", { name: "apps.claude" });
+
+  await userEvent.click(
+    screen.getByRole("tab", {
+      name: /^agentConnections.directory.notInstalled/,
+    }),
+  );
+  const missingPanel = screen.getByRole("tabpanel");
+  const geminiGroup = within(missingPanel).getByRole("group", {
+    name: "apps.gemini",
+  });
+  const connectButton = within(geminiGroup).getByRole("button", {
+    name: "agentConnections.connect",
+  });
+  expect(connectButton).toBeEnabled();
+  await userEvent.click(connectButton);
+  expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+    "gemini",
+    true,
+    expect.any(String),
+  );
+});

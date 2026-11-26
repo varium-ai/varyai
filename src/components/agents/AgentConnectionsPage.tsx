@@ -88,6 +88,30 @@ import "./agent-directory.css";
 
 const orderStorageKey = "vary-agent-order";
 
+const recognizedConnectionErrors = new Set([
+  "agentConnections.invalidConfig",
+  "agentConnections.permissionDenied",
+]);
+
+function connectionErrorKey(
+  cause: unknown,
+  {
+    includeNoModels = true,
+    includeConflict = true,
+  }: { includeNoModels?: boolean; includeConflict?: boolean } = {},
+): string {
+  if (typeof cause === "string") {
+    if (
+      recognizedConnectionErrors.has(cause) ||
+      (includeConflict && cause === "agentConnections.conflict") ||
+      (includeNoModels && cause === "agentConnections.noModels")
+    ) {
+      return cause;
+    }
+  }
+  return "agentConnections.failed";
+}
+
 function readAgentOrder(): AppId[] {
   try {
     const saved: unknown = JSON.parse(
@@ -441,15 +465,7 @@ export function AgentConnectionsPage({
       await agentConnectionsApi.reapply(app);
       applied = true;
     } catch (cause) {
-      setError(
-        app,
-        typeof cause === "string" &&
-          ["agentConnections.noModels", "agentConnections.conflict"].includes(
-            cause,
-          )
-          ? cause
-          : "agentConnections.failed",
-      );
+      setError(app, connectionErrorKey(cause));
     } finally {
       refreshConnectionViews(true, applied ? app : undefined);
       endOperation(app);
@@ -481,16 +497,7 @@ export function AgentConnectionsPage({
       setDisconnecting((current) => (current === app ? null : current));
       return true;
     } catch (cause) {
-      setError(
-        app,
-        enabled &&
-          typeof cause === "string" &&
-          ["agentConnections.conflict", "agentConnections.noModels"].includes(
-            cause,
-          )
-          ? cause
-          : "agentConnections.failed",
-      );
+      setError(app, connectionErrorKey(cause, { includeNoModels: enabled }));
       return false;
     } finally {
       refreshConnectionViews(false, applied ? app : undefined);
@@ -536,9 +543,13 @@ export function AgentConnectionsPage({
     mutationKey: ["agent-disconnect"],
     mutationFn: (app: AppId) => agentConnectionsApi.set(app, false, null),
     retry: false,
-    onError: (_cause, app) => {
-      setError(app, "agentConnections.failed");
-      toast.error(`${name(app)}: ${t("agentConnections.failed")}`);
+    onError: (cause, app) => {
+      const errorKey = connectionErrorKey(cause, {
+        includeNoModels: false,
+        includeConflict: false,
+      });
+      setError(app, errorKey);
+      toast.error(`${name(app)}: ${t(errorKey)}`);
     },
     onSettled: (_data, _error, app) => {
       refreshConnectionViews();
@@ -1281,6 +1292,11 @@ export function AgentConnectionsPage({
                         !orphaned &&
                         !inactiveCodexIntent &&
                         !(
+                          app === "codex" &&
+                          state.recoveryReason === "connection_inactive"
+                        ) &&
+                        state.recoveryReason !== "configuration_changed" &&
+                        !(
                           isTrae(app) &&
                           [
                             "bridge_pending",
@@ -1748,17 +1764,16 @@ export function AgentConnectionsPage({
           </div>
           <div className="mp-agent-install-actions">
             {installButton(app)}
-            {MANAGED_APP_IDS.includes(app) &&
-              installations.data?.[app] === true && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!installations.data?.[app] || rowBusy(app)}
-                  onClick={() => connect(app)}
-                >
-                  {t("agentConnections.connect")}
-                </Button>
-              )}
+            {MANAGED_APP_IDS.includes(app) && !installations.isError && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={rowBusy(app)}
+                onClick={() => connect(app)}
+              >
+                {t("agentConnections.connect")}
+              </Button>
+            )}
             {websiteButton(app)}
           </div>
           {errorMessage(app)}

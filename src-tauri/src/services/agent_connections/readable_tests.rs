@@ -99,7 +99,11 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
             second,
         );
         assert_eq!(upgraded.model_map.get(name), Some(second));
-        assert!(name.contains("Zeta"), "{app} unreadable model");
+        if app == "deepseek-harness" {
+            assert_eq!(name, second, "{app} should keep stable model id");
+        } else {
+            assert!(name.contains("Zeta"), "{app} unreadable model");
+        }
         if app == "t3code" {
             assert!(name.is_ascii() && !name.contains(char::is_whitespace));
         }

@@ -2214,3 +2214,71 @@ fn payload_extractor_covers_chat_reasoning_and_refusal_fields_for_redaction() {
     assert!(!result.blocked);
     assert!(!body.to_string().contains(key));
 }
+
+#[test]
+fn responses_input_image_and_media_fields_are_excluded_from_dlp_inspection_and_redaction() {
+    use super::runtime::CompiledCustomRule;
+    let mut runtime = SecurityRuntimeConfig::default();
+    runtime.custom_rules.push(CompiledCustomRule {
+        id: "custom_hhh".to_string(),
+        name: "hhh".to_string(),
+        rule_type: "keyword".to_string(),
+        pattern: "hhh".to_string(),
+        regex: None,
+        risk_level: RiskLevel::High,
+        action: AuditAction::Redact,
+        enabled: true,
+    });
+
+    let image_data = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAHHHhhhAAA";
+    let mut body = json!({
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe this image"},
+                    {"type": "input_image", "image_url": image_data, "detail": "auto"}
+                ]
+            }
+        ]
+    });
+
+    let extracted = super::extractor::extract_payload_texts(&body);
+    assert!(
+        extracted.iter().all(|node| node.text != image_data),
+        "input_image base64 payload must not be extracted for DLP inspection"
+    );
+
+    let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+    assert!(!result.blocked);
+    assert!(
+        result.findings.is_empty(),
+        "base64 image data must not trigger custom keyword rules"
+    );
+    assert_eq!(body["input"][0]["content"][1]["image_url"], image_data);
+
+    // When actual user text contains the keyword, only the text is redacted; the image stays intact.
+    let mut mixed_body = json!({
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "please check hhh"},
+                    {"type": "input_image", "image_url": image_data, "detail": "auto"}
+                ]
+            }
+        ]
+    });
+    let mixed_result =
+        SecurityAuditEngine::inspect_and_redact_with_runtime(&mut mixed_body, &runtime);
+    assert!(!mixed_result.blocked);
+    assert_eq!(mixed_result.findings.len(), 1);
+    assert_eq!(
+        mixed_body["input"][0]["content"][1]["image_url"],
+        image_data
+    );
+    assert_ne!(
+        mixed_body["input"][0]["content"][0]["text"],
+        "please check hhh"
+    );
+}

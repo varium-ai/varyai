@@ -413,7 +413,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::agent_connections::{FileEdit, Manager, CONFLICT};
+    use crate::services::agent_connections::{FileEdit, Manager};
     use serde_json::json;
     use std::{collections::BTreeMap, fs};
 
@@ -705,7 +705,12 @@ mod tests {
                 fs::read_to_string(&path).map_err(|_| FAILED)?,
                 live.to_string()
             );
-            assert_eq!(manager.disconnect(app), Err(CONFLICT.into()));
+            assert_eq!(manager.disconnect(app), Ok(()));
+            assert!(manager.load(app)?.is_none());
+            let after: Value =
+                serde_json::from_str(&fs::read_to_string(&path).map_err(|_| FAILED)?)
+                    .map_err(|_| FAILED)?;
+            assert_eq!(after["token"], json!("synthetic-external-change"));
         }
         Ok(())
     }
