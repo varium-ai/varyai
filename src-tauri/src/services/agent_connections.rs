@@ -1224,14 +1224,13 @@ impl Manager {
                 file.intact().unwrap_or(false)
             }
         }) {
-            if selected.is_none() {
-                return Err(CONFLICT.into());
-            }
             if !reclaim_changed_fields {
                 return Ok(None);
             }
             // An explicit connection replaces changed routing fields. Validate
             // the new projection before archiving and releasing the old one.
+            // External tools (e.g. Magpie) may rewrite shared config files at
+            // any time; silently rebuild instead of surfacing a conflict.
             build_with_token(
                 app,
                 menu,
@@ -2609,9 +2608,14 @@ mod tests {
                     .is_none(),
                 "{app} changed endpoint requires a fresh connection"
             );
+            // Passive refresh silently merges external changes back (Magpie-style
+            // coexistence) instead of surfacing a conflict.
+            manager
+                .refresh(app, &menu, "http://127.0.0.1:3")
+                .map_err(|error| format!("{app} passive refresh: {error}"))?;
             assert!(
-                manager.refresh(app, &menu, "http://127.0.0.1:3").is_err(),
-                "{app} passive refresh"
+                manager.status_with_desktop(app, |_, _| None)?.configured,
+                "{app} passive refresh restores connection"
             );
             manager
                 .update(app, &menu, "http://127.0.0.1:3", Some(selected))

@@ -348,17 +348,22 @@ pub(crate) fn recover_for_reapply(
             .as_object()
             .filter(|routes| !routes.is_empty())
             .ok_or(conflict)?;
-        let live = clean["providers"]
-            .as_object_mut()
-            .ok_or(conflict)?
-            .remove(id)
-            .ok_or(conflict)?;
-        if live["name"] != PLUGIN
-            || routes.keys().any(|route| {
-                !route.starts_with("varyai-") || live["config"]["providers"].get(route).is_none()
-            })
+        // External tools (e.g. Magpie) may remove or rewrite our entries at
+        // any time.  Silently skip entries that are no longer present so the
+        // reapply flow can rebuild without surfacing a conflict to the user.
+        if let Some(live) = clean
+            .get_mut("providers")
+            .and_then(Value::as_object_mut)
+            .and_then(|map| map.remove(id))
         {
-            return Err(conflict.into());
+            if live["name"] != PLUGIN
+                || routes.keys().any(|route| {
+                    !route.starts_with("varyai-")
+                        || live["config"]["providers"].get(route).is_none()
+                })
+            {
+                return Err(conflict.into());
+            }
         }
         owned_routes.extend(routes.keys().map(String::as_str));
     }
