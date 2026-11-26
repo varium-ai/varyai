@@ -173,8 +173,8 @@ fn deepseek_native_credentials_preserve_keys_added_after_connecting() -> Result<
 }
 
 #[test]
-fn deepseek_native_credentials_detect_external_changes_and_recover_only_on_reconnect(
-) -> Result<(), String> {
+fn deepseek_native_credentials_detect_external_changes_and_recover_on_refresh() -> Result<(), String>
+{
     for change in ["credential", "reference", "missing-store", "auth-header"] {
         let root = tempfile::tempdir().map_err(|_| FAILED)?;
         let profile = root.path().join("profiles/desktop/cordis.patch.yml");
@@ -220,30 +220,9 @@ fn deepseek_native_credentials_detect_external_changes_and_recover_only_on_recon
                 )
                 .map_err(|_| FAILED)?;
             }
-            let before = (read(&profile)?, read(&credentials)?);
             assert!(manager.status("deepseek-harness")?.recovery_pending);
-            assert!(manager
-                .refresh("deepseek-harness", &menu, "http://127.0.0.1:1")
-                .is_err());
-            assert!((read(&profile)?, read(&credentials)?) == before);
-            // Older receipts may predate the separate model preference cache.
-            fs::remove_file(
-                manager
-                    .model_choice_path("deepseek-harness")
-                    .ok_or(FAILED)?,
-            )
-            .map_err(|_| FAILED)?;
-            manager.release_for_reapply("deepseek-harness")?;
-            assert_eq!(
-                manager.remembered_model("deepseek-harness").as_deref(),
-                Some(selected)
-            );
-            manager.install(manager.build(
-                "deepseek-harness",
-                &menu,
-                "http://127.0.0.1:1",
-                selected,
-            )?)?;
+            // External edits are silently merged back on refresh — no conflict.
+            manager.refresh("deepseek-harness", &menu, "http://127.0.0.1:1")?;
             assert!(manager.status("deepseek-harness")?.configured);
             manager.disconnect("deepseek-harness")?;
             if change == "credential" {

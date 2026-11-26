@@ -225,11 +225,18 @@ pub(super) fn release(manager: &Manager, receipt: &Receipt) -> Result<(), String
         let source = read(&file.path)?;
         let baseline = file.format.parse(file.original.as_deref())?;
         let replacement = if matches!(file.format, Format::Cordis) {
-            Some(crate::services::deepseek_harness::recover_for_reapply(
-                source.as_deref().ok_or(CONFLICT)?,
-                &file.installed,
-                &baseline,
-            )?)
+            // An external tool may have already rewritten or removed the file;
+            // recover what we can without surfacing a conflict.
+            source
+                .as_deref()
+                .map(|source| {
+                    crate::services::deepseek_harness::recover_for_reapply(
+                        source,
+                        &file.installed,
+                        &baseline,
+                    )
+                })
+                .transpose()?
         } else {
             let mut clean = file.format.parse(source.as_deref())?;
             put(

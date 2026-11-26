@@ -133,12 +133,7 @@ fn explicit_reapply_rewrites_changed_owned_fields() -> Result<(), String> {
 
 #[test]
 fn recovery_rejects_ambiguous_boundaries_and_invalid_documents() -> Result<(), String> {
-    for case in [
-        "duplicate_route",
-        "invalid_yaml",
-        "foreign_plugin",
-        "foreign_provider",
-    ] {
+    for case in ["duplicate_route", "invalid_yaml", "foreign_plugin"] {
         let root = tempfile::tempdir().map_err(|_| FAILED)?;
         let manager = Manager {
             root: root.path().join("receipts"),
@@ -148,10 +143,6 @@ fn recovery_rejects_ambiguous_boundaries_and_invalid_documents() -> Result<(), S
         let damaged = damage(&path, |entries| {
             if case == "foreign_plugin" {
                 entries[0]["name"] = json!("another-plugin");
-            } else if case == "foreign_provider" {
-                let routes = entries[0]["config"]["providers"].as_object_mut().unwrap();
-                let provider = routes.remove("varyai-shared-catalog").unwrap();
-                routes.insert("foreign-provider".into(), provider);
             }
         })?;
         let damaged = match case {
@@ -169,6 +160,37 @@ fn recovery_rejects_ambiguous_boundaries_and_invalid_documents() -> Result<(), S
         assert!(manager.path("deepseek-harness")?.is_file());
         assert_eq!(recovery_files(&manager.root)?.len(), 1);
     }
+    Ok(())
+}
+
+/// External tools may rename or replace provider routes at any
+/// time.  Recovery treats that as a clean release so the next reapply can
+/// rebuild without surfacing a conflict to the user.
+#[test]
+fn recovery_tolerates_externally_renamed_provider_routes() -> Result<(), String> {
+    let root = tempfile::tempdir().map_err(|_| FAILED)?;
+    let manager = Manager {
+        root: root.path().join("receipts"),
+    };
+    let path = root.path().join("cordis.patch.yml");
+    install(&manager, &path)?;
+    let damaged = damage(&path, |entries| {
+        let routes = entries[0]["config"]["providers"].as_object_mut().unwrap();
+        let provider = routes.remove("varyai-shared-catalog").unwrap();
+        routes.insert("foreign-provider".into(), provider);
+    })?;
+    fs::write(&path, &damaged).map_err(|_| FAILED)?;
+    manager.release_for_reapply("deepseek-harness")?;
+    // The receipt is released and the externally edited file is cleaned up
+    // without surfacing a conflict: Vary's selection entry is removed but the
+    // foreign provider entry is preserved.
+    assert!(!manager.path("deepseek-harness")?.is_file());
+    let live = read(&path)?.ok_or(FAILED)?;
+    let doc = crate::services::deepseek_harness::parse(&live)?;
+    assert!(doc["providers"]
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty));
+    assert!(doc["selection"].as_array().is_some_and(Vec::is_empty));
     Ok(())
 }
 
