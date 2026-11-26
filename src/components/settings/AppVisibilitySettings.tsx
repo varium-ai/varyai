@@ -50,7 +50,6 @@ const APP_CONFIG: Array<{
     icon: "deepseek",
     nameKey: "apps.deepseek-harness",
   },
-  { id: "glm", icon: APP_ICON_NAME.glm, nameKey: "apps.glm" },
 ];
 
 export function AppVisibilitySettings({

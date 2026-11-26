@@ -21,7 +21,7 @@ import { securityApi } from "@/lib/api/security";
 import { securityEventsApi } from "@/lib/api/securityEvents";
 import { trayUsageKey } from "@/lib/api/trayUsage";
 import { panelTab, trayPanelApi, type PanelTab } from "@/lib/trayPanel";
-import { APP_IDS } from "@/config/appConfig";
+import { MANAGED_APP_IDS } from "@/config/appConfig";
 import appIcon from "@/assets/icons/app-icon.png";
 import "./tray-panel.css";
 import { TrayQuotaPanel } from "./TrayQuotaPanel";
@@ -137,7 +137,7 @@ export function TrayPanel() {
       .open(view === "quota" ? "providers" : view === "usage" ? "stats" : view)
       .catch(() => setError(true));
   }
-  const selectedApps = APP_IDS.filter((app) =>
+  const selectedApps = MANAGED_APP_IDS.filter((app) =>
     connections.data?.some(
       (connection) => connection.enabled && connection.app === app,
     ),

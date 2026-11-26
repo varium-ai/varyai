@@ -21,7 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useTranslation } from "react-i18next";
 import {
   APP_ICON_NAME,
-  APP_IDS,
+  MANAGED_APP_IDS,
   DEFAULT_VISIBLE_APPS,
 } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -38,14 +38,14 @@ function readAppOrder(): AppId[] {
     );
     if (Array.isArray(saved)) {
       const knownApps = saved.filter((app): app is AppId =>
-        APP_IDS.includes(app),
+        MANAGED_APP_IDS.includes(app),
       );
-      return [...new Set([...knownApps, ...APP_IDS])];
+      return [...new Set([...knownApps, ...MANAGED_APP_IDS])];
     }
   } catch {
     // Missing/unavailable storage and older invalid values use the default order.
   }
-  return [...APP_IDS];
+  return [...MANAGED_APP_IDS];
 }
 
 interface ManagedAppTabsProps {

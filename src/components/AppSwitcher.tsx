@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Monitor, MoreHorizontal, Terminal } from "lucide-react";
 import {
-  APP_IDS,
+  MANAGED_APP_IDS,
   APP_ICON_NAME,
   DEFAULT_VISIBLE_APPS,
 } from "@/config/appConfig";
@@ -109,7 +109,7 @@ export function AppSwitcher({
   };
 
   // Filter apps based on visibility settings (default all visible)
-  const appsToShow = APP_IDS.filter((app) => {
+  const appsToShow = MANAGED_APP_IDS.filter((app) => {
     return visibleApps?.[app] ?? DEFAULT_VISIBLE_APPS[app];
   });
   const appCount = appsToShow.length;

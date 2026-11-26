@@ -362,7 +362,7 @@ describe("managed app sorting", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("defaults GLM visibility to off and displays it after opt-in", () => {
+  it("keeps GLM out of workspace tabs even when an old setting opts in", () => {
     const onAppChange = vi.fn();
     const { rerender } = render(
       <ManagedAppTabs
@@ -382,7 +382,9 @@ describe("managed app sorting", () => {
         onAppChange={onAppChange}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "GLM" }));
-    expect(onAppChange).toHaveBeenCalledWith("glm");
+    expect(
+      screen.queryByRole("button", { name: "GLM" }),
+    ).not.toBeInTheDocument();
+    expect(onAppChange).not.toHaveBeenCalled();
   });
 });

@@ -12,7 +12,7 @@ import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
 import zh from "@/i18n/locales/zh.json";
 import zhTW from "@/i18n/locales/zh-TW.json";
-import { APP_IDS } from "@/config/appConfig";
+import { APP_IDS, MANAGED_APP_IDS } from "@/config/appConfig";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { toast } from "sonner";
 import { profilesApi } from "@/lib/api/profiles";
@@ -555,14 +555,14 @@ it.each(availableApps)(
     fireEvent.keyDown(picker, { key: "ArrowDown" });
     const options = await screen.findAllByRole("option");
     expect(options.map((option) => option.textContent)).toEqual(
-      APP_IDS.map((app) => zh.apps[app]),
+      MANAGED_APP_IDS.map((app) => zh.apps[app]),
     );
-    for (const label of [zh.apps.doubaowork, zh.apps.glm]) {
-      expect(screen.getByRole("option", { name: label })).toHaveAttribute(
-        "aria-disabled",
-        "true",
-      );
-    }
+    expect(
+      screen.getByRole("option", { name: zh.apps.doubaowork }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByRole("option", { name: zh.apps.glm }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("option", { name: zh.apps[app] }));
     expect(
       screen.getByRole("checkbox", { name: zh.profiles.bundle.create }),
@@ -586,9 +586,12 @@ it("keeps the compact profile picker native and unavailable Agents disabled", as
   fireEvent.click(await screen.findByText(zh.profiles.createFromCurrent));
   const select = screen.getByLabelText(zh.profiles.bundle.singleAgent);
   expect(select).toBeInstanceOf(HTMLSelectElement);
-  for (const label of [zh.apps.doubaowork, zh.apps.glm]) {
-    expect(screen.getByRole("option", { name: label })).toBeDisabled();
-  }
+  expect(
+    screen.getByRole("option", { name: zh.apps.doubaowork }),
+  ).toBeDisabled();
+  expect(
+    screen.queryByRole("option", { name: zh.apps.glm }),
+  ).not.toBeInTheDocument();
 });
 
 it("does not flash duplicate-name error after saving a new profile while post-create refresh is in flight", async () => {

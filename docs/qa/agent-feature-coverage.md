@@ -2755,9 +2755,17 @@ classifier and Windows runtime were not exercised.
 
 ### GLM Agent registration and transparent routing
 
+GLM is excluded from the macOS and Windows Agent management directory,
+workspace tabs, visibility settings, and profile creation picker, including
+when older settings or connection responses contain its ID. The existing
+canonical ID still identifies stored data and transparent routing, accounting,
+and DLP. Provider catalogs continue to list any GLM models they offer. The
+other Agents in the matrix use the same directory and workspace entry points.
+The UI regression exercises an old GLM record and visibility setting.
+
 GLM uses the canonical application ID across the renderer, transparent proxy,
-DLP, diagnostics, and usage. The shared UI supports visibility and stored
-provider records. The managed connection getter reports a read-only status.
+DLP, diagnostics, and usage. Stored provider records remain readable. The
+managed connection getter reports a read-only status.
 An existing transparent route receipt can forward requests and report its
 own status. The repository provides a settings path but no verified native
 settings schema. Native configuration changes, managed model publication,
