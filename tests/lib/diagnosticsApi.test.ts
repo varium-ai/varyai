@@ -4,7 +4,7 @@ import { settingsApi } from "@/lib/api/settings";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-it.each([null, { sourceBytes: 200, redactedLines: 1 }])(
+it.each([null, { sourceBytes: 200 }])(
   "exports only the application log without source paths",
   async (result) => {
     vi.mocked(invoke).mockResolvedValueOnce(result);

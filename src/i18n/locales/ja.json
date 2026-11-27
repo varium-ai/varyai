@@ -790,12 +790,11 @@
       "logConfig": {
         "export": "varyai.log をエクスポート",
         "exporting": "エクスポート中…",
-        "exportDescription": "現在の varyai.log 全体を、機密情報を伏せてエクスポートします。",
+        "exportDescription": "現在の varyai.log 全体をそのままエクスポートします（マスキング処理なし）。",
         "exportSuccess": "varyai.log をエクスポートしました。",
         "exportMissing": "varyai.log がありません。ログを有効にして問題を再現してください。",
         "exportEmpty": "varyai.log は空です。問題を再現してから再試行してください。",
         "exportSameSource": "使用中の varyai.log とは別の保存先を選んでください。",
-        "exportPrivacy": "機密情報の処理を利用できません。Vary AI を再起動して再試行してください。",
         "exportBackendUpdate": "単一ファイルのログ出力を使うには、更新後の Vary AI を再起動してください。",
         "exportFailed": "varyai.log をエクスポートできませんでした。再試行してください。",
         "title": "アプリ診断ログ",

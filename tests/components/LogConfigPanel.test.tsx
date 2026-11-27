@@ -28,7 +28,6 @@ beforeEach(() => {
   });
   vi.mocked(settingsApi.exportApplicationLog).mockResolvedValue({
     sourceBytes: 200,
-    redactedLines: 0,
   });
 });
 
@@ -145,7 +144,6 @@ it.each([
       "exportMissing",
       "exportEmpty",
       "exportSameSource",
-      "exportPrivacy",
       "exportBackendUpdate",
       "exportFailed",
     ]) {
@@ -179,7 +177,6 @@ it.each([
   ["diagnostics.logMissing", "exportMissing"],
   ["diagnostics.logEmpty", "exportEmpty"],
   ["diagnostics.sameSource", "exportSameSource"],
-  ["diagnostics.privacyUnavailable", "exportPrivacy"],
   ["diagnostics.backendUpdateRequired", "exportBackendUpdate"],
 ])("shows a fixed message for %s", async (error, key) => {
   vi.mocked(settingsApi.exportApplicationLog).mockRejectedValueOnce(error);

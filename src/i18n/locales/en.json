@@ -864,12 +864,11 @@
       "logConfig": {
         "export": "Export varyai.log",
         "exporting": "Exporting…",
-        "exportDescription": "Export the complete current varyai.log with sensitive content redacted.",
+        "exportDescription": "Export the complete current varyai.log directly without redaction.",
         "exportSuccess": "varyai.log exported.",
         "exportMissing": "No varyai.log is available yet. Enable logging and reproduce the issue first.",
         "exportEmpty": "varyai.log is empty. Reproduce the issue and try again.",
         "exportSameSource": "Choose a different location from the active varyai.log.",
-        "exportPrivacy": "Privacy processing is unavailable. Restart Vary AI and try again.",
         "exportBackendUpdate": "Restart the updated Vary AI application to use single-file log export.",
         "exportFailed": "Could not export varyai.log. Please try again.",
         "title": "Application Diagnostic Logs",

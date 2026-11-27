@@ -94,7 +94,6 @@ fn safe_reason(error: &str) -> &'static str {
         super::MISSING => "log_missing",
         super::EMPTY => "log_empty",
         super::SAME_SOURCE => "source_destination_conflict",
-        super::PRIVACY => "privacy_unavailable",
         _ => "operation_failed",
     }
 }

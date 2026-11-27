@@ -25,7 +25,6 @@ export interface ConfigTransferResult {
 
 export interface ApplicationLogExportReport {
   sourceBytes: number;
-  redactedLines: number;
 }
 
 export interface WebDavTestResult {
