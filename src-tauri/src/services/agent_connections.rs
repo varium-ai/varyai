@@ -1233,6 +1233,21 @@ impl Manager {
                 file.intact().unwrap_or(false)
             }
         }) {
+            if app == "deepseek-harness" {
+                if let Some(next) = harness_credentials::rebuild_stripped(self, &old, || {
+                    build_with_token(
+                        app,
+                        menu,
+                        origin,
+                        model,
+                        old.token.clone(),
+                        &visibility,
+                        Some(&old),
+                    )
+                })? {
+                    return Ok(Some(next));
+                }
+            }
             if !reclaim_changed_fields {
                 return Ok(None);
             }

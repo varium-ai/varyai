@@ -400,3 +400,46 @@ fn deepseek_orphan_key_is_not_claimed_by_foreign_profiles() -> Result<(), String
     }
     Ok(())
 }
+
+#[test]
+fn deepseek_reapply_after_both_native_entries_disappear() -> Result<(), String> {
+    let root = tempfile::tempdir().map_err(|_| FAILED)?;
+    let profile = root.path().join("profiles/desktop/cordis.patch.yml");
+    let credentials = root.path().join(".credentials.yaml");
+    let manager = Manager {
+        root: root.path().join("receipts"),
+    };
+    let menu = tests::fixture_menu();
+    let selected = menu.default_model.as_deref().ok_or(FAILED)?;
+    let app = "deepseek-harness";
+    let origin = "http://127.0.0.1:1";
+    crate::services::agent_clients::with_test_config(&profile, || -> Result<(), String> {
+        let original = manager.build(app, &menu, origin, selected)?;
+        let token = original.token.clone();
+        manager.install(original)?;
+        let foreign =
+            "# Keep this native plugin\n- id: synthetic-native\n  config: {enabled: true}\n";
+        let store = "version: 1\naccounts: {synthetic: {enabled: true}}\nrefs: {}\n";
+        fs::write(&profile, foreign).map_err(|_| FAILED)?;
+        fs::write(&credentials, "version: 2\n").map_err(|_| FAILED)?;
+        let journal = read(&manager.path(app)?)?;
+        assert!(!matches!(
+            manager.refresh_for_reapply(app, &menu, origin, selected),
+            Ok(Some(_))
+        ));
+        assert!(read(&manager.path(app)?)? == journal);
+        assert!(read(&profile)?.as_deref() == Some(foreign));
+        fs::write(&credentials, store).map_err(|_| FAILED)?;
+        let repaired = manager
+            .refresh_for_reapply(app, &menu, origin, selected)?
+            .ok_or("stripped route must be rebuilt without releasing the journal")?;
+        assert!(repaired.token == token);
+        assert!(manager.status(app)?.configured);
+        let parsed = harness_credentials::parse(read(&credentials)?.as_deref())?;
+        assert!(parsed["refs"][KEY].as_str() == Some(token.as_str()));
+        manager.disconnect(app)?;
+        assert!(read(&profile)?.as_deref() == Some(foreign));
+        assert!(read(&credentials)?.as_deref() == Some(store));
+        Ok(())
+    })
+}

@@ -5190,9 +5190,14 @@ describe("Agent connections", () => {
         name: "agentConnections.reapply",
       }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "agentConnections.failed",
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "apps.codex: agentConnections.failed",
+        expect.objectContaining({ closeButton: true }),
+      ),
     );
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
     expect(
       screen.queryByText("synthetic-private-reapply-error"),
     ).not.toBeInTheDocument();
@@ -5471,39 +5476,59 @@ describe("Agent connections", () => {
       within(row).queryByRole("button", { name: "agentConnections.restart" }),
     ).not.toBeInTheDocument();
   });
-  it("explains how to recover DeepSeek Harness and retries from its switch", async () => {
-    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
-      "deepseek-harness": true,
-    });
-    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
-      {
-        app: "deepseek-harness",
-        enabled: false,
-        configured: false,
-        model: "vary-auto/shared",
-        recoveryPending: true,
-        recoveryReason: "configuration_changed",
-        restartRequired: false,
-      },
-    ]);
-    mount();
-    const row = await screen.findByRole("article", {
-      name: "apps.deepseek-harness",
-    });
-    expect(
-      within(row).getByText("agentConnections.deepseekRecoveryHint"),
-    ).toBeInTheDocument();
-    expect(
-      within(row).queryByRole("button", { name: "agentConnections.restart" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(within(row).getByRole("switch"));
-    await waitFor(() =>
-      expect(agentConnectionsApi.reapply).toHaveBeenCalledWith(
-        "deepseek-harness",
-      ),
-    );
-    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
-  });
+  it.each(MANAGED_APP_IDS)(
+    "toasts for each manual reconnect attempt for %s",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: false,
+          configured: false,
+          model: "vary-auto/shared",
+          recoveryPending: true,
+          recoveryReason: "configuration_changed",
+          restartRequired: false,
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.reapply)
+        .mockRejectedValueOnce("agentConnections.conflict")
+        .mockRejectedValueOnce(new Error("synthetic-private-error"))
+        .mockResolvedValueOnce();
+      mount(
+        app !== "deepseek-harness" && MANAGED_APP_IDS.indexOf(app) % 2 === 0,
+      );
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const retry = await within(row).findByRole("button", {
+        name: "agentConnections.reapply",
+      });
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      for (const [index, key] of [
+        "agentConnections.conflict",
+        "agentConnections.failed",
+        "agentConnections.reapplySubmitted",
+      ].entries()) {
+        await waitFor(() => expect(retry).toBeEnabled());
+        fireEvent.click(
+          app === "deepseek-harness" ? within(row).getByRole("switch") : retry,
+        );
+        const notify = index === 2 ? toast.success : toast.error;
+        await waitFor(() =>
+          expect(notify).toHaveBeenLastCalledWith(
+            expect.stringContaining(key),
+            expect.anything(),
+          ),
+        );
+        expect(agentConnectionsApi.reapply).toHaveBeenCalledTimes(index + 1);
+        expect(within(row).queryByText(key)).not.toBeInTheDocument();
+      }
+      expect(toast.error).toHaveBeenCalledTimes(2);
+      expect(toast.success).toHaveBeenCalledTimes(1);
+    },
+  );
   it.each([false, true])(
     "selects the DeepSeek Harness starting model when connected is %s",
     async (enabled) => {
