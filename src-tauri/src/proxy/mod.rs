@@ -47,6 +47,7 @@ pub mod session;
 mod session_identity_tests;
 pub(crate) mod sse;
 pub(crate) mod switch_lock;
+pub(crate) mod system_proxy;
 pub mod thinking_budget_rectifier;
 pub mod thinking_optimizer;
 pub mod thinking_rectifier;

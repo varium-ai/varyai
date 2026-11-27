@@ -1532,7 +1532,6 @@ again without running the installer. A later confirmed newer version clears the
 unverified result. If the version remains missing or unchanged, check the
 client's installation and the CLI selected by your terminal before updating again.
 
-
 ## Routing groups take a long time to refresh
 
 **Refresh** reloads routing groups and provider options from saved catalogs. It
@@ -1565,30 +1564,30 @@ These timings distinguish discovery from subsequent local list reads and
 background Agent publication. Native Agent configuration and protocol adapters
 retain their existing platform support and consent requirements.
 
-
 ## Export the application log
 
 Open **Settings > Advanced > Application Diagnostic Logs > Export varyai.log**
-and choose a save location. VaryAI saves a sanitized `.log` file locally; it does
-not upload it. Only the current `varyai.log` is read, normally from
-`~/.varyai/logs/varyai.log`. Agent-native logs, configurations, databases, crash
-files and rotated logs are not scanned or included.
+and choose a save location. VaryAI saves a direct raw snapshot of the current
+`varyai.log` locally without export-time redaction; it does not upload it. Only
+the current `varyai.log` is read, normally from `~/.varyai/logs/varyai.log`.
+Agent-native logs, configurations, databases, crash files and rotated logs are
+not scanned or included.
 
-The export reads from byte zero to the file size captured when opened, retaining
-line order, newline endings, long lines and the final line. There is no tail,
-line-count or byte-count clipping. New records written after the snapshot are
-outside that export. Rotation can remove older records before export; logs that
-were never recorded cannot be recovered. Enable logging and reproduce the issue
-before exporting when possible. Existing logs can still be exported when logging
-is disabled or the settings query fails.
+The export copies raw bytes from byte zero to the file size captured when
+opened, retaining exact line order, newline endings, long lines and the final
+line. There is no tail, line-count or byte-count clipping, and no export-time
+rewriting. New records written after the snapshot are outside that export.
+Rotation can remove older records before export; logs that were never recorded
+cannot be recovered. Enable logging and reproduce the issue before exporting
+when possible. Existing logs can still be exported when logging is disabled or
+the settings query fails.
 
-Recognized credentials, personal identifiers, URLs, local paths, custom audit-rule
-matches and raw request/tool/configuration blocks are redacted. Custom privacy
-rules apply even when forwarding protection is disabled. Export fails closed when
-privacy processing is unavailable or the snapshot cannot be read completely.
-A failed export preserves an existing destination. The exporter rejects the live
-source, hardlink aliases and symlink destinations. Missing and empty logs receive
-specific notices. Only a completed save produces a success notice.
+Export fails closed if the snapshot cannot be read completely. A failed export
+preserves an existing destination. The exporter rejects the live source,
+hardlink aliases and symlink destinations. Missing and empty logs receive
+specific notices. Only a completed save produces a success notice. Review the
+exported raw file before sharing it externally if it may contain local paths,
+URLs or other diagnostic details.
 
 New `[Diagnostics]` events include application version, OS, architecture and build
 mode; connection/disconnection, configuration reapplication, confirmed desktop
@@ -1599,9 +1598,37 @@ and request bodies. Logging obeys the configured level and enable switch. A
 successful connection command means the operation returned successfully, not that
 the native application has been manually verified. Existing status/recovery UI
 remains the source for that distinction. Export events record cancellation,
-failure, source-byte count and redacted-line count without destination paths.
+failure and source-byte count without destination paths.
 
 The single-file command requires the rebuilt application backend. A frontend
 connected to the old ZIP backend asks for an update/restart instead of invoking
 the old broad exporter. See the [coverage ledger](qa/agent-feature-coverage.md#application-log-export-and-operation-diagnostics)
 for synthetic checks and native/platform verification limits.
+
+## Dynamic system proxy detection and fallback
+
+When Vary AI has no explicit global proxy configured, upstream forwarding resolves
+proxies dynamically in the order: process environment variables
+(`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, skipping entries pointing
+to Vary AI's own local listener port) followed by OS system proxy settings
+(macOS `scutil --proxy` and Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`),
+cached with short TTLs (15s when a proxy is set, 2s when none).
+
+- **Dead loopback system proxy fallback**: if a system proxy points to a
+  loopback port (`127.0.0.1` / `localhost` / `::1`) where nothing is listening
+  (for example after a VPN or proxy client exits without clearing system
+  settings), Vary AI skips that dead entry and falls back to direct connection,
+  re-probing every 2s so restarting the proxy client automatically restores
+  proxied forwarding. An explicit global proxy configured inside Vary AI is
+  never silently bypassed.
+- **Connection pool invalidation and immediate retry**: `reqwest::Client`
+  instances are keyed by the effective proxy snapshot, so changing or disabling
+  a proxy rebuilds clients and drops stale idle connections, while background
+  stale-while-revalidate probing keeps request hot paths non-blocking. System
+  SOCKS5 proxies use `socks5h://` for remote DNS resolution. On non-DLP
+  connection failures, forwarding across both `reqwest` and `hyper_client`
+  forces an immediate proxy refresh and retries once if the effective proxy
+  changed.
+- **Loopback and LAN bypass**: loopback destinations are never proxied, and
+  system proxies automatically bypass private/LAN addresses and OS `ExceptionsList` /
+  `ProxyOverride` rules.

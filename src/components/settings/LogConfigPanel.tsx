@@ -42,7 +42,6 @@ export function LogConfigPanel() {
         "diagnostics.logMissing": "exportMissing",
         "diagnostics.logEmpty": "exportEmpty",
         "diagnostics.sameSource": "exportSameSource",
-        "diagnostics.privacyUnavailable": "exportPrivacy",
         "diagnostics.backendUpdateRequired": "exportBackendUpdate",
       };
       const key =

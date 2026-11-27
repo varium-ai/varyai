@@ -864,12 +864,11 @@
       "logConfig": {
         "export": "导出 varyai.log",
         "exporting": "正在导出…",
-        "exportDescription": "导出当前完整的 varyai.log，敏感内容会脱敏。",
+        "exportDescription": "直接导出当前完整的 varyai.log 源文件（不做脱敏处理）。",
         "exportSuccess": "varyai.log 已导出。",
         "exportMissing": "尚未找到 varyai.log，请开启日志并复现问题后再导出。",
         "exportEmpty": "varyai.log 为空，请复现问题后重试。",
         "exportSameSource": "请选择其他保存位置，不能覆盖正在使用的 varyai.log。",
-        "exportPrivacy": "脱敏处理暂不可用，请重启 Vary AI 后重试。",
         "exportBackendUpdate": "请重启更新后的 Vary AI，使用单文件日志导出。",
         "exportFailed": "导出 varyai.log 失败，请重试。",
         "title": "应用诊断日志",

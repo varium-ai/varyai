@@ -404,6 +404,10 @@ pub(crate) struct Session {
     pub bindings: Arc<tokio::sync::Mutex<Bindings>>,
 }
 impl Session {
+    pub(crate) fn resolve_client(&self) -> reqwest::Client {
+        super::http_client::forwarding_client_or(&self.client)
+    }
+
     pub(crate) fn default_reasoning_level(&self) -> Option<String> {
         let mut defaults = self
             .menu_targets()
@@ -3214,7 +3218,7 @@ async fn execute(
                         conversation.as_deref(),
                         scoped.shadow.clone(),
                         scoped.history.clone(),
-                        session.client.clone(),
+                        session.resolve_client(),
                         state.app_handle.as_ref(),
                     )
                     .await;
@@ -3319,7 +3323,7 @@ async fn execute(
                             .filter(|r| r.status().is_success())
                         } else {
                             let mut req = session
-                                .client
+                                .resolve_client()
                                 .post(native_url)
                                 .headers(headers.clone())
                                 .body(payload.clone());
@@ -3500,9 +3504,10 @@ async fn execute(
                 output,
             );
             let mut named_recovery = super::responses_replay::Recovery::default();
+            let mut proxy_refreshed = false;
             loop {
                 let mut request = session
-                    .client
+                    .resolve_client()
                     .post(url.clone())
                     .headers(headers.clone())
                     .body(payload.clone());
@@ -3525,6 +3530,14 @@ async fn execute(
                 };
                 let response = match dispatched {
                     Ok(response) => super::hyper_client::ProxyResponse::Reqwest(response),
+                    Err(super::ProxyError::ForwardFailed(msg))
+                        if msg == "connect_failed"
+                            && !proxy_refreshed
+                            && super::http_client::refresh_on_connect_failure().await =>
+                    {
+                        proxy_refreshed = true;
+                        continue;
+                    }
                     // Connection-establishment failures happen before any bytes are sent upstream,
                     // so trying another candidate carries no duplicate-execution risk.
                     Err(super::ProxyError::ForwardFailed(msg))
