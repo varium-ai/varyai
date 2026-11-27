@@ -59,6 +59,15 @@ impl Context {
             ),
         }
     }
+
+    pub(super) fn for_consumer(consumer: &str) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(b"varyai-consumer-checkpoint-v1:");
+        hash.update(consumer.as_bytes());
+        Self {
+            identity: format!("{:x}", hash.finalize()),
+        }
+    }
 }
 #[derive(Default)]
 pub(crate) struct Native {
@@ -176,7 +185,7 @@ impl Native {
         *self.checkpoints.write().map_err(|_| FAILED)? = Some(Arc::new(store));
         Ok(())
     }
-    fn checkpoints(&self) -> Result<Arc<super::checkpoint::Store>, &'static str> {
+    pub(super) fn checkpoints(&self) -> Result<Arc<super::checkpoint::Store>, &'static str> {
         self.checkpoints
             .read()
             .map_err(|_| FAILED)?
@@ -515,6 +524,165 @@ async fn validated_native_compaction(
     match super::compaction::validate_native(response, operation).await {
         Ok(response) => response,
         Err(code) => super::error(StatusCode::BAD_GATEWAY, code),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn execute_responses(
+    state: super::super::server::ProxyState,
+    session: Arc<super::Session>,
+    mut parts: http::request::Parts,
+    bytes: bytes::Bytes,
+    mut original: Value,
+    legacy: bool,
+    consumer: String,
+    refresh_credentials: bool,
+    external: bool,
+    generation: Option<u64>,
+    started: Instant,
+) -> axum::response::Response {
+    let agent = parts
+        .extensions
+        .get::<super::super::connections::Agent>()
+        .map(|agent| agent.0)
+        .unwrap_or(if external { "external" } else { "codex" });
+    let trace_kind = super::trace::request_kind(&parts.headers, legacy);
+    let fail = |status: StatusCode, code: &'static str| {
+        let trace = state.intent_runtime.traces.begin_with_kind(
+            agent,
+            &session
+                .group
+                .model_alias
+                .clone()
+                .unwrap_or_else(|| format!("vary-auto/{}", session.group.id)),
+            &session.group.name,
+            match session.group.routing {
+                crate::services::intent_routing::RoutingStrategy::Ordered => "ordered",
+                crate::services::intent_routing::RoutingStrategy::Fastest => "fastest",
+            },
+            started,
+            trace_kind,
+        );
+        trace.finish(status.as_u16(), super::trace::State::Failed);
+        super::error(status, code)
+    };
+    let has_trigger = original.get("input").is_some_and(|input| {
+        input.get("type").and_then(Value::as_str) == Some("compaction_trigger")
+            || input.as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("compaction_trigger")
+                })
+            })
+    });
+    let operation = if legacy || has_trigger {
+        match super::compaction::operation(&original, legacy) {
+            Ok(operation) => operation,
+            Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+        }
+    } else {
+        None
+    };
+    let has_varyai_checkpoint = original["input"].as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item.get("encrypted_content")
+                .and_then(Value::as_str)
+                .is_some_and(|seal| seal.starts_with("varyai1:"))
+        })
+    });
+    let context = Context::for_consumer(&consumer);
+    let alias = session.group.alias();
+    let store = if operation.is_some() || has_varyai_checkpoint {
+        match state.intent_runtime.checkpoint_store() {
+            Ok(store) => Some(store),
+            Err(code) => return fail(StatusCode::SERVICE_UNAVAILABLE, code),
+        }
+    } else {
+        None
+    };
+    let unmodified = (operation.is_some() || has_varyai_checkpoint).then(|| original.clone());
+    if let Some(store) = store.as_ref().filter(|_| has_varyai_checkpoint) {
+        match restore_checkpoints(&mut original, &session, &context, &alias, store) {
+            Ok(Some(index)) => {
+                parts.extensions.insert(ForcedTarget(index));
+            }
+            Ok(None) => {}
+            Err(code) => return fail(StatusCode::CONFLICT, code),
+        }
+    }
+    let selected = CheckpointTarget::default();
+    let native_compact =
+        operation.is_some() && session.targets.iter().all(|target| target.official);
+    if let Some(operation) = operation {
+        parts.extensions.insert(selected.clone());
+        parts.extensions.insert(Compact {
+            operation,
+            native: native_compact,
+        });
+        if !native_compact {
+            let history = match super::compaction::history(&original, operation) {
+                Ok(history) => history,
+                Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+            };
+            original = match super::compaction::summary_request(&history) {
+                Ok(summary) => summary,
+                Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+            };
+        }
+    }
+    let bytes = if let Some(unmodified) = unmodified.as_ref().filter(|u| *u != &original) {
+        match encode_request(&bytes, unmodified, &original) {
+            Ok(encoded) => bytes::Bytes::from(encoded),
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_json"),
+        }
+    } else {
+        bytes
+    };
+    let response = super::execute(
+        state,
+        session.clone(),
+        parts,
+        bytes,
+        original,
+        super::Protocol::Responses,
+        if legacy && native_compact {
+            "/v1/responses/compact"
+        } else {
+            "/v1/responses"
+        }
+        .into(),
+        consumer,
+        refresh_credentials,
+        external,
+        generation,
+        started,
+    )
+    .await;
+    let Some(operation) = operation else {
+        return response;
+    };
+    if native_compact {
+        return validated_native_compaction(response, operation).await;
+    }
+    if !response.status().is_success() {
+        return response;
+    }
+    let (summary, usage) = match super::compaction::collect_summary(response).await {
+        Ok(summary) => summary,
+        Err(code) => return super::error(StatusCode::BAD_GATEWAY, code),
+    };
+    let Some(index) = selected.0.read().ok().and_then(|index| *index) else {
+        return super::error(StatusCode::BAD_GATEWAY, FAILED);
+    };
+    let Some(target) = session.targets.get(index) else {
+        return super::error(StatusCode::BAD_GATEWAY, FAILED);
+    };
+    let Some(store) = store else {
+        return super::error(StatusCode::SERVICE_UNAVAILABLE, FAILED);
+    };
+    let checkpoint_ctx = checkpoint_context(&context, &alias, target);
+    match store.seal(&checkpoint_ctx, &summary) {
+        Ok(seal) => super::compaction::checkpoint_response(operation, seal, usage),
+        Err(_) => super::error(StatusCode::BAD_GATEWAY, "routing_checkpoint_unavailable"),
     }
 }
 

@@ -340,7 +340,9 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                             let event = json!({"type":"response.completed","response":reply});
                             return (
                                 [(header::CONTENT_TYPE, "text/event-stream")],
-                                format!("event: response.completed\ndata: {event}\n\ndata: [DONE]\n\n"),
+                                format!(
+                                    "event: response.completed\ndata: {event}\n\ndata: [DONE]\n\n"
+                                ),
                             )
                                 .into_response();
                         }
@@ -400,50 +402,36 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                 group.group.enabled = true;
                 if template == RoutingTemplate::Speed {
                     // Seed speed telemetry so primary is measurably faster once available.
-                    group.targets[0]
-                        .scheduling
-                        .served(100, 50.0, 500.0, 100, chrono::Utc::now().timestamp());
-                    group.targets[1]
-                        .scheduling
-                        .served(100, 900.0, 2000.0, 20, chrono::Utc::now().timestamp());
+                    group.targets[0].scheduling.served(
+                        100,
+                        50.0,
+                        500.0,
+                        100,
+                        chrono::Utc::now().timestamp(),
+                    );
+                    group.targets[1].scheduling.served(
+                        100,
+                        900.0,
+                        2000.0,
+                        20,
+                        chrono::Utc::now().timestamp(),
+                    );
                 }
                 group.group.off = if available {
                     vec![]
                 } else {
                     vec!["primary".into()]
                 };
-                if available {
-                    let mut p = group.targets.last().cloned().ok_or("missing target")?;
-                    p.provider_id = "primary-provider".into();
-                    p.model = "strong-model".into();
-                    p.upstream = Some(static_provider("primary-provider", &base, "openai_chat"));
-                    p.scheduling = Arc::default();
-                    if template == RoutingTemplate::Speed {
-                        p.scheduling.served(
-                            100,
-                            50.0,
-                            500.0,
-                            100,
-                            chrono::Utc::now().timestamp(),
-                        );
-                    }
-                    let mut b = p.clone();
-                    b.provider_id = "backup-provider".into();
-                    b.model = "backup-model".into();
-                    b.upstream = Some(static_provider("backup-provider", &base, "openai_chat"));
-                    b.scheduling = Arc::default();
-                    if template == RoutingTemplate::Speed {
-                        b.scheduling.served(
-                            100,
-                            900.0,
-                            2000.0,
-                            20,
-                            chrono::Utc::now().timestamp(),
-                        );
-                    }
-                    group.targets = vec![p, b];
-                } else {
-                    group.targets.retain(|t| t.model == "backup-model");
+                if group.targets.len() == 2 && template == RoutingTemplate::Speed {
+                    let now = chrono::Utc::now().timestamp();
+                    group.targets[0].scheduling = Arc::default();
+                    group.targets[0]
+                        .scheduling
+                        .served(100, 50.0, 500.0, 100, now);
+                    group.targets[1].scheduling = Arc::default();
+                    group.targets[1]
+                        .scheduling
+                        .served(100, 900.0, 2000.0, 20, now);
                 }
                 runtime.set_global(menu.clone(), 0)?;
                 runtime.set_menu(Arc::new(menu.clone()))?;
@@ -511,7 +499,8 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                         let mut body =
                             json!({"model": alias, "max_tokens": 128, "messages": messages});
                         if step <= 2 || step == 99 {
-                            body["tools"] = json!([{"name":"synthetic_tool","input_schema":{"type":"object"}}]);
+                            body["tools"] =
+                                json!([{"name":"synthetic_tool","input_schema":{"type":"object"}}]);
                         }
                         body
                     }
@@ -1146,7 +1135,11 @@ async fn smart_template_compaction_and_multimodal_classification_apply_across_al
             }))
             .send()
             .await?;
-        assert_eq!(resumed.status(), StatusCode::OK, "{label} checkpoint resume");
+        assert_eq!(
+            resumed.status(),
+            StatusCode::OK,
+            "{label} checkpoint resume"
+        );
         let _ = resumed.bytes().await?;
     }
 

@@ -1,5 +1,38 @@
 # Agent feature coverage
 
+## Cross-Agent parity for all four routing templates
+
+All four routing group templates (`Smart`, `Capability`, `Speed`, and `Expiry`)
+share per-turn reselection after closed tool rounds, multimodal/unsigned-thinking
+projection for live classification, and cross-protocol `Compaction` rule
+execution across connected Agents and external gateway routes. Active tool
+continuations and opaque/signed provider state remain pinned to their observed
+upstream owner, and unknown tool-call continuations fail closed.
+
+| Agent ID | Entry point and protocol adapter | Runtime and template behavior | Verification |
+| --- | --- | --- | --- |
+| `claude` | Claude Code CLI `/connections/claude/v1/messages` (Anthropic) | Per-turn reselection after closed `tool_use`/`tool_result` rounds, inline image + unsigned thinking classification, and Anthropic prompt compaction routing | Loopback cross-Agent template matrix and unit fixtures. Native macOS and Windows client verification pending. |
+| `claude-desktop` | Desktop `/connections/claude-desktop/v1/messages` (Anthropic) with Desktop lead-model resolution | Same Anthropic per-turn reselection, multimodal classification, and compaction routing without mislabeling compaction as title generation | Loopback cross-Agent template matrix and unit fixtures. Native macOS and Windows client verification pending. |
+| `codex` | Desktop/CLI `/backend-api/codex/responses(/compact)` and `/intent/v1/responses(/compact)` (Responses) | Per-turn replay, empty reasoning cleanup, multimodal classification, and native/endpoint/header compaction with `varyai1:` checkpoints | Loopback cross-Agent template matrix and native replay/compaction suites. Native macOS and Windows client verification pending. |
+| `t3code` | Desktop managed Codex driver `/connections/t3code/v1/responses(/compact)` (Responses) | Shared Codex Responses replay (empty reasoning cleanup, per-turn reselection), multimodal classification, and endpoint/header compaction | Loopback cross-Agent template matrix and Responses checkpoint round-trip. Native macOS and Windows client verification pending. |
+| `grokbuild` | CLI `/connections/grokbuild/v1/responses(/compact)` and `/v1/chat/completions` (Responses/Chat) | Per-turn reselection after closed tool rounds, multimodal classification, and endpoint/header/prompt compaction | Loopback cross-Agent template matrix across Responses and Chat. Native macOS and Windows client verification pending. |
+| `gemini` | Gemini CLI `/connections/gemini/v1beta/models/*:generateContent` (Gemini Native) | Per-turn reselection after closed `functionCall`/`functionResponse` rounds, `inlineData` image classification, and `<state_snapshot>` compaction routing | Loopback cross-Agent template matrix and Gemini projection unit tests. Native macOS and Windows client verification pending. |
+| `opencode` | CLI `/connections/opencode/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and OpenCode summarization compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `openclaw` | Native provider registry `/connections/openclaw/v1/chat/completions` and `/gateway` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and structured checkpoint compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `hermes` | CLI `/connections/hermes/v1/chat/completions` and `/v1/messages` (Chat/Anthropic) | Per-turn reselection after closed tool rounds, multimodal classification, and context-compression prompt routing across Chat and Anthropic | Loopback cross-Agent template matrix across Chat and Anthropic. Native macOS and Windows client verification pending. |
+| `pi` | CLI `/connections/pi` across Chat, Anthropic, and Responses | Per-turn reselection after closed tool rounds, multimodal classification, and prompt/endpoint compaction across all three protocols | Loopback cross-Agent template matrix across Chat, Anthropic, and Responses. Native macOS and Windows client verification pending. |
+| `workbuddy` | China Desktop `/connections/workbuddy/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing alongside visible-history recovery | Loopback cross-Agent template matrix and WorkBuddy history suites. Native macOS and Windows client verification pending. |
+| `workbuddy-ai` | International Desktop `/connections/workbuddy-ai/v1/chat/completions` (Chat) | Same per-turn reselection, `image_url` classification, and prompt compaction routing in the international scope | Loopback cross-Agent template matrix and WorkBuddy history suites. Native macOS and Windows client verification pending. |
+| `qoder` | China Desktop `/connections/qoder/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `doubaowork` | Desktop native audit integration | Dedicated audit integration without selectable VaryAI routing groups | Outside routing-group forwarding by design; source review. |
+| `trae` | China IDE/Agent `/connections/trae/v1/chat/completions` and `/v1/responses(/compact)` | Per-turn reselection (preserving rewritten Chat tool-ID matching), multimodal classification, and prompt/endpoint compaction | Loopback cross-Agent template matrix across Chat and Responses, plus TRAE projection tests. Native macOS and Windows client verification pending. |
+| `trae-intl` | International IDE/Agent `/connections/trae-intl/v1/chat/completions` and `/v1/responses(/compact)` | Same per-turn reselection, rewritten tool-ID matching, multimodal classification, and prompt/endpoint compaction in the international scope | Loopback cross-Agent template matrix across Chat and Responses. Native macOS and Windows client verification pending. |
+| `kimi` | CLI `/connections/kimi/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `qwen` | CLI `/connections/qwen/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `zcode` | Desktop `/connections/zcode/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `deepseek-harness` | Desktop/CLI `/connections/deepseek-harness` across Chat, Anthropic, and Responses | Per-turn reselection after closed tool rounds, multimodal classification, and prompt/endpoint compaction alongside owned-tool-history recovery | Loopback cross-Agent template matrix across Chat, Anthropic, and Responses. Native macOS and Windows client verification pending. |
+| `glm` | Historical inactive identity retained for stored data compatibility | No active routing-group picker or connection ingress | Outside routing-group forwarding by design; source review. |
+
 ## Live route graph titles for TRAE and WorkBuddy
 
 | Agent ID | Entry point and title source | Runtime and UI | Verification |

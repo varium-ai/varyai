@@ -14,6 +14,7 @@ mod continuation;
 pub(super) mod identity;
 pub(super) mod length;
 pub(crate) use codex_replay::is_page_context as is_codex_page_context;
+pub(crate) use compaction::is_anthropic_compaction;
 pub(crate) use length::visible_reasoning;
 pub(crate) mod native;
 mod native_gateway;
@@ -79,6 +80,7 @@ pub(crate) struct Runtime {
     conversations: scopes::Conversations,
     session_models: RwLock<HashMap<(String, String), String>>,
     pub(crate) native: native::Native,
+    ephemeral_checkpoints: std::sync::OnceLock<Result<Arc<checkpoint::Store>, &'static str>>,
     continuations: RwLock<Option<Arc<continuation::Store>>>,
     native_protocol_preferred: RwLock<std::collections::HashSet<(String, String, &'static str)>>,
 }
@@ -481,6 +483,15 @@ impl Session {
     }
 }
 impl Runtime {
+    fn checkpoint_store(&self) -> Result<Arc<checkpoint::Store>, &'static str> {
+        if let Ok(store) = self.native.checkpoints() {
+            return Ok(store);
+        }
+        self.ephemeral_checkpoints
+            .get_or_init(|| checkpoint::Store::ephemeral().map(Arc::new))
+            .clone()
+    }
+
     pub(crate) async fn prepare_continuations(&self, path: std::path::PathBuf) {
         if self.continuations.read().is_ok_and(|store| store.is_some()) {
             return;
@@ -1680,7 +1691,10 @@ pub(crate) async fn handle(
             json!({"object":"list","data":data}),
         ));
     }
-    if request.method() != http::Method::POST || request.uri().path() != "/intent/v1/responses" {
+    let legacy_compact = request.uri().path() == "/intent/v1/responses/compact";
+    if request.method() != http::Method::POST
+        || !(request.uri().path() == "/intent/v1/responses" || (legacy_compact && menu.is_some()))
+    {
         return fail(StatusCode::NOT_FOUND, "routing_endpoint_unsupported");
     }
     let (parts, body) = request.into_parts();
@@ -1750,14 +1764,13 @@ pub(crate) async fn handle(
             None => fail(StatusCode::NOT_FOUND, "routing_model_unavailable"),
         };
     }
-    execute(
+    native::execute_responses(
         state,
         session,
         parts,
         bytes,
         original,
-        Protocol::Responses,
-        "/v1/responses".into(),
+        legacy_compact,
         "local-codex".into(),
         menu.is_some(),
         false,
@@ -1865,20 +1878,42 @@ pub(crate) async fn handle_global(
             .extensions
             .get::<super::connections::Agent>()
             .is_some_and(|agent| matches!(agent.0, "trae" | "trae-intl"));
-    let pending = execute(
-        state,
-        session,
-        parts,
-        bytes,
-        original,
-        protocol,
-        endpoint,
-        consumer,
-        true,
-        external,
-        Some(generation),
-        Instant::now(),
-    );
+    let legacy_compact =
+        protocol == Protocol::Responses && parts.uri.path() == "/v1/responses/compact";
+    let pending = async move {
+        if protocol == Protocol::Responses {
+            native::execute_responses(
+                state,
+                session,
+                parts,
+                bytes,
+                original,
+                legacy_compact,
+                consumer,
+                true,
+                external,
+                Some(generation),
+                Instant::now(),
+            )
+            .await
+        } else {
+            execute(
+                state,
+                session,
+                parts,
+                bytes,
+                original,
+                protocol,
+                endpoint,
+                consumer,
+                true,
+                external,
+                Some(generation),
+                Instant::now(),
+            )
+            .await
+        }
+    };
     if keep_trae_waiting {
         trae::waiting_response(pending).await
     } else {
@@ -1962,7 +1997,7 @@ async fn execute(
                     .split('?')
                     .next()
                     .is_some_and(|p| p.ends_with(":streamGenerateContent"))));
-    let responses_replay = protocol == Protocol::Responses && agent == "codex";
+    let responses_replay = protocol == Protocol::Responses && matches!(agent, "codex" | "t3code");
     let mut projection =
         match super::group_forward::canonical_request(protocol, &original, &endpoint) {
             Ok(value) => match compact.filter(|c| c.native) {
@@ -1979,6 +2014,14 @@ async fn execute(
             items.retain(|item| !length::empty_reasoning(item));
         }
     }
+    let prompt_compact = compact.is_none()
+        && desktop_purpose.is_none()
+        && !count_tokens
+        && compaction::is_prompt_compaction(&parts.headers, &projection);
+    if prompt_compact {
+        trace.mark_kind("compact");
+    }
+    let is_compact = compact.is_some() || prompt_compact;
     let named_conversation = identity::named(&parts.headers);
     let desktop_probe = desktop_purpose == Some(super::connections::desktop::Purpose::Probe);
     let conversation = (!desktop_probe).then(|| identity::affinity(&parts.headers, &bytes));
@@ -1993,7 +2036,7 @@ async fn execute(
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
     }
-    if !external && !count_tokens && compact.is_none() && desktop_purpose.is_none() {
+    if !external && !count_tokens && !is_compact && desktop_purpose.is_none() {
         if let Some(id) = identity::title_session(agent, &parts.headers, &original, true) {
             trace.native_session(&id);
         } else if let Some(digest) = identity::trae_title_turn(agent, &parts.headers, &original) {
@@ -2019,11 +2062,12 @@ async fn execute(
             )
         })
     });
-    let per_turn_intent = session.group.affinity == "turn" && session.group.uses_classifier();
+    let per_turn_routing = matches!(session.group.affinity.as_str(), "off" | "turn");
+    let per_turn_intent = per_turn_routing && session.group.uses_classifier();
     let turn_tool_replay = (!count_tokens
         && !desktop_probe
-        && compact.is_none()
-        && per_turn_intent
+        && !is_compact
+        && per_turn_routing
         && !opaque_state
         && has_tool_items)
         .then(|| codex_replay::inline_tool_history(&projection, true))
@@ -2041,10 +2085,8 @@ async fn execute(
                 Protocol::Chat | Protocol::Anthropic | Protocol::Responses
             )
     );
-    let visible_history_replay = visible_history_agent
-        && compact.is_none()
-        && !opaque_state
-        && length::portable(&projection);
+    let visible_history_replay =
+        visible_history_agent && !is_compact && !opaque_state && length::portable(&projection);
     let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
         || session.targets.iter().all(|target| target.official))
         && protocol != Protocol::Responses
@@ -2053,11 +2095,11 @@ async fn execute(
         && completed_tool_history(&projection);
     let harness_chat = agent == "deepseek-harness" && protocol == Protocol::Chat;
     let harness_tool_history =
-        harness_chat && compact.is_none() && !opaque_state && completed_tool_history(&projection);
+        harness_chat && !is_compact && !opaque_state && completed_tool_history(&projection);
     let harness_next_user_turn = harness_tool_history
         && named_conversation
-        && session.group.affinity == "turn"
-        && if per_turn_intent {
+        && per_turn_routing
+        && if per_turn_routing {
             closed_inline_tool_turn
         } else {
             user_follow_up_after_tool_reply(&projection)
@@ -2103,7 +2145,7 @@ async fn execute(
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
     };
-    let route_compaction = compact.is_some_and(|compact| !compact.native)
+    let route_compaction = (compact.is_some_and(|compact| !compact.native) || prompt_compact)
         && parts.extensions.get::<native::ForcedTarget>().is_none()
         && session.group.rules.iter().any(|rule| {
             rule.enabled
@@ -2117,15 +2159,14 @@ async fn execute(
                         }
                 })
         });
-    let compact_inline_tools = route_compaction
-        && responses_replay
-        && codex_replay::portable_compaction_tools(&projection);
+    let compact_inline_tools_shape =
+        route_compaction && codex_replay::portable_compaction_tools(&projection);
     let portable_reroutable = length::portable(&projection)
         && !opaque_state
         && !native_request
         && session.group.affinity != "strict";
     let codex_per_turn = responses_replay
-        && compact.is_none()
+        && !is_compact
         && named_conversation
         && matches!(session.group.affinity.as_str(), "off" | "turn");
     let codex_inline_replay = codex_per_turn
@@ -2142,6 +2183,12 @@ async fn execute(
         let session_owner = conversation
             .as_deref()
             .and_then(|name| bindings.session(name));
+        let compact_inline_tools = compact_inline_tools_shape
+            && (responses_replay
+                || (session_owner != Some(usize::MAX)
+                    && bindings.knows_tool_calls(
+                        &bindings.continuation_projection(&consumer, &projection),
+                    )));
         let closed_tool_turn = closed_inline_tool_turn
             && session_owner != Some(usize::MAX)
             && bindings.knows_tool_calls(&bindings.continuation_projection(&consumer, &projection));
@@ -2163,7 +2210,7 @@ async fn execute(
             Err(())
         } else if protocol != Protocol::Responses {
             let pinned = session_owner;
-            if !per_turn_intent
+            if !per_turn_routing
                 && harness_next_user_turn
                 && pinned != Some(usize::MAX)
                 && bindings.knows_tool_calls(&projection)
@@ -2234,11 +2281,11 @@ async fn execute(
                 && (!per_turn_intent || !history.closed_tool_calls)
                 && (completed || history.follows_interruption)
         });
-        if (compact.is_none() || route_compaction)
+        if (!is_compact || route_compaction)
             && !opaque_state
             && (inline_new_turn
                 || compact_inline_tools
-                || (completed
+                || ((completed || route_compaction)
                     && length::portable_ignoring(&projection, |item| {
                         // Codex sends inline browser context in both turns and summaries.
                         responses_replay && codex_replay::is_page_context(item)
@@ -2389,7 +2436,7 @@ async fn execute(
         images: has_images,
         effort: requested_effort.as_deref(),
         agent,
-        compact: compact.is_some(),
+        compact: is_compact,
         at: chrono::Utc::now(),
         folder: &folder,
     };
@@ -2437,6 +2484,7 @@ async fn execute(
     let classified = if inspected_projection["_group_projection_incomplete"] != true
         && desktop_purpose != Some(super::connections::desktop::Purpose::Probe)
         && !count_tokens
+        && !is_compact
         && pinned.is_none()
         && classifier_permitted
         && session.group.uses_classifier()

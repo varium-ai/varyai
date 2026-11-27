@@ -266,6 +266,7 @@ pub(super) fn legacy_inline_assistant_id(item: &Value, id: &str) -> bool {
 }
 
 fn visible_message(item: &Value) -> bool {
+    let allow_media = item["role"] == "user";
     (item["type"].is_null() || item["type"] == "message")
         && matches!(
             item["role"].as_str(),
@@ -275,7 +276,21 @@ fn visible_message(item: &Value) -> bool {
         && (item["phase"].is_null()
             || matches!(item["phase"].as_str(), Some("commentary" | "final_answer")))
         && completed(item)
-        && text_parts(&item["content"], &["text", "input_text", "output_text"])
+        && (text_parts(&item["content"], &["text", "input_text", "output_text"])
+            || (allow_media
+                && item["content"].as_array().is_some_and(|parts| {
+                    !parts.is_empty()
+                        && parts.iter().all(|part| {
+                            super::length::inline_media_part(part)
+                                || (matches!(part["type"].as_str(), Some("text" | "input_text"))
+                                    && part["text"].is_string()
+                                    && part.as_object().is_some_and(|fields| {
+                                        fields
+                                            .keys()
+                                            .all(|key| matches!(key.as_str(), "type" | "text"))
+                                    }))
+                        })
+                })))
 }
 
 fn full_call(item: &Value) -> bool {

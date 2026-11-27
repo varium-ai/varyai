@@ -277,6 +277,7 @@ impl Desktop {
             .as_u64()
             .is_some_and(|n| n > 0 && n <= 4096);
         let title = !tools
+            && !crate::proxy::intent::is_anthropic_compaction(body)
             && if cli {
                 title(body)
             } else {

@@ -341,6 +341,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                     | "/v1/messages/count_tokens"
                     | "/v1/chat/completions"
                     | "/v1/responses"
+                    | "/v1/responses/compact"
             ))
     {
         return StatusCode::NOT_FOUND.into_response();
@@ -442,7 +443,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         body["model"] = json!(alias);
     }
     let normalized_trae = matches!(app, "trae" | "trae-intl")
-        && endpoint == "/v1/responses"
+        && matches!(endpoint.as_str(), "/v1/responses" | "/v1/responses/compact")
         && super::native_protocol::normalize_trae_responses(&mut body);
     let db = state.db.clone();
     let policy_model = alias.clone();

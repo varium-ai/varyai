@@ -47,6 +47,30 @@ pub(crate) fn visible_reasoning(item: &Value) -> bool {
     })
 }
 
+/// Inline media blocks carry their own payload or URL, not a provider-owned file ID.
+pub(super) fn inline_media_part(part: &Value) -> bool {
+    if part.get("file_id").is_some_and(|v| !v.is_null()) {
+        return false;
+    }
+    match part["type"].as_str() {
+        Some("input_image") => {
+            part.as_object().is_some_and(|fields| {
+                fields
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "image_url" | "detail"))
+            }) && part
+                .get("image_url")
+                .is_none_or(|url| url.is_null() || url.is_string())
+        }
+        Some("input_file") => part.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .all(|key| matches!(key.as_str(), "type" | "file_data" | "file_url" | "filename"))
+        }),
+        _ => false,
+    }
+}
+
 pub(super) fn portable(body: &Value) -> bool {
     portable_ignoring(body, |_| false)
 }
@@ -66,15 +90,17 @@ pub(super) fn portable_ignoring(body: &Value, ignore: impl Fn(&Value) -> bool) -
             if visible_reasoning(item) || ignore(item) {
                 return true;
             }
+            let allow_media = item["role"] == "user";
             matches!(item["type"].as_str(), None | Some("message"))
                 && item.get("encrypted_content").is_none()
                 && match &item["content"] {
                     Value::String(_) => true,
                     Value::Array(parts) => parts.iter().all(|p| {
-                        matches!(
+                        (matches!(
                             p["type"].as_str(),
                             Some("input_text" | "output_text" | "text")
-                        ) && p["text"].is_string()
+                        ) && p["text"].is_string())
+                            || (allow_media && inline_media_part(p))
                     }),
                     _ => false,
                 }
@@ -98,7 +124,8 @@ pub(in crate::proxy) fn estimate(projection: &Value, body: &Value) -> Option<u64
                         Some("input_text" | "output_text" | "text") => {
                             n = n.saturating_add(p["text"].as_str()?.len() as u64)
                         }
-                        Some("input_image") => {}
+                        Some("input_image" | "input_file")
+                            if p.get("file_id").is_none_or(Value::is_null) => {}
                         _ => return None,
                     }
                 }
@@ -187,10 +214,14 @@ mod tests {
         assert!(portable(
             &json!({"input":[{"role":"user","content":"synthetic"}]})
         ));
+        assert!(portable(
+            &json!({"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"input_text","text":"synthetic"}]}]})
+        ));
         for body in [
             json!({"input":"x","previous_response_id":"r"}),
             json!({"input":[{"type":"function_call_output","call_id":"c","output":"x"}]}),
             json!({"input":[{"type":"reasoning","encrypted_content":"synthetic"}]}),
+            json!({"input":[{"role":"user","content":[{"type":"input_image","file_id":"file-server-owned"}]}]}),
             json!({"input":"x","_group_projection_incomplete":true}),
         ] {
             assert!(!portable(&body));

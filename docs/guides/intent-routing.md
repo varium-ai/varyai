@@ -60,7 +60,7 @@ removes its published models.
 
 ## External consumers
 
-Start the loopback gateway explicitly and configure a gateway key under **Settings → Routing → Local routing**. Give restricted keys the group's public alias, not its concrete member model. Authenticated `GET /gateway/v1/models` lists only executable published groups permitted by that key. Use the same alias on `/gateway/v1/responses`, `/gateway/v1/chat/completions`, `/gateway/v1/messages`, or the Gemini generate/streamGenerateContent route. See [gateway keys](gateway-keys.md) for headers, budgets and manual connection setup. This version does not automatically take over every agent.
+Start the loopback gateway explicitly and configure a gateway key under **Settings → Routing → Local routing**. Give restricted keys the group's public alias, not its concrete member model. Authenticated `GET /gateway/v1/models` lists only executable published groups permitted by that key. Use the same alias on `/gateway/v1/responses`, `/gateway/v1/responses/compact`, `/gateway/v1/chat/completions`, `/gateway/v1/messages`, or the Gemini generate/streamGenerateContent route. See [gateway keys](gateway-keys.md) for headers, budgets and manual connection setup. This version does not automatically take over every agent.
 
 Protocol selection belongs to the request and chosen upstream, not to the consuming agent. Same-protocol requests preserve native fields and JSON lexemes except supported model/redaction/effort edits. Cross-protocol requests use the explicit bridge; unsupported semantics fail before forwarding instead of being silently discarded. Opaque state is never moved to a different account merely because another member is healthy. Official Codex destinations retain their native Responses constraints.
 
@@ -484,14 +484,35 @@ An observed, successfully completed plain-history turn has soft affinity: as its
 
 Managed WorkBuddy and DeepSeek Harness requests with self-contained visible history can continue in the same conversation when group members are removed or restored. Remaining destinations retain their exact ownership. Per-turn affinity can reselect the preferred member after an observed completed turn. Requests that depend on upstream response IDs, tool state or encrypted reasoning still require their original binding.
 
-For every Agent using a per-turn intent group, Chat Completions, Messages,
-Responses and Gemini Native use the same turn and model selection rules.
-The classifier receives a new user message once the preceding observed tool
-calls have their results in the transcript. The user can start this turn after
-interrupting the assistant before its final reply. Forwarding retains the
-complete transcript. A tool result for the active turn goes to its observed
-owner. Provider-signed state and server-side response references continue to
-require their original destination.
+For every Agent using a per-turn group (`affinity: "turn"`, including the Smart,
+Capability, Speed, and Expiring-allowance templates), Chat Completions,
+Messages, Responses and Gemini Native use the same turn and model selection
+rules. Once the preceding observed tool calls have their results and final
+assistant reply in the transcript, the next user turn re-evaluates the group's
+current member priority, speed telemetry, expiry/quota window, or live
+classifier rules across all connected Agents and external gateway callers. In
+intent-classification groups, the user can also start a classified turn after
+interrupting the assistant once earlier tool calls have inline results, and
+inline images/documents or unsigned Anthropic thinking blocks do not skip
+classification. T3 Code shares Codex's Responses replay handling for empty
+reasoning placeholders and browser context. Forwarding retains the complete
+transcript. A tool result for the active turn stays pinned to its observed
+owner, and unknown or mismatched tool-call IDs fail closed. Provider-signed
+state and server-side response or file references continue to require their
+original destination.
+
+Compaction rules (`conditions: { compact: true }`) apply across every connected
+Agent and external gateway route rather than only Codex native takeover.
+`/intent/v1/responses/compact`, `/connections/<app>/v1/responses/compact`, and
+`/gateway/v1/responses/compact` (plus Responses `compaction_trigger`) validate
+compaction inputs and seal consumer-scoped `varyai1:` checkpoints when
+non-official targets summarize history. Prompt-based context compaction sent
+over Anthropic Messages, OpenAI Chat, OpenAI Responses, or Gemini Native (via
+explicit `compact` subagent metadata or recognized Agent compaction system/user
+prompts) also matches enabled compaction rules, skips paid intent
+classification, and preserves the conversation's existing session binding for
+subsequent turns. Ordinary user messages asking to summarize text do not match
+the compaction condition.
 
 Managed Harness Chat also resumes a saved conversation with a completed tool transcript after a membership change when the gateway can match the calls to their original, still available destination. This check also applies to observations restored from disk after a gateway restart.
 

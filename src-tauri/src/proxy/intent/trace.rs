@@ -542,6 +542,14 @@ impl Request {
         self.update(|row| row.classification_outcome = Some(outcome.into()));
     }
 
+    pub(super) fn mark_kind(&self, kind: &'static str) {
+        self.update(|row| {
+            if row.kind.is_none() {
+                row.kind = Some(kind.into());
+            }
+        });
+    }
+
     fn update(&self, update: impl FnOnce(&mut Route)) {
         if let Ok(mut rows) = self.store.rows.try_write() {
             if let Some(row) = rows.iter_mut().find(|row| row.id == self.id) {

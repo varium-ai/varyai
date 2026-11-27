@@ -281,14 +281,40 @@ pub(crate) fn canonical_request(
                         projection.incomplete = true;
                         continue;
                     };
+                    let has_inline_image =
+                        role == "user" && parts.iter().any(|part| part.get("inlineData").is_some());
+                    let mut buffered_user_parts = Vec::new();
+                    let flush_buffered_user =
+                        |projection: &mut Projection, buffered: &mut Vec<Value>| {
+                            if !buffered.is_empty() {
+                                projection.input.push(json!({
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": std::mem::take(buffered),
+                                }));
+                            }
+                        };
                     for part in parts {
                         if let Some(text) = part["text"].as_str() {
                             if part["thought"] != true {
-                                projection.message(role, &json!(text));
+                                if has_inline_image {
+                                    if !text.is_empty() {
+                                        buffered_user_parts
+                                            .push(json!({"type": "input_text", "text": text}));
+                                    }
+                                } else {
+                                    projection.message(role, &json!(text));
+                                }
                             } else {
                                 projection.incomplete = true;
                             }
+                        } else if has_inline_image
+                            && part["inlineData"]["data"].is_string()
+                            && part.get("thoughtSignature").is_none()
+                        {
+                            buffered_user_parts.push(json!({"type": "input_image"}));
                         } else if let Some(call) = part.get("functionCall") {
+                            flush_buffered_user(&mut projection, &mut buffered_user_parts);
                             let name = call["name"].as_str().unwrap_or("");
                             let id = call["id"].as_str().map(str::to_owned).unwrap_or_else(|| {
                                 next_id += 1;
@@ -297,6 +323,7 @@ pub(crate) fn canonical_request(
                             calls.entry(name.into()).or_default().push_back(id.clone());
                             projection.input.push(json!({"type":"function_call", "call_id":id, "name":name, "arguments":call["args"].to_string()}));
                         } else if let Some(output) = part.get("functionResponse") {
+                            flush_buffered_user(&mut projection, &mut buffered_user_parts);
                             let name = output["name"].as_str().unwrap_or("");
                             let queue = calls.entry(name.into()).or_default();
                             let id = if let Some(id) = output["id"].as_str() {
@@ -321,6 +348,7 @@ pub(crate) fn canonical_request(
                             projection.incomplete = true;
                         }
                     }
+                    flush_buffered_user(&mut projection, &mut buffered_user_parts);
                 }
             } else {
                 projection.incomplete = true;
@@ -333,6 +361,43 @@ pub(crate) fn canonical_request(
         result["_group_projection_incomplete"] = json!(true);
     }
     Ok(result)
+}
+
+fn is_unsigned_thinking(block: &Value) -> bool {
+    block["type"] == "thinking"
+        && block
+            .get("thinking")
+            .is_some_and(|text| text.is_null() || text.is_string())
+        && block
+            .get("signature")
+            .is_none_or(|sig| sig.is_null() || sig.as_str().is_some_and(str::is_empty))
+}
+
+fn inline_media_kind(block: &Value) -> Option<&'static str> {
+    match block["type"].as_str() {
+        Some("image_url") if block["image_url"]["url"].is_string() => Some("input_image"),
+        Some("image") if matches!(block["source"]["type"].as_str(), Some("base64" | "url")) => {
+            Some("input_image")
+        }
+        Some("document")
+            if matches!(
+                block["source"]["type"].as_str(),
+                Some("base64" | "text" | "content" | "url")
+            ) =>
+        {
+            Some("input_file")
+        }
+        Some("input_image")
+            if block.get("file_id").is_none_or(Value::is_null)
+                && block
+                    .get("image_url")
+                    .is_some_and(|url| url.is_string() || url.is_object()) =>
+        {
+            Some("input_image")
+        }
+        Some("input_file") if block.get("file_id").is_none_or(Value::is_null) => Some("input_file"),
+        _ => None,
+    }
 }
 
 #[derive(Default)]
@@ -363,12 +428,49 @@ impl Projection {
                     }
                 }
                 Some("tool_use" | "tool_result") => {}
+                Some("thinking") if is_unsigned_thinking(block) => {}
                 _ => self.incomplete = true,
             }
         }
         texts.join("\n")
     }
     fn message(&mut self, role: &str, content: &Value) {
+        if role == "user" {
+            if let Some(blocks) = content.as_array().filter(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| inline_media_kind(block).is_some())
+            }) {
+                let mut parts = Vec::new();
+                for block in blocks {
+                    match block["type"].as_str() {
+                        Some("text" | "input_text" | "output_text") => {
+                            if let Some(text) = block["text"].as_str() {
+                                if !text.is_empty() {
+                                    parts.push(json!({"type": "input_text", "text": text}));
+                                }
+                            } else {
+                                self.incomplete = true;
+                            }
+                        }
+                        Some("tool_use" | "tool_result") => {}
+                        Some("thinking") if is_unsigned_thinking(block) => {}
+                        _ => {
+                            if let Some(kind) = inline_media_kind(block) {
+                                parts.push(json!({"type": kind}));
+                            } else {
+                                self.incomplete = true;
+                            }
+                        }
+                    }
+                }
+                if !parts.is_empty() {
+                    self.input
+                        .push(json!({"type": "message", "role": role, "content": parts}));
+                }
+                return;
+            }
+        }
         let text = self.text(content);
         if !text.is_empty() {
             self.input.push(json!({"type":"message", "role":role, "content":[{"type":if role == "assistant" {"output_text"} else {"input_text"}, "text":text}]}));
@@ -919,5 +1021,80 @@ mod tests {
             canonical_request(Protocol::Responses, &responses, "/v1/responses").unwrap(),
             responses
         );
+    }
+
+    #[test]
+    fn canonical_projection_preserves_inline_multimodal_and_unsigned_thinking(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let chat = canonical_request(
+            Protocol::Chat,
+            &json!({
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } },
+                        { "type": "text", "text": "describe image" }
+                    ]
+                }]
+            }),
+            "/v1/chat/completions",
+        )?;
+        assert_ne!(chat["_group_projection_incomplete"], true);
+        assert_eq!(chat["input"][0]["content"][0]["type"], "input_image");
+        assert_eq!(chat["input"][0]["content"][1]["text"], "describe image");
+
+        let anthropic = canonical_request(
+            Protocol::Anthropic,
+            &json!({
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            { "type": "thinking", "thinking": "visible unsigned", "signature": "" },
+                            { "type": "text", "text": "prior reply" }
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AA==" } },
+                            { "type": "text", "text": "follow up" }
+                        ]
+                    }
+                ]
+            }),
+            "/v1/messages",
+        )?;
+        assert_ne!(anthropic["_group_projection_incomplete"], true);
+
+        let signed = canonical_request(
+            Protocol::Anthropic,
+            &json!({
+                "messages": [{
+                    "role": "assistant",
+                    "content": [{ "type": "thinking", "thinking": "sealed", "signature": "sig_1" }]
+                }]
+            }),
+            "/v1/messages",
+        )?;
+        assert_eq!(signed["_group_projection_incomplete"], true);
+
+        let gemini = canonical_request(
+            Protocol::Gemini,
+            &json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "text": "what is here" },
+                        { "inlineData": { "mimeType": "image/png", "data": "AA==" } }
+                    ]
+                }]
+            }),
+            "/v1beta/models/synthetic:generateContent",
+        )?;
+        assert_ne!(gemini["_group_projection_incomplete"], true);
+        assert_eq!(gemini["input"][0]["content"][0]["text"], "what is here");
+        assert_eq!(gemini["input"][0]["content"][1]["type"], "input_image");
+        Ok(())
     }
 }

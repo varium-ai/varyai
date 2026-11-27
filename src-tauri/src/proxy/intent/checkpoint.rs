@@ -37,6 +37,15 @@ pub(super) struct Store {
 }
 
 impl Store {
+    /// Ephemeral process-local key used only when persistent storage was not configured.
+    pub(super) fn ephemeral() -> Result<Self, &'static str> {
+        let mut key = [0; KEY_BYTES];
+        getrandom::getrandom(&mut key).map_err(|_| KEY_ERROR)?;
+        Ok(Self {
+            cipher: ChaCha20Poly1305::new((&key).into()),
+        })
+    }
+
     /// Read or atomically publish a private key. Run outside request forwarding.
     pub(super) fn load_or_create(path: &Path) -> Result<Self, &'static str> {
         if let Some(store) = read_key(path)? {
