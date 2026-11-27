@@ -437,6 +437,25 @@ mod tests {
         Ok(())
     }
 
+    async fn latest_finished_trace(
+        store: &trace::Store,
+    ) -> Result<trace::Route, tokio::time::error::Elapsed> {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(row) = store
+                    .snapshot()
+                    .into_iter()
+                    .next()
+                    .filter(|r| r.status.is_some())
+                {
+                    return row;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+    }
+
     async fn assert_trae_responses_after_restart(
         app: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -504,11 +523,13 @@ mod tests {
         )
         .with_intent_runtime(runtime.clone());
         let info = server.start().await?;
-        let url = format!(
-            "http://127.0.0.1:{}/upstream/{app}/providers/fixture/v1/responses?client=kept",
-            info.port
-        );
-        let client = reqwest::Client::new();
+        let endpoint = |port| {
+            format!(
+                "http://127.0.0.1:{port}/upstream/{app}/providers/fixture/v1/responses?client=kept"
+            )
+        };
+        let url = endpoint(info.port);
+        let client = reqwest::Client::builder().no_proxy().build()?;
         let payload = json!({
             "model":"fixture", "stream":true, "store":false, "max_output_tokens":8192,
             "tools":[{"type":"function","name":"fixture_tool","parameters":{"type":"object"}}],
@@ -559,16 +580,10 @@ mod tests {
             assert_eq!(response.status().as_u16(), code);
             assert_eq!(response.headers()["x-fixture-response"], "kept");
             assert_eq!(response.text().await?, response_bytes);
-            tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                while runtime.traces.snapshot()[0].status.is_none() {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await?;
-            let traces = runtime.traces.snapshot();
-            assert_eq!(traces[0].status, Some(code));
-            assert_eq!(traces[0].candidates[0].provider_id, "fixture");
-            assert_eq!(traces[0].agent, app);
+            let row = latest_finished_trace(&runtime.traces).await?;
+            assert_eq!(row.status, Some(code));
+            assert_eq!(row.candidates[0].provider_id, "fixture");
+            assert_eq!(row.agent, app);
             let rows = observed.lock().unwrap();
             let (uri, headers, actual) = rows.last().unwrap();
             assert_eq!(
@@ -625,19 +640,21 @@ mod tests {
             .status()
             .is_success());
         assert_eq!(observed.lock().unwrap().len(), count);
+        drop(client);
         server.stop().await?;
 
         let runtime = Arc::new(super::super::intent::Runtime::default());
         let restarted = ProxyServer::new(
             ProxyConfig {
-                listen_port: info.port,
+                listen_port: 0,
                 ..Default::default()
             },
             db.clone(),
             None,
         )
         .with_intent_runtime(runtime.clone());
-        restarted.start().await?;
+        let url = endpoint(restarted.start().await?.port);
+        let client = reqwest::Client::builder().no_proxy().build()?;
         status.store(200, Ordering::Relaxed);
         let response = client
             .post(&url)
@@ -648,13 +665,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         response.bytes().await?;
         assert_eq!(observed.lock().unwrap().len(), count + 1);
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while runtime.traces.snapshot()[0].status.is_none() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await?;
-        assert_eq!(runtime.traces.snapshot()[0].state, trace::State::Completed);
+        assert_eq!(
+            latest_finished_trace(&runtime.traces).await?.state,
+            trace::State::Completed
+        );
         assert!(!db.get_bool_flag(crate::services::trae_bridge::ENABLED_KEY)?);
 
         let mut policy = SecurityRuntimeConfig::default();
@@ -680,7 +694,10 @@ mod tests {
             .status()
             .is_success());
         assert_eq!(observed.lock().unwrap().len(), count + 1);
-        assert_eq!(runtime.traces.snapshot()[0].state, trace::State::Failed);
+        assert_eq!(
+            latest_finished_trace(&runtime.traces).await?.state,
+            trace::State::Failed
+        );
         restarted.stop().await?;
         task.abort();
         Ok(())

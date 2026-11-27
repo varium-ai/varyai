@@ -19,11 +19,25 @@ pub(super) fn inline_tool_history(body: &Value, per_turn_intent: bool) -> Option
         return None;
     }
     let items = body["input"].as_array()?;
-    let start = items
+    let mut start = items
         .iter()
         .rposition(|item| is_user(item) && !is_interrupt_marker(item))?;
     if !visible_message(&items[start]) {
         return None;
+    }
+    if let Some(turn) = turn_id(&items[start]) {
+        // Steering messages share the original turn's tool-call ownership.
+        for (index, item) in items[..start].iter().enumerate().rev() {
+            if is_user(item) {
+                if is_interrupt_marker(item) || turn_id(item) != Some(turn) {
+                    break;
+                }
+                if !visible_message(item) {
+                    return None;
+                }
+                start = index;
+            }
+        }
     }
     let mut calls = HashMap::new();
     let mut open_calls = 0usize;

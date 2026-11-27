@@ -124,8 +124,7 @@ pub(in crate::proxy) fn estimate(projection: &Value, body: &Value) -> Option<u64
                         Some("input_text" | "output_text" | "text") => {
                             n = n.saturating_add(p["text"].as_str()?.len() as u64)
                         }
-                        Some("input_image" | "input_file")
-                            if p.get("file_id").is_none_or(Value::is_null) => {}
+                        Some("input_image") if p.get("file_id").is_none_or(Value::is_null) => {}
                         _ => return None,
                     }
                 }
