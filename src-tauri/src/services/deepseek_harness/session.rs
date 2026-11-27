@@ -1,11 +1,10 @@
-//! Native request-header extension; no generated or cache-derived session identities.
+//! Compatibility with Cordis entries written by the former session extension.
 use super::FAILED;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub(crate) const ID: &str = "varyai-harness-session-identity";
 pub(crate) const FILE: &str = "varyai-harness-session-id.mjs";
-pub(crate) const SOURCE: &str = include_str!("../../../resources/harness-session-id.mjs");
 
 pub(crate) fn path(profile: &Path) -> PathBuf {
     profile.with_file_name(FILE)
@@ -30,19 +29,12 @@ pub(super) fn recognized(entry: &Value) -> bool {
             .is_some_and(|url| url.scheme() == "file" && url.path().ends_with(&format!("/{FILE}")))
 }
 
-fn conflicts(value: &Value) -> bool {
-    match value {
-        Value::Object(fields) => value["id"] == ID || fields.values().any(conflicts),
-        Value::Array(values) => values.iter().any(conflicts),
-        _ => false,
+pub(crate) fn retire(value: &mut Value, profile: &Path) -> Result<(), String> {
+    if let Some(header) = value.get("sessionHeader") {
+        if header == &entry(profile)? {
+            value.as_object_mut().ok_or(FAILED)?.remove("sessionHeader");
+        }
     }
-}
-
-pub(crate) fn configure(value: &mut Value, profile: &Path) -> Result<(), String> {
-    if conflicts(&value["patches"]) {
-        return Err(FAILED.into());
-    }
-    value["sessionHeader"] = entry(profile)?;
     Ok(())
 }
 
@@ -57,13 +49,13 @@ mod tests {
             "# Synthetic native plugin\n- id: native-plugin\n  config: {preserved: true}\n";
         let mut value = super::super::parse(source).unwrap();
         let before = value.clone();
-        configure(&mut value, &profile).unwrap();
+        value["sessionHeader"] = entry(&profile).unwrap();
         let encoded = super::super::encode(source, &value).unwrap();
         assert!(encoded.contains("# Synthetic native plugin"));
         assert_eq!(super::super::parse(&encoded).unwrap(), value);
         assert_eq!(super::super::normalize(&value).unwrap(), value);
         assert_eq!(super::super::normalize(&before).unwrap(), before);
-        value.as_object_mut().unwrap().remove("sessionHeader");
+        retire(&mut value, &profile).unwrap();
         assert_eq!(
             super::super::parse(&super::super::encode(&encoded, &value).unwrap()).unwrap(),
             before
@@ -76,7 +68,7 @@ mod tests {
             super::super::parse(&format!("- id: {ID}\n  name: synthetic-foreign-module\n"))
                 .unwrap();
         let before = value.clone();
-        assert!(configure(&mut value, Path::new("/synthetic/profile.yml")).is_err());
+        retire(&mut value, Path::new("/synthetic/profile.yml")).unwrap();
         assert_eq!(value, before);
     }
 }
