@@ -481,8 +481,15 @@ export function AgentConnectionsPage({
       await agentConnectionsApi.reapply(app);
       recordConfigurationChange(app);
       applied = true;
+      toast.success(`${name(app)}: ${t("agentConnections.reapplySubmitted")}`, {
+        closeButton: true,
+        duration: 8000,
+      });
     } catch (cause) {
-      setError(app, connectionErrorKey(cause));
+      toast.error(`${name(app)}: ${t(connectionErrorKey(cause))}`, {
+        closeButton: true,
+        duration: 8000,
+      });
     } finally {
       refreshConnectionViews(true, applied ? app : undefined);
       endOperation(app);
@@ -1238,12 +1245,6 @@ export function AgentConnectionsPage({
             {!enabled && restartButton}
             {bypassed && reapplyButton}
           </p>
-          {app === "deepseek-harness" &&
-            state?.recoveryReason === "configuration_changed" && (
-              <p className="text-xs text-muted-foreground">
-                {t("agentConnections.deepseekRecoveryHint")}
-              </p>
-            )}
         </div>
         {compact && (
           <span className="mp-agent-summary-model" title={currentModel}>

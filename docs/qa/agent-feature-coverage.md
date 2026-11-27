@@ -223,6 +223,15 @@ Native configuration and picker state continue through the existing adapters.
 The loop uses the same code on macOS and Windows. Installed Agent self-tests
 are tracked separately from loopback fixtures.
 
+## Manual reconnect feedback
+
+| Agent IDs | Entry points and adapters | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| `deepseek-harness` | Main and tray Agents views, reconnect button and connection switch; shared Harness Desktop profile on Windows and macOS | Keep the recovery status and action in the row; show one result toast per explicit reconnect attempt, including retries; polling stays silent. When both managed entries are gone, rebuild from the current native files without first deleting the connection record. No forwarding or CLI protocol change. | Renderer failures and synthetic two-file reconnect, retry and disconnect regressions; native acceptance pending on both platforms. |
+| `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `t3code` | Existing entry points and native adapters in the inventory below | A reconnect button or recovery switch uses the shared manual-result toast. No change to which actions are available, native adapters or routing. | Parameterized renderer tests against the managed inventory; native acceptance pending. |
+
+Historical `glm` has no managed row or manual reconnect action.
+
 ## Routing failover after an unreadable Codex rejection
 
 The change is scoped to an explicit retryable HTTP rejection on the native
