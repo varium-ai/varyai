@@ -5190,9 +5190,14 @@ describe("Agent connections", () => {
         name: "agentConnections.reapply",
       }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "agentConnections.failed",
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "apps.codex: agentConnections.failed",
+        expect.objectContaining({ closeButton: true }),
+      ),
     );
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
     expect(
       screen.queryByText("synthetic-private-reapply-error"),
     ).not.toBeInTheDocument();
