@@ -676,6 +676,54 @@ impl Database {
         })?;
         Ok(())
     }
+
+    pub(crate) fn sync_subscription_catalog(
+        &self,
+        provider: crate::services::routing_upstreams::SubscriptionProvider,
+        account_id: &str,
+        catalog: &[serde_json::Value],
+    ) -> Result<bool, String> {
+        if catalog.is_empty() || !valid_identity(account_id) {
+            return Ok(false);
+        }
+        let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let tx = conn.transaction().map_err(|_| FAILED)?;
+        let records = read_records(&tx)?;
+        let mut changed = false;
+        for record in records {
+            if let UpstreamSource::Subscription {
+                provider: current_provider,
+                account_id: current_account,
+                catalog: existing,
+                ..
+            } = &record.source
+            {
+                if *current_provider == provider
+                    && current_account == account_id
+                    && existing.as_slice() != catalog
+                {
+                    let mut candidate = record.clone();
+                    if let UpstreamSource::Subscription {
+                        catalog: target_catalog,
+                        ..
+                    } = &mut candidate.source
+                    {
+                        *target_catalog = catalog.to_vec();
+                    }
+                    if candidate.validate().is_ok() {
+                        write_record(&tx, &candidate)?;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            tx.commit().map_err(|_| FAILED)?;
+            drop(conn);
+            self.invalidate_routing_resources();
+        }
+        Ok(changed)
+    }
 }
 
 #[cfg(test)]

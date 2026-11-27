@@ -48,6 +48,10 @@ to query the same authenticated account again.
   account-specific client ID for refresh. Inference goes to the OpenAI API.
   A Codex token is never reused for this entry.
 - **GitHub Copilot** and **Grok** keep their existing device authorization flows.
+  GitHub Copilot uses Magpie-aligned editor/plugin headers (`vscode/1.140.0`,
+  `copilot-chat/0.68.0`, `GitHubCopilotChat/0.68.0`), sending `X-GitHub-Api-Version`
+  `2026-08-01` for `/models` discovery (for full long-context windows) and `2026-01-09`
+  for inference and usage requests.
 - **Gemini CLI** uses Google authorization or imports `.gemini/oauth_creds.json`.
   Code Assist selects the project, model availability and backend model IDs.
   Standard or Enterprise accounts can supply a Google Cloud project explicitly.
@@ -56,8 +60,18 @@ to query the same authenticated account again.
   adding an account opens Google sign-in without environment setup. Both
   `VARYAI_ANTIGRAVITY_CLIENT_ID` and `VARYAI_ANTIGRAVITY_CLIENT_SECRET` can
   optionally override that client; a partial override is rejected.
-  Model discovery uses `fetchAvailableModels` for the selected account. Account
-  JSON imports accept Google OAuth fields, optionally nested under `token`.
+  Model discovery uses `fetchAvailableModels` for the selected account with
+  the current Antigravity client version resolved from its updater manifest
+  (cached for 6 hours on success, retried after 30 minutes on failure, falling
+  back to the bundled version), caches `loadCodeAssist` entitlement tiers for
+  1 hour, orders models by `agentModelSorts`, excludes internal (`chat_*`,
+  `tab_*`) and retired/disabled entries, repairs mislabeled legacy display
+  names, and backs off refused entitlement tiers for 24 hours. Inference requests
+  send the cached `User-Agent` and `X-Goog-Api-Client` headers (warming stale
+  version cache in the background), and quota refreshes synchronize newly
+  discovered models back into the saved provider catalog without disturbing
+  open editor revisions. Account JSON imports accept Google OAuth fields,
+  optionally nested under `token`.
 
 - **WorkBuddy** and **WorkBuddy AI** open the vendor's browser sign-in for
   China and international accounts respectively. Vary AI polls for completion
