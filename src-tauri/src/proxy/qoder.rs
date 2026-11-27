@@ -245,9 +245,11 @@ pub(crate) async fn handle_official(
     .await
     {
         Ok(Ok(grant)) => grant,
-        Ok(Err(err)) => return Ok(super::gateway::policy_error(err)),
+        Ok(Err(err)) => return Ok(super::gateway::policy_error_for("qoder", &model, err)),
         Err(_) => {
-            return Ok(super::gateway::policy_error(
+            return Ok(super::gateway::policy_error_for(
+                "qoder",
+                &model,
                 super::gateway::GatewayError::Storage,
             ))
         }

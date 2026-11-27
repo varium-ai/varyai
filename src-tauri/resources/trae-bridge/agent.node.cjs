@@ -3,6 +3,19 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { isChatTarget, bootstrapSource, PipeClient } = require("./agent.cjs");
 const { PassThrough } = require("node:stream");
+test("a loading TRAE window does not block selection in an initialized window", async () => {
+  const { selectStartingModelInWindows } = require("./agent.cjs");
+  const applied = [];
+  const select = async (session) => {
+    applied.push(session);
+    if (session === "loading") throw Error("not ready");
+    return true;
+  };
+  assert.equal(await selectStartingModelInWindows(["agent"], 2, select), false);
+  assert.equal(await selectStartingModelInWindows(["loading", "ide"], 2, select), false);
+  assert.equal(await selectStartingModelInWindows(["agent", "ide"], 2, select), true);
+  assert.deepEqual(applied, ["agent", "loading", "ide", "agent", "ide"]);
+});
 test("IDE services survive module renumbering without loading unrelated modules", async () => {
   const { workbenchServices } = require("./agent.cjs");
   for (const id of [19208, 99001]) {
@@ -504,7 +517,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
       legacyAudits++;
       throw Error("older helper is disabled");
     },
-    __varyaiTraeAuditV23(payload) {
+    __varyaiTraeAuditV24(payload) {
       audits++;
       const { id, value } = JSON.parse(payload);
       value.body.messages[0].content[0].text = "[REDACTED]";
@@ -517,7 +530,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(released, 1);
   assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
   assert.equal(context.__varyaiTraeNativeBridge.modelVerification, 1);
-  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 23);
+  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 24);
   assert.equal(context.__varyaiTraeNativeBridge.startingModel, 1);
   const current = context.__varyaiTraeNativeBridge;
   assert.equal(typeof current.bridge.replace, "function");

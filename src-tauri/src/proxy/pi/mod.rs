@@ -472,6 +472,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
         latency_ms: 0,
         status: status.as_u16(),
         streaming,
+        error_message: None,
     };
     use super::tool_observation::parsers::{
         PROTOCOL_ANTHROPIC, PROTOCOL_GEMINI, PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES,

@@ -4708,7 +4708,7 @@
     "failed": "网关密钥操作失败",
     "nameExample": "例如：Desktop 测试、项目 A",
     "allModels": "允许全部模型",
-    "modelsHint": "对于绑定此密钥的本机 Agent，勾选模型后可直接使用，也可通过包含它的路由组使用。勾选路由组后，组内可用的成员模型均可直接使用。在「本机 agent」中绑定此密钥。",
+    "modelsHint": "勾选模型后可直接使用，也可通过包含它的路由组使用；勾选路由组后，组内可用的成员模型均可直接使用，也可通过包含这些成员的其他路由组使用。本机 Agent 请在「本机 agent」中绑定此密钥。",
     "searchModels": "搜索模型、供应商或路由组",
     "catalogFailed": "加载模型目录失败。",
     "noModels": "暂无可用的共享模型或路由组。",
@@ -4743,7 +4743,7 @@
     "noUsage": "还没有观察到请求。请绑定已开启本地路由的 agent，或使用网关密钥发送请求。",
     "usageRow": "{{requests}} 次请求 · {{tokens}} Token · {{unmetered}} 次未上报用量",
     "lastUsed": "最近请求：{{time}}",
-    "connectHint": "外部客户端要调用共享模型，请先将路由组发布到网关，再为此密钥授权该路由组。已接管的客户端可在「本机 agent」中绑定密钥。",
+    "connectHint": "外部客户端要调用共享模型，请先将路由组发布到网关，再为此密钥授权该路由组（或包含其成员的模型/其他路由组）。已接管的客户端可在「本机 agent」中绑定密钥。",
     "chooseKey": "选择一把密钥",
     "clientProtocol": "客户端请求协议",
     "exampleHint": "把 YOUR_GATEWAY_KEY 替换为保存的密钥，把 MODEL_ID 替换为允许的模型 ID。",
@@ -5627,6 +5627,17 @@
       "unavailable": "分类器不可用",
       "timeout": "意图判断超时",
       "no_user_text": "没有可用于分类的用户文本"
+    },
+    "classificationBadge": {
+      "easy": "简单任务",
+      "hard": "复杂任务",
+      "matched": "已命中意图",
+      "no_match": "未命中意图",
+      "failed": "分类失败"
+    },
+    "classificationResult": {
+      "easy": "已分类为简单任务",
+      "hard": "已分类为复杂任务"
     },
     "templateSmart": "难题给强模型，简单任务给便宜模型",
     "templateSmartHint": "压缩和难题优先用强模型，简单任务优先用低价模型。价格未知或相同时也会随机预选模型，保存前可以更换。",

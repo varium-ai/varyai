@@ -844,21 +844,11 @@ async fn set_agent_connection_inner(
             {
                 return Err(agent_connections::EMPTY.into());
             }
-        } else {
-            state
-                .proxy_service
-                .intent_runtime
-                .connections
-                .revoke(edition.app());
         }
-        {
-            let _guard = state.proxy_service.lock_switch_for_app(edition.app()).await;
-            state
-                .proxy_service
-                .agent_connections
-                .bridge_for(edition)
-                .bridge_select_model(enabled, model)?;
-        }
+        state
+            .proxy_service
+            .set_shared_trae_intent(edition, enabled, model)
+            .await?;
         state
             .proxy_service
             .finish_shared_trae_connection(edition, enabled)
@@ -866,13 +856,6 @@ async fn set_agent_connection_inner(
         return Ok(());
     }
     if app == "trae" {
-        if !enabled {
-            state
-                .proxy_service
-                .intent_runtime
-                .connections
-                .revoke("trae");
-        }
         if enabled {
             super::proxy::ensure_trae_consent(&app_handle, state.inner()).await?;
             state.proxy_service.start().await?;

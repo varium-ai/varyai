@@ -52,7 +52,7 @@
   "pi_upstream_redirect_rejected": "基於安全限制，已拒絕上游回傳的 HTTP 重新導向。",
   "pi_upstream_error": "上游供應商回傳錯誤（為防止敏感資訊回顯，已隱藏原始錯誤內容）。",
   "invalid_gateway_key": "Gateway 金鑰無效或已被撤銷。",
-  "model_not_allowed": "目前 Gateway 金鑰無權存取此模型。",
+  "model_not_allowed": "目前的閘道金鑰無權存取此模型。請選擇此金鑰允許清單中的模型。",
   "gateway_operation_not_supported": "目前 Gateway 預算策略不支援此操作。",
   "gateway_budget_exhausted": "目前 Gateway 金鑰的 Token 預算已耗盡。",
   "gateway_policy_unavailable": "Gateway 策略儲存暫時無法使用，請稍後重試。",

@@ -271,6 +271,7 @@ fn picker_icon(value: Option<&str>) -> Option<String> {
 }
 
 fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
+    let valid_model = |id: &&str| crate::services::intent_routing::valid_target(&provider.id, id);
     let mut rows = std::collections::BTreeMap::new();
     if let Some(entries) = provider
         .settings_config
@@ -278,9 +279,7 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
         .and_then(serde_json::Value::as_array)
     {
         for entry in entries {
-            let Some(id) = entry["model"].as_str().map(str::trim).filter(|id| {
-                !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control)
-            }) else {
+            let Some(id) = entry["model"].as_str().map(str::trim).filter(valid_model) else {
                 continue;
             };
             let name =
@@ -316,7 +315,7 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
             .get("model")
             .and_then(toml::Value::as_str)
             .map(str::trim)
-            .filter(|id| !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control))
+            .filter(valid_model)
         {
             rows.entry(id.into()).or_insert_with(|| ModelOption {
                 id: id.into(),
@@ -337,6 +336,42 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
 
 #[cfg(test)]
 mod model_picker_tests {
+    #[test]
+    fn routing_picker_offers_only_models_that_can_be_saved_as_group_members() {
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            serde_json::json!({"modelCatalog":{"models":[
+                {"model":"auto/existing-group"},
+                {"model":"vary-auto/another-group"},
+                {"model":"vary-provider/another-route"},
+                {"model":"vendor/first"},
+                {"model":"vendor/second"},
+                {"model":"vendor/third"}
+            ]}, "config":"model = 'vary-auto/imported-group'"}),
+            None,
+        );
+        let choices = super::model_options(&provider);
+        assert_eq!(
+            choices
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["vendor/first", "vendor/second", "vendor/third"]
+        );
+        let group: crate::services::intent_routing::RoutingGroup = serde_json::from_value(
+            serde_json::json!({
+                "id":"custom-fixture","name":"Custom synthetic group","revision":0,"client":"global",
+                "enabled":true,"defaultMemberId":"first","fallbackMemberIds":["second","third"],
+                "intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[],
+                "members":choices.iter().zip(["first", "second", "third"]).map(|(model, id)| {
+                    serde_json::json!({"id":id,"providerId":provider.id,"modelId":model.id})
+                }).collect::<Vec<_>>()
+            }),
+        ).expect("custom group from picker");
+        assert_eq!(group.validate(), Ok(()));
+    }
+
     #[test]
     fn fetched_capabilities_reach_picker_without_rewriting_saved_model_rows() {
         let provider = crate::provider::Provider::with_id(

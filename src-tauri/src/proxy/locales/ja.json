@@ -52,7 +52,7 @@
   "pi_upstream_redirect_rejected": "セキュリティ上の理由によりアップストリームの HTTP リダイレクトが拒否されました。",
   "pi_upstream_error": "アップストリームプロバイダーがエラーを返しました（安全のため詳細は非表示）。",
   "invalid_gateway_key": "無効または失効したゲートウェイ認証情報です。",
-  "model_not_allowed": "このゲートウェイキーではこのモデルは許可されていません。",
+  "model_not_allowed": "このゲートウェイキーではこのモデルは許可されていません。キーの許可リストからモデルを選択してください。",
   "gateway_operation_not_supported": "この操作はゲートウェイの予算ポリシーでサポートされていません。",
   "gateway_budget_exhausted": "ゲートウェイのトークン予算が使い切られました。",
   "gateway_policy_unavailable": "ゲートウェイポリシーが一時的に利用できません。",

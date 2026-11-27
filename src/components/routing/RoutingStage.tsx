@@ -20,6 +20,7 @@ import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import appIcon from "@/assets/icons/app-icon.png";
 import { RoutingPackets } from "./RoutingPackets";
 import { attemptCandidateIndex } from "./routingAttempts";
+import { resolveRoutingClassification } from "./routingClassification";
 import { formatRoutingDuration } from "@/lib/routingDuration";
 import { routingSourceKey, useRoutingFlights } from "./useRoutingFlights";
 import type {
@@ -457,6 +458,7 @@ export function RoutingStage({
         ] ?? "",
     ),
   ];
+  const idleClassification = resolveRoutingClassification(row);
   return (
     <div
       className={`rt-stage${narrow ? " narrow" : ""}${stageLayout === "compact" ? " compact" : ""}`}
@@ -602,6 +604,15 @@ export function RoutingStage({
             {row?.status != null && row.status >= 400 && row.status !== 499 && (
               <code>{row.status}</code>
             )}
+            {idleClassification && (
+              <span
+                className={`rt-cls-badge ${idleClassification.tone}`}
+                data-classification-tone={idleClassification.tone}
+                title={t(idleClassification.detailKey)}
+              >
+                {t(idleClassification.badgeKey)}
+              </span>
+            )}
           </li>
         )}
         {routeGroups.map((group) => {
@@ -610,6 +621,21 @@ export function RoutingStage({
           const groupActive = group.items.some(
             ({ trace }) => isAnswering(trace) || trace.state === "completed",
           );
+          const groupClassifiedTrace = group.items
+            .map(({ trace }) => trace)
+            .filter((trace) => Boolean(trace.classificationOutcome))
+            .sort((a, b) => {
+              const liveDiff = Number(isAnswering(b)) - Number(isAnswering(a));
+              return liveDiff !== 0 ? liveDiff : b.startedAt - a.startedAt;
+            })[0];
+          const groupBadge = resolveRoutingClassification(groupClassifiedTrace);
+          const groupTones = new Set(
+            group.items
+              .map(({ trace }) => resolveRoutingClassification(trace))
+              .filter(Boolean)
+              .map((item) => `${item!.tone}:${item!.detailKey}`),
+          );
+          const showSeatClassification = !showSub || groupTones.size > 1;
           return (
             <Fragment key={group.key}>
               {showSub && (
@@ -642,6 +668,15 @@ export function RoutingStage({
                     !group.modelRef.startsWith("vary-auto/") && (
                       <code className="mdl">{group.modelRef}</code>
                     )}
+                  {groupBadge && (
+                    <span
+                      className={`rt-cls-badge ${groupBadge.tone}`}
+                      data-classification-tone={groupBadge.tone}
+                      title={t(groupBadge.detailKey)}
+                    >
+                      {t(groupBadge.badgeKey)}
+                    </span>
+                  )}
                   <span className="chev" aria-hidden="true">
                     <ChevronDown size={13} />
                   </span>
@@ -821,6 +856,13 @@ export function RoutingStage({
                   ]
                     .filter(Boolean)
                     .join(" · ");
+                  const seatClassification =
+                    showSeatClassification &&
+                    (answering ||
+                      answered ||
+                      (chosen === index && trace.state === "failed"))
+                      ? resolveRoutingClassification(trace)
+                      : undefined;
                   return (
                     <li
                       key={candidateKey(trace, candidate)}
@@ -858,6 +900,15 @@ export function RoutingStage({
                             ? ` :${candidate.fixedEffort}`
                             : ""}
                         </code>
+                        {seatClassification && (
+                          <span
+                            className={`rt-cls-badge ${seatClassification.tone}`}
+                            data-classification-tone={seatClassification.tone}
+                            title={t(seatClassification.detailKey)}
+                          >
+                            {t(seatClassification.badgeKey)}
+                          </span>
+                        )}
                       </b>
                       <em
                         className={`rt-seat-status${sessionLabel || rateLabel ? " has-response" : ""}`}

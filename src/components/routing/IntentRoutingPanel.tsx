@@ -673,8 +673,14 @@ export function IntentRoutingPanel({
             : draftTemplate === "templateCapability" || draft.quotaOrder
               ? withDraftMemberOrder(draft, draft.members)
               : draft;
+        const defaultMemberId =
+          draftTemplate ||
+          group.members.some(({ id }) => id === group.defaultMemberId)
+            ? group.defaultMemberId
+            : (group.members[0]?.id ?? "");
         await saveGroup({
           ...group,
+          defaultMemberId,
           name: draft.name.trim(),
           sink: !!draft.sink,
           ...(pattern
@@ -1705,8 +1711,13 @@ export function IntentRoutingPanel({
                   </div>
                 )}
                 <details className="rt-edit-settings">
-                  <summary className="cursor-pointer text-sm text-muted-foreground">
+                  <summary>
                     {t("modelPicker.groupSettings")}
+                    <ChevronDown
+                      className="rt-advanced-chevron"
+                      size={13}
+                      aria-hidden="true"
+                    />
                   </summary>
                   <div className="mt-3 space-y-4">
                     <div className="flex items-start justify-between gap-5">
@@ -1741,7 +1752,10 @@ export function IntentRoutingPanel({
                         disabled={pending}
                         value={draft.defaultMemberId}
                         onValueChange={(value) => {
-                          edit({ ...draft, defaultMemberId: value });
+                          // The hidden select can emit an empty value while its options change.
+                          if (draft.members.some(({ id }) => id === value)) {
+                            edit({ ...draft, defaultMemberId: value });
+                          }
                         }}
                       >
                         <SelectTrigger

@@ -52,6 +52,80 @@ impl GroupMemberPolicy {
                 .map(|target| direct_alias(&target.provider_id, &target.model)),
         );
     }
+
+    pub(crate) fn expanded_models(
+        policy: &KeyPolicy,
+        catalog: Option<&Menu>,
+    ) -> std::collections::HashSet<String> {
+        let mut models: std::collections::HashSet<String> = policy.models.iter().cloned().collect();
+        if let Some(catalog) = catalog {
+            for group in policy.models.iter().filter_map(|id| {
+                catalog
+                    .groups
+                    .get(id)
+                    .filter(|group| group.group.enabled)
+                    .map(Arc::as_ref)
+            }) {
+                models.extend(
+                    group
+                        .menu_targets()
+                        .map(|target| direct_alias(&target.provider_id, &target.model)),
+                );
+            }
+        }
+        models
+    }
+
+    pub(crate) fn for_session(
+        policy: &KeyPolicy,
+        session: &Session,
+        requested: &str,
+        exact: bool,
+        temporary_route: bool,
+        catalog: Option<&PublishedMenu>,
+        routing_generation: u64,
+    ) -> Result<Self, GatewayError> {
+        let mut allowed = Self {
+            group_id: session.group.id.clone(),
+            published_group: session.group.enabled,
+            catalog_generation: catalog.and_then(|menu| menu.generation),
+            models: Self::expanded_models(policy, catalog.map(|menu| menu.menu.as_ref())),
+        };
+        if !allowed.current(routing_generation) {
+            return Err(GatewayError::Storage);
+        }
+        // Temporary execution can come from an unsaved draft. Only the
+        // published catalog or explicit model permissions may grant its targets.
+        if exact && session.group.enabled && !temporary_route {
+            let published_group = catalog
+                .and_then(|menu| menu.groups.get(requested))
+                .filter(|group| group.group.enabled)
+                .map(Arc::as_ref);
+            allowed.allow_members(published_group.unwrap_or(session));
+        }
+        if !allowed.permits_session(session) {
+            return Err(GatewayError::Forbidden);
+        }
+        Ok(allowed)
+    }
+
+    pub(crate) fn permits_published_group(
+        policy: &KeyPolicy,
+        alias: &str,
+        session: &Session,
+        catalog: &Menu,
+    ) -> bool {
+        if !session.group.enabled {
+            return false;
+        }
+        if policy.all_models || policy.models.iter().any(|model| model == alias) {
+            return true;
+        }
+        let models = Self::expanded_models(policy, Some(catalog));
+        session
+            .menu_targets()
+            .any(|target| models.contains(&direct_alias(&target.provider_id, &target.model)))
+    }
 }
 
 pub(crate) async fn agent_policy_catalog(
@@ -151,9 +225,10 @@ impl Database {
         model: &str,
         now: i64,
     ) -> Result<Option<Grant>, GatewayError> {
-        self.authorize_gateway_agent_model(app, model, None, None, None, now)
+        self.authorize_gateway_agent_model(app, model, None, None, None, false, now)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn authorize_gateway_agent_model(
         &self,
         app: &str,
@@ -161,6 +236,7 @@ impl Database {
         alias: Option<&str>,
         route: Option<&Session>,
         catalog: Option<&PublishedMenu>,
+        temporary_route: bool,
         now: i64,
     ) -> Result<Option<Grant>, GatewayError> {
         let conn = self
@@ -207,35 +283,21 @@ impl Database {
         drop(conn);
         let requested = alias.unwrap_or(model);
         let exact = policy.models.iter().any(|m| m == model || m == requested);
-        let managed = route.filter(|s| s.group.enabled || requested.starts_with("vary-provider/"));
+        let managed = route.filter(|s| {
+            temporary_route || s.group.enabled || requested.starts_with("vary-provider/")
+        });
         let group_members = if policy.all_models {
             None
         } else if let Some(session) = managed {
-            let mut allowed = GroupMemberPolicy {
-                group_id: session.group.id.clone(),
-                published_group: session.group.enabled,
-                catalog_generation: catalog.and_then(|menu| menu.generation),
-                models: policy.models.iter().cloned().collect(),
-            };
-            if !allowed.current(self.routing_generation()) {
-                return Err(GatewayError::Storage);
-            }
-            let published_group = |alias: &str| {
-                catalog
-                    .and_then(|menu| menu.groups.get(alias))
-                    .filter(|group| group.group.enabled)
-                    .map(Arc::as_ref)
-            };
-            for group in policy.models.iter().filter_map(|id| published_group(id)) {
-                allowed.allow_members(group);
-            }
-            if exact && session.group.enabled {
-                allowed.allow_members(published_group(requested).unwrap_or(session));
-            }
-            if !allowed.permits_session(session) {
-                return Err(GatewayError::Forbidden);
-            }
-            Some(allowed)
+            Some(GroupMemberPolicy::for_session(
+                &policy,
+                session,
+                requested,
+                exact,
+                temporary_route,
+                catalog,
+                self.routing_generation(),
+            )?)
         } else if exact {
             None
         } else {
@@ -411,18 +473,34 @@ pub async fn enforce_agent(
         _ => return super::ingress::error(GatewayError::Storage),
     }
     if unsupported {
-        return super::ingress::error(GatewayError::UnsupportedOperation);
+        return super::ingress::policy_error_for(
+            &app,
+            "<unsupported>",
+            GatewayError::UnsupportedOperation,
+        );
     }
     let (mut parts, body) = request.into_parts();
     let bytes = match to_bytes(body, 200 * 1024 * 1024).await {
         Ok(v) => v,
-        Err(_) => return super::ingress::error(GatewayError::Forbidden),
+        Err(_) => {
+            return super::ingress::policy_error_for(
+                &app,
+                "<body_too_large>",
+                GatewayError::Forbidden,
+            )
+        }
     };
     let mut headers = parts.headers.clone();
     let decoded =
         match crate::proxy::handlers::decode_codex_request_body(&mut headers, bytes.clone()) {
             Ok(v) => v,
-            Err(_) => return super::ingress::error(GatewayError::Forbidden),
+            Err(_) => {
+                return super::ingress::policy_error_for(
+                    &app,
+                    "<invalid_encoding>",
+                    GatewayError::Forbidden,
+                )
+            }
         };
     let model = path_model(&path)
         .or_else(|| {
@@ -431,69 +509,126 @@ pub async fn enforce_agent(
                 .and_then(|v| v["model"].as_str().map(str::to_owned))
         })
         .unwrap_or_default();
-    let intent_menu = if matches!(
+    let is_intent_path = matches!(
         path.as_str(),
         "/intent/v1/responses" | "/intent/v1/responses/compact"
-    ) {
-        let token = parts
-            .headers
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "));
+    );
+    let is_native_codex = matches!(
+        path.as_str(),
+        "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
+    );
+    if is_intent_path || is_native_codex {
+        let generation = state.db.routing_generation();
+        let menu_stale = match state.intent_runtime.menu_publication() {
+            Ok(menu) => menu.is_some_and(|m| !m.current(generation)),
+            Err(_) => return super::ingress::policy_error_for(&app, &model, GatewayError::Storage),
+        };
+        if (menu_stale || state.intent_runtime.native.is_stale(generation))
+            && !state.intent_runtime.ensure_menu_current(&state.db).await
+        {
+            return crate::proxy::intent::catalog_stale();
+        }
+    }
+    let token = is_intent_path
+        .then(|| {
+            parts
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+        })
+        .flatten();
+    let intent_menu = if is_intent_path {
         match state.intent_runtime.menu_publication() {
             Ok(menu) => menu.filter(|menu| token == Some(menu.token.as_str())),
-            Err(_) => return super::ingress::error(GatewayError::Storage),
+            Err(_) => return super::ingress::policy_error_for(&app, &model, GatewayError::Storage),
         }
     } else {
         None
     };
-    let managed_codex = intent_menu.is_some()
-        || matches!(
-            path.as_str(),
-            "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
-        );
-    let (alias, expected, group) = if managed_codex {
+    let temp_session = if is_intent_path && intent_menu.is_none() {
+        token
+            .and_then(|token| state.intent_runtime.temporary_session(token))
+            .filter(|session| {
+                model == session.group.alias() || model == format!("vary-auto/{}", session.group.id)
+            })
+    } else {
+        None
+    };
+    let managed_codex = intent_menu.is_some() || is_native_codex;
+    let (alias, expected, group, temporary_route) = if managed_codex {
         let (native_group, resolved) = match state.intent_runtime.native.policy_model(&model) {
             Ok(policy) => policy,
-            Err(_) => return super::ingress::error(GatewayError::Storage),
+            Err(_) => return super::ingress::policy_error_for(&app, &model, GatewayError::Storage),
         };
-        let group = match intent_menu {
-            Some(menu) => menu.groups.get(&resolved).cloned(),
-            None => native_group,
+        let (policy_alias, group) = if let Some(menu) = intent_menu.as_ref() {
+            let side_alias = crate::proxy::intent::is_side_request(&parts.headers)
+                .then(|| {
+                    state.intent_runtime.side_session_alias(
+                        "local-codex",
+                        crate::proxy::intent::named_conversation(&parts.headers),
+                    )
+                })
+                .flatten()
+                .filter(|alias| menu.groups.contains_key(alias));
+            let policy_alias = side_alias.unwrap_or_else(|| resolved.clone());
+            let group = menu.groups.get(&policy_alias).cloned();
+            (policy_alias, group)
+        } else {
+            (resolved.clone(), native_group)
         };
         (
-            group.as_ref().map(|_| resolved.clone()),
+            group.as_ref().map(|_| policy_alias),
             Some(AuthorizedCodexModel(resolved)),
             group,
+            false,
         )
+    } else if let Some(session) = temp_session {
+        (Some(session.group.alias()), None, Some(session), true)
     } else {
-        (None, None, None)
+        (None, None, None, false)
     };
     let catalog = if group.is_some() {
         match agent_policy_catalog(&state).await {
             Ok(catalog) => catalog,
-            Err(err) => return super::ingress::error(err),
+            Err(err) => {
+                return super::ingress::policy_error_for(
+                    &app,
+                    alias.as_deref().unwrap_or(&model),
+                    err,
+                );
+            }
         }
     } else {
         None
     };
     let db = state.db.clone();
     let lookup = app.clone();
+    let logged_model = alias.clone().unwrap_or_else(|| model.clone());
+    let policy_model = match (&alias, &expected) {
+        // When the request follows its conversation's route, only that route's
+        // or its actual members' permissions can authorize the operation.
+        (Some(alias), Some(expected)) if alias != &expected.0 => alias.clone(),
+        _ => model,
+    };
     let grant = match tokio::task::spawn_blocking(move || {
         db.authorize_gateway_agent_model(
             &lookup,
-            &model,
+            &policy_model,
             alias.as_deref(),
             group.as_deref(),
             catalog.as_ref(),
+            temporary_route,
             Utc::now().timestamp(),
         )
     })
     .await
     {
         Ok(Ok(grant)) => grant,
-        Ok(Err(err)) => return super::ingress::error(err),
-        Err(_) => return super::ingress::error(GatewayError::Storage),
+        Ok(Err(err)) => return super::ingress::policy_error_for(&app, &logged_model, err),
+        Err(_) => {
+            return super::ingress::policy_error_for(&app, &logged_model, GatewayError::Storage);
+        }
     };
     if let Some(grant) = &grant {
         parts.extensions.insert(grant.upstream_model.clone());

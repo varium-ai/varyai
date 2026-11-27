@@ -641,6 +641,13 @@ impl Runtime {
             });
         }
     }
+    pub(crate) fn temporary_session(&self, token: &str) -> Option<Arc<Session>> {
+        self.sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(token).map(|entry| entry.snapshot.clone()))
+            .filter(|session| session.created.elapsed() < TEMPORARY_SESSION_TTL)
+    }
     pub(crate) async fn ensure_global_current(&self, db: &crate::database::Database) -> bool {
         if self.global_current(db.routing_generation()) {
             return true;
@@ -654,12 +661,14 @@ impl Runtime {
         self.global_current(db.routing_generation())
     }
     pub(crate) async fn ensure_menu_current(&self, db: &crate::database::Database) -> bool {
+        let generation = db.routing_generation();
         let stale = self
             .menu
             .read()
             .ok()
-            .and_then(|slot| slot.as_ref().map(|m| !m.current(db.routing_generation())))
-            .unwrap_or(false);
+            .and_then(|slot| slot.as_ref().map(|m| !m.current(generation)))
+            .unwrap_or(false)
+            || self.native.is_stale(generation);
         if !stale {
             return true;
         }
@@ -674,11 +683,13 @@ impl Runtime {
         if let Err(err) = refresher().await {
             log::warn!("[Routing] On-demand menu catalog refresh failed: {err}");
         }
-        self.menu
+        let menu_current = self
+            .menu
             .read()
             .ok()
-            .and_then(|slot| slot.as_ref().map(|m| m.current(db.routing_generation())))
-            .unwrap_or(true)
+            .and_then(|slot| slot.as_ref().map(|m| m.current(generation)))
+            .unwrap_or(true);
+        menu_current && !self.native.is_stale(generation)
     }
     pub(crate) fn set_global(&self, mut menu: Menu, generation: u64) -> Result<(), String> {
         self.reserve_global_aliases(menu.groups.keys().cloned())?;
@@ -1780,6 +1791,14 @@ pub(crate) async fn handle(
     .await
 }
 
+pub(crate) fn is_side_request(headers: &http::HeaderMap) -> bool {
+    trace::is_side_request(headers)
+}
+
+pub(crate) fn named_conversation(headers: &http::HeaderMap) -> Option<&str> {
+    identity::named(headers)
+}
+
 pub(crate) fn catalog_stale() -> Response {
     error(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale")
 }
@@ -1976,7 +1995,12 @@ async fn execute(
     }
     let policy_rejected = || {
         trace.finish(StatusCode::FORBIDDEN.as_u16(), trace::State::Failed);
-        super::gateway::policy_error(super::gateway::GatewayError::Forbidden)
+        let alias = session
+            .group
+            .model_alias
+            .as_deref()
+            .unwrap_or(&session.group.id);
+        super::gateway::policy_error_for(agent, alias, super::gateway::GatewayError::Forbidden)
     };
     if group_policy.is_some_and(|policy| !policy.permits_session(&session)) {
         return policy_rejected();
@@ -2321,10 +2345,18 @@ async fn execute(
         }
         pinned = Some(forced.0);
     }
-    if pinned.is_some_and(|index| !target_permitted(index))
-        || checkpoint_owner.is_some_and(|index| !target_permitted(index))
-    {
+    if checkpoint_owner.is_some_and(|index| !target_permitted(index)) {
         return policy_rejected();
+    }
+    if pinned.is_some_and(|index| !target_permitted(index)) {
+        if portable_reroutable && parts.extensions.get::<native::ForcedTarget>().is_none() {
+            pinned = None;
+        } else {
+            return policy_rejected();
+        }
+    }
+    if affinity.is_some_and(|index| !target_permitted(index)) {
+        affinity = None;
     }
     if pinned.is_some_and(|index| {
         session.targets.get(index).is_none_or(|target| {
@@ -2481,15 +2513,36 @@ async fn execute(
             .as_ref()
             .is_some_and(|target| policy.allows(&target.provider_id, &target.model_id))
     });
-    let classified = if inspected_projection["_group_projection_incomplete"] != true
-        && desktop_purpose != Some(super::connections::desktop::Purpose::Probe)
-        && !count_tokens
-        && !is_compact
-        && pinned.is_none()
-        && classifier_permitted
-        && session.group.uses_classifier()
-        && !classifier_candidates.is_empty()
-    {
+    let log_classification = session.group.uses_classifier()
+        || session.group.template == Some(crate::services::intent_routing::RoutingTemplate::Smart);
+    let skip_reason = if !session.group.uses_classifier() {
+        Some("disabled")
+    } else if inspected_projection["_group_projection_incomplete"] == true {
+        Some("projection_incomplete")
+    } else if desktop_purpose == Some(super::connections::desktop::Purpose::Probe) {
+        Some("desktop_probe")
+    } else if count_tokens {
+        Some("count_tokens")
+    } else if is_compact {
+        Some("compaction")
+    } else if pinned.is_some() {
+        Some("pinned")
+    } else if !classifier_permitted {
+        Some("policy_denied")
+    } else if classifier_candidates.is_empty() {
+        Some("no_eligible_rules")
+    } else {
+        None
+    };
+    let classified = if let Some(reason) = skip_reason {
+        if log_classification {
+            log::info!(
+                "[Intent] classification trace_id={} agent={agent} classified=false reason={reason}",
+                trace.id
+            );
+        }
+        None
+    } else {
         let text = if closed_tool_turn {
             classifier::extract_user_text_after_closed_tools(inspected_projection, responses_replay)
         } else {
@@ -2501,28 +2554,119 @@ async fn execute(
                 eligible
                     .rules
                     .retain(|rule| classifier_candidates.contains(&rule.id));
-                match classifier::trial_prepared(eligible, provider, text).await {
+                match classifier::trial_prepared(eligible, provider.clone(), text).await {
                     Ok(result) => {
-                        trace.classification(result.outcome);
+                        let difficulty = (result.outcome == "matched")
+                            .then(|| {
+                                classifier::classification_difficulty(
+                                    &session.group,
+                                    result.intent_id.as_deref(),
+                                )
+                            })
+                            .flatten();
+                        trace.classification(result.outcome, difficulty);
+                        if let Some(telemetry) = result.telemetry {
+                            let in_tok = telemetry
+                                .usage
+                                .as_ref()
+                                .map(|u| u.input_tokens)
+                                .unwrap_or(0);
+                            let out_tok = telemetry
+                                .usage
+                                .as_ref()
+                                .map(|u| u.output_tokens)
+                                .unwrap_or(0);
+                            if result.outcome == "matched" {
+                                let difficulty_label = difficulty.unwrap_or("custom");
+                                log::info!(
+                                    "[Intent] classification trace_id={} agent={agent} classified=true outcome=matched difficulty={difficulty_label} latency_ms={} status={} input_tokens={in_tok} output_tokens={out_tok}",
+                                    trace.id,
+                                    telemetry.latency_ms,
+                                    telemetry.status
+                                );
+                            } else if result.outcome == "no_match" {
+                                log::info!(
+                                    "[Intent] classification trace_id={} agent={agent} classified=true outcome=no_match difficulty=none latency_ms={} status={} input_tokens={in_tok} output_tokens={out_tok}",
+                                    trace.id,
+                                    telemetry.latency_ms,
+                                    telemetry.status
+                                );
+                            } else {
+                                log::warn!(
+                                    "[Intent] classification trace_id={} agent={agent} classified={} outcome={} reason={} latency_ms={} status={}",
+                                    trace.id,
+                                    telemetry.dispatched,
+                                    result.outcome,
+                                    telemetry.detail,
+                                    telemetry.latency_ms,
+                                    telemetry.status
+                                );
+                            }
+                            if !external && telemetry.dispatched {
+                                let app_type = consumer_app.unwrap_or("codex");
+                                let mut usage = telemetry.usage.unwrap_or_default();
+                                if crate::services::sql_helpers::is_cache_inclusive_app(app_type) {
+                                    usage.input_tokens = usage
+                                        .input_tokens
+                                        .saturating_add(usage.cache_read_tokens)
+                                        .saturating_add(usage.cache_creation_tokens);
+                                }
+                                let status = if telemetry.status == 0 {
+                                    502
+                                } else {
+                                    telemetry.status
+                                };
+                                let error_message = (status >= 300
+                                    || result.outcome == "request_failed")
+                                    .then(|| format!("classification_{}", result.outcome));
+                                super::pi::usage::emit(super::pi::usage::Job {
+                                    app_type,
+                                    db: state.db.clone(),
+                                    request_id: format!("{}:classifier", trace.id),
+                                    provider_id:
+                                        crate::services::routing_upstreams::execution_identity(
+                                            &provider,
+                                        )
+                                        .to_owned(),
+                                    request_model: telemetry.model,
+                                    session_id: None,
+                                    usage,
+                                    latency_ms: telemetry.latency_ms,
+                                    status,
+                                    streaming: false,
+                                    error_message,
+                                });
+                            }
+                        }
                         result.intent_id
                     }
                     Err(_) => {
-                        trace.classification("unavailable");
+                        trace.classification("unavailable", None);
+                        log::warn!(
+                            "[Intent] classification trace_id={} agent={agent} classified=false outcome=unavailable reason=classifier_unavailable",
+                            trace.id
+                        );
                         None
                     }
                 }
             }
             (None, _) => {
-                trace.classification("no_user_text");
+                trace.classification("no_user_text", None);
+                log::info!(
+                    "[Intent] classification trace_id={} agent={agent} classified=false outcome=no_user_text reason=no_user_text",
+                    trace.id
+                );
                 None
             }
             (_, None) => {
-                trace.classification("unavailable");
+                trace.classification("unavailable", None);
+                log::warn!(
+                    "[Intent] classification trace_id={} agent={agent} classified=false outcome=unavailable reason=classifier_unavailable",
+                    trace.id
+                );
                 None
             }
         }
-    } else {
-        None
     };
     let matched_rules = match scoped.update(|bindings| {
         if pinned.is_some() {
@@ -3889,6 +4033,7 @@ async fn execute(
             latency_ms: 0,
             status: status.as_u16(),
             streaming,
+            error_message: None,
         };
         let metadata = super::tool_observation::mount::metadata(
             match protocol {

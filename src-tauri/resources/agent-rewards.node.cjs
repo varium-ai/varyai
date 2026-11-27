@@ -178,6 +178,31 @@ test("Qoder status never claims and respects the vendor campaign window", async 
     ["GET"],
   );
 });
+test("Qoder's confirmed daily check-in survives a concurrent claimable bonus", async () => {
+  const bonus = {
+    ...campaign,
+    campaignId: "synthetic-bonus",
+    startAt: now - 3600000,
+    endAt: now + 10 * 86400000,
+  };
+  const daily = { ...campaign, claimStatus: "CLAIMED" };
+  const read = await qoderCampaigns(
+    async () => ({ campaigns: [daily, bonus] }),
+    false,
+    now,
+  );
+  assert.equal(read.outcome, "not_checked");
+  assert.equal(read.rewardDay, "2026-11-05");
+  const claim = await qoderCampaigns(
+    async (_url, method) =>
+      method === "GET"
+        ? { campaigns: [campaign, bonus] }
+        : { status: "CLAIMED" },
+    true,
+    now,
+  );
+  assert.equal(claim.rewardDay, "2026-11-05");
+});
 test("Qoder claims only current benefit campaigns and confirms the claim body", async () => {
   for (const status of ["CLAIMED", "unknown"]) {
     const paths = [];
@@ -647,7 +672,7 @@ test("Qoder records confirmed daily windows ending in the last minute before 10:
   }
 });
 
-test("Qoder does not date unconfirmed, shifted, shortened or mixed campaign windows", async () => {
+test("Qoder dates only confirmed daily campaigns, including when other campaigns are present", async () => {
   const daily = { ...campaign, endAt: campaign.endAt - 60000 };
   for (const value of [
     { ...daily, claimStatus: "CLAIMABLE" },
@@ -678,7 +703,7 @@ test("Qoder does not date unconfirmed, shifted, shortened or mixed campaign wind
     false,
     now,
   );
-  assert.equal(mixed.rewardDay, undefined);
+  assert.equal(mixed.rewardDay, "2026-11-05");
   const failed = await qoderCampaigns(
     async (_, method) =>
       method === "POST" ? { status: "FAILED" } : { campaigns: [daily] },

@@ -11,6 +11,7 @@ Open **Plans / Routing** from the sidebar. Manage independent global connections
 - Create, edit and delete up to 32 groups, each with up to 256 members and 16 intent rules. Removing a member promotes each rule's next surviving target and drops only rules with no targets.
 - Add global providers explicitly in **Models / Providers**, or manually import a supported existing Agent configuration from the add sheet. Startup, catalog reads and proxy refreshes never import saved Agent configurations automatically. Imported references read the source provider's stored configuration; they do not copy managed OAuth tokens or change its live client files. Existing identities, including legacy Codex IDs, remain stable so saved groups and direct-model aliases remain usable. Names or URLs never merge accounts automatically.
 - Group members reference global upstream IDs. The persisted JSON key remains `providerId` for compatibility. Older `client:"codex"` documents remain readable; saving normalizes them to `client:"global"`. The field no longer determines ownership.
+- The group editor uses the saved-group validator to list selectable provider models. Imported VaryAI route aliases do not appear as model members, which prevents automatic selection from adding an invalid group reference.
 - Choose the default and explicitly approved fallbacks. The planner deduplicates candidates and retains each exact upstream model ID. Classifiers support API-key upstreams using Chat Completions, OpenAI Responses, Anthropic Messages or Gemini Native. They also support selected models from a bound WorkBuddy China or WorkBuddy AI subscription.
 - **Publish to gateway**, followed by **Save**, adds an executable group to connected Agent model pickers and makes it available through authenticated external access. Turning this off withdraws the group from both, including the Codex picker in the ChatGPT app. Existing key allowlists still apply. Automatically discovered groups are published when discovery creates them. Publication leaves disconnected Agents and a stopped listener in their current state.
 
@@ -103,12 +104,19 @@ macOS and Windows.
 
 Click the group name, member summary, blank row space or **Edit** to open its editor. **Create group** opens the template chooser first. The compact list remains in place behind the dialog. Publication toggles, drag handles and delete icons keep their own actions. The dialog is capped at 880 px wide with a scrollable body and persistent Save/Cancel actions. Group deletion is available only through the list's trash icon and its confirmation dialog; the editor footer has no group deletion action. Focus starts in the group name and returns to the row's Edit button or the creation trigger after closing.
 
-Custom drafts start with an editable, distinct group name. The publication
-switch also works for automatically discovered groups and retains discovery
-as their membership source. The live stage labels the session's name as the
-conversation title. For a local ZCode request, the stage reads the title from
-the desktop task index using the request's exact session identifier. The stage
-shows a short reference while a matching title is unavailable.
+Custom drafts start with an editable, distinct group name. If its default model
+is removed, the first remaining selected model becomes the default. Selecting
+models after clearing the list also assigns the first selected model as the
+default. In **Advanced settings**, expand **Group settings** below **Reasoning
+levels** to choose a different default. Save uses the first selected model if
+the current default is missing.
+
+The publication switch also works for automatically discovered groups and
+retains discovery as their membership source. The live stage labels the
+session's name as the conversation title. For a local ZCode request, the stage
+reads the title from the desktop task index using the request's exact session
+identifier. The stage shows a short reference while a matching title is
+unavailable.
 
 When an Agent sends requests to different routes at the same time, each
 route has its own source and attempted upstream cards. The cards show the
@@ -182,6 +190,13 @@ one model per supplier.
   the same editor. New drafts use a 10,000 ms deadline.
   The built-in hard and easy rule descriptions follow the interface language.
   The classifier uses the saved rule descriptions, including any custom text.
+  Each intent-classification attempt emits a privacy-safe structured runtime
+  log stating whether classification ran (`classified=true`/`false`), the
+  difficulty result (`easy`, `hard`, `custom`, or `none`) or skip/failure reason,
+  and records dispatched classifier usage and failure status into Statistics
+  (`proxy_request_logs`) without blocking request forwarding. The live route
+  graph displays the classification difficulty or failure badge directly on the
+  stage and in the footer.
 - **Most capable first.** The initial list follows the template's recommendation.
   Replacing a model keeps its position. Select **Apply recommended order** to
   rank the current members again.
@@ -445,6 +460,15 @@ image falls back to the standard provider icon.
 Claude Desktop has a separate **model list** control on its connected Agent row, following the reference implementation's distinction between model visibility and a chat's selected model. Search and check several models, show or hide all, then save. By default, newly added shared models appear automatically; **Only models I pick** keeps new models hidden until explicitly selected. These preferences survive disconnect, reapply, gateway suspension and catalog refresh, and never hide a model from another Agent or disable its global provider. The native gateway profile and authenticated Desktop model-list endpoint publish only the visible subset, including an explicitly empty list. Visibility is not an access-control policy and does not invalidate an existing conversation's model identity. Quit and reopen Claude Desktop to load the updated profile, then choose the model inside Desktop. Configuration conflicts keep the recovery record rather than overwriting externally changed fields. This covers model visibility, not the reference implementation's separate per-Agent model ordering controls.
 
 Disconnected Agents with a starting-model control show their persisted native model selection. **Default** means that no explicit model is stored and the tool chooses its own default; it is not a guessed model ID, a shared-catalog default, or proof of a Vary connection. The current native value is read-only in this picker. Selecting a shared model explicitly connects the Agent to Vary; **Disconnect and restore** restores the saved pre-connection configuration. The status observation reads only supported selection fields from bounded configuration files, never imports providers, starts a CLI, reads authentication files, or changes configuration. Read errors show an unavailable state instead of claiming Default. Runtime-only choices, command-line overrides and inherited shell environments are not inferred. Native-model editing and the reference implementation's distinct factory-default reset action remain outside this control.
+
+TRAE CN and TRAE International save connection and model changes while the
+native bridge synchronizes in the background. A confirmed catalog is available
+to the local gateway while individual windows finish applying the starting
+model. A temporarily unavailable bridge can resume its last confirmed catalog on
+the same gateway endpoint. An explicit disconnect revokes the gateway credential
+immediately and queues removal of the managed native models. If a native catalog
+check confirms that the configuration changed, the route is revoked and the
+Agent row offers recovery.
 
 Reload Codex configuration after enabling routing. Changing a conversation's model alone does not change its stored provider. A standalone connection migrates the previous provider's quiet conversations to `varyai` only when their saved model is executable in the current menu: paginated history changes only its SQLite provider row, while legacy history also updates rollout metadata. Unavailable, inconsistent or unreadable saved models stay with their original provider; model names are never guessed or replaced with a default. Already migrated conversations with an unavailable historical model require explicit model reselection, or a new conversation if automatic compaction blocks that choice. Busy compatible conversations wait for writer locks to be released and retry in the background. Native compatibility instead handles eligible built-in OpenAI conversations without changing their provider. Profiles, environment/CLI overrides, cached configuration and unknown historical opaque state remain separate constraints. Actual desktop acceptance must be verified with the user's client version.
 

@@ -74,18 +74,21 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
   const dailyStart = nextDay(now, 10) - 86400000;
   // The campaign can end at 09:59 UTC+8 rather than exactly at 10:00.
   const dailyEnd = dailyStart + 86400000;
-  const rewardDate = chosen.every(
-    (c) =>
-      stamp(c.startAt) === dailyStart &&
-      stamp(c.endAt) >= dailyEnd - 60000 &&
-      stamp(c.endAt) <= dailyEnd,
-  )
-    ? {
-        rewardDay: new Date(dailyStart + 8 * 3600000)
-          .toISOString()
-          .slice(0, 10),
-      }
-    : {};
+  const isDaily = (c) =>
+    stamp(c.startAt) === dailyStart &&
+    stamp(c.endAt) >= dailyEnd - 60000 &&
+    stamp(c.endAt) <= dailyEnd;
+  let confirmedDaily = active.some(
+    (c) => c.claimStatus === "CLAIMED" && isDaily(c),
+  );
+  const rewardDate = () =>
+    confirmedDaily
+      ? {
+          rewardDay: new Date(dailyStart + 8 * 3600000)
+            .toISOString()
+            .slice(0, 10),
+        }
+      : {};
   let credit =
     chosen.reduce((sum, c) => sum + (positive(c.benefit?.amount) ?? 0), 0) ||
     null;
@@ -95,9 +98,10 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
       credit,
       until,
       windowKey,
-      ...rewardDate,
+      ...rewardDate(),
     };
-  if (!claim) return { outcome: "not_checked", credit, until, windowKey };
+  if (!claim)
+    return { outcome: "not_checked", credit, until, windowKey, ...rewardDate() };
   credit = 0;
   for (const c of available) {
     const result = await call(
@@ -107,7 +111,8 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
     );
     const body = result?.data ?? result;
     if (body?.status !== "CLAIMED")
-      return { outcome: "failed", until: now + 30 * 60000 };
+      return { outcome: "failed", until: now + 30 * 60000, ...rewardDate() };
+    confirmedDaily ||= isDaily(c);
     credit +=
       positive(body.benefit?.amount) ?? positive(c.benefit?.amount) ?? 0;
   }
@@ -116,7 +121,7 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
     credit: credit || null,
     until,
     windowKey,
-    ...rewardDate,
+    ...rewardDate(),
   };
 }
 async function zcodePlans(call, claim, now = Date.now()) {

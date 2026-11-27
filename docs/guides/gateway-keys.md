@@ -42,20 +42,26 @@ Enable the agent's local route below the key panel and restart the client when i
 
 Budget policies do not turn an observational audit bridge into a forwarding gateway. Non-chat image/search operations on a bound Codex route are refused as `gateway_operation_not_supported` rather than escaping the policy without accounting. Model-list and token-count probes do not consume the generation budget.
 
-For a bound local Agent, permissions apply to exact provider/model pairs.
+For both bound local Agents and external `/gateway` requests, permissions apply to exact `(provider, model)` pairs.
 Selecting a model in **Allowed models** authorizes direct use and use through
-any published group that contains it. Selecting a published group authorizes
-its currently available member models, including direct use. A group's
+any published routing group that contains it. Selecting a published routing group
+authorizes its currently available member models, including direct use and use
+through any other published routing group that shares them. A group's
 membership changes take effect when its published catalog updates. Initial
-attempts, fallbacks and classifiers use only authorized provider/model pairs.
+attempts, fallbacks and classifiers use only authorized `(provider, model)` pairs.
+An upstream account's HTTP 402 lets a routing group try its next eligible,
+authorized member. When using a model allowlist, include each fallback model
+the key should be able to reach. A gateway key's own exhausted token budget
+applies to the entire request and returns `gateway_budget_exhausted` before any
+upstream attempt.
 
-Codex group and direct model-menu requests use their published alias as the policy's request model ID. Their usage records retain that alias and the exact selected upstream model separately. Temporary Codex group sessions use the same Codex binding; their session token does not bypass it.
+Codex group and direct model-menu requests use their published alias as the policy's request model ID. Their usage records retain that alias and the exact selected upstream model separately. Temporary Codex sessions use the same binding, which authorizes targets from the published catalog or explicit model selections. Temporary drafts cannot add targets to a key's permissions.
 
 ## External client connection
 
 The **Connect** tab generates a request example using the chosen key's model policy and selected client protocol. Direct shared provider routes are for managed local Agents and are skipped when selecting an example model. Replace `YOUR_GATEWAY_KEY` with the saved secret and `MODEL_ID` with a permitted request model. It does not change a provider or agent configuration.
 
-The default local origin is `http://127.0.0.1:15722` (use the configured port). First add a global provider in **Models / Providers**, or manually import a supported existing Agent configuration. Saved Agent configurations are never imported automatically. In **Plans / Routing**, create a group using these global providers, explicitly enable **Publish to gateway** on the group and save it. Add its public alias to a restricted key's request-model allowlist. An authenticated `GET /gateway/v1/models` returns only executable published group aliases permitted by that key, without charging a generation. This catalog is independent of Codex's routing switch; it does not enumerate every ordinary provider model.
+The default local origin is `http://127.0.0.1:15722` (use the configured port). First add a global provider in **Models / Providers**, or manually import a supported existing Agent configuration. Saved Agent configurations are never imported automatically. In **Plans / Routing**, create a group using these global providers, explicitly enable **Publish to gateway** on the group and save it. Add its public alias (or any member model / group containing shared members) to a restricted key's allowlist. An authenticated `GET /gateway/v1/models` or `GET /gateway/v1beta/models` returns only executable published group aliases permitted by that key's expanded `(provider, model)` policy, without charging a generation. This catalog is independent of Codex's routing switch; it does not enumerate every ordinary provider model.
 
 Use that group alias with any supported POST protocol. VaryAI selects the concrete upstream first, then preserves native wire semantics or validates an explicit conversion. Non-group request models retain the existing provider namespaces shown below. Other agents must be configured manually with this authenticated gateway base URL and key; saving a provider or group never rewrites every agent's configuration.
 

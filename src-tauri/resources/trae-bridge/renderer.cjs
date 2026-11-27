@@ -210,7 +210,7 @@ function createBridge(
     if (!/^[\w-]+$/.test(id) || !Array.isArray(config.models)) return false;
     await refreshModels();
     const result = await service.getModelList();
-    if (!Array.isArray(result.model_list)) return false;
+    if (!Array.isArray(result.model_list)) throw Error("model_list_unavailable");
     const owned = loadOwned(id),
       verification = loadVerification(id),
       baseUrl = endpoint(config);
@@ -378,6 +378,7 @@ function createBridge(
           addedIds.add(plan.match.id);
         }
       }
+      let editedAfterRefresh = false;
       for (const { model, fields, match } of plans) {
         owned = owned.filter(
           (row) => row.model !== model.model && row.id !== match.id,
@@ -397,6 +398,7 @@ function createBridge(
             ...editFields(fields),
           });
           if (result.code !== 0) throw modelFailure("update", result.code);
+          editedAfterRefresh = true;
         }
         wanted.add(match.id);
       }
@@ -409,12 +411,13 @@ function createBridge(
           id: old.id,
         });
         if (result.code !== 0) throw modelFailure("remove", result.code);
+        editedAfterRefresh = true;
       }
       saveOwned(
         id,
         owned.filter((row) => wanted.has(row.id)),
       );
-      await refreshModels();
+      if (editedAfterRefresh) await refreshModels();
       const native = (await service.getModelList()).model_list;
       if (!Array.isArray(native)) throw Error("model_list_unavailable");
       const verification = await Promise.all(
@@ -544,8 +547,9 @@ function createBridge(
         if (deleted.code !== 0) throw modelFailure("remove", deleted.code);
       }
       for (const owner of ownership.keys()) saveOwned(owner, []);
-      await refreshModels();
-      return config === null ? [] : await apply(id, name, config);
+      if (config !== null) return await apply(id, name, config);
+      if (snapshots.length) await refreshModels();
+      return [];
     } catch (error) {
       let restored = true;
       await refreshModels();

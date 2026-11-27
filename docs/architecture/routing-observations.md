@@ -110,6 +110,14 @@ navigation, and reduced-motion settings suppress control and stage movement.
   closes, including when a terminal response arrives before transport EOF.
   The usage dashboard attributes those tokens to the observed upstream model.
   A close before any usage arrives leaves token accounting unavailable.
+  Dispatched intent-classifier requests are also recorded asynchronously in
+  `proxy_request_logs` under `<trace-id>:classifier`, attributing tokens,
+  cost, latency, and upstream status to the classifier provider and model while
+  normalizing cache-inclusive vs. fresh-input semantics by consumer `app_type`.
+  Recorded traces retain both `classificationOutcome` and bounded difficulty
+  `classificationResult` (`easy` | `hard`), and the live routing stage renders
+  a badge on the group header, active/completed seat (when distinct or in
+  compact mode), or idle failure row alongside the footer summary.
   Finished players are removed once the return ends and stay finished on
   subsequent polls. Newly completed long requests use their finish time for
   admission. Recent workspace source cards can appear with stationary paths

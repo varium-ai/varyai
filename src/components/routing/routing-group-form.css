@@ -347,6 +347,19 @@
   color: var(--mp-muted);
   font-size: 11.5px;
 }
+.rt-group-form .rt-edit-settings {
+  grid-column: 1 / -1;
+}
+.rt-group-form .rt-edit-settings > summary {
+  width: var(--rt-advanced-label-width);
+  flex-direction: row-reverse;
+  text-align: right;
+}
+.rt-group-form .rt-edit-settings > div {
+  margin-inline-start: calc(
+    var(--rt-advanced-label-width) + var(--rt-advanced-column-gap)
+  );
+}
 .rt-group-form .rt-edit-routing > fieldset > .rt-diagnostics {
   margin-block-start: 0;
 }
@@ -403,7 +416,7 @@
       .rt-edit-levels > .rt-reference-setting
     )
     > *,
-  .rt-group-form :is(.rt-edit-settings, .rt-diagnostics, .rt-execution-legacy) {
+  .rt-group-form :is(.rt-diagnostics, .rt-execution-legacy) {
     grid-column: 1;
   }
   .rt-group-form
@@ -459,7 +472,7 @@
   padding-top: 8px;
   border-top: 1px solid var(--mp-line-2);
 }
-.rt-group-form .rt-form-advanced > summary {
+.rt-group-form :is(.rt-form-advanced, .rt-edit-settings) > summary {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -469,7 +482,9 @@
   cursor: pointer;
   list-style: none;
 }
-.rt-group-form .rt-form-advanced > summary::-webkit-details-marker {
+.rt-group-form
+  :is(.rt-form-advanced, .rt-edit-settings)
+  > summary::-webkit-details-marker {
   display: none;
 }
 .rt-group-form .rt-advanced-chevron {
@@ -477,16 +492,21 @@
   transform: rotate(-90deg);
   transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
 }
-.rt-group-form .rt-form-advanced[open] > summary .rt-advanced-chevron {
+.rt-group-form
+  :is(.rt-form-advanced, .rt-edit-settings)[open]
+  > summary
+  .rt-advanced-chevron {
   transform: rotate(0deg);
 }
-.rt-group-form .rt-form-advanced > summary:hover {
+.rt-group-form :is(.rt-form-advanced, .rt-edit-settings) > summary:hover {
   color: var(--mp-fg);
 }
 .rt-group-form .rt-advanced-fields {
+  --rt-advanced-label-width: 132px;
+  --rt-advanced-column-gap: 14px;
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
-  gap: 10px 14px;
+  grid-template-columns: var(--rt-advanced-label-width) minmax(0, 1fr);
+  gap: 10px var(--rt-advanced-column-gap);
   padding-top: 12px;
 }
 .rt-group-form .rt-form-advanced:not([open]) > .rt-advanced-fields {
@@ -897,7 +917,14 @@
 }
 @container routing-form (max-width: 520px) {
   .rt-group-form .rt-advanced-fields {
+    --rt-advanced-label-width: 0px;
+    --rt-advanced-column-gap: 0px;
     grid-template-columns: minmax(0, 1fr);
+  }
+  .rt-group-form .rt-edit-settings > summary {
+    width: fit-content;
+    flex-direction: row;
+    text-align: left;
   }
 }
 @media (max-height: 600px) {

@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 mod ingress;
 pub use ingress::handle;
-pub(crate) use ingress::{error as policy_error, meter as meter_response};
+pub(crate) use ingress::{meter as meter_response, policy_error_for};
 mod bindings;
 mod secrets;
 pub(crate) use bindings::{agent_policy_catalog, catalog, codex_model_changed, GroupMemberPolicy};
@@ -397,6 +397,17 @@ impl Database {
         model: &str,
         now: i64,
     ) -> Result<Grant, GatewayError> {
+        self.authorize_gateway_key_model(secret, model, None, None, now)
+    }
+
+    pub(crate) fn authorize_gateway_key_model(
+        &self,
+        secret: &str,
+        model: &str,
+        route: Option<&crate::proxy::intent::Session>,
+        catalog: Option<&crate::proxy::intent::PublishedMenu>,
+        now: i64,
+    ) -> Result<Grant, GatewayError> {
         let conn = self
             .extension_connection()
             .lock()
@@ -414,10 +425,7 @@ impl Database {
             return Err(GatewayError::Unauthorized);
         }
         let policy: KeyPolicy = serde_json::from_str(&raw).map_err(|_| GatewayError::Storage)?;
-        if model.is_empty()
-            || model.len() > 200
-            || (!policy.all_models && !policy.models.iter().any(|m| m == model))
-        {
+        if model.is_empty() || model.len() > 200 {
             return Err(GatewayError::Forbidden);
         }
         let (window, reset) = policy.period.window(now);
@@ -430,6 +438,26 @@ impl Database {
             .optional()
             .map_err(|_| GatewayError::Storage)?
             .unwrap_or(0);
+        drop(conn);
+        let exact = policy.models.iter().any(|m| m == model);
+        let managed = route.filter(|s| s.group.enabled);
+        let group_members = if policy.all_models {
+            None
+        } else if let Some(session) = managed {
+            Some(GroupMemberPolicy::for_session(
+                &policy,
+                session,
+                model,
+                exact,
+                false,
+                catalog,
+                self.routing_generation(),
+            )?)
+        } else if exact {
+            None
+        } else {
+            return Err(GatewayError::Forbidden);
+        };
         if policy.token_limit.is_some_and(|limit| tokens >= limit) {
             return Err(GatewayError::Exhausted(reset));
         }
@@ -439,7 +467,7 @@ impl Database {
             agent: "external".into(),
             model: model.into(),
             upstream_model: GatewayUpstreamModel::default(),
-            group_members: None,
+            group_members,
         })
     }
     pub fn charge_gateway_key(&self, id: &str, window: i64, tokens: u64) -> Result<(), AppError> {

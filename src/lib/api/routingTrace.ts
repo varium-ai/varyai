@@ -42,6 +42,7 @@ export interface RoutingTrace {
   groupName: string;
   strategy: string;
   classificationOutcome?: string;
+  classificationResult?: string | null;
   candidates: RoutingCandidate[];
   steps: RoutingTraceStep[];
   state: "routing" | "streaming" | "completed" | "failed" | "cancelled";

@@ -1213,3 +1213,377 @@ async fn smart_template_compaction_and_multimodal_classification_apply_across_al
     upstream.abort();
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn smart_template_records_classifier_usage_stats_difficulty_and_failures_across_agents(
+) -> TestResult {
+    use rusqlite::OptionalExtension;
+    let _security = disable_security();
+    let cls_mode = Arc::new(Mutex::new("normal"));
+    let mode_ref = cls_mode.clone();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}", listener.local_addr()?);
+    let upstream = tokio::spawn(async move {
+        let app = Router::new()
+            .route(
+                "/classify/v1/chat/completions",
+                post(move |Json(body): Json<Value>| {
+                    let mode_ref = mode_ref.clone();
+                    async move {
+                        let mode = *mode_ref.lock().unwrap_or_else(|e| e.into_inner());
+                        if mode == "fail_500" {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "synthetic-cls-error")
+                                .into_response();
+                        }
+                        if mode == "timeout" {
+                            tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                        }
+                        let payload: Value = serde_json::from_str(
+                            body["messages"][1]["content"].as_str().unwrap_or("{}"),
+                        )
+                        .unwrap_or_default();
+                        let text = payload["text"].as_str().unwrap_or("");
+                        let intent = if text.contains("easy") {
+                            json!("easy")
+                        } else {
+                            json!("hard")
+                        };
+                        Json(json!({
+                            "id": "cls_usage_1",
+                            "object": "chat.completion",
+                            "model": "cls-upstream-model",
+                            "choices": [{
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": json!({ "intentId": intent }).to_string()
+                                },
+                                "finish_reason": "stop"
+                            }],
+                            "usage": {
+                                "prompt_tokens": 120,
+                                "completion_tokens": 16,
+                                "prompt_tokens_details": { "cached_tokens": 30 }
+                            }
+                        }))
+                        .into_response()
+                    }
+                }),
+            )
+            .fallback(post(move |req: Request| async move {
+                let uri = req.uri().clone();
+                let bytes = axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024)
+                    .await
+                    .unwrap_or_default();
+                let body: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                let model = body["model"]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        uri.path()
+                            .split("/models/")
+                            .nth(1)
+                            .and_then(|rest| rest.split(':').next())
+                            .unwrap_or("unknown")
+                    })
+                    .to_owned();
+                let protocol = if uri.path().ends_with("/messages") {
+                    Protocol::Anthropic
+                } else if uri.path().ends_with("/responses") {
+                    Protocol::Responses
+                } else if uri.path().contains("/models/") {
+                    Protocol::Gemini
+                } else {
+                    Protocol::Chat
+                };
+                Json(upstream_reply(protocol, &model, None, "Synthetic ok")).into_response()
+            }));
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let (mut menu, alias) = two_member_menu(&base, RoutingTemplate::Smart)?;
+    {
+        let group = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("missing group")?);
+        group.group.enabled = true;
+        group.group.intent_recognition_enabled = true;
+        group.group.classification_budget_ms = 550;
+        group.group.classifier_target = Some(Target {
+            provider_id: "classifier-provider".into(),
+            model_id: "cls-model".into(),
+        });
+        group.classifier = Some(static_provider(
+            "classifier-provider",
+            &format!("{base}/classify"),
+            "openai_chat",
+        ));
+        group.group.rules = serde_json::from_value(json!([
+            {
+                "id": "compact",
+                "name": "Compaction",
+                "description": "",
+                "enabled": true,
+                "targetMemberId": "primary",
+                "conditions": { "compact": true }
+            },
+            {
+                "id": "hard",
+                "name": "Hard task",
+                "description": "Complex architecture tasks",
+                "enabled": true,
+                "targetMemberId": "primary"
+            },
+            {
+                "id": "easy",
+                "name": "Easy task",
+                "description": "Simple direct questions",
+                "enabled": true,
+                "targetMemberId": "backup",
+                "fallbackMemberIds": ["primary"]
+            }
+        ]))?;
+    }
+
+    let runtime = Arc::new(Runtime::default());
+    runtime.set_global(menu.clone(), 0)?;
+    runtime.set_menu(Arc::new(menu.clone()))?;
+    install_all_agents(&runtime, &alias)?;
+
+    let db = Arc::new(Database::memory()?);
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let origin = format!("http://127.0.0.1:{}", info.port);
+    let client = reqwest::Client::builder().no_proxy().build()?;
+
+    let send_agent_prompt = |agent: &'static str, protocol: Protocol, prompt: &str| {
+        let (url, bearer) = if agent == "codex" {
+            (format!("{origin}/intent/v1/responses"), MENU_TOKEN)
+        } else {
+            let path = match protocol {
+                Protocol::Anthropic => "/v1/messages".to_owned(),
+                Protocol::Responses => "/v1/responses".to_owned(),
+                Protocol::Gemini => format!("/v1beta/models/{alias}:generateContent"),
+                Protocol::Chat => "/v1/chat/completions".to_owned(),
+            };
+            (format!("{origin}/connections/{agent}{path}"), AGENT_TOKEN)
+        };
+        let body = match protocol {
+            Protocol::Chat => {
+                json!({ "model": alias, "messages": [{ "role": "user", "content": prompt }] })
+            }
+            Protocol::Anthropic => json!({
+                "model": alias,
+                "max_tokens": 128,
+                "messages": [{ "role": "user", "content": prompt }]
+            }),
+            Protocol::Responses => {
+                json!({ "model": alias, "input": [{ "role": "user", "content": prompt }] })
+            }
+            Protocol::Gemini => {
+                json!({ "contents": [{ "role": "user", "parts": [{ "text": prompt }] }] })
+            }
+        };
+        client.post(url).bearer_auth(bearer).json(&body).send()
+    };
+
+    let wait_for_classifier_row = |trace_id: String| {
+        let db = db.clone();
+        async move {
+            let key = format!("{trace_id}:classifier");
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    let row = db
+                        .conn
+                        .lock()
+                        .unwrap()
+                        .query_row(
+                            "SELECT provider_id, app_type, model, request_model, input_tokens, output_tokens, cache_read_tokens, input_token_semantics, status_code, error_message
+                             FROM proxy_request_logs WHERE request_id = ?1",
+                            [&key],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, String>(3)?,
+                                    row.get::<_, u32>(4)?,
+                                    row.get::<_, u32>(5)?,
+                                    row.get::<_, u32>(6)?,
+                                    row.get::<_, i64>(7)?,
+                                    row.get::<_, u16>(8)?,
+                                    row.get::<_, Option<String>>(9)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+                    if let Some(row) = row {
+                        return Ok::<_, rusqlite::Error>(row);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                }
+            })
+            .await
+        }
+    };
+
+    // 1. Verify Easy & Hard classification stats + trace across cache-inclusive and fresh-input agents.
+    for (agent, protocol, prompt, expected_diff, expected_input, expected_sem) in [
+        (
+            "codex",
+            Protocol::Responses,
+            "easy codex question",
+            "easy",
+            120u32,
+            1i64,
+        ),
+        (
+            "claude",
+            Protocol::Anthropic,
+            "hard claude task",
+            "hard",
+            90u32,
+            2i64,
+        ),
+        (
+            "gemini",
+            Protocol::Gemini,
+            "easy gemini question",
+            "easy",
+            120u32,
+            1i64,
+        ),
+        (
+            "trae",
+            Protocol::Chat,
+            "hard trae task",
+            "hard",
+            90u32,
+            2i64,
+        ),
+        (
+            "workbuddy",
+            Protocol::Chat,
+            "easy workbuddy task",
+            "easy",
+            120u32,
+            2i64,
+        ),
+    ] {
+        // Note: workbuddy has app_type="workbuddy" (not in CACHE_INCLUSIVE_APP_TYPES), so input_tokens=90 (fresh).
+        let expected_input = if agent == "workbuddy" {
+            90
+        } else {
+            expected_input
+        };
+        let resp = send_agent_prompt(agent, protocol, prompt).await?;
+        assert_eq!(resp.status(), StatusCode::OK, "{agent}");
+        let _ = resp.bytes().await?;
+
+        let trace = runtime
+            .traces
+            .snapshot()
+            .into_iter()
+            .next()
+            .ok_or("missing trace")?;
+        assert_eq!(trace.classification_outcome.as_deref(), Some("matched"));
+        assert_eq!(
+            trace.classification_result.as_deref(),
+            Some(expected_diff),
+            "{agent}"
+        );
+
+        let row = wait_for_classifier_row(trace.id.clone()).await??;
+        assert_eq!(row.0, "classifier-provider");
+        assert_eq!(row.1, agent);
+        assert_eq!(row.2, "cls-upstream-model");
+        assert_eq!(row.3, "cls-model");
+        assert_eq!(row.4, expected_input, "{agent} input_tokens");
+        assert_eq!(row.5, 16);
+        assert_eq!(row.6, 30);
+        assert_eq!(row.7, expected_sem);
+        assert_eq!(row.8, 200);
+        assert_eq!(row.9, None);
+    }
+
+    // 2. Classifier HTTP 500 failure records error stats and trace outcome while task request succeeds.
+    *cls_mode.lock().unwrap_or_else(|e| e.into_inner()) = "fail_500";
+    let resp = send_agent_prompt("claude", Protocol::Anthropic, "easy fallback check").await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.bytes().await?;
+    let fail_trace = runtime
+        .traces
+        .snapshot()
+        .into_iter()
+        .next()
+        .ok_or("missing fail trace")?;
+    assert_eq!(
+        fail_trace.classification_outcome.as_deref(),
+        Some("request_failed")
+    );
+    assert_eq!(fail_trace.classification_result, None);
+    let fail_row = wait_for_classifier_row(fail_trace.id.clone()).await??;
+    assert_eq!(fail_row.8, 500);
+    assert_eq!(fail_row.9.as_deref(), Some("classification_request_failed"));
+
+    // 3. Classifier timeout records 504 error stats and timeout outcome.
+    *cls_mode.lock().unwrap_or_else(|e| e.into_inner()) = "timeout";
+    let resp = send_agent_prompt("codex", Protocol::Responses, "easy timeout check").await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.bytes().await?;
+    let timeout_trace = runtime
+        .traces
+        .snapshot()
+        .into_iter()
+        .next()
+        .ok_or("missing timeout trace")?;
+    assert_eq!(
+        timeout_trace.classification_outcome.as_deref(),
+        Some("timeout")
+    );
+    assert_eq!(timeout_trace.classification_result, None);
+    let timeout_row = wait_for_classifier_row(timeout_trace.id.clone()).await??;
+    assert_eq!(timeout_row.8, 504);
+    assert_eq!(timeout_row.9.as_deref(), Some("classification_timeout"));
+
+    // 4. Compaction skips classification and writes NO classifier row.
+    *cls_mode.lock().unwrap_or_else(|e| e.into_inner()) = "normal";
+    let compact_resp = client
+        .post(format!("{origin}/intent/v1/responses"))
+        .bearer_auth(MENU_TOKEN)
+        .header("x-openai-subagent", "compact")
+        .json(&json!({
+            "model": alias,
+            "input": [{ "role": "user", "content": "Compact this easy conversation" }]
+        }))
+        .send()
+        .await?;
+    assert_eq!(compact_resp.status(), StatusCode::OK);
+    let _ = compact_resp.bytes().await?;
+    let compact_trace = runtime
+        .traces
+        .snapshot()
+        .into_iter()
+        .next()
+        .ok_or("missing compact trace")?;
+    assert_eq!(compact_trace.classification_outcome, None);
+    assert_eq!(compact_trace.classification_result, None);
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let compact_cls_count: i64 = db.conn.lock().unwrap().query_row(
+        "SELECT COUNT(*) FROM proxy_request_logs WHERE request_id = ?1",
+        [format!("{}:classifier", compact_trace.id)],
+        |r| r.get(0),
+    )?;
+    assert_eq!(compact_cls_count, 0);
+
+    server.stop().await?;
+    upstream.abort();
+    Ok(())
+}

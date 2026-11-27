@@ -446,11 +446,25 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         && matches!(endpoint.as_str(), "/v1/responses" | "/v1/responses/compact")
         && super::native_protocol::normalize_trae_responses(&mut body);
     let db = state.db.clone();
-    let policy_model = alias.clone();
+    let mut policy_model = alias.clone();
     let catalog = match super::gateway::agent_policy_catalog(&state).await {
         Ok(catalog) => catalog,
-        Err(error) => return super::gateway::policy_error(error),
+        Err(error) => return super::gateway::policy_error_for(app, &policy_model, error),
     };
+    if intent::is_side_request(&parts.headers) {
+        if let Some(side_alias) = state.intent_runtime.side_session_alias(
+            &format!("agent:{app}"),
+            intent::named_conversation(&parts.headers),
+        ) {
+            if catalog
+                .as_ref()
+                .is_some_and(|menu| menu.groups.contains_key(&side_alias))
+            {
+                policy_model = side_alias;
+            }
+        }
+    }
+    let logged_model = policy_model.clone();
     let grant = match tokio::task::spawn_blocking(move || {
         let route = catalog
             .as_ref()
@@ -461,18 +475,20 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             None,
             route.map(Arc::as_ref),
             catalog.as_ref(),
+            false,
             chrono::Utc::now().timestamp(),
         )
     })
     .await
     {
         Ok(Ok(grant)) => grant,
-        Ok(Err(error)) => return super::gateway::policy_error(error),
+        Ok(Err(error)) => return super::gateway::policy_error_for(app, &logged_model, error),
         Err(_) => {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "gateway_policy_unavailable",
-            )
+            return super::gateway::policy_error_for(
+                app,
+                &logged_model,
+                super::gateway::GatewayError::Storage,
+            );
         }
     };
     if remember {

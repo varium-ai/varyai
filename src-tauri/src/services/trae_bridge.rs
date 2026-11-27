@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 23;
+const HELPER_REVISION: u64 = 24;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 static CHINA_HELPER_START: Mutex<()> = Mutex::new(());
 static INTERNATIONAL_HELPER_START: Mutex<()> = Mutex::new(());
@@ -577,22 +577,9 @@ pub(crate) fn enable(origin: &str) -> Result<(), AppError> {
 }
 /// Prepare only after explicit consent. Never launch the UI or enable audit hooks.
 pub(crate) fn prepare_shared() -> Result<(), AppError> {
-    if request(&json!({"op":"health"}), false)
-        .ok()
-        .is_some_and(|health| {
-            health["ready"] == true
-                && health["revision"] == HELPER_REVISION
-                && health["modelVerification"] == 1
-                && health["startingModel"] == 1
-        })
-    {
-        return Ok(());
-    }
     #[cfg(target_os = "macos")]
     let _ = installed_executable()?;
-    prepare_connection(&directory()?, &argv_path()?)?;
-    let _ = ensure_ready();
-    Ok(())
+    prepare_connection(&directory()?, &argv_path()?)
 }
 pub(crate) fn suspend_inspection() -> Result<(), AppError> {
     // Invalidate first; missed/closed windows release their hooks on the heartbeat.

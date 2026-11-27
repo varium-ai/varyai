@@ -120,6 +120,13 @@ impl Native {
                 .is_some_and(|published| &published.catalog == catalog)
         })
     }
+    pub(crate) fn is_stale(&self, generation: u64) -> bool {
+        self.projection.read().ok().is_some_and(|projection| {
+            projection
+                .as_ref()
+                .is_some_and(|published| !published.menu.current(generation))
+        })
+    }
     pub(crate) fn policy_model(
         &self,
         model: &str,
@@ -873,22 +880,22 @@ pub(crate) async fn handle(
         return super::error(StatusCode::UPGRADE_REQUIRED, "routing_native_use_http");
     }
     let mut projection = state.intent_runtime.native.projection().ok();
-    if models {
+    if projection
+        .as_ref()
+        .is_some_and(|p| !p.menu.current(state.db.routing_generation()))
+    {
+        if !state.intent_runtime.ensure_menu_current(&state.db).await {
+            return super::catalog_stale();
+        }
+        projection = state.intent_runtime.native.projection().ok();
         if projection
             .as_ref()
             .is_some_and(|p| !p.menu.current(state.db.routing_generation()))
         {
-            if !state.intent_runtime.ensure_menu_current(&state.db).await {
-                return super::catalog_stale();
-            }
-            projection = state.intent_runtime.native.projection().ok();
-            if projection
-                .as_ref()
-                .is_some_and(|p| !p.menu.current(state.db.routing_generation()))
-            {
-                return super::catalog_stale();
-            }
+            return super::catalog_stale();
         }
+    }
+    if models {
         let catalog = projection
             .as_ref()
             .map(|p| p.catalog.clone())
@@ -952,7 +959,9 @@ pub(crate) async fn handle(
             .get::<super::super::gateway::GroupMemberPolicy>()
             .is_some()
         {
-            return super::super::gateway::policy_error(
+            return super::super::gateway::policy_error_for(
+                "codex",
+                model,
                 super::super::gateway::GatewayError::Forbidden,
             );
         }

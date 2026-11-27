@@ -16,12 +16,71 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
 static TRIAL_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
+#[derive(Clone, Debug)]
+pub(crate) struct ClassificationTelemetry {
+    pub model: String,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub usage: Option<crate::proxy::usage::parser::TokenUsage>,
+    pub dispatched: bool,
+    pub detail: String,
+}
+
+#[derive(Default)]
+struct DispatchTracker {
+    dispatched: bool,
+    model: String,
+    status: u16,
+    usage: Option<crate::proxy::usage::parser::TokenUsage>,
+    detail: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TrialResult {
     pub plan: PlanPreview,
     pub intent_id: Option<String>,
     pub outcome: &'static str,
+    #[serde(skip)]
+    pub(crate) telemetry: Option<ClassificationTelemetry>,
+}
+
+pub(crate) fn classification_difficulty(
+    group: &RoutingGroup,
+    intent_id: Option<&str>,
+) -> Option<&'static str> {
+    let id = intent_id?;
+    let rule = group.rules.iter().find(|r| r.id == id)?;
+    if rule.name.trim().eq_ignore_ascii_case("Easy task") || rule.id.eq_ignore_ascii_case("easy") {
+        Some("easy")
+    } else if rule.name.trim().eq_ignore_ascii_case("Hard task")
+        || rule.id.eq_ignore_ascii_case("hard")
+    {
+        Some("hard")
+    } else {
+        None
+    }
+}
+
+fn extract_usage(
+    protocol: Protocol,
+    value: &Value,
+) -> Option<crate::proxy::usage::parser::TokenUsage> {
+    use crate::proxy::usage::parser::TokenUsage;
+    let mut parsed = match protocol {
+        Protocol::Anthropic => TokenUsage::from_claude_response(value),
+        Protocol::Gemini => TokenUsage::from_gemini_response(value),
+        Protocol::Chat | Protocol::Responses => TokenUsage::from_codex_response_auto(value),
+    }?;
+    if protocol != Protocol::Anthropic {
+        let cached = parsed
+            .cache_read_tokens
+            .saturating_add(parsed.cache_creation_tokens);
+        if parsed.input_tokens >= cached {
+            parsed.input_tokens -= cached;
+        }
+    }
+    Some(parsed)
 }
 
 /// Unknown continuations never become new classification opportunities.
@@ -344,11 +403,11 @@ fn native_text(protocol: Protocol, value: &Value) -> Option<String> {
     Some(text)
 }
 
-fn decode_result(
+fn decode_result_detailed(
     group: &RoutingGroup,
     protocol: Protocol,
     value: &Value,
-) -> (Option<String>, &'static str) {
+) -> (Option<String>, &'static str, &'static str) {
     let output_limit = match protocol {
         Protocol::Chat => value["choices"][0]["finish_reason"] == "length",
         Protocol::Responses => {
@@ -359,24 +418,61 @@ fn decode_result(
         Protocol::Gemini => value["candidates"][0]["finishReason"] == "MAX_TOKENS",
     };
     if output_limit {
-        return (None, "output_limit");
+        return (None, "output_limit", "max_output_tokens");
     }
-    match native_text(protocol, value)
-        .as_deref()
-        .filter(|content| content.len() <= 4096)
-        .and_then(|content| {
-            let content = content.trim();
-            let json = content
-                .split_once('\n')
-                .filter(|(fence, _)| matches!(fence.trim_end_matches('\r'), "```json" | "```"))
-                .and_then(|(_, body)| body.strip_suffix("\n```").map(str::trim_end))
-                .unwrap_or(content);
-            group.parse_classification(json).ok()
-        }) {
-        Some(Some(id)) => (Some(id), "matched"),
-        Some(None) => (None, "no_match"),
-        None => (None, "invalid_output"),
+    let Some(content) = native_text(protocol, value) else {
+        return (None, "invalid_output", "unexpected_response_format");
+    };
+    if content.len() > 4096 {
+        return (None, "invalid_output", "invalid_classification_json");
     }
+    let content = content.trim();
+    let json = content
+        .split_once('\n')
+        .filter(|(fence, _)| matches!(fence.trim_end_matches('\r'), "```json" | "```"))
+        .and_then(|(_, body)| body.strip_suffix("\n```").map(str::trim_end))
+        .unwrap_or(content);
+    match group.parse_classification(json) {
+        Ok(Some(id)) => (Some(id), "matched", "matched"),
+        Ok(None) => (None, "no_match", "no_match"),
+        Err(_) => (None, "invalid_output", "invalid_classification_json"),
+    }
+}
+
+#[cfg(test)]
+fn decode_result(
+    group: &RoutingGroup,
+    protocol: Protocol,
+    value: &Value,
+) -> (Option<String>, &'static str) {
+    let (intent_id, outcome, _) = decode_result_detailed(group, protocol, value);
+    (intent_id, outcome)
+}
+
+fn update_tracker(
+    tracker: &std::sync::Mutex<DispatchTracker>,
+    update: impl FnOnce(&mut DispatchTracker),
+) {
+    if let Ok(mut guard) = tracker.lock() {
+        update(&mut guard);
+    }
+}
+
+fn default_detail_for_outcome(outcome: &str) -> String {
+    match outcome {
+        "matched" => "matched",
+        "no_match" => "no_match",
+        "no_rules" => "no_enabled_rules",
+        "privacy" => "privacy_blocked",
+        "input_limit" => "input_limit_exceeded",
+        "output_limit" => "max_output_tokens",
+        "invalid_output" => "invalid_classification_json",
+        "timeout" => "budget_exceeded",
+        "unavailable" => "classifier_unavailable",
+        "request_failed" => "transport_error",
+        _ => "classification_failed",
+    }
+    .to_owned()
 }
 
 async fn send(
@@ -386,26 +482,59 @@ async fn send(
     payload: &Value,
     protocol: Protocol,
     group: &RoutingGroup,
+    tracker: &std::sync::Mutex<DispatchTracker>,
 ) -> Result<(Option<String>, &'static str), &'static str> {
+    update_tracker(tracker, |state| state.dispatched = true);
     let mut response = client
         .post(url)
         .headers(headers)
         .json(payload)
         .send()
         .await
-        .map_err(|_| "request_failed")?;
+        .map_err(|_| {
+            update_tracker(tracker, |state| {
+                state.status = 502;
+                state.detail = Some("transport_error".into());
+            });
+            "request_failed"
+        })?;
+    let status = response.status().as_u16();
+    update_tracker(tracker, |state| state.status = status);
     if !response.status().is_success() {
+        update_tracker(tracker, |state| {
+            state.detail = Some(format!("http_{status}"));
+        });
         return Err("request_failed");
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| "request_failed")? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        update_tracker(tracker, |state| {
+            state.status = 502;
+            state.detail = Some("body_read_error".into());
+        });
+        "request_failed"
+    })? {
         if bytes.len() + chunk.len() > MAX_RESPONSE {
+            update_tracker(tracker, |state| {
+                state.detail = Some("response_too_large".into());
+            });
             return Err("invalid_output");
         }
         bytes.extend_from_slice(&chunk);
     }
-    let value = serde_json::from_slice(&bytes).map_err(|_| "invalid_output")?;
-    Ok(decode_result(group, protocol, &value))
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+        update_tracker(tracker, |state| {
+            state.detail = Some("invalid_json".into());
+        });
+        "invalid_output"
+    })?;
+    let usage = extract_usage(protocol, &value);
+    let (intent_id, outcome, detail) = decode_result_detailed(group, protocol, &value);
+    update_tracker(tracker, |state| {
+        state.usage = usage;
+        state.detail = Some(detail.into());
+    });
+    Ok((intent_id, outcome))
 }
 
 pub(crate) async fn trial(
@@ -429,7 +558,10 @@ pub(crate) async fn trial_prepared(
         .classifier_target
         .as_ref()
         .ok_or("intentRouting.providerUnavailable")?;
-    if target.provider_id != provider.id || !eligible_provider(&provider, true) {
+    let identity = crate::services::routing_upstreams::execution_identity(&provider);
+    if (target.provider_id != provider.id && target.provider_id != identity)
+        || !eligible_provider(&provider, true)
+    {
         return Err("intentRouting.providerUnavailable".into());
     }
     let runtime = crate::proxy::security::get_security_runtime();
@@ -443,16 +575,38 @@ async fn trial_with_runtime(
     runtime: std::sync::Arc<SecurityRuntimeConfig>,
     client: Option<reqwest::Client>,
 ) -> Result<TrialResult, String> {
+    let started = std::time::Instant::now();
+    let tracker = std::sync::Arc::new(std::sync::Mutex::new(DispatchTracker {
+        model: group
+            .classifier_target
+            .as_ref()
+            .map(|target| target.model_id.clone())
+            .unwrap_or_default(),
+        ..Default::default()
+    }));
     let outcome = async {
-        let _permit = TRIAL_SLOTS.acquire().await.map_err(|_| "unavailable")?;
+        let _permit = TRIAL_SLOTS.acquire().await.map_err(|_| {
+            update_tracker(&tracker, |state| {
+                state.detail = Some("slot_unavailable".into());
+            });
+            "unavailable"
+        })?;
         if !group
             .rules
             .iter()
             .any(|r| r.enabled && !r.description.is_empty())
         {
+            update_tracker(&tracker, |state| {
+                state.detail = Some("no_enabled_rules".into());
+            });
             return Ok((None, "no_rules"));
         }
-        let text = extract_user_text(&json!({"input":text}), false).ok_or("input_limit")?;
+        let text = extract_user_text(&json!({"input":text}), false).ok_or_else(|| {
+            update_tracker(&tracker, |state| {
+                state.detail = Some("input_limit_exceeded".into());
+            });
+            "input_limit"
+        })?;
         let model = &group
             .classifier_target
             .as_ref()
@@ -460,6 +614,9 @@ async fn trial_with_runtime(
             .model_id;
         let provider = super::classifier_for_model(&provider, model).ok_or("unavailable")?;
         let protocol = super::static_protocol(&provider).ok_or("unavailable")?;
+        update_tracker(&tracker, |state| {
+            state.model = model.clone();
+        });
         let thinking_level = if protocol == Protocol::Gemini {
             gemini_thinking_level(&provider, model)
         } else {
@@ -490,10 +647,21 @@ async fn trial_with_runtime(
                 crate::proxy::http_client::get_without_redirects,
             )
             .await
-            .map_err(|_| "unavailable")?
-            .map_err(|_| "unavailable")?,
+            .map_err(|_| {
+                update_tracker(&tracker, |state| {
+                    state.detail = Some("transport_unavailable".into());
+                });
+                "unavailable"
+            })?
+            .map_err(|_| {
+                update_tracker(&tracker, |state| {
+                    state.detail = Some("transport_unavailable".into());
+                });
+                "unavailable"
+            })?,
         };
         if let Some(binding) = crate::services::subscription_provider::binding(&provider) {
+            let tracker_ref = tracker.clone();
             let result = Box::pin(crate::proxy::workbuddy_classifier_request(
                 binding,
                 &client,
@@ -501,14 +669,41 @@ async fn trial_with_runtime(
                 payload,
                 &provider,
                 MAX_RESPONSE,
+                move || {
+                    update_tracker(&tracker_ref, |state| state.dispatched = true);
+                },
             ))
-            .await?;
-            return Ok(decode_result(&group, protocol, &result));
+            .await
+            .map_err(|err| {
+                update_tracker(&tracker, |state| {
+                    state.status = err.status;
+                    state.detail = Some(err.detail);
+                });
+                err.outcome
+            })?;
+            let usage = extract_usage(protocol, &result);
+            let (intent_id, outcome, detail) = decode_result_detailed(&group, protocol, &result);
+            update_tracker(&tracker, |state| {
+                state.status = 200;
+                state.usage = usage;
+                state.detail = Some(detail.into());
+            });
+            return Ok((intent_id, outcome));
         }
         let (endpoint, headers) =
-            super::execution::static_transport(&provider, model).map_err(|_| "unavailable")?;
-        let url = reqwest::Url::parse(&endpoint).map_err(|_| "unavailable")?;
-        send(&client, url, headers, &payload, protocol, &group).await
+            super::execution::static_transport(&provider, model).map_err(|_| {
+                update_tracker(&tracker, |state| {
+                    state.detail = Some("transport_unavailable".into());
+                });
+                "unavailable"
+            })?;
+        let url = reqwest::Url::parse(&endpoint).map_err(|_| {
+            update_tracker(&tracker, |state| {
+                state.detail = Some("transport_unavailable".into());
+            });
+            "unavailable"
+        })?;
+        send(&client, url, headers, &payload, protocol, &group, &tracker).await
     };
     let (intent_id, outcome) = match tokio::time::timeout(
         std::time::Duration::from_millis(group.classification_budget_ms.into()),
@@ -518,13 +713,35 @@ async fn trial_with_runtime(
     {
         Ok(Ok(result)) => result,
         Ok(Err(reason)) => (None, reason),
-        Err(_) => (None, "timeout"),
+        Err(_) => {
+            update_tracker(&tracker, |state| {
+                state.status = 504;
+                state.detail = Some("budget_exceeded".into());
+            });
+            (None, "timeout")
+        }
     };
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let telemetry = tracker
+        .lock()
+        .ok()
+        .map(|mut state| ClassificationTelemetry {
+            model: std::mem::take(&mut state.model),
+            status: state.status,
+            latency_ms,
+            usage: state.usage.take(),
+            dispatched: state.dispatched,
+            detail: state
+                .detail
+                .take()
+                .unwrap_or_else(|| default_detail_for_outcome(outcome)),
+        });
     let plan = group.plan_prepared(intent_id.as_deref())?;
     Ok(TrialResult {
         plan,
         intent_id,
         outcome,
+        telemetry,
     })
 }
 
@@ -1121,5 +1338,171 @@ mod tests {
             *response.pointer_mut(path).unwrap() = invalid;
             assert_eq!(decode_result(&group, protocol, &response), (None, outcome));
         }
+    }
+
+    #[test]
+    fn classification_difficulty_maps_smart_and_custom_rules() {
+        let mut group = group();
+        let mut hard = group.rules[0].clone();
+        hard.id = "r-hard".into();
+        hard.name = "Hard task".into();
+        let mut easy = group.rules[0].clone();
+        easy.id = "r-easy".into();
+        easy.name = "Easy task".into();
+        let mut custom = group.rules[0].clone();
+        custom.id = "custom-id".into();
+        custom.name = "Custom rule".into();
+        group.rules.extend([hard, easy, custom]);
+
+        assert_eq!(
+            classification_difficulty(&group, Some("r-easy")),
+            Some("easy")
+        );
+        assert_eq!(
+            classification_difficulty(&group, Some("r-hard")),
+            Some("hard")
+        );
+        assert_eq!(classification_difficulty(&group, Some("custom-id")), None);
+        assert_eq!(classification_difficulty(&group, None), None);
+    }
+
+    #[tokio::test]
+    async fn classifier_telemetry_captures_usage_across_protocols_and_failure_details(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/*path",
+                    post(|uri: http::Uri, Json(payload): Json<Value>| async move {
+                        let raw_text = match uri.path() {
+                            "/v1/responses" => payload["input"].as_str(),
+                            "/v1/messages" => payload["messages"][0]["content"].as_str(),
+                            "/v1beta/models/classifier-model:generateContent" => {
+                                payload["contents"][0]["parts"][0]["text"].as_str()
+                            }
+                            _ => payload["messages"][1]["content"].as_str(),
+                        }
+                        .unwrap_or("{}");
+                        let text = serde_json::from_str::<Value>(raw_text)
+                            .ok()
+                            .and_then(|v| v["text"].as_str().map(str::to_owned))
+                            .unwrap_or_default();
+                        if text.contains("rate-limit") {
+                            return (StatusCode::TOO_MANY_REQUESTS, "private-upstream-429")
+                                .into_response();
+                        }
+                        if text.contains("slow-timeout") {
+                            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                        }
+                        let reply = match uri.path() {
+                            "/v1/responses" => json!({
+                                "status": "completed",
+                                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"intentId\":\"debug\"}"}]}],
+                                "usage": {"input_tokens": 100, "output_tokens": 12, "input_tokens_details": {"cached_tokens": 40}}
+                            }),
+                            "/v1/messages" => json!({
+                                "stop_reason": "end_turn",
+                                "content": [{"type":"text","text":"{\"intentId\":\"debug\"}"}],
+                                "usage": {"input_tokens": 60, "output_tokens": 12, "cache_read_input_tokens": 40}
+                            }),
+                            "/v1beta/models/classifier-model:generateContent" => json!({
+                                "candidates": [{"finishReason":"STOP","content":{"parts":[{"text":"{\"intentId\":\"debug\"}"}]}}],
+                                "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 12, "totalTokenCount": 112, "cachedContentTokenCount": 40}
+                            }),
+                            _ if text.contains("output-limit") => json!({
+                                "choices": [{"finish_reason":"length","message":{"content":"{\"intentId\":"}}],
+                                "usage": {"prompt_tokens": 80, "completion_tokens": 4096}
+                            }),
+                            _ if text.contains("bad-json-reply") => json!({
+                                "choices": [{"finish_reason":"stop","message":{"content":"not-json"}}],
+                                "usage": {"prompt_tokens": 50, "completion_tokens": 5}
+                            }),
+                            _ => json!({
+                                "choices": [{"finish_reason":"stop","message":{"content":"{\"intentId\":\"debug\"}"}}],
+                                "usage": {"prompt_tokens": 100, "completion_tokens": 12, "prompt_tokens_details": {"cached_tokens": 40}}
+                            }),
+                        };
+                        Json(reply).into_response()
+                    }),
+                ),
+            )
+            .await
+        });
+
+        for format in [
+            "openai_chat",
+            "openai_responses",
+            "anthropic",
+            "gemini_native",
+        ] {
+            let record = serde_json::from_value(json!({
+                "schemaVersion":1,"id":"classifier","name":"Synthetic","revision":1,
+                "source":{"kind":"api","baseUrl":format!("http://{address}/v1"),"apiKey":"synthetic-key","apiFormat":format,
+                    "authType":if format == "anthropic" { Some("api-key") } else { None }}
+            }))?;
+            let provider = crate::services::routing_upstreams::resolve_provider(&record)?;
+            let result = test_trial(group(), provider, "Synthetic normal task".into()).await?;
+            assert_eq!(result.outcome, "matched", "{format}");
+            let telemetry = result.telemetry.expect("telemetry");
+            assert!(telemetry.dispatched, "{format}");
+            assert_eq!(telemetry.status, 200, "{format}");
+            let usage = telemetry.usage.expect("usage");
+            assert_eq!(usage.input_tokens, 60, "{format} fresh input");
+            assert_eq!(usage.output_tokens, 12, "{format}");
+            assert_eq!(usage.cache_read_tokens, 40, "{format}");
+        }
+
+        let chat_provider = provider(&format!("http://{address}/v1"));
+        let rate_limited = test_trial(group(), chat_provider.clone(), "rate-limit".into()).await?;
+        assert_eq!(rate_limited.outcome, "request_failed");
+        let rate_tel = rate_limited.telemetry.expect("429 telemetry");
+        assert!(rate_tel.dispatched);
+        assert_eq!(rate_tel.status, 429);
+        assert_eq!(rate_tel.detail, "http_429");
+
+        let mut fast_timeout = group();
+        fast_timeout.classification_budget_ms = 500;
+        let timed_out =
+            test_trial(fast_timeout, chat_provider.clone(), "slow-timeout".into()).await?;
+        assert_eq!(timed_out.outcome, "timeout");
+        let timeout_tel = timed_out.telemetry.expect("timeout telemetry");
+        assert!(timeout_tel.dispatched);
+        assert_eq!(timeout_tel.status, 504);
+        assert_eq!(timeout_tel.detail, "budget_exceeded");
+
+        let capped = test_trial(group(), chat_provider.clone(), "output-limit".into()).await?;
+        assert_eq!(capped.outcome, "output_limit");
+        let capped_tel = capped.telemetry.expect("output_limit telemetry");
+        assert!(capped_tel.dispatched);
+        assert_eq!(capped_tel.detail, "max_output_tokens");
+        assert_eq!(capped_tel.usage.expect("usage").output_tokens, 4096);
+
+        let invalid = test_trial(group(), chat_provider.clone(), "bad-json-reply".into()).await?;
+        assert_eq!(invalid.outcome, "invalid_output");
+        let invalid_tel = invalid.telemetry.expect("invalid_output telemetry");
+        assert!(invalid_tel.dispatched);
+        assert_eq!(invalid_tel.detail, "invalid_classification_json");
+        assert_eq!(invalid_tel.usage.expect("usage").output_tokens, 5);
+
+        let mut no_rules = group();
+        no_rules.rules.clear();
+        let no_rules_res = test_trial(no_rules, chat_provider.clone(), "Synthetic".into()).await?;
+        assert_eq!(no_rules_res.outcome, "no_rules");
+        let no_rules_tel = no_rules_res.telemetry.expect("no_rules telemetry");
+        assert!(!no_rules_tel.dispatched);
+        assert_eq!(no_rules_tel.detail, "no_enabled_rules");
+
+        let oversized = test_trial(group(), chat_provider, "x".repeat(MAX_TEXT_BYTES + 1)).await?;
+        assert_eq!(oversized.outcome, "input_limit");
+        let oversized_tel = oversized.telemetry.expect("input_limit telemetry");
+        assert!(!oversized_tel.dispatched);
+        assert_eq!(oversized_tel.detail, "input_limit_exceeded");
+
+        task.abort();
+        Ok(())
     }
 }

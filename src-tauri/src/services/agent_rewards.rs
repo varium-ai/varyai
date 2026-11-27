@@ -166,7 +166,7 @@ pub(crate) struct Manager {
     path: PathBuf,
     db: Arc<crate::database::Database>,
     lock: Mutex<()>,
-    settings_lock: Mutex<()>,
+    accounts_and_settings: Mutex<BTreeMap<String, Observation>>,
     #[cfg(target_os = "macos")]
     native_cache: Arc<std::sync::Mutex<qoder_native::Cache>>,
 }
@@ -201,7 +201,7 @@ fn qoder_reward_day(now: i64) -> String {
         .unwrap_or_default()
 }
 fn remember_qoder_date(app: &str, store: &mut Store, native: &Observation, now: i64) -> bool {
-    if app != "qoder" || !native.outcome.confirmed() {
+    if app != "qoder" {
         return false;
     }
     let (Some(account), Some(day)) = (&native.account_id, &native.reward_day) else {
@@ -222,7 +222,7 @@ impl Manager {
             path,
             db,
             lock: Mutex::new(()),
-            settings_lock: Mutex::new(()),
+            accounts_and_settings: Mutex::default(),
             #[cfg(target_os = "macos")]
             native_cache: Arc::new(std::sync::Mutex::new(qoder_native::Cache::default())),
         }
@@ -244,9 +244,17 @@ impl Manager {
         .map_err(|_| STORAGE.to_owned())?
     }
     async fn save_observation(&self, store: &mut Store) -> Result<(), String> {
-        let _guard = self.settings_lock.lock().await;
+        let _guard = self.accounts_and_settings.lock().await;
         store.enabled = self.read().await?.enabled;
         self.save(store).await
+    }
+    async fn remember_account(&self, app: &str, native: &Observation) {
+        let mut accounts = self.accounts_and_settings.lock().await;
+        if native.account_id.is_some() {
+            accounts.insert(app.into(), native.clone());
+        } else {
+            accounts.remove(app);
+        }
     }
     async fn helper(&self, app: &str, mut input: Value) -> Result<Value, String> {
         valid_app(app)?;
@@ -427,34 +435,30 @@ impl Manager {
         native: &Observation,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().timestamp_millis();
-        let Some(id) = native
+        let mut changed = remember_qoder_date(app, store, native, now);
+        let id = native
             .account_id
             .as_ref()
             .filter(|_| native.outcome.confirmed())
-        else {
-            return Ok(());
-        };
-        let Some(until) = native.until.filter(|until| *until > now) else {
-            return Ok(());
-        };
-        let id = key(app, id);
-        let mut changed = remember_qoder_date(app, store, native, now);
-        if !store
-            .records
-            .get(&id)
-            .is_some_and(|r| cached(r, native, now))
-        {
-            store.records.insert(
-                id,
-                Record {
-                    outcome: native.outcome,
-                    credit: native.credit,
-                    checked_at: now,
-                    until,
-                    window: native.window_key.clone(),
-                },
-            );
-            changed = true;
+            .map(|id| key(app, id));
+        if let (Some(id), Some(until)) = (id, native.until.filter(|until| *until > now)) {
+            if !store
+                .records
+                .get(&id)
+                .is_some_and(|r| cached(r, native, now))
+            {
+                store.records.insert(
+                    id,
+                    Record {
+                        outcome: native.outcome,
+                        credit: native.credit,
+                        checked_at: now,
+                        until,
+                        window: native.window_key.clone(),
+                    },
+                );
+                changed = true;
+            }
         }
         if changed {
             self.save_observation(store).await?;
@@ -471,6 +475,7 @@ impl Manager {
         };
         let mut store = self.read().await?;
         self.remember_confirmed(app, &mut store, &native).await?;
+        self.remember_account(app, &native).await;
         Ok(Self::snapshot(app, &store, &native))
     }
     pub(crate) async fn connect_qoder_native(&self) -> Result<Status, String> {
@@ -484,6 +489,7 @@ impl Manager {
             .validate()?;
         self.remember_confirmed("qoder", &mut store, &native)
             .await?;
+        self.remember_account("qoder", &native).await;
         Ok(Self::snapshot("qoder", &store, &native))
     }
     pub(crate) async fn set_auto(
@@ -493,18 +499,15 @@ impl Manager {
         enabled: bool,
     ) -> Result<Status, String> {
         valid_app(app)?;
-        let _guard = self.settings_lock.lock().await;
+        let accounts = self.accounts_and_settings.lock().await;
+        let native = accounts
+            .get(app)
+            .filter(|native| native.account_id.as_deref() == Some(id))
+            .ok_or("agentRewards.accountChanged")?;
         let mut store = self.read().await?;
-        let value = self.helper(app, json!({"mode":"identity"})).await?;
-        let native = serde_json::from_value::<Observation>(value)
-            .map_err(|_| ERROR.to_owned())?
-            .validate()?;
-        if native.account_id.as_deref() != Some(id) {
-            return Err("agentRewards.accountChanged".into());
-        }
         store.enabled.insert(key(app, id), enabled);
         self.save(&store).await?;
-        Ok(Self::snapshot(app, &store, &native))
+        Ok(Self::snapshot(app, &store, native))
     }
     async fn claim_locked(
         &self,
@@ -560,6 +563,7 @@ impl Manager {
         let _guard = self.lock.lock().await;
         let mut store = self.read().await?;
         let native = self.observe(app, None).await?;
+        self.remember_account(app, &native).await;
         self.claim_locked(app, id, &mut store, native).await
     }
     pub(crate) async fn start_login(&self, app: &str) -> Result<LoginStart, String> {
@@ -615,14 +619,20 @@ impl Manager {
             return Err(ERROR.into());
         }
         let _guard = self.lock.lock().await;
-        let _settings = self.settings_lock.lock().await;
-        let mut store = self.read().await?;
         let value = self
             .helper(app, json!({"mode":"forget","expectedAccountId":id}))
             .await?;
         if value["complete"] != true {
             return Err(ERROR.into());
         }
+        let mut accounts = self.accounts_and_settings.lock().await;
+        if accounts
+            .get(app)
+            .is_some_and(|native| native.account_id.as_deref() == Some(id))
+        {
+            accounts.remove(app);
+        }
+        let mut store = self.read().await?;
         store.enabled.remove(&key(app, id));
         self.save(&store).await
     }
@@ -669,6 +679,41 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn auto_preferences_use_the_displayed_account_without_waiting_for_observations() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(
+            dir.path().join("rewards.json"),
+            Arc::new(crate::database::Database::memory().unwrap()),
+        );
+        let _observation = manager.lock.lock().await;
+        let account = "a".repeat(64);
+        let mut native = Observation::outcome(Outcome::NotChecked);
+        native.account_id = Some(account.clone());
+        for app in APPS {
+            manager.remember_account(app, &native).await;
+            assert!(manager.set_auto(app, &"b".repeat(64), true).await.is_err());
+            for enabled in [true, false] {
+                let status = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    manager.set_auto(app, &account, enabled),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(status.auto_enabled, enabled);
+                assert_eq!(
+                    manager.read().await.unwrap().enabled[&key(app, &account)],
+                    enabled
+                );
+            }
+            manager
+                .remember_account(app, &Observation::outcome(Outcome::SignInRequired))
+                .await;
+            assert!(manager.set_auto(app, &account, true).await.is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn an_in_flight_reward_write_keeps_the_latest_check_in_preference() {
         let dir = tempfile::tempdir().expect("temporary directory");
         let manager = Manager::new(
@@ -712,6 +757,8 @@ mod tests {
         assert!(Manager::snapshot("qoder", &store, &native)
             .confirmed_dates
             .is_empty());
+        // The daily check-in is confirmed even though a separate offer is available.
+        native.outcome = Outcome::NotChecked;
         native.reward_day = Some(qoder_reward_day(chrono::Utc::now().timestamp_millis()));
         manager
             .remember_confirmed("qoder", &mut store, &native)

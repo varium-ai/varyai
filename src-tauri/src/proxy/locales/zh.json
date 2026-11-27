@@ -52,7 +52,7 @@
   "pi_upstream_redirect_rejected": "出于安全限制，已拒绝上游返回的 HTTP 重定向。",
   "pi_upstream_error": "上游供应商返回错误（为防止敏感信息回显，已隐藏原始错误体）。",
   "invalid_gateway_key": "Gateway 密钥无效或已被吊销。",
-  "model_not_allowed": "当前 Gateway 密钥无权访问该模型。",
+  "model_not_allowed": "当前网关密钥无权访问该模型。请选择此密钥白名单中的模型。",
   "gateway_operation_not_supported": "当前 Gateway 预算策略不支持该操作。",
   "gateway_budget_exhausted": "当前 Gateway 密钥的 Token 预算已耗尽。",
   "gateway_policy_unavailable": "Gateway 策略存储暂不可用，请稍后重试。",

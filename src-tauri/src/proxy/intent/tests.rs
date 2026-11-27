@@ -307,6 +307,14 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
     };
     let runtime = Arc::new(Runtime::default());
     let temporary = runtime.install(session(), None).expect("temporary session");
+    let mut draft = session();
+    draft.group.enabled = true;
+    draft.group.members[0].provider_id = "synthetic-unlisted-provider".into();
+    draft.targets[0].provider_id = "synthetic-unlisted-provider".into();
+    let draft_token = runtime.install(draft, None)?;
+    let mut published = session();
+    published.group.enabled = true;
+    let published = Arc::new(published);
     runtime
         .set_menu(Arc::new(Menu {
             token: concat!("synthetic", "-menu-token").into(),
@@ -314,10 +322,21 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
             default_model: None,
             omitted_entries: 0,
             context_settings: Default::default(),
-            groups: HashMap::from([(alias.clone(), Arc::new(session()))]),
+            groups: HashMap::from([(alias.clone(), published.clone())]),
         }))
         .expect("menu");
     let db = Arc::new(Database::memory()?);
+    runtime.set_global(
+        Menu {
+            token: String::new(),
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            context_settings: Default::default(),
+            groups: HashMap::from([(alias.clone(), published)]),
+        },
+        db.routing_generation(),
+    )?;
     let key = db.create_gateway_key(KeyPolicy {
         name: "Synthetic Codex policy".into(),
         models: vec![alias.clone()],
@@ -350,6 +369,17 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
         let error: Value = response.json().await?;
         assert_eq!(error["error"]["code"], "model_not_allowed");
     }
+    let denied_draft = client
+        .post(&url)
+        .bearer_auth(draft_token)
+        .json(&json!({"model":alias, "input":"synthetic"}))
+        .send()
+        .await?;
+    assert_eq!(denied_draft.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        denied_draft.json::<Value>().await?["error"]["code"],
+        "model_not_allowed"
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     for token in tokens {
         let response = client
@@ -740,6 +770,7 @@ async fn dropped_route_stream_keeps_observed_usage_from_the_actual_model(
                 latency_ms: 0,
                 status: 200,
                 streaming: true,
+                error_message: None,
             }),
             started,
             upstream_status: 200,

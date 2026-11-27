@@ -148,9 +148,7 @@ impl Client {
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         let _ = self.installed_executable()?;
-        prepare_connection(&self.directory()?, &self.argv_path()?)?;
-        let _ = ensure_ready_for(self.0);
-        Ok(())
+        prepare_connection(&self.directory()?, &self.argv_path()?)
     }
     pub(crate) fn reconnect(self) -> Result<(), AppError> {
         ensure_ready_for(self.0)
