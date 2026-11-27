@@ -443,3 +443,47 @@ fn deepseek_reapply_after_both_native_entries_disappear() -> Result<(), String> 
         Ok(())
     })
 }
+
+#[test]
+fn deepseek_legacy_receipt_refresh_retires_registration_without_touching_script(
+) -> Result<(), String> {
+    use crate::services::deepseek_harness::{parse as parse_profile, session};
+    let root = tempfile::tempdir().map_err(|_| FAILED)?;
+    let profile = root.path().join("profiles/desktop/cordis.patch.yml");
+    fs::create_dir_all(profile.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
+    let native = "# Native plugin\n- id: synthetic-plugin\n  config: {enabled: true}\n";
+    fs::write(&profile, native).map_err(|_| FAILED)?;
+    let helper = session::path(&profile);
+    let script = b"// synthetic older build\r\n";
+    fs::write(&helper, script).map_err(|_| FAILED)?;
+    let manager = Manager {
+        root: root.path().join("receipts"),
+    };
+    let menu = tests::fixture_menu();
+    let selected = menu.default_model.as_deref().ok_or(FAILED)?;
+    let app = "deepseek-harness";
+    let origin = "http://127.0.0.1:1";
+    crate::services::agent_clients::with_test_config(&profile, || -> Result<(), String> {
+        let mut old = manager.build(app, &menu, origin, selected)?;
+        let cordis = old
+            .files
+            .iter_mut()
+            .find(|f| matches!(f.format, Format::Cordis))
+            .ok_or(FAILED)?;
+        cordis.installed["sessionHeader"] = session::entry(&profile)?;
+        cordis.fields.push(vec!["sessionHeader".into()]);
+        manager.install(old)?;
+        manager
+            .refresh_for_reapply(app, &menu, origin, selected)?
+            .ok_or(FAILED)?;
+        assert!(manager.status(app)?.configured);
+        assert!(parse_profile(&read(&profile)?.ok_or(FAILED)?)?
+            .get("sessionHeader")
+            .is_none());
+        manager.refresh(app, &menu, origin)?;
+        manager.disconnect(app)?;
+        assert!(read(&profile)?.as_deref() == Some(native));
+        assert!(fs::read(&helper).map_err(|_| FAILED)? == script);
+        Ok(())
+    })
+}

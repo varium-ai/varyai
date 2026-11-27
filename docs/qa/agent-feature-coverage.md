@@ -223,6 +223,13 @@ Native configuration and picker state continue through the existing adapters.
 The loop uses the same code on macOS and Windows. Installed Agent self-tests
 are tracked separately from loopback fixtures.
 
+## Harness connection without a session helper
+
+| Agents | Entry points and adapters | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| DeepSeek Harness | Desktop Cordis projection and credential store, main/tray connect and refresh | Do not install or check a session script. Retire the exact legacy module entry during projection. Use supplied native session IDs; events without one remain uncorrelated. | Temporary profile tests; Windows and macOS native acceptance pending. |
+| All other managed Agents and variants listed below | Existing native adapters and CLI/desktop entry points | No change to configuration, session extraction, forwarding or UI | Outside this Harness-only adapter; no new native acceptance claimed. |
+
 ## Manual reconnect feedback
 
 | Agent IDs | Entry points and adapters | Runtime and UI | Verification |
