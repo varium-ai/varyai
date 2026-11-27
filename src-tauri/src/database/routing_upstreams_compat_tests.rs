@@ -786,3 +786,84 @@ fn native_provider_modes_keep_catalog_and_picks_independent(
         .is_empty());
     Ok(())
 }
+
+#[test]
+fn sync_subscription_catalog_updates_matching_account_without_bumping_revision(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::codex_provider::ModelMode;
+    use crate::services::routing_upstreams::SubscriptionProvider;
+
+    let db = Database::memory()?;
+    let antigravity: RoutingUpstream = serde_json::from_value(json!({
+        "schemaVersion": 1,
+        "id": "ag-1",
+        "name": "Antigravity",
+        "revision": 0,
+        "source": {
+            "kind": "subscription",
+            "provider": "antigravity",
+            "accountId": "acct-1",
+            "models": [{"model": "pinned-model"}],
+            "catalog": [{"model": "old-model"}],
+            "mode": "picked"
+        }
+    }))?;
+    let other_account: RoutingUpstream = serde_json::from_value(json!({
+        "schemaVersion": 1,
+        "id": "ag-2",
+        "name": "Antigravity 2",
+        "revision": 0,
+        "source": {
+            "kind": "subscription",
+            "provider": "antigravity",
+            "accountId": "acct-2",
+            "models": [],
+            "catalog": [{"model": "other-old"}],
+            "mode": "vendor"
+        }
+    }))?;
+    let saved_ag = db.save_routing_upstream(antigravity)?;
+    let saved_other = db.save_routing_upstream(other_account)?;
+
+    let next_catalog = vec![
+        json!({"model": "gemini-4-argon", "displayName": "Gemini 4 Argon"}),
+        json!({"model": "gemini-4-neon", "displayName": "Gemini 4 Neon"}),
+    ];
+    assert!(db.sync_subscription_catalog(
+        SubscriptionProvider::Antigravity,
+        "acct-1",
+        &next_catalog,
+    )?);
+    assert!(!db.sync_subscription_catalog(
+        SubscriptionProvider::Antigravity,
+        "acct-1",
+        &next_catalog,
+    )?);
+    assert!(!db.sync_subscription_catalog(SubscriptionProvider::Antigravity, "acct-1", &[],)?);
+
+    let list = db.list_routing_upstreams()?;
+    let updated = list.iter().find(|r| r.id == saved_ag.id).ok_or("ag-1")?;
+    assert_eq!(updated.revision, saved_ag.revision);
+    match &updated.source {
+        UpstreamSource::Subscription {
+            models,
+            catalog,
+            mode,
+            ..
+        } => {
+            assert!(matches!(*mode, ModelMode::Picked));
+            assert_eq!(models, &vec![json!({"model": "pinned-model"})]);
+            assert_eq!(catalog, &next_catalog);
+        }
+        _ => panic!("expected subscription source"),
+    }
+
+    let untouched = list.iter().find(|r| r.id == saved_other.id).ok_or("ag-2")?;
+    match &untouched.source {
+        UpstreamSource::Subscription { catalog, .. } => {
+            assert_eq!(catalog, &vec![json!({"model": "other-old"})]);
+        }
+        _ => panic!("expected subscription source"),
+    }
+    Ok(())
+}

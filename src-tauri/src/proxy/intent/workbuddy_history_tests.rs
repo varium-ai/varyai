@@ -509,7 +509,10 @@ async fn harness_saved_tool_history_follows_priority_after_the_tool_round(
             .client
             .post(&endpoint)
             .bearer_auth(TOKEN)
-            .header("x-vary-harness-session-id", "synthetic-saved-tool-history")
+            .header(
+                "x-deepseek-harness-session-id",
+                "synthetic-saved-tool-history",
+            )
             .json(body)
             .send()
     };

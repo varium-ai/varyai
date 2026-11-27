@@ -148,6 +148,30 @@ it("refreshes subscription plan labels after a Google quota observation", async 
     queryKey: ["native-subscription-accounts", "antigravity"],
   });
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["routing-upstreams"] });
+  expect(invalidate).not.toHaveBeenCalledWith({
+    queryKey: ["agent-model-catalog"],
+  });
+  expect(invalidate).not.toHaveBeenCalledWith({
+    queryKey: ["subscription-account-models", "antigravity", "fixture-id"],
+  });
+});
+
+it("invalidates model caches only when Antigravity quota reports catalogUpdated", async () => {
+  vi.mocked(nativeSubscriptionApi.quota).mockResolvedValueOnce({
+    credentialStatus: "valid",
+    success: true,
+    catalogUpdated: true,
+    tiers: [{ name: "five_hour", utilization: 25, resetsAt: null }],
+  } as never);
+  const client = mount("antigravity");
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  await screen.findByText("codexProvider.remaining");
+  expect(invalidate).toHaveBeenCalledWith({
+    queryKey: ["agent-model-catalog"],
+  });
+  expect(invalidate).toHaveBeenCalledWith({
+    queryKey: ["subscription-account-models", "antigravity", "fixture-id"],
+  });
 });
 
 it("keeps an exhausted enterprise shared pool visible without inventing unknown meters", async () => {

@@ -645,6 +645,8 @@ pub(super) async fn quota(account: &Account) -> Result<QuotaObservation, String>
     Ok(QuotaObservation {
         quota,
         credits_expires_at,
+        catalog_updated: false,
+        discovered_models: None,
     })
 }
 

@@ -25,6 +25,7 @@ export const nativeSubscriptionApi = {
     invoke<
       import("@/types/subscription").SubscriptionQuota & {
         creditsExpiresAt?: string;
+        catalogUpdated?: boolean;
       }
     >("native_subscription_quota", { provider, id }),
   accounts: (provider: NativeSubscriptionProvider) =>

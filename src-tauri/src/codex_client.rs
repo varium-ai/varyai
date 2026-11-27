@@ -5,7 +5,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) const MIN_VERSION: &str = "0.165.0";
+pub(crate) const MIN_VERSION: &str = "0.169.1";
+#[cfg(not(test))]
+const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@openai/codex/latest";
+const PUBLISHED_SUCCESS_TTL: Duration = Duration::from_secs(6 * 3600);
+const PUBLISHED_FAILURE_TTL: Duration = Duration::from_secs(30 * 60);
+const MAX_NPM_RESPONSE_BYTES: usize = 64 * 1024;
 mod identity;
 pub(crate) use identity::user_agent;
 
@@ -46,6 +51,26 @@ impl Version {
 struct Cache {
     version: Option<Version>,
     checked: Option<Instant>,
+    #[cfg(not(test))]
+    published_checked: Option<Instant>,
+    #[cfg(not(test))]
+    published_succeeded: bool,
+}
+
+fn published_cache_fresh(elapsed: Duration, succeeded: bool) -> bool {
+    let ttl = if succeeded {
+        PUBLISHED_SUCCESS_TTL
+    } else {
+        PUBLISHED_FAILURE_TTL
+    };
+    elapsed < ttl
+}
+
+#[cfg(not(test))]
+fn is_published_fresh(cache: &Cache) -> bool {
+    cache
+        .published_checked
+        .is_some_and(|at| published_cache_fresh(at.elapsed(), cache.published_succeeded))
 }
 
 fn cache() -> &'static RwLock<Cache> {
@@ -86,14 +111,27 @@ pub(crate) fn observe(headers: &http::HeaderMap) {
         return;
     };
     if let Ok(mut c) = cache().write() {
-        let floor = Version::parse(MIN_VERSION).unwrap_or(Version([0, 165, 0]));
+        let floor = Version::parse(MIN_VERSION).unwrap_or(Version([0, 169, 1]));
         c.version = Some(c.version.unwrap_or(floor).max(version));
+    }
+}
+
+fn trigger_published_refresh() {
+    #[cfg(not(test))]
+    {
+        let fresh = cache().read().ok().is_some_and(|c| is_published_fresh(&c));
+        if !fresh && tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async {
+                refresh_published_version().await;
+            });
+        }
     }
 }
 
 pub(crate) fn apply_identity(
     headers: &mut http::HeaderMap,
 ) -> Result<(), http::header::InvalidHeaderValue> {
+    trigger_published_refresh();
     let version = current_version();
     headers.insert("version", http::HeaderValue::from_str(&version)?);
     headers.insert(
@@ -103,39 +141,103 @@ pub(crate) fn apply_identity(
     Ok(())
 }
 
+fn parse_published_release(bytes: &[u8]) -> Option<Version> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let raw = value.get("version")?.as_str()?.trim();
+    if raw.contains(['-', '+']) {
+        return None;
+    }
+    let parts: Vec<_> = raw.split('.').collect();
+    if parts.len() != 3
+        || !parts
+            .iter()
+            .all(|part| (1..=6).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    Version::parse(raw)
+}
+
+async fn fetch_published_with_client(client: &reqwest::Client, url: &str) -> Option<Version> {
+    let mut response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_NPM_RESPONSE_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    parse_published_release(&bytes)
+}
+
+#[cfg(not(test))]
+async fn refresh_published_version() {
+    if cache().read().ok().is_some_and(|c| is_published_fresh(&c)) {
+        return;
+    }
+    static PUBLISHED_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = PUBLISHED_GUARD.lock().await;
+    if cache().read().ok().is_some_and(|c| is_published_fresh(&c)) {
+        return;
+    }
+    let version = match crate::proxy::http_client::get_without_redirects() {
+        Ok(client) => fetch_published_with_client(&client, NPM_LATEST_URL).await,
+        Err(_) => None,
+    };
+    if let Ok(mut c) = cache().write() {
+        let floor = Version::parse(MIN_VERSION).unwrap_or(Version([0, 169, 1]));
+        if let Some(version) = version {
+            c.version = Some(c.version.unwrap_or(floor).max(version));
+        }
+        c.published_checked = Some(Instant::now());
+        c.published_succeeded = version.is_some();
+    }
+}
+
 /// Passive discovery runs off the forwarding path and never starts a CLI.
 pub(crate) async fn resolve_version() -> String {
     identity::prepare().await;
     static PREPARE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = PREPARE.lock().await;
-    if cache().read().ok().is_some_and(|c| {
+    let local_fresh = cache().read().ok().is_some_and(|c| {
         c.checked
             .is_some_and(|at| at.elapsed() < Duration::from_secs(600))
-    }) {
-        return current_version();
-    }
-    let result = tokio::task::spawn_blocking(|| {
-        let mut candidates = crate::codex_config::codex_cli_candidates();
-        if let Some(path) = std::env::var_os("PATH") {
-            for dir in std::env::split_paths(&path).filter(|p| p.is_absolute()) {
-                candidates.push(dir.join("codex"));
-                #[cfg(windows)]
-                candidates.push(dir.join("codex.cmd"));
+    });
+    if !local_fresh {
+        let result = tokio::task::spawn_blocking(|| {
+            let mut candidates = crate::codex_config::codex_cli_candidates();
+            if let Some(path) = std::env::var_os("PATH") {
+                for dir in std::env::split_paths(&path).filter(|p| p.is_absolute()) {
+                    candidates.push(dir.join("codex"));
+                    #[cfg(windows)]
+                    candidates.push(dir.join("codex.cmd"));
+                }
             }
+            detect(
+                &crate::codex_config::get_codex_config_dir().join("models_cache.json"),
+                &candidates,
+            )
+        })
+        .await
+        .ok();
+        if let Ok(mut c) = cache().write() {
+            if let Some(version) = result {
+                c.version = Some(c.version.map_or(version, |v| v.max(version)));
+            }
+            c.checked = Some(Instant::now());
         }
-        detect(
-            &crate::codex_config::get_codex_config_dir().join("models_cache.json"),
-            &candidates,
-        )
-    })
-    .await
-    .ok();
-    if let Ok(mut c) = cache().write() {
-        if let Some(version) = result {
-            c.version = Some(c.version.map_or(version, |v| v.max(version)));
-        }
-        c.checked = Some(Instant::now());
     }
+    #[cfg(not(test))]
+    refresh_published_version().await;
     current_version()
 }
 
@@ -155,7 +257,7 @@ fn read_json(path: &Path, limit: u64) -> Option<serde_json::Value> {
 }
 
 fn detect(model_cache: &Path, candidates: &[PathBuf]) -> Version {
-    let mut newest = Version::parse(MIN_VERSION).unwrap_or(Version([0, 165, 0]));
+    let mut newest = Version::parse(MIN_VERSION).unwrap_or(Version([0, 169, 1]));
     if let Some(version) = read_json(model_cache, 4 * 1024 * 1024).and_then(|v| {
         v.get("client_version")
             .and_then(|v| v.as_str())
@@ -225,20 +327,20 @@ mod tests {
         std::fs::write(&executable, "not executable").unwrap();
         std::fs::write(
             bin.parent().unwrap().join("package.json"),
-            r#"{"name":"@openai/codex","version":"0.166.0"}"#,
+            r#"{"name":"@openai/codex","version":"0.170.0"}"#,
         )
         .unwrap();
         std::fs::write(
             &model_cache,
-            r#"{"client_version":"0.164.0","models":[{"slug":"other-account-model"}]}"#,
+            r#"{"client_version":"0.168.0","models":[{"slug":"other-account-model"}]}"#,
         )
         .unwrap();
         assert_eq!(
             detect(&model_cache, std::slice::from_ref(&executable)).text(),
-            "0.166.0"
+            "0.170.0"
         );
-        std::fs::write(&model_cache, r#"{"client_version":"0.167.1"}"#).unwrap();
-        assert_eq!(detect(&model_cache, &[executable]).text(), "0.167.1");
+        std::fs::write(&model_cache, r#"{"client_version":"0.171.1"}"#).unwrap();
+        assert_eq!(detect(&model_cache, &[executable]).text(), "0.171.1");
         std::fs::write(&model_cache, "invalid").unwrap();
         assert_eq!(detect(&model_cache, &[]).text(), MIN_VERSION);
     }
@@ -283,5 +385,99 @@ mod tests {
         assert!(
             Version::parse(headers["version"].to_str().unwrap()) >= Version::parse(MIN_VERSION)
         );
+    }
+
+    #[test]
+    fn published_release_parser_accepts_stable_semver_and_rejects_prereleases() {
+        assert_eq!(
+            parse_published_release(br#"{"version":"0.172.0"}"#),
+            Version::parse("0.172.0")
+        );
+        for invalid in [
+            br#"{"version":"0.172.0-alpha.1"}"#.as_slice(),
+            br#"{"version":"0.172.0+build"}"#,
+            br#"{"version":"0.172"}"#,
+            br#"{"version":"0.172.0\r\nX-Injected: 1"}"#,
+            br#"{"version":172}"#,
+            br#"{}"#,
+        ] {
+            assert!(
+                parse_published_release(invalid).is_none(),
+                "expected none for {:?}",
+                String::from_utf8_lossy(invalid)
+            );
+        }
+        assert!(published_cache_fresh(Duration::from_secs(10 * 60), false));
+        assert!(!published_cache_fresh(Duration::from_secs(30 * 60), false));
+        assert!(published_cache_fresh(Duration::from_secs(30 * 60), true));
+        assert!(!published_cache_fresh(Duration::from_secs(6 * 3600), true));
+    }
+
+    #[tokio::test]
+    async fn fetch_published_with_client_handles_release_prerelease_errors_redirects_and_limits() {
+        use axum::{http::StatusCode, routing::get, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/latest", get(|| async { r#"{"version":"0.172.0"}"# }))
+            .route(
+                "/alpha",
+                get(|| async { r#"{"version":"0.173.0-alpha.1"}"# }),
+            )
+            .route(
+                "/err",
+                get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, r#"{"version":"9.9.9"}"#) }),
+            )
+            .route(
+                "/large",
+                get(|| async {
+                    format!(
+                        r#"{{"version":"0.172.0","pad":"{}"}}"#,
+                        "a".repeat(MAX_NPM_RESPONSE_BYTES + 16)
+                    )
+                }),
+            )
+            .route(
+                "/redirect",
+                get(|| async {
+                    (
+                        StatusCode::FOUND,
+                        [(axum::http::header::LOCATION, "/latest")],
+                        "",
+                    )
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            fetch_published_with_client(&client, &format!("http://{addr}/latest")).await,
+            Version::parse("0.172.0")
+        );
+        assert!(
+            fetch_published_with_client(&client, &format!("http://{addr}/alpha"))
+                .await
+                .is_none()
+        );
+        assert!(
+            fetch_published_with_client(&client, &format!("http://{addr}/err"))
+                .await
+                .is_none()
+        );
+        assert!(
+            fetch_published_with_client(&client, &format!("http://{addr}/large"))
+                .await
+                .is_none()
+        );
+        assert!(
+            fetch_published_with_client(&client, &format!("http://{addr}/redirect"))
+                .await
+                .is_none()
+        );
+        server.abort();
     }
 }

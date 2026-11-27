@@ -305,7 +305,6 @@ fn edit(
     token: &str,
     selected: &str,
 ) -> Result<FileEdit, String> {
-    let harness_profile = path.clone();
     let format = match app {
         "gemini" => Format::Env,
         "grokbuild" | "kimi" => Format::Toml,
@@ -530,7 +529,6 @@ fn edit(
                     crate::services::deepseek_harness::project(
                         value, catalog, base, token, selected,
                     )?;
-                    crate::services::deepseek_harness::session::configure(value, &harness_profile)?;
                     return Ok(());
                 }
                 let source = if app == "kimi" {
@@ -1154,26 +1152,8 @@ mod tests {
         let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
         assert!(live.starts_with(original));
         let doc = crate::services::deepseek_harness::parse(&live)?;
-        let helper = crate::services::deepseek_harness::session::path(&path);
-        assert_eq!(
-            doc["sessionHeader"],
-            crate::services::deepseek_harness::session::entry(&path)?
-        );
-        assert_eq!(
-            std::fs::read_to_string(&helper).map_err(|_| FAILED)?,
-            crate::services::deepseek_harness::session::SOURCE
-        );
-        std::fs::remove_file(&helper).map_err(|_| FAILED)?;
-        projection.ensure_harness_session_helper()?;
-        assert!(helper.is_file());
-        std::fs::write(&helper, "synthetic externally edited module").map_err(|_| FAILED)?;
-        assert!(projection.ensure_harness_session_helper().is_err());
-        assert_eq!(
-            std::fs::read_to_string(&helper).map_err(|_| FAILED)?,
-            "synthetic externally edited module"
-        );
-        // Clean the conflict fixture before the independent projection round trips below.
-        std::fs::remove_file(&helper).map_err(|_| FAILED)?;
+        let helper = path.with_file_name("varyai-harness-session-id.mjs");
+        assert!(!helper.exists());
         assert!(
             live.contains("id: agent-default-model"),
             "the chosen starting model reaches Harness"
@@ -1712,13 +1692,9 @@ mod tests {
         let cred_path = root.path().join(".credentials.yaml");
         let cred_source = "version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: synthetic-test-secret\n";
         std::fs::write(&cred_path, cred_source).map_err(|_| FAILED)?;
-        // Session helper must match SOURCE exactly.
-        let session_path = crate::services::deepseek_harness::session::path(&path);
-        std::fs::write(
-            &session_path,
-            crate::services::deepseek_harness::session::SOURCE,
-        )
-        .map_err(|_| FAILED)?;
+        // An unrelated script beside the profile is not connection state.
+        let session_path = path.with_file_name("varyai-harness-session-id.mjs");
+        std::fs::write(&session_path, "synthetic unmanaged script").map_err(|_| FAILED)?;
 
         let catalog = vec![Model {
             api: "openai-completions",
@@ -1778,10 +1754,6 @@ mod tests {
         let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
         assert!(live.starts_with("# Your patch layer"), "comments preserved");
         let doc = crate::services::deepseek_harness::parse(&live)?;
-        assert_eq!(
-            doc["sessionHeader"],
-            crate::services::deepseek_harness::session::entry(&path)?
-        );
         assert!(
             doc["providers"]
                 .as_object()
@@ -1798,11 +1770,10 @@ mod tests {
         );
         assert!(cred_live.contains("synthetic-test-token"), "token written");
 
-        // Verify the session file still matches SOURCE.
+        // The connection does not modify an existing script.
         let session_live = std::fs::read_to_string(&session_path).map_err(|_| FAILED)?;
         assert_eq!(
-            session_live,
-            crate::services::deepseek_harness::session::SOURCE,
+            session_live, "synthetic unmanaged script",
             "session file unchanged"
         );
 

@@ -52,6 +52,7 @@ export function SubscriptionAccountQuota({
       const good = previous?.quota?.success ? previous.quota : undefined;
       try {
         let quota: Snapshot["quota"];
+        let catalogUpdated = false;
         if (provider === "github_copilot") {
           const usage = await copilotGetUsageForAccount(id);
           const tiers: QuotaTier[] = Object.entries(
@@ -84,6 +85,8 @@ export function SubscriptionAccountQuota({
             provider === "xai_oauth"
               ? await subscriptionApi.getXaiOauthQuota(id)
               : await nativeSubscriptionApi.quota(provider, id);
+          catalogUpdated =
+            "catalogUpdated" in value && value.catalogUpdated === true;
           quota = {
             credentialStatus: value.credentialStatus,
             success: value.success,
@@ -106,6 +109,14 @@ export function SubscriptionAccountQuota({
             queryKey: ["native-subscription-accounts", provider],
           });
           void client.invalidateQueries({ queryKey: ["routing-upstreams"] });
+          if (provider === "antigravity" && catalogUpdated) {
+            void client.invalidateQueries({
+              queryKey: ["agent-model-catalog"],
+            });
+            void client.invalidateQueries({
+              queryKey: ["subscription-account-models", provider, id],
+            });
+          }
         }
         return {
           quota:

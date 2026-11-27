@@ -58,10 +58,24 @@ pub(crate) async fn native_subscription_models(
 
 #[tauri::command]
 pub(crate) async fn native_subscription_quota(
+    state: tauri::State<'_, crate::store::AppState>,
     provider: SubscriptionProvider,
     id: String,
 ) -> Result<accounts::QuotaObservation, String> {
     let mut observation = accounts::quota(provider, &id).await?;
+    if provider == SubscriptionProvider::Antigravity {
+        if let Some(models) = observation.discovered_models.take() {
+            let db = state.db.clone();
+            let account_id = id.clone();
+            if let Ok(Ok(true)) = tokio::task::spawn_blocking(move || {
+                db.sync_subscription_catalog(provider, &account_id, &models)
+            })
+            .await
+            {
+                observation.catalog_updated = true;
+            }
+        }
+    }
     observation.quota.error = None;
     observation.quota.credential_message = None;
     Ok(observation)

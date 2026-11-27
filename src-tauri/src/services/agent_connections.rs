@@ -627,36 +627,7 @@ impl FileEdit {
                 .as_deref()
                 .is_some_and(|text| jsonc::parse(text).is_err())
     }
-    fn ensure_harness_session_helper(&self) -> Result<(), String> {
-        use super::deepseek_harness::session;
-        if !matches!(self.format, Format::Cordis) || self.installed.get("sessionHeader").is_none() {
-            return Ok(());
-        }
-        if self.installed["sessionHeader"] != session::entry(&self.path)? {
-            log::warn!(
-                "[AgentConnections] ensure_harness_session CONFLICT: sessionHeader mismatch for {:?}",
-                self.path,
-            );
-            return Err(CONFLICT.into());
-        }
-        let path = session::path(&self.path);
-        let original = read(&path)?;
-        if original
-            .as_deref()
-            .is_some_and(|source| source != session::SOURCE)
-        {
-            log::warn!(
-                "[AgentConnections] ensure_harness_session CONFLICT: session file content mismatch for {:?} (len={:?} vs SOURCE len={})",
-                path,
-                original.as_deref().map(str::len),
-                session::SOURCE.len(),
-            );
-            return Err(CONFLICT.into());
-        }
-        replace_checked(&path, original.as_deref(), Some(session::SOURCE))
-    }
     fn write(&self) -> Result<(), String> {
-        self.ensure_harness_session_helper()?;
         self.write_document()?;
         if matches!(self.format, Format::HarnessCredentials) {
             harness_credentials::secure(&self.path)?;
@@ -1169,11 +1140,6 @@ impl Manager {
         let app = old.app.as_str();
         if app == "pi" && !old.suspended {
             crate::pi_config::session::ensure_installed();
-        }
-        if app == "deepseek-harness" && !old.suspended {
-            for file in &old.files {
-                file.ensure_harness_session_helper()?;
-            }
         }
         let model = selected
             .or_else(|| menu.stand_in_direct(&old.model))

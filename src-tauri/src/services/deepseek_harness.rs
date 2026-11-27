@@ -1,5 +1,4 @@
 //! Desktop profile patches. Account credentials remain owned by Harness.
-pub(crate) mod session;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -45,14 +44,7 @@ fn parse_entries(entries: Vec<Value>) -> Result<Value, String> {
     let mut providers = serde_json::Map::new();
     let mut selection = Vec::new();
     let mut legacy = false;
-    let mut session_header = None;
     for mut entry in entries {
-        if session::recognized(&entry) {
-            if session_header.replace(entry).is_some() {
-                return Err(FAILED.into());
-            }
-            continue;
-        }
         if entry["id"] == "agent-default-model" && entry["config"].is_object() {
             selection = vec![json!({"id":"agent-default-model","config":entry["config"]})];
             entry.as_object_mut().ok_or(FAILED)?.remove("config");
@@ -122,11 +114,7 @@ fn parse_entries(entries: Vec<Value>) -> Result<Value, String> {
         if let Some(children) = entry.get("insert").and_then(Value::as_array) {
             let mut kept = Vec::new();
             for child in children {
-                if session::recognized(child) {
-                    if session_header.replace(child.clone()).is_some() {
-                        return Err(FAILED.into());
-                    }
-                } else if child["id"]
+                if child["id"]
                     .as_str()
                     .is_some_and(|id| id.starts_with("varyai-provider-"))
                     && child["name"] == PLUGIN
@@ -180,11 +168,9 @@ fn parse_entries(entries: Vec<Value>) -> Result<Value, String> {
     {
         return Err(FAILED.into());
     }
-    let mut value = json!({"patches":patches,"providers":providers,"selection":selection,"legacyProviders":legacy});
-    if let Some(header) = session_header {
-        value["sessionHeader"] = header;
-    }
-    Ok(value)
+    Ok(
+        json!({"patches":patches,"providers":providers,"selection":selection,"legacyProviders":legacy}),
+    )
 }
 
 pub(crate) fn parse(text: &str) -> Result<Value, String> {
@@ -194,9 +180,6 @@ pub(crate) fn parse(text: &str) -> Result<Value, String> {
 /// Normalize receipts written before structural Cordis editing.
 pub(crate) fn normalize(value: &Value) -> Result<Value, String> {
     let mut entries = value["patches"].as_array().cloned().ok_or(FAILED)?;
-    if let Some(header) = value.get("sessionHeader") {
-        entries.push(json!({"insert":[header]}));
-    }
     for provider in value["providers"].as_object().ok_or(FAILED)?.values() {
         if value["legacyProviders"] == true {
             entries.push(json!({"insert":[provider]}));
@@ -210,9 +193,6 @@ pub(crate) fn normalize(value: &Value) -> Result<Value, String> {
 
 fn entries(next: &Value) -> Result<Vec<Value>, String> {
     let mut entries = next["patches"].as_array().cloned().ok_or(FAILED)?;
-    if let Some(header) = next.get("sessionHeader") {
-        entries.push(json!({"insert":[header]}));
-    }
     let providers = next["providers"].as_object().ok_or(FAILED)?;
     if next["legacyProviders"] == true {
         entries.extend(
@@ -368,19 +348,6 @@ pub(crate) fn recover_for_reapply(
         owned_routes.extend(routes.keys().map(String::as_str));
     }
     let selected = selection(&clean);
-    if installed.get("sessionHeader").is_some()
-        && clean.get("sessionHeader") == installed.get("sessionHeader")
-    {
-        match baseline.get("sessionHeader") {
-            Some(header) => clean["sessionHeader"] = header.clone(),
-            None => {
-                clean
-                    .as_object_mut()
-                    .ok_or(conflict)?
-                    .remove("sessionHeader");
-            }
-        }
-    }
     if selected
         .get("provider")
         .and_then(Value::as_str)

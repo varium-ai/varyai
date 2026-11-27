@@ -8169,6 +8169,7 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             .start(
                 ResponseMetadata {
                     session_id: None,
+                    dsh_hint: None,
                     protocol: "openai_responses",
                     client: "codex",
                     transport: Transport::Json,
@@ -13903,6 +13904,7 @@ mod xai_json_fixture_boundary_tests {
             .start(
                 ResponseMetadata {
                     session_id: None,
+                    dsh_hint: None,
                     protocol: "openai_responses",
                     client: "codex",
                     transport: Transport::Json,

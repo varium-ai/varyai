@@ -233,7 +233,6 @@ pub(crate) fn extract_client_session_id(
     }
     if client_format == "deepseek-harness" {
         for name in [
-            "x-vary-harness-session-id",
             "x-deepseek-harness-session-id",
             "x-session-id",
             "x-session-affinity",
@@ -1174,7 +1173,6 @@ mod tests {
     #[test]
     fn harness_native_session_headers_are_validated_without_using_request_or_cache_ids() {
         for name in [
-            "x-vary-harness-session-id",
             "x-deepseek-harness-session-id",
             "x-session-id",
             "x-session-affinity",
@@ -1213,6 +1211,12 @@ mod tests {
             headers.append(name, "two".parse().unwrap());
             assert!(extract_client_session_id(&headers, &json!({}), "deepseek-harness").is_none());
         }
+        let mut retired = HeaderMap::new();
+        retired.insert(
+            "x-vary-harness-session-id",
+            "synthetic-harness-session".parse().unwrap(),
+        );
+        assert!(extract_client_session_id(&retired, &json!({}), "deepseek-harness").is_none());
         let headers = HeaderMap::from_iter([
             (
                 http::header::HeaderName::from_static("x-request-id"),

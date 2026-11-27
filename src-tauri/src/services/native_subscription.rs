@@ -19,6 +19,7 @@ use tokio::{
 const FAILED: &str = "nativeSubscription.failed";
 const EXPIRED: &str = "nativeSubscription.expired";
 const PROJECT: &str = "nativeSubscription.projectRequired";
+mod antigravity_models;
 mod antigravity_quota;
 pub(crate) mod provider_import;
 pub(crate) mod workbuddy;
@@ -1503,27 +1504,51 @@ async fn codeassist(
     method: &str,
     body: &Value,
 ) -> Result<Value, String> {
+    codeassist_request(account, base, method, body, true)
+        .await
+        .map_err(|(_, err)| err)
+}
+
+async fn codeassist_request(
+    account: &Account,
+    base: &str,
+    method: &str,
+    body: &Value,
+    record_rejection: bool,
+) -> Result<Value, (Option<reqwest::StatusCode>, String)> {
+    let user_agent = if account.provider == SubscriptionProvider::Antigravity {
+        let version = antigravity_models::resolve_version().await;
+        antigravity_models::user_agent(&version)
+    } else {
+        google_user_agent(account.provider)
+    };
     let mut request = crate::proxy::http_client::get()
         .post(format!("{base}/v1internal:{method}"))
         .bearer_auth(&account.access)
         .json(body)
-        .timeout(Duration::from_secs(25));
-    request = request.header("User-Agent", google_user_agent(account.provider));
+        .timeout(Duration::from_secs(25))
+        .header("User-Agent", user_agent);
     if account.provider == SubscriptionProvider::Antigravity {
         request = request.header("X-Goog-Api-Client", "gl-node/22.21.1");
     }
-    let response = request.send().await.map_err(|_| FAILED)?;
+    let response = request.send().await.map_err(|_| (None, FAILED.into()))?;
     if !response.status().is_success() {
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            observe_rejection(account).await;
-            return Err(EXPIRED.into());
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            if record_rejection {
+                observe_rejection(account).await;
+            }
+            return Err((Some(status), EXPIRED.into()));
         }
-        return Err(FAILED.into());
+        return Err((Some(status), FAILED.into()));
     }
-    response.json().await.map_err(|_| FAILED.into())
+    response.json().await.map_err(|_| (None, FAILED.into()))
 }
 
-fn google_user_agent(provider: SubscriptionProvider) -> String {
+pub(crate) fn google_user_agent_cached(
+    provider: SubscriptionProvider,
+    model: Option<&str>,
+) -> String {
     let platform = match std::env::consts::OS {
         "macos" => "darwin",
         "windows" => "win32",
@@ -1536,47 +1561,67 @@ fn google_user_agent(provider: SubscriptionProvider) -> String {
     };
     match provider {
         SubscriptionProvider::Antigravity => {
-            format!("antigravity/hub/2.9.1 {platform}/{arch}")
+            antigravity_models::trigger_background_refresh();
+            antigravity_models::user_agent(&antigravity_models::current_version())
         }
         SubscriptionProvider::GeminiCli => {
-            format!("GeminiCLI/0.61.0/gemini-2.5-pro ({platform}; {arch}; terminal)")
+            let model = model
+                .map(str::trim)
+                .filter(|m| {
+                    !m.is_empty()
+                        && m.len() <= 128
+                        && !m.chars().any(|c| c.is_control() || c.is_whitespace())
+                })
+                .unwrap_or("gemini-2.5-pro");
+            format!("GeminiCLI/0.61.0/{model} ({platform}; {arch}; terminal)")
         }
         _ => "vary-ai".into(),
     }
 }
 
+fn google_user_agent(provider: SubscriptionProvider) -> String {
+    google_user_agent_cached(provider, None)
+}
+
 async fn antigravity_models(account: &Account, project: &str) -> Result<Value, String> {
-    let mut tiers = Vec::new();
-    if let Ok(response) = codeassist(
-        account,
-        "https://cloudcode-pa.googleapis.com",
-        "loadCodeAssist",
-        &json!({"metadata":{"ideType":"ANTIGRAVITY"}}),
-    )
-    .await
+    let raw_tiers = if let Some(cached) = antigravity_models::cached_entitlements(account, project)
     {
-        for tier in [
-            response["paidTier"]["id"].as_str(),
-            response["currentTier"]["id"].as_str(),
-        ]
-        .into_iter()
-        .flatten()
+        cached
+    } else {
+        match codeassist_request(
+            account,
+            "https://cloudcode-pa.googleapis.com",
+            "loadCodeAssist",
+            &json!({"metadata":{"ideType":"ANTIGRAVITY"}}),
+            false,
+        )
+        .await
         {
-            if !tier.is_empty() && tier != "free-tier" && !tiers.iter().any(|item| item == tier) {
-                tiers.push(tier.to_owned());
+            Ok(response) => {
+                let extracted = antigravity_models::extract_entitlements(&response);
+                antigravity_models::store_entitlements(account, project, extracted.clone());
+                extracted
             }
+            Err(_) => Vec::new(),
         }
-    }
+    };
+    let tiers = antigravity_models::filter_tiers(account, project, raw_tiers);
     for tier in tiers {
-        let result = codeassist(
+        match codeassist_request(
             account,
             account.provider.endpoint(),
             "fetchAvailableModels",
             &json!({"project":project,"entitlement":{"userTier":tier}}),
+            true,
         )
-        .await;
-        if result.is_ok() {
-            return result;
+        .await
+        {
+            Ok(result) => return Ok(result),
+            Err((Some(reqwest::StatusCode::UNAUTHORIZED), err)) => return Err(err),
+            Err((Some(reqwest::StatusCode::BAD_REQUEST), _)) => {
+                antigravity_models::mark_tier_refused(account, project, &tier);
+            }
+            Err(_) => {}
         }
     }
     codeassist(
@@ -1720,17 +1765,17 @@ pub(crate) async fn models(provider: SubscriptionProvider, id: &str) -> Result<V
         let flags = gemini_flags(&account, &project).await;
         return Ok(gemini_account_catalog(&flags, &quota));
     }
-    let body = if provider == SubscriptionProvider::Antigravity {
-        antigravity_models(&account, &project).await?
-    } else {
-        codeassist(
-            &account,
-            provider.endpoint(),
-            "fetchAvailableModels",
-            &json!({"project":project}),
-        )
-        .await?
-    };
+    if provider == SubscriptionProvider::Antigravity {
+        let body = antigravity_models(&account, &project).await?;
+        return antigravity_models::parse_models(&body);
+    }
+    let body = codeassist(
+        &account,
+        provider.endpoint(),
+        "fetchAvailableModels",
+        &json!({"project":project}),
+    )
+    .await?;
     Ok(body["models"].as_object().ok_or(FAILED)?.iter().filter(|(_, row)| row["disabled"] != true).map(|(id, row)| json!({"model":id,"displayName":row["displayName"].as_str().unwrap_or(id),"contextWindow":row["maxTokens"],"maxOutputTokens":row["maxOutputTokens"]})).collect())
 }
 
@@ -1831,6 +1876,10 @@ pub(crate) struct QuotaObservation {
     pub quota: super::subscription::SubscriptionQuota,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credits_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub catalog_updated: bool,
+    #[serde(skip)]
+    pub discovered_models: Option<Vec<Value>>,
 }
 
 impl From<super::subscription::SubscriptionQuota> for QuotaObservation {
@@ -1838,6 +1887,8 @@ impl From<super::subscription::SubscriptionQuota> for QuotaObservation {
         Self {
             quota,
             credits_expires_at: None,
+            catalog_updated: false,
+            discovered_models: None,
         }
     }
 }
@@ -1884,6 +1935,7 @@ pub(crate) async fn quota(
                 .await?
             };
             let mut quota = parse_google_quota(provider, &value);
+            let mut discovered_models = None;
             if provider == SubscriptionProvider::Antigravity {
                 let summary = codeassist(
                     &account,
@@ -1894,6 +1946,9 @@ pub(crate) async fn quota(
                 .await
                 .ok();
                 quota.tiers = antigravity_quota::parse(&value, summary.as_ref());
+                discovered_models = antigravity_models::parse_models(&value)
+                    .ok()
+                    .filter(|rows| !rows.is_empty());
             }
             if provider == SubscriptionProvider::GeminiCli {
                 let flags = gemini_flags(&account, &project).await;
@@ -1901,7 +1956,12 @@ pub(crate) async fn quota(
                     tier.name = gemini_shown_model(&flags, &tier.name).into();
                 }
             }
-            return Ok(quota.into());
+            return Ok(QuotaObservation {
+                quota,
+                credits_expires_at: None,
+                catalog_updated: false,
+                discovered_models,
+            });
         }
         if provider == SubscriptionProvider::Claude {
             if let Some(quota) = claude_cli_usage(&account).await {
