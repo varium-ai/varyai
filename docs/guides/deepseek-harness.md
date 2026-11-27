@@ -14,7 +14,7 @@ not that upstream source. Refreshing an existing connection updates these names
 even when Harness continues using an older bare request alias as the model's
 `id`. Historical aliases and the selected upstream model remain valid.
 
-Connection setup and refresh do not install or check a JavaScript helper. An exact legacy helper registration for this profile is removed during projection; files on disk and unrelated plugin entries are left alone. Audit records can correlate sessions when the client supplies a supported identifier.
+Connection setup and refresh do not install or check a JavaScript helper; files on disk and unrelated plugin entries are left alone. Audit records and live routing traces correlate sessions when the client supplies a supported identifier, or fall back off the hot path to read-only matching against `$DSH_HOME/sessions/` (`Convs`, `TurnConvs`, and `ResponseIDs`).
 
 VaryAI stores its local gateway credential as `VARYAI_HARNESS_GATEWAY_KEY` in `$DSH_HOME/.credentials.yaml` (native version 1) and points all three managed protocol routes at it through `apiKeyEnv`. This lets Harness resolve authentication and show its native green credential indicator. The green dot confirms that a credential is configured; it does not test connectivity or identify the model used by a conversation. Catalog synchronization upgrades intact older connections that used an Authorization header. A conflicting credential reference, unsupported credential-store version or invalid YAML stops the update without overwriting the native files. On Unix, credential writes use owner-only permissions.
 

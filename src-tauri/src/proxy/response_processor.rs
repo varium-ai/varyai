@@ -974,6 +974,7 @@ mod tests {
         set_tool_risk_runtime_for_test(ToolRiskRuntime::build(true, 5, vec![], &HashMap::new()));
         let metadata = ResponseMetadata {
             session_id: None,
+            dsh_hint: None,
             protocol: "anthropic_messages",
             client: "claude",
             transport: Transport::Sse,

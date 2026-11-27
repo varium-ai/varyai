@@ -227,7 +227,7 @@ are tracked separately from loopback fixtures.
 
 | Agents | Entry points and adapters | Runtime and UI | Verification |
 | --- | --- | --- | --- |
-| DeepSeek Harness | Desktop Cordis projection and credential store, main/tray connect and refresh | Do not install or check a session script. Retire the exact legacy module entry during projection. Use supplied native session IDs; events without one remain uncorrelated. | Temporary profile tests; Windows and macOS native acceptance pending. |
+| DeepSeek Harness | Desktop Cordis projection and credential store, main/tray connect and refresh | Do not install or check a session script. Use supplied native session IDs, with off-hot-path Magpie-style read-only `$DSH_HOME/sessions/` (`Convs`, `TurnConvs`, `ResponseIDs`, and fork safety) correlation for live route graph titles and async tool-risk observations on macOS and Windows; ambiguous or uncorrelated events remain unattributed. (`harness-session-id.mjs`, `harness-session-id.node.cjs`, `deepseek_harness/session.rs`, `sessionHeader`, and `x-vary-harness-session-id` ingress support have been removed.) | Temporary profile, session-index, trace, and tool-risk worker tests; Windows and macOS native acceptance pending. |
 | All other managed Agents and variants listed below | Existing native adapters and CLI/desktop entry points | No change to configuration, session extraction, forwarding or UI | Outside this Harness-only adapter; no new native acceptance claimed. |
 
 ## Manual reconnect feedback

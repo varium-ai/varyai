@@ -31,9 +31,15 @@ pub struct ToolSchemaRef {
     pub namespace: Option<String>,
     pub schema: &'static str,
 }
+#[derive(Clone, Debug)]
+pub struct DshCorrelationHint {
+    pub opening_conv: String,
+    pub last_convs: Vec<String>,
+}
 #[derive(Clone)]
 pub struct ResponseMetadata {
     pub session_id: Option<String>,
+    pub dsh_hint: Option<DshCorrelationHint>,
     pub protocol: &'static str,
     pub client: &'static str,
     pub transport: Transport,
@@ -43,6 +49,10 @@ pub struct ResponseMetadata {
 impl ResponseMetadata {
     pub fn with_session(mut self, session: Option<String>) -> Self {
         self.session_id = super::types::normalized_session_id(session.as_deref());
+        self
+    }
+    pub fn with_dsh_hint(mut self, hint: Option<DshCorrelationHint>) -> Self {
+        self.dsh_hint = hint;
         self
     }
 }
@@ -337,6 +347,7 @@ pub(crate) fn observe_native(observation: super::types::ToolObservation) {
         .saturating_add(8192);
     let metadata = ResponseMetadata {
         session_id: observation.correlation.session_id.clone(),
+        dsh_hint: None,
         protocol: "native_hook",
         client,
         transport: Transport::Json,
@@ -395,6 +406,7 @@ mod budget_regression_tests {
     fn metadata() -> ResponseMetadata {
         ResponseMetadata {
             session_id: None,
+            dsh_hint: None,
             protocol: "anthropic_messages",
             client: "claude",
             transport: Transport::Sse,

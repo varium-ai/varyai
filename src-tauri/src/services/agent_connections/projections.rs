@@ -305,7 +305,6 @@ fn edit(
     token: &str,
     selected: &str,
 ) -> Result<FileEdit, String> {
-    let harness_profile = path.clone();
     let format = match app {
         "gemini" => Format::Env,
         "grokbuild" | "kimi" => Format::Toml,
@@ -530,7 +529,6 @@ fn edit(
                     crate::services::deepseek_harness::project(
                         value, catalog, base, token, selected,
                     )?;
-                    crate::services::deepseek_harness::session::retire(value, &harness_profile)?;
                     return Ok(());
                 }
                 let source = if app == "kimi" {
@@ -1154,8 +1152,7 @@ mod tests {
         let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
         assert!(live.starts_with(original));
         let doc = crate::services::deepseek_harness::parse(&live)?;
-        let helper = crate::services::deepseek_harness::session::path(&path);
-        assert!(doc.get("sessionHeader").is_none());
+        let helper = path.with_file_name("varyai-harness-session-id.mjs");
         assert!(!helper.exists());
         assert!(
             live.contains("id: agent-default-model"),
@@ -1695,8 +1692,8 @@ mod tests {
         let cred_path = root.path().join(".credentials.yaml");
         let cred_source = "version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: synthetic-test-secret\n";
         std::fs::write(&cred_path, cred_source).map_err(|_| FAILED)?;
-        // An unrelated or stale script beside the profile is not connection state.
-        let session_path = crate::services::deepseek_harness::session::path(&path);
+        // An unrelated script beside the profile is not connection state.
+        let session_path = path.with_file_name("varyai-harness-session-id.mjs");
         std::fs::write(&session_path, "synthetic unmanaged script").map_err(|_| FAILED)?;
 
         let catalog = vec![Model {
@@ -1757,7 +1754,6 @@ mod tests {
         let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
         assert!(live.starts_with("# Your patch layer"), "comments preserved");
         let doc = crate::services::deepseek_harness::parse(&live)?;
-        assert!(doc.get("sessionHeader").is_none());
         assert!(
             doc["providers"]
                 .as_object()

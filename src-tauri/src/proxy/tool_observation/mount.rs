@@ -32,6 +32,7 @@ pub fn metadata(
 ) -> ResponseMetadata {
     ResponseMetadata {
         session_id: None,
+        dsh_hint: None,
         protocol,
         client,
         transport,

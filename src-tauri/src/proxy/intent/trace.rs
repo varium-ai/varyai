@@ -102,6 +102,12 @@ pub(crate) struct Route {
     native_session: Option<[u8; 32]>,
     #[serde(skip)]
     trae_title_turn: Option<[u8; 32]>,
+    #[serde(skip)]
+    dsh_conv: Option<String>,
+    #[serde(skip)]
+    dsh_last_convs: Vec<String>,
+    #[serde(skip)]
+    response_id: Option<String>,
     pub model: String,
     pub group_name: String,
     pub strategy: String,
@@ -383,6 +389,9 @@ impl Store {
                 session: None,
                 native_session: None,
                 trae_title_turn: None,
+                dsh_conv: None,
+                dsh_last_convs: Vec::new(),
+                response_id: None,
                 model: label(model),
                 group_name: label(group_name),
                 strategy: label(strategy),
@@ -465,6 +474,63 @@ impl Store {
                     route.native_session =
                         Some(self.native_session_digest(&route.agent, &first.session_id));
                 }
+            }
+        }
+    }
+
+    pub(crate) fn attach_dsh_sessions(&self, requests: &mut [Route]) {
+        let has_unresolved = |rows: &[Route]| {
+            rows.iter().any(|route| {
+                route.agent == "deepseek-harness"
+                    && route.native_session.is_none()
+                    && (route.response_id.is_some() || route.dsh_conv.is_some())
+            })
+        };
+        if !has_unresolved(requests) {
+            return;
+        }
+        let (sessions, from_cache) =
+            crate::session_manager::providers::deepseek_harness::scan_correlation_index_with(false);
+        self.attach_dsh_sessions_with(requests, &sessions);
+        if from_cache && has_unresolved(requests) {
+            let (fresh, _) =
+                crate::session_manager::providers::deepseek_harness::scan_correlation_index_with(
+                    true,
+                );
+            self.attach_dsh_sessions_with(requests, &fresh);
+        }
+    }
+
+    pub(crate) fn attach_dsh_sessions_with(
+        &self,
+        requests: &mut [Route],
+        sessions: &[crate::session_manager::providers::deepseek_harness::DshSessionRecord],
+    ) {
+        use crate::session_manager::providers::deepseek_harness::DshOwners;
+        if sessions.is_empty() {
+            return;
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let owners = DshOwners::from_sessions(sessions);
+        for route in requests.iter_mut() {
+            if route.agent != "deepseek-harness" || route.native_session.is_some() {
+                continue;
+            }
+            if route.response_id.is_none() && route.dsh_conv.is_none() {
+                continue;
+            }
+            let waiting_for_reply = matches!(route.state, State::Routing | State::Streaming)
+                || (route.response_id.is_some()
+                    && now_ms
+                        .saturating_sub(route.started_at.saturating_add(route.duration_ms as i64))
+                        <= 60_000);
+            if let Some(session_id) = owners.resolve(
+                route.response_id.as_deref(),
+                route.dsh_conv.as_deref(),
+                &route.dsh_last_convs,
+                waiting_for_reply,
+            ) {
+                route.native_session = Some(self.native_session_digest(&route.agent, &session_id));
             }
         }
     }
@@ -581,6 +647,27 @@ impl Request {
         self.update(|row| {
             if row.kind.is_none() {
                 row.trae_title_turn = Some(digest);
+            }
+        });
+    }
+
+    pub(in crate::proxy) fn dsh_correlation(&self, conv: String, last_convs: Vec<String>) {
+        self.update(|row| {
+            if row.kind.is_none() {
+                row.dsh_conv = Some(conv);
+                row.dsh_last_convs = last_convs;
+            }
+        });
+    }
+
+    pub(in crate::proxy) fn response_id(&self, id: &str) {
+        let trimmed = id.trim();
+        if trimmed.is_empty() || trimmed.len() > 256 || trimmed.chars().any(char::is_control) {
+            return;
+        }
+        self.update(|row| {
+            if row.response_id.is_none() {
+                row.response_id = Some(trimmed.to_owned());
             }
         });
     }

@@ -371,6 +371,7 @@ mod tests {
             .start(
                 ResponseMetadata {
                     session_id: None,
+                    dsh_hint: None,
                     protocol: "openai_chat",
                     client: "codex",
                     transport: Transport::Sse,
@@ -1054,6 +1055,7 @@ mod tests {
             let (tx, rx) = create_channel(32);
             let metadata = ResponseMetadata {
                 session_id: None,
+                dsh_hint: None,
                 protocol: "anthropic_messages",
                 client: "claude",
                 transport: Transport::Sse,

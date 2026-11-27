@@ -220,7 +220,6 @@ pub(super) fn rebuild_stripped(
     if !native["providers"]
         .as_object()
         .is_some_and(|providers| providers.is_empty())
-        || native.get("sessionHeader").is_some()
         || crate::services::deepseek_harness::selection(&native)["provider"]
             .as_str()
             .is_some_and(|provider| provider.starts_with("varyai-"))
