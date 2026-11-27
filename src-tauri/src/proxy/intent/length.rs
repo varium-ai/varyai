@@ -26,7 +26,7 @@ fn reasoning_summary(item: &Value) -> Option<&[Value]> {
 }
 
 // Codex can replay a reasoning item with neither a summary nor opaque state.
-pub(super) fn empty_reasoning(item: &Value) -> bool {
+pub(crate) fn empty_reasoning(item: &Value) -> bool {
     reasoning_summary(item).is_some_and(|parts| parts.is_empty())
 }
 
@@ -145,6 +145,15 @@ pub(in crate::proxy) fn estimate(projection: &Value, body: &Value) -> Option<u64
                             + item["arguments"].as_str()?.len() as u64,
                     ),
                     Some("function_call_output") => text(&item["output"]),
+                    Some("reasoning") if visible_reasoning(item) || empty_reasoning(item) => Some(
+                        item["summary"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|part| part["text"].as_str())
+                            .map(|s| s.len() as u64)
+                            .sum(),
+                    ),
                     _ => return None,
                 }?;
                 bytes = bytes.saturating_add(n);

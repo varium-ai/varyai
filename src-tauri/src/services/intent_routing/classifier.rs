@@ -36,14 +36,18 @@ pub(crate) fn extract_user_text(body: &Value, codex_responses: bool) -> Option<S
         return bounded_text(text);
     }
     let items = input.as_array()?;
-    // Codex adds browser context as unsolicited output items without a call ID.
+    // Codex adds browser context as unsolicited output items without a call ID,
+    // and replays empty reasoning placeholders when switching from non-encrypted models.
     // Classification uses only the new user text, while forwarding keeps those items.
-    let is_page_context =
-        |item: &Value| codex_responses && crate::proxy::intent::is_codex_page_context(item);
+    let is_codex_auxiliary = |item: &Value| {
+        codex_responses
+            && (crate::proxy::intent::is_codex_page_context(item)
+                || crate::proxy::intent::empty_reasoning(item))
+    };
     if items.len() > 1024
         || items
             .iter()
-            .filter(|item| !is_page_context(item))
+            .filter(|item| !is_codex_auxiliary(item))
             .any(|item| {
                 !crate::proxy::intent::visible_reasoning(item)
                     && (!matches!(
@@ -57,7 +61,7 @@ pub(crate) fn extract_user_text(body: &Value, codex_responses: bool) -> Option<S
     {
         return None;
     }
-    let last = items.iter().rfind(|item| !is_page_context(item))?;
+    let last = items.iter().rfind(|item| !is_codex_auxiliary(item))?;
     user_message_text(last)
 }
 
@@ -70,9 +74,11 @@ pub(crate) fn extract_user_text_after_closed_tools(
     if items.len() > 1024 {
         return None;
     }
-    let last = items
-        .iter()
-        .rfind(|item| !codex_responses || !crate::proxy::intent::is_codex_page_context(item))?;
+    let last = items.iter().rfind(|item| {
+        !codex_responses
+            || (!crate::proxy::intent::is_codex_page_context(item)
+                && !crate::proxy::intent::empty_reasoning(item))
+    })?;
     user_message_text(last)
 }
 

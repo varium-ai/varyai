@@ -74,6 +74,11 @@ fn all_executable_agent_protocols() -> Vec<(&'static str, Protocol)> {
 }
 
 fn static_provider(id: &str, base: &str, format: &str) -> Provider {
+    let wire_api = if format == "openai_chat" {
+        "chat"
+    } else {
+        "responses"
+    };
     let mut provider = Provider::with_id(
         id.into(),
         format!("Synthetic {id}"),
@@ -81,6 +86,7 @@ fn static_provider(id: &str, base: &str, format: &str) -> Provider {
             "base_url": format!("{base}/v1"),
             "auth": { "OPENAI_API_KEY": "synthetic-upstream-key" },
             "apiFormat": format,
+            "config": format!("model_provider = 'p'\n[model_providers.p]\nbase_url = '{base}/v1'\nwire_api = '{wire_api}'\n"),
         }),
         None,
     );
@@ -469,7 +475,7 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                                 json!({"role":"tool","tool_call_id":if step == 99 { "unknown_call" } else { "call_turn_1" },"content":"Synthetic tool output"}),
                             ]);
                         }
-                        if step >= 3 {
+                        if step == 3 {
                             messages.extend([
                                 json!({"role":"assistant","content":"Synthetic final answer"}),
                                 json!({"role":"user","content":"Synthetic second turn question"}),
@@ -490,7 +496,7 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                                 json!({"role":"user","content":[{"type":"tool_result","tool_use_id":if step == 99 { "unknown_call" } else { "call_turn_1" },"content":"Synthetic tool output"}]}),
                             ]);
                         }
-                        if step >= 3 {
+                        if step == 3 {
                             messages.extend([
                                 json!({"role":"assistant","content":[{"type":"thinking","thinking":"Unsigned visible thought","signature":""},{"type":"text","text":"Synthetic final answer"}]}),
                                 json!({"role":"user","content":"Synthetic second turn question"}),
@@ -513,7 +519,7 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                                 json!({"type":"function_call_output","call_id":if step == 99 { "unknown_call" } else { "call_turn_1" },"output":"Synthetic tool output"}),
                             ]);
                         }
-                        if step >= 3 {
+                        if step == 3 {
                             if matches!(agent, "codex" | "t3code") {
                                 input.push(json!({"type":"reasoning","id":format!("rs_{call_id}"),"summary":[],"content":null,"encrypted_content":null}));
                             }
@@ -538,7 +544,7 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                                 json!({"role":"user","parts":[{"functionResponse":{"id":if step == 99 { "unknown_call" } else { "call_turn_1" },"name":"synthetic_tool","response":{"result":"Synthetic tool output"}}}]}),
                             ]);
                         }
-                        if step >= 3 {
+                        if step == 3 {
                             contents.extend([
                                 json!({"role":"model","parts":[{"text":"Synthetic final answer"}]}),
                                 json!({"role":"user","parts":[{"text":"Synthetic second turn question"}]}),
@@ -582,7 +588,8 @@ async fn non_classifier_templates_reselect_each_turn_after_closed_tool_calls_acr
                 assert_eq!(
                     bad.status(),
                     StatusCode::CONFLICT,
-                    "{template:?} {agent} {protocol:?} unknown tool call must fail closed"
+                    "{template:?} {agent} {protocol:?} unknown tool call must fail closed; trace={}",
+                    serde_json::to_string(&runtime.traces.snapshot().first()).unwrap_or_default()
                 );
             }
             let r2 = send(2).await?;
@@ -635,7 +642,7 @@ async fn smart_template_compaction_and_multimodal_classification_apply_across_al
     let upstream = tokio::spawn(async move {
         let app = Router::new()
             .route(
-                "/v1/classify/chat/completions",
+                "/classify/v1/chat/completions",
                 post(move |Json(body): Json<Value>| {
                     let cls_counter = cls_counter.clone();
                     async move {
@@ -729,7 +736,7 @@ async fn smart_template_compaction_and_multimodal_classification_apply_across_al
         });
         group.classifier = Some(static_provider(
             "classifier",
-            &format!("{base}/v1/classify"),
+            &format!("{base}/classify"),
             "openai_chat",
         ));
         group.group.rules = serde_json::from_value(json!([
