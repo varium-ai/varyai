@@ -1434,6 +1434,69 @@ test("explicit shared reconnect overwrites a large compatible catalog without re
   );
 });
 
+for (const edition of ["trae", "trae-intl"]) {
+  test(`${edition} reconnect writes only missing or changed shared models`, async () => {
+    const f = encryptedFixture();
+    const id = "shared_catalog_connection";
+    const config = {
+      protocol: "openai",
+      baseUrl: `http://127.0.0.1:1/connections/${edition}/v1`,
+      apiKey: "synthetic-credential",
+      models: Array.from({ length: 177 }, (_, index) => ({
+        model: `synthetic-${index}`,
+      })),
+    };
+    await createBridge(f.service, async () => ({})).apply(id, "VaryAI", config);
+    const writes = [];
+    for (const method of ["addCustomModel", "updateCustomModel"]) {
+      const original = f.service[method];
+      f.service[method] = async (fields) => {
+        writes.push(fields.id ?? fields.model_name);
+        return original(fields);
+      };
+    }
+    const bridge = createBridge(f.service, async () => ({}));
+    await bridge.replace(id, "VaryAI", config);
+    assert.equal(writes.length, 0);
+
+    const [changedKey, changedLabel, missing] = f.models;
+    changedKey.ak = "changed-protected-fixture";
+    changedLabel.display_name = "Changed synthetic label";
+    f.models.splice(2, 1);
+    await bridge.replace(id, "VaryAI", config);
+    assert.deepEqual(writes, [
+      config.models[2].model,
+      changedKey.custom_model_id,
+      changedLabel.custom_model_id,
+    ]);
+    assert.equal(f.models.length, 177);
+    assert.ok(!f.models.some((row) => row.custom_model_id === missing.custom_model_id));
+    assert.equal(await bridge.matches(id, config), true);
+  });
+}
+
+test("disconnect keeps ownership until native model removal is confirmed", async () => {
+  const f = fixture();
+  const bridge = createBridge(f.service, async () => ({}));
+  const id = "shared_catalog_connection";
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic-credential",
+    models: [{ model: "managed" }],
+  };
+  await bridge.apply(id, "VaryAI", config);
+  const foreign = { custom_model_id: "foreign", model_name: "foreign" };
+  f.models.push(foreign);
+  const remove = f.service.updateCustomModel;
+  f.service.updateCustomModel = async () => ({ code: 0 });
+  await assert.rejects(bridge.remove(id), /model_remove_failed/);
+  assert.equal(await bridge.matches(id, config), true);
+  f.service.updateCustomModel = remove;
+  await bridge.remove(id);
+  assert.deepEqual(f.models, [foreign]);
+});
+
 test("failed compatible reconnect restores original fields and ownership", async () => {
   const f = fixture();
   const b = createBridge(f.service, async () => ({}));

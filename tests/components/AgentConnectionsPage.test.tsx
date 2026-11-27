@@ -3329,6 +3329,76 @@ describe("Agent connections", () => {
     },
   );
 
+  it.each(["trae", "trae-intl"] as const)(
+    "shows a loading indicator while %s applies its model catalog or starting model",
+    async (app) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const pending = {
+        app,
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "bridge_pending" as const,
+        restartRequired: false,
+        desktopState: "current" as const,
+        model: "vary-auto/shared",
+      };
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([pending]);
+      mount(false, client);
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const status = within(row).getByRole("status");
+      await waitFor(() =>
+        expect(status).toHaveTextContent(
+          "agentConnections.states.bridgePending",
+        ),
+      );
+      const indicator = () => status.querySelector("svg");
+      expect(indicator()).toHaveClass("motion-safe:animate-spin");
+      await act(async () => {
+        client.setQueryData(["agent-connections", app], {
+          ...pending,
+          configured: true,
+          recoveryReason: "bridge_selection_pending",
+        });
+      });
+      await waitFor(() =>
+        expect(status).toHaveTextContent(
+          "agentConnections.states.bridgeSelectionPending",
+        ),
+      );
+      expect(indicator()).toHaveClass("motion-safe:animate-spin");
+      await act(async () => {
+        client.setQueryData(["agent-connections", app], {
+          ...pending,
+          enabled: false,
+        });
+      });
+      await waitFor(() =>
+        expect(status).toHaveTextContent(
+          "agentConnections.states.bridgeCleanupPending",
+        ),
+      );
+      expect(indicator()).toHaveClass("motion-safe:animate-spin");
+      await act(async () => {
+        client.setQueryData(["agent-connections", app], {
+          ...pending,
+          configured: true,
+          recoveryPending: false,
+          recoveryReason: null,
+        });
+      });
+      await waitFor(() =>
+        expect(status).toHaveTextContent("agentConnections.states.configured"),
+      );
+      expect(indicator()).toBeNull();
+    },
+  );
+
   it("offers only restart when a running TRAE predates its configured bridge", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({ trae: true });
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([

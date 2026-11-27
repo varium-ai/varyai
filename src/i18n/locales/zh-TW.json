@@ -5222,6 +5222,7 @@
       "inactive": "連接待恢復",
       "orphaned": "連接還原記錄缺失",
       "bridgePending": "等待 {{app}} 連線 · 模型同步或清理尚未完成",
+      "bridgeCleanupPending": "已中斷連線 · {{app}} 模型清理待完成",
       "bridgeModelRejected": "{{app}} 模型設定未完成 · 點擊重新接入重試",
       "bridgeSelectionPending": "{{app}} 已連線 · 用戶端尚未確認首選模型",
       "auditConnected": "官方對話稽核已接入",

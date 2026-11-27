@@ -1336,12 +1336,21 @@ pub fn run() {
                 // startup cleanup is not a live client route change.
                 state.proxy_service.start_codex_app_server_worker();
 
-                // TRAE may be closed at startup or recreate its chat windows later.
+                // Keep each edition's catalog and cleanup progressing while the other is busy.
+                for edition in crate::services::trae_bridge::shared::Edition::ALL {
+                    let trae_proxy = state.proxy_service.clone();
+                    tauri::async_runtime::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            trae_proxy.refresh_shared_trae(edition).await;
+                        }
+                    });
+                }
                 let trae_proxy = state.proxy_service.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        trae_proxy.refresh_trae_takeover().await;
+                        trae_proxy.refresh_trae_native_features().await;
                     }
                 });
 

@@ -5221,6 +5221,7 @@
       "inactive": "接続の再開が必要です",
       "orphaned": "接続の復元記録がありません",
       "bridgePending": "{{app}} への接続待ち · モデル同期または削除が未完了",
+      "bridgeCleanupPending": "切断済み · {{app}} のモデル削除が未完了",
       "bridgeModelRejected": "{{app}} のモデル設定が未完了です · 再接続して再試行してください",
       "bridgeSelectionPending": "{{app}} に接続済み · 優先モデルはクライアントの確認待ちです",
       "auditConnected": "公式セッションの監査が有効",

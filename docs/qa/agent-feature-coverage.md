@@ -41,6 +41,37 @@ while the bridge is briefly unavailable, and an older delivery cannot
 reinstall a disconnected credential. Native connection timings and reproduction
 with the reported clients and accounts remain pending.
 
+### TRAE synchronization latency and status indicator
+
+| Agent | Entry point and adapter | Runtime and UI | Verification plan |
+| --- | --- | --- | --- |
+| TRAE CN | Tools/Agent and tray, China edition's native bridge | Display a loader while connecting, reapplying, publishing, or confirming the starting model. Reuse verified matching rows during shared catalog updates. | China loopback and renderer fixtures for matching and changed metadata, credentials and missing rows. Installed macOS and Windows timing pending. |
+| TRAE International | Tools/Agent and tray, separate international bridge | Same loader and verified-row updates with international credentials and endpoint. | International renderer and connection-state fixtures. Installed macOS and Windows timing pending. |
+| Other Agents in the inventory above | Each Agent's own adapter and status row | Source scope review of the TRAE-specific status predicate and renderer. | Existing Agent connection suite. |
+
+The international desktop acknowledged a 177-model delivery in 159 seconds.
+The command that saved the connection intent took 28 ms. The original shared
+writer replaced every matching model even when it had evidence that the native
+row already matched. Compare existing rows against the desired fields and
+saved credential proof before deciding which rows to update. Use the existing
+single-row native APIs in sequence for additions and changed rows.
+The two editions also have independent periodic delivery and cleanup. After a
+disconnect, keep the cleanup intent and model ownership until a fresh native
+list confirms the managed rows are gone. A synthetic delete acknowledgment that
+leaves a row behind must keep the cleanup pending. The status loader identifies
+delivery, starting-model confirmation and cleanup separately.
+
+The isolated working tree over `28b458a4` passed 82 bridge tests, 61 focused
+TRAE Rust tests, 8,150 full Rust tests with 21 ignored, Cargo test compilation,
+strict Clippy, the renderer build and type check, both formatting checks,
+`pnpm test:dev`, and the production dependency audit on macOS arm64. The
+177-model fixture for each edition went from 177 updates to zero when existing
+rows matched. Two changed rows and one missing row required three native writes.
+On Node 20.20.2, the full renderer run passed 5,044 tests and had one timeout
+in Agent update concurrency. The complete AgentUpdates suite passed on rerun
+(69 tests). The live 159-second timing describes the earlier build. Installed
+macOS and Windows acceptance of the new writer and loader is pending.
+
 Local verification used the working tree over `02109704` on macOS 26.6.2 arm64,
 Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. Renderer type checking, build,
 formatting, and all 5,039 unit tests passed. The 79 TRAE bridge tests, 15 reward
@@ -244,7 +275,7 @@ The Rust tests used reduced debug information and disabled incremental
 compilation for the application crate after the initial build exhausted
 the available disk space. Remote CI has not been run for this working tree.
 
-## Routing group fallback after upstream HTTP 400
+## Routing group fallback after upstream HTTP 400 and 520
 
 The shared attempt loop will advance an unbound inference request after an
 explicit upstream HTTP 400, before publishing model output. The next attempt
@@ -252,6 +283,13 @@ must already be eligible under the group and caller policy. Bound continuations,
 local request validation, and security decisions retain their existing behavior.
 The route graph records each attempted candidate and its original status.
 Native configuration and picker state continue through the existing adapters.
+The November 27 TRAE CN report had five eligible members. The first member
+returned HTTP 520 and the router returned 502 after one attempt. Extend the
+same shared policy to advance an unpinned request after a confirmed HTTP 520.
+The inventory below applies to this change. Cover managed and external gateway
+admission with the bound-key regression and both TRAE editions with a native
+Chat streaming fixture. The fixtures must show the original 520 in the trace
+and delivery of the fallback's output. Native acceptance remains pending.
 
 | Agent ID | Entry point and adapter | Runtime and UI | Verification plan |
 | --- | --- | --- | --- |

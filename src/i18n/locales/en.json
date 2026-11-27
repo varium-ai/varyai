@@ -5297,6 +5297,7 @@
       "inactive": "Connection needs to be resumed",
       "orphaned": "Connection recovery record is missing",
       "bridgePending": "Waiting for {{app}} connection · delivery or cleanup pending",
+      "bridgeCleanupPending": "Disconnected · {{app}} model cleanup pending",
       "bridgeModelRejected": "{{app}} model configuration is incomplete · Reconnect to retry",
       "bridgeSelectionPending": "{{app}} connected · the client has yet to confirm the starting model",
       "auditConnected": "Official session inspection active",

@@ -9,10 +9,10 @@ use crate::{
 };
 use axum::{routing::post, Json, Router};
 
-struct RoutingOnlySecurity(crate::proxy::security::SecurityRuntimeConfig);
+pub(super) struct RoutingOnlySecurity(crate::proxy::security::SecurityRuntimeConfig);
 
 impl RoutingOnlySecurity {
-    fn install() -> Self {
+    pub(super) fn install() -> Self {
         let previous = Self((*crate::proxy::security::get_security_runtime()).clone());
         crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
         previous
@@ -71,7 +71,7 @@ pub(super) fn menu(url: &str) -> Menu {
 async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::services::{agent_connections::Receipt, intent_routing::menu::direct_id};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 
     let _security = RoutingOnlySecurity::install();
 
@@ -80,11 +80,11 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
     let denied_requests = Arc::new(AtomicUsize::new(0));
     let permitted_requests = Arc::new(AtomicUsize::new(0));
     let fail_permitted = Arc::new(AtomicBool::new(false));
-    let reject_primary = Arc::new(AtomicBool::new(false));
+    let primary_rejection = Arc::new(AtomicU16::new(200));
     let denied = denied_requests.clone();
     let permitted = permitted_requests.clone();
     let fail = fail_permitted.clone();
-    let reject = reject_primary.clone();
+    let reject = primary_rejection.clone();
     let task = tokio::spawn(async move {
         let app = Router::new().route("/*path", post(move |uri: http::Uri| {
             let denied = denied.clone();
@@ -99,8 +99,9 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
                     }
                 } else {
                     denied.fetch_add(1, Ordering::SeqCst);
-                    if reject.load(Ordering::SeqCst) {
-                        return (StatusCode::PAYMENT_REQUIRED, Json(json!({"error":{"message":"Synthetic upstream quota exhausted"}})));
+                    let status = reject.load(Ordering::SeqCst);
+                    if status != 200 {
+                        return (StatusCode::from_u16(status).expect("synthetic status"), Json(json!({"error":{"message":"Synthetic upstream failure"}})));
                     }
                 }
                 (StatusCode::OK, Json(json!({"id":"synthetic-response","object":"response","status":"completed","model":"exact-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic response"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}})))
@@ -427,7 +428,6 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
         send("deepseek-harness", &alias).await?.status(),
         StatusCode::OK
     );
-    reject_primary.store(true, Ordering::SeqCst);
     let counts = || {
         (
             denied_requests.load(Ordering::SeqCst),
@@ -435,7 +435,7 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
         )
     };
     let (primary_before, fallback_before) = counts();
-    let routes = apps
+    let routes: Vec<_> = apps
         .into_iter()
         .map(|app| {
             (
@@ -453,23 +453,27 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
             "/gateway/v1/responses".to_owned(),
             key.secret.as_str(),
             alias.as_str(),
-        )));
-    for (path, token, model) in routes {
-        assert_eq!(
-            client
-                .post(format!("{local}{path}"))
-                .bearer_auth(token)
-                .json(&json!({"model":model,"input":format!("Synthetic fallback request {path}")}))
-                .send()
-                .await?
-                .status(),
-            StatusCode::OK,
-            "{path}"
-        );
-        // Check each ingress against an independently available primary.
-        primary_scheduling.succeeded();
+        )))
+        .collect();
+    for status in [402, 520] {
+        primary_rejection.store(status, Ordering::SeqCst);
+        for (path, token, model) in &routes {
+            assert_eq!(
+                client
+                    .post(format!("{local}{path}"))
+                    .bearer_auth(token)
+                    .json(&json!({"model":model,"input":format!("Synthetic fallback for {status} at {path}")}))
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::OK,
+                "{path} after upstream HTTP {status}"
+            );
+            // Check each ingress against an independently available primary.
+            primary_scheduling.succeeded();
+        }
     }
-    let expected_attempts = apps.len() + codex_ingress.len() + 1;
+    let expected_attempts = routes.len() * 2;
     let after_failover = counts();
     assert_eq!(
         after_failover,
@@ -490,7 +494,7 @@ async fn agent_bound_model_allowlist_supports_groups_and_direct_members(
         StatusCode::BAD_REQUEST
     );
     assert_eq!(counts(), after_failover);
-    reject_primary.store(false, Ordering::SeqCst);
+    primary_rejection.store(200, Ordering::SeqCst);
     let forbidden_count = denied_requests.load(Ordering::SeqCst);
     assert_eq!(
         send("deepseek-harness", &overlapping_alias).await?.status(),

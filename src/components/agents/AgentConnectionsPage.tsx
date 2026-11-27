@@ -34,6 +34,7 @@ import {
   ChevronDown,
   PackageCheck,
   PackagePlus,
+  Loader2,
   X,
 } from "lucide-react";
 import {
@@ -900,7 +901,9 @@ export function AgentConnectionsPage({
                 : state.recoveryReason === "bridge_model_rejected"
                   ? "bridgeModelRejected"
                   : state.recoveryReason === "bridge_pending"
-                    ? "bridgePending"
+                    ? enabled
+                      ? "bridgePending"
+                      : "bridgeCleanupPending"
                     : state.recoveryReason === "connection_inactive"
                       ? gateway.data?.running
                         ? "inactive"
@@ -934,6 +937,14 @@ export function AgentConnectionsPage({
                         ? "off"
                         : "unavailable";
     const restartNotice = restartFeedback.messages[app];
+    const traeLoading =
+      isTrae(app) &&
+      (operation === "connecting" ||
+        operation === "reapplying" ||
+        (!operation &&
+          (status === "bridgePending" ||
+            status === "bridgeSelectionPending" ||
+            status === "bridgeCleanupPending")));
     const bypassed = status === "recovery";
     const ready =
       !compact &&
@@ -1229,7 +1240,13 @@ export function AgentConnectionsPage({
               <span className="agent-feedback">{restartNotice}</span>
             ) : (
               <>
-                {bypassed ? (
+                {traeLoading ? (
+                  <Loader2
+                    size={11}
+                    className="shrink-0 motion-safe:animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : bypassed ? (
                   <X size={13} strokeWidth={3} aria-hidden="true" />
                 ) : (
                   <span className="mp-agent-dot" aria-hidden="true" />

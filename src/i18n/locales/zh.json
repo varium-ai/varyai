@@ -5295,6 +5295,7 @@
       "inactive": "接入连接待恢复",
       "orphaned": "接入恢复记录缺失",
       "bridgePending": "等待 {{app}} 连接 · 模型同步或清理尚未完成",
+      "bridgeCleanupPending": "已断开 · {{app}} 模型清理待完成",
       "bridgeModelRejected": "{{app}} 模型配置未完成 · 点击重新接入重试",
       "bridgeSelectionPending": "{{app}} 已连接 · 客户端尚未确认首选模型",
       "auditConnected": "官方会话审计已接入",
