@@ -23,6 +23,74 @@ struct Stored {
     bytes: usize,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum PrecedingReasoning {
+    None,
+    Unsigned(String),
+    OtherReasoning,
+}
+
+fn preceding_reasoning_by_call(
+    parsed: &ir::Request,
+) -> HashMap<String, Option<PrecedingReasoning>> {
+    let mut out: HashMap<String, Option<PrecedingReasoning>> = HashMap::new();
+    let mut prev = PrecedingReasoning::None;
+    for message in &parsed.messages {
+        let mut pending_non_item = false;
+        for part in &message.parts {
+            match part {
+                ir::Part::Thinking {
+                    text,
+                    source,
+                    sealed,
+                    ..
+                } => {
+                    if *source == Protocol::Responses && sealed.is_some() {
+                        pending_non_item = false;
+                        prev = PrecedingReasoning::OtherReasoning;
+                    } else if !text.is_empty() {
+                        pending_non_item = false;
+                        prev = PrecedingReasoning::Unsigned(text.clone());
+                    }
+                }
+                ir::Part::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } => {
+                    if pending_non_item {
+                        pending_non_item = false;
+                        prev = PrecedingReasoning::None;
+                    }
+                    if let Some(key) = call_key(id, name, arguments) {
+                        out.entry(key)
+                            .and_modify(|existing| *existing = None)
+                            .or_insert_with(|| Some(prev.clone()));
+                    }
+                    prev = PrecedingReasoning::None;
+                }
+                ir::Part::ToolSearchCall { .. }
+                | ir::Part::ToolSearchResult { .. }
+                | ir::Part::NamespacedToolCall { .. }
+                | ir::Part::CustomToolCall { .. }
+                | ir::Part::CustomToolResult { .. }
+                | ir::Part::ToolResult { .. } => {
+                    pending_non_item = false;
+                    prev = PrecedingReasoning::None;
+                }
+                _ => {
+                    pending_non_item = true;
+                }
+            }
+        }
+        if pending_non_item {
+            prev = PrecedingReasoning::None;
+        }
+    }
+    out
+}
+
 fn call_key(id: &str, name: &str, arguments: &Value) -> Option<String> {
     if id.len() > 256 || name.len() > 1024 {
         return None;
@@ -143,10 +211,11 @@ impl History {
         history.push_back(entry);
     }
 
-    fn restore(&self, body: &mut Value, target: usize) {
+    fn restore(&self, parsed: &ir::Request, body: &mut Value, target: usize) {
         let Some(input) = body["input"].as_array_mut() else {
             return;
         };
+        let preceding = preceding_reasoning_by_call(parsed);
         let mut keys = HashMap::new();
         for (index, item) in input
             .iter()
@@ -195,17 +264,31 @@ impl History {
             if !positions.windows(2).all(|pair| pair[0] < pair[1]) {
                 continue;
             }
+            let Some(first_key) = entry.calls.first() else {
+                continue;
+            };
+            let Some(Some(prev)) = preceding.get(first_key) else {
+                continue;
+            };
             let start = if entry.visible.is_empty() {
-                if first > 0 && input[first - 1]["type"] == "reasoning" {
+                if !matches!(prev, PrecedingReasoning::None)
+                    || (first > 0 && input[first - 1]["type"] == "reasoning")
+                {
                     continue;
                 }
                 first
             } else {
-                let visible = json!({"type":"reasoning","summary":[{"type":"summary_text","text":entry.visible}]});
-                if first == 0 || input[first - 1] != visible {
+                if *prev != PrecedingReasoning::Unsigned(entry.visible.clone()) {
                     continue;
                 }
-                first - 1
+                let visible = json!({"type":"reasoning","summary":[{"type":"summary_text","text":entry.visible}]});
+                if first > 0 && input[first - 1] == visible {
+                    first - 1
+                } else if first > 0 && input[first - 1]["type"] == "reasoning" {
+                    continue;
+                } else {
+                    first
+                }
             };
             edits.push((start, first, entry.reasoning.clone()));
         }
@@ -309,7 +392,7 @@ pub(super) fn request_wire(
         include.push(json!("reasoning.encrypted_content"));
     }
     body["include"] = json!(include);
-    history.restore(&mut body, target);
+    history.restore(&parsed, &mut body, target);
     serde_json::to_vec(&body)
         .map_err(|_| ProxyError::InvalidRequest("Invalid official request".into()))
 }
@@ -532,6 +615,63 @@ mod tests {
                 retained
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn openai_model_restores_matching_sealed_reasoning_and_blocks_added_summary(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let history = History::default();
+        history.record(&reply(), 0);
+        let wire = request_wire(
+            &payload("Synthetic visible thought", 7),
+            Protocol::Chat,
+            "/v1/chat/completions",
+            "gpt-5.4",
+            &history,
+            0,
+            true,
+        )?;
+        let value: Value = serde_json::from_slice(&wire)?;
+        assert!(value["input"]
+            .as_array()
+            .ok_or("missing input")?
+            .iter()
+            .any(|item| item["encrypted_content"] == "synthetic-private-seal"));
+
+        let mismatch = request_wire(
+            &payload("Synthetic different summary", 7),
+            Protocol::Chat,
+            "/v1/chat/completions",
+            "gpt-5.4",
+            &history,
+            0,
+            true,
+        )?;
+        assert!(!String::from_utf8(mismatch)?.contains("synthetic-private-seal"));
+
+        let hidden_history = History::default();
+        let mut hidden = reply();
+        if let ir::Part::Thinking {
+            text,
+            sealed: Some(item),
+            ..
+        } = &mut hidden.parts[0]
+        {
+            text.clear();
+            item["summary"] = json!([]);
+        }
+        hidden_history.record(&hidden, 0);
+        let added = request_wire(
+            &payload("Synthetic added summary", 7),
+            Protocol::Chat,
+            "/v1/chat/completions",
+            "gpt-5.4",
+            &hidden_history,
+            0,
+            true,
+        )?;
+        assert!(!String::from_utf8(added)?.contains("synthetic-private-seal"));
         Ok(())
     }
 }

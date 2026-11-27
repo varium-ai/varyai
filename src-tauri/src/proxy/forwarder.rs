@@ -68,6 +68,28 @@ fn should_strip_gemini_routed_model(
     matches!(app_type, AppType::Gemini) && wire_is_gemini && has_routed_restoration
 }
 
+/// Resolve the upstream host from provider configuration without calling an
+/// injected test/routing adapter a second time.
+fn bridge_upstream_host(app_type: &AppType, provider: &Provider) -> Option<String> {
+    let claude = super::providers::ClaudeAdapter::new();
+    let codex = super::providers::CodexAdapter::new();
+    let gemini = super::providers::GeminiAdapter::new();
+    let candidates: [&dyn ProviderAdapter; 3] = match app_type {
+        AppType::Codex | AppType::GrokBuild => [&codex, &claude, &gemini],
+        AppType::Gemini => [&gemini, &claude, &codex],
+        _ => [&claude, &codex, &gemini],
+    };
+    let host = candidates.into_iter().find_map(|adapter| {
+        adapter
+            .extract_base_url(provider)
+            .ok()
+            .and_then(|base_url| url::Url::parse(&base_url).ok())
+            .and_then(|url| url.host_str().map(str::to_owned))
+    });
+    host
+}
+
+/// Cross-protocol requests must not re-admit the client payload as native traffic.
 /// Internal wire-execution mode, never a consumer identity or routing decision.
 /// Only explicit group bridge execution can insert this extension.
 #[derive(Clone)]
@@ -1499,7 +1521,12 @@ impl RequestForwarder {
         }
         let streaming = parsed.stream;
         let model = parsed.model.clone();
-        let mut body = super::protocol_bridge::ir::build::request(&parsed, bridge.output)?;
+        let upstream_host = bridge_upstream_host(app_type, provider);
+        let mut body = super::protocol_bridge::ir::build::request_for_host(
+            &parsed,
+            bridge.output,
+            upstream_host.as_deref(),
+        )?;
         if let Some(model) = target_model {
             body["model"] = model;
         } else {

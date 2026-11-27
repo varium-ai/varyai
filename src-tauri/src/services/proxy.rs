@@ -409,6 +409,8 @@ pub struct ProxyService {
     codex_thread_worker: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
     #[cfg(any(target_os = "macos", windows))]
     codex_app_server_worker: Arc<std::sync::Mutex<Option<super::codex_app_server::Worker>>>,
+    upstream_protocol_backfill_inflight:
+        Arc<std::sync::Mutex<std::collections::HashSet<(String, String)>>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -543,6 +545,7 @@ impl ProxyService {
             app_handle: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
             trae_audit_lock: Arc::new(tokio::sync::Mutex::new(())),
+            upstream_protocol_backfill_inflight: Arc::default(),
         }
     }
 
@@ -1226,6 +1229,7 @@ impl ProxyService {
         if self.refresh_global_routing().await.is_err() {
             log::warn!("Global routing catalog is unavailable; stale targets were revoked");
         }
+        self.schedule_upstream_endpoint_backfill();
         self.catalog_sync.pause_clients(false);
         log::info!("代理服务器已启动: {}:{}", info.address, info.port);
         Ok(info)
@@ -3116,6 +3120,234 @@ impl ProxyService {
             self.global_routing_lock.clone(),
         )
         .await
+    }
+
+    pub(crate) fn schedule_upstream_endpoint_backfill(&self) {
+        #[cfg(not(test))]
+        {
+            let service = self.clone();
+            tokio::spawn(async move {
+                service.backfill_routing_upstream_endpoints().await;
+            });
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(crate) async fn backfill_routing_upstream_endpoints(&self) -> usize {
+        let Ok(client) = crate::proxy::http_client::get_without_redirects() else {
+            return 0;
+        };
+        self.backfill_routing_upstream_endpoints_with_client(&client)
+            .await
+    }
+
+    pub(crate) async fn backfill_routing_upstream_endpoints_with_client(
+        &self,
+        client: &reqwest::Client,
+    ) -> usize {
+        use crate::services::provider_protocol_detection::{
+            detect_missing_endpoints, pick_probe_model_for_format,
+        };
+        use crate::services::routing_upstreams::UpstreamSource;
+        use futures::stream::StreamExt;
+
+        struct InflightGuard {
+            inflight: Arc<std::sync::Mutex<std::collections::HashSet<(String, String)>>>,
+            key: (String, String),
+        }
+        impl Drop for InflightGuard {
+            fn drop(&mut self) {
+                if let Ok(mut guard) = self.inflight.lock() {
+                    guard.remove(&self.key);
+                }
+            }
+        }
+
+        const PROBE_FORMATS: [&str; 4] = [
+            "openai_chat",
+            "openai_responses",
+            "anthropic",
+            "gemini_native",
+        ];
+
+        struct ProbeTask {
+            id: String,
+            revision: u32,
+            fingerprint: String,
+            base_url: String,
+            api_key: String,
+            anthropic_auth_field: &'static str,
+            format_models: Vec<(&'static str, String)>,
+            _guard: InflightGuard,
+        }
+
+        let db = self.db.clone();
+        let Ok(Ok((records, probed))) = tokio::task::spawn_blocking(move || {
+            let records = db.private_routing_upstreams()?;
+            let probed = db.list_upstream_protocol_probes()?;
+            Ok::<_, String>((records, probed))
+        })
+        .await
+        else {
+            return 0;
+        };
+
+        let mut tasks = Vec::new();
+        for record in records {
+            if !record.enabled || !record.has_enabled_key() {
+                continue;
+            }
+            if record.transport.as_ref().is_some_and(|t| {
+                t.full_url || t.primary_protocol.is_some() || t.endpoints.len() > 1
+            }) {
+                continue;
+            }
+            let UpstreamSource::Api {
+                base_url,
+                api_key,
+                api_format,
+                models,
+                catalog,
+                auth_type,
+                ..
+            } = &record.source
+            else {
+                continue;
+            };
+            let fingerprint = Database::upstream_protocol_probe_fingerprint(
+                base_url,
+                api_format,
+                auth_type.as_deref(),
+            );
+            if probed
+                .get(&record.id)
+                .is_some_and(|existing| existing == &fingerprint)
+            {
+                continue;
+            }
+            let primary_off = record.transport.as_ref().is_some_and(|t| t.primary_off);
+            let active_key = if !primary_off {
+                api_key.as_deref().filter(|k| !k.trim().is_empty())
+            } else {
+                record.transport.as_ref().and_then(|t| {
+                    t.keys
+                        .iter()
+                        .find(|k| k.enabled && k.api_format.is_none())
+                        .and_then(|k| k.key.as_deref())
+                        .filter(|k| !k.trim().is_empty())
+                })
+            };
+            let Some(active_key) = active_key else {
+                continue;
+            };
+
+            let mut format_models = Vec::new();
+            let mut missing_model = false;
+            for format in PROBE_FORMATS {
+                if format == api_format
+                    || record
+                        .transport
+                        .as_ref()
+                        .is_some_and(|t| t.endpoints.contains_key(format))
+                {
+                    continue;
+                }
+                let Some(model) = pick_probe_model_for_format(models, catalog, format) else {
+                    missing_model = true;
+                    break;
+                };
+                format_models.push((format, model));
+            }
+            if missing_model || format_models.is_empty() {
+                continue;
+            }
+
+            let claim_key = (record.id.clone(), fingerprint.clone());
+            let claimed = self
+                .upstream_protocol_backfill_inflight
+                .lock()
+                .map(|mut set| set.insert(claim_key.clone()))
+                .unwrap_or(false);
+            if !claimed {
+                continue;
+            }
+
+            let anthropic_auth_field = if auth_type.as_deref() == Some("api-key") {
+                "ANTHROPIC_API_KEY"
+            } else {
+                "ANTHROPIC_AUTH_TOKEN"
+            };
+            tasks.push(ProbeTask {
+                id: record.id,
+                revision: record.revision,
+                fingerprint,
+                base_url: base_url.clone(),
+                api_key: active_key.to_owned(),
+                anthropic_auth_field,
+                format_models,
+                _guard: InflightGuard {
+                    inflight: self.upstream_protocol_backfill_inflight.clone(),
+                    key: claim_key,
+                },
+            });
+        }
+
+        if tasks.is_empty() {
+            return 0;
+        }
+
+        let results: Vec<(ProbeTask, Result<_, String>)> = futures::stream::iter(tasks)
+            .map(|task| async move {
+                let res = detect_missing_endpoints(
+                    client,
+                    &task.base_url,
+                    &task.api_key,
+                    Some(task.anthropic_auth_field),
+                    &task.format_models,
+                )
+                .await;
+                (task, res)
+            })
+            .buffer_unordered(4)
+            .collect()
+            .await;
+
+        let mut updated = 0usize;
+        for (task, outcome) in results {
+            let Ok(report) = outcome else {
+                continue;
+            };
+            if !report.decisive {
+                continue;
+            }
+            let added_formats: Vec<&'static str> =
+                report.verified.iter().map(|(fmt, _)| *fmt).collect();
+            let id = task.id.clone();
+            let fingerprint = task.fingerprint.clone();
+            let db = self.db.clone();
+            let verified = report.verified;
+            if let Ok(Ok(true)) = tokio::task::spawn_blocking(move || {
+                db.record_probed_routing_upstream_endpoints(
+                    &id,
+                    task.revision,
+                    &fingerprint,
+                    &verified,
+                )
+            })
+            .await
+            {
+                updated += 1;
+                log::info!(
+                    "[RoutingUpstreams] Backfilled protocol endpoints for provider={}: formats={added_formats:?}",
+                    task.id
+                );
+            }
+        }
+
+        if updated > 0 {
+            self.schedule_routing_refresh().await;
+        }
+        updated
     }
 
     async fn ensure_global_routing_with(
@@ -16550,5 +16782,149 @@ experimental_bearer_token = "PROXY_MANAGED"
             .await
             .expect("clear fake client");
         service.stop().await.expect("stop test server");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn backfill_routing_upstream_discovers_responses_and_skips_when_cached(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::{
+            codex_provider::ModelMode,
+            routing_upstreams::{resolve_provider, variants, RoutingUpstream, UpstreamSource},
+        };
+        use axum::{http::StatusCode, response::IntoResponse, routing::post, Router};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings()?;
+        let db = Arc::new(Database::memory()?);
+
+        let transient = Arc::new(AtomicBool::new(true));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let transient_flag = transient.clone();
+        let hit_counter = hits.clone();
+        let mock = Router::new().fallback(post(move |req: axum::extract::Request| {
+            let transient_flag = transient_flag.clone();
+            let hit_counter = hit_counter.clone();
+            async move {
+                hit_counter.fetch_add(1, Ordering::SeqCst);
+                let path = req.uri().path().to_owned();
+                let _ = axum::body::to_bytes(req.into_body(), 4096).await;
+                if transient_flag.load(Ordering::SeqCst) {
+                    return (StatusCode::SERVICE_UNAVAILABLE, "transient").into_response();
+                }
+                if path.ends_with("/responses") {
+                    axum::Json(json!({
+                        "status": "completed",
+                        "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                    }))
+                    .into_response()
+                } else {
+                    (StatusCode::NOT_FOUND, "unsupported").into_response()
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, mock).await;
+        });
+
+        let saved = db.save_routing_upstream(RoutingUpstream {
+            schema_version: 1,
+            id: "legacy-sol".into(),
+            name: "Legacy Relay".into(),
+            notes: None,
+            icon: None,
+            revision: 0,
+            source: UpstreamSource::Api {
+                base_url: format!("http://{address}/v1"),
+                api_key: Some("synthetic-key".into()),
+                api_format: "openai_chat".into(),
+                models: vec![json!({"model": "gpt-6.2-sol"})],
+                catalog: vec![],
+                mode: ModelMode::Picked,
+                groups_only: false,
+                auth_type: None,
+            },
+            has_api_key: false,
+            enabled: true,
+            preset_id: None,
+            region: None,
+            codex_settings: None,
+            transport: None,
+        })?;
+
+        let service = ProxyService::new(db.clone());
+        let client = reqwest::Client::builder().no_proxy().build()?;
+
+        // Transient 503 must not cache a negative probe fingerprint.
+        assert_eq!(
+            service
+                .backfill_routing_upstream_endpoints_with_client(&client)
+                .await,
+            0
+        );
+        assert!(db.list_upstream_protocol_probes()?.is_empty());
+
+        // Recovery allows decisive probing and persists openai_responses alongside openai_chat.
+        transient.store(false, Ordering::SeqCst);
+        let hits_before_success = hits.load(Ordering::SeqCst);
+        assert_eq!(
+            service
+                .backfill_routing_upstream_endpoints_with_client(&client)
+                .await,
+            1
+        );
+        assert!(hits.load(Ordering::SeqCst) > hits_before_success);
+        service.catalog_sync.drain().await;
+
+        let updated = db
+            .list_routing_upstreams()?
+            .into_iter()
+            .find(|r| r.id == saved.id)
+            .ok_or("missing updated upstream")?;
+        assert_eq!(updated.revision, saved.revision + 1);
+        let endpoints = &updated
+            .transport
+            .as_ref()
+            .ok_or("missing transport")?
+            .endpoints;
+        assert_eq!(
+            endpoints.get("openai_chat").map(String::as_str),
+            Some(format!("http://{address}/v1").as_str())
+        );
+        assert_eq!(
+            endpoints.get("openai_responses").map(String::as_str),
+            Some(format!("http://{address}/v1").as_str())
+        );
+        assert!(!endpoints.contains_key("anthropic"));
+        assert!(!endpoints.contains_key("gemini_native"));
+
+        let resolved = resolve_provider(
+            &db.private_routing_upstreams()?
+                .into_iter()
+                .find(|r| r.id == saved.id)
+                .ok_or("missing private upstream")?,
+        )?;
+        let formats: Vec<_> = variants(&resolved)
+            .into_iter()
+            .filter_map(|v| v.meta.and_then(|m| m.api_format))
+            .collect();
+        assert!(formats.contains(&"openai_chat".to_owned()));
+        assert!(formats.contains(&"openai_responses".to_owned()));
+
+        // Subsequent backfill runs must not make any HTTP requests once fingerprinted.
+        let hits_after_success = hits.load(Ordering::SeqCst);
+        assert_eq!(
+            service
+                .backfill_routing_upstream_endpoints_with_client(&client)
+                .await,
+            0
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), hits_after_success);
+
+        server.abort();
+        Ok(())
     }
 }

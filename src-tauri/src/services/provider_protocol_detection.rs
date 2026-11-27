@@ -52,6 +52,195 @@ pub struct ProtocolDetection {
     pub stream: Option<ProbeOutcome>,
 }
 
+pub(crate) fn derived_endpoint_base(base_url: &str, format: &str) -> Option<String> {
+    let mut trimmed = base_url.trim().trim_end_matches('/');
+    for suffix in [
+        "/chat/completions",
+        "/responses",
+        "/v1/messages",
+        "/messages",
+    ] {
+        if let Some(stripped) = trimmed.strip_suffix(suffix) {
+            trimmed = stripped.trim_end_matches('/');
+            break;
+        }
+    }
+    let mut url = url::Url::parse(trimmed).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let path = url.path().trim_end_matches('/').to_owned();
+    match format {
+        "anthropic" => {
+            let next = path
+                .strip_suffix("/v1beta")
+                .or_else(|| path.strip_suffix("/v1"))
+                .unwrap_or(&path);
+            url.set_path(next);
+        }
+        "gemini_native" => {
+            if let Some(prefix) = path.strip_suffix("/v1") {
+                url.set_path(&format!("{prefix}/v1beta"));
+            } else {
+                url.set_path(&path);
+            }
+        }
+        "openai_chat" | "openai_responses" => {
+            if path.is_empty() {
+                url.set_path("/v1");
+            } else {
+                url.set_path(&path);
+            }
+        }
+        _ => return None,
+    }
+    let derived = url.as_str().trim_end_matches('/').to_owned();
+    crate::services::routing_upstreams::valid_url(&derived).then_some(derived)
+}
+
+fn is_non_chat_probe_model(row: &Value, id: &str) -> bool {
+    if row["isImageGeneration"].as_bool() == Some(true) {
+        return true;
+    }
+    if let Some(modalities) = row.get("outputModalities").and_then(Value::as_array) {
+        if !modalities.is_empty() && !modalities.iter().any(|m| m.as_str() == Some("text")) {
+            return true;
+        }
+    }
+    let lower = id.to_ascii_lowercase();
+    [
+        "dall-e",
+        "gpt-image",
+        "imagen",
+        "flux",
+        "midjourney",
+        "stable-diffusion",
+        "sdxl",
+        "embedding",
+        "rerank",
+        "whisper",
+        "tts",
+        "sora",
+        "veo",
+        "kling",
+        "seedance",
+        "wanx",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern))
+}
+
+pub(crate) fn pick_probe_model_for_format(
+    models: &[Value],
+    catalog: &[Value],
+    format: &str,
+) -> Option<String> {
+    let mut chat_ids: Vec<String> = Vec::new();
+    for row in models.iter().chain(catalog.iter()) {
+        let Some(id) = crate::services::routing_upstreams::model_id(row) else {
+            continue;
+        };
+        let trimmed = id.trim();
+        if trimmed.is_empty()
+            || trimmed.chars().any(char::is_control)
+            || is_non_chat_probe_model(row, trimmed)
+        {
+            continue;
+        }
+        if !chat_ids.iter().any(|existing| existing == trimmed) {
+            chat_ids.push(trimmed.to_owned());
+        }
+    }
+    let first = chat_ids.first()?.clone();
+    let preferred = match format {
+        "openai_responses" => chat_ids.iter().find(|id| {
+            let lower = id.to_ascii_lowercase();
+            let base = lower.rsplit('/').next().unwrap_or(&lower);
+            base.starts_with("gpt-")
+                || base.starts_with("o1")
+                || base.starts_with("o3")
+                || base.starts_with("o4")
+                || lower.contains("codex")
+        }),
+        "anthropic" => chat_ids
+            .iter()
+            .find(|id| id.to_ascii_lowercase().contains("claude")),
+        "gemini_native" => chat_ids
+            .iter()
+            .find(|id| id.to_ascii_lowercase().contains("gemini")),
+        _ => None,
+    };
+    Some(preferred.cloned().unwrap_or(first))
+}
+
+#[derive(Debug)]
+pub(crate) struct BackfillProbeReport {
+    pub verified: Vec<(&'static str, String)>,
+    pub decisive: bool,
+}
+
+pub(crate) async fn detect_missing_endpoints(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    anthropic_auth_field: Option<&str>,
+    format_models: &[(&'static str, String)],
+) -> Result<BackfillProbeReport, String> {
+    let base = url::Url::parse(base_url.trim()).map_err(|_| "Invalid detection configuration")?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || api_key.trim().is_empty()
+    {
+        return Err("Invalid detection configuration".into());
+    }
+    if format_models.is_empty() {
+        return Ok(BackfillProbeReport {
+            verified: Vec::new(),
+            decisive: true,
+        });
+    }
+    let auth_field = anthropic_auth_field.map(str::to_owned);
+    let results = join_all(format_models.iter().map(|(format, model)| {
+        let base = &base;
+        let auth_field = auth_field.clone();
+        async move {
+            let config = DetectionConfig {
+                base_url: base_url.trim().to_owned(),
+                api_key: api_key.trim().to_owned(),
+                model: model.clone(),
+                anthropic_auth_field: auth_field,
+            };
+            (*format, probe(client, &config, base, format, false).await)
+        }
+    }))
+    .await;
+    let decisive = results.iter().any(|(_, outcome)| {
+        !matches!(
+            outcome.status,
+            "network" | "timeout" | "unavailable" | "rate_limited"
+        )
+    });
+    let mut verified = Vec::new();
+    for (format, outcome) in results {
+        if outcome.verified() {
+            if let Some(derived) = derived_endpoint_base(base_url, format) {
+                verified.push((format, derived));
+            }
+        }
+    }
+    Ok(BackfillProbeReport { verified, decisive })
+}
+
 pub async fn detect(config: DetectionConfig) -> Result<Vec<ProtocolDetection>, String> {
     let client = crate::proxy::http_client::get_without_redirects()
         .map_err(|_| "Unable to initialize detection client".to_string())?;
@@ -91,11 +280,22 @@ async fn detect_with_client(
     .await)
 }
 
+#[cfg(test)]
 fn request_spec(
     config: &DetectionConfig,
     base: &url::Url,
     format: &str,
     stream: bool,
+) -> Result<(url::Url, Value, HeaderMap), ProbeOutcome> {
+    request_spec_with_token_field(config, base, format, stream, false)
+}
+
+fn request_spec_with_token_field(
+    config: &DetectionConfig,
+    base: &url::Url,
+    format: &str,
+    stream: bool,
+    use_max_completion_tokens: bool,
 ) -> Result<(url::Url, Value, HeaderMap), ProbeOutcome> {
     let mut url = base.clone();
     let base_path = base.path().trim_end_matches('/');
@@ -117,7 +317,12 @@ fn request_spec(
     let body = match format {
         "openai_chat" => {
             url.set_path(&openai_probe_path(base_path, "/chat/completions"));
-            json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":OUTPUT_TOKEN_LIMIT})
+            let token_key = if use_max_completion_tokens {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,(token_key):OUTPUT_TOKEN_LIMIT})
         }
         "openai_responses" => {
             url.set_path(&openai_probe_path(base_path, "/responses"));
@@ -200,16 +405,43 @@ fn http_error(status: StatusCode) -> ProbeOutcome {
         status_code: Some(status.as_u16()),
     }
 }
-async fn read_bounded(mut response: Response) -> Result<Vec<u8>, ProbeOutcome> {
+async fn read_bounded(response: Response) -> Result<Vec<u8>, ProbeOutcome> {
+    read_bounded_limit(response, BODY_LIMIT).await
+}
+
+async fn read_bounded_limit(mut response: Response, limit: usize) -> Result<Vec<u8>, ProbeOutcome> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(network_error)? {
-        if bytes.len() + chunk.len() > BODY_LIMIT {
+        if bytes.len() + chunk.len() > limit {
             return Err(ProbeOutcome::new("invalid_response"));
         }
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
 }
+
+fn wants_max_completion_tokens(body: &[u8]) -> bool {
+    String::from_utf8_lossy(body)
+        .to_ascii_lowercase()
+        .contains("max_completion_tokens")
+}
+
+fn requires_stream(body: &[u8]) -> bool {
+    let lower = String::from_utf8_lossy(body).to_ascii_lowercase();
+    lower.contains("stream")
+        && [
+            "must be true",
+            "must be set to true",
+            "stream=true",
+            "streaming is required",
+            "only supports stream",
+            "stream only",
+            "requires stream",
+        ]
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+}
+
 async fn probe(
     client: &Client,
     config: &DetectionConfig,
@@ -217,8 +449,38 @@ async fn probe(
     format: &str,
     stream: bool,
 ) -> ProbeOutcome {
+    let (outcome, error_body) = probe_once(client, config, base, format, stream, false).await;
+    let Some(bytes) = error_body.as_deref() else {
+        return outcome;
+    };
+    if format == "openai_chat"
+        && outcome.status_code == Some(400)
+        && wants_max_completion_tokens(bytes)
+    {
+        return probe_once(client, config, base, format, stream, true)
+            .await
+            .0;
+    }
+    if !stream && matches!(outcome.status_code, Some(400 | 422)) && requires_stream(bytes) {
+        return probe_once(client, config, base, format, true, false)
+            .await
+            .0;
+    }
+    outcome
+}
+
+async fn probe_once(
+    client: &Client,
+    config: &DetectionConfig,
+    base: &url::Url,
+    format: &str,
+    stream: bool,
+    use_max_completion_tokens: bool,
+) -> (ProbeOutcome, Option<Vec<u8>>) {
     let run = async {
-        let (url, body, headers) = request_spec(config, base, format, stream)?;
+        let (url, body, headers) =
+            request_spec_with_token_field(config, base, format, stream, use_max_completion_tokens)
+                .map_err(|outcome| (outcome, None))?;
         let response = client
             .post(url)
             .headers(headers)
@@ -226,38 +488,54 @@ async fn probe(
             .timeout(TIMEOUT)
             .send()
             .await
-            .map_err(network_error)?;
-        if !response.status().is_success() {
-            return Err(http_error(response.status()));
+            .map_err(|err| (network_error(err), None))?;
+        let status = response.status();
+        if !status.is_success() {
+            let outcome = http_error(status);
+            let error_body = if matches!(status.as_u16(), 400 | 422) {
+                read_bounded_limit(response, 8 * 1024).await.ok()
+            } else {
+                None
+            };
+            return Err((outcome, error_body));
         }
-        if stream
-            && response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|h| h.to_str().ok())
-                .is_some_and(|s| s.starts_with("text/html"))
-        {
-            return Err(ProbeOutcome::new("invalid_response"));
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        if content_type.starts_with("text/html") {
+            return Err((ProbeOutcome::new("invalid_response"), None));
         }
-        if stream {
-            return read_stream_outcome(format, response).await;
+        if stream || content_type.starts_with("text/event-stream") {
+            return read_stream_outcome(format, response)
+                .await
+                .map(|outcome| (outcome, None))
+                .map_err(|outcome| (outcome, None));
         }
-        let bytes = read_bounded(response).await?;
-        let valid =
-            serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| valid_message(format, &v));
-        Ok(ProbeOutcome::new(if valid {
-            "verified"
-        } else {
-            "invalid_response"
-        }))
+        let bytes = read_bounded(response)
+            .await
+            .map_err(|outcome| (outcome, None))?;
+        let valid = serde_json::from_slice::<Value>(&bytes)
+            .is_ok_and(|v| valid_message(format, &v))
+            || std::str::from_utf8(&bytes).is_ok_and(|text| valid_stream(format, text));
+        Ok((
+            ProbeOutcome::new(if valid {
+                "verified"
+            } else {
+                "invalid_response"
+            }),
+            None,
+        ))
     };
     match tokio::time::timeout(TIMEOUT, run).await {
         Ok(Ok(result)) | Ok(Err(result)) => result,
-        Err(_) => ProbeOutcome::new("timeout"),
+        Err(_) => (ProbeOutcome::new("timeout"), None),
     }
 }
 fn valid_message(format: &str, body: &Value) -> bool {
-    if body.get("error").is_some() {
+    if body.get("error").is_some_and(|v| !v.is_null()) {
         return false;
     }
     match format {
@@ -291,7 +569,7 @@ fn validate_sse_frame(format: &str, frame: &str) -> FrameVerdict {
     let Ok(body) = serde_json::from_str::<Value>(&data) else {
         return FrameVerdict::Invalid;
     };
-    if body.get("error").is_some()
+    if body.get("error").is_some_and(|v| !v.is_null())
         || matches!(
             body["type"].as_str(),
             Some("error" | "response.failed" | "response.incomplete")
@@ -674,6 +952,281 @@ mod tests {
         .await
         .expect("stream probe should return on first valid SSE event");
         assert_eq!(outcome.status, "verified");
+        server.abort();
+    }
+
+    #[test]
+    fn derived_endpoint_base_normalizes_for_each_protocol() {
+        assert_eq!(
+            derived_endpoint_base("https://relay.example", "openai_chat").as_deref(),
+            Some("https://relay.example/v1")
+        );
+        assert_eq!(
+            derived_endpoint_base("https://relay.example/", "openai_responses").as_deref(),
+            Some("https://relay.example/v1")
+        );
+        assert_eq!(
+            derived_endpoint_base(
+                "https://relay.example/v1/chat/completions",
+                "openai_responses"
+            )
+            .as_deref(),
+            Some("https://relay.example/v1")
+        );
+        assert_eq!(
+            derived_endpoint_base("https://relay.example/v1", "anthropic").as_deref(),
+            Some("https://relay.example")
+        );
+        assert_eq!(
+            derived_endpoint_base("https://relay.example/gateway/v1beta/", "anthropic").as_deref(),
+            Some("https://relay.example/gateway")
+        );
+        assert_eq!(
+            derived_endpoint_base("https://relay.example/v1", "gemini_native").as_deref(),
+            Some("https://relay.example/v1beta")
+        );
+        assert_eq!(
+            derived_endpoint_base("https://relay.example/api/paas/v4", "openai_responses")
+                .as_deref(),
+            Some("https://relay.example/api/paas/v4")
+        );
+        assert_eq!(
+            derived_endpoint_base("https://user:secret@relay.example/v1", "openai_chat"),
+            None
+        );
+    }
+
+    #[test]
+    fn pick_probe_model_filters_media_and_prefers_protocol_models() {
+        let models = vec![
+            json!({"model": "gpt-image-2", "isImageGeneration": true}),
+            json!({"model": "text-embedding-3-large"}),
+            json!({"model": "deepseek-chat"}),
+            json!({"model": "claude-sonnet-4-5"}),
+            json!({"model": "gpt-6.2-sol"}),
+            json!({"model": "gemini-2.5-pro"}),
+        ];
+        assert_eq!(
+            pick_probe_model_for_format(&models, &[], "openai_responses").as_deref(),
+            Some("gpt-6.2-sol")
+        );
+        assert_eq!(
+            pick_probe_model_for_format(&models, &[], "anthropic").as_deref(),
+            Some("claude-sonnet-4-5")
+        );
+        assert_eq!(
+            pick_probe_model_for_format(&models, &[], "gemini_native").as_deref(),
+            Some("gemini-2.5-pro")
+        );
+        assert_eq!(
+            pick_probe_model_for_format(&models, &[], "openai_chat").as_deref(),
+            Some("deepseek-chat")
+        );
+        let fallback_only = vec![json!({"model": "glm-5.3"})];
+        assert_eq!(
+            pick_probe_model_for_format(&[], &fallback_only, "openai_responses").as_deref(),
+            Some("glm-5.3")
+        );
+        let image_only = vec![
+            json!({"model": "flux-1"}),
+            json!({"model": "draw", "outputModalities": ["image"]}),
+        ];
+        assert_eq!(
+            pick_probe_model_for_format(&image_only, &[], "openai_responses"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_missing_endpoints_distinguishes_decisive_and_transient_outcomes() {
+        let transient = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transient_flag = transient.clone();
+        let mock = Router::new().fallback(post(move |req: axum::extract::Request| {
+            let transient_flag = transient_flag.clone();
+            async move {
+                if transient_flag.load(Ordering::SeqCst) {
+                    return (HttpStatus::SERVICE_UNAVAILABLE, "transient").into_response();
+                }
+                let path = req.uri().path().to_owned();
+                axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+                if path.ends_with("/responses") {
+                    axum::Json(json!({"status": "completed", "output": [{"content": [{"type": "output_text", "text": MARKER}]}]}))
+                        .into_response()
+                } else {
+                    (HttpStatus::NOT_FOUND, "not supported").into_response()
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let client = Client::new();
+        let base_url = format!("http://{address}/v1");
+        let report = detect_missing_endpoints(
+            &client,
+            &base_url,
+            "synthetic-key",
+            None,
+            &[
+                ("openai_responses", "gpt-6.2-sol".into()),
+                ("anthropic", "gpt-6.2-sol".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(report.decisive);
+        assert_eq!(
+            report.verified,
+            vec![("openai_responses", format!("http://{address}/v1"))]
+        );
+
+        transient.store(true, Ordering::SeqCst);
+        let transient_report = detect_missing_endpoints(
+            &client,
+            &base_url,
+            "synthetic-key",
+            None,
+            &[("openai_responses", "gpt-6.2-sol".into())],
+        )
+        .await
+        .unwrap();
+        assert!(!transient_report.decisive);
+        assert!(transient_report.verified.is_empty());
+        server.abort();
+    }
+
+    #[test]
+    fn valid_message_and_sse_accept_explicit_null_error_field() {
+        assert!(valid_message(
+            "openai_responses",
+            &json!({
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "error": null,
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}]
+            })
+        ));
+        assert!(!valid_message(
+            "openai_responses",
+            &json!({"id": "resp_1", "status": "failed", "error": {"message": "bad"}})
+        ));
+        assert!(valid_stream(
+            "openai_responses",
+            "data: {\"type\":\"response.created\",\"error\":null}\n\n"
+        ));
+        assert!(!valid_stream(
+            "openai_responses",
+            "data: {\"type\":\"response.created\",\"error\":{\"message\":\"bad\"}}\n\n"
+        ));
+    }
+
+    #[tokio::test]
+    async fn probe_retries_stream_required_responses_and_accepts_sse_on_nonstream() {
+        let always_sse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let always_sse_flag = always_sse.clone();
+        let mock = Router::new().fallback(post(move |req: axum::extract::Request| {
+            let always_sse_flag = always_sse_flag.clone();
+            async move {
+                let path = req.uri().path().to_owned();
+                let bytes = axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                if !path.ends_with("/responses") {
+                    return (HttpStatus::NOT_FOUND, "not found").into_response();
+                }
+                let sse = format!(
+                    "data: {}\n\ndata: {}\n\n",
+                    json!({"type": "response.output_text.delta", "delta": "hi"}),
+                    json!({"type": "response.completed", "response": {"status": "completed", "error": null}})
+                );
+                if always_sse_flag.load(Ordering::SeqCst) || body["stream"] == true {
+                    return ([("content-type", "text/event-stream")], sse).into_response();
+                }
+                (
+                    HttpStatus::BAD_REQUEST,
+                    axum::Json(json!({"error": {"message": "Stream must be set to true"}})),
+                )
+                    .into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let client = Client::new();
+        let config = DetectionConfig {
+            base_url: format!("http://{address}/v1"),
+            api_key: "synthetic-key".into(),
+            model: "gpt-5.6-luna".into(),
+            anthropic_auth_field: None,
+        };
+        let results = detect_with_client(&client, &config).await.unwrap();
+        let responses = results
+            .iter()
+            .find(|r| r.format == "openai_responses")
+            .unwrap();
+        assert_eq!(responses.text.status, "verified");
+        assert_eq!(
+            responses.stream.as_ref().map(|s| s.status),
+            Some("verified")
+        );
+
+        always_sse.store(true, Ordering::SeqCst);
+        let base = url::Url::parse(&config.base_url).unwrap();
+        let outcome = probe(&client, &config, &base, "openai_responses", false).await;
+        assert_eq!(outcome.status, "verified");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn probe_retries_chat_with_max_completion_tokens_when_max_tokens_rejected() {
+        let mock = Router::new().fallback(post(|req: axum::extract::Request| async move {
+            let path = req.uri().path().to_owned();
+            let bytes = axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            if !path.ends_with("/chat/completions") {
+                return (HttpStatus::NOT_FOUND, "not found").into_response();
+            }
+            if body.get("max_tokens").is_some() {
+                return (
+                    HttpStatus::BAD_REQUEST,
+                    axum::Json(json!({"error": {"message": "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."}})),
+                )
+                    .into_response();
+            }
+            assert!(body.get("max_completion_tokens").is_some());
+            if body["stream"] == true {
+                ([("content-type", "text/event-stream")], chat_stream()).into_response()
+            } else {
+                axum::Json(json!({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}))
+                    .into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let client = Client::new();
+        let config = DetectionConfig {
+            base_url: format!("http://{address}/v1"),
+            api_key: "synthetic-key".into(),
+            model: "o4-mini".into(),
+            anthropic_auth_field: None,
+        };
+        let results = detect_with_client(&client, &config).await.unwrap();
+        let chat = results.iter().find(|r| r.format == "openai_chat").unwrap();
+        assert_eq!(chat.text.status, "verified");
+        assert_eq!(chat.stream.as_ref().map(|s| s.status), Some("verified"));
         server.abort();
     }
 }

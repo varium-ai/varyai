@@ -214,7 +214,7 @@ fn verify_wire(target: Protocol, streaming: bool, uri: &Uri, headers: &HeaderMap
             assert_eq!(headers["authorization"], format!("Bearer {SOURCE_KEY}"));
             assert!(!headers.contains_key("x-api-key") && !headers.contains_key("x-goog-api-key"));
             if target == Protocol::Chat {
-                assert_eq!(body["max_completion_tokens"], 128);
+                assert_eq!(body["max_tokens"], 128);
                 assert!(body["tools"][0]["function"]["parameters"].is_object());
                 assert!(body.get("system").is_none() && body.get("input").is_none());
             } else {

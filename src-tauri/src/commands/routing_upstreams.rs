@@ -192,6 +192,7 @@ pub(crate) async fn import_provider_sources(
     .await?;
     drop(copilot);
     refresh(state.inner()).await;
+    state.proxy_service.schedule_upstream_endpoint_backfill();
     Ok(result)
 }
 
@@ -349,6 +350,7 @@ pub(crate) async fn save_routing_upstream(
     .await
     .map_err(|_| "routingUpstreams.failed")??;
     refresh(state.inner()).await;
+    state.proxy_service.schedule_upstream_endpoint_backfill();
     Ok(saved)
 }
 
