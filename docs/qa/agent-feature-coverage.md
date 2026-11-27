@@ -1,11 +1,13 @@
 # Agent feature coverage
 
-## Harness reconnect feedback
+## Manual reconnect feedback
 
 | Agent IDs | Entry points and adapters | Runtime and UI | Verification |
 | --- | --- | --- | --- |
-| `deepseek-harness` | Main and tray Agents views, reconnect button and connection switch; shared Harness Desktop profile on Windows and macOS | Keep the recovery status and action in the row; show sanitized feedback once when an explicit reconnect fails, not during polling. When both managed entries are gone, rebuild from the current native files without first deleting the connection record. No forwarding or CLI protocol change. | Renderer failures and synthetic two-file reconnect, retry and disconnect regressions; native acceptance pending on both platforms. |
-| `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `t3code`, historical `glm` | Existing entry points and native adapters in the inventory below | No Harness-specific toast or change in routing, configuration or UI | Unchanged; no new native acceptance claimed. |
+| `deepseek-harness` | Main and tray Agents views, reconnect button and connection switch; shared Harness Desktop profile on Windows and macOS | Keep the recovery status and action in the row; show one result toast per explicit reconnect attempt, including retries; polling stays silent. When both managed entries are gone, rebuild from the current native files without first deleting the connection record. No forwarding or CLI protocol change. | Renderer failures and synthetic two-file reconnect, retry and disconnect regressions; native acceptance pending on both platforms. |
+| `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `t3code` | Existing entry points and native adapters in the inventory below | A reconnect button or recovery switch uses the shared manual-result toast. No change to which actions are available, native adapters or routing. | Parameterized renderer tests against the managed inventory; native acceptance pending. |
+
+Historical `glm` has no managed row or manual reconnect action.
 
 ## Routing failover after an unreadable Codex rejection
 
@@ -47,6 +49,10 @@ or Windows can offer its confirmed restart action after connection status loads
 even when desktop freshness is missing or unknown. The existing bundle or
 process identity checks still control the native action. Recovery-pending and
 unsupported states suppress this fallback. The CLI starts a new session.
+The renderer records confirmed restart success for the current workspace and
+hides the fallback until another successful configuration change. A failed
+restart stays retryable, and fresh restart requirements from the native state
+still take precedence.
 
 The other Agent rows in the inventory above retain their own restart or new
 session entry points and native adapters. The test plan checks macOS, Windows,
@@ -70,8 +76,8 @@ before deciding whether another change is needed.
 
 | Row | Report | Current evidence and acceptance |
 | --- | --- | --- |
-| 1 | Key that permits a group rejects direct member requests | The policy authorizes exact published route IDs. Authorizing a group does not grant its members' direct routes. The desired permissions change needs a product decision. |
-| 2 | Key that permits a direct model rejects a group containing it | The group alias needs separate authorization under the same policy. A group may route to any eligible member. The desired permissions change needs a product decision. |
+| 1 | Key that permits a group rejects direct member requests | A selected published group grants its available exact provider/model routes to bound local Agents, including direct selection. Native retest pending. |
+| 2 | Key that permits a direct model rejects a group containing it | Bound local Agents can use a published group with the key's allowed provider/model routes. The policy applies to initial attempts, fallback and the classifier. Native retest pending. |
 | 3 | DeepSeek Harness has no restart button after connection or model changes | Reproduced missing action when freshness is unknown or absent. Added the installed-desktop fallback with confirmation and unchanged identity checks. Native retest pending. |
 | 4 | ZCode starts with a different default model after restart | The recording shows a direct model in the restarted task composer while VaryAI shows a routing group. The installed build has a managed default and a matching rule on disk. Native new-chat readback with the reported configuration is pending. |
 | 5 | TRAE CN stays in the waiting state after restart with an incomplete catalog | Existing bridge delivery and native starting-model retry are present. The failed window/catalog state has not been reproduced in the reported client. |
@@ -476,6 +482,26 @@ catalog names, removes entries by exact route ID, and preserves saved IDs absent
 from the catalog. Existing native adapters and policy enforcement consume the
 same policy format. Renderer checks cover creation, editing, removal and the
 existing binding inventory. Installed-client verification remains pending.
+
+For bound local Agents in this matrix, a selected model grants its exact
+provider/model route directly and inside published groups. Selecting a group
+grants each available member route. The resulting permissions apply to initial
+attempts, retries, opaque continuations and separately configured classifiers.
+The same picker saves the catalog selection on macOS and Windows. OpenClaw and
+GLM have no local binding. Audit-only and legacy provider-scoped requests
+without a shared model route retain their existing handling. Authenticated
+external gateway requests continue to use the external route allowlist.
+The macOS loopback regression (26.6.2 arm64, Rust 1.98.1, working tree over
+`2071adf4`) exercises the 17 bound managed connection entries over Responses
+and the Codex menu and native Responses entry points. It verifies both
+selection directions, same-name provider isolation, membership withdrawal,
+failover and budget exhaustion. Rust check, formatting and Clippy passed, as did
+7,928 library tests and 167 integration tests. The library suite reported 21
+ignored tests. With Node 20.20.2 and pnpm 10.12.3, TypeScript, the renderer
+build, formatting and 28 focused renderer tests passed. The full renderer run
+reported 5,012 passes and two notarization fixture timeouts. All 21 tests in
+that file passed on an isolated rerun. Installed-client and Windows verification
+are pending.
 
 Synthetic regressions passed for catalog identity, exact policy saves,
 historical IDs absent from the picker, external connection examples and the
@@ -1142,6 +1168,11 @@ suites and native client acceptance were not repeated for this follow-up.
 All entries below share per-request rate measurements and both stage layouts.
 The macOS and Windows paths use the same session readers and protocol observer.
 Native title lookup requires an explicit local identity and an exact match.
+For the ZCode routing graph report, the desktop task index supplies the
+title. ZCode removes the `sess_` prefix before sending the native session
+header. The shared stage matches the remaining identifier to a local task
+and retains the short reference for missing or ambiguous titles. The other
+Agent rows below document their existing sources and fallbacks.
 Gemini derives its session list title from message content. It uses the same
 short opaque reference as clients that lack a verified native title reader.
 The reference appears when a route has a session digest. Rate availability
@@ -1166,7 +1197,7 @@ depends on each provider's usage events and stream timing.
 | `trae-intl`        | TRAE International connection      | Short reference                                     | Renderer passed, native pending |
 | `kimi`             | Kimi Code CLI and desktop          | Short reference                                     | Renderer passed, native pending |
 | `qwen`             | Qwen Code CLI                      | Short reference                                     | Renderer passed, native pending |
-| `zcode`            | ZCode desktop                      | Short reference                                     | Renderer passed, native pending |
+| `zcode`            | ZCode desktop on macOS and Windows | Native title from the local task index on exact ID match | macOS SQLite and stage regressions passed. Installed clients pending. |
 | `deepseek-harness` | DeepSeek Harness desktop           | Short reference                                     | Renderer passed, native pending |
 | `glm`              | Shared routing source cards        | No GLM native title reader or routing source        | Source review. Native pending   |
 | `t3code`           | T3 Code desktop                    | Short reference                                     | Renderer passed, native pending |
@@ -3112,6 +3143,15 @@ in the selected language and keeps saved rule text available to each existing
 classifier path. Renderer verification exercises the four supported locales
 with saved rules. On macOS, type checking, formatting, the renderer build,
 and all 4,857 renderer tests passed. Installed WebView verification is pending.
+
+For each Agent in the matrix below, macOS and Windows use the same hard/easy
+template editor. Pricing affects automatic suggestions. The editor always
+shows the compaction, hard task, easy task, and classifier controls, including
+for saved groups with missing rules. Choosing a rule target writes the existing
+rule schema through the shared save path. Each listed native adapter consumes
+the saved group through its existing runtime path where routing applies.
+Verification uses renderer fixtures for creation, editing, and saving.
+Installed WebView verification is pending.
 
 Protocol format is part of the selected upstream transport for each executable
 Agent in the following matrix. The shared scheduler on macOS and Windows

@@ -59,7 +59,9 @@ open session will pick up those settings.
 
 The installed DeepSeek Harness desktop on macOS and Windows offers a confirmed
 restart even when its configuration freshness is unknown. The native adapter
-verifies the application identity when processing the restart.
+verifies the application identity when processing the restart. Once the
+restart succeeds, the fallback button closes until a later configuration
+change or a new restart requirement.
 
 Codex provider changes also reconcile conversation ownership. Paginated history
 is updated in SQLite using one connection per database and transactions of at

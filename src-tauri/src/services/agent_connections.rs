@@ -43,6 +43,8 @@ pub(crate) use visibility::ModelVisibility;
 pub(crate) const FAILED: &str = "agentConnections.failed";
 pub(crate) const CONFLICT: &str = "agentConnections.conflict";
 pub(crate) const EMPTY: &str = "agentConnections.noModels";
+pub(crate) const INVALID_CONFIG: &str = "agentConnections.invalidConfig";
+pub(crate) const PERMISSION_DENIED: &str = "agentConnections.permissionDenied";
 pub(crate) const APPS: &[&str] = &[
     "claude-desktop",
     "claude",
@@ -370,6 +372,13 @@ pub(crate) struct FileEdit {
     #[serde(default)]
     desktop_carried: bool,
 }
+fn io_error(error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        PERMISSION_DENIED.into()
+    } else {
+        FAILED.into()
+    }
+}
 fn read(path: &Path) -> Result<Option<String>, String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() || meta.len() > 4 * 1024 * 1024 => {
@@ -377,9 +386,9 @@ fn read(path: &Path) -> Result<Option<String>, String> {
         }
         Ok(_) => fs::read_to_string(path)
             .map(Some)
-            .map_err(|_| FAILED.into()),
+            .map_err(|error| io_error(&error)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(FAILED.into()),
+        Err(error) => Err(io_error(&error)),
     }
 }
 fn replace_checked(
@@ -450,9 +459,9 @@ fn replace_checked(
     result
 }
 fn parse(text: Option<&str>) -> Result<Value, String> {
-    let value: Value = serde_json::from_str(text.unwrap_or("{}")).map_err(|_| FAILED)?;
+    let value: Value = serde_json::from_str(text.unwrap_or("{}")).map_err(|_| INVALID_CONFIG)?;
     if !value.is_object() && !value.is_array() {
-        return Err(FAILED.into());
+        return Err(INVALID_CONFIG.into());
     }
     Ok(value)
 }
@@ -1296,7 +1305,21 @@ impl Manager {
                     .filter(|file| !old.files.iter().any(|prior| prior.path == file.path))
                     .all(|file| matches!(file.desktop, Some(desktop_config::Kind::Carry))))
         {
-            return Err(CONFLICT.into());
+            if !reclaim_changed_fields {
+                return Err(CONFLICT.into());
+            }
+            self.release_for_reapply(app)?;
+            let rebuilt = build_with_token(
+                app,
+                menu,
+                origin,
+                model,
+                old.token.clone(),
+                &visibility,
+                Some(&old),
+            )?;
+            self.install(rebuilt.clone())?;
+            return Ok(Some(rebuilt));
         }
         if selected.is_none() {
             selection::preserve(&old, &mut next)?;
@@ -1351,7 +1374,23 @@ impl Manager {
         )
         .map_err(|_| FAILED)?;
         for file in &writes {
-            file.write()?;
+            if let Err(error) = file.write() {
+                if error == CONFLICT && reclaim_changed_fields {
+                    self.release_for_reapply(app)?;
+                    let rebuilt = build_with_token(
+                        app,
+                        menu,
+                        origin,
+                        model,
+                        old.token.clone(),
+                        &visibility,
+                        Some(&old),
+                    )?;
+                    self.install(rebuilt.clone())?;
+                    return Ok(Some(rebuilt));
+                }
+                return Err(error);
+            }
         }
         self.sync_model_control(&next, false)?;
         self.remember_model(app, Some(&next.model));
@@ -1361,23 +1400,30 @@ impl Manager {
         let Some(receipt) = self.load(app)? else {
             return Ok(());
         };
-        // Check all fields before restoring any file; unrelated edits survive.
-        if !receipt
+        let all_restorable = receipt
             .files
             .iter()
-            .all(|file| file.restorable().unwrap_or(false))
-        {
-            return Err(CONFLICT.into());
+            .all(|file| file.restorable().unwrap_or(false));
+        if !all_restorable {
+            let archive = self
+                .root
+                .join(format!("{app}-disconnect-recovery-{}.json", new_token()));
+            atomic_write_private(&archive, &serde_json::to_vec(&receipt).map_err(|_| FAILED)?)
+                .map_err(|_| FAILED)?;
         }
         desktop_config::save_settings(&self.root, &receipt)?;
         let before = Self::desktop_restoration_snapshot(&receipt)?;
         for file in receipt.files.iter().rev() {
-            file.restore()?;
+            if all_restorable {
+                file.restore()?;
+            } else {
+                file.restore_fields(true)?;
+            }
         }
         self.record_desktop_restoration(&receipt, before)?;
         self.sync_model_control(&receipt, true)?;
         self.remember_model(app, Some(&receipt.model));
-        fs::remove_file(self.path(app)?).map_err(|_| FAILED.into())
+        fs::remove_file(self.path(app)?).map_err(|error| io_error(&error))
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
         let receipt = self.load(app)?.ok_or(CONFLICT)?;
@@ -2860,5 +2906,49 @@ mod tests {
         file.restore()?;
         assert_eq!(parse(read(&path)?.as_deref())?, json!({"theme":"dark"}));
         Ok(())
+    }
+    #[test]
+    fn update_rebuilds_when_managed_file_count_changes() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = dir.path().join("kimi.toml");
+        let extra_path = dir.path().join("extra.json");
+        fs::write(&extra_path, "{}").map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("connections"),
+        };
+        let menu = fixture_menu();
+        let selected = menu.default_model.clone().ok_or(FAILED)?;
+        let origin = "http://127.0.0.1:9";
+        let mut receipt = crate::services::agent_clients::with_test_config(&path, || {
+            manager.build("kimi", &menu, origin, &selected)
+        })?;
+        let extra_edit = FileEdit::prepare(extra_path.clone(), |v| {
+            v["legacy"] = json!(true);
+            Ok(())
+        })?;
+        receipt.files.push(extra_edit);
+        manager.install(receipt)?;
+        let updated = crate::services::agent_clients::with_test_config(&path, || {
+            manager.update("kimi", &menu, origin, Some(&selected))
+        })?
+        .ok_or(FAILED)?;
+        assert_eq!(updated.files.len(), 1);
+        assert_eq!(parse(read(&extra_path)?.as_deref())?, json!({}));
+        Ok(())
+    }
+    #[test]
+    fn invalid_config_syntax_returns_invalid_config_error() {
+        assert_eq!(
+            Format::Json.parse(Some("{invalid-json")).unwrap_err(),
+            INVALID_CONFIG
+        );
+        assert_eq!(
+            Format::Toml.parse(Some("[unclosed")).unwrap_err(),
+            INVALID_CONFIG
+        );
+        assert_eq!(
+            Format::Yaml.parse(Some(":\n  - : [")).unwrap_err(),
+            INVALID_CONFIG
+        );
     }
 }

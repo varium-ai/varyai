@@ -913,7 +913,8 @@ export function IntentRoutingPanel({
     (model) => model.id === selectedClassifier,
   );
   const classifierPicker = draft &&
-    (draft.classifierTarget ||
+    (draftTemplate === "templateSmart" ||
+      draft.classifierTarget ||
       draft.rules.some((rule) => !rule.pause && rule.description.trim())) && (
       <div className="rt-classifier-pick">
         <Popover
@@ -2279,15 +2280,7 @@ export function IntentRoutingPanel({
           {templates.map((template) => (
             <div key={template.key}>
               <b>{t(`routingPage.${template.key}`)}</b>
-              <p>
-                {t(
-                  template.key === "templateSmart" &&
-                    !template.need &&
-                    !template.group.rules.length
-                    ? "routingPage.templateSmartSameModelHint"
-                    : `routingPage.${template.key}Hint`,
-                )}
-              </p>
+              <p>{t(`routingPage.${template.key}Hint`)}</p>
               <span>
                 {template.need ? (
                   <AccountLabel title>{templateNeed(template)}</AccountLabel>

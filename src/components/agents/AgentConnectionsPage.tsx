@@ -1,5 +1,6 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
 import {
+  skipToken,
   useMutation,
   useMutationState,
   useQueries,
@@ -37,6 +38,7 @@ import {
 } from "lucide-react";
 import {
   agentConnectionsApi,
+  type AgentConnection,
   type CodexProxyIssue,
 } from "@/lib/api/agentConnections";
 import { CodexProxyWarning } from "./CodexProxyWarning";
@@ -87,6 +89,34 @@ import { SearchEmptyState } from "@/components/ui/search-empty-state";
 import "./agent-directory.css";
 
 const orderStorageKey = "vary-agent-order";
+const harnessRestartConfirmationKey = [
+  "agent-restart-confirmed",
+  "deepseek-harness",
+] as const;
+
+const recognizedConnectionErrors = new Set([
+  "agentConnections.invalidConfig",
+  "agentConnections.permissionDenied",
+]);
+
+function connectionErrorKey(
+  cause: unknown,
+  {
+    includeNoModels = true,
+    includeConflict = true,
+  }: { includeNoModels?: boolean; includeConflict?: boolean } = {},
+): string {
+  if (typeof cause === "string") {
+    if (
+      recognizedConnectionErrors.has(cause) ||
+      (includeConflict && cause === "agentConnections.conflict") ||
+      (includeNoModels && cause === "agentConnections.noModels")
+    ) {
+      return cause;
+    }
+  }
+  return "agentConnections.failed";
+}
 
 function readAgentOrder(): AppId[] {
   try {
@@ -156,6 +186,11 @@ export function AgentConnectionsPage({
   const [installationTab, setInstallationTab] = useState("installed");
   const name = (app: AppId) => getWorkspaceAgentLabel(t, app);
   const client = useQueryClient();
+  const { data: harnessRestartConfirmed } = useQuery<boolean>({
+    queryKey: harnessRestartConfirmationKey,
+    queryFn: skipToken,
+    gcTime: Infinity,
+  });
   const connections = useQueries({
     queries: MANAGED_APP_IDS.map((app) => ({
       queryKey: ["agent-connections", app],
@@ -433,31 +468,28 @@ export function AgentConnectionsPage({
         });
     }
   }
+  function recordConfigurationChange(app: AppId) {
+    if (app === "deepseek-harness") {
+      client.setQueryData(harnessRestartConfirmationKey, false);
+    }
+  }
   async function reapply(app: AppId) {
     if (!beginOperation(app, "reapplying")) return;
     setError(app, null);
     let applied = false;
     try {
       await agentConnectionsApi.reapply(app);
+      recordConfigurationChange(app);
       applied = true;
+      toast.success(`${name(app)}: ${t("agentConnections.reapplySubmitted")}`, {
+        closeButton: true,
+        duration: 8000,
+      });
     } catch (cause) {
-      const reason =
-        cause === "agentConnections.noModels" ||
-        cause === "agentConnections.conflict"
-          ? cause
-          : "agentConnections.failed";
-      if (app === "deepseek-harness") {
-        const message =
-          reason === "agentConnections.conflict"
-            ? "agentConnections.deepseekRecoveryHint"
-            : reason;
-        toast.error(`${name(app)}: ${t(message)}`, {
-          closeButton: true,
-          duration: 8000,
-        });
-      } else {
-        setError(app, reason);
-      }
+      toast.error(`${name(app)}: ${t(connectionErrorKey(cause))}`, {
+        closeButton: true,
+        duration: 8000,
+      });
     } finally {
       refreshConnectionViews(true, applied ? app : undefined);
       endOperation(app);
@@ -473,6 +505,7 @@ export function AgentConnectionsPage({
     let applied = false;
     try {
       await agentConnectionsApi.set(app, enabled, enabled ? model : null);
+      recordConfigurationChange(app);
       applied = enabled;
       if (enabled) {
         toast.success(
@@ -489,16 +522,7 @@ export function AgentConnectionsPage({
       setDisconnecting((current) => (current === app ? null : current));
       return true;
     } catch (cause) {
-      setError(
-        app,
-        enabled &&
-          typeof cause === "string" &&
-          ["agentConnections.conflict", "agentConnections.noModels"].includes(
-            cause,
-          )
-          ? cause
-          : "agentConnections.failed",
-      );
+      setError(app, connectionErrorKey(cause, { includeNoModels: enabled }));
       return false;
     } finally {
       refreshConnectionViews(false, applied ? app : undefined);
@@ -544,9 +568,14 @@ export function AgentConnectionsPage({
     mutationKey: ["agent-disconnect"],
     mutationFn: (app: AppId) => agentConnectionsApi.set(app, false, null),
     retry: false,
-    onError: (_cause, app) => {
-      setError(app, "agentConnections.failed");
-      toast.error(`${name(app)}: ${t("agentConnections.failed")}`);
+    onSuccess: (_data, app) => recordConfigurationChange(app),
+    onError: (cause, app) => {
+      const errorKey = connectionErrorKey(cause, {
+        includeNoModels: false,
+        includeConflict: false,
+      });
+      setError(app, errorKey);
+      toast.error(`${name(app)}: ${t(errorKey)}`);
     },
     onSettled: (_data, _error, app) => {
       refreshConnectionViews();
@@ -564,6 +593,17 @@ export function AgentConnectionsPage({
     mutationKey: ["agent-restart"],
     mutationFn: (app: AppId) => agentConnectionsApi.restart(app, true),
     retry: false,
+    onSuccess: async (_data, app) => {
+      if (app !== "deepseek-harness") return;
+      const queryKey = ["agent-connections", app];
+      await client.cancelQueries({ queryKey, exact: true });
+      client.setQueryData(harnessRestartConfirmationKey, true);
+      client.setQueryData<AgentConnection>(queryKey, (state) =>
+        state
+          ? { ...state, restartRequired: false, desktopState: "current" }
+          : state,
+      );
+    },
     onError: (cause: unknown, app) => {
       const allowed = [
         "agentConnections.restartBlocked",
@@ -1062,6 +1102,7 @@ export function AgentConnectionsPage({
     );
     const canRestartHarnessManually =
       app === "deepseek-harness" &&
+      !harnessRestartConfirmed &&
       !!state &&
       !state.recoveryPending &&
       (state.desktopState === "current" ||
@@ -1282,6 +1323,11 @@ export function AgentConnectionsPage({
                       (!!state?.recoveryPending &&
                         !orphaned &&
                         !inactiveCodexIntent &&
+                        !(
+                          app === "codex" &&
+                          state.recoveryReason === "connection_inactive"
+                        ) &&
+                        state.recoveryReason !== "configuration_changed" &&
                         !(
                           isTrae(app) &&
                           [
@@ -1750,17 +1796,16 @@ export function AgentConnectionsPage({
           </div>
           <div className="mp-agent-install-actions">
             {installButton(app)}
-            {MANAGED_APP_IDS.includes(app) &&
-              installations.data?.[app] === true && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!installations.data?.[app] || rowBusy(app)}
-                  onClick={() => connect(app)}
-                >
-                  {t("agentConnections.connect")}
-                </Button>
-              )}
+            {MANAGED_APP_IDS.includes(app) && !installations.isError && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={rowBusy(app)}
+                onClick={() => connect(app)}
+              >
+                {t("agentConnections.connect")}
+              </Button>
+            )}
             {websiteButton(app)}
           </div>
           {errorMessage(app)}

@@ -5099,7 +5099,7 @@ describe("Agent connections", () => {
       within(row).getByRole("button", {
         name: "agentConnections.model apps.codex",
       }),
-    ).toBeDisabled();
+    ).toBeEnabled();
     expect(
       screen.queryByRole("button", {
         name: "agentConnections.disconnectOnly",
@@ -5142,7 +5142,7 @@ describe("Agent connections", () => {
       within(row).getByRole("button", {
         name: "agentConnections.model apps.codex",
       }),
-    ).toBeDisabled();
+    ).toBeEnabled();
     fireEvent.click(
       within(row).getByRole("switch", {
         name: row.getAttribute("aria-label") ?? undefined,
@@ -5275,6 +5275,13 @@ describe("Agent connections", () => {
           true,
         ),
       );
+      await waitFor(() =>
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        ).not.toBeInTheDocument(),
+      );
     },
   );
   it.each([
@@ -5332,9 +5339,108 @@ describe("Agent connections", () => {
             true,
           ),
         );
+        await waitFor(() =>
+          expect(
+            within(row).queryByRole("button", {
+              name: "agentConnections.restart",
+            }),
+          ).not.toBeInTheDocument(),
+        );
       } finally {
         os.mockRestore();
       }
+    },
+  );
+  it.each(["model change", "disconnect"] as const)(
+    "keeps a successful Harness restart acknowledged until a %s",
+    async (change) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const app = "deepseek-harness";
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          model: "vary-auto/previous",
+          desktopState: "current",
+          restartRequired: false,
+          recoveryPending: false,
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.restart).mockRejectedValueOnce(
+        "agentConnections.restartOpenFailed",
+      );
+      const view = mount(false, client);
+      const rowName = { name: `apps.${app}` };
+      const tools = within(await screen.findByRole("article", rowName));
+      const restartButton = { name: "agentConnections.restart" };
+      const confirmRestart = async () => {
+        fireEvent.click(await tools.findByRole("button", restartButton));
+        fireEvent.click(
+          within(screen.getByRole("dialog")).getByRole("button", restartButton),
+        );
+      };
+      await confirmRestart();
+      await screen.findByText("agentConnections.restartOpenFailed");
+      await waitFor(() =>
+        expect(tools.getByRole("button", restartButton)).toBeEnabled(),
+      );
+      await confirmRestart();
+      await waitFor(() =>
+        expect(
+          tools.queryByRole("button", restartButton),
+        ).not.toBeInTheDocument(),
+      );
+      view.unmount();
+      mount(true, client);
+      const compactTools = within(await screen.findByRole("article", rowName));
+      expect(
+        compactTools.queryByRole("button", restartButton),
+      ).not.toBeInTheDocument();
+      fireEvent.click(
+        compactTools.getByRole("button", {
+          name: `agentConnections.details apps.${app}`,
+        }),
+      );
+      if (change === "model change") {
+        fireEvent.click(
+          compactTools.getByRole("button", {
+            name: `agentConnections.model apps.${app}`,
+          }),
+        );
+        fireEvent.click(
+          await screen.findByRole("radio", { name: /Shared group/ }),
+        );
+        await waitFor(() =>
+          expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+            app,
+            true,
+            "vary-auto/shared",
+          ),
+        );
+      } else {
+        fireEvent.click(compactTools.getByRole("switch", rowName));
+        fireEvent.click(
+          within(screen.getByRole("dialog")).getByRole("button", {
+            name: "agentConnections.disconnectRestore",
+          }),
+        );
+        await waitFor(() =>
+          expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+            app,
+            false,
+            null,
+          ),
+        );
+      }
+      expect(
+        await compactTools.findByRole("button", restartButton),
+      ).toBeEnabled();
     },
   );
   it("keeps the Harness restart hidden on an unsupported desktop platform", async () => {
@@ -5365,15 +5471,15 @@ describe("Agent connections", () => {
       within(row).queryByRole("button", { name: "agentConnections.restart" }),
     ).not.toBeInTheDocument();
   });
-  it.each([false, true])(
-    "shows Harness reconnect feedback only as a toast (compact=%s)",
-    async (compact) => {
+  it.each(MANAGED_APP_IDS)(
+    "toasts for each manual reconnect attempt for %s",
+    async (app) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
-        "deepseek-harness": true,
+        [app]: true,
       });
       vi.mocked(agentConnectionsApi.list).mockResolvedValue([
         {
-          app: "deepseek-harness",
+          app,
           enabled: false,
           configured: false,
           model: "vary-auto/shared",
@@ -5382,40 +5488,40 @@ describe("Agent connections", () => {
           restartRequired: false,
         },
       ]);
-      vi.mocked(agentConnectionsApi.reapply).mockRejectedValueOnce(
-        "agentConnections.conflict",
+      vi.mocked(agentConnectionsApi.reapply)
+        .mockRejectedValueOnce("agentConnections.conflict")
+        .mockRejectedValueOnce(new Error("synthetic-private-error"))
+        .mockResolvedValueOnce();
+      mount(
+        app !== "deepseek-harness" && MANAGED_APP_IDS.indexOf(app) % 2 === 0,
       );
-      mount(compact);
-      const row = await screen.findByRole("article", {
-        name: "apps.deepseek-harness",
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const retry = await within(row).findByRole("button", {
+        name: "agentConnections.reapply",
       });
-      expect(
-        within(row).queryByText("agentConnections.deepseekRecoveryHint"),
-      ).not.toBeInTheDocument();
-      expect(
-        within(row).queryByRole("button", { name: "agentConnections.restart" }),
-      ).not.toBeInTheDocument();
       expect(toast.error).not.toHaveBeenCalled();
-      fireEvent.click(
-        compact
-          ? within(row).getByRole("button", {
-              name: "agentConnections.reapply",
-            })
-          : within(row).getByRole("switch"),
-      );
-      await waitFor(() =>
-        expect(agentConnectionsApi.reapply).toHaveBeenCalledWith(
-          "deepseek-harness",
-        ),
-      );
-      await waitFor(() =>
-        expect(toast.error).toHaveBeenCalledWith(
-          expect.stringContaining("agentConnections.deepseekRecoveryHint"),
-          expect.anything(),
-        ),
-      );
-      expect(toast.error).toHaveBeenCalledTimes(1);
-      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      for (const [index, key] of [
+        "agentConnections.conflict",
+        "agentConnections.failed",
+        "agentConnections.reapplySubmitted",
+      ].entries()) {
+        await waitFor(() => expect(retry).toBeEnabled());
+        fireEvent.click(
+          app === "deepseek-harness" ? within(row).getByRole("switch") : retry,
+        );
+        const notify = index === 2 ? toast.success : toast.error;
+        await waitFor(() =>
+          expect(notify).toHaveBeenLastCalledWith(
+            expect.stringContaining(key),
+            expect.anything(),
+          ),
+        );
+        expect(agentConnectionsApi.reapply).toHaveBeenCalledTimes(index + 1);
+        expect(within(row).queryByText(key)).not.toBeInTheDocument();
+      }
+      expect(toast.error).toHaveBeenCalledTimes(2);
+      expect(toast.success).toHaveBeenCalledTimes(1);
     },
   );
   it.each([false, true])(
@@ -6467,6 +6573,93 @@ it("keeps external Desktop configuration conflicts under explicit recovery", asy
   expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
 });
 
+it("allows direct model selection during configuration_changed recovery without forcing reapply first", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+    claude: true,
+  });
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+    {
+      app: "claude",
+      enabled: false,
+      configured: false,
+      recoveryPending: true,
+      recoveryReason: "configuration_changed",
+      restartRequired: false,
+      model: "vary-auto/shared",
+    },
+  ]);
+  mount();
+  const row = await screen.findByRole("article", { name: "apps.claude" });
+  const picker = within(row).getByRole("button", {
+    name: "agentConnections.model Claude Code",
+  });
+  expect(picker).toBeEnabled();
+  fireEvent.click(picker);
+  const option = await screen.findByRole("radio", { name: /Shared group/ });
+  fireEvent.click(option);
+  await waitFor(() =>
+    expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+      "claude",
+      true,
+      "vary-auto/shared",
+    ),
+  );
+  expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+});
+
+it("preserves specific invalidConfig and permissionDenied errors on connect and disconnect", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+    claude: true,
+    codex: true,
+  });
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+    {
+      app: "claude",
+      enabled: false,
+      configured: false,
+      recoveryPending: false,
+      restartRequired: false,
+      model: null,
+    },
+    {
+      app: "codex",
+      enabled: true,
+      configured: true,
+      recoveryPending: false,
+      restartRequired: false,
+      model: "vary-auto/shared",
+    },
+  ]);
+  vi.mocked(agentConnectionsApi.set).mockImplementation(
+    async (app, enabled) => {
+      if (app === "claude" && enabled) {
+        throw "agentConnections.invalidConfig";
+      }
+      if (app === "codex" && !enabled) {
+        throw "agentConnections.permissionDenied";
+      }
+    },
+  );
+  mount();
+  const claudeRow = await screen.findByRole("article", { name: "apps.claude" });
+  fireEvent.click(within(claudeRow).getByRole("switch"));
+  expect(await within(claudeRow).findByRole("alert")).toHaveTextContent(
+    "agentConnections.invalidConfig",
+  );
+
+  const codexRow = screen.getByRole("article", { name: "apps.codex" });
+  fireEvent.click(within(codexRow).getByRole("switch"));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.disconnectRestore",
+    }),
+  );
+  expect(await within(codexRow).findByRole("alert")).toHaveTextContent(
+    "agentConnections.permissionDenied",
+  );
+});
+
 it("reports a failed explicit Desktop connection without exposing the backend error or retrying on render", async () => {
   vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
     "claude-desktop": true,
@@ -6639,3 +6832,32 @@ it.each(MANAGED_APP_IDS)(
     expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
   },
 );
+
+it("allows connecting supported agents even when installation detection returns false", async () => {
+  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+    claude: true,
+    gemini: false,
+  });
+  mount();
+  await screen.findByRole("article", { name: "apps.claude" });
+
+  await userEvent.click(
+    screen.getByRole("tab", {
+      name: /^agentConnections.directory.notInstalled/,
+    }),
+  );
+  const missingPanel = screen.getByRole("tabpanel");
+  const geminiGroup = within(missingPanel).getByRole("group", {
+    name: "apps.gemini",
+  });
+  const connectButton = within(geminiGroup).getByRole("button", {
+    name: "agentConnections.connect",
+  });
+  expect(connectButton).toBeEnabled();
+  await userEvent.click(connectButton);
+  expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+    "gemini",
+    true,
+    expect.any(String),
+  );
+});

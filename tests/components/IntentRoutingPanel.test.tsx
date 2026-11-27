@@ -1872,17 +1872,25 @@ describe("IntentRoutingPanel", () => {
       screen.getByRole("button", { name: "routingPage.templateSmart" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "intentRouting.defaultTarget" }),
+      screen.getByRole("button", {
+        name: "intentRouting.target routingPage.templateSmartHardRule",
+      }),
     );
     expectModelPickerWheelAllowed();
     await user.click(screen.getByRole("radio", { name: /Second task model/ }));
     await user.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
     const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
-    expect(saved.members).toEqual([
-      expect.objectContaining({ id: saved.defaultMemberId, modelId: "second" }),
+    const first = saved.members.find(({ modelId }) => modelId === "first");
+    const second = saved.members.find(({ modelId }) => modelId === "second");
+    expect(second?.id).toBe(saved.defaultMemberId);
+    expect(
+      saved.rules.map(({ name, targetMemberId }) => [name, targetMemberId]),
+    ).toEqual([
+      ["Compaction", first?.id],
+      ["Hard task", saved.defaultMemberId],
+      ["Easy task", second?.id],
     ]);
-    expect(saved.rules).toEqual([]);
   });
   it.each([true, false])(
     "resaves and reopens a smart group without its unselected fallback (template stored: %s)",

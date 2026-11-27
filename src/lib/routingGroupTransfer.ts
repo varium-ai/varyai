@@ -7,10 +7,7 @@ import type {
   RoutingTemplateKey,
 } from "./api/intentRouting";
 import { routingCapabilityNaming } from "./routingCapabilityNaming";
-import {
-  routingMemberKey,
-  withSmartRuleMembers,
-} from "./routingMemberSelection";
+import { routingMemberKey } from "./routingMemberSelection";
 import { compareVersions } from "./version";
 
 export const MIN_CLASSIFICATION_BUDGET_MS = 500;
@@ -796,7 +793,6 @@ function templateCandidates(providers: RoutingProviderOption[]) {
   const seen = new Set<string>();
   const now = Math.floor(Date.now() / 1000);
   return providers
-    .filter((provider) => provider.taskEligible)
     .flatMap((provider) =>
       (provider.models ?? []).map((model) => {
         const words = model.id.toLowerCase().split(/[^a-z0-9.]+/);
@@ -928,7 +924,9 @@ export function recommendRoutingMemberOrder(
   template: "templateCapability" | "templateExpiry" = "templateCapability",
 ): RoutingMember[] {
   const candidates = new Map(
-    templateCandidates(providers).map((candidate, catalogIndex) => [
+    templateCandidates(
+      providers.filter((provider) => provider.taskEligible),
+    ).map((candidate, catalogIndex) => [
       routingMemberKey({
         providerId: candidate.provider.id,
         modelId: candidate.model.id,
@@ -1051,9 +1049,12 @@ export function routingTemplates(
     return candidates.filter((candidate) => members.has(candidate));
   }
 
-  const strongest = templateCandidates(providers).sort(
-    compareTemplateCandidates,
+  const candidates = templateCandidates(
+    providers.filter((p) => p.taskEligible || p.classifierEligible),
   );
+  const strongest = candidates
+    .filter(({ provider }) => provider.taskEligible)
+    .sort(compareTemplateCandidates);
   const smartCandidates = draw(strongest);
   const strongestModel = strongest[0];
   const minimumPrice = strongest.reduce(
@@ -1087,23 +1088,16 @@ export function routingTemplates(
   const cheaperDistinct = cheaper.filter(
     ({ modelKey }) => modelKey !== best?.modelKey,
   );
-  const economy =
+  const easyModel =
     cheaperDistinct.find(
       ({ modelKey }) =>
         alternativeModels.size > 1 ||
         (alternativeModels.size === 1 && !alternativeModels.has(modelKey)),
     ) ??
     cheaperDistinct[0] ??
-    cheaper[0];
-  const distinctFallback = (candidate: TemplateCandidate) =>
-    candidate.modelKey !== best?.modelKey &&
-    candidate.modelKey !== economy?.modelKey;
-  const fallback =
-    otherSuppliers.find(distinctFallback) ??
-    (otherSuppliers.length
-      ? smartCandidates.find(distinctFallback)
-      : undefined) ??
-    otherSuppliers.find((candidate) => candidate !== economy);
+    cheaper[0] ??
+    smartCandidates.find(({ modelKey }) => modelKey !== best?.modelKey) ??
+    smartCandidates.find((candidate) => candidate !== best);
   const expiryRecommended = pick([...strongest].sort(compareExpiryCandidates));
   // The speed template has a $100/M output ceiling and one model per supplier.
   const speedEligible = strongest
@@ -1135,7 +1129,9 @@ export function routingTemplates(
     }
     const split = key === "templateSmart";
     const selected = split
-      ? [best, fallback, economy].filter((candidate) => candidate != null)
+      ? easyModel
+        ? [best, easyModel]
+        : [best]
       : key === "templateCapability"
         ? pick(rankCapabilityCandidates(strongest))
         : key === "templateSpeed"
@@ -1149,16 +1145,16 @@ export function routingTemplates(
     const [primary, ...backups] = group.members;
     group.defaultMemberId = primary.id;
     group.fallbackMemberIds = backups.map((member) => member.id);
-    if (!split || !economy) return result;
+    if (!split) return result;
 
-    const low = group.members[selected.indexOf(economy)];
-    const strongBackups = backups.filter((member) => member.id !== low.id);
-    const classifier = strongest
-      .filter(
-        (candidate) =>
-          candidate.provider.classifierEligible && !candidate.model.reasoning,
-      )
-      .sort((a, b) => (a.out ?? Infinity) - (b.out ?? Infinity))[0];
+    const easy = backups[0] ?? primary;
+    const classifier = draw(
+      candidates.filter(({ provider }) => provider.classifierEligible),
+    ).sort(
+      (a, b) =>
+        Number(!!a.model.reasoning) - Number(!!b.model.reasoning) ||
+        (a.out ?? Infinity) - (b.out ?? Infinity),
+    )[0];
     if (classifier) {
       group.classifierTarget = {
         providerId: classifier.provider.id,
@@ -1186,22 +1182,21 @@ export function routingTemplates(
         ...(conditions ? { conditions } : {}),
       });
     };
-    const strongIds = strongBackups.map((member) => member.id);
-    addRule("Compaction", primary.id, strongIds, { compact: true });
+    addRule("Compaction", primary.id, [], { compact: true });
     addRule(
       "Hard task",
       primary.id,
-      strongIds,
+      [],
       undefined,
       SMART_RULE_DESCRIPTIONS["Hard task"],
     );
     addRule(
       "Easy task",
-      low.id,
-      [primary.id, ...strongIds],
+      easy.id,
+      easy.id === primary.id ? [] : [primary.id],
       undefined,
       SMART_RULE_DESCRIPTIONS["Easy task"],
     );
-    return { ...result, group: withSmartRuleMembers(group) };
+    return result;
   });
 }

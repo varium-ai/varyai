@@ -87,7 +87,9 @@ Click the group name, member summary, blank row space or **Edit** to open its ed
 Custom drafts start with an editable, distinct group name. The publication
 switch also works for automatically discovered groups and retains discovery
 as their membership source. The live stage labels the session's name as the
-conversation title.
+conversation title. For a local ZCode request, the stage reads the title from
+the desktop task index using the request's exact session identifier. The stage
+shows a short reference while a matching title is unavailable.
 
 When an Agent sends requests to different routes at the same time, each
 route has its own source and attempted upstream cards. The cards show the
@@ -99,9 +101,10 @@ Choose one of four templates or **Custom** in **Create group**. Template-created
 groups hide **Advanced settings** during both creation and editing, display the
 template's **Running rules** directly on the dialog, and keep the template's
 preset settings. The
-task-classification draft has no separate member or model-order controls: choose
-a task model directly for each rule, or choose the default model when there is
-no automatic task split. Choose the classifier separately in **Intent told by**.
+task-classification draft has no separate member or model-order controls. Choose
+the **Compaction**, **Hard task**, and **Easy task** models directly in their
+rule rows. The **Hard task** row shows the default task model until a hard task
+rule is configured. Choose the classifier separately in **Intent told by**.
 The **Models** count in the routing group list includes a configured
 classifier when its supplier and model combination is absent from the
 explicit and pattern-matched members. A classifier shared with a task
@@ -147,12 +150,14 @@ exact supplier and model ID. When distinct choices are scarce, another
 supplier can serve the same model as a fallback. The speed template still uses
 one model per supplier.
 
-- **Strong models for hard tasks, cheaper models for easy tasks.** Confirm
-  the suggested primary, fallback and cheaper model. Image requests with
-  explicit capability differences and high reasoning use the strong model.
-  The intent classifier helps identify simple tasks. Unclear results use the
-  primary order. Other members can still serve as backups. If catalog prices
-  do not identify a cheaper model, the draft has no automatic task split.
+- **Strong models for hard tasks, cheaper models for easy tasks.** New drafts
+  prefill the compaction and hard-task rules with the suggested strong model.
+  The easy-task rule prefers a model with a lower known output price. When
+  prices are missing or tied, the template draws another available task model
+  if possible. The classifier is drawn from eligible models, with preference
+  for non-reasoning models and lower known prices. You can change all four
+  choices before saving. If the catalog has no eligible classifier, the
+  draft shows a prompt and leaves intent recognition off.
   Automatic suggestions skip the Codex automatic approval review model.
   Set the classification deadline and test the selected intent model in
   the same editor. New drafts use a 10,000 ms deadline.
