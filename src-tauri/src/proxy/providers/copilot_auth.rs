@@ -134,10 +134,11 @@ fn composite_account_id(domain: &str, user_id: u64) -> String {
 }
 
 /// Copilot API Header 常量
-pub const COPILOT_EDITOR_VERSION: &str = "vscode/1.110.1";
-pub const COPILOT_PLUGIN_VERSION: &str = "copilot-chat/0.38.2";
-pub const COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.38.2";
-pub const COPILOT_API_VERSION: &str = "2025-10-01";
+pub const COPILOT_EDITOR_VERSION: &str = "vscode/1.140.0";
+pub const COPILOT_PLUGIN_VERSION: &str = "copilot-chat/0.68.0";
+pub const COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.68.0";
+pub const COPILOT_API_VERSION: &str = "2026-01-09";
+pub const COPILOT_MODELS_API_VERSION: &str = "2026-08-01";
 pub const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
 
 /// Copilot 使用量响应
@@ -1027,7 +1028,7 @@ impl CopilotAuthManager {
             .header("editor-version", COPILOT_EDITOR_VERSION)
             .header("editor-plugin-version", COPILOT_PLUGIN_VERSION)
             .header("user-agent", COPILOT_USER_AGENT)
-            .header("x-github-api-version", COPILOT_API_VERSION)
+            .header("x-github-api-version", COPILOT_MODELS_API_VERSION)
             .send()
             .await?;
 
@@ -2436,5 +2437,23 @@ mod subscription_parity_tests {
         let value = serde_json::to_value(detail).expect("public quota");
         assert!(value["remaining"].is_null());
         assert!(value["percent_remaining"].is_null());
+    }
+    #[test]
+    fn copilot_identity_and_models_api_version_align_with_magpie() {
+        assert_eq!(COPILOT_EDITOR_VERSION, "vscode/1.140.0");
+        assert_eq!(COPILOT_PLUGIN_VERSION, "copilot-chat/0.68.0");
+        assert_eq!(COPILOT_USER_AGENT, "GitHubCopilotChat/0.68.0");
+        assert_eq!(COPILOT_API_VERSION, "2026-01-09");
+        assert_eq!(COPILOT_MODELS_API_VERSION, "2026-08-01");
+        let wire: CopilotModelsResponseItem = serde_json::from_value(serde_json::json!({
+            "id": "claude-opus-5.5",
+            "name": "Claude Opus 5.5",
+            "vendor": "anthropic",
+            "model_picker_enabled": true,
+            "capabilities": {"limits": {"max_context_window_tokens": 1000000, "max_output_tokens": 64000}}
+        }))
+        .expect("long context model");
+        let value = serde_json::to_value(CopilotModel::from_wire(wire)).expect("public model");
+        assert_eq!(value["contextWindow"], 1000000);
     }
 }

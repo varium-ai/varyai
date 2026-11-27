@@ -3653,7 +3653,7 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
     let upstream = tokio::spawn(async move {
         axum::serve(listener, Router::new().route("/v1/chat/completions", post(|headers: http::HeaderMap, Json(body): Json<Value>| async move {
             assert!(!headers.contains_key("x-vary-pi-session-id"));
-            assert!(!headers.contains_key("x-vary-harness-session-id"));
+            assert!(!headers.contains_key("x-deepseek-harness-session-id"));
             assert!(!headers.contains_key("x-opencode-session-id"));
             assert!(!headers.contains_key("x-vary-hermes-session-id"));
             let name = body["tools"][0]["function"]["name"].as_str().unwrap_or_default();
@@ -3887,7 +3887,7 @@ async fn shared_chat_keeps_supported_shell_semantics_and_request_sessions(
                             "t3code" => "thread-id",
                             "opencode" => "x-opencode-session-id",
                             "hermes" => "x-vary-hermes-session-id",
-                            _ => "x-vary-harness-session-id",
+                            _ => "x-deepseek-harness-session-id",
                         },
                         id,
                     );

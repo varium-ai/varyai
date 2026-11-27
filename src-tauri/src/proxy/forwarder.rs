@@ -3369,24 +3369,6 @@ impl RequestForwarder {
             self.non_streaming_timeout
         };
 
-        // 获取全局代理 URL
-        #[cfg(not(test))]
-        let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
-        #[cfg(test)]
-        let upstream_proxy_url: Option<String> = if final_send_binding_test_support::is_active()
-            || upstream_error_test_support::is_active()
-        {
-            None
-        } else {
-            super::http_client::get_current_proxy_url()
-        };
-
-        // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
-        let is_socks_proxy = upstream_proxy_url
-            .as_deref()
-            .map(|u| u.starts_with("socks5"))
-            .unwrap_or(false);
-
         let preserve_exact_header_case = should_preserve_exact_header_case(
             adapter.name(),
             provider,
@@ -3427,7 +3409,27 @@ impl RequestForwarder {
         let responses_wire = protocol == "openai_responses"
             && url::Url::parse(&url).is_ok_and(|url| url.path().ends_with("/responses"));
         let mut replay_recovery = super::responses_replay::Recovery::default();
+        let mut hyper_proxy_refreshed = false;
         let response = loop {
+            // 获取有效代理 URL（显式全局代理 / 环境变量 / 动态系统代理）
+            #[cfg(not(test))]
+            let upstream_proxy_url: Option<String> =
+                super::http_client::effective_proxy_for_url(&url);
+            #[cfg(test)]
+            let upstream_proxy_url: Option<String> = if final_send_binding_test_support::is_active()
+                || upstream_error_test_support::is_active()
+            {
+                None
+            } else {
+                super::http_client::effective_proxy_for_url(&url)
+            };
+
+            // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
+            let is_socks_proxy = upstream_proxy_url
+                .as_deref()
+                .map(|u| u.starts_with("socks5"))
+                .unwrap_or(false);
+
             let response = if let Some(injected) = injected.take() {
                 if let Some(attempt) = dlp_attempt.as_ref() {
                     attempt
@@ -3457,69 +3459,86 @@ impl RequestForwarder {
                 let test_client = final_send_binding_test_support::client(bound_attempt)?;
                 #[cfg(not(test))]
                 let test_client: Option<reqwest::Client> = None;
-                let client = if let Some(client) = test_client {
-                    client
-                } else if let Some(client) = codex_oauth_client.clone() {
-                    client
-                } else if bound_attempt {
-                    super::http_client::get_without_redirects().map_err(|_| {
-                        ProxyError::DlpForward(
-                            super::security::http_restoration::DlpForwardError::ContextUnavailable,
-                        )
-                    })?
-                } else {
-                    super::http_client::get()
-                };
-                let mut request = client.request(method.clone(), &url);
-                if request_is_streaming {
-                    // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
-                    // 的首包/静默期超时控制，避免长流被总时长误杀。
-                    request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
-                } else {
-                    request = request.timeout(if self.non_streaming_timeout.is_zero() {
-                        std::time::Duration::from_secs(600)
-                    } else {
-                        self.non_streaming_timeout
-                    });
-                }
-                for (key, value) in &ordered_headers {
-                    request = request.header(key, value);
-                }
-                if let Some(attempt) = dlp_attempt.as_ref() {
-                    attempt
-                        .validate_final_send_binding(
-                            &provider.id,
-                            protocol,
-                            &url,
-                            dlp_auth_principal(&ordered_headers).as_deref(),
-                        )
-                        .map_err(ProxyError::DlpForward)?;
-                    attempt
-                        .validate_final_send_history(&filtered_body)
-                        .map_err(ProxyError::DlpForward)?;
-                    attempt.record_permitted_attempt(&provider.id, None);
-                }
-                #[cfg(test)]
-                final_send_binding_test_support::observe_transport(true);
-                let send = request.body(body_bytes.clone()).send();
-                let send_result = if request_is_streaming {
-                    let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
-                        timeout
-                    } else {
-                        self.streaming_first_byte_timeout
-                    };
-                    tokio::time::timeout(header_timeout, send)
-                        .await
-                        .map_err(|_| {
-                            ProxyError::Timeout(format!(
-                                "流式响应首包超时: {}s（上游未返回响应头）",
-                                header_timeout.as_secs()
-                            ))
+                let can_refresh_proxy =
+                    !bound_attempt && test_client.is_none() && codex_oauth_client.is_none();
+                let mut proxy_refreshed = false;
+                let reqwest_resp = loop {
+                    let client = if let Some(client) = test_client.clone() {
+                        client
+                    } else if let Some(client) = codex_oauth_client.clone() {
+                        client
+                    } else if bound_attempt {
+                        super::http_client::get_without_redirects().map_err(|_| {
+                            ProxyError::DlpForward(
+                                super::security::http_restoration::DlpForwardError::ContextUnavailable,
+                            )
                         })?
-                } else {
-                    send.await
+                    } else {
+                        super::http_client::get()
+                    };
+                    let mut request = client.request(method.clone(), &url);
+                    if request_is_streaming {
+                        // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
+                        // 的首包/静默期超时控制，避免长流被总时长误杀。
+                        request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
+                    } else {
+                        request = request.timeout(if self.non_streaming_timeout.is_zero() {
+                            std::time::Duration::from_secs(600)
+                        } else {
+                            self.non_streaming_timeout
+                        });
+                    }
+                    for (key, value) in &ordered_headers {
+                        request = request.header(key, value);
+                    }
+                    if let Some(attempt) = dlp_attempt.as_ref() {
+                        attempt
+                            .validate_final_send_binding(
+                                &provider.id,
+                                protocol,
+                                &url,
+                                dlp_auth_principal(&ordered_headers).as_deref(),
+                            )
+                            .map_err(ProxyError::DlpForward)?;
+                        attempt
+                            .validate_final_send_history(&filtered_body)
+                            .map_err(ProxyError::DlpForward)?;
+                        attempt.record_permitted_attempt(&provider.id, None);
+                    }
+                    #[cfg(test)]
+                    final_send_binding_test_support::observe_transport(true);
+                    let send = request.body(body_bytes.clone()).send();
+                    let send_result = if request_is_streaming {
+                        let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
+                            timeout
+                        } else {
+                            self.streaming_first_byte_timeout
+                        };
+                        tokio::time::timeout(header_timeout, send)
+                            .await
+                            .map_err(|_| {
+                                ProxyError::Timeout(format!(
+                                    "流式响应首包超时: {}s（上游未返回响应头）",
+                                    header_timeout.as_secs()
+                                ))
+                            })?
+                    } else {
+                        send.await
+                    };
+                    match send_result {
+                        Ok(resp) => break resp,
+                        Err(err)
+                            if can_refresh_proxy
+                                && !proxy_refreshed
+                                && err.is_connect()
+                                && super::http_client::refresh_on_connect_failure().await =>
+                        {
+                            proxy_refreshed = true;
+                            continue;
+                        }
+                        Err(err) => return Err(map_reqwest_send_error(err)),
+                    }
                 };
-                let reqwest_resp = send_result.map_err(map_reqwest_send_error)?;
                 ProxyResponse::Reqwest(reqwest_resp)
             } else {
                 // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
@@ -3545,7 +3564,7 @@ impl RequestForwarder {
                 }
                 #[cfg(test)]
                 final_send_binding_test_support::observe_transport(false);
-                super::hyper_client::send_request(
+                match super::hyper_client::send_request(
                     uri,
                     &target_for_log,
                     method.clone(),
@@ -3555,7 +3574,19 @@ impl RequestForwarder {
                     timeout,
                     upstream_proxy_url.as_deref(),
                 )
-                .await?
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err(ProxyError::ForwardFailed(_))
+                        if dlp_attempt.is_none()
+                            && !hyper_proxy_refreshed
+                            && super::http_client::refresh_on_connect_failure().await =>
+                    {
+                        hyper_proxy_refreshed = true;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                }
             };
             let (response, retry) = probe_recovery.inspect(response, &body_bytes).await;
             if let Some(retry) = retry {

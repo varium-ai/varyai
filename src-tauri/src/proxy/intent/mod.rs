@@ -404,6 +404,10 @@ pub(crate) struct Session {
     pub bindings: Arc<tokio::sync::Mutex<Bindings>>,
 }
 impl Session {
+    pub(crate) fn resolve_client(&self) -> reqwest::Client {
+        super::http_client::forwarding_client_or(&self.client)
+    }
+
     pub(crate) fn default_reasoning_level(&self) -> Option<String> {
         let mut defaults = self
             .menu_targets()
@@ -1231,6 +1235,7 @@ struct Observer {
     trace_terminal: bool,
     failed: bool,
     pending_tools: bool,
+    response_id: Option<String>,
 }
 impl Observer {
     fn push(&mut self, bytes: &[u8], bindings: &mut Bindings, target: usize) {
@@ -1274,6 +1279,18 @@ impl Observer {
             scheduling.observe_event(value, chrono::Utc::now().timestamp());
         }
         bindings.observe(value, target);
+        if self.response_id.is_none() {
+            if let Some(id) = value
+                .pointer("/response/id")
+                .or_else(|| value.pointer("/message/id"))
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+            {
+                self.response_id = Some(id.to_owned());
+            }
+        }
         if self.trae {
             self.trae_calls.observe(value, bindings, target);
         }
@@ -2060,11 +2077,26 @@ async fn execute(
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
     }
-    if !external && !count_tokens && !is_compact && desktop_purpose.is_none() {
+    let mut dsh_tool_hint = None;
+    if !external && !count_tokens && desktop_purpose.is_none() {
         if let Some(id) = identity::title_session(agent, &parts.headers, &original, true) {
-            trace.native_session(&id);
-        } else if let Some(digest) = identity::trae_title_turn(agent, &parts.headers, &original) {
+            if !is_compact {
+                trace.native_session(&id);
+            }
+        } else if let Some(digest) = (!is_compact)
+            .then(|| identity::trae_title_turn(agent, &parts.headers, &original))
+            .flatten()
+        {
             trace.trae_title_turn(digest);
+        } else if let Some(conv) = identity::dsh_opening_conv(agent, &parts.headers, &bytes) {
+            let last_convs = identity::dsh_last_convs(agent, &bytes);
+            if !is_compact {
+                trace.dsh_correlation(conv.clone(), last_convs.clone());
+            }
+            dsh_tool_hint = Some(super::tool_observation::channel::DshCorrelationHint {
+                opening_conv: conv,
+                last_convs,
+            });
         }
     }
     let durable = if external || refresh_credentials {
@@ -3358,7 +3390,7 @@ async fn execute(
                         conversation.as_deref(),
                         scoped.shadow.clone(),
                         scoped.history.clone(),
-                        session.client.clone(),
+                        session.resolve_client(),
                         state.app_handle.as_ref(),
                     )
                     .await;
@@ -3463,7 +3495,7 @@ async fn execute(
                             .filter(|r| r.status().is_success())
                         } else {
                             let mut req = session
-                                .client
+                                .resolve_client()
                                 .post(native_url)
                                 .headers(headers.clone())
                                 .body(payload.clone());
@@ -3644,9 +3676,10 @@ async fn execute(
                 output,
             );
             let mut named_recovery = super::responses_replay::Recovery::default();
+            let mut proxy_refreshed = false;
             loop {
                 let mut request = session
-                    .client
+                    .resolve_client()
                     .post(url.clone())
                     .headers(headers.clone())
                     .body(payload.clone());
@@ -3669,6 +3702,14 @@ async fn execute(
                 };
                 let response = match dispatched {
                     Ok(response) => super::hyper_client::ProxyResponse::Reqwest(response),
+                    Err(super::ProxyError::ForwardFailed(msg))
+                        if msg == "connect_failed"
+                            && !proxy_refreshed
+                            && super::http_client::refresh_on_connect_failure().await =>
+                    {
+                        proxy_refreshed = true;
+                        continue;
+                    }
                     // Connection-establishment failures happen before any bytes are sent upstream,
                     // so trying another candidate carries no duplicate-execution risk.
                     Err(super::ProxyError::ForwardFailed(msg))
@@ -3883,7 +3924,8 @@ async fn execute(
                         super::tool_observation::channel::OutputQuality::Native,
                         super::tool_observation::mount::collect_tool_schemas(&body, agent),
                     )
-                    .with_session(tool_session_id.clone()),
+                    .with_session(tool_session_id.clone())
+                    .with_dsh_hint(dsh_tool_hint.clone()),
                 ),
                 reply_observer: Some({
                     let history = scoped.official.clone();
@@ -4059,7 +4101,8 @@ async fn execute(
             },
             super::tool_observation::mount::collect_tool_schemas(&body, agent),
         )
-        .with_session(tool_session_id.clone());
+        .with_session(tool_session_id.clone())
+        .with_dsh_hint(dsh_tool_hint.clone());
         let account_scheduling = target.scheduling.clone();
         let mut observation = StreamObservation {
             observer,
@@ -4072,6 +4115,7 @@ async fn execute(
         };
         let stream = async_stream::stream! {
             let mut content_timed = false;
+            let mut response_id_recorded = false;
             let mut last_rate_sample = None;
             // Magpie holds its affinity mutex only for a lookup/update. The
             // conversation Arc, not a mutex guard, retains state through EOF/drop.
@@ -4085,6 +4129,12 @@ async fn execute(
                         if scoped.update(|bindings| observer.push(&bytes, bindings, index)).is_err() {
                             observation.finish(503, trace::State::Failed);
                             yield Err(std::io::Error::other("Routing state unavailable")); return;
+                        }
+                        if !response_id_recorded {
+                            if let Some(id) = observer.response_id.as_deref() {
+                                observation.trace.response_id(id);
+                                response_id_recorded = true;
+                            }
                         }
                         if !content_timed {
                             if let Some(at) = observer.first_content {
@@ -4126,6 +4176,11 @@ async fn execute(
             if updated.is_err() {
                 observation.finish(503, trace::State::Failed);
                 yield Err(std::io::Error::other("Routing state unavailable")); return;
+            }
+            if !response_id_recorded {
+                if let Some(id) = observer.response_id.as_deref() {
+                    observation.trace.response_id(id);
+                }
             }
             let (_, _, decode_ms, output_tokens) = observer.sample();
             observation.trace.speed(decode_ms, output_tokens);

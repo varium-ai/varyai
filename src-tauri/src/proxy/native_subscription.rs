@@ -471,19 +471,23 @@ pub(crate) async fn forward(
             ir::build::request(&request, Protocol::Gemini)?,
             session,
         );
-        let response = client
+        let mut upstream = client
             .post(format!(
                 "{}/v1internal:streamGenerateContent?alt=sse",
                 binding.provider.endpoint()
             ))
             .bearer_auth(account.token())
+            .header(
+                header::USER_AGENT,
+                accounts::google_user_agent_cached(binding.provider, Some(&request.model)),
+            )
             .header(header::ACCEPT, "text/event-stream")
             .header(header::ACCEPT_ENCODING, "identity")
-            .timeout(Duration::from_secs(300))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|_| invalid())?;
+            .timeout(Duration::from_secs(300));
+        if binding.provider == SubscriptionProvider::Antigravity {
+            upstream = upstream.header("x-goog-api-client", "gl-node/22.21.1");
+        }
+        let response = upstream.json(&body).send().await.map_err(|_| invalid())?;
         if response.status() == StatusCode::UNAUTHORIZED {
             accounts::observe_rejection(account).await;
         }

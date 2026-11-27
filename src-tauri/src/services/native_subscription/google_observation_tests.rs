@@ -74,3 +74,19 @@ fn antigravity_summary_keeps_explicit_exhausted_windows() {
     assert_eq!(quota.tiers[2].utilization, 100.0);
     assert!(quota.tiers[0].name.contains("5h"));
 }
+
+#[test]
+fn gemini_cli_cached_user_agent_uses_sanitized_request_model() {
+    let explicit =
+        google_user_agent_cached(SubscriptionProvider::GeminiCli, Some("gemini-3.8-flash"));
+    assert!(explicit.starts_with("GeminiCLI/0.61.0/gemini-3.8-flash "));
+
+    let injected = google_user_agent_cached(
+        SubscriptionProvider::GeminiCli,
+        Some("gemini-3.8-flash\r\nX-Test: 1"),
+    );
+    assert!(injected.starts_with("GeminiCLI/0.61.0/gemini-2.5-pro "));
+
+    let empty = google_user_agent_cached(SubscriptionProvider::GeminiCli, Some("   "));
+    assert!(empty.starts_with("GeminiCLI/0.61.0/gemini-2.5-pro "));
+}

@@ -6,7 +6,6 @@ use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
 const SESSION_HEADERS: &[&str] = &[
-    "x-vary-harness-session-id",
     "x-opencode-session",
     "x-session-affinity",
     "x-session-id",
@@ -16,6 +15,95 @@ const SESSION_HEADERS: &[&str] = &[
     "x-conversation-id",
     "x-deepseek-harness-session-id",
 ];
+
+pub(in crate::proxy) fn dsh_opening_conv(
+    agent: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<String> {
+    (agent == "deepseek-harness" && named(headers).is_none()).then(|| conversation(body))
+}
+
+pub(in crate::proxy) fn dsh_last_convs(agent: &str, body: &[u8]) -> Vec<String> {
+    if agent != "deepseek-harness" {
+        return Vec::new();
+    }
+    let Some(fields) = serde_json::from_slice::<&RawValue>(body)
+        .ok()
+        .and_then(object)
+    else {
+        return Vec::new();
+    };
+    let Some(items) = fields.get("messages").map(|r| elements(r)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items.iter().rev() {
+        if out.len() >= 4 {
+            break;
+        }
+        let Some(msg_fields) = object(item) else {
+            if !out.is_empty() {
+                break;
+            }
+            continue;
+        };
+        let is_user = msg_fields
+            .get("role")
+            .and_then(|r| serde_json::from_str::<String>(r.get()).ok())
+            .as_deref()
+            == Some("user");
+        if !is_user {
+            if !out.is_empty() {
+                break;
+            }
+            continue;
+        }
+        let Some(content) = msg_fields.get("content").copied() else {
+            if !out.is_empty() {
+                break;
+            }
+            return Vec::new();
+        };
+        let text_raw = if let Some(text) = one_text_part(content) {
+            text.get().trim()
+        } else {
+            let trimmed = content.get().trim();
+            if out.is_empty() && tool_results_only(content) {
+                continue;
+            }
+            if !trimmed.starts_with('"') {
+                if !out.is_empty() {
+                    break;
+                }
+                return Vec::new();
+            }
+            trimmed
+        };
+        let raw_msg = format!(r#"{{"role":"user","content":{text_raw}}}"#);
+        let digest = Sha256::digest(raw_msg.as_bytes());
+        let mut id = String::from("magpie-");
+        use std::fmt::Write;
+        for byte in &digest[..12] {
+            let _ = write!(id, "{byte:02x}");
+        }
+        out.push(id);
+    }
+    out
+}
+
+fn tool_results_only(raw: &RawValue) -> bool {
+    if !raw.get().trim_start().starts_with('[') {
+        return false;
+    }
+    let parts = elements(raw);
+    !parts.is_empty()
+        && parts.iter().all(|part| {
+            object(part)
+                .and_then(|fields| fields.get("type").copied())
+                .is_some_and(|kind| kind.get().trim() == "\"tool_result\"")
+        })
+}
 
 pub(super) fn named(headers: &HeaderMap) -> Option<&str> {
     SESSION_HEADERS
@@ -551,5 +639,47 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn dsh_last_convs_tracks_trailing_user_messages_and_skips_tool_results() {
+        let chat_turn = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "typed"},
+                {"role": "user", "content": [{"type": "text", "text": "context", "cache_control": {"type": "ephemeral"}}]},
+                {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "out"}
+            ]
+        });
+        let got = dsh_last_convs("deepseek-harness", chat_turn.to_string().as_bytes());
+        assert_eq!(got.len(), 2);
+        let expected_context = crate::session_manager::providers::deepseek_harness::dsh_convs(
+            &serde_json::json!("context"),
+        )[0]
+        .clone();
+        let expected_typed = crate::session_manager::providers::deepseek_harness::dsh_convs(
+            &serde_json::json!("typed"),
+        )[0]
+        .clone();
+        assert_eq!(got, vec![expected_context, expected_typed.clone()]);
+
+        let anthropic_tool_step = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "typed"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "out"}]}
+            ]
+        });
+        assert_eq!(
+            dsh_last_convs(
+                "deepseek-harness",
+                anthropic_tool_step.to_string().as_bytes()
+            ),
+            vec![expected_typed]
+        );
+        assert!(dsh_last_convs("pi", chat_turn.to_string().as_bytes()).is_empty());
     }
 }

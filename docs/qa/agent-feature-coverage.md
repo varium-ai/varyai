@@ -280,6 +280,13 @@ Native configuration and picker state continue through the existing adapters.
 The loop uses the same code on macOS and Windows. Installed Agent self-tests
 are tracked separately from loopback fixtures.
 
+## Harness connection without a session helper
+
+| Agents | Entry points and adapters | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| DeepSeek Harness | Desktop Cordis projection and credential store, main/tray connect and refresh | Do not install or check a session script. Use supplied native session IDs, with off-hot-path Magpie-style read-only `$DSH_HOME/sessions/` (`Convs`, `TurnConvs`, `ResponseIDs`, and fork safety) correlation for live route graph titles and async tool-risk observations on macOS and Windows; ambiguous or uncorrelated events remain unattributed. (`harness-session-id.mjs`, `harness-session-id.node.cjs`, `deepseek_harness/session.rs`, `sessionHeader`, and `x-vary-harness-session-id` ingress support have been removed.) | Temporary profile, session-index, trace, and tool-risk worker tests; Windows and macOS native acceptance pending. |
+| All other managed Agents and variants listed below | Existing native adapters and CLI/desktop entry points | No change to configuration, session extraction, forwarding or UI | Outside this Harness-only adapter; no new native acceptance claimed. |
+
 ## Manual reconnect feedback
 
 | Agent IDs | Entry points and adapters | Runtime and UI | Verification |
@@ -2087,9 +2094,11 @@ and native acceptance limits.
 ## Application log export and operation diagnostics
 
 On 2026-11-18 the user explicitly narrowed diagnostic export to the current
-`varyai.log` only. This replaces the earlier all-Agent ZIP plan. Settings exports
-a complete sanitized snapshot of this one file; native Agent logs, configurations,
-crash files, rotations and databases are outside the accepted scope.
+`varyai.log` only. This replaces the earlier all-Agent ZIP plan. On 2026-11-27
+the user explicitly directed exporting the raw `varyai.log` source bytes
+directly without export-time redaction. Settings exports a complete raw
+snapshot of this one file; native Agent logs, configurations, crash files,
+rotations and databases are outside the accepted scope.
 
 Before implementation, the following matrix records shared operation
 diagnostics and verification scope. Each row uses Settings for export and the
@@ -2125,8 +2134,8 @@ logic applies on macOS, Windows and Linux where the existing adapter is supporte
 
 Application export uses the actual device log directory, a blocking worker and a
 private same-directory temporary destination. Publishing happens only after a
-complete sanitized snapshot is written. Missing logs, unsafe destinations and
-unavailable privacy processing produce fixed errors. The command name changes to
+complete raw byte snapshot is written. Missing logs, empty logs, incomplete
+reads and unsafe destinations produce fixed errors. The command name changes to
 `export_application_log` so a hot-reloaded UI cannot accidentally invoke the old
 all-Agent ZIP handler. Native save-dialog acceptance and Windows/Linux execution
 remain unverified until separately tested.
@@ -3912,3 +3921,40 @@ helper suites in the verification contract, and the production dependency audit
 passed. The Rust test build used package-level debug information disabled and
 incremental compilation disabled for `varyai` after exhausting disk space.
 Installed-client acceptance on macOS and Windows and remote CI are pending.
+
+## Dynamic system proxy switching and dead loopback fallback
+
+2026-11-27
+
+Shared upstream forwarding (`proxy::system_proxy`, `proxy::http_client`,
+`proxy::intent`, `proxy::intent::native_gateway`, and `proxy::forwarder`)
+resolves explicit Vary AI global proxies, process environment variables, and OS
+system proxy configurations dynamically with non-blocking stale-while-revalidate
+short-TTL caching (15s active / 2s inactive), `socks5h://` remote DNS for OS
+SOCKS5 proxies, dead loopback system-proxy fallback to direct connection,
+proxy-fingerprint-keyed client pool invalidation, and one-shot `connect_failed`
+proxy-refresh retries on non-DLP `reqwest` and `hyper_client` paths.
+
+| Agent ID | Entry point and adapter | Verification scope |
+| --- | --- | --- |
+| `claude` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `claude-desktop` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `codex` | Shared `http_client`, `forwarder`, `intent::Session::resolve_client()`, and `native_gateway` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `gemini` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `grokbuild` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `opencode` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `openclaw` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `hermes` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `pi` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `workbuddy` | Shared `http_client`, `forwarder`, `native_subscription`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `workbuddy-ai` | Shared `http_client`, `forwarder`, `native_subscription`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `qoder` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `doubaowork` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `trae` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `trae-intl` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `kimi` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `qwen` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `zcode` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `deepseek-harness` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |
+| `glm` | Shared `http_client` and `forwarder` (retained historical Agent identity) | Shared unit regressions (macOS); native GLM client unsupported |
+| `t3code` | Shared `http_client`, `forwarder`, and Intent `Session::resolve_client()` | Shared synthetic proxy-switch and unit regressions (macOS); Windows/Linux and live client pending |

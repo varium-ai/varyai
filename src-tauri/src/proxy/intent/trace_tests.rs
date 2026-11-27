@@ -113,6 +113,62 @@ fn trae_live_graph_pairs_native_session_updates_with_the_request(
 }
 
 #[test]
+fn deepseek_harness_live_graph_correlates_headerless_sessions_and_forks(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::session_manager::providers::deepseek_harness::{dsh_convs, DshSessionRecord};
+
+    let store = Arc::new(Store::default());
+    let now = Instant::now();
+    let opening = dsh_convs(&serde_json::json!("shared opening"))[0].clone();
+    let fork_turn = dsh_convs(&serde_json::json!("fork turn"))[0].clone();
+    let sessions = vec![
+        DshSessionRecord {
+            session_id: "session-parent".into(),
+            parent_session: None,
+            convs: vec![opening.clone()],
+            seed_convs: Vec::new(),
+            turn_convs: Vec::new(),
+            response_ids: vec!["resp-parent".into()],
+        },
+        DshSessionRecord {
+            session_id: "session-fork".into(),
+            parent_session: Some("session-parent".into()),
+            convs: Vec::new(),
+            seed_convs: vec![opening.clone()],
+            turn_convs: vec![fork_turn.clone()],
+            response_ids: vec!["resp-fork".into()],
+        },
+    ];
+
+    let fork_req = store.begin("deepseek-harness", "fixture", "Fixture", "ordered", now);
+    fork_req.dsh_correlation(opening.clone(), vec![fork_turn]);
+    let ambiguous_req = store.begin("deepseek-harness", "fixture", "Fixture", "ordered", now);
+    ambiguous_req.dsh_correlation(opening, Vec::new());
+
+    let mut snapshot = store.snapshot();
+    store.attach_dsh_sessions_with(&mut snapshot, &sessions);
+    let live = store.live_requests(snapshot, |agent| {
+        assert_eq!(agent, "deepseek-harness");
+        vec![
+            ("session-parent".into(), "Parent Route Title".into()),
+            ("session-fork".into(), "Fork Route Title".into()),
+        ]
+    });
+    let rows = serde_json::to_value(live)?;
+    let fork_row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == fork_req.id))
+        .ok_or("missing fork row")?;
+    let ambiguous_row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == ambiguous_req.id))
+        .ok_or("missing ambiguous row")?;
+    assert_eq!(fork_row["sessionTitle"], "Fork Route Title");
+    assert!(ambiguous_row.get("sessionTitle").is_none());
+    Ok(())
+}
+
+#[test]
 fn workbuddy_live_graph_accepts_only_an_explicit_conversation_for_each_edition() {
     let id = "synthetic-workbuddy-conversation";
     let mut headers = http::HeaderMap::new();

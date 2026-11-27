@@ -270,8 +270,19 @@ impl ResponseProcessor {
     }
 }
 fn qualify(mut observations: Vec<ToolObservation>, state: &ResponseState) -> Vec<ToolObservation> {
+    let resolved_session = state.metadata.session_id.clone().or_else(|| {
+        (state.metadata.client == "deepseek-harness").then_some(())?;
+        let hint = state.metadata.dsh_hint.as_ref()?;
+        let id = crate::session_manager::providers::deepseek_harness::resolve_session_for_audit(
+            &hint.opening_conv,
+            &hint.last_convs,
+        )?;
+        crate::proxy::tool_observation::types::normalized_session_id(Some(&format!(
+            "deepseek-harness_{id}"
+        )))
+    });
     for obs in &mut observations {
-        obs.correlation.session_id = state.metadata.session_id.clone();
+        obs.correlation.session_id = resolved_session.clone();
         if matches!(
             obs.quality.tool_identity,
             ToolIdentityQuality::Source | ToolIdentityQuality::ValidatedMapping
@@ -315,6 +326,7 @@ mod tests {
     fn metadata(transport: Transport, quality: OutputQuality) -> ResponseMetadata {
         ResponseMetadata {
             session_id: None,
+            dsh_hint: None,
             protocol: "anthropic_messages",
             client: "claude",
             transport,
@@ -404,6 +416,7 @@ mod tests {
             let (tx, mut rx) = create_channel(4);
             let metadata = ResponseMetadata {
                 session_id: None,
+                dsh_hint: None,
                 protocol: "openai_chat",
                 client: "codex",
                 transport: Transport::Sse,
@@ -537,6 +550,7 @@ mod tests {
             let (tx, mut rx) = create_channel(8);
             let metadata = ResponseMetadata {
                 session_id: None,
+                dsh_hint: None,
                 protocol: "openai_chat",
                 client: "codex",
                 transport: Transport::Sse,
@@ -841,5 +855,73 @@ mod tests {
                 "{namespace}"
             );
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn deepseek_harness_tool_observation_correlates_via_dsh_hint_and_fails_closed_when_ambiguous(
+    ) {
+        use crate::session_manager::providers::deepseek_harness::dsh_convs;
+
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(prev) => std::env::set_var("CC_SWITCH_TEST_HOME", prev),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+        let prev = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let temp = tempfile::tempdir().unwrap();
+        let _restore = RestoreHome(prev);
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let sess_dir = temp
+            .path()
+            .join(".dsh")
+            .join("sessions")
+            .join("--proj--")
+            .join("session-dsh-audit-1");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        let opening = "run permission check";
+        let conv = dsh_convs(&serde_json::json!(opening))[0].clone();
+        let lines = [
+            serde_json::json!({"type":"session","version":4,"id":"session-dsh-audit-1","cwd":"/proj","createdAt":1000,"delegationDepth":0,"isSeeded":false}).to_string(),
+            serde_json::json!({"type":"turn/start","seq":1,"time":1001,"data":{"turn":1}}).to_string(),
+            serde_json::json!({"type":"user/message","seq":2,"time":1002,"data":{"source":{"kind":"user"},"content":[{"type":"text","text":opening}]}}).to_string(),
+        ]
+        .join("\n")
+            + "\n";
+        std::fs::write(sess_dir.join("session.v4.jsonl"), lines).unwrap();
+
+        let (tx, mut rx) = create_channel(4);
+        let mut meta = metadata(Transport::Json, OutputQuality::Native);
+        meta.client = "deepseek-harness";
+        meta = meta.with_dsh_hint(Some(DshCorrelationHint {
+            opening_conv: conv.clone(),
+            last_convs: vec![conv.clone()],
+        }));
+        let mut tap = tx.start(meta, 0).unwrap();
+        tap.push(&body());
+        let matched = ResponseProcessor::default().ingest(&rx.recv().await.unwrap());
+        assert_eq!(matched.len(), 1);
+        assert_eq!(
+            matched[0].correlation.session_id.as_deref(),
+            Some("deepseek-harness_session-dsh-audit-1")
+        );
+
+        let (tx2, mut rx2) = create_channel(4);
+        let mut missing_meta = metadata(Transport::Json, OutputQuality::Native);
+        missing_meta.client = "deepseek-harness";
+        missing_meta = missing_meta.with_dsh_hint(Some(DshCorrelationHint {
+            opening_conv: "magpie-000000000000000000000000".into(),
+            last_convs: Vec::new(),
+        }));
+        let mut tap2 = tx2.start(missing_meta, 0).unwrap();
+        tap2.push(&body());
+        let unmatched = ResponseProcessor::default().ingest(&rx2.recv().await.unwrap());
+        assert_eq!(unmatched.len(), 1);
+        assert_eq!(unmatched[0].correlation.session_id, None);
     }
 }

@@ -54,9 +54,8 @@ pub(crate) async fn export_application_log(
         operation.finish(&result);
         if let Ok(report) = &result {
             log::info!(
-                "[Diagnostics] Application log saved source_bytes={} redacted_lines={}",
-                report.source_bytes,
-                report.redacted_lines
+                "[Diagnostics] Application log saved source_bytes={}",
+                report.source_bytes
             );
         }
         result.map(Some)

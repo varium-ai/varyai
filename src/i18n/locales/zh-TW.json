@@ -790,12 +790,11 @@
       "logConfig": {
         "export": "匯出 varyai.log",
         "exporting": "正在匯出…",
-        "exportDescription": "匯出目前完整的 varyai.log，敏感內容會去識別化。",
+        "exportDescription": "直接匯出目前完整的 varyai.log 原始檔（不做去識別化處理）。",
         "exportSuccess": "varyai.log 已匯出。",
         "exportMissing": "尚未找到 varyai.log，請開啟日誌並重現問題後再匯出。",
         "exportEmpty": "varyai.log 為空，請重現問題後重試。",
         "exportSameSource": "請選擇其他儲存位置，不能覆蓋使用中的 varyai.log。",
-        "exportPrivacy": "敏感資訊處理暫時無法使用，請重新啟動 Vary AI 後重試。",
         "exportBackendUpdate": "請重新啟動更新後的 Vary AI，使用單一檔案日誌匯出。",
         "exportFailed": "匯出 varyai.log 失敗，請重試。",
         "title": "應用程式診斷日誌",

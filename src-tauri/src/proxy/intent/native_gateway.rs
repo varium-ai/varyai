@@ -383,7 +383,7 @@ pub(crate) async fn forward(
     body: Bytes,
     query: Option<&str>,
 ) -> Response {
-    let client = match client() {
+    let mut current_client = match client() {
         Ok(client) => client,
         Err(_) => {
             return super::error(
@@ -397,8 +397,9 @@ pub(crate) async fn forward(
         .map(Bytes::from)
         .unwrap_or(body);
     let mut recovery = super::super::responses_replay::Recovery::default();
+    let mut proxy_refreshed = false;
     loop {
-        let request = client
+        let request = current_client
             .post(&url)
             .headers(outbound_headers(&source_headers))
             .body(body.clone());
@@ -409,6 +410,21 @@ pub(crate) async fn forward(
         .await
         {
             Ok(response) => super::super::hyper_client::ProxyResponse::Reqwest(response),
+            Err(super::super::ProxyError::ForwardFailed(msg))
+                if msg == "connect_failed"
+                    && !proxy_refreshed
+                    && super::super::http_client::refresh_on_connect_failure().await =>
+            {
+                proxy_refreshed = true;
+                if let Ok(refreshed) = client() {
+                    current_client = refreshed;
+                    continue;
+                }
+                return super::error(
+                    StatusCode::BAD_GATEWAY,
+                    "routing_upstream_connection_failed",
+                );
+            }
             Err(_) => {
                 return super::error(
                     StatusCode::BAD_GATEWAY,
