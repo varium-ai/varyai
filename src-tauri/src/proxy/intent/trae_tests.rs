@@ -1,6 +1,6 @@
 use super::*;
 use crate::{database::Database, proxy::server::ProxyServer, proxy::ProxyConfig};
-use axum::{response::IntoResponse, routing::post, Json, Router};
+use axum::{response::IntoResponse, routing::post, Router};
 
 fn catalog(address: std::net::SocketAddr) -> Result<Menu, Box<dyn std::error::Error>> {
     let mut menu = super::global_tests::menu(&format!("http://{address}/v1/chat/completions"));

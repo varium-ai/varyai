@@ -1439,7 +1439,9 @@ async fn native_gateway_formats_preserve_wire_extensions_and_gemini_stream_url(
             assert_eq!(upstream["model"], "exact-model");
         }
     }
-    let response=client.post(format!("http://127.0.0.1:{}/gateway/v1beta/models/vary-auto/native-3:streamGenerateContent?alt=sse",info.port)).bearer_auth(&key.secret).json(&fixtures[3].2).send().await?;
+    let mut streaming = fixtures[3].2.clone();
+    streaming["contents"][0]["parts"][0]["text"] = json!("synthetic stream");
+    let response=client.post(format!("http://127.0.0.1:{}/gateway/v1beta/models/vary-auto/native-3:streamGenerateContent?alt=sse",info.port)).bearer_auth(&key.secret).json(&streaming).send().await?;
     assert_eq!(response.status(), StatusCode::OK);
     let _ = response.text().await?;
     let (rejected_uri, _, _) = rx.recv().await.ok_or("primary stream request missing")?;
@@ -3243,7 +3245,7 @@ async fn codex_grok_chat_fixture(
     for stream in [false, true] {
         let response = client.post(format!("http://127.0.0.1:{}/intent/v1/responses", info.port))
             .bearer_auth("synthetic-local-token")
-            .json(&json!({"model":group().alias(),"stream":stream,"input":"Synthetic [a&&b] prompt",
+            .json(&json!({"model":group().alias(),"stream":stream,"input":format!("Synthetic [a&&b] prompt, stream={stream}"),
                 "tools":[{"type":"function","name":"synthetic_tool","parameters":{"type":"object","properties":{
                     "selector":{"allOf":[{"type":"string"},{"pattern":r"^[^\s[\]]+$"}],"required":null},
                     "pattern":{"type":"string","description":"Synthetic unchanged property"},
