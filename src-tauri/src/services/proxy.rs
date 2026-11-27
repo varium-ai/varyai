@@ -1753,26 +1753,27 @@ impl ProxyService {
                 .await;
             }
         }
-        // Reconnect existing desktops outside catalog switch locks. Route edits
-        // must not wait for helper injection or rewrite client launch settings.
-        if self.is_running().await {
-            use super::trae_bridge::shared::{Client, Edition};
-            for edition in [Edition::China, Edition::International] {
-                if self.agent_connections.bridge_for(edition).bridge_owned()
-                    && self
-                        .db
-                        .get_bool_flag(edition.consent_key())
-                        .unwrap_or(false)
-                {
-                    let _ = tokio::task::spawn_blocking(move || Client(edition).reconnect()).await;
-                }
+        use super::trae_bridge::shared::{Client, Edition};
+        let refresh = |edition: Edition| async move {
+            if !self.agent_connections.bridge_for(edition).bridge_owned() {
+                return;
             }
-        }
-        self.refresh_trae_responses().await;
-        self.sync_shared_trae_intl(false).await;
-        if self.agent_connections.bridge_owned() {
-            self.sync_shared_trae(false).await;
-        }
+            // Reconnect outside the switch lock so each edition can deliver independently.
+            if self.is_running().await
+                && self
+                    .db
+                    .get_bool_flag(edition.consent_key())
+                    .unwrap_or(false)
+            {
+                let _ = tokio::task::spawn_blocking(move || Client(edition).reconnect()).await;
+            }
+            self.sync_shared_trae_edition(edition, false).await;
+        };
+        tokio::join!(
+            refresh(Edition::China),
+            refresh(Edition::International),
+            self.refresh_trae_responses()
+        );
         {
             let _guard = self.lock_trae_audit().await;
             if self.is_running().await
@@ -1852,9 +1853,11 @@ impl ProxyService {
         enabled: bool,
         model: Option<String>,
     ) -> Result<(), String> {
-        let _guard = self.lock_switch_for_app("trae").await;
-        let _audit_guard = self.lock_trae_audit().await;
-        self.agent_connections.bridge_status()?;
+        let _audit_guard = if enabled {
+            Some(self.lock_trae_audit().await)
+        } else {
+            None
+        };
         if enabled
             && self
                 .db
@@ -1869,10 +1872,25 @@ impl ProxyService {
                 .set_setting(super::trae_bridge::ENABLED_KEY, "false")
                 .map_err(|_| super::agent_connections::FAILED)?;
         }
-        let manager = self.agent_connections.clone();
-        tokio::task::spawn_blocking(move || manager.bridge_select_model(enabled, model))
+        self.set_shared_trae_intent(super::trae_bridge::shared::Edition::China, enabled, model)
             .await
-            .map_err(|_| super::agent_connections::FAILED)?
+    }
+
+    pub(crate) async fn set_shared_trae_intent(
+        &self,
+        edition: super::trae_bridge::shared::Edition,
+        enabled: bool,
+        model: Option<String>,
+    ) -> Result<(), String> {
+        let manager = self.agent_connections.clone();
+        let runtime = self.intent_runtime.clone();
+        tokio::task::spawn_blocking(move || {
+            manager
+                .bridge_for(edition)
+                .set_intent(enabled, model, || runtime.connections.revoke(edition.app()))
+        })
+        .await
+        .map_err(|_| super::agent_connections::FAILED)?
     }
 
     pub(crate) async fn finish_shared_trae_connection(
@@ -1880,25 +1898,16 @@ impl ProxyService {
         edition: super::trae_bridge::shared::Edition,
         enabled: bool,
     ) {
-        use super::trae_bridge::shared::Edition;
-        if enabled {
-            if !self.intent_runtime.connections.active(edition.app()) {
-                self.prepare_shared_trae(edition).await;
-            }
-            // The periodic worker delivers the saved model and publishes its acknowledgement.
-            return;
+        if enabled && !self.intent_runtime.connections.active(edition.app()) {
+            self.prepare_shared_trae(edition).await;
         }
-        match edition {
-            Edition::China => self.sync_shared_trae(false).await,
-            Edition::International => self.sync_shared_trae_intl(false).await,
-        }
+        // The worker applies or removes native models after the local choice is saved.
     }
 
     pub(crate) async fn prepare_shared_trae(
         &self,
         edition: super::trae_bridge::shared::Edition,
     ) -> bool {
-        let _guard = self.lock_switch_for_app(edition.app()).await;
         if !self.is_running().await
             || !self.agent_connections.bridge_for(edition).bridge_enabled()
             || !self
@@ -1908,67 +1917,31 @@ impl ProxyService {
         {
             return false;
         }
-        let prepared = matches!(
-            tokio::task::spawn_blocking(
-                move || super::trae_bridge::shared::Client(edition).prepare()
-            )
-            .await,
+        let manager = self.agent_connections.clone();
+        matches!(
+            tokio::task::spawn_blocking(move || manager.bridge_for(edition).prepare()).await,
             Ok(Ok(()))
-        );
-        if !prepared {
-            self.intent_runtime.connections.revoke(edition.app());
-        }
-        prepared
+        )
     }
 
     pub(crate) async fn sync_shared_trae(&self, suspend: bool) {
-        let _guard = self.lock_switch_for_app("trae").await;
-        if !self.agent_connections.bridge_owned() {
-            return;
-        }
-        if !self
-            .db
-            .get_bool_flag(super::trae_bridge::CONSENT_KEY)
-            .unwrap_or(false)
-        {
-            self.intent_runtime.connections.revoke("trae");
-            return;
-        }
-        let running = self.is_running().await && !suspend && !self.catalog_sync.clients_paused();
-        let menu = running
-            .then(|| self.intent_runtime.global_snapshot().ok().flatten())
-            .flatten();
-        // A paused catalog worker or a startup refresh may have no snapshot.
-        // Shared models remain valid references in open TRAE chats until explicit cleanup.
-        if !suspend && menu.is_none() && self.agent_connections.bridge_enabled() {
-            return;
-        }
-        let port = self.get_status().await.map(|s| s.port).unwrap_or(0);
-        let manager = self.agent_connections.clone();
-        let runtime = self.intent_runtime.clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            if let Some(receipt) = manager.bridge_sync(
-                menu.as_deref(),
-                &format!("http://127.0.0.1:{port}"),
-                !running,
-            )? {
-                runtime.connections.install(&receipt)?;
-            } else {
-                runtime.connections.revoke("trae");
-            }
-            Ok(())
-        })
-        .await;
-        if !matches!(result, Ok(Ok(()))) {
-            self.intent_runtime.connections.revoke("trae");
-        }
+        self.sync_shared_trae_edition(super::trae_bridge::shared::Edition::China, suspend)
+            .await;
     }
 
     pub(crate) async fn sync_shared_trae_intl(&self, suspend: bool) {
-        use super::trae_bridge::shared::Edition;
-        let edition = Edition::International;
+        self.sync_shared_trae_edition(super::trae_bridge::shared::Edition::International, suspend)
+            .await;
+    }
+
+    async fn sync_shared_trae_edition(
+        &self,
+        edition: super::trae_bridge::shared::Edition,
+        suspend: bool,
+    ) {
         let _guard = self.lock_switch_for_app(edition.app()).await;
-        if !self.agent_connections.bridge_for(edition).bridge_owned() {
+        let bridge = self.agent_connections.bridge_for(edition);
+        if !bridge.bridge_owned() {
             return;
         }
         if !self
@@ -1983,8 +1956,8 @@ impl ProxyService {
         let menu = running
             .then(|| self.intent_runtime.global_snapshot().ok().flatten())
             .flatten();
-        if !suspend && menu.is_none() && self.agent_connections.bridge_for(edition).bridge_enabled()
-        {
+        // A paused or unprepared catalog must never remove models used by open chats.
+        if !suspend && menu.is_none() && bridge.bridge_enabled() {
             return;
         }
         let port = self
@@ -1994,22 +1967,24 @@ impl ProxyService {
             .unwrap_or(0);
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            if let Some(receipt) = manager.bridge_for(edition).bridge_sync(
+        let catalog_sync = self.catalog_sync.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            manager.bridge_for(edition).bridge_sync(
                 menu.as_deref(),
                 &format!("http://127.0.0.1:{port}"),
                 !running,
-            )? {
-                runtime.connections.install(&receipt)?;
-            } else {
-                runtime.connections.revoke(edition.app());
-            }
-            Ok(())
+                |receipt| match receipt {
+                    Some(receipt) if !catalog_sync.clients_paused() => {
+                        runtime.connections.install(receipt)
+                    }
+                    _ => {
+                        runtime.connections.revoke(edition.app());
+                        Ok(())
+                    }
+                },
+            )
         })
         .await;
-        if !matches!(result, Ok(Ok(()))) {
-            self.intent_runtime.connections.revoke(edition.app());
-        }
     }
 
     pub async fn set_takeover_for_app(&self, app_type: &str, enabled: bool) -> Result<(), String> {
@@ -6865,6 +6840,19 @@ mod tests {
                 service.finish_shared_trae_connection(edition, true),
             )
             .await?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                service.set_shared_trae_intent(edition, true, Some("selected".into())),
+            )
+            .await??;
+            assert!(service.intent_runtime.connections.active(edition.app()));
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                service.set_shared_trae_intent(edition, false, None).await?;
+                service.finish_shared_trae_connection(edition, false).await;
+                Ok::<_, String>(())
+            })
+            .await??;
+            assert!(!service.intent_runtime.connections.active(edition.app()));
         }
         Ok(())
     }

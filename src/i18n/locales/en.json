@@ -4707,7 +4707,7 @@
     "failed": "Gateway key operation failed",
     "nameExample": "For example: Desktop testing or Project A",
     "allModels": "Allow all models",
-    "modelsHint": "For bound local agents, selecting a model allows it directly and in routing groups. Selecting a routing group allows each of its available member models, including direct use. Bind this key in Local agents.",
+    "modelsHint": "Selecting a model allows it directly and in routing groups. Selecting a routing group allows each of its available member models, including direct use and other groups that contain them. Bind this key in Local agents.",
     "searchModels": "Search models, suppliers or routing groups",
     "catalogFailed": "Could not load the configured model catalog.",
     "noModels": "No shared models or routing groups are available.",
@@ -4742,7 +4742,7 @@
     "noUsage": "No observed requests yet. Bind an agent with local routing enabled, or send a request with a gateway key.",
     "usageRow": "{{requests}} requests · {{tokens}} tokens · {{unmetered}} without reported usage",
     "lastUsed": "Last request: {{time}}",
-    "connectHint": "To use shared models from an external client, publish a routing group to the gateway and allow the group on this key. For managed agents, bind the key in Local agents.",
+    "connectHint": "To use shared models from an external client, publish a routing group to the gateway and allow the group (or any member model / group containing its members) on this key. For managed agents, bind the key in Local agents.",
     "chooseKey": "Choose a key",
     "clientProtocol": "Client request protocol",
     "exampleHint": "Replace YOUR_GATEWAY_KEY with the saved secret and MODEL_ID with an allowed model ID.",
@@ -5630,6 +5630,17 @@
       "unavailable": "Classifier unavailable",
       "timeout": "Classification timed out",
       "no_user_text": "No user text available for classification"
+    },
+    "classificationBadge": {
+      "easy": "Easy task",
+      "hard": "Hard task",
+      "matched": "Intent matched",
+      "no_match": "No match",
+      "failed": "Classification failed"
+    },
+    "classificationResult": {
+      "easy": "Classified as easy task",
+      "hard": "Classified as hard task"
     },
     "templateSmart": "Strong models for hard tasks, cheaper models for easy tasks",
     "templateSmartHint": "Compaction and hard tasks use a strong model. Easy tasks prefer a cheaper model. Models are also drawn when prices are unknown or equal. You can change the selections before saving.",

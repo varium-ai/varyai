@@ -1529,3 +1529,45 @@ fn trace_keeps_execution_identity_and_records_the_configured_supplier_id(
     assert_eq!(wire["sourceProviderId"], public_id);
     Ok(())
 }
+
+#[test]
+fn trace_persists_classification_result_and_reads_legacy_history_without_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store = Arc::new(Store::with_history(dir.path().to_path_buf())?);
+    let trace = store.begin(
+        "codex",
+        "vary-auto/smart",
+        "Smart",
+        "ordered",
+        Instant::now(),
+    );
+    trace.classification("matched", Some("easy"));
+    trace.finish(200, State::Completed);
+    store.flush_history()?;
+
+    let snapshot = store.snapshot();
+    assert_eq!(
+        snapshot[0].classification_outcome.as_deref(),
+        Some("matched")
+    );
+    assert_eq!(snapshot[0].classification_result.as_deref(), Some("easy"));
+
+    let day = chrono::Local::now().date_naive().to_string();
+    let page = store.history(Some(&day))?;
+    assert_eq!(page.requests.len(), 1);
+    assert_eq!(
+        page.requests[0].classification_outcome.as_deref(),
+        Some("matched")
+    );
+    assert_eq!(
+        page.requests[0].classification_result.as_deref(),
+        Some("easy")
+    );
+
+    let legacy_json = r#"{"id":"legacy","startedAt":1700000000000,"agent":"codex","session":null,"model":"vary-auto/smart","groupName":"Smart","strategy":"ordered","classificationOutcome":"matched","candidates":[],"steps":[],"state":"completed","status":200,"durationMs":10,"firstTokenMs":null,"outputTokensPerSecond":null,"inputTokens":null,"outputTokens":null,"cacheReadTokens":null,"estimatedTokens":null}"#;
+    let legacy: Route = serde_json::from_str(legacy_json)?;
+    assert_eq!(legacy.classification_outcome.as_deref(), Some("matched"));
+    assert_eq!(legacy.classification_result, None);
+    Ok(())
+}

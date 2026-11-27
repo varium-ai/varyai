@@ -207,7 +207,7 @@ pub(crate) fn valid_text(value: &str, max: usize) -> bool {
         && !value.chars().any(|c| c.is_control() && c != '\n')
 }
 
-fn valid_target(provider_id: &str, model_id: &str) -> bool {
+pub(crate) fn valid_target(provider_id: &str, model_id: &str) -> bool {
     valid_text(provider_id, 128)
         && valid_text(model_id, 200)
         && model_id == model_id.trim()

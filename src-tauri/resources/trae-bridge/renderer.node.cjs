@@ -810,6 +810,23 @@ test("native model cache is refreshed before matching and after writes across of
   assert.equal(f.models.length, 8);
   assert.equal(new Set(f.models.map((model) => model.custom_model_id)).size, 8);
 });
+test("an unavailable native model list cannot prove that a delivered catalog changed", async () => {
+  const f = fixture();
+  const bridge = createBridge(f.service, async () => ({}));
+  const id = "shared_catalog_connection";
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic",
+    models: [{ model: "synthetic-model" }],
+  };
+  await bridge.apply(id, "Vary AI", config);
+  assert.equal(await bridge.matches(id, config), true);
+  f.service.getModelList = async () => ({});
+  await assert.rejects(bridge.matches(id, config), /model_list_unavailable/);
+  f.service.getModelList = async () => ({ model_list: [] });
+  assert.equal(await bridge.matches(id, config), false);
+});
 test("shared catalog names keep one VaryAI suffix within TRAE's display limit", async () => {
   const f = fixture();
   const bridge = createBridge(f.service, async () => ({}));
@@ -882,6 +899,30 @@ test("shared catalog refreshes expose final labels throughout replacement", asyn
     f.models.map((m) => m.model_name),
     config.models.map((m) => m.model),
   );
+});
+test("first shared connection publishes every model with a single refresh after creation", async () => {
+  const f = fixture();
+  let refreshes = 0;
+  const bridge = createBridge(f.service, async () => ({}), async () => {
+    refreshes++;
+  });
+  const models = Array.from({ length: 58 }, (_, index) => ({
+    model: `synthetic/model-${index}`,
+  }));
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic-local",
+    models,
+  };
+  const id = "shared_catalog_connection";
+  await bridge.replace(id, "VaryAI", config);
+  assert.equal(refreshes, 3);
+  assert.deepEqual(
+    f.models.map((row) => row.model_name),
+    models.map((row) => row.model),
+  );
+  assert.equal(await bridge.matches(id, config), true);
 });
 test("shared catalog persistence failures remove only the newly added native row", async () => {
   const f = fixture();
@@ -1461,7 +1502,7 @@ test("native whole-catalog writes preserve every model without overlapping creat
     models: Array.from({ length: 10 }, (_, i) => ({ model: `model-${i}` })),
   });
   assert.equal(peak, 1);
-  assert.equal(refreshes, 3);
+  assert.equal(refreshes, 2);
   assert.equal(f.models.length, 10);
 });
 

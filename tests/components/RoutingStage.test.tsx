@@ -1113,3 +1113,66 @@ it("groups candidates under route headers and assigns distinct agent hues when m
   expect(hues[1]).not.toBe("");
   expect(hues[0]).not.toBe(hues[1]);
 });
+
+it("renders classification difficulty and failure badges in responsive, compact, and idle stages", () => {
+  const easyView = show({
+    row: {
+      ...row,
+      state: "completed",
+      classificationOutcome: "matched",
+      classificationResult: "easy",
+      steps: [
+        { kind: "attempt", candidate: 1, atMs: 1 },
+        { kind: "completed", candidate: 1, atMs: 20, status: 200 },
+      ],
+    },
+  });
+  const easyBadge = easyView.container.querySelector(".rt-sub .rt-cls-badge");
+  expect(easyBadge).toHaveAttribute("data-classification-tone", "easy");
+  expect(easyBadge).toHaveTextContent("routingPage.classificationBadge.easy");
+  expect(easyBadge).toHaveAttribute(
+    "title",
+    "routingPage.classificationResult.easy",
+  );
+  easyView.unmount();
+
+  const hardCompact = show({
+    layout: "compact",
+    row: {
+      ...row,
+      state: "completed",
+      classificationOutcome: "matched",
+      classificationResult: "hard",
+      steps: [
+        { kind: "attempt", candidate: 1, atMs: 1 },
+        { kind: "completed", candidate: 1, atMs: 20, status: 200 },
+      ],
+    },
+  });
+  const hardBadge = hardCompact.container.querySelector(
+    ".rt-accts li:not(.rt-sub) .rt-cls-badge",
+  );
+  expect(hardBadge).toHaveAttribute("data-classification-tone", "hard");
+  expect(hardBadge).toHaveTextContent("routingPage.classificationBadge.hard");
+  hardCompact.unmount();
+
+  const failedIdle = show({
+    row: {
+      ...row,
+      candidates: [],
+      steps: [],
+      state: "failed",
+      status: 502,
+      classificationOutcome: "timeout",
+    },
+  });
+  const failBadge = failedIdle.container.querySelector(
+    ".rt-accts li.idle .rt-cls-badge",
+  );
+  expect(failBadge).toHaveAttribute("data-classification-tone", "failed");
+  expect(failBadge).toHaveTextContent("routingPage.classificationBadge.failed");
+  expect(failBadge).toHaveAttribute(
+    "title",
+    "routingPage.classificationOutcome.timeout",
+  );
+});

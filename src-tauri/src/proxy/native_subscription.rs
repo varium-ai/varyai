@@ -141,6 +141,21 @@ fn envelope(
     body
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ClassifierRequestError {
+    pub outcome: &'static str,
+    pub status: u16,
+    pub detail: String,
+}
+
+impl std::fmt::Display for ClassifierRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.outcome, self.detail)
+    }
+}
+
+impl std::error::Error for ClassifierRequestError {}
+
 /// Classifiers share WorkBuddy's regional transport, with a smaller response budget.
 pub(crate) async fn workbuddy_classifier_request(
     binding: crate::services::subscription_provider::Binding,
@@ -149,17 +164,27 @@ pub(crate) async fn workbuddy_classifier_request(
     payload: Value,
     provider: &Provider,
     max_bytes: usize,
-) -> Result<Value, &'static str> {
+    on_dispatch: impl FnOnce(),
+) -> Result<Value, ClassifierRequestError> {
     if !binding.provider.is_workbuddy() {
-        return Err("unavailable");
+        return Err(ClassifierRequestError {
+            outcome: "unavailable",
+            status: 0,
+            detail: "classifier_unavailable".into(),
+        });
     }
     let account = accounts::resolve(binding.provider, &binding.account_id)
         .await
-        .map_err(|_| "unavailable")?;
+        .map_err(|_| ClassifierRequestError {
+            outcome: "unavailable",
+            status: 0,
+            detail: "classifier_unavailable".into(),
+        })?;
     let model_name = provider.settings_config["modelCatalog"]["models"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["model"] == payload["model"]))
         .and_then(|row| row["displayName"].as_str());
+    on_dispatch();
     let (response, _) = workbuddy::send(
         client,
         &account,
@@ -172,7 +197,36 @@ pub(crate) async fn workbuddy_classifier_request(
         model_name,
     )
     .await
-    .map_err(|_| "request_failed")?;
+    .map_err(|err| match err {
+        ProxyError::UpstreamError { status, .. } => ClassifierRequestError {
+            outcome: "request_failed",
+            status,
+            detail: format!("http_{status}"),
+        },
+        ProxyError::SafeUpstream(err) => {
+            let status = err.status().as_u16();
+            ClassifierRequestError {
+                outcome: "request_failed",
+                status,
+                detail: format!("http_{status}"),
+            }
+        }
+        ProxyError::Timeout(_) => ClassifierRequestError {
+            outcome: "request_failed",
+            status: 504,
+            detail: "upstream_timeout".into(),
+        },
+        ProxyError::AuthError(_) => ClassifierRequestError {
+            outcome: "request_failed",
+            status: 401,
+            detail: "auth_error".into(),
+        },
+        _ => ClassifierRequestError {
+            outcome: "request_failed",
+            status: 502,
+            detail: "transport_error".into(),
+        },
+    })?;
     workbuddy_classifier_reply(ProxyResponse::Reqwest(response), protocol, max_bytes).await
 }
 
@@ -180,19 +234,35 @@ async fn workbuddy_classifier_reply(
     response: ProxyResponse,
     protocol: Protocol,
     max_bytes: usize,
-) -> Result<Value, &'static str> {
+) -> Result<Value, ClassifierRequestError> {
     let bytes = response
         .bytes_with_limit(max_bytes)
         .await
         .map_err(|err| match err {
-            ProxyError::ResponseBodyTooLarge(_) => "invalid_output",
-            _ => "request_failed",
+            ProxyError::ResponseBodyTooLarge(_) => ClassifierRequestError {
+                outcome: "invalid_output",
+                status: 200,
+                detail: "response_too_large".into(),
+            },
+            _ => ClassifierRequestError {
+                outcome: "request_failed",
+                status: 502,
+                detail: "body_read_error".into(),
+            },
         })?;
     let stream = futures::stream::once(async move { Ok(bytes) });
     let reply = ir::stream::collect(Box::pin(stream), protocol)
         .await
-        .map_err(|_| "invalid_output")?;
-    ir::reply::render(protocol, &reply).map_err(|_| "invalid_output")
+        .map_err(|_| ClassifierRequestError {
+            outcome: "invalid_output",
+            status: 200,
+            detail: "unexpected_response_format".into(),
+        })?;
+    ir::reply::render(protocol, &reply).map_err(|_| ClassifierRequestError {
+        outcome: "invalid_output",
+        status: 200,
+        detail: "unexpected_response_format".into(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -768,7 +838,8 @@ mod tests {
             assert_eq!(text, classification);
             assert_eq!(
                 workbuddy_classifier_reply(response(frames.clone()), protocol, frames.len() - 1)
-                    .await,
+                    .await
+                    .map_err(|err| err.outcome),
                 Err("invalid_output")
             );
             assert_eq!(
@@ -777,7 +848,8 @@ mod tests {
                     protocol,
                     frames.len()
                 )
-                .await,
+                .await
+                .map_err(|err| err.outcome),
                 Err("invalid_output")
             );
         }

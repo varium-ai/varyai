@@ -11,25 +11,47 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+fn gateway_error_code(err: &GatewayError) -> &'static str {
+    match err {
+        GatewayError::Unauthorized => "invalid_gateway_key",
+        GatewayError::Forbidden => "model_not_allowed",
+        GatewayError::UnsupportedOperation => "gateway_operation_not_supported",
+        GatewayError::Exhausted(_) => "gateway_budget_exhausted",
+        GatewayError::Storage => "gateway_policy_unavailable",
+    }
+}
+
+pub(crate) fn log_rejection(agent: &str, model: &str, err: &GatewayError) {
+    let selection = if model.starts_with("vary-provider/") {
+        "provider_model"
+    } else if model.starts_with("vary-auto/") || model.starts_with("auto/") {
+        "routing_group"
+    } else if model.is_empty() {
+        "missing"
+    } else {
+        "other"
+    };
+    log::warn!(
+        "[Gateway] Request rejected: agent={} code={} selection={}",
+        agent,
+        gateway_error_code(err),
+        selection
+    );
+}
+
+pub(crate) fn policy_error_for(agent: &str, model: &str, err: GatewayError) -> Response {
+    log_rejection(agent, model, &err);
+    error(err)
+}
+
 pub(crate) fn error(err: GatewayError) -> Response {
-    let (status, code, reset) = match err {
-        GatewayError::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_gateway_key", None),
-        GatewayError::Forbidden => (StatusCode::FORBIDDEN, "model_not_allowed", None),
-        GatewayError::UnsupportedOperation => (
-            StatusCode::FORBIDDEN,
-            "gateway_operation_not_supported",
-            None,
-        ),
-        GatewayError::Exhausted(reset) => (
-            StatusCode::PAYMENT_REQUIRED,
-            "gateway_budget_exhausted",
-            reset,
-        ),
-        GatewayError::Storage => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "gateway_policy_unavailable",
-            None,
-        ),
+    let code = gateway_error_code(&err);
+    let (status, reset) = match err {
+        GatewayError::Unauthorized => (StatusCode::UNAUTHORIZED, None),
+        GatewayError::Forbidden => (StatusCode::FORBIDDEN, None),
+        GatewayError::UnsupportedOperation => (StatusCode::FORBIDDEN, None),
+        GatewayError::Exhausted(reset) => (StatusCode::PAYMENT_REQUIRED, reset),
+        GatewayError::Storage => (StatusCode::SERVICE_UNAVAILABLE, None),
     };
     let message = crate::proxy::error_i18n::gateway_message(code);
     let mut body = json!({"error":{"code":code,"message":message,"resets_at":reset}});
@@ -89,32 +111,33 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         let policy =
             match tokio::task::spawn_blocking(move || db.gateway_catalog_policy(&secret)).await {
                 Ok(Ok(policy)) => policy,
-                Ok(Err(err)) => return error(err),
-                Err(_) => return error(GatewayError::Storage),
+                Ok(Err(err)) => return policy_error_for("external", "<models>", err),
+                Err(_) => return policy_error_for("external", "<models>", GatewayError::Storage),
             };
         if !state.intent_runtime.ensure_global_current(&state.db).await {
             return crate::proxy::intent::catalog_stale();
         }
         let menu = match state.intent_runtime.global_snapshot() {
             Ok(menu) => menu,
-            Err(_) => return error(GatewayError::Storage),
+            Err(_) => return policy_error_for("external", "<models>", GatewayError::Storage),
         };
-        let aliases = menu
-            .iter()
-            .flat_map(|menu| menu.listed_aliases())
-            .filter(|alias| policy.all_models || policy.models.contains(alias))
-            .cloned()
-            .collect::<Vec<_>>();
-        let data = aliases
-            .into_iter()
-            .filter_map(|id| {
-                menu.as_ref()?
-                    .groups
-                    .get(&id)
-                    .filter(|session| session.group.enabled)
-                    .map(|session| session.model_entry(&id))
+        let data = menu
+            .as_ref()
+            .map(|menu| {
+                menu.listed_aliases()
+                    .filter_map(|id| {
+                        menu.groups
+                            .get(id)
+                            .filter(|session| {
+                                super::GroupMemberPolicy::permits_published_group(
+                                    &policy, id, session, menu,
+                                )
+                            })
+                            .map(|session| session.model_entry(id))
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
+            .unwrap_or_default();
         if path == "/v1beta/models" {
             return Json(json!({"models":data.into_iter().map(|model| json!({"name":format!("models/{}", model["id"].as_str().unwrap_or_default()),"displayName":model["id"],"supportedGenerationMethods":["generateContent","streamGenerateContent"]})).collect::<Vec<_>>()})).into_response();
         }
@@ -130,19 +153,32 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
             .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned))
     });
     let requested_model = model.clone().unwrap_or_default();
+    let catalog = match super::bindings::agent_policy_catalog(&state).await {
+        Ok(catalog) => catalog,
+        Err(err) => return policy_error_for("external", &requested_model, err),
+    };
     let db = state.db.clone();
+    let policy_model = requested_model.clone();
+    let policy_catalog = catalog.clone();
     let grant = match tokio::task::spawn_blocking(move || {
-        db.authorize_gateway_key(
+        let route = policy_catalog
+            .as_ref()
+            .and_then(|menu| menu.groups.get(&policy_model))
+            .filter(|session| session.group.enabled)
+            .map(Arc::as_ref);
+        db.authorize_gateway_key_model(
             &secret,
-            model.as_deref().unwrap_or(""),
+            &policy_model,
+            route,
+            policy_catalog.as_ref(),
             Utc::now().timestamp(),
         )
     })
     .await
     {
         Ok(Ok(grant)) => grant,
-        Ok(Err(err)) => return error(err),
-        Err(_) => return error(GatewayError::Storage),
+        Ok(Err(err)) => return policy_error_for("external", &requested_model, err),
+        Err(_) => return policy_error_for("external", &requested_model, GatewayError::Storage),
     };
     for name in [
         "authorization",
@@ -155,6 +191,9 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         parts.headers.remove(name);
     }
     parts.extensions.insert(grant.upstream_model.clone());
+    if let Some(group_members) = &grant.group_members {
+        parts.extensions.insert(group_members.clone());
+    }
     let endpoint = parts
         .uri
         .path_and_query()

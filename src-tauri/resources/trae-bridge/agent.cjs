@@ -9,7 +9,7 @@ const { createBridge, workbenchServices } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 const { createTraeRewards } = require("./rewards.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 23;
+const REVISION = 24;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 const MODEL_OPERATION_TIMEOUT = 300_000;
@@ -191,6 +191,15 @@ function bootstrapSource() {
     globalThis.${SLOT}={revision:${RENDERER_REVISION},hookRevision:${REVISION},modelVerification:1,startingModel:1,auditBinding:${JSON.stringify(AUDIT_BINDING)},bridge,resolve(id,value,error){const task=pending.get(id);if(!task)return;clearTimeout(task.timer);pending.delete(id);error?task.reject(Error('audit_unavailable')):task.resolve(value);}};
     return true;
   })()`;
+}
+async function selectStartingModelInWindows(sessions, expected, select) {
+  let complete = sessions.length === expected;
+  // Windows can share persisted defaults, so apply the selection in order.
+  for (const session of sessions) {
+    const applied = await select(session).catch(() => false);
+    if (applied !== true) complete = false;
+  }
+  return complete;
 }
 // Solo bundles its own container. Obtain its loaded runtime without patching app files,
 // pausing execution or exporting account credentials.
@@ -589,7 +598,7 @@ async function run(endpoint, directory) {
     if (command.op === "apply")
       return invoke(first, "apply", command.id, command.name, command.config);
     if (command.op === "selection_pending") {
-      if (sessions.size !== expected) throw Error("chat_window_unavailable");
+      if (sessions.size !== expected) return true;
       const windows = await Promise.all(
         [...sessions.keys()].map((s) =>
           invoke(s, "needsSelection", command.id, command.model),
@@ -598,18 +607,11 @@ async function run(endpoint, directory) {
       return windows.some((pending) => pending === true);
     }
     if (command.op === "select") {
-      if (sessions.size !== expected) throw Error("chat_window_unavailable");
-      let success = true;
-      for (const session of [...sessions.keys()]) {
-        const applied = await invoke(
-          session,
-          "select",
-          command.id,
-          command.model,
-        ).catch(() => false);
-        if (applied !== true) success = false;
-      }
-      if (!success) throw Error("starting_model_unavailable");
+      const complete = await selectStartingModelInWindows(
+        [...sessions.keys()], expected,
+        (session) => invoke(session, "select", command.id, command.model),
+      );
+      if (!complete) throw Error("starting_model_unavailable");
       return true;
     }
     if (command.op === "replace")
@@ -707,6 +709,7 @@ module.exports = {
   safeModelError,
   isChatTarget,
   bootstrapSource,
+  selectStartingModelInWindows,
   initializeSolo,
   nativeModelService,
   workbenchServices,

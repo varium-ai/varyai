@@ -2,13 +2,18 @@
 use super::{models, read, Manager, Receipt, RecoveryReason, Status, CONFLICT, FAILED};
 use crate::{config::atomic_write_private, provider::Provider, proxy::intent::Menu};
 use serde::{Deserialize, Serialize};
+use std::sync::{Mutex, MutexGuard};
 
 const ID: &str = "shared_catalog_connection";
 const MODEL_REJECTED: &str = "agentConnections.nativeModelRejected";
+static CHINA_OUTBOX: Mutex<()> = Mutex::new(());
+static INTERNATIONAL_OUTBOX: Mutex<()> = Mutex::new(());
 #[derive(Serialize, Deserialize)]
 pub(super) struct Outbox {
     enabled: bool,
     token: String,
+    #[serde(default)]
+    revision: Option<String>,
     provider: Option<Provider>,
     delivered: bool,
     #[serde(default)]
@@ -40,6 +45,7 @@ impl Manager {
         self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
             .bridge_enabled()
     }
+    #[cfg(test)]
     pub(crate) fn bridge_status(&self) -> Result<Status, String> {
         self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
             .bridge_status()
@@ -48,26 +54,9 @@ impl Manager {
         self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
             .bridge_select(enabled)
     }
-    pub(crate) fn bridge_select_model(
-        &self,
-        enabled: bool,
-        model: Option<String>,
-    ) -> Result<(), String> {
-        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
-            .bridge_select_model(enabled, model)
-    }
     pub(crate) fn bridge_retry(&self) -> Result<(), String> {
         self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
             .bridge_retry()
-    }
-    pub(crate) fn bridge_sync(
-        &self,
-        menu: Option<&Menu>,
-        origin: &str,
-        suspend: bool,
-    ) -> Result<Option<Receipt>, String> {
-        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
-            .bridge_sync(menu, origin, suspend)
     }
 }
 pub(crate) struct TraeBridge<'a> {
@@ -96,11 +85,43 @@ impl TraeBridge<'_> {
         )
         .map_err(|_| FAILED.into())
     }
+    fn lock_outbox(&self) -> Result<MutexGuard<'static, ()>, String> {
+        use crate::services::trae_bridge::shared::Edition;
+        match self.edition {
+            Edition::China => &CHINA_OUTBOX,
+            Edition::International => &INTERNATIONAL_OUTBOX,
+        }
+        .lock()
+        .map_err(|_| FAILED.into())
+    }
+    fn commit<T>(
+        &self,
+        outbox: &Outbox,
+        commit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _guard = self.lock_outbox()?;
+        if self
+            .bridge_load()?
+            .is_some_and(|current| current.revision == outbox.revision)
+        {
+            commit()
+        } else {
+            Err(FAILED.into())
+        }
+    }
     pub(crate) fn bridge_owned(&self) -> bool {
         self.bridge_load().map_or(true, |o| o.is_some())
     }
     pub(crate) fn bridge_enabled(&self) -> bool {
         self.bridge_load().ok().flatten().is_some_and(|o| o.enabled)
+    }
+    pub(crate) fn prepare(&self) -> Result<(), String> {
+        let _guard = self.lock_outbox()?;
+        if self.bridge_load()?.is_some_and(|outbox| outbox.enabled) {
+            self.client().prepare().map_err(|_| FAILED.into())
+        } else {
+            Err(FAILED.into())
+        }
     }
     pub(crate) fn bridge_status(&self) -> Result<Status, String> {
         self.bridge_status_with_desktop(self.client().applied_at_ms(), super::desktop::state)
@@ -160,8 +181,18 @@ impl TraeBridge<'_> {
         enabled: bool,
         model: Option<String>,
     ) -> Result<(), String> {
+        self.set_intent(enabled, model, || {})
+    }
+    pub(crate) fn set_intent(
+        &self,
+        enabled: bool,
+        model: Option<String>,
+        revoke: impl FnOnce(),
+    ) -> Result<(), String> {
+        let _guard = self.lock_outbox()?;
         let old = self.bridge_load()?;
         if !enabled && old.is_none() {
+            revoke();
             return Ok(());
         }
         let selected = model
@@ -177,6 +208,7 @@ impl TraeBridge<'_> {
                 .is_none_or(|outbox| !outbox.enabled || outbox.replace_pending);
         self.bridge_save(&Outbox {
             enabled,
+            revision: Some(uuid::Uuid::new_v4().simple().to_string()),
             token: old.as_ref().map(|o| o.token.clone()).unwrap_or_else(|| {
                 format!(
                     "{}{}",
@@ -192,12 +224,17 @@ impl TraeBridge<'_> {
             replace_pending,
             model: selected.clone(),
         })?;
+        if !enabled {
+            revoke();
+        }
         self.manager
             .remember_model(self.edition.app(), selected.as_deref());
         Ok(())
     }
     pub(crate) fn bridge_retry(&self) -> Result<(), String> {
+        let _guard = self.lock_outbox()?;
         let mut outbox = self.bridge_load()?.ok_or(CONFLICT)?;
+        outbox.revision = Some(uuid::Uuid::new_v4().simple().to_string());
         outbox.delivered = false;
         outbox.configuration_changed = false;
         outbox.model_write_failed = false;
@@ -210,30 +247,13 @@ impl TraeBridge<'_> {
         menu: Option<&Menu>,
         origin: &str,
         suspend: bool,
-    ) -> Result<Option<Receipt>, String> {
-        let mut outbox = self.bridge_load()?;
-        if let Some(saved) = outbox.as_mut().filter(|saved| {
-            !suspend
-                && menu.is_some()
-                && saved.enabled
-                && saved.delivered
-                && !saved.selection_pending
-        }) {
-            if saved
-                .model
-                .as_deref()
-                .is_some_and(|model| self.client().selection_pending(ID, model) == Some(true))
-            {
-                saved.selection_pending = true;
-                self.bridge_save(saved)?;
-            }
-        }
-        let replace = outbox.is_some_and(|saved| saved.replace_pending);
-        self.bridge_sync_with(
+        publish: impl Fn(Option<&Receipt>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.deliver(
             menu,
             origin,
             suspend,
-            |provider| {
+            |provider, replace| {
                 let applied = if replace {
                     self.client().reapply(provider)
                 } else {
@@ -254,14 +274,16 @@ impl TraeBridge<'_> {
                     }
                 })
             },
-            || {
-                self.client().remove(ID).map_err(|_| FAILED)?;
-                self.client().restore().map_err(|_| FAILED.into())
-            },
+            || self.client().remove(ID).map_err(|_| FAILED.into()),
+            || self.client().restore().map_err(|_| FAILED.into()),
+            |model| self.client().selection_pending(ID, model) == Some(true),
             |model| self.client().select(ID, model).map_err(|_| FAILED.into()),
             |provider| self.client().matches(provider),
+            publish,
         )
+        .map(|_| ())
     }
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn bridge_sync_with(
         &self,
@@ -273,18 +295,60 @@ impl TraeBridge<'_> {
         select: impl FnOnce(&str) -> Result<(), String>,
         ready: impl FnOnce(&Provider) -> Option<bool>,
     ) -> Result<Option<Receipt>, String> {
-        let Some(mut outbox) = self.bridge_load()? else {
-            return Ok(None);
+        self.deliver(
+            menu,
+            origin,
+            suspend,
+            |provider, _| apply(provider),
+            remove,
+            || Ok(()),
+            |_| false,
+            select,
+            ready,
+            |_| Ok(()),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn deliver(
+        &self,
+        menu: Option<&Menu>,
+        origin: &str,
+        suspend: bool,
+        apply: impl FnOnce(&Provider, bool) -> Result<(), String>,
+        remove: impl FnOnce() -> Result<(), String>,
+        restore: impl FnOnce() -> Result<(), String>,
+        needs_selection: impl FnOnce(&str) -> bool,
+        select: impl FnOnce(&str) -> Result<(), String>,
+        ready: impl FnOnce(&Provider) -> Option<bool>,
+        publish: impl Fn(Option<&Receipt>) -> Result<(), String>,
+    ) -> Result<Option<Receipt>, String> {
+        let mut outbox = {
+            let _guard = self.lock_outbox()?;
+            match self.bridge_load() {
+                Ok(Some(outbox)) => outbox,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    publish(None)?;
+                    return Err(error);
+                }
+            }
         };
         let catalog = menu.map(models).unwrap_or_default();
         if !outbox.enabled || suspend || catalog.is_empty() {
             outbox.delivered = false;
             outbox.selection_pending = outbox.enabled && outbox.model.is_some();
-            self.bridge_save(&outbox)?;
+            self.commit(&outbox, || {
+                publish(None)?;
+                self.bridge_save(&outbox)
+            })?;
             remove()?;
-            if !outbox.enabled {
-                std::fs::remove_file(self.bridge_path()).map_err(|_| FAILED)?;
-            }
+            self.commit(&outbox, || {
+                restore()?;
+                if !outbox.enabled {
+                    std::fs::remove_file(self.bridge_path()).map_err(|_| FAILED)?;
+                }
+                Ok(())
+            })?;
             return Ok(None);
         }
         if outbox
@@ -294,7 +358,7 @@ impl TraeBridge<'_> {
         {
             outbox.model = Some(catalog[0].id.clone());
             outbox.selection_pending = true;
-            self.bridge_save(&outbox)?;
+            self.commit(&outbox, || self.bridge_save(&outbox))?;
         }
         // Keep an acknowledged ordering when only the starting model changes.
         let published_first = outbox
@@ -319,23 +383,47 @@ impl TraeBridge<'_> {
                 .provider
                 .as_ref()
                 .is_some_and(|old| old.settings_config == provider.settings_config);
+        let receipt = Receipt {
+            app: self.edition.app().into(),
+            token: outbox.token.clone(),
+            model: outbox
+                .model
+                .clone()
+                .unwrap_or_else(|| catalog[0].id.clone()),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        };
+        let previously_delivered = unchanged && !outbox.configuration_changed;
+        if previously_delivered {
+            self.commit(&outbox, || publish(Some(&receipt)))?;
+        }
+        let mut bridge_ready = true;
         if unchanged {
             match ready(&provider) {
                 Some(true) => {
                     if outbox.configuration_changed {
                         outbox.configuration_changed = false;
-                        self.bridge_save(&outbox)?;
+                        self.commit(&outbox, || self.bridge_save(&outbox))?;
                     }
                 }
                 Some(false) => {
-                    if !outbox.configuration_changed {
-                        outbox.configuration_changed = true;
-                        self.bridge_save(&outbox)?;
-                    }
+                    let changed = !outbox.configuration_changed;
+                    outbox.configuration_changed = true;
+                    self.commit(&outbox, || {
+                        publish(None)?;
+                        if changed {
+                            self.bridge_save(&outbox)?;
+                        }
+                        Ok(())
+                    })?;
                     return Err(CONFLICT.into());
                 }
                 // An offline bridge is not evidence of an externally changed configuration.
-                None => return Err(FAILED.into()),
+                None if outbox.configuration_changed => return Err(CONFLICT.into()),
+                None => bridge_ready = false,
             }
         } else {
             if outbox.configuration_changed {
@@ -343,42 +431,152 @@ impl TraeBridge<'_> {
             }
             outbox.provider = Some(provider.clone());
             outbox.delivered = false;
-            self.bridge_save(&outbox)?;
-            if let Err(error) = apply(&provider) {
+            self.commit(&outbox, || self.bridge_save(&outbox))?;
+            if let Err(error) = apply(&provider, outbox.replace_pending) {
                 outbox.model_write_failed = error == MODEL_REJECTED;
-                self.bridge_save(&outbox)?;
+                self.commit(&outbox, || self.bridge_save(&outbox))?;
                 return Err(error);
             }
             outbox.model_write_failed = false;
             outbox.replace_pending = false;
             // The catalog is usable even while the preferred model awaits acknowledgement.
             outbox.delivered = true;
-            self.bridge_save(&outbox)?;
+            self.commit(&outbox, || self.bridge_save(&outbox))?;
         }
-        if outbox.selection_pending
-            && outbox
+        // A verified catalog can route while native windows restore their selections.
+        if !previously_delivered {
+            self.commit(&outbox, || publish(Some(&receipt)))?;
+        }
+        if bridge_ready
+            && (outbox.selection_pending || outbox.model.as_deref().is_some_and(needs_selection))
+        {
+            outbox.selection_pending = true;
+            self.commit(&outbox, || self.bridge_save(&outbox))?;
+            if outbox
                 .model
                 .as_deref()
                 .is_none_or(|model| select(model).is_ok())
-        {
-            outbox.selection_pending = false;
-            self.bridge_save(&outbox)?;
+            {
+                outbox.selection_pending = false;
+                self.commit(&outbox, || self.bridge_save(&outbox))?;
+            }
         }
-        Ok(Some(Receipt {
-            app: self.edition.app().into(),
-            token: outbox.token,
-            model: outbox.model.unwrap_or_else(|| catalog[0].id.clone()),
-            model_map: Default::default(),
-            visible_models: None,
-            files: vec![],
-            suspended: false,
-            applied_at_ms: None,
-        }))
+        Ok(Some(receipt))
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{proxy::connections::Connections, services::trae_bridge::shared::Edition};
+
+    #[test]
+    fn published_trae_routes_survive_pending_selection_and_cannot_be_reinstalled_after_disconnect(
+    ) -> Result<(), String> {
+        let directory = tempfile::tempdir().map_err(|_| FAILED)?;
+        let owner = Manager {
+            root: directory.path().into(),
+        };
+        let menu = super::super::tests::fixture_menu();
+        let connections = Connections::default();
+        for edition in Edition::ALL {
+            let bridge = owner.bridge_for(edition);
+            let app = edition.app();
+            let origin = "http://127.0.0.1:8123";
+            let publish = |receipt: Option<&Receipt>| match receipt {
+                Some(receipt) => connections.install(receipt),
+                None => {
+                    connections.revoke(app);
+                    Ok(())
+                }
+            };
+            let disconnect = || bridge.set_intent(false, None, || connections.revoke(app));
+            bridge.bridge_select_model(true, menu.default_model.clone())?;
+            let stale = bridge.deliver(
+                Some(&menu),
+                origin,
+                false,
+                |_, _| {
+                    disconnect()?;
+                    Ok(())
+                },
+                || Ok(()),
+                || Ok(()),
+                |_| false,
+                |_| panic!("stale selection"),
+                |_| None,
+                publish,
+            );
+            assert!(stale.is_err());
+            assert!(!connections.active(app));
+            bridge.bridge_select_model(true, menu.default_model.clone())?;
+            bridge.deliver(
+                Some(&menu),
+                origin,
+                false,
+                |_, _| Ok(()),
+                || Ok(()),
+                || Ok(()),
+                |_| false,
+                |_| {
+                    assert!(connections.active(app));
+                    Err(FAILED.into())
+                },
+                |_| None,
+                publish,
+            )?;
+            assert!(connections.active(app));
+            assert!(bridge.bridge_status()?.recovery_pending);
+            connections.revoke(app); // The gateway has restarted.
+            bridge.deliver(
+                Some(&menu),
+                origin,
+                false,
+                |_, _| panic!("already published"),
+                || Ok(()),
+                || Ok(()),
+                |_| false,
+                |_| panic!("offline"),
+                |_| {
+                    assert!(connections.active(app));
+                    None
+                },
+                publish,
+            )?;
+            assert!(connections.active(app));
+            assert!(bridge
+                .deliver(
+                    Some(&menu),
+                    origin,
+                    false,
+                    |_, _| panic!("explicit repair required"),
+                    || Ok(()),
+                    || Ok(()),
+                    |_| false,
+                    |_| panic!("conflict"),
+                    |_| Some(false),
+                    publish
+                )
+                .is_err());
+            assert!(!connections.active(app));
+            assert!(bridge
+                .deliver(
+                    Some(&menu),
+                    origin,
+                    false,
+                    |_, _| panic!("explicit repair required"),
+                    || Ok(()),
+                    || Ok(()),
+                    |_| false,
+                    |_| panic!("conflict"),
+                    |_| None,
+                    publish
+                )
+                .is_err());
+            assert!(!connections.active(app));
+            disconnect()?;
+        }
+        Ok(())
+    }
     #[test]
     fn trae_first_catalog_prefers_the_saved_model_and_later_switches_only_select(
     ) -> Result<(), String> {
@@ -625,17 +823,18 @@ mod tests {
             |_| panic!("ordinary refresh must preserve the native selection"),
             |_| Some(true),
         )?;
-        assert!(manager
+        let offline = manager
             .bridge_sync_with(
                 Some(&menu),
                 "http://127.0.0.1:1",
                 false,
                 |_| panic!("an offline client must not trigger configuration replacement"),
                 || Ok(()),
-                |_| Ok(()),
+                |_| panic!("an offline client cannot acknowledge a selection"),
                 |_| None,
-            )
-            .is_err());
+            )?
+            .ok_or(FAILED)?;
+        assert_eq!(offline.token, receipt.token);
         assert!(manager.bridge_status()?.recovery_reason.is_none());
         assert!(manager
             .bridge_sync_with(

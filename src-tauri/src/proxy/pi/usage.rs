@@ -101,6 +101,7 @@ pub(crate) struct Job {
     pub latency_ms: u64,
     pub status: u16,
     pub streaming: bool,
+    pub error_message: Option<String>,
 }
 static SENDER: OnceLock<Mutex<Option<tokio::sync::mpsc::Sender<Job>>>> = OnceLock::new();
 pub(crate) fn emit(job: Job) {
@@ -130,6 +131,26 @@ pub(crate) fn emit(job: Job) {
                                 .clone()
                                 .unwrap_or_else(|| job.request_model.clone());
                             let id = job.request_id;
+                            if let Some(error_message) = job.error_message {
+                                if logger
+                                    .log_error_with_context(
+                                        id,
+                                        job.provider_id,
+                                        job.app_type.into(),
+                                        model,
+                                        job.status,
+                                        error_message,
+                                        job.latency_ms,
+                                        job.streaming,
+                                        job.session_id,
+                                        Some(job.app_type.into()),
+                                    )
+                                    .is_err()
+                                {
+                                    log::warn!("[Pi] stage=usage_write category=failed");
+                                }
+                                continue;
+                            }
                             let (multiplier, source) = futures::executor::block_on(
                                 logger.resolve_pricing_config(&job.provider_id, job.app_type),
                             );

@@ -168,6 +168,35 @@ it.each(["timeout", "matched", "no_match"])(
   },
 );
 
+it.each(["easy", "hard"] as const)(
+  "shows classification difficulty %s in the live stage footer and group header",
+  async (classificationResult) => {
+    vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+      requests: [
+        {
+          ...route,
+          classificationOutcome: "matched",
+          classificationResult,
+        },
+      ],
+      accounts: [],
+      capacity: 60,
+      running: true,
+      days: [],
+    });
+    show();
+    const stage = screen.getByRole("region", { name: "routingPage.stage" });
+    expect(
+      await within(stage).findByText(
+        `routingPage.state.completed · routingPage.classificationResult.${classificationResult}`,
+      ),
+    ).toBeVisible();
+    expect(stage.querySelector(".rt-sub .rt-cls-badge")).toHaveTextContent(
+      `routingPage.classificationBadge.${classificationResult}`,
+    );
+  },
+);
+
 it("requests a new group from the toolbar without scrolling the page", async () => {
   const originalScroll = Element.prototype.scrollIntoView;
   const scrollIntoView = vi.fn();

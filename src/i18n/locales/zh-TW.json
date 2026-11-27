@@ -4634,7 +4634,7 @@
     "failed": "閘道金鑰操作失敗",
     "nameExample": "例如：Desktop 測試、專案 A",
     "allModels": "允許全部模型",
-    "modelsHint": "對於綁定此金鑰的本機 Agent，勾選模型後可直接使用，也可透過包含它的路由群組使用。勾選路由群組後，群組內可用的成員模型皆可直接使用。請在「本機 agent」綁定此金鑰。",
+    "modelsHint": "勾選模型後可直接使用，也可透過包含它的路由群組使用；勾選路由群組後，群組內可用的成員模型皆可直接使用，也可透過包含這些成員的其他路由群組使用。本機 Agent 請在「本機 agent」綁定此金鑰。",
     "searchModels": "搜尋模型、供應商或路由群組",
     "catalogFailed": "載入模型目錄失敗。",
     "noModels": "目前沒有可用的共用模型或路由群組。",
@@ -4669,7 +4669,7 @@
     "noUsage": "尚未觀察到請求。請綁定已開啟本機路由的 agent，或使用閘道金鑰傳送請求。",
     "usageRow": "{{requests}} 次請求 · {{tokens}} Token · {{unmetered}} 次未回報用量",
     "lastUsed": "最近請求：{{time}}",
-    "connectHint": "外部客戶端要呼叫共用模型，請先將路由群組發佈到閘道，再為此金鑰授權該路由群組。已接管的客戶端可在「本機 agent」中綁定金鑰。",
+    "connectHint": "外部客戶端要呼叫共用模型，請先將路由群組發佈到閘道，再為此金鑰授權該路由群組（或包含其成員的模型/其他路由群組）。已接管的客戶端可在「本機 agent」中綁定金鑰。",
     "chooseKey": "選擇金鑰",
     "clientProtocol": "客戶端請求協定",
     "exampleHint": "將 YOUR_GATEWAY_KEY 替換為已儲存的金鑰，將 MODEL_ID 替換為允許的模型 ID。",
@@ -5553,6 +5553,17 @@
       "unavailable": "分類器無法使用",
       "timeout": "意圖判斷逾時",
       "no_user_text": "沒有可用於分類的使用者文字"
+    },
+    "classificationBadge": {
+      "easy": "簡單任務",
+      "hard": "複雜任務",
+      "matched": "已命中意圖",
+      "no_match": "未命中意圖",
+      "failed": "分類失敗"
+    },
+    "classificationResult": {
+      "easy": "已分類為簡單任務",
+      "hard": "已分類為複雜任務"
     },
     "templateSmart": "難題給強模型，簡單任務給便宜模型",
     "templateSmartHint": "壓縮和難題優先使用強模型，簡單任務優先使用低價模型。價格未知或相同時也會隨機預選模型，儲存前可以更換。",

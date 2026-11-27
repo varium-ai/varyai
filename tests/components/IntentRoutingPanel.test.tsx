@@ -3243,6 +3243,123 @@ describe("IntentRoutingPanel", () => {
     ]);
   });
 
+  it.each(["unchecking the previous provider", "clearing and reselecting"])(
+    "saves an unpublished custom group with one provider after %s",
+    async (operation) => {
+      const providers = [
+        {
+          id: "other",
+          name: "Other provider",
+          taskEligible: true,
+          classifierEligible: false,
+          models: [{ id: "other-model", name: "Other model" }],
+        },
+        {
+          id: "provider",
+          name: "Fixture provider",
+          taskEligible: true,
+          classifierEligible: false,
+          models: [
+            { id: "fixture-model", name: "Fixture model" },
+            { id: "another-model", name: "Another model" },
+          ],
+        },
+      ];
+      vi.mocked(intentRoutingApi.providers).mockResolvedValue(providers);
+      vi.mocked(intentRoutingApi.save).mockImplementationOnce(async (draft) => {
+        if (!draft.members.some(({ id }) => id === draft.defaultMemberId)) {
+          throw "intentRouting.invalid";
+        }
+        return { ...draft, revision: 1 };
+      });
+      mount();
+      await screen.findByText("Fixture group");
+      fireEvent.click(
+        screen.getByRole("button", { name: "intentRouting.create" }),
+      );
+      chooseCustom();
+      fireEvent.change(screen.getByLabelText("intentRouting.name"), {
+        target: { value: "Bug 3 verification" },
+      });
+      fireEvent.click(screen.getByText("intentRouting.advancedSettings"));
+      fireEvent.click(screen.getByText("modelPicker.groupSettings"));
+      fireEvent.click(
+        screen.getByRole("switch", { name: "intentRouting.publishGateway" }),
+      );
+      if (operation === "clearing and reselecting") {
+        fireEvent.click(
+          screen.getByRole("button", { name: "providerEditor.selectNone" }),
+        );
+        expect(
+          screen.getByRole("button", { name: "common.save" }),
+        ).toBeDisabled();
+        fireEvent.click(
+          screen.getByRole("checkbox", { name: "Fixture provider" }),
+        );
+      } else {
+        fireEvent.click(
+          screen.getByRole("checkbox", { name: "Other provider" }),
+        );
+      }
+      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+      await waitFor(() => expect(intentRoutingApi.save).toHaveBeenCalledOnce());
+      const saved = vi.mocked(intentRoutingApi.save).mock.calls[0][0];
+      expect(saved.enabled).toBe(false);
+      expect(saved.members.map(({ modelId }) => modelId)).toEqual([
+        "fixture-model",
+        "another-model",
+      ]);
+      expect(saved.defaultMemberId).toBe(saved.members[0].id);
+      expect(saved.fallbackMemberIds).toEqual([saved.members[1].id]);
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    },
+  );
+
+  it.each(["", "missing-member"])(
+    "fills an invalid default member %j from the first selected model on save",
+    async (defaultMemberId) => {
+      const draft = {
+        ...group,
+        defaultMemberId,
+        members: [
+          group.members[0],
+          {
+            id: "other-member",
+            providerId: "provider",
+            modelId: "other-model",
+          },
+        ],
+        fallbackMemberIds: ["other-member"],
+      };
+      vi.mocked(intentRoutingApi.list).mockResolvedValue({
+        groups: [draft],
+        autoCreate: false,
+        omittedGroups: 0,
+      });
+      vi.mocked(intentRoutingApi.save).mockImplementationOnce(
+        async (value) => ({
+          ...value,
+          revision: draft.revision + 1,
+        }),
+      );
+      mount();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "common.edit" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+      await waitFor(() =>
+        expect(intentRoutingApi.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            defaultMemberId: draft.members[0].id,
+            fallbackMemberIds: draft.fallbackMemberIds,
+          }),
+        ),
+      );
+    },
+  );
+
   it("folds providers independently without changing selection and supports bulk changes while folded", async () => {
     vi.mocked(intentRoutingApi.providers).mockResolvedValue([
       {

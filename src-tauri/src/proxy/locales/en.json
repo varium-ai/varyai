@@ -52,7 +52,7 @@
   "pi_upstream_redirect_rejected": "Upstream HTTP redirect was rejected for security reasons.",
   "pi_upstream_error": "Upstream provider returned an error (details withheld for security).",
   "invalid_gateway_key": "Invalid or revoked gateway credential.",
-  "model_not_allowed": "This model is not permitted by this gateway key.",
+  "model_not_allowed": "This gateway key does not allow this model. Select a model on the key's allowlist.",
   "gateway_operation_not_supported": "This operation is not supported by gateway budget policies.",
   "gateway_budget_exhausted": "Gateway token budget exhausted.",
   "gateway_policy_unavailable": "Gateway policy is temporarily unavailable.",

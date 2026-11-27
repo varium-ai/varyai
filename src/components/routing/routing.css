@@ -946,6 +946,61 @@
   transition: transform 0.2s;
 }
 
+.vary-routing .rt-cls-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--rt-line);
+  background: var(--rt-card);
+  color: var(--rt-fg-2);
+  font-size: 10.5px;
+  font-weight: 560;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.vary-routing .rt-cls-badge.easy {
+  border-color: color-mix(in srgb, var(--rt-green) 42%, var(--rt-line));
+  background: color-mix(in srgb, var(--rt-green) 11%, var(--rt-card));
+  color: var(--rt-green);
+}
+
+.vary-routing .rt-cls-badge.hard,
+.vary-routing .rt-cls-badge.matched {
+  border-color: color-mix(in srgb, var(--rt-accent) 42%, var(--rt-line));
+  background: color-mix(in srgb, var(--rt-accent) 11%, var(--rt-card));
+  color: var(--rt-accent);
+}
+
+.vary-routing .rt-cls-badge.failed {
+  border-color: color-mix(in srgb, var(--rt-red) 45%, var(--rt-line));
+  background: color-mix(in srgb, var(--rt-red) 11%, var(--rt-card));
+  color: var(--rt-red);
+}
+
+.vary-routing .rt-stage:not(.compact) .rt-accts li.rt-sub .rt-cls-badge {
+  margin-left: auto;
+}
+
+.vary-routing
+  .rt-stage:not(.compact)
+  .rt-accts
+  li.rt-sub
+  .rt-cls-badge
+  + .chev {
+  margin-left: 0;
+}
+
+.vary-routing .rt-accts b .rt-cls-badge {
+  margin-left: auto;
+}
+
+.vary-routing .rt-accts li.idle .rt-cls-badge {
+  margin-top: 5px;
+}
+
 .vary-routing .rt-stage:not(.compact) .rt-accts li.rt-sub.open .chev {
   transform: rotate(180deg);
 }

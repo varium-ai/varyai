@@ -14,6 +14,7 @@ import {
 } from "./useRoutingFlights";
 import { routingModelLabel } from "@/lib/routingModelLabel";
 import { routingPurpose } from "@/lib/routingPurposes";
+import { resolveRoutingClassification } from "./routingClassification";
 import { AccountMask } from "@/components/AccountLabel";
 import { Button } from "@/components/ui/button";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -123,6 +124,7 @@ export function RoutingPage({
   const maskLabel = t(
     masked ? "routingPage.showAccounts" : "routingPage.hideAccounts",
   );
+  const shownClassification = resolveRoutingClassification(shown);
   return (
     <AccountMask
       masked={masked}
@@ -216,8 +218,7 @@ export function RoutingPage({
           {shown && !multipleRoutes && (
             <p className="rt-cap" aria-live="polite">
               {t(`routingPage.state.${shown.state}`)}
-              {shown.classificationOutcome &&
-                ` · ${t(`routingPage.classificationOutcome.${shown.classificationOutcome}`)}`}
+              {shownClassification && ` · ${t(shownClassification.detailKey)}`}
             </p>
           )}
           <div className="rt-stats">

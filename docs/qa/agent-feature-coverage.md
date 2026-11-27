@@ -1,11 +1,68 @@
 # Agent feature coverage
 
+## November 27 Mina view, rows 5–12
+
+| Agent ID | Entry point and adapter | Runtime and UI coverage | Verification |
+| --- | --- | --- | --- |
+| `claude` | Claude Code CLI, managed Messages | Uses its own connection adapter. No check-in card. | Source scope review |
+| `claude-desktop` | Claude Desktop, managed Messages | Uses its own connection adapter. No check-in card. | Source scope review |
+| `codex` | Codex desktop and CLI, managed Responses | Uses the Codex configuration adapter. No check-in card. | Source scope review |
+| `gemini` | Gemini CLI, managed Gemini API | Uses its own connection adapter. No check-in card. | Source scope review |
+| `grokbuild` | Grok Build CLI, managed gateway | Uses its own connection adapter. No check-in card. | Source scope review |
+| `opencode` | OpenCode CLI, managed provider | Uses its own connection adapter. No check-in card. | Source scope review |
+| `openclaw` | OpenClaw gateway connection | Uses its own connection adapter. No check-in card. | Source scope review |
+| `hermes` | Hermes CLI, managed provider | Uses its own connection adapter. No check-in card. | Source scope review |
+| `pi` | Pi CLI, managed provider | Uses its own connection adapter. No check-in card. | Source scope review |
+| `workbuddy` | WorkBuddy China, native and authorized reward accounts | Separate calendar and preference commands. | Source scope review |
+| `workbuddy-ai` | WorkBuddy International, managed connection | Uses its own connection adapter. No check-in card. | Source scope review |
+| `qoder` | Qoder China, agent and tray panels, macOS native account and macOS/Windows browser accounts | Account-scoped auto preference and official daily confirmation | Account and mixed-campaign fixtures passed. Installed macOS and Windows pending. |
+| `doubaowork` | Doubao Work desktop, native reward accounts | Separate progress and preference commands. | Source scope review |
+| `trae` | TRAE China IDE and Agent, shared Chat catalog and CN reward bridge | Publish catalog, acknowledge the starting model, disconnect, authenticate, and save account preference | Bridge, loopback authentication and account fixtures passed. Installed macOS and Windows pending. |
+| `trae-intl` | TRAE International IDE and Agent, separate shared Chat catalog | Same connection lifecycle with separate edition credentials. No check-in card. | Bridge and connection lifecycle fixtures passed. Installed macOS and Windows pending. |
+| `kimi` | Kimi Code CLI, managed provider | Uses its own connection adapter. No check-in card. | Source scope review |
+| `qwen` | Qwen Code CLI, managed provider | Uses its own connection adapter. No check-in card. | Source scope review |
+| `zcode` | ZCode desktop, agent and tray reward panels | Shared account-scoped auto preference. Official claim flow uses its vendor adapter. | Account and reward helper fixtures passed. Installed macOS and Windows pending. |
+| `deepseek-harness` | DeepSeek Harness CLI and desktop | Uses its own connection adapter. No check-in card. | Source scope review |
+| `glm` | Historical data and proxy records | No managed connection or check-in card. | Source scope review |
+| `t3code` | T3 Code desktop | Uses its own connection adapter. No check-in card. | Source scope review |
+
+Rows 5 and 6 show Qoder CN. Saving preferences uses the account already
+identified in the panel. A confirmed daily campaign can mark the current
+calendar dot while a separate promotion is available. Rows 7 and 8 cover
+starting-model selection and complete catalog publication. The helper selects
+the starting model in ready windows and retries windows still loading. A
+58-model synthetic first connection verifies every model and reduces native
+refreshes from five to three. Rows 9 through 11 cover changing the model,
+disconnecting TRAE CN, and connecting TRAE. Row 11's title omits the edition.
+The connection action persists the choice before native synchronization in both
+editions. Row 12 shows HTTP 401
+`agent_connection_unavailable` in TRAE CN. A confirmed catalog can authenticate
+while the bridge is briefly unavailable, and an older delivery cannot
+reinstall a disconnected credential. Native connection timings and reproduction
+with the reported clients and accounts remain pending.
+
+Local verification used the working tree over `02109704` on macOS 26.6.2 arm64,
+Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. Renderer type checking, build,
+formatting, and all 5,039 unit tests passed. The 79 TRAE bridge tests, 15 reward
+helper tests, development helpers, and production dependency audit passed.
+Cargo check, strict Clippy, and Rust formatting passed. The library run passed
+7,956 tests, including the new TRAE and reward regressions, with 21 ignored and
+two gateway policy assertions failing. Those two also failed in isolation.
+The subsequent full Cargo command could not import `TargetIdentity` from a
+concurrent change in the gateway-policy test source. Running the integration
+targets separately passed all 167 tests. Installed-client and remote CI
+verification remain pending.
+
 ## Cross-Agent parity for all four routing templates
 
 All four routing group templates (`Smart`, `Capability`, `Speed`, and `Expiry`)
 share per-turn reselection after closed tool rounds, multimodal/unsigned-thinking
 projection for live classification, and cross-protocol `Compaction` rule
-execution across connected Agents and external gateway routes. Active tool
+execution across connected Agents and external gateway routes. Dispatched
+intent-classification requests share asynchronous usage accounting
+(`proxy_request_logs`), structured classification/skip/failure logging, and
+bounded difficulty (`easy` / `hard`) + failure indicators on the live routing
+stage across all supported Agents. Active tool
 continuations and opaque/signed provider state remain pinned to their observed
 upstream owner, and unknown tool-call continuations fail closed.
 
@@ -353,6 +410,24 @@ suite, and `pnpm audit --prod`. Rust formatting, `cargo check`, Clippy with
 `-D warnings`, `cargo test --lib` (7,925 passed, 21 ignored), and
 `cargo test --no-fail-fast` (8,092 passed, 21 ignored) passed against the
 `src-tauri` manifest. Native desktop acceptance remains pending.
+
+## Custom routing group default member
+
+This check applies to the shared VaryAI group editor on macOS and Windows.
+The Agent entry points and protocol adapters are listed in the routing-template
+and model-picker matrices. The editor submits the same group definition through
+one save command for every consumer. Routing, publication, and Agent picker
+state are downstream of that save. Doubao Work and the historical GLM identity
+have no routing-group picker.
+
+On macOS, the reported draft showed six checked models and an empty default
+member. In the isolated renderer, clearing all selections and rechecking one
+supplier reproduced the validation error with gateway publication disabled.
+The regression checks automatic selection, fallback order, unpublished saves,
+and recovery from empty or obsolete default IDs. All four template editors
+passed their focused create and edit checks. Wide and narrow isolated dialogs
+were checked for aligned labels and accessible group settings. Windows native
+UI verification is pending.
 
 ## Routing-group visibility in Agent model pickers
 
@@ -3773,6 +3848,79 @@ either EOF or close. The focused regression records the upstream model and
 token counts, preserves the terminal status when observed, and covers
 partial and unavailable usage. The regression was added for later manual
 verification and was not run.
+
+## Model-level gateway key expansion across all Agents and external gateway routes
+
+The first four rows of the filtered November 27 browser view cover overlapping
+Expiry and Smart groups, upstream quota failover within the key's scope,
+custom group saving, and direct model selection with a group allowlist. The
+per-Agent inventory below records normal entry points and verification. All
+managed rows use the shared route catalog and group editor on macOS and
+Windows. The editor must offer models that pass the saved-group validator.
+For a bound Agent, a direct model listed in an allowed group uses the same
+permission as the group's routed attempt. The gateway reports a denied direct
+model with `403 model_not_allowed` and guidance to choose a permitted model.
+How each native client surfaces that response still requires native acceptance.
+
+| Agent | Entry point for the reported policy or catalog | Verification |
+| --- | --- | --- |
+| `claude` | Claude Code Messages and managed reasoning | Shared allowlist and gateway regressions. Native pending. |
+| `claude-desktop` | Claude Desktop Messages and native model IDs | Shared allowlist regressions and Desktop alias fixtures. Native pending. |
+| `codex` | CLI and desktop native, menu and temporary Responses | Shared allowlist and Codex request fixtures. Native pending. |
+| `gemini` | Gemini CLI native model URL and managed Responses | Shared allowlist and Gemini URL fixtures. Native pending. |
+| `grokbuild` | Grok Build native Responses and managed connection | Shared allowlist and Grok routing fixtures. Native pending. |
+| `opencode` | OpenCode managed Chat and Responses | Shared allowlist fixtures. Native pending. |
+| `openclaw` | OpenClaw managed or external gateway | Shared external allowlist fixtures. Native pending. |
+| `hermes` | Hermes managed Chat, Messages and Responses | Shared allowlist fixtures. Native pending. |
+| `pi` | Pi managed and provider-scoped routes | Shared allowlist and Pi route fixtures. Native pending. |
+| `workbuddy` | WorkBuddy China shared and native Chat | Shared allowlist and native adapter fixtures. Native pending. |
+| `workbuddy-ai` | WorkBuddy International shared and native Chat | Separate client adapters with shared allowlist fixtures. Native pending. |
+| `qoder` | Qoder China managed and native model path | Shared allowlist and native adapter fixtures. Native pending. |
+| `doubaowork` | Doubao Work native audit and provider catalog | Audit-only traffic retains its existing adapter and the shared catalog uses the same save validation. |
+| `trae` | TRAE China managed Chat and Responses | Shared allowlist fixtures. Native pending. |
+| `trae-intl` | TRAE International managed Chat and Responses | Separate client credentials with shared allowlist fixtures. Native pending. |
+| `kimi` | Kimi Code managed connection | Shared allowlist fixtures. Native pending. |
+| `qwen` | Qwen Code managed connection | Shared allowlist fixtures. Native pending. |
+| `zcode` | ZCode managed connection | Shared allowlist fixtures. Native pending. |
+| `deepseek-harness` | DeepSeek Harness CLI/desktop managed connection | Shared allowlist and direct model fixtures. Native pending. |
+| `glm` | Historical route identity with no managed connection | Source assessment. |
+| `t3code` | T3 Code managed Responses | Shared allowlist fixtures. Native pending. |
+
+Gateway keys treat individual `(provider_id, model_id)` pairs as the atomic
+permission unit across local bound Agents, Codex menu/native/temporary
+sessions, side requests, and external `/gateway` endpoints on macOS and Windows.
+Selecting a published routing group (such as an Expiry group) authorizes all of
+its available member models and permits calling any other published group (such
+as a Smart hard/easy group) that shares at least one member model, while
+filtering initial attempts, fallbacks, and classifiers strictly to authorized
+members. Unpublished groups remain rejected with `404 routing_model_unavailable`
+on `/gateway`, and disjoint groups fail closed with `403 model_not_allowed`
+alongside rejection logs containing the Agent, code and selection category.
+An upstream HTTP 402 advances to the next authorized group member when the
+request permits a retry. An exhausted gateway-key budget returns
+`402 gateway_budget_exhausted` before an upstream attempt. Temporary Codex
+drafts receive permissions from explicit models and the published catalog.
+The picker regression builds and validates a three-member group from a
+provider containing both real models and imported route aliases.
+
+| Entry / Agent | Path & adapter | Policy behavior verified | Verification |
+| --- | --- | --- | --- |
+| External `/gateway` | `/gateway/v1/models`, `/gateway/v1beta/models`, `/gateway/v1/{messages,responses,chat/completions}`, `/gateway/v1beta/models/*` | Expands group/member allowlists, enforces `GroupMemberPolicy` per target/classifier, keeps unpublished groups as 404 | Loopback regression (`agent_bound_model_allowlist_supports_groups_and_direct_members`, `gateway_key_expiry_group_permits_overlapping_smart_group_across_all_ingresses`) |
+| `codex` | `/intent/v1/responses(/compact)`, `/backend-api/codex/responses(/compact)`, temporary session token | Refreshes stale menu/native projection before policy check, resolves side requests (`side_session_alias`), enforces member allowlists on temporary sessions | Loopback regressions (`codex_enforce_agent_refreshes_stale_menu_before_policy_check`, `gateway_key_side_requests_authorize_active_session_group`, `gateway_key_expiry_group_permits_overlapping_smart_group_across_all_ingresses`) |
+| Managed Agents (`claude`, `claude-desktop`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `deepseek-harness`, `t3code`) | `/connections/{app}/...`, `/agents/{app}/...`, `/upstream/{app}/...`, Qoder official adapter | Expands member permissions across overlapping groups, resolves side requests to active session group, reroutes portable pinned continuations when permitted while failing opaque continuations closed | Loopback regressions (`agent_bound_model_allowlist_supports_groups_and_direct_members`, `gateway_key_side_requests_authorize_active_session_group`, `gateway_key_portable_pinned_continuation_reroutes_while_opaque_fails_closed`) |
+
+The November 27 working tree over `02109704` was checked on macOS 26.6.2
+arm64 with Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3. The Rust gateway
+filter passed 81 tests with three native tests ignored. The Agent-bound
+upstream 402 and routing-picker save regressions also passed independently.
+The full `cargo test --no-fail-fast` run passed 8,130 tests with 21 ignored
+across the library and integration targets.
+`cargo check`, strict Clippy, Rust and renderer formatting, `git diff --check`,
+renderer type checking and build, 5,039 renderer unit tests, the development
+helper suites in the verification contract, and the production dependency audit
+passed. The Rust test build used package-level debug information disabled and
+incremental compilation disabled for `varyai` after exhausting disk space.
+Installed-client acceptance on macOS and Windows and remote CI are pending.
 
 ## Dynamic system proxy switching and dead loopback fallback
 
