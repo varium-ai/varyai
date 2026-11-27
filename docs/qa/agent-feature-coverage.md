@@ -1,5 +1,51 @@
 # Agent feature coverage
 
+## Check-in confirmation and inactive activity labels
+
+The main and tray reward panels display a muted, expandable pill when the
+displayed account's service response reports no activity. For daily check-ins,
+the last cell reflects the confirmed current day or reward window. ZCode uses
+that cell for the current gift offer. The renderer consumes the existing
+account-scoped responses on macOS and Windows.
+
+| Agent ID | Entry point and adapter | Runtime and UI coverage | Verification plan |
+| --- | --- | --- | --- |
+| `claude` | Claude Code CLI | Daily check-in unavailable | Inventory review |
+| `claude-desktop` | Claude Desktop | Daily check-in unavailable | Inventory review |
+| `codex` | Codex CLI and desktop | Daily check-in unavailable | Inventory review |
+| `gemini` | Gemini CLI | Daily check-in unavailable | Inventory review |
+| `grokbuild` | Grok Build CLI | Daily check-in unavailable | Inventory review |
+| `opencode` | OpenCode CLI | Daily check-in unavailable | Inventory review |
+| `openclaw` | OpenClaw gateway | Daily check-in unavailable | Inventory review |
+| `hermes` | Hermes CLI | Daily check-in unavailable | Inventory review |
+| `pi` | Pi CLI | Daily check-in unavailable | Inventory review |
+| `workbuddy` | WorkBuddy China, native and browser check-in | Official history plus the current day's confirmation; inactive pill follows selected account | Calendar and account selection regressions |
+| `workbuddy-ai` | WorkBuddy International desktop | Daily check-in unavailable | Inventory review |
+| `qoder` | Qoder CN, native macOS and browser macOS/Windows rewards | Calendar uses the 10:00 UTC+8 window; muted pill when the active account has no offer | Calendar and main/tray renderer regressions |
+| `doubaowork` | Doubao Work, native campaign adapter | The rightmost step marks a confirmed day with or without a streak; inactive pill follows selected account | Progress, account selection and panel regressions |
+| `trae` | TRAE China IDE and Agent, native daily Credits bridge | Calendar marks the confirmed current UTC+8 day; muted pill for inactive rewards | Renderer and bridge regressions, plus installed macOS and Windows review |
+| `trae-intl` | TRAE International IDE and Agent, independent connection bridge | Daily check-in unavailable | Inventory review |
+| `kimi` | Kimi Code CLI | Daily check-in unavailable | Inventory review |
+| `qwen` | Qwen Code CLI | Daily check-in unavailable | Inventory review |
+| `zcode` | ZCode desktop, native gift-plan adapter | The last step marks a confirmed current offer; inactive pill remains expandable | Campaign and main/tray renderer regressions |
+| `deepseek-harness` | DeepSeek Harness CLI and desktop | Daily check-in unavailable | Inventory review |
+| `glm` | Legacy proxy and usage records | Daily check-in unavailable | Inventory review |
+| `t3code` | T3 Code desktop | Daily check-in unavailable | Inventory review |
+
+Verified the working tree over `4d25a673` on macOS 26.6.2 arm64 with Node
+20.20.2, pnpm 10.12.3, and Rust 1.98.1. The renderer build, type checking,
+formatting, 5,060 renderer tests, helper suites, and production dependency
+audit passed. Cargo check, formatting, strict Clippy, and the full Cargo test
+command passed with the CI debug-information settings. The renderer
+regressions cover all five reward panels, compact and full activity controls,
+account selection, missing history, and expired TRAE CN confirmations.
+
+In the running macOS development app, TRAE CN and WorkBuddy China showed the
+current date as complete alongside a confirmed reward. Qoder CN and ZCode
+displayed the inactive pill, and Qoder CN's expanded switch showed its saved
+automatic preference. Installed Windows, live Doubao Work reward confirmation,
+and native tray acceptance remain pending.
+
 ## November 27 Mina view, rows 5–12
 
 | Agent ID | Entry point and adapter | Runtime and UI coverage | Verification |

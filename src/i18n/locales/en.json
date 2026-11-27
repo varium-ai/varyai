@@ -6240,7 +6240,7 @@
   },
   "agentRewards": {
     "currentWindow": "Current window",
-    "qoderConfirmed": "Confirmed in the last 7 days",
+    "confirmedLastSevenDays": "Confirmed in the last 7 days",
     "qoderCalendarHint": "Dates identify daily reward windows starting at 10:00 (UTC+8). Only service-confirmed windows saved for this account are marked; other dates are unknown, not missed check-ins.",
     "noActivity": "No active campaign",
     "nativeAccountManagement": "Only the current official client account is available here. Add or switch accounts in the official client, then refresh. Adding separate accounts in VaryAI is not supported yet.",

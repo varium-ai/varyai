@@ -6159,7 +6159,7 @@
   },
   "agentRewards": {
     "currentWindow": "本輪",
-    "qoderConfirmed": "最近 7 天已確認",
+    "confirmedLastSevenDays": "最近 7 天已確認",
     "qoderCalendarHint": "日期依北京時間每天 10:00 開始的領取週期標示。僅標記此帳號已由服務確認並儲存在本機的領取紀錄；其餘日期為未知，不代表未簽到。",
     "noActivity": "暫無活動",
     "nativeAccountManagement": "此處僅顯示官方用戶端的目前帳號。請在官方用戶端新增或切換帳號，再回來重新整理。暫不支援在 VaryAI 內獨立新增多個帳號。",

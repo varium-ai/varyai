@@ -6,7 +6,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AgentRewardsPanel } from "@/components/AgentRewardsPanel";
 import {
   agentRewardsApi,
@@ -66,6 +66,7 @@ beforeEach(() => {
     autoEnabled: true,
   });
 });
+afterEach(() => vi.useRealTimers());
 it("keeps the saved completion visible alongside a disconnected client warning", async () => {
   vi.mocked(agentRewardsApi.status).mockResolvedValue({
     ...initial,
@@ -323,11 +324,18 @@ it.each(
     );
     if (app !== "qoder")
       expect(screen.getByText("dailyCheckin.noData")).toBeVisible();
+    const days = screen.getAllByRole("listitem");
     expect(
-      screen
-        .getAllByRole("listitem")
-        .every((day) => day.dataset.state === "unknown"),
+      days.slice(0, 6).every((day) => day.dataset.state === "unknown"),
     ).toBe(true);
+    expect(days[6]).toHaveAttribute(
+      "data-state",
+      app === "zcode" ? "complete" : "unknown",
+    );
+    if (app === "zcode") {
+      expect(days[6]).toHaveTextContent("agentRewards.currentWindow");
+      expect(days[6]).not.toHaveAttribute("data-date");
+    }
     fireEvent.click(completed);
     expect(agentRewardsApi.claim).not.toHaveBeenCalled();
     vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, app });
@@ -342,6 +350,90 @@ it.each(
     expect(agentRewardsApi.claim).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  { outcome: "already_checked", window: "current", complete: true },
+  { outcome: "connection_required", window: "current", complete: true },
+  { outcome: "not_checked", window: "current", complete: false },
+  { outcome: "already_checked", window: "expired", complete: false },
+  { outcome: "already_checked", window: "missing", complete: false },
+  { outcome: "already_checked", window: "future", complete: false },
+] as const)(
+  "shows only the current TRAE CN date for $outcome with a $window window",
+  async ({ outcome, window, complete }) => {
+    vi.setSystemTime(new Date("2026-11-26T17:00:00Z"));
+    const nextCheckAt = {
+      current: Date.UTC(2026, 10, 27, 16),
+      expired: Date.UTC(2026, 10, 26, 16),
+      missing: null,
+      future: Date.UTC(2026, 10, 28, 16),
+    }[window];
+    const saved = outcome === "connection_required";
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({
+      ...initial,
+      app: "trae",
+      accountId: saved ? null : initial.accountId,
+      outcome,
+      savedOutcome: saved ? "claimed" : null,
+      checkedAt: Date.UTC(2026, 10, 26, 17),
+      nextCheckAt,
+    });
+    mount("trae");
+    await screen.findByText(
+      `agentRewards.outcomes.${saved ? "claimed" : outcome}`,
+    );
+    const days = screen.getAllByRole("listitem");
+    expect(
+      days.slice(0, 6).every((day) => day.dataset.state === "unknown"),
+    ).toBe(true);
+    expect(days[6]).toHaveAttribute("aria-current", "date");
+    expect(days[6]).toHaveAttribute("data-date", "2026-11-27");
+    expect(days[6]).toHaveAttribute(
+      "data-state",
+      complete ? "complete" : "unknown",
+    );
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  },
+);
+
+it("marks the TRAE CN date on claim and clears it when the active account changes", async () => {
+  vi.setSystemTime(new Date("2026-11-26T17:00:00Z"));
+  const status: AgentRewardStatus = {
+    ...initial,
+    app: "trae",
+    nextCheckAt: Date.UTC(2026, 10, 27, 16),
+  };
+  vi.mocked(agentRewardsApi.status).mockResolvedValue(status);
+  vi.mocked(agentRewardsApi.claim).mockResolvedValue({
+    ...status,
+    outcome: "claimed",
+  });
+  mount("trae");
+  const claim = await screen.findByRole("button", {
+    name: "agentRewards.claim",
+  });
+  await waitFor(() => expect(claim).toBeEnabled());
+  fireEvent.click(claim);
+  await waitFor(() =>
+    expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+      "data-state",
+      "complete",
+    ),
+  );
+  expect(agentRewardsApi.status).toHaveBeenCalledOnce();
+
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...status,
+    accountId: "b".repeat(64),
+  });
+  fireEvent.click(screen.getByRole("button", { name: "agentRewards.refresh" }));
+  await waitFor(() =>
+    expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+      "data-state",
+      "unknown",
+    ),
+  );
+});
 
 it.each(["zcode", "trae"] as const)(
   "shows the current %s account picker and explains native account management",

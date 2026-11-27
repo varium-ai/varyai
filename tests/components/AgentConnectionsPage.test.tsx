@@ -1807,6 +1807,117 @@ describe("Agent connections", () => {
   );
 
   it.each(
+    (["qoder", "trae", "workbuddy", "doubaowork"] as const).flatMap((app) =>
+      [false, true].map((compact) => ({ app, compact })),
+    ),
+  )(
+    "shows the shared inactive check-in pill for $app (compact=$compact)",
+    async ({ app, compact }) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      const inactive = {
+        autoEnabled: true,
+        day: "2026-11-27",
+        outcome: "inactive" as const,
+        credit: null,
+        checkedAt: null,
+        streak: null,
+        creditDelayed: false,
+      };
+      const available = { ...inactive, outcome: "not_checked" as const };
+      if (app === "workbuddy") {
+        vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+          nativeStatus: inactive,
+          accounts: [
+            { id: "first", label: "First", source: "native", status: inactive },
+            {
+              id: "second",
+              label: "Second",
+              source: "browser",
+              status: available,
+            },
+          ],
+        });
+      } else if (app === "doubaowork") {
+        vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+          connected: true,
+          day: inactive.day,
+          outcome: inactive.outcome,
+          accounts: [
+            {
+              ...inactive,
+              id: "first",
+              label: "First",
+              current: true,
+              totalDays: null,
+            },
+            {
+              ...available,
+              id: "second",
+              label: "Second",
+              current: false,
+              totalDays: null,
+            },
+          ],
+        });
+      } else {
+        vi.mocked(agentRewardsApi.status).mockResolvedValue({
+          ...inactive,
+          app,
+          accountId: "first",
+          label: "First",
+          nextCheckAt: null,
+        });
+      }
+      mount(compact);
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      if (compact) {
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: `agentConnections.details apps.${app}`,
+          }),
+        );
+      }
+      const trigger = await within(row).findByRole("button", {
+        name: `agentRewards.noActivity apps.${app}`,
+      });
+      expect(trigger).toHaveTextContent(
+        "dailyCheckin.title · agentRewards.noActivity",
+      );
+      expect(trigger).toHaveAttribute("data-inactive", "true");
+      expect(trigger).toHaveAttribute("data-complete", "false");
+      expect(trigger).toBeEnabled();
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      const prefix =
+        app === "workbuddy"
+          ? "workbuddy.checkin"
+          : app === "doubaowork"
+            ? "doubaowork.checkin"
+            : "agentRewards";
+      expect(
+        within(row).getByText(`${prefix}.outcomes.inactive`),
+      ).toBeVisible();
+      const action = prefix === "agentRewards" ? "claim" : "checkNow";
+      expect(
+        within(row).getByRole("button", { name: `${prefix}.${action}` }),
+      ).toBeDisabled();
+      if (app === "workbuddy" || app === "doubaowork") {
+        const select = within(row).getByRole("combobox", {
+          name: `${prefix}.account`,
+        });
+        selectAppOption(select, "second");
+        expect(trigger).toHaveAttribute("data-inactive", "false");
+        expect(trigger).toHaveTextContent("agentRewards.autoLabel");
+        selectAppOption(select, "first");
+        expect(trigger).toHaveAttribute("data-inactive", "true");
+        expect(trigger).toHaveTextContent("agentRewards.noActivity");
+      }
+    },
+  );
+
+  it.each(
     [false, true].flatMap((compact) =>
       [false, true].map((autoEnabled) => ({ compact, autoEnabled })),
     ),
