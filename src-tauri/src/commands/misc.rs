@@ -1663,6 +1663,17 @@ fn extend_windows_cli_manager_search_paths(paths: &mut Vec<std::path::PathBuf>, 
 
     if !home.as_os_str().is_empty() {
         push_unique_path(paths, home.join("scoop").join("shims"));
+        push_unique_path(paths, home.join(".bun").join("bin"));
+    }
+    push_env_child_dir(paths, std::env::var_os("BUN_INSTALL"), "bin");
+    if let Some(fnm_dir) = std::env::var_os("FNM_DIR") {
+        let fnm_dir = std::path::PathBuf::from(fnm_dir);
+        push_unique_path(paths, fnm_dir.join("aliases").join("default"));
+        extend_existing_child_search_paths(
+            paths,
+            &fnm_dir.join("node-versions"),
+            Some("installation"),
+        );
     }
 
     if let Some(local_data) = dirs::data_local_dir() {
@@ -1741,20 +1752,32 @@ fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<std::path::PathBuf>
 }
 
 fn extend_mise_node_search_paths(paths: &mut Vec<std::path::PathBuf>, home: &Path) {
-    if home.as_os_str().is_empty() {
-        return;
+    let mut bases = Vec::new();
+    if let Some(mise_data_dir) = std::env::var_os("MISE_DATA_DIR").filter(|v| !v.is_empty()) {
+        bases.push(std::path::PathBuf::from(mise_data_dir));
+    }
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+        bases.push(std::path::PathBuf::from(xdg_data_home).join("mise"));
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(local_data) = dirs::data_local_dir() {
+        bases.push(local_data.join("mise"));
+    }
+    if !home.as_os_str().is_empty() {
+        bases.push(home.join(".local/share/mise"));
     }
 
-    let mise_base = home.join(".local/share/mise");
-    push_unique_path(paths, mise_base.join("shims"));
+    for mise_base in bases {
+        push_unique_path(paths, mise_base.join("shims"));
 
-    let node_installs = mise_base.join("installs").join("node");
-    if node_installs.exists() {
-        if let Ok(entries) = std::fs::read_dir(&node_installs) {
-            for entry in entries.flatten() {
-                let bin_path = entry.path().join("bin");
-                if bin_path.exists() {
-                    push_unique_path(paths, bin_path);
+        let node_installs = mise_base.join("installs").join("node");
+        if node_installs.exists() {
+            if let Ok(entries) = std::fs::read_dir(&node_installs) {
+                for entry in entries.flatten() {
+                    let bin_path = entry.path().join("bin");
+                    if bin_path.exists() {
+                        push_unique_path(paths, bin_path);
+                    }
                 }
             }
         }
@@ -1806,8 +1829,97 @@ fn effective_path_os() -> Option<std::ffi::OsString> {
 }
 
 #[cfg(not(target_os = "windows"))]
+fn parse_login_shell_path_output(output: &[u8]) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    const PREFIX: &[u8] = b"__VARY_PATH__=";
+    for line in output.split(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(rest) = line.strip_prefix(PREFIX) {
+            if !rest.is_empty() {
+                return Some(std::ffi::OsString::from_vec(rest.to_vec()));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn merge_unix_path_lists(
+    primary: Option<&std::ffi::OsStr>,
+    fallback: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    let mut merged = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in [primary, fallback].into_iter().flatten() {
+        for dir in std::env::split_paths(raw) {
+            if !dir.as_os_str().is_empty() && seen.insert(dir.clone()) {
+                merged.push(dir);
+            }
+        }
+    }
+    if merged.is_empty() {
+        None
+    } else {
+        std::env::join_paths(merged).ok()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn probe_login_shell_path() -> Option<std::ffi::OsString> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let shell = std::env::var_os("SHELL")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::ffi::OsString::from(if cfg!(target_os = "macos") {
+                "/bin/zsh"
+            } else {
+                "/bin/sh"
+            })
+        });
+    let mut child = Command::new(shell)
+        .args(["-lic", "printf '__VARY_PATH__=%s\\n' \"$PATH\""])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut buf = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut buf);
+    }
+    parse_login_shell_path_output(&buf)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cached_login_shell_path() -> Option<&'static std::ffi::OsString> {
+    if cfg!(test) {
+        return None;
+    }
+    static LOGIN_PATH: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    LOGIN_PATH.get_or_init(probe_login_shell_path).as_ref()
+}
+
+#[cfg(not(target_os = "windows"))]
 fn effective_path_os() -> Option<std::ffi::OsString> {
-    std::env::var_os("PATH")
+    let process = std::env::var_os("PATH");
+    let login = cached_login_shell_path().map(std::ffi::OsString::as_os_str);
+    merge_unix_path_lists(process.as_deref(), login)
 }
 
 /// Prepend a candidate directory without converting the existing PATH to
@@ -1912,7 +2024,35 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
         push_unique_path(&mut search_paths, home.join(".npm-global/bin"));
         push_unique_path(&mut search_paths, home.join("n/bin"));
         push_unique_path(&mut search_paths, home.join(".volta/bin"));
+        push_unique_path(&mut search_paths, home.join(".bun/bin"));
+        push_unique_path(&mut search_paths, home.join(".asdf/shims"));
+        push_unique_path(&mut search_paths, home.join(".cargo/bin"));
         extend_mise_node_search_paths(&mut search_paths, &home);
+    }
+    push_env_child_dir(&mut search_paths, std::env::var_os("BUN_INSTALL"), "bin");
+    push_env_child_dir(
+        &mut search_paths,
+        std::env::var_os("ASDF_DATA_DIR"),
+        "shims",
+    );
+    if let Some(nvm_dir) = std::env::var_os("NVM_DIR").filter(|v| !v.is_empty()) {
+        let nvm_nodes = std::path::PathBuf::from(nvm_dir).join("versions/node");
+        extend_existing_child_search_paths(&mut search_paths, &nvm_nodes, Some("bin"));
+    }
+    if let Some(fnm_dir) = std::env::var_os("FNM_DIR").filter(|v| !v.is_empty()) {
+        let fnm_dir = std::path::PathBuf::from(fnm_dir);
+        push_unique_path(&mut search_paths, fnm_dir.join("aliases/default/bin"));
+        let versions = fnm_dir.join("node-versions");
+        if versions.exists() {
+            if let Ok(entries) = std::fs::read_dir(&versions) {
+                for entry in entries.flatten() {
+                    let bin_path = entry.path().join("installation/bin");
+                    if bin_path.exists() {
+                        push_unique_path(&mut search_paths, bin_path);
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -3889,6 +4029,78 @@ pub(crate) fn find_agent_desktop_bundle(app: &str) -> Option<PathBuf> {
     desktop_apps::find(app)
 }
 
+fn cli_config_installed_in(app: &str, home: &Path) -> bool {
+    let env_dir = |var: &str| {
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let candidates: Vec<PathBuf> = match app {
+        "claude" => {
+            let mut paths = vec![
+                home.join(".claude/settings.json"),
+                home.join(".claude.json"),
+            ];
+            if let Some(dir) = env_dir("CLAUDE_CONFIG_DIR") {
+                paths.insert(0, dir.join("settings.json"));
+            }
+            paths
+        }
+        "codex" => {
+            let mut paths = vec![
+                home.join(".codex/config.toml"),
+                home.join(".codex/auth.json"),
+            ];
+            if let Some(dir) = env_dir("CODEX_HOME") {
+                paths.insert(0, dir.join("auth.json"));
+                paths.insert(0, dir.join("config.toml"));
+            }
+            paths
+        }
+        "gemini" => vec![
+            home.join(".gemini/settings.json"),
+            home.join(".gemini/.env"),
+        ],
+        "opencode" => {
+            let mut paths = vec![
+                home.join(".config/opencode/opencode.json"),
+                home.join(".config/opencode/opencode.jsonc"),
+            ];
+            if let Some(dir) = env_dir("OPENCODE_CONFIG_DIR") {
+                paths.insert(0, dir.join("opencode.jsonc"));
+                paths.insert(0, dir.join("opencode.json"));
+            }
+            paths
+        }
+        "pi" => {
+            let mut paths = vec![home.join(".pi/agent/settings.json")];
+            if let Some(dir) = env_dir("PI_CODING_AGENT_DIR") {
+                paths.insert(0, dir.join("settings.json"));
+            }
+            paths
+        }
+        "openclaw" => vec![home.join(".openclaw/openclaw.json")],
+        "hermes" => {
+            let mut paths = vec![home.join(".hermes/config.yaml")];
+            if let Some(dir) = env_dir("HERMES_HOME") {
+                paths.insert(0, dir.join("config.yaml"));
+            }
+            paths
+        }
+        "kimi" => vec![home.join(".kimi/config.toml")],
+        "qwen" => vec![home.join(".qwen/settings.json")],
+        "grokbuild" => {
+            let mut paths = vec![home.join(".grok/config.toml")];
+            if let Some(dir) = env_dir("GROK_HOME") {
+                paths.insert(0, dir.join("config.toml"));
+            }
+            paths
+        }
+        _ => return false,
+    };
+    candidates.into_iter().any(|path| path.is_file())
+}
+
 pub(crate) fn is_agent_installed(app: &str) -> bool {
     #[cfg(target_os = "windows")]
     if desktop_apps::windows::supported(app)
@@ -3902,6 +4114,7 @@ pub(crate) fn is_agent_installed(app: &str) -> bool {
     };
     desktop_apps::find(app).is_some()
         || agent_installed_in(app, &[], &build_tool_search_paths(tool))
+        || dirs::home_dir().is_some_and(|home| cli_config_installed_in(app, &home))
 }
 
 /// Presence-only checks: do not run clients, create configs, or prompt for certificates.
@@ -3910,6 +4123,8 @@ pub async fn get_agent_installations() -> Result<HashMap<String, bool>, String> 
     tokio::task::spawn_blocking(|| {
         #[cfg(target_os = "windows")]
         let snapshot = desktop_apps::windows::snapshot();
+        #[cfg(target_os = "windows")]
+        let home = dirs::home_dir();
         AppType::all()
             .map(|app| {
                 let id = app.as_str();
@@ -3919,7 +4134,10 @@ pub async fn get_agent_installations() -> Result<HashMap<String, bool>, String> 
                         id,
                         &[],
                         &build_tool_search_paths(if id == "grokbuild" { "grok" } else { id }),
-                    );
+                    )
+                    || home
+                        .as_deref()
+                        .is_some_and(|h| cli_config_installed_in(id, h));
                 #[cfg(not(target_os = "windows"))]
                 let installed = is_agent_installed(id);
                 (id.to_string(), installed)
@@ -4014,6 +4232,42 @@ mod agent_installation_tests {
         )
         .expect("exe");
         assert!(agent_installed_in("codex", &[], &[bin]));
+    }
+
+    #[test]
+    fn cli_config_presence_detects_cli_agents_without_polluting_desktop_apps() {
+        let home = tempfile::tempdir().expect("home");
+        assert!(!cli_config_installed_in("codex", home.path()));
+        std::fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        assert!(!cli_config_installed_in("codex", home.path()));
+        std::fs::write(home.path().join(".codex/config.toml"), "model = \"gpt-5\"").expect("cfg");
+        assert!(cli_config_installed_in("codex", home.path()));
+
+        std::fs::create_dir_all(home.path().join(".qoder-cn")).expect("qoder dir");
+        assert!(!cli_config_installed_in("qoder", home.path()));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn login_shell_path_parser_and_merger_preserve_primary_order() {
+        let parsed =
+            parse_login_shell_path_output(b"motd line\n__VARY_PATH__=/custom/nvm/bin:/opt/bin\n")
+                .expect("parsed");
+        let merged = merge_unix_path_lists(
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(parsed.as_os_str()),
+        )
+        .expect("merged");
+        let dirs: Vec<_> = std::env::split_paths(&merged).collect();
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/custom/nvm/bin"),
+                PathBuf::from("/opt/bin"),
+            ]
+        );
     }
 }
 

@@ -5250,6 +5250,8 @@
     "setupHint": "Choose a shared model or routing group. No provider is added to this Agent.",
     "consent": "Vary will update this tool’s connection fields and keep a private recovery record. Turning it off restores the fields Vary changed. Your account credentials stay in their existing files.",
     "noModels": "Add a provider and at least one available model in Models / Providers first.",
+    "invalidConfig": "The Agent's configuration file has invalid syntax. Fix the syntax error in that file and try again.",
+    "permissionDenied": "Permission denied while reading or writing the Agent's configuration file. Check file permissions and try again.",
     "failed": "Could not read or update the connection. Refresh and try again.",
     "moreTools": "More tools ({{count}})",
     "moreHint": "Install missing CLIs here, or open the official website for desktop tools. Installation does not connect a tool to Vary.",

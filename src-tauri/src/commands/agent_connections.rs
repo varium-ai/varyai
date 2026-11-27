@@ -1015,52 +1015,74 @@ pub(crate) async fn set_native_connection(
     if legacy {
         if manager.owns(&app) {
             log::warn!(
-                "[AgentConnections] set_native_connection LEGACY CONFLICT: manager.owns({app}) is true"
+                "[AgentConnections] set_native_connection: clearing stale legacy state while receipt exists for {app}"
             );
-            return Err(agent_connections::CONFLICT.into());
-        }
-        {
-            let manager = manager.clone();
-            let app_name = app.clone();
-            let app = app.clone();
-            let menu = menu.clone();
-            let origin = origin.clone();
-            let selected = selected.clone();
-            tokio::task::spawn_blocking(move || manager.build(&app, &menu, &origin, &selected))
+            if let Err(e) = state
+                .proxy_service
+                .release_legacy_agent_connection(&app)
                 .await
-                .map_err(|_| FAILED)?
+            {
+                log::warn!(
+                    "[AgentConnections] set_native_connection: release_legacy_agent_connection({app}) failed ({e}), deleting live_backup"
+                );
+                let _ = state.db.delete_live_backup(&app).await;
+            }
+        } else {
+            {
+                let manager = manager.clone();
+                let app_name = app.clone();
+                let app = app.clone();
+                let menu = menu.clone();
+                let origin = origin.clone();
+                let selected = selected.clone();
+                tokio::task::spawn_blocking(move || manager.build(&app, &menu, &origin, &selected))
+                    .await
+                    .map_err(|_| FAILED)?
+                    .map_err(|e| {
+                        log::warn!(
+                            "[AgentConnections] set_native_connection LEGACY CONFLICT: build({app_name}) failed: {e}"
+                        );
+                        agent_connections::CONFLICT
+                    })?;
+            }
+            state
+                .proxy_service
+                .release_legacy_agent_connection(&app)
+                .await
                 .map_err(|e| {
                     log::warn!(
-                        "[AgentConnections] set_native_connection LEGACY CONFLICT: build({app_name}) failed: {e}"
+                        "[AgentConnections] set_native_connection LEGACY CONFLICT: release_legacy_agent_connection({app}) failed: {e}"
                     );
                     agent_connections::CONFLICT
                 })?;
         }
-        state
-            .proxy_service
-            .release_legacy_agent_connection(&app)
-            .await
-            .map_err(|e| {
-                log::warn!(
-                    "[AgentConnections] set_native_connection LEGACY CONFLICT: release_legacy_agent_connection({app}) failed: {e}"
-                );
-                agent_connections::CONFLICT
-            })?;
     }
     let runtime = state.proxy_service.intent_runtime.clone();
     let app_name = app.clone();
     let result = tokio::task::spawn_blocking(move || {
-        if manager.load(&app)?.is_some() {
-            log::warn!("[AgentConnections] set_native_connection: receipt exists for {app}, calling update()");
-            let receipt = manager
-                .update(&app, &menu, &origin, Some(&selected))?
-                .ok_or(FAILED)?;
-            return runtime.connections.install(&receipt);
+        let mut attempt = 0;
+        loop {
+            let outcome = if manager.load(&app)?.is_some() {
+                log::warn!("[AgentConnections] set_native_connection: receipt exists for {app}, calling update()");
+                let receipt = manager
+                    .update(&app, &menu, &origin, Some(&selected))?
+                    .ok_or(FAILED)?;
+                runtime.connections.install(&receipt)
+            } else {
+                log::warn!("[AgentConnections] set_native_connection: no receipt for {app}, calling build()+install()");
+                let receipt = manager.build(&app, &menu, &origin, &selected)?;
+                manager.install(receipt.clone())?;
+                runtime.connections.install(&receipt)
+            };
+            match outcome {
+                Err(err) if err == agent_connections::CONFLICT && attempt == 0 => {
+                    attempt += 1;
+                    log::warn!("[AgentConnections] set_native_connection transient CONFLICT for {app}, retrying once");
+                    continue;
+                }
+                other => return other,
+            }
         }
-        log::warn!("[AgentConnections] set_native_connection: no receipt for {app}, calling build()+install()");
-        let receipt = manager.build(&app, &menu, &origin, &selected)?;
-        manager.install(receipt.clone())?;
-        runtime.connections.install(&receipt)
     })
     .await
     .map_err(|_| FAILED)?;

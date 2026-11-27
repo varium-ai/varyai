@@ -9,6 +9,7 @@ enum PickerIds {
     Retained,
     SourceQualified,
     CurrentLabels,
+    Stable,
 }
 
 pub(super) fn named_catalog(
@@ -58,36 +59,40 @@ fn catalog_names(
     for index in order {
         let model = &mut projected[index];
         let internal = model.id.clone();
-        let previous = super::model_wire(model_map, None, &internal);
-        // Label edits keep an existing ID that already identifies its source.
-        let has_source = previous
-            .to_lowercase()
-            .contains(&format!(" · {}", model.group.to_lowercase()));
-        let base = if previous == internal
-            || matches!(picker_ids, PickerIds::CurrentLabels)
-            || (matches!(picker_ids, PickerIds::SourceQualified) && !has_source)
-        {
-            &model.name
+        if matches!(picker_ids, PickerIds::Stable) {
+            model_map.insert(internal.clone(), internal);
         } else {
-            previous
+            let previous = super::model_wire(model_map, None, &internal);
+            // Label edits keep an existing ID that already identifies its source.
+            let has_source = previous
+                .to_lowercase()
+                .contains(&format!(" · {}", model.group.to_lowercase()));
+            let base = if previous == internal
+                || matches!(picker_ids, PickerIds::CurrentLabels)
+                || (matches!(picker_ids, PickerIds::SourceQualified) && !has_source)
+            {
+                &model.name
+            } else {
+                previous
+            }
+            .to_owned();
+            let mut name = base.clone();
+            let mut duplicate = 2;
+            while model_map.get(&name).is_some_and(|alias| {
+                alias != &internal
+                    && (reserved.contains(alias) || !matches!(picker_ids, PickerIds::CurrentLabels))
+            }) || (reserved.contains(&name) && name != internal)
+                || (name != base && labels.contains(&name))
+            {
+                name = format!("{base} ({duplicate})");
+                duplicate += 1;
+            }
+            if internal == selected {
+                chosen = name.clone();
+            }
+            model_map.insert(name.clone(), internal);
+            model.id = name;
         }
-        .to_owned();
-        let mut name = base.clone();
-        let mut duplicate = 2;
-        while model_map.get(&name).is_some_and(|alias| {
-            alias != &internal
-                && (reserved.contains(alias) || !matches!(picker_ids, PickerIds::CurrentLabels))
-        }) || (reserved.contains(&name) && name != internal)
-            || (name != base && labels.contains(&name))
-        {
-            name = format!("{base} ({duplicate})");
-            duplicate += 1;
-        }
-        if internal == selected {
-            chosen = name.clone();
-        }
-        model_map.insert(name.clone(), internal);
-        model.id = name;
         let label = model.name.clone();
         let is_duplicate_label = label_counts
             .get(&label.to_lowercase())
@@ -200,6 +205,8 @@ pub(super) fn build(
             model.name.clone_from(&model.id);
         }
         (projected, chosen)
+    } else if app == "deepseek-harness" {
+        catalog_names(catalog, selected, &mut receipt.model_map, PickerIds::Stable)
     } else if matches!(app, "hermes" | "zcode") {
         // These clients list IDs without a separate display-name field. Keep
         // historical aliases routable while publishing source-qualified IDs.
@@ -1799,6 +1806,94 @@ mod tests {
             "session file unchanged"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn deepseek_harness_keeps_stable_model_ids_across_label_changes_and_reconnects(
+    ) -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = root.path().join("profiles/desktop/cordis.patch.yml");
+        std::fs::create_dir_all(path.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
+        std::fs::write(&path, "").map_err(|_| FAILED)?;
+        let mut catalog = vec![Model {
+            api: "openai-completions",
+            native_model: Some("glm-5.3-flash".into()),
+            output_tokens: Some(4096),
+            cost: None,
+            id: "vary-provider/model-stable-1".into(),
+            name: "GLM-5.3-Flash · OldProvider".into(),
+            context_window: Some(128_000),
+            compact_at: None,
+            group: "OldProvider".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: true,
+            icon: None,
+        }];
+        let mut first_receipt = Receipt {
+            app: "deepseek-harness".into(),
+            token: "synthetic-test-token".into(),
+            model: catalog[0].id.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        };
+        crate::services::agent_clients::with_test_config(&path, || {
+            build(
+                "deepseek-harness",
+                &catalog,
+                "http://127.0.0.1:1/connections/deepseek-harness",
+                "synthetic-test-token",
+                &catalog[0].id,
+                &mut first_receipt,
+                None,
+            )
+        })?;
+        catalog[0].name = "GLM-5.3-Flash · RenamedProvider".into();
+        catalog[0].group = "RenamedProvider".into();
+        let mut second_receipt = Receipt {
+            app: "deepseek-harness".into(),
+            token: "synthetic-test-token".into(),
+            model: catalog[0].id.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        };
+        crate::services::agent_clients::with_test_config(&path, || {
+            build(
+                "deepseek-harness",
+                &catalog,
+                "http://127.0.0.1:1/connections/deepseek-harness",
+                "synthetic-test-token",
+                &catalog[0].id,
+                &mut second_receipt,
+                None,
+            )
+        })?;
+        let cordis = second_receipt
+            .files
+            .iter()
+            .find(|file| matches!(file.format, Format::Cordis))
+            .ok_or(FAILED)?;
+        let projected_models = cordis.installed["providers"]["varyai-provider-shared-catalog"]
+            ["config"]["providers"]["varyai-shared-catalog"]["models"]
+            .as_array()
+            .ok_or(FAILED)?;
+        assert_eq!(projected_models[0]["id"], "vary-provider/model-stable-1");
+        assert_eq!(
+            projected_models[0]["name"],
+            "GLM-5.3-Flash · RenamedProvider"
+        );
+        assert_eq!(
+            cordis.installed["selection"][0]["config"]["model"],
+            "vary-provider/model-stable-1"
+        );
         Ok(())
     }
 }
