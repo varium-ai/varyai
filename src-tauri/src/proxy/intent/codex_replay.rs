@@ -1,16 +1,17 @@
-//! Select a new Codex turn without treating inline, closed tool pairs as live owners.
+//! Distinguish closed inline tool history from the active turn.
 use serde_json::Value;
 use std::collections::HashMap;
 
 pub(super) struct InlineReplay {
     pub current_turn_start: usize,
     pub new_user_turn: bool,
+    pub closed_tool_calls: bool,
     pub follows_interruption: bool,
 }
 
 /// Classifies the read-only planner view. All items, including historical tool
 /// pairs, still go through the usual request conversion and inspection.
-pub(super) fn inline_tool_history(body: &Value) -> Option<InlineReplay> {
+pub(super) fn inline_tool_history(body: &Value, per_turn_intent: bool) -> Option<InlineReplay> {
     if body["_group_projection_incomplete"] == true
         || !body["previous_response_id"].is_null()
         || !body["conversation"].is_null()
@@ -18,11 +19,25 @@ pub(super) fn inline_tool_history(body: &Value) -> Option<InlineReplay> {
         return None;
     }
     let items = body["input"].as_array()?;
-    let start = items
+    let mut start = items
         .iter()
         .rposition(|item| is_user(item) && !is_interrupt_marker(item))?;
     if !visible_message(&items[start]) {
         return None;
+    }
+    if let Some(turn) = turn_id(&items[start]) {
+        // Steering messages share the original turn's tool-call ownership.
+        for (index, item) in items[..start].iter().enumerate().rev() {
+            if is_user(item) {
+                if is_interrupt_marker(item) || turn_id(item) != Some(turn) {
+                    break;
+                }
+                if !visible_message(item) {
+                    return None;
+                }
+                start = index;
+            }
+        }
     }
     let mut calls = HashMap::new();
     let mut open_calls = 0usize;
@@ -41,11 +56,13 @@ pub(super) fn inline_tool_history(body: &Value) -> Option<InlineReplay> {
                 awaiting_reply = false;
                 interrupted_turn = Some(turn);
             } else if is_user(item) {
-                if awaiting_reply
+                if open_calls != 0
+                    || (awaiting_reply && !per_turn_intent)
                     || interrupted_turn.is_some_and(|turn| turn_id(item) == Some(turn))
                 {
                     return None;
                 }
+                awaiting_reply = false;
                 last_user_turn = turn_id(item);
                 closed_reply = false;
             } else if item["role"] == "assistant"
@@ -86,15 +103,25 @@ pub(super) fn inline_tool_history(body: &Value) -> Option<InlineReplay> {
     }
     let current = &items[start + 1..];
     let new_user_turn = current.iter().all(is_page_context);
+    let live_tools = per_turn_intent
+        && current.iter().any(|item| {
+            matches!(
+                item["type"].as_str(),
+                Some("function_call" | "function_call_output")
+            )
+        });
     // Message IDs from a plain completed conversation can also belong to
     // several models. They are not references when the text is present.
     let plain_boundary = new_user_turn && (closed_reply || interrupted_turn.is_some());
+    // A new user message can supersede an interrupted answer once every
+    // earlier call has an inline result. A pending call is still live state.
     if open_calls != 0
-        || awaiting_reply
+        || (awaiting_reply && !per_turn_intent)
         || (calls.is_empty()
             && !page_context
             && !current.iter().any(is_page_context)
-            && !plain_boundary)
+            && !plain_boundary
+            && !live_tools)
     {
         return None;
     }
@@ -109,6 +136,7 @@ pub(super) fn inline_tool_history(body: &Value) -> Option<InlineReplay> {
     Some(InlineReplay {
         current_turn_start: start,
         new_user_turn,
+        closed_tool_calls: !calls.is_empty(),
         follows_interruption,
     })
 }
@@ -252,6 +280,7 @@ pub(super) fn legacy_inline_assistant_id(item: &Value, id: &str) -> bool {
 }
 
 fn visible_message(item: &Value) -> bool {
+    let allow_media = item["role"] == "user";
     (item["type"].is_null() || item["type"] == "message")
         && matches!(
             item["role"].as_str(),
@@ -261,7 +290,21 @@ fn visible_message(item: &Value) -> bool {
         && (item["phase"].is_null()
             || matches!(item["phase"].as_str(), Some("commentary" | "final_answer")))
         && completed(item)
-        && text_parts(&item["content"], &["text", "input_text", "output_text"])
+        && (text_parts(&item["content"], &["text", "input_text", "output_text"])
+            || (allow_media
+                && item["content"].as_array().is_some_and(|parts| {
+                    !parts.is_empty()
+                        && parts.iter().all(|part| {
+                            super::length::inline_media_part(part)
+                                || (matches!(part["type"].as_str(), Some("text" | "input_text"))
+                                    && part["text"].is_string()
+                                    && part.as_object().is_some_and(|fields| {
+                                        fields
+                                            .keys()
+                                            .all(|key| matches!(key.as_str(), "type" | "text"))
+                                    }))
+                        })
+                })))
 }
 
 fn full_call(item: &Value) -> bool {
@@ -296,6 +339,80 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn native_protocols_project_closed_tool_rounds_for_shared_classification() {
+        use super::super::{opaque_continuation, Protocol};
+        use crate::proxy::group_forward::canonical_request;
+        use crate::services::intent_routing::classifier;
+
+        let first = "Synthetic first task";
+        let answer = "Synthetic completed answer";
+        let follow_up = "Synthetic new question";
+        let id = "synthetic-shared-call";
+        let name = "synthetic_lookup";
+        let result = "Synthetic tool result";
+        let fixtures = [
+            (
+                Protocol::Chat,
+                "/v1/chat/completions",
+                json!({"messages":[
+                    {"role":"user","content":first},
+                    {"role":"assistant","tool_calls":[{"type":"function","id":id,"function":{"name":name,"arguments":"{}"}}]},
+                    {"role":"tool","tool_call_id":id,"content":result},
+                    {"role":"assistant","content":answer},
+                    {"role":"user","content":follow_up}
+                ]}),
+            ),
+            (
+                Protocol::Anthropic,
+                "/v1/messages",
+                json!({"messages":[
+                    {"role":"user","content":first},
+                    {"role":"assistant","content":[{"type":"tool_use","id":id,"name":name,"input":{}}]},
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":result}]},
+                    {"role":"assistant","content":answer},
+                    {"role":"user","content":follow_up}
+                ]}),
+            ),
+            (
+                Protocol::Responses,
+                "/v1/responses",
+                json!({"input":[
+                    {"role":"user","content":first},
+                    {"type":"function_call","call_id":id,"name":name,"arguments":"{}"},
+                    {"type":"function_call_output","call_id":id,"output":result},
+                    {"role":"assistant","content":answer},
+                    {"role":"user","content":follow_up}
+                ]}),
+            ),
+            (
+                Protocol::Gemini,
+                "/v1beta/models/fixture:generateContent",
+                json!({"contents":[
+                    {"role":"user","parts":[{"text":first}]},
+                    {"role":"model","parts":[{"functionCall":{"id":id,"name":name,"args":{}}}]},
+                    {"role":"user","parts":[{"functionResponse":{"id":id,"name":name,"response":{"result":result}}}]},
+                    {"role":"model","parts":[{"text":answer}]},
+                    {"role":"user","parts":[{"text":follow_up}]}
+                ]}),
+            ),
+        ];
+        for (protocol, endpoint, body) in fixtures {
+            assert!(!opaque_continuation(protocol, &body), "{endpoint}");
+            let projection = canonical_request(protocol, &body, endpoint).unwrap();
+            let replay = inline_tool_history(&projection, true).unwrap();
+            assert!(
+                replay.closed_tool_calls && replay.new_user_turn,
+                "{endpoint}"
+            );
+            assert_eq!(
+                classifier::extract_user_text_after_closed_tools(&projection, false).as_deref(),
+                Some(follow_up),
+                "{endpoint}"
+            );
+        }
+    }
+
     fn closed() -> Value {
         json!({"input":[
             {"role":"user","content":"Synthetic opening"},
@@ -310,16 +427,35 @@ mod tests {
     #[test]
     fn closed_pairs_define_a_boundary_but_not_an_active_tool_continuation() {
         let mut body = closed();
-        let replay = inline_tool_history(&body).expect("closed history");
+        let replay = inline_tool_history(&body, false).expect("closed history");
         assert_eq!(replay.current_turn_start, 5);
         assert!(replay.new_user_turn && !replay.follows_interruption);
         body["input"].as_array_mut().expect("fixture array").extend([
             json!({"type":"function_call","name":"synthetic_tool","call_id":"call-active","arguments":"{}"}),
             json!({"type":"function_call_output","call_id":"call-active","output":"Synthetic active result"}),
         ]);
-        let active = inline_tool_history(&body).expect("older history is closed");
+        let active = inline_tool_history(&body, false).expect("older history is closed");
         assert_eq!(active.current_turn_start, 5);
         assert!(!active.new_user_turn);
+    }
+
+    #[test]
+    fn per_turn_intent_accepts_a_new_question_after_an_interrupted_tool_reply() {
+        let mut body = closed();
+        body["input"].as_array_mut().unwrap().remove(4);
+        assert!(inline_tool_history(&body, false).is_none());
+
+        let replay = inline_tool_history(&body, true).unwrap();
+        assert_eq!(replay.current_turn_start, 4);
+        assert!(replay.new_user_turn && replay.closed_tool_calls);
+
+        body["input"].as_array_mut().unwrap().insert(
+            4,
+            json!({"role":"user","content":"Synthetic earlier follow-up without a reply"}),
+        );
+        assert!(inline_tool_history(&body, true).unwrap().new_user_turn);
+        body["input"].as_array_mut().unwrap().remove(2);
+        assert!(inline_tool_history(&body, true).is_none());
     }
 
     #[test]
@@ -361,7 +497,7 @@ mod tests {
                 "content":[{"type":"output_text","text":"Second answer","annotations":[],"logprobs":[]}]},
             {"role":"user","content":"Return to group"}
         ]});
-        let history = inline_tool_history(&body).expect("inline messages");
+        let history = inline_tool_history(&body, false).expect("inline messages");
         assert!(history.new_user_turn);
         assert_eq!(history.current_turn_start, 4);
     }
@@ -372,12 +508,12 @@ mod tests {
         let items = body["input"].as_array_mut().expect("fixture array");
         let final_reply = items.remove(4);
         items.insert(2, final_reply.clone());
-        assert!(inline_tool_history(&body).is_none());
+        assert!(inline_tool_history(&body, false).is_none());
         body["input"]
             .as_array_mut()
             .expect("fixture array")
             .insert(5, final_reply);
-        assert!(inline_tool_history(&body).is_some());
+        assert!(inline_tool_history(&body, false).is_some());
     }
 
     #[test]
@@ -407,12 +543,15 @@ mod tests {
         ] {
             let mut body = closed();
             body["input"][index][field] = value;
-            assert!(inline_tool_history(&body).is_none(), "{index}: {field}");
+            assert!(
+                inline_tool_history(&body, false).is_none(),
+                "{index}: {field}"
+            );
         }
         for field in ["previous_response_id", "conversation"] {
             let mut body = closed();
             body[field] = json!("synthetic-cursor");
-            assert!(inline_tool_history(&body).is_none(), "{field}");
+            assert!(inline_tool_history(&body, false).is_none(), "{field}");
         }
         for invalid in [
             json!({"type":"function_call_output","call_id":"call-test","output":"Synthetic duplicate"}),
@@ -426,7 +565,7 @@ mod tests {
                 .as_array_mut()
                 .expect("fixture array")
                 .insert(5, invalid);
-            assert!(inline_tool_history(&body).is_none());
+            assert!(inline_tool_history(&body, false).is_none());
         }
     }
 }

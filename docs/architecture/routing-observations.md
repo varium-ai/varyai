@@ -106,6 +106,10 @@ navigation, and reduced-motion settings suppress control and stage movement.
   upstream error. The workspace and tray omit the synthetic HTTP 499 status code
   from candidate labels. Recorded traces retain the original status and neutral
   cancellation events for diagnostics.
+  The shared stream observer saves actual usage received before the client
+  closes, including when a terminal response arrives before transport EOF.
+  The usage dashboard attributes those tokens to the observed upstream model.
+  A close before any usage arrives leaves token accounting unavailable.
   Finished players are removed once the return ends and stay finished on
   subsequent polls. Newly completed long requests use their finish time for
   admission. Recent workspace source cards can appear with stationary paths

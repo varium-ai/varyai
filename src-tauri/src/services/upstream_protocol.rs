@@ -35,9 +35,8 @@ pub(crate) fn project(
     app: &AppType,
     provider: &Provider,
 ) -> Result<Provider, AppError> {
-    let responses_route = *app == AppType::Trae
-        && trae_native_responses(provider)
-        && db.get_bool_flag(super::trae_bridge::ENABLED_KEY)?;
+    let responses_route =
+        matches!(app, AppType::Trae | AppType::TraeIntl) && trae_native_responses(provider);
     if !matches!(app, AppType::Hermes | AppType::Trae | AppType::TraeIntl)
         || !(requires_bridge(app, provider) || responses_route)
     {
@@ -83,11 +82,6 @@ mod tests {
             None,
         );
         let original = provider.settings_config.clone();
-        assert_eq!(
-            project(&db, &AppType::Trae, &provider)?.settings_config,
-            original
-        );
-        db.set_setting(super::super::trae_bridge::ENABLED_KEY, "true")?;
         let projected = project(&db, &AppType::Trae, &provider)?;
         assert!(projected.settings_config["baseUrl"]
             .as_str()
@@ -96,16 +90,26 @@ mod tests {
         assert_eq!(projected.settings_config["protocol"], "openai-responses");
         assert_eq!(provider.settings_config, original);
         assert!(!db.get_security_settings()?.enabled);
+        db.set_setting(super::super::trae_bridge::ENABLED_KEY, "true")?;
+        assert_eq!(
+            project(&db, &AppType::Trae, &provider)?.settings_config,
+            projected.settings_config
+        );
         provider.category = Some("official".into());
         assert_eq!(
             project(&db, &AppType::Trae, &provider)?.settings_config,
             original
         );
         provider.category = None;
+        let international = project(&db, &AppType::TraeIntl, &provider)?;
+        assert!(international.settings_config["baseUrl"]
+            .as_str()
+            .is_some_and(|url| url.contains("/upstream/trae-intl/providers/fixture/v1")));
+        assert_eq!(international.settings_config["apiKey"], "varyai-local");
         db.set_setting(super::super::trae_bridge::ENABLED_KEY, "false")?;
         assert_eq!(
             project(&db, &AppType::Trae, &provider)?.settings_config,
-            original
+            projected.settings_config
         );
         Ok(())
     }

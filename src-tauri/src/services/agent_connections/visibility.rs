@@ -14,13 +14,11 @@ impl ModelVisibility {
         self.ids.iter().any(|known| known == id) == self.only
     }
     pub(crate) fn validate(&self) -> Result<(), String> {
-        if self.ids.len() > 256
-            || self.order.len() > 256
-            || self
-                .ids
-                .iter()
-                .chain(&self.order)
-                .any(|id| id.is_empty() || id.len() > 512 || id.chars().any(char::is_control))
+        if self
+            .ids
+            .iter()
+            .chain(&self.order)
+            .any(|id| id.is_empty() || id.len() > 512 || id.chars().any(char::is_control))
         {
             return Err(FAILED.into());
         }
@@ -95,11 +93,11 @@ impl Manager {
         policy: &ModelVisibility,
     ) -> Result<(), String> {
         policy.validate()?;
-        atomic_write_private(
-            &self.visibility_path(app)?,
-            &serde_json::to_vec(policy).map_err(|_| FAILED)?,
-        )
-        .map_err(|_| FAILED.into())
+        let bytes = serde_json::to_vec(policy).map_err(|_| FAILED)?;
+        if bytes.len() > MAX_CONNECTION_FILE_BYTES {
+            return Err(FAILED.into());
+        }
+        atomic_write_private(&self.visibility_path(app)?, &bytes).map_err(|_| FAILED.into())
     }
 
     pub fn set_model_visibility(
@@ -225,19 +223,20 @@ mod tests {
     }
 
     #[test]
-    fn visibility_is_bounded_and_malformed_settings_fail_closed() -> Result<(), String> {
+    fn large_visibility_settings_round_trip_and_malformed_settings_fail_closed(
+    ) -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
         let manager = Manager {
             root: dir.path().into(),
         };
-        let oversized = ModelVisibility {
+        let ids: Vec<_> = (0..302).map(|index| format!("model-{index:03}")).collect();
+        let policy = ModelVisibility {
             only: true,
-            ids: vec!["id".into(); 257],
-            order: vec![],
+            order: ids.iter().rev().cloned().collect(),
+            ids,
         };
-        assert!(manager
-            .write_model_visibility("claude-desktop", &oversized)
-            .is_err());
+        manager.write_model_visibility("claude-desktop", &policy)?;
+        assert_eq!(manager.model_visibility("claude-desktop")?, policy);
         fs::write(manager.visibility_path("claude-desktop")?, "malformed").map_err(|_| FAILED)?;
         assert_eq!(
             manager.model_visibility("claude-desktop"),

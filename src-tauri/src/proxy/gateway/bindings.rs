@@ -308,6 +308,7 @@ fn route_agent(path: &str) -> Option<&str> {
     if matches!(
         path,
         "/intent/v1/responses"
+            | "/intent/v1/responses/compact"
             | "/backend-api/codex/responses"
             | "/backend-api/codex/responses/compact"
     ) {
@@ -430,7 +431,10 @@ pub async fn enforce_agent(
                 .and_then(|v| v["model"].as_str().map(str::to_owned))
         })
         .unwrap_or_default();
-    let intent_menu = if path == "/intent/v1/responses" {
+    let intent_menu = if matches!(
+        path.as_str(),
+        "/intent/v1/responses" | "/intent/v1/responses/compact"
+    ) {
         let token = parts
             .headers
             .get("authorization")

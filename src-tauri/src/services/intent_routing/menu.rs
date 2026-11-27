@@ -14,8 +14,6 @@ use std::{
     time::Instant,
 };
 
-pub(crate) const MAX_MENU_ENTRIES: usize = 256;
-
 pub(crate) fn direct_id(provider: &str, model: &str) -> String {
     let mut hash = Sha256::new();
     for value in [provider, model] {
@@ -127,8 +125,6 @@ pub(crate) async fn prepare(
         .collect();
     let mut http_client = None;
     let mut accounts: Vec<Target> = Vec::new();
-    // Leave capacity for every saved/discovered routing group, even with large catalogs.
-    let direct_limit = MAX_MENU_ENTRIES.saturating_sub(groups.len());
     for provider in &providers {
         let current = Some(&provider.id) == current_provider.as_ref();
         let default = configured_model(provider);
@@ -230,9 +226,7 @@ pub(crate) async fn prepare(
             }
             let key = (provider.id.clone(), model.clone());
             let direct = direct_models.contains(&model);
-            let publish = direct && menu.groups.len() < direct_limit;
-            if !publish && !required.contains(&key) {
-                menu.omitted_entries += usize::from(direct);
+            if !direct && !required.contains(&key) {
                 continue;
             }
             let pool = templates
@@ -260,8 +254,7 @@ pub(crate) async fn prepare(
             if required.contains(&key) {
                 targets.insert(key, pool.clone());
             }
-            if !publish {
-                menu.omitted_entries += usize::from(direct);
+            if !direct {
                 continue;
             }
             let mut group = direct_group(provider, &model);
@@ -344,7 +337,6 @@ pub(crate) async fn prepare(
             || !ready
             || (group.uses_classifier() && classifier.is_none())
             || menu.models.contains_key(&group.id)
-            || menu.groups.len() >= MAX_MENU_ENTRIES
         {
             menu.omitted_entries += 1;
             continue;
@@ -465,7 +457,7 @@ pub(crate) async fn prepare_with_stand_ins(
     let mut menu = prepare(manager, providers, published, current).await?;
     // Stand-ins remain executable for old sessions, never offered as routing groups.
     // Reuse direct destinations so compatibility aliases do not consume picker slots.
-    for group in stand_ins.into_iter().take(MAX_MENU_ENTRIES) {
+    for group in stand_ins {
         let alias = group.alias();
         if menu.groups.contains_key(&alias) || group.members.len() != 1 || group.validate().is_err()
         {
@@ -1688,21 +1680,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn large_provider_catalog_keeps_group_members_and_bounds_the_published_menu() {
+    async fn codex_connects_with_256_visible_models_and_a_compatibility_alias() {
         let dir = tempfile::tempdir().unwrap();
-        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let oauth = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut source = provider("a");
+        source.settings_config["modelCatalog"]["models"] = json!((0..255)
+            .map(|i| json!({"model":format!("model-{i:03}")}))
+            .collect::<Vec<_>>());
+        let mut stand_in = direct_group(&source, "model-254");
+        stand_in.id = "historical".into();
+        let alias = stand_in.alias();
+        let menu = prepare_with_stand_ins(oauth, vec![source], vec![], None, vec![stand_in])
+            .await
+            .unwrap();
+        assert_eq!(menu.groups.len(), 257);
+        assert_eq!(menu.listed_aliases().count(), 256);
+        assert_eq!(menu.groups[&alias].targets[0].model, "model-254");
+
+        let config = dir.path().join("config.toml");
+        let original = "model='original'\n";
+        std::fs::write(&config, original).unwrap();
+        let manager = super::super::client::Manager::new(
+            config,
+            dir.path().join("receipt.json"),
+            Arc::new(crate::proxy::intent::Runtime::default()),
+        );
+        manager
+            .activate_menu(Arc::new(menu), "http://127.0.0.1:1/intent/v1")
+            .unwrap();
+        assert!(manager.status().unwrap().enabled);
+        manager.restore().unwrap();
+        super::super::client::tests::assert_restored_config(&manager, original);
+    }
+
+    #[tokio::test]
+    async fn large_provider_catalog_keeps_direct_models_routing_groups_and_legacy_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let oauth = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let mut a = provider("a");
         a.settings_config["modelCatalog"]["models"] = json!((0..300)
             .map(|i| json!({"model":format!("model-{i:03}")}))
             .collect::<Vec<_>>());
         let mut group = direct_group(&a, "model-299");
         group.id = "saved".into();
-        let menu = prepare(manager, vec![a], vec![group], Some("a".into()))
+        let group_alias = group.alias();
+        group.enabled = true;
+        let stand_ins = super::super::discover_stand_ins(vec![a.clone()]);
+        let menu = prepare_with_stand_ins(oauth, vec![a], vec![group], None, stand_ins)
             .await
             .unwrap();
-        assert_eq!(menu.groups.len(), MAX_MENU_ENTRIES);
-        assert_eq!(menu.omitted_entries, 46);
+        assert_eq!(menu.groups.len(), 603);
+        assert_eq!(menu.omitted_entries, 0);
+        let models = crate::services::agent_connections::models(&menu);
+        assert_eq!(models.len(), 302);
         assert_eq!(menu.groups["vary-auto/saved"].targets[0].model, "model-299");
+        let direct = menu.stand_in_direct("auto/model-299").unwrap();
+        assert_eq!(menu.groups[direct].targets[0].model, "model-299");
+        assert!(models.iter().any(|model| model.id == direct));
+        assert!(models.iter().any(|model| model.id == group_alias));
+
+        let config = dir.path().join("config.toml");
+        let original = "model='original'\n";
+        std::fs::write(&config, original).unwrap();
+        let manager = super::super::client::Manager::new(
+            config.clone(),
+            dir.path().join("receipt.json"),
+            Arc::new(crate::proxy::intent::Runtime::default()),
+        );
+        manager
+            .activate_menu_with_selection(
+                Arc::new(menu),
+                "http://127.0.0.1:1/intent/v1",
+                None,
+                true,
+                Some(&group_alias),
+            )
+            .unwrap();
+        let status = manager.status().unwrap();
+        assert!(status.enabled);
+        assert_eq!(status.omitted_entries, 0);
+        assert_eq!(manager.selected_model().unwrap(), Some(group_alias));
+        let config: toml::Value = std::fs::read_to_string(config).unwrap().parse().unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config["model_catalog_json"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let visible = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["visibility"] == "list")
+            .count();
+        assert_eq!(visible, 302);
+        manager.restore().unwrap();
+        super::super::client::tests::assert_restored_config(&manager, original);
     }
     #[tokio::test]
     async fn direct_only_catalog_exceeds_the_old_group_limit_and_restores_selected_alias() {

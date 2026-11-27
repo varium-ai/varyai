@@ -11,7 +11,7 @@ function fixture(legacyModuleId) {
     agent: [{ custom_model_id: "native-a", name: "provider//model-a" }],
     solo_agent: [{ custom_model_id: "native-a", name: "provider//model-a" }],
   };
-  const label = (type) => (type === "solo_agent" ? type : "agent");
+  const label = (type) => (["assistant", "solo_agent"].includes(type) ? type : "agent");
   const domain = {
     setNewSessionSelection: (type, selection) =>
       calls.push(["clear", type, selection]),
@@ -61,6 +61,7 @@ function fixture(legacyModuleId) {
       Eo: {
         Chat: "chat",
         Builder: "builder",
+        Assistant: "assistant",
         SoloAgent: "solo_agent",
         Unsupported: "unsupported",
       },
@@ -102,6 +103,36 @@ test("sets and verifies new-session selections once per supported native Agent l
     if (op === "persist") assert.equal(value.selection.mode, 0);
   }
   assert.deepEqual(f.sessions, { existing: { modelId: "original" } });
+});
+
+test("skips forced Auto and acknowledges the default for each native selection scope", async () => {
+  const f = fixture();
+  f.rows.assistant = [...f.rows.agent];
+  f.port.getHostContext = () => ({
+    modelSelectionPolicy: {
+      strategy: "ai-chat",
+      agentTypeAliases: { assistant: "fixed_assistant" },
+      forcedModeByAgentType: { fixed_assistant: 1 },
+    },
+  });
+  let scope = "first-workspace";
+  f.port.getSelectionStorageIdentity = () => scope;
+  assert.equal(f.adapter.needsSelection("native-a"), true);
+  await f.adapter.select("native-a");
+  assert.deepEqual(Object.keys(f.recent), ["agent", "solo_agent"]);
+  assert.equal(f.adapter.needsSelection("native-a"), false);
+  assert.equal(f.adapter.needsSelection("native-b"), true);
+  scope = "another-workspace";
+  assert.equal(f.adapter.needsSelection("native-a"), true);
+});
+
+test("a failed label stays pending while other labels receive the default", async () => {
+  const f = fixture();
+  f.port.persistUserModelSelection = async ({ agentType }) => agentType !== "chat";
+  await assert.rejects(f.adapter.select("native-a"), /starting_model_unavailable/);
+  assert.equal(f.recent.agent, undefined);
+  assert.equal(f.recent.solo_agent.modelId, "solo_agent:native-a");
+  assert.equal(f.adapter.needsSelection("native-a"), true);
 });
 
 test("waits for the native catalog and saved selection before writing the startup model", async () => {

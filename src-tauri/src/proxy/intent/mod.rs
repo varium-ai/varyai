@@ -11,10 +11,11 @@ mod compaction;
 #[cfg(test)]
 mod concurrency_tests;
 mod continuation;
-mod identity;
+pub(super) mod identity;
 pub(super) mod length;
 pub(crate) use codex_replay::is_page_context as is_codex_page_context;
-pub(crate) use length::visible_reasoning;
+pub(crate) use compaction::is_anthropic_compaction;
+pub(crate) use length::{empty_reasoning, visible_reasoning};
 pub(crate) mod native;
 mod native_gateway;
 #[cfg(test)]
@@ -79,6 +80,7 @@ pub(crate) struct Runtime {
     conversations: scopes::Conversations,
     session_models: RwLock<HashMap<(String, String), String>>,
     pub(crate) native: native::Native,
+    ephemeral_checkpoints: std::sync::OnceLock<Result<Arc<checkpoint::Store>, &'static str>>,
     continuations: RwLock<Option<Arc<continuation::Store>>>,
     native_protocol_preferred: RwLock<std::collections::HashSet<(String, String, &'static str)>>,
 }
@@ -481,6 +483,15 @@ impl Session {
     }
 }
 impl Runtime {
+    fn checkpoint_store(&self) -> Result<Arc<checkpoint::Store>, &'static str> {
+        if let Ok(store) = self.native.checkpoints() {
+            return Ok(store);
+        }
+        self.ephemeral_checkpoints
+            .get_or_init(|| checkpoint::Store::ephemeral().map(Arc::new))
+            .clone()
+    }
+
     pub(crate) async fn prepare_continuations(&self, path: std::path::PathBuf) {
         if self.continuations.read().is_ok_and(|store| store.is_some()) {
             return;
@@ -834,13 +845,17 @@ fn remember(map: &mut HashMap<String, usize>, kind: &str, key: &str, target: usi
     }
 }
 impl Bindings {
-    fn continuation_projection(&self, consumer: &str, body: &Value) -> Value {
+    fn continuation_projection<'a>(
+        &self,
+        consumer: &str,
+        body: &'a Value,
+    ) -> std::borrow::Cow<'a, Value> {
         if matches!(consumer, "agent:trae" | "agent:trae-intl") {
-            trae::projection(body, |id| {
+            std::borrow::Cow::Owned(trae::projection(body, |id| {
                 self.calls.contains_key(&continuation::hash("call", id))
-            })
+            }))
         } else {
-            body.clone()
+            std::borrow::Cow::Borrowed(body)
         }
     }
     fn persist(&self) {
@@ -972,6 +987,15 @@ impl Bindings {
     }
 
     fn resolve(&self, body: &Value, session: Option<&str>) -> Result<Option<usize>, ()> {
+        self.resolve_from(body, session, 0)
+    }
+
+    fn resolve_from(
+        &self,
+        body: &Value,
+        session: Option<&str>,
+        current_turn_start: usize,
+    ) -> Result<Option<usize>, ()> {
         let mut selected = session.and_then(|s| self.session(s));
         if selected == Some(usize::MAX) {
             return Err(());
@@ -995,7 +1019,7 @@ impl Bindings {
             )?;
         }
         if let Some(items) = body.get("input").and_then(Value::as_array) {
-            for item in items {
+            for item in items.iter().skip(current_turn_start) {
                 if length::visible_reasoning(item) {
                     continue;
                 }
@@ -1031,7 +1055,7 @@ impl Bindings {
                     )?;
                 }
             }
-            if items.iter().any(|v| {
+            if items.iter().skip(current_turn_start).any(|v| {
                 !length::visible_reasoning(v)
                     && (v.get("encrypted_content").is_some()
                         || !matches!(
@@ -1463,6 +1487,53 @@ impl Drop for Observer {
         }
     }
 }
+
+struct StreamObservation {
+    observer: Observer,
+    trace: trace::Request,
+    collector: super::pi::usage::Collector,
+    job: Option<super::pi::usage::Job>,
+    started: Instant,
+    upstream_status: u16,
+    finished: bool,
+}
+
+impl StreamObservation {
+    fn finish(&mut self, status: u16, state: trace::State) {
+        self.collector.finish();
+        if self.collector.observed {
+            self.trace
+                .usage(&self.collector.usage, self.observer.first_content);
+            if let Some(mut job) = self.job.take() {
+                job.usage = std::mem::take(&mut self.collector.usage);
+                job.latency_ms = self.started.elapsed().as_millis() as u64;
+                job.status = status;
+                super::pi::usage::emit(job);
+            }
+        }
+        self.trace.finish(status, state);
+        self.finished = true;
+    }
+}
+
+impl Drop for StreamObservation {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        // Clients can close immediately after receiving the terminal frame,
+        // without polling the upstream body to EOF.
+        let (status, state) = if self.observer.failed {
+            (502, trace::State::Failed)
+        } else if self.observer.completed || self.observer.trace_terminal {
+            (self.upstream_status, trace::State::Completed)
+        } else {
+            (499, trace::State::Cancelled)
+        };
+        self.finish(status, state);
+    }
+}
+
 fn conversion_failure_reason(error: &super::ProxyError) -> &'static str {
     let super::ProxyError::InvalidRequest(message) = error else {
         return "other";
@@ -1620,7 +1691,10 @@ pub(crate) async fn handle(
             json!({"object":"list","data":data}),
         ));
     }
-    if request.method() != http::Method::POST || request.uri().path() != "/intent/v1/responses" {
+    let legacy_compact = request.uri().path() == "/intent/v1/responses/compact";
+    if request.method() != http::Method::POST
+        || !(request.uri().path() == "/intent/v1/responses" || (legacy_compact && menu.is_some()))
+    {
         return fail(StatusCode::NOT_FOUND, "routing_endpoint_unsupported");
     }
     let (parts, body) = request.into_parts();
@@ -1690,14 +1764,13 @@ pub(crate) async fn handle(
             None => fail(StatusCode::NOT_FOUND, "routing_model_unavailable"),
         };
     }
-    execute(
+    native::execute_responses(
         state,
         session,
         parts,
         bytes,
         original,
-        Protocol::Responses,
-        "/v1/responses".into(),
+        legacy_compact,
         "local-codex".into(),
         menu.is_some(),
         false,
@@ -1805,20 +1878,42 @@ pub(crate) async fn handle_global(
             .extensions
             .get::<super::connections::Agent>()
             .is_some_and(|agent| matches!(agent.0, "trae" | "trae-intl"));
-    let pending = execute(
-        state,
-        session,
-        parts,
-        bytes,
-        original,
-        protocol,
-        endpoint,
-        consumer,
-        true,
-        external,
-        Some(generation),
-        Instant::now(),
-    );
+    let legacy_compact =
+        protocol == Protocol::Responses && parts.uri.path() == "/v1/responses/compact";
+    let pending = async move {
+        if protocol == Protocol::Responses {
+            native::execute_responses(
+                state,
+                session,
+                parts,
+                bytes,
+                original,
+                legacy_compact,
+                consumer,
+                true,
+                external,
+                Some(generation),
+                Instant::now(),
+            )
+            .await
+        } else {
+            execute(
+                state,
+                session,
+                parts,
+                bytes,
+                original,
+                protocol,
+                endpoint,
+                consumer,
+                true,
+                external,
+                Some(generation),
+                Instant::now(),
+            )
+            .await
+        }
+    };
     if keep_trae_waiting {
         trae::waiting_response(pending).await
     } else {
@@ -1902,7 +1997,7 @@ async fn execute(
                     .split('?')
                     .next()
                     .is_some_and(|p| p.ends_with(":streamGenerateContent"))));
-    let responses_replay = protocol == Protocol::Responses && agent == "codex";
+    let responses_replay = protocol == Protocol::Responses && matches!(agent, "codex" | "t3code");
     let mut projection =
         match super::group_forward::canonical_request(protocol, &original, &endpoint) {
             Ok(value) => match compact.filter(|c| c.native) {
@@ -1919,6 +2014,14 @@ async fn execute(
             items.retain(|item| !length::empty_reasoning(item));
         }
     }
+    let prompt_compact = compact.is_none()
+        && desktop_purpose.is_none()
+        && !count_tokens
+        && compaction::is_prompt_compaction(&parts.headers, &projection);
+    if prompt_compact {
+        trace.mark_kind("compact");
+    }
+    let is_compact = compact.is_some() || prompt_compact;
     let named_conversation = identity::named(&parts.headers);
     let desktop_probe = desktop_purpose == Some(super::connections::desktop::Purpose::Probe);
     let conversation = (!desktop_probe).then(|| identity::affinity(&parts.headers, &bytes));
@@ -1933,13 +2036,12 @@ async fn execute(
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
     }
-    if let Some(id) = identity::title_session(
-        agent,
-        &parts.headers,
-        &original,
-        !external && !count_tokens && compact.is_none() && desktop_purpose.is_none(),
-    ) {
-        trace.native_session(&id);
+    if !external && !count_tokens && !is_compact && desktop_purpose.is_none() {
+        if let Some(id) = identity::title_session(agent, &parts.headers, &original, true) {
+            trace.native_session(&id);
+        } else if let Some(digest) = identity::trae_title_turn(agent, &parts.headers, &original) {
+            trace.trae_title_turn(digest);
+        }
     }
     let durable = if external || refresh_credentials {
         state
@@ -1951,6 +2053,30 @@ async fn execute(
     } else {
         None
     };
+    let opaque_state = opaque_continuation(protocol, &original);
+    let has_tool_items = projection["input"].as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            matches!(
+                item["type"].as_str(),
+                Some("function_call" | "function_call_output")
+            )
+        })
+    });
+    let per_turn_routing = matches!(session.group.affinity.as_str(), "off" | "turn");
+    let per_turn_intent = per_turn_routing && session.group.uses_classifier();
+    let turn_tool_replay = (!count_tokens
+        && !desktop_probe
+        && !is_compact
+        && per_turn_routing
+        && !opaque_state
+        && has_tool_items)
+        .then(|| codex_replay::inline_tool_history(&projection, true))
+        .flatten();
+    let closed_inline_tool_turn = turn_tool_replay.as_ref().is_some_and(|history| {
+        history.new_user_turn
+            && history.closed_tool_calls
+            && (responses_replay || !history.follows_interruption)
+    });
     let visible_history_agent = matches!(
         (agent, protocol),
         ("workbuddy" | "workbuddy-ai", Protocol::Chat)
@@ -1959,25 +2085,25 @@ async fn execute(
                 Protocol::Chat | Protocol::Anthropic | Protocol::Responses
             )
     );
-    let visible_history_replay = visible_history_agent
-        && compact.is_none()
-        && !opaque_continuation(protocol, &original)
-        && length::portable(&projection);
+    let visible_history_replay =
+        visible_history_agent && !is_compact && !opaque_state && length::portable(&projection);
     let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
         || session.targets.iter().all(|target| target.official))
         && protocol != Protocol::Responses
         && session.targets.len() == 1
-        && !opaque_continuation(protocol, &original)
+        && !opaque_state
         && completed_tool_history(&projection);
     let harness_chat = agent == "deepseek-harness" && protocol == Protocol::Chat;
-    let harness_tool_history = harness_chat
-        && compact.is_none()
-        && !opaque_continuation(protocol, &original)
-        && completed_tool_history(&projection);
+    let harness_tool_history =
+        harness_chat && !is_compact && !opaque_state && completed_tool_history(&projection);
     let harness_next_user_turn = harness_tool_history
         && named_conversation
-        && session.group.affinity == "turn"
-        && user_follow_up_after_tool_reply(&projection);
+        && per_turn_routing
+        && if per_turn_routing {
+            closed_inline_tool_turn
+        } else {
+            user_follow_up_after_tool_reply(&projection)
+        };
     let previous_response_required = visible_history_agent
         && projection
             .get("previous_response_id")
@@ -2019,7 +2145,7 @@ async fn execute(
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
     };
-    let route_compaction = compact.is_some_and(|compact| !compact.native)
+    let route_compaction = (compact.is_some_and(|compact| !compact.native) || prompt_compact)
         && parts.extensions.get::<native::ForcedTarget>().is_none()
         && session.group.rules.iter().any(|rule| {
             rule.enabled
@@ -2033,21 +2159,20 @@ async fn execute(
                         }
                 })
         });
-    let compact_inline_tools = route_compaction
-        && responses_replay
-        && codex_replay::portable_compaction_tools(&projection);
+    let compact_inline_tools_shape =
+        route_compaction && codex_replay::portable_compaction_tools(&projection);
     let portable_reroutable = length::portable(&projection)
-        && !opaque_continuation(protocol, &original)
+        && !opaque_state
         && !native_request
         && session.group.affinity != "strict";
     let codex_per_turn = responses_replay
-        && compact.is_none()
+        && !is_compact
         && named_conversation
         && matches!(session.group.affinity.as_str(), "off" | "turn");
     let codex_inline_replay = codex_per_turn
-        .then(|| codex_replay::inline_tool_history(&projection))
+        .then(|| codex_replay::inline_tool_history(&projection, false))
         .flatten();
-    let (mut pinned, mut affinity, checkpoint_owner, last_input_tokens) = {
+    let (mut pinned, mut affinity, checkpoint_owner, last_input_tokens, closed_tool_turn) = {
         let bindings = match scoped.bindings.lock() {
             Ok(bindings) => bindings,
             Err(_) => return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_state_unavailable"),
@@ -2055,30 +2180,42 @@ async fn execute(
         if bindings.full() {
             return fail(StatusCode::CONFLICT, "routing_session_capacity");
         }
-        let resolution = if count_tokens {
+        let session_owner = conversation
+            .as_deref()
+            .and_then(|name| bindings.session(name));
+        let compact_inline_tools = compact_inline_tools_shape
+            && (responses_replay
+                || (session_owner != Some(usize::MAX)
+                    && bindings.knows_tool_calls(
+                        &bindings.continuation_projection(&consumer, &projection),
+                    )));
+        let closed_tool_turn = closed_inline_tool_turn
+            && session_owner != Some(usize::MAX)
+            && bindings.knows_tool_calls(&bindings.continuation_projection(&consumer, &projection));
+        let resolution = if count_tokens || closed_tool_turn {
             Ok(None)
+        } else if let Some(replay) = turn_tool_replay
+            .as_ref()
+            .filter(|replay| !responses_replay && !replay.new_user_turn)
+        {
+            // Closed turns stay on the wire. Only the active turn supplies
+            // ownership evidence for tool results after a model switch.
+            let owned = bindings.continuation_projection(&consumer, &projection);
+            match bindings.resolve_from(&owned, conversation.as_deref(), replay.current_turn_start)
+            {
+                Ok(Some(owner)) => Ok(Some(owner)),
+                _ => return fail(StatusCode::CONFLICT, "routing_unknown_continuation"),
+            }
+        } else if harness_chat && bindings.has_archived_call_in_open_turn(&projection) {
+            Err(())
         } else if protocol != Protocol::Responses {
-            let pinned = conversation
-                .as_ref()
-                .and_then(|name| bindings.session(name));
-            let tools = projection
-                .get("input")
-                .and_then(Value::as_array)
-                .is_some_and(|items| {
-                    items.iter().any(|item| {
-                        matches!(
-                            item["type"].as_str(),
-                            Some("function_call" | "function_call_output")
-                        )
-                    })
-                });
-            if harness_next_user_turn
+            let pinned = session_owner;
+            if !per_turn_routing
+                && harness_next_user_turn
                 && pinned != Some(usize::MAX)
                 && bindings.knows_tool_calls(&projection)
             {
                 Ok(None)
-            } else if harness_chat && bindings.has_archived_call_in_open_turn(&projection) {
-                Err(())
             } else if requires_owner {
                 bindings.resolve(
                     &projection,
@@ -2088,14 +2225,14 @@ async fn execute(
                 // An existing named scope still pins its destination. A self-contained
                 // transcript can start a new single-target scope after a model switch.
                 Ok(pinned)
-            } else if tools && !named_conversation {
+            } else if has_tool_items && !named_conversation {
                 // A derived opening is affinity, not tool-call ownership. Resolve
                 // every call so unknown, colliding or mixed owners still fail closed.
                 bindings.resolve(
                     &bindings.continuation_projection(&consumer, &projection),
                     None,
                 )
-            } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
+            } else if (has_tool_items || opaque_state) && pinned.is_none() {
                 Err(())
             } else {
                 Ok(pinned)
@@ -2111,8 +2248,9 @@ async fn execute(
                     // owner is relevant to the new checkpoint.
                     projection["input"].as_array().map_or(0, Vec::len)
                 } else {
-                    codex_inline_replay
+                    turn_tool_replay
                         .as_ref()
+                        .or(codex_inline_replay.as_ref())
                         .map_or(0, |history| history.current_turn_start)
                 },
             )
@@ -2139,13 +2277,15 @@ async fn execute(
                 .contains(&continuation::hash("session", key))
         });
         let inline_new_turn = codex_inline_replay.as_ref().is_some_and(|history| {
-            history.new_user_turn && (completed || history.follows_interruption)
+            history.new_user_turn
+                && (!per_turn_intent || !history.closed_tool_calls)
+                && (completed || history.follows_interruption)
         });
-        if (compact.is_none() || route_compaction)
-            && !opaque_continuation(protocol, &original)
+        if (!is_compact || route_compaction)
+            && !opaque_state
             && (inline_new_turn
                 || compact_inline_tools
-                || (completed
+                || ((completed || route_compaction)
                     && length::portable_ignoring(&projection, |item| {
                         // Codex sends inline browser context in both turns and summaries.
                         responses_replay && codex_replay::is_page_context(item)
@@ -2172,6 +2312,7 @@ async fn execute(
             affinity,
             checkpoint_owner,
             bindings.last_input_tokens,
+            closed_tool_turn,
         )
     };
     if let Some(forced) = parts.extensions.get::<native::ForcedTarget>() {
@@ -2295,7 +2436,7 @@ async fn execute(
         images: has_images,
         effort: requested_effort.as_deref(),
         agent,
-        compact: compact.is_some(),
+        compact: is_compact,
         at: chrono::Utc::now(),
         folder: &folder,
     };
@@ -2322,10 +2463,7 @@ async fn execute(
             })
         };
     if pinned.is_some_and(is_paused) {
-        if length::portable(&projection)
-            && !opaque_continuation(protocol, &original)
-            && !native_request
-        {
+        if length::portable(&projection) && !opaque_state && !native_request {
             pinned = None;
         } else {
             return fail(StatusCode::CONFLICT, "routing_continuation_target_paused");
@@ -2346,15 +2484,18 @@ async fn execute(
     let classified = if inspected_projection["_group_projection_incomplete"] != true
         && desktop_purpose != Some(super::connections::desktop::Purpose::Probe)
         && !count_tokens
+        && !is_compact
         && pinned.is_none()
         && classifier_permitted
         && session.group.uses_classifier()
         && !classifier_candidates.is_empty()
     {
-        match (
-            classifier::extract_user_text(inspected_projection, responses_replay),
-            session.classifier.clone(),
-        ) {
+        let text = if closed_tool_turn {
+            classifier::extract_user_text_after_closed_tools(inspected_projection, responses_replay)
+        } else {
+            classifier::extract_user_text(inspected_projection, responses_replay)
+        };
+        match (text, session.classifier.clone()) {
             (Some(text), Some(provider)) => {
                 let mut eligible = session.group.clone();
                 eligible
@@ -2692,6 +2833,11 @@ async fn execute(
         let Some(target) = session.targets.get(index) else {
             return fail(StatusCode::BAD_REQUEST, "routing_invalid_target");
         };
+        let retry_bad_request = session.group.enabled
+            && pinned.is_none()
+            && !count_tokens
+            && compact.is_none()
+            && (!attempts.is_empty() || !reset_deferred.is_empty());
         if !count_tokens && target.effort.free != Some(true) {
             if let Some(identity) = target.credentials.as_ref().and_then(|c| c.quota_identity()) {
                 let now = chrono::Utc::now().timestamp();
@@ -3114,6 +3260,16 @@ async fn execute(
                     transient.push((candidate, index));
                 }
             };
+            let retry_converted = |status, body: &[u8]| {
+                (status == 400 && retry_bad_request)
+                    || retry_converted_rejection(
+                        upstream,
+                        status,
+                        body,
+                        pinned,
+                        !attempts.is_empty(),
+                    )
+            };
             match forwarded {
                 Ok(response) => response,
                 Err(super::ProxyError::DlpForward(error)) => {
@@ -3194,13 +3350,7 @@ async fn execute(
                         resp
                     } else {
                         let bytes = body.as_deref().unwrap_or_default().as_bytes();
-                        if retry_converted_rejection(
-                            upstream,
-                            status,
-                            bytes,
-                            pinned,
-                            !attempts.is_empty(),
-                        ) {
+                        if retry_converted(status, bytes) {
                             record_retryable_rejection(&mut transient, status);
                             continue;
                         }
@@ -3220,23 +3370,14 @@ async fn execute(
                     }
                 }
                 Err(super::ProxyError::UpstreamError { status, ref body })
-                    if retry_converted_rejection(
-                        upstream,
-                        status,
-                        body.as_deref().unwrap_or_default().as_bytes(),
-                        pinned,
-                        !attempts.is_empty(),
-                    ) =>
+                    if retry_converted(status, body.as_deref().unwrap_or_default().as_bytes()) =>
                 {
                     record_retryable_rejection(&mut transient, status);
                     continue;
                 }
                 Err(super::ProxyError::SafeUpstream(error))
-                    if pinned.is_none()
-                        && matches!(
-                            error.status().as_u16(),
-                            401 | 402 | 403 | 429 | 500 | 502 | 503 | 504
-                        ) =>
+                    if (error.status() == StatusCode::BAD_REQUEST && retry_bad_request)
+                        || (pinned.is_none() && failover_status(error.status().as_u16())) =>
                 {
                     let status = error.status().as_u16();
                     log::warn!(
@@ -3416,6 +3557,10 @@ async fn execute(
                             .await
                         {
                             Ok(result) => result,
+                            Err(_) if probe_status == 400 && retry_bad_request => {
+                                trace.step(trace::Kind::Rejected, Some(candidate), Some(400));
+                                continue 'attempts;
+                            }
                             Err(_) => {
                                 return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected")
                             }
@@ -3443,7 +3588,9 @@ async fn execute(
                 );
                 let error_bytes = match wait_for_attempt(attempt_deadline, read_error).await {
                     Ok(Ok(Ok(bytes))) => bytes,
-                    _ if pinned.is_none() && failover_status(status.as_u16()) => {
+                    _ if (status == StatusCode::BAD_REQUEST && retry_bad_request)
+                        || (pinned.is_none() && failover_status(status.as_u16())) =>
+                    {
                         break super::hyper_client::ProxyResponse::buffered(
                             status,
                             response_headers,
@@ -3526,6 +3673,9 @@ async fn execute(
                     }
                     error_bytes = Some(bytes);
                 }
+            }
+            if status == StatusCode::BAD_REQUEST && retry_bad_request {
+                continue;
             }
             let hints = error_bytes
                 .as_deref()
@@ -3718,13 +3868,13 @@ async fn execute(
         observer.scheduling = Some(target.scheduling.clone());
         observer.started = streaming.then_some(attempt_started);
         observer.first_content = observed_first_content;
-        let mut collector = super::pi::usage::Collector::new(match protocol {
+        let collector = super::pi::usage::Collector::new(match protocol {
             Protocol::Responses => crate::services::pi_routing::catalog::Protocol::Responses,
             Protocol::Chat => crate::services::pi_routing::catalog::Protocol::Chat,
             Protocol::Anthropic => crate::services::pi_routing::catalog::Protocol::Anthropic,
             Protocol::Gemini => crate::services::pi_routing::catalog::Protocol::Gemini,
         });
-        let mut job = super::pi::usage::Job {
+        let job = super::pi::usage::Job {
             app_type: if external {
                 "external"
             } else {
@@ -3766,6 +3916,15 @@ async fn execute(
         )
         .with_session(tool_session_id.clone());
         let account_scheduling = target.scheduling.clone();
+        let mut observation = StreamObservation {
+            observer,
+            trace,
+            collector,
+            job: (!external).then_some(job),
+            started,
+            upstream_status: status.as_u16(),
+            finished: false,
+        };
         let stream = async_stream::stream! {
             let mut content_timed = false;
             let mut last_rate_sample = None;
@@ -3776,29 +3935,31 @@ async fn execute(
                 let Some(next) = next else { break; };
                 match next {
                     Ok(bytes) => {
+                        let observer = &mut observation.observer;
                         let previous_output = observer.output_tokens;
                         if scoped.update(|bindings| observer.push(&bytes, bindings, index)).is_err() {
-                            trace.finish(503, trace::State::Failed);
+                            observation.finish(503, trace::State::Failed);
                             yield Err(std::io::Error::other("Routing state unavailable")); return;
                         }
                         if !content_timed {
                             if let Some(at) = observer.first_content {
-                                trace.first_content(at);
+                                observation.trace.first_content(at);
                                 content_timed = true;
                             }
                         }
                         if let Some((decode_ms, output_tokens)) =
                             observer.live_sample(previous_output, &mut last_rate_sample)
                         {
-                            trace.speed(decode_ms, output_tokens);
+                            observation.trace.speed(decode_ms, output_tokens);
                         }
-                        collector.push(&bytes); yield Ok::<_, std::io::Error>(bytes); }
+                        observation.collector.push(&bytes); yield Ok::<_, std::io::Error>(bytes); }
                     Err(_) => {
-                        trace.finish(502, trace::State::Failed);
+                        observation.finish(502, trace::State::Failed);
                         yield Err(std::io::Error::other("Routing upstream stream failed")); return;
                     }
                 }
             }
+            let observer = &mut observation.observer;
             let updated = scoped.update(|bindings| {
                 observer.finish(bindings, index);
                 if portable_tool_history && observer.completed && !observer.failed && !observer.oversized {
@@ -3818,28 +3979,19 @@ async fn execute(
                 }
             });
             if updated.is_err() {
-                trace.finish(503, trace::State::Failed);
+                observation.finish(503, trace::State::Failed);
                 yield Err(std::io::Error::other("Routing state unavailable")); return;
             }
-            collector.finish();
-            if collector.observed {
-                trace.usage(&collector.usage, observer.first_content);
-            }
             let (_, _, decode_ms, output_tokens) = observer.sample();
-            trace.speed(decode_ms, output_tokens);
-            trace.observe_account(candidate, &account_scheduling);
+            observation.trace.speed(decode_ms, output_tokens);
+            observation.trace.observe_account(candidate, &account_scheduling);
             let trace_failed = observer.failed || (streaming && !observer.completed && !observer.trace_terminal && !observer.oversized);
             if trace_failed { account_scheduling.failed(&http::HeaderMap::new(), chrono::Utc::now().timestamp()); }
             else { account_scheduling.succeeded(); }
-            trace.finish(
+            observation.finish(
                 if trace_failed { 502 } else { status.as_u16() },
                 if trace_failed { trace::State::Failed } else { trace::State::Completed },
             );
-            if collector.observed && !external {
-                job.usage = collector.usage;
-                job.latency_ms = started.elapsed().as_millis() as u64;
-                super::pi::usage::emit(job);
-            }
         };
         let mut response = Response::new(Body::from_stream(
             super::tool_observation::mount::observe_stream(stream, metadata),
@@ -4095,17 +4247,22 @@ fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
                     })
             })
         }),
-        Protocol::Gemini => body["contents"].as_array().is_some_and(|contents| {
-            contents.iter().any(|content| {
-                content["parts"].as_array().is_some_and(|parts| {
-                    parts.iter().any(|part| {
-                        part.get("thoughtSignature").is_some()
-                            || part["thought"] == true
-                            || part.get("functionResponse").is_some()
+        Protocol::Gemini => {
+            !body["cachedContent"].is_null()
+                || body["contents"].as_array().is_some_and(|contents| {
+                    contents.iter().any(|content| {
+                        content["parts"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part.get("thoughtSignature").is_some()
+                                    || part["thought"] == true
+                                    || part.get("functionResponse").is_some_and(|result| {
+                                        result["id"].as_str().is_none_or(str::is_empty)
+                                    })
+                            })
+                        })
                     })
                 })
-            })
-        }),
+        }
         Protocol::Responses => false,
     }
 }
@@ -4185,5 +4342,7 @@ mod global_tests;
 mod routed_dlp_agent_matrix;
 #[cfg(test)]
 mod routed_dlp_tests;
+#[cfg(test)]
+mod template_agent_matrix_tests;
 #[cfg(test)]
 mod tests;

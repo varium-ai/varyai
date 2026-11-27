@@ -23,6 +23,7 @@ pub(crate) async fn routing_trace_snapshot(
     let inventory = tokio::task::spawn_blocking(move || {
         recorded_gateway_costs(&db, &mut requests);
         resolve_trace_suppliers(&db, &mut requests);
+        store.attach_trae_sessions(&mut requests);
         let requests = store.live_requests(requests, crate::session_manager::named_session_titles);
         (requests, store.history_days())
     })

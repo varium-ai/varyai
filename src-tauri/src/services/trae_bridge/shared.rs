@@ -7,6 +7,8 @@ pub(crate) enum Edition {
     International,
 }
 impl Edition {
+    pub(crate) const ALL: [Self; 2] = [Self::China, Self::International];
+
     pub(crate) fn parse(app: &str) -> Option<Self> {
         match app {
             "trae" => Some(Self::China),
@@ -53,12 +55,14 @@ impl Client {
         }))
     }
     pub(crate) fn argv_path(self) -> Result<PathBuf, AppError> {
-        Ok(dirs::home_dir()
-            .ok_or_else(unavailable)?
-            .join(match self.0 {
-                Edition::China => ".trae-cn/argv.json",
-                Edition::International => ".trae/argv.json",
-            }))
+        #[cfg(test)]
+        let home = crate::config::get_home_dir();
+        #[cfg(not(test))]
+        let home = dirs::home_dir().ok_or_else(unavailable)?;
+        Ok(home.join(match self.0 {
+            Edition::China => ".trae-cn/argv.json",
+            Edition::International => ".trae/argv.json",
+        }))
     }
     #[cfg(target_os = "macos")]
     pub(super) fn port_path(self) -> Result<PathBuf, AppError> {
@@ -168,6 +172,11 @@ impl Client {
         // A stopped client keeps the durable outbox until cleanup is acknowledged.
         self.request(&json!({"op":"remove","id":id}))?;
         Ok(())
+    }
+    pub(crate) fn selection_pending(self, id: &str, model: &str) -> Option<bool> {
+        self.request(&json!({"op":"selection_pending","id":id,"model":model}))
+            .ok()?
+            .as_bool()
     }
     pub(crate) fn select(self, id: &str, model: &str) -> Result<(), AppError> {
         if self.request(&json!({"op":"select","id":id,"model":model}))? != true {

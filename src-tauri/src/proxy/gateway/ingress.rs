@@ -61,7 +61,7 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         && !gemini
         && !matches!(
             path.as_str(),
-            "/v1/messages" | "/v1/responses" | "/v1/chat/completions"
+            "/v1/messages" | "/v1/responses" | "/v1/responses/compact" | "/v1/chat/completions"
         )
     {
         return StatusCode::NOT_FOUND.into_response();
@@ -216,6 +216,7 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
                 )
                 .await
             }
+            "/v1/responses/compact" => return StatusCode::NOT_FOUND.into_response(),
             _ => {
                 crate::proxy::handlers::handle_responses_with_ingress(
                     state.clone(),

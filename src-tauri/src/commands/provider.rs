@@ -213,6 +213,21 @@ pub async fn switch_provider(
     id: String,
 ) -> Result<SwitchResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(&app) {
+        let state = app_handle
+            .try_state::<AppState>()
+            .ok_or_else(|| "Application state is unavailable".to_string())?;
+        let native_responses = state
+            .db
+            .get_provider_by_id(&id, edition.app())
+            .map_err(|error| error.to_string())?
+            .as_ref()
+            .is_some_and(crate::services::upstream_protocol::trae_native_responses);
+        if native_responses {
+            super::proxy::ensure_trae_edition_consent(&app_handle, state.inner(), edition).await?;
+            state.proxy_service.start().await?;
+        }
+    }
     if app_type == AppType::Qoder {
         let state = app_handle
             .try_state::<AppState>()

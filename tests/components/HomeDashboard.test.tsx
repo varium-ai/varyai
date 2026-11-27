@@ -215,6 +215,8 @@ describe("HomeDashboard current provider", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(scope).toBeVisible();
     expect(note).toHaveTextContent("IDE 和 Agent 窗口");
+    expect(scope).toHaveTextContent("官方 Auto 模型需要单独接入官方会话审计");
+    expect(scope).toHaveTextContent("在聊天窗口选择 VaryAI 模型");
     expect(note).toHaveTextContent("完全退出 TRAE");
     expect(note).toHaveTextContent("VaryAI 不会自动打开 TRAE");
     expect(note).not.toHaveTextContent("证书");

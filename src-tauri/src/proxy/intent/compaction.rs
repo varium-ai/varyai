@@ -21,6 +21,96 @@ pub(super) enum Operation {
     Trigger,
 }
 
+fn is_compaction_system_prompt(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with("You are a helpful AI assistant tasked with summarizing conversations")
+        || trimmed.starts_with("You are performing a CONTEXT CHECKPOINT COMPACTION.")
+        || trimmed.starts_with(
+            "You are the component that summarizes internal chat history into a given structure.",
+        )
+        || trimmed.starts_with("You are a context summarization assistant.")
+        || trimmed.starts_with("You are a context compression assistant")
+}
+
+fn is_compaction_user_prompt(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    (text.contains("CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.")
+        && (text.contains("summary of the conversation") || text.contains("<summary>")))
+        || (text.contains("Your task is to create a detailed summary of the conversation so far")
+            && text.contains("Pending Tasks:")
+            && text.contains("Current Work:"))
+        || trimmed.starts_with("Provide a detailed prompt for continuing our conversation above")
+        || text.contains("First, reason in your scratchpad. Then, generate the <state_snapshot>.")
+        || text.contains(
+            "The messages above are a conversation to summarize. Create a structured context checkpoint summary",
+        )
+}
+
+fn item_text(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_owned();
+    }
+    let Some(parts) = content.as_array() else {
+        return String::new();
+    };
+    let mut joined = String::new();
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            if !joined.is_empty() {
+                joined.push('\n');
+            }
+            joined.push_str(text);
+        }
+    }
+    joined
+}
+
+/// Detect Anthropic-formatted compaction requests so Desktop admission never treats them as title probes.
+pub(crate) fn is_anthropic_compaction(body: &Value) -> bool {
+    let system_matches = body
+        .get("system")
+        .map(item_text)
+        .is_some_and(|text| is_compaction_system_prompt(&text));
+    if system_matches {
+        return true;
+    }
+    body.get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| messages.last())
+        .filter(|last| last.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|last| item_text(&last["content"]))
+        .is_some_and(|text| is_compaction_user_prompt(&text))
+}
+
+/// Detect Agent-initiated context compaction across Chat, Anthropic, Responses, and Gemini projections.
+pub(super) fn is_prompt_compaction(headers: &axum::http::HeaderMap, projection: &Value) -> bool {
+    if super::trace::request_kind(headers, false) == Some("compact") {
+        return true;
+    }
+    if projection
+        .get("instructions")
+        .and_then(Value::as_str)
+        .is_some_and(is_compaction_system_prompt)
+    {
+        return true;
+    }
+    let Some(items) = projection.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    if items.iter().any(|item| {
+        matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("system" | "developer")
+        ) && is_compaction_system_prompt(&item_text(&item["content"]))
+    }) {
+        return true;
+    }
+    items
+        .last()
+        .filter(|last| last.get("role").and_then(Value::as_str) == Some("user"))
+        .is_some_and(|last| is_compaction_user_prompt(&item_text(&last["content"])))
+}
+
 pub(super) fn operation(body: &Value, legacy: bool) -> Result<Option<Operation>, &'static str> {
     let object = body.as_object().ok_or(INVALID_REQUEST)?;
     object
@@ -1391,5 +1481,52 @@ mod tests {
         .await;
         assert_ne!(events[3]["response"]["id"], another["id"]);
         assert_ne!(events[1]["item"]["id"], another["output"][0]["id"]);
+    }
+
+    #[test]
+    fn prompt_compaction_matches_agent_compaction_templates_without_user_false_positives() {
+        let empty = axum::http::HeaderMap::new();
+        for positive in [
+            json!({
+                "instructions": "You are a helpful AI assistant tasked with summarizing conversations.",
+                "input": [{ "role": "user", "content": "conversation" }]
+            }),
+            json!({
+                "instructions": "You are performing a CONTEXT CHECKPOINT COMPACTION.",
+                "input": [{ "role": "user", "content": "conversation" }]
+            }),
+            json!({
+                "instructions": "You are the component that summarizes internal chat history into a given structure.",
+                "input": [{ "role": "user", "content": "First, reason in your scratchpad. Then, generate the <state_snapshot>." }]
+            }),
+            json!({
+                "input": [
+                    { "role": "system", "content": "You are a context summarization assistant." },
+                    { "role": "user", "content": "The messages above are a conversation to summarize. Create a structured context checkpoint summary." }
+                ]
+            }),
+            json!({
+                "input": [
+                    { "role": "system", "content": "You are a context compression assistant." },
+                    { "role": "user", "content": "compress" }
+                ]
+            }),
+            json!({
+                "input": [{
+                    "role": "user",
+                    "content": "Your task is to create a detailed summary of the conversation so far.\nCRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+                }]
+            }),
+        ] {
+            assert!(is_prompt_compaction(&empty, &positive), "{positive}");
+        }
+
+        for negative in [
+            json!({ "input": [{ "role": "user", "content": "Please summarize our conversation so far." }] }),
+            json!({ "input": [{ "role": "user", "content": "Summarize this file and list Pending Tasks." }] }),
+            json!({ "instructions": "You are a coding assistant.", "input": [{ "role": "user", "content": "Summarize this PR" }] }),
+        ] {
+            assert!(!is_prompt_compaction(&empty, &negative), "{negative}");
+        }
     }
 }

@@ -1,5 +1,228 @@
 # Agent feature coverage
 
+## Cross-Agent parity for all four routing templates
+
+All four routing group templates (`Smart`, `Capability`, `Speed`, and `Expiry`)
+share per-turn reselection after closed tool rounds, multimodal/unsigned-thinking
+projection for live classification, and cross-protocol `Compaction` rule
+execution across connected Agents and external gateway routes. Active tool
+continuations and opaque/signed provider state remain pinned to their observed
+upstream owner, and unknown tool-call continuations fail closed.
+
+| Agent ID | Entry point and protocol adapter | Runtime and template behavior | Verification |
+| --- | --- | --- | --- |
+| `claude` | Claude Code CLI `/connections/claude/v1/messages` (Anthropic) | Per-turn reselection after closed `tool_use`/`tool_result` rounds, inline image + unsigned thinking classification, and Anthropic prompt compaction routing | Loopback cross-Agent template matrix and unit fixtures. Native macOS and Windows client verification pending. |
+| `claude-desktop` | Desktop `/connections/claude-desktop/v1/messages` (Anthropic) with Desktop lead-model resolution | Same Anthropic per-turn reselection, multimodal classification, and compaction routing without mislabeling compaction as title generation | Loopback cross-Agent template matrix and unit fixtures. Native macOS and Windows client verification pending. |
+| `codex` | Desktop/CLI `/backend-api/codex/responses(/compact)` and `/intent/v1/responses(/compact)` (Responses) | Per-turn replay, empty reasoning cleanup, multimodal classification, and native/endpoint/header compaction with `varyai1:` checkpoints | Loopback cross-Agent template matrix and native replay/compaction suites. Native macOS and Windows client verification pending. |
+| `t3code` | Desktop managed Codex driver `/connections/t3code/v1/responses(/compact)` (Responses) | Shared Codex Responses replay (empty reasoning cleanup, per-turn reselection), multimodal classification, and endpoint/header compaction | Loopback cross-Agent template matrix and Responses checkpoint round-trip. Native macOS and Windows client verification pending. |
+| `grokbuild` | CLI `/connections/grokbuild/v1/responses(/compact)` and `/v1/chat/completions` (Responses/Chat) | Per-turn reselection after closed tool rounds, multimodal classification, and endpoint/header/prompt compaction | Loopback cross-Agent template matrix across Responses and Chat. Native macOS and Windows client verification pending. |
+| `gemini` | Gemini CLI `/connections/gemini/v1beta/models/*:generateContent` (Gemini Native) | Per-turn reselection after closed `functionCall`/`functionResponse` rounds, `inlineData` image classification, and `<state_snapshot>` compaction routing | Loopback cross-Agent template matrix and Gemini projection unit tests. Native macOS and Windows client verification pending. |
+| `opencode` | CLI `/connections/opencode/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and OpenCode summarization compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `openclaw` | Native provider registry `/connections/openclaw/v1/chat/completions` and `/gateway` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and structured checkpoint compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `hermes` | CLI `/connections/hermes/v1/chat/completions` and `/v1/messages` (Chat/Anthropic) | Per-turn reselection after closed tool rounds, multimodal classification, and context-compression prompt routing across Chat and Anthropic | Loopback cross-Agent template matrix across Chat and Anthropic. Native macOS and Windows client verification pending. |
+| `pi` | CLI `/connections/pi` across Chat, Anthropic, and Responses | Per-turn reselection after closed tool rounds, multimodal classification, and prompt/endpoint compaction across all three protocols | Loopback cross-Agent template matrix across Chat, Anthropic, and Responses. Native macOS and Windows client verification pending. |
+| `workbuddy` | China Desktop `/connections/workbuddy/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing alongside visible-history recovery | Loopback cross-Agent template matrix and WorkBuddy history suites. Native macOS and Windows client verification pending. |
+| `workbuddy-ai` | International Desktop `/connections/workbuddy-ai/v1/chat/completions` (Chat) | Same per-turn reselection, `image_url` classification, and prompt compaction routing in the international scope | Loopback cross-Agent template matrix and WorkBuddy history suites. Native macOS and Windows client verification pending. |
+| `qoder` | China Desktop `/connections/qoder/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `doubaowork` | Desktop native audit integration | Dedicated audit integration without selectable VaryAI routing groups | Outside routing-group forwarding by design; source review. |
+| `trae` | China IDE/Agent `/connections/trae/v1/chat/completions` and `/v1/responses(/compact)` | Per-turn reselection (preserving rewritten Chat tool-ID matching), multimodal classification, and prompt/endpoint compaction | Loopback cross-Agent template matrix across Chat and Responses, plus TRAE projection tests. Native macOS and Windows client verification pending. |
+| `trae-intl` | International IDE/Agent `/connections/trae-intl/v1/chat/completions` and `/v1/responses(/compact)` | Same per-turn reselection, rewritten tool-ID matching, multimodal classification, and prompt/endpoint compaction in the international scope | Loopback cross-Agent template matrix across Chat and Responses. Native macOS and Windows client verification pending. |
+| `kimi` | CLI `/connections/kimi/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `qwen` | CLI `/connections/qwen/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `zcode` | Desktop `/connections/zcode/v1/chat/completions` (Chat) | Per-turn reselection after closed tool rounds, `image_url` classification, and prompt compaction routing | Loopback cross-Agent template matrix. Native macOS and Windows client verification pending. |
+| `deepseek-harness` | Desktop/CLI `/connections/deepseek-harness` across Chat, Anthropic, and Responses | Per-turn reselection after closed tool rounds, multimodal classification, and prompt/endpoint compaction alongside owned-tool-history recovery | Loopback cross-Agent template matrix across Chat, Anthropic, and Responses. Native macOS and Windows client verification pending. |
+| `glm` | Historical inactive identity retained for stored data compatibility | No active routing-group picker or connection ingress | Outside routing-group forwarding by design; source review. |
+
+## Live route graph titles for TRAE and WorkBuddy
+
+| Agent ID | Entry point and title source | Runtime and UI | Verification |
+| --- | --- | --- | --- |
+| `trae` | CN IDE and Agent windows, managed Chat/Responses, native renderer logs | Resolve the exact local conversation, including titles in rotated logs | Native macOS log evidence and gateway fixtures. Windows native verification pending. |
+| `trae-intl` | International IDE and Agent windows, separate managed Chat/Responses and renderer logs | Accept the international chat logger and keep edition-specific titles | Native macOS log evidence and gateway fixtures. Windows native verification pending. |
+| `workbuddy` | China Desktop and native SDK, managed Chat/Messages/Responses, China session database | Match the native conversation ID and display the current title | Both edition schemas observed on macOS. Gateway and database fixtures. Windows native verification pending. |
+| `workbuddy-ai` | International Desktop and native SDK, separate International session database | Same graph behavior with title lookup scoped to the international edition | Both edition schemas observed on macOS. Gateway and database fixtures. Windows native verification pending. |
+| `claude` | CLI Messages and local project logs | Existing explicit session title | Existing identity and graph regressions. |
+| `claude-desktop` | Desktop Messages | Existing session reference | Existing identity and graph regressions. |
+| `codex` | Desktop/CLI Responses and local thread index | Existing explicit thread title | Existing identity and graph regressions. |
+| `gemini` | CLI Gemini Native | Existing session reference | Existing identity and graph regressions. |
+| `grokbuild` | CLI Responses and local conversation logs | Existing explicit conversation title | Existing identity and graph regressions. |
+| `opencode` | CLI shared route and local session database | Existing explicit session title | Existing identity and graph regressions. |
+| `openclaw` | Native gateway and local Agent session store | Existing explicit session title | Existing identity and graph regressions. |
+| `hermes` | CLI shared Chat and local session store | Existing explicit session title | Existing identity and graph regressions. |
+| `pi` | CLI shared route and local session logs | Existing explicit session title | Existing identity and graph regressions. |
+| `qoder` | CN Desktop shared and native gateway | Existing session reference | Existing identity and graph regressions. |
+| `doubaowork` | Desktop native audit integration | No applicable graph title adapter | Source review. |
+| `kimi` | Native provider and shared route | Existing session reference | Existing identity and graph regressions. |
+| `qwen` | CLI shared route | Existing session reference | Existing identity and graph regressions. |
+| `zcode` | Desktop shared route and task index | Existing explicit session title | Existing identity and graph regressions. |
+| `deepseek-harness` | Desktop/CLI shared routes and local session store | Existing explicit session title | Existing identity and graph regressions. |
+| `glm` | Historical identity | No applicable graph title adapter | Source review. |
+| `t3code` | Desktop managed Codex and shared route | Existing session reference | Existing identity and graph regressions. |
+
+The reported TRAE CN request had a matching native title event in
+`renderer.1.log`. The international client used the `trae-chat-core` log
+category for its title event. Both are now accepted alongside active logs.
+The title join requires an explicit session identifier and rejects conflicting
+identifiers. WorkBuddy reads `sessions.id`, `custom_title` and `title` from the
+edition's database in read-only mode and excludes deleted sessions.
+
+A follow-up native TRAE CN chat showed a valid title in the active log while
+the live graph still displayed the session reference. For either TRAE edition,
+the managed Chat and Responses paths can correlate an otherwise unidentified
+request with one native local turn using the exact user text and request time.
+Multiple matching sessions leave the reference in place. In the native macOS
+TRAE CN probe, the gateway extracted the exact text from `user_input`, while
+the renderer recorded the same text in the serialized `query` part's
+`data.content`. A second provider request for that turn arrived 10 seconds
+later. The parser decodes this native envelope and the live join allows a
+30-second window for additional requests. The desktop UI retest is pending.
+
+Native macOS inspection confirmed the two TRAE log layouts and the two
+WorkBuddy database schemas. The regressions reproduce the missing titles and
+check the current and rotated log formats, edition isolation, invalid or
+missing identifiers, and the WorkBuddy gateway-to-graph join. Actual request
+headers from the reported TRAE turn and end-to-end rendering with the rebuilt
+desktop remain unverified.
+
+The macOS 26.6.2 arm64 working tree over `24aceae6` reproduced all three
+focused failures and passed the three regressions after the fix. The renderer
+type check, build and formatting passed, along with 5,014 unit tests, the
+development helpers and the production dependency audit. The toolchain was
+Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3.
+
+## TRAE provider Responses routes after restarting VaryAI
+
+| Agent | Entry point and adapter | Runtime and UI checks | Verification |
+| --- | --- | --- | --- |
+| TRAE CN | VaryAI-managed provider profile and the native Responses adapter in IDE and Agent windows | Startup refreshes model entries owned by the current profile. The managed endpoint routes with either official-session audit setting. | The migrated existing chat used native Responses after only VaryAI restarted on macOS. Its reply, route graph and redaction toast were observed. Windows native verification pending. |
+| TRAE International | Separate provider namespace, edition bridge, and shared model catalog | The native Responses provider and shared catalog can coexist. Startup queues international delivery separately. Normal exit preserves the shared model IDs. | The same Agent chat used the shared GLM model after only VaryAI restarted on macOS. Its reply, route graph and redaction toast were observed. The standalone Responses provider has projection and loopback restart coverage. Standalone native and Windows verification pending. |
+| Other Agents in the inventory below | Their existing launch, connection and gateway entry points | Provider Responses projection and route delivery are scoped to the two TRAE editions. Hermes protocol conversion retains its branch of the same HTTP endpoint. | Source review and existing protocol regressions. |
+
+The previous code tied both endpoint projection and admission at the provider
+Responses endpoint to the official-session audit flag. The regression failed
+with the original upstream address and HTTP 400 when the flag was off. It now
+exercises the existing endpoint across a local gateway restart and verifies
+stream bytes, provider attribution, text audit blocking and rejected input.
+
+The original CN chat had selected a direct model entry with a different native
+ID from the VaryAI-managed entry. The chat was switched to the managed entry in
+the native model picker. Normal VaryAI exit now preserves the published shared
+catalogs for both editions and restores launch settings owned by VaryAI.
+Explicit disconnect still withdraws the catalogs.
+
+On November 26, 2026, the international app restarted once for first-time
+connection setup. After collecting a baseline from each native chat, VaryAI
+quit normally and was relaunched. Both TRAE process start times and both native
+conversation IDs matched across the restart. The International shared chat at
+20:06 and the original CN Responses chat at 20:07 both entered the loopback
+gateway, returned the requested reply, and displayed a redaction toast for a
+synthetic phone sample. The live route graph showed both editions and the
+selected upstream in their respective requests. CN official-session auditing
+was off during the live checks.
+
+The working tree over `24aceae6` passed the full Cargo suite with 8,101
+passes and 21 ignored, strict Clippy, Cargo check, Rust and renderer formatting,
+renderer type checking and build, 5,014 renderer tests, and 74 TRAE bridge
+tests on macOS 26.6.2 arm64. The production dependency audit found no known
+vulnerabilities. Rust used 1.98.1, Node used 20.20.2, and pnpm used 10.12.3.
+Application-crate test builds used reduced debug information and disabled
+incremental compilation. Remote CI is pending.
+
+## TRAE CN connection reports from the November 26 Mina view
+
+The 14-report view lists five open TRAE CN issues in rows 3–7. This pass
+checks publication order, connection status after a restart, connection time,
+text auditing in Auto mode, and the source of conversation titles.
+
+| Agent | Entry point and adapter | Runtime and UI checks | Verification |
+| --- | --- | --- | --- |
+| `trae` | CN Desktop, shared model catalog and official-session audit | First publication with a non-first model, pending selection, inactive route, connection latency, text audit notification and live title | Isolated fixtures on macOS. Native macOS and Windows acceptance pending. |
+| `trae-intl` | International Desktop, separate outbox and shared model route | Same shared catalog and status cases, separate edition identity | Same synthetic catalog checks. Native macOS and Windows acceptance pending. |
+| Other Agents in the inventory below | Their individual desktop/CLI adapters and ingress paths | Their connection commands do not use the TRAE outbox or its status projection | Source review for scope |
+
+On the first catalog delivery, the saved starting model now appears first.
+Changing that selection after delivery preserves the catalog order. Status
+polling reads the native acknowledgment and the local route separately. An
+active connection saves the model choice and lets background delivery apply
+it, so the switch can return while a native acknowledgment is pending.
+First-open selection, catalog completeness after a native restart, and elapsed
+connection time still need measurements from the affected desktop.
+
+The audit screenshot shows a phone number submitted in a normal chat with the
+official Auto model selected. This exercises text auditing. The shared model
+connection suspends CN official-session inspection. A message sent through a
+VaryAI model follows the gateway text policy. A native Auto audit requires its
+own enabled and connected audit mode. The picker and CN audit notice explain
+the distinction. The existing compact Chinese phone fixture and shared gateway
+matrix cover text recognition and routing. An Auto event and notification
+from the reported desktop remain unverified.
+
+TRAE CN's chat and SOLO clients both apply the title from
+`RealtimeEventService.handleSessionUpdated` to the session identified by
+`chat_session_id`. The same event writes `chat_session_id`, `title` and
+`updated_at` to the window's `renderer.log`. On macOS the logs are in
+`~/Library/Application Support/Trae CN/logs`. On Windows the root is
+`%APPDATA%/Trae CN/logs`. The international edition has its own `Trae` root.
+Three distinct title-bearing updates were observed on the installed CN client.
+The production reader returned the same three pairs on its initial and
+cached reads. Both installed macOS editions use the same title handler in
+their chat and SOLO bundles. The separate IDE chat index contained no titles
+on this machine.
+
+The live graph joins a local request's explicit `chat_session_id` or
+`metadata.session_id` to these events and uses the newest title by update
+time. Tests cover concurrent requests in both editions, renamed and cleared
+titles, older updates, incomplete and unrelated log records, and absent or
+conflicting request IDs. Requests without a matching native ID have no
+title. The available gateway records predated all three retained title
+events. An end-to-end native gateway request and a Windows run are pending.
+
+The macOS 26.6.2 arm64 working tree over `24aceae6` passed type checking,
+the renderer build, both formatting checks, 5,014 renderer tests, Cargo check,
+strict Clippy and the full Cargo suite (8,101 passed and 21 ignored). A
+loopback test exercised the normal TRAE streaming endpoint while the
+upstream was waiting. The development helpers and production dependency
+audit passed. Tool versions were Rust 1.98.1, Node 20.20.2 and pnpm 10.12.3.
+The Rust tests used reduced debug information and disabled incremental
+compilation for the application crate after the initial build exhausted
+the available disk space. Remote CI has not been run for this working tree.
+
+## Routing group fallback after upstream HTTP 400
+
+The shared attempt loop will advance an unbound inference request after an
+explicit upstream HTTP 400, before publishing model output. The next attempt
+must already be eligible under the group and caller policy. Bound continuations,
+local request validation, and security decisions retain their existing behavior.
+The route graph records each attempted candidate and its original status.
+Native configuration and picker state continue through the existing adapters.
+
+| Agent ID | Entry point and adapter | Runtime and UI | Verification plan |
+| --- | --- | --- | --- |
+| `claude` | Claude Code CLI and shared Messages | Shared retry and route trace | Managed ingress and Messages fixtures |
+| `claude-desktop` | Native Desktop Messages and managed connection | Shared retry and route trace | Managed ingress and Messages fixtures |
+| `codex` | Desktop/CLI native Responses and temporary group | Shared retry, route trace and preserved response ownership | Both Responses ingress paths and pinned continuations |
+| `gemini` | Gemini CLI connection and Gemini Native | Shared retry and route trace | Managed ingress and Gemini Native fixtures |
+| `grokbuild` | CLI managed provider connection | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `opencode` | CLI catalog and managed connection | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `openclaw` | Native provider registry and managed/external gateway | Shared retry and route trace | Managed ingress and external gateway fixtures |
+| `hermes` | CLI managed Chat connection | Shared retry and route trace | Managed ingress and Chat fixtures |
+| `pi` | CLI provider-scoped ingress | Shared retry and route trace | Managed ingress and Chat fixtures |
+| `workbuddy` | China Desktop, managed gateway and native Chat | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `workbuddy-ai` | International Desktop, managed gateway and native Chat | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `qoder` | China Desktop native adapter and managed gateway | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `doubaowork` | Native audit integration | Dedicated audit UI without selectable routing groups | Outside group forwarding, source review |
+| `trae` | China IDE/Agent bridge and managed Chat/Responses | Shared retry and route trace | Both managed Chat and Responses fixtures |
+| `trae-intl` | International IDE/Agent bridge and managed Chat/Responses | Shared retry and route trace | Both managed Chat and Responses fixtures |
+| `kimi` | Native provider projection and managed gateway | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `qwen` | CLI model settings and managed gateway | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `zcode` | Desktop model catalog and managed gateway | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `deepseek-harness` | Desktop/CLI native model catalog and managed gateway | Shared retry and route trace | Managed ingress and conversion fixtures |
+| `glm` | Historical identity retained for existing records | No active routing-group picker | Outside managed group forwarding, source review |
+| `t3code` | Desktop managed Codex instances and shared ingress | Shared retry and route trace | Managed ingress and Responses fixtures |
+
+The loop uses the same code on macOS and Windows. Installed Agent self-tests
+are tracked separately from loopback fixtures.
+
 ## Manual reconnect feedback
 
 | Agent IDs | Entry points and adapters | Runtime and UI | Verification |
@@ -81,10 +304,10 @@ before deciding whether another change is needed.
 | 3 | DeepSeek Harness has no restart button after connection or model changes | Reproduced missing action when freshness is unknown or absent. Added the installed-desktop fallback with confirmation and unchanged identity checks. Native retest pending. |
 | 4 | ZCode starts with a different default model after restart | The recording shows a direct model in the restarted task composer while VaryAI shows a routing group. The installed build has a managed default and a matching rule on disk. Native new-chat readback with the reported configuration is pending. |
 | 5 | TRAE CN stays in the waiting state after restart with an incomplete catalog | Existing bridge delivery and native starting-model retry are present. The failed window/catalog state has not been reproduced in the reported client. |
-| 6 | TRAE CN produces no risk prompt or event | Current source provides the consented native RunCommand hook. Existing synthetic fixtures and historical acceptance cover specific hook paths. The reported client's hook load, accepted event, and notification are pending. |
+| 6 | TRAE CN produces no risk prompt or event | The attachment shows a normal chat with the official Auto model. See the text-audit follow-up above. |
 | 7 | TRAE CN first opens with the wrong default model | The existing startup selection retry waits for the native catalog and restored selection. The reported first-open path still needs a native retest. |
 | 8 | TRAE CN model connection is slow | Current source separates bridge reconnect work from the local switch lock. A timing trace from the affected operation is missing. |
-| 9 | TRAE CN routing graph lacks conversation titles | The live title resolver has no TRAE reader. Read-only metadata inspection found no verified native title index for the routed session IDs. Implementation is open. |
+| 9 | TRAE CN routing graph lacks conversation titles | The live graph reads the native session-title updates described above. A native request without an explicit session ID still has no title. |
 | 10 | Gemini appears disconnected in VaryAI while the existing CLI displays its old model | The two screenshots show a disconnected VaryAI row and an open CLI model label. Added the existing restart guidance to Gemini's disconnect confirmation. The terminal's effective route remains unverified. |
 | 11 | Codex started at system login has a stale model and catalog | Current source has a separate desktop refresh and catalog cache lifecycle. The reported system-login startup sequence is unreproduced. |
 | 12 | Qoder CN calendar misses a successful daily claim | The existing campaign-window parser and cache-update repair covers the reported November 17 date pattern. Native verification with the reporter's account is pending. |
@@ -2723,11 +2946,16 @@ The Agent page continues to show pending selection until native confirmation.
 
 | Agent              | Entry point and adapter                                                                          | macOS and Windows verification                                           |
 | ------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| TRAE CN            | Agent starting-model picker, native IDE and Agent window adapters                                | Model readiness and retry fixtures, installed-client acceptance pending  |
-| TRAE International | Agent starting-model picker, separate edition bridge with the same IDE and Agent window adapters | Shared readiness and retry fixtures, installed-client acceptance pending |
+| TRAE CN            | Agent starting-model picker, native IDE and Agent window adapters                                | macOS readback identified an Auto-only mode interrupting delivery. Saved model delivery to newly opened windows and workspace scopes needs a native retest on macOS and Windows. |
+| TRAE International | Agent starting-model picker, separate edition bridge with the same IDE and Agent window adapters | Same native policy and scope handling. Native macOS and Windows acceptance pending. |
 
-Other Agents use the entry points listed below and do not use the TRAE
-starting-model adapter.
+The TRAE adapter skips modes with a forced native selection other than Manual
+and attempts each applicable label and window independently. A ready window
+or workspace scope receives the saved default when it has no acknowledgement
+for that model. Acknowledged scopes keep their native selection until another
+explicit VaryAI selection or scope change. The bridge writes new-session
+defaults without a conversation ID. Other Agents use the entry points listed
+below and do not use the TRAE starting-model adapter.
 
 The November 23 gateway publication check covers the same Agent inventory
 through its existing native routes. The publication flag controls the external
@@ -3395,3 +3623,144 @@ and fail final validation with `400 dlp_redaction_failed`.
 | Agent IDs                                                                                                                                                                                                    | Entry point and adapter                                                | Verification scope                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `claude`, `claude-desktop`, `codex`, `gemini`, `grokbuild`, `opencode`, `openclaw`, `hermes`, `pi`, `workbuddy`, `workbuddy-ai`, `qoder`, `doubaowork`, `trae`, `trae-intl`, `kimi`, `qwen`, `zcode`, `deepseek-harness`, `t3code` | Shared Chat, Anthropic, Gemini, and Responses DLP adapters and `extractor` | Shared macOS synthetic HTTP and adapter regressions; native macOS/Windows pending |
+
+## Shared intent selection after a tool round
+
+The stream accounting follow-up applies to every executable Agent below on
+macOS and Windows. Each wire adapter feeds its actual usage frames through the
+shared route observation and asynchronous usage queue. The live graph and the
+usage dashboard retain the same request identity and observed model. The
+regression covers a client closing after terminal usage, closing with partial
+usage, and closing before any usage. Native acceptance remains pending.
+
+The interrupted-answer follow-up applies to every executable Agent in the
+matrix below through the same shared gate on macOS and Windows. The four
+protocol adapters supply their canonical history, and the existing routing
+graph displays the choice. The follow-up fixtures cover a new user query
+after a complete tool result and an interrupted answer. Native acceptance
+and the synthetic regressions remain pending manual verification.
+
+All Agents that execute a per-turn intent group use the shared turn classifier
+on macOS and Windows. Chat Completions, Messages, Responses and Gemini Native
+project their supported request fields into the shared planner. After a
+verified closed tool round, the classifier receives the new user text. Live
+tool results retain their observed owner. The model picker identifies the
+group and the routing graph shows the selected upstream.
+
+| Agent ID           | Entry point and adapter                                                | Runtime and UI                                                                                                                         | Verification                                                                     |
+| ------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `workbuddy`        | WorkBuddy China desktop and CLI, managed Chat                          | Classify the next user turn after a closed tool round, keep active tool rounds pinned, show the resulting choice in the existing graph | Authenticated Chat with synthetic tool history, native macOS and Windows pending |
+| `workbuddy-ai`     | WorkBuddy international desktop, separate managed Chat connection      | Same planner and graph, with separate conversation scope                                                                               | Authenticated Chat with synthetic tool history, native macOS and Windows pending |
+| `claude`           | Claude Code, Messages                                                  | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `claude-desktop`   | Claude Desktop, native Messages                                        | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `codex`            | CLI and desktop, Responses                                             | Responses replay, shared planner and routing graph                                                                                     | Shared regression and native acceptance pending                                  |
+| `gemini`           | Gemini CLI, Gemini Native                                              | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `grokbuild`        | Grok Build CLI, Responses                                              | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `opencode`         | OpenCode CLI and desktop, shared model catalog                         | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `openclaw`         | OpenClaw, managed Chat                                                 | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `hermes`           | Hermes Agent, managed Chat                                             | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `pi`               | Pi, shared model catalog                                               | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `qoder`            | Qoder desktop, Qoder China provider registry and native transport      | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `doubaowork`       | Doubao Work desktop                                                    | No executable intent route                                                                                                             | Inventory check                                                                  |
+| `trae`             | TRAE China desktop, managed Chat and Responses                         | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `trae-intl`        | TRAE international desktop, managed Chat and Responses                 | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `kimi`             | Kimi CLI, managed Chat                                                 | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `qwen`             | Qwen CLI, managed Chat                                                 | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `zcode`            | ZCode desktop, managed Chat                                            | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `deepseek-harness` | DeepSeek Harness desktop and CLI, managed Chat, Messages and Responses | Owned Chat tool history, shared planner and routing graph                                                                              | Shared regression and native acceptance pending                                  |
+| `t3code`           | T3 Code desktop, managed Responses                                     | Shared planner and routing graph                                                                                                       | Shared regression and native acceptance pending                                  |
+| `glm`              | Historical GLM identifiers                                             | No active Agent connection                                                                                                             | Inventory check                                                                  |
+
+The macOS WorkBuddy China request and conversation records showed a matched
+classification, a tool result, and then a user message after the assistant
+reply. The new question retained the earlier route. The loopback regression
+reproduced the same failure before the code change. It uses synthetic inputs,
+compares the forwarded Chat transcript, and checks classification through the
+routing trace.
+
+On the working tree based on `24aceae6`, macOS 26.6.2 arm64 with Rust
+1.98.1 passed all 14 WorkBuddy history tests on the initial correction.
+The final revision adds a third user turn, metadata-only session identity
+coverage, and a mismatched tool-result check. Cargo check and strict Clippy
+passed on that revision. The final Rust tests were stopped at the user's
+request for manual verification. The installed-client results for the final
+revision remain pending for both editions and platforms.
+
+The macOS DeepSeek Harness Chat records showed three user turns after a
+completed tool round recording `no_user_text` and selecting the default
+Grok member. The usage records and selected upstream agreed. The shared
+regression now exercises the registered managed Agent entries, the Codex
+menu and the Chat Completions, Messages, Responses, and Gemini Native
+adapters. It checks hard/easy selection, live tool ownership, repeated
+classification in the same conversation and preservation of the Chat
+transcript. The updated regressions and installed clients remain unverified
+on macOS and Windows at the user's request for manual testing.
+
+The 21:28 macOS Harness session included a paired tool call and result,
+followed by an interrupted assistant reply. The next two user requests
+received local HTTP 409 before any upstream attempt. The shared follow-up
+recognizes the new user boundary once all earlier calls have inline results
+and their recorded owners are known. The managed Chat and native protocol
+fixtures cover the missing final reply. The parser regression also covers
+a repeated question and a missing result. These tests were added for later
+verification and were not run.
+
+## Large routing catalogs and Agent row error layout
+
+The shared catalog is prepared before any native projection, and the Agent
+directory uses one sortable row for all managed Agents on macOS and Windows.
+The catalog regressions exercise the shared list and Codex's native projection.
+The browser check exercises an off-to-error transition for each managed row
+and checks the handle against the switch and the inline alert.
+
+| Agent ID           | Entry point and native adapter                                         | Runtime and UI coverage                                                    |
+| ------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `claude`           | Claude Code CLI, Messages                                              | Shared catalog, starting model, sortable row                               |
+| `claude-desktop`   | Claude Desktop, native Messages                                        | Shared catalog, large model visibility and order persistence, sortable row |
+| `codex`            | Codex CLI and desktop, Responses                                       | Shared catalog, native configuration publication and restore, sortable row |
+| `gemini`           | Gemini CLI, Gemini Native                                              | Shared catalog, starting model, sortable row                               |
+| `grokbuild`        | Grok Build CLI, Responses                                              | Shared catalog, starting model, sortable row                               |
+| `opencode`         | OpenCode CLI and desktop, native provider projection                   | Shared catalog, native picker, sortable row                                |
+| `openclaw`         | OpenClaw, managed Chat                                                 | Shared catalog, starting model, sortable row                               |
+| `hermes`           | Hermes Agent, managed Chat                                             | Shared catalog, starting model, sortable row                               |
+| `pi`               | Pi, native provider projection                                         | Shared catalog, native picker, sortable row                                |
+| `workbuddy`        | WorkBuddy China desktop and CLI, managed Chat                          | Shared catalog, authorized starting model, sortable row                    |
+| `workbuddy-ai`     | WorkBuddy international desktop, managed Chat                          | Shared catalog, authorized starting model, sortable row                    |
+| `qoder`            | Qoder desktop, native provider registry                                | Shared catalog, authorized starting model, sortable row                    |
+| `doubaowork`       | Doubao Work desktop, audit-only                                        | Official models, audit toggle, sortable row                                |
+| `trae`             | TRAE China desktop, managed Chat and Responses                         | Shared catalog, bridge starting model, sortable row                        |
+| `trae-intl`        | TRAE international desktop, managed Chat and Responses                 | Shared catalog, bridge starting model, sortable row                        |
+| `kimi`             | Kimi CLI, managed Chat                                                 | Shared catalog, starting model, sortable row                               |
+| `qwen`             | Qwen CLI, managed Chat                                                 | Shared catalog, starting model, sortable row                               |
+| `zcode`            | ZCode desktop, managed Chat                                            | Shared catalog, unsupported default-model control, sortable row            |
+| `deepseek-harness` | DeepSeek Harness desktop and CLI, managed Chat, Messages and Responses | Shared catalog, starting model, sortable row                               |
+| `t3code`           | T3 Code desktop, managed Responses                                     | Shared catalog, starting model, sortable row                               |
+| `glm`              | Historical GLM identifiers                                             | Inactive connection and excluded from the Agent directory                  |
+
+On macOS 26.6.2 arm64 with Rust 1.98.1, the isolated Codex connection
+reproduced `intentRouting.invalid` with 256 visible models and one hidden
+compatibility alias. The same fixture connected after the fix. The larger
+fixture connected with 302 visible entries and 301 hidden compatibility
+aliases, selected its saved group and restored the original configuration.
+
+Headless Chrome 158 and WebKit 27.2 verified all 20 Agent rows at 1200px and
+660px, including the generic connection error and the no-models action.
+The drag handle stayed to the right of the switch and the alert occupied
+the line below.
+
+Local verification used the working tree based on `bc0dd64b` with Node
+20.20.2 and pnpm 10.12.3. The 24 routing-menu tests passed, and the final
+targeted run passed the two large-catalog regressions and the 302-entry
+Claude Desktop visibility round trip. Type checking, the renderer build,
+all 5,014 frontend unit tests, formatting, the production dependency audit,
+CI helper tests, Cargo check and strict Clippy passed. The full Cargo test
+run was stopped at the user's request. Native application acceptance on macOS
+and Windows remains pending.
+
+The 21:41 macOS Harness record showed a normal HY reply with provider usage
+and a Vary AI trace ending before transport EOF. The trace request ID had
+no usage row. Shared stream observation now finalizes received usage on
+either EOF or close. The focused regression records the upstream model and
+token counts, preserves the terminal status when observed, and covers
+partial and unavailable usage. The regression was added for later manual
+verification and was not run.

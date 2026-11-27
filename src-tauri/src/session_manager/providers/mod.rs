@@ -7,5 +7,7 @@ pub mod hermes;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi;
+pub(crate) mod trae;
 mod utils;
+pub(crate) mod workbuddy;
 pub(crate) mod zcode;

@@ -219,6 +219,10 @@
   order: 1;
 }
 
+.agent-list-row > .mp-agent-error {
+  order: 1;
+}
+
 .agent-list-row .mp-agent-drag-handle {
   position: static;
   inset: auto;

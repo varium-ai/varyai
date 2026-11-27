@@ -996,7 +996,7 @@ impl Manager {
         if native_url.is_some_and(|url| !valid_native_url(url)) {
             return Err("intentRouting.invalid".into());
         }
-        if groups.is_empty() || groups.len() > super::menu::MAX_MENU_ENTRIES {
+        if groups.is_empty() {
             return Err("intentRouting.invalid".into());
         }
         for group in groups {

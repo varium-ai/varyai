@@ -52,6 +52,20 @@ fn with_remembered_model(mut status: Status, remembered: Option<String>) -> Stat
     status
 }
 
+fn with_trae_route(mut status: Status, active: bool) -> Status {
+    if status.configured && !active {
+        status.recovery_reason = Some(RecoveryReason::ConnectionInactive);
+    }
+    status.configured &= active;
+    if status.enabled && !status.configured {
+        status.recovery_pending = true;
+        status
+            .recovery_reason
+            .get_or_insert(RecoveryReason::BridgePending);
+    }
+    status
+}
+
 fn with_codex_reload(
     mut status: Status,
     reload: Option<agent_connections::ReloadState>,
@@ -243,25 +257,17 @@ pub(crate) async fn get_agent_connection(
     })
     .await
     .map_err(|_| FAILED)??;
-    if status.configured && !state.proxy_service.intent_runtime.connections.active(&app) {
-        if app == "trae-intl" {
-            state.proxy_service.sync_shared_trae_intl(false).await;
-        } else if app == "trae" {
-            state.proxy_service.sync_shared_trae(false).await;
-        } else {
-            state.proxy_service.sync_shared_agent_catalog(&app).await;
-        }
-    }
-    let active = state.proxy_service.intent_runtime.connections.active(&app);
     if Edition::parse(&app).is_some() {
-        status.configured &= active;
-        if status.enabled && !status.configured {
-            status.recovery_pending = true;
-            status
-                .recovery_reason
-                .get_or_insert(RecoveryReason::BridgePending);
-        }
-    } else if status.configured && !active {
+        // The background worker delivers the catalog. Status polling only reads its result.
+        return Ok(with_trae_route(
+            status,
+            state.proxy_service.intent_runtime.connections.active(&app),
+        ));
+    }
+    if status.configured && !state.proxy_service.intent_runtime.connections.active(&app) {
+        state.proxy_service.sync_shared_agent_catalog(&app).await;
+    }
+    if status.configured && !state.proxy_service.intent_runtime.connections.active(&app) {
         status.configured = false;
         status.recovery_pending = true;
         status.recovery_reason = Some(RecoveryReason::ConnectionInactive);
@@ -340,22 +346,18 @@ pub(crate) async fn list_agent_connections(
     statuses.push(status);
     for edition in [Edition::China, Edition::International] {
         let manager = state.proxy_service.agent_connections.clone();
-        let mut bridge =
+        let bridge =
             tokio::task::spawn_blocking(move || manager.bridge_for(edition).bridge_status())
                 .await
                 .map_err(|_| FAILED)??;
-        bridge.configured &= state
-            .proxy_service
-            .intent_runtime
-            .connections
-            .active(edition.app());
-        if bridge.enabled && !bridge.configured {
-            bridge.recovery_pending = true;
-            bridge
-                .recovery_reason
-                .get_or_insert(RecoveryReason::BridgePending);
-        }
-        statuses.push(bridge);
+        statuses.push(with_trae_route(
+            bridge,
+            state
+                .proxy_service
+                .intent_runtime
+                .connections
+                .active(edition.app()),
+        ));
     }
     let (audit_active, audit_waiting) = state.proxy_service.doubaowork_connection_status();
     let manager = state.proxy_service.agent_connections.clone();
@@ -374,6 +376,41 @@ pub(crate) async fn list_agent_connections(
 #[cfg(test)]
 mod desktop_restart_tests {
     use super::*;
+
+    #[test]
+    fn trae_starting_model_only_waits_for_a_chat_when_its_route_is_active() {
+        for edition in [Edition::China, Edition::International] {
+            let mut status = Status {
+                app: edition.app().into(),
+                enabled: true,
+                configured: true,
+                recovery_pending: true,
+                recovery_reason: Some(RecoveryReason::BridgeSelectionPending),
+                model: None,
+                restart_required: false,
+                reload_state: None,
+                desktop_state: None,
+                native_compatibility: None,
+                configuration_issue: None,
+            };
+            assert!(matches!(
+                with_trae_route(status.clone(), true).recovery_reason,
+                Some(RecoveryReason::BridgeSelectionPending)
+            ));
+            let inactive = with_trae_route(status.clone(), false);
+            assert!(!inactive.configured && inactive.recovery_pending);
+            assert!(matches!(
+                inactive.recovery_reason,
+                Some(RecoveryReason::ConnectionInactive)
+            ));
+            status.configured = false;
+            status.recovery_reason = Some(RecoveryReason::BridgeModelRejected);
+            assert!(matches!(
+                with_trae_route(status, false).recovery_reason,
+                Some(RecoveryReason::BridgeModelRejected)
+            ));
+        }
+    }
 
     #[test]
     fn active_doubao_inspection_proves_the_running_client_is_connected() {
@@ -792,7 +829,7 @@ async fn set_agent_connection_inner(
             }
             super::proxy::ensure_trae_edition_consent(&app_handle, state.inner(), edition).await?;
             state.proxy_service.start().await?;
-            state.proxy_service.refresh_global_routing().await?;
+            state.proxy_service.ensure_global_routing().await?;
             let catalog = state
                 .proxy_service
                 .intent_runtime
@@ -822,9 +859,10 @@ async fn set_agent_connection_inner(
                 .bridge_for(edition)
                 .bridge_select_model(enabled, model)?;
         }
-        if !enabled || state.proxy_service.prepare_shared_trae(edition).await {
-            state.proxy_service.sync_shared_trae_intl(false).await;
-        }
+        state
+            .proxy_service
+            .finish_shared_trae_connection(edition, enabled)
+            .await;
         return Ok(());
     }
     if app == "trae" {
@@ -838,7 +876,7 @@ async fn set_agent_connection_inner(
         if enabled {
             super::proxy::ensure_trae_consent(&app_handle, state.inner()).await?;
             state.proxy_service.start().await?;
-            state.proxy_service.refresh_global_routing().await?;
+            state.proxy_service.ensure_global_routing().await?;
             let catalog = state
                 .proxy_service
                 .intent_runtime
@@ -860,14 +898,10 @@ async fn set_agent_connection_inner(
             .proxy_service
             .select_shared_trae_connection_model(enabled, model)
             .await?;
-        if !enabled
-            || state
-                .proxy_service
-                .prepare_shared_trae(Edition::China)
-                .await
-        {
-            state.proxy_service.sync_shared_trae(false).await;
-        }
+        state
+            .proxy_service
+            .finish_shared_trae_connection(Edition::China, enabled)
+            .await;
         return Ok(());
     }
     if app == "glm" {
@@ -1408,7 +1442,7 @@ mod tests {
         assert!(state
             .db
             .get_bool_flag(trae_bridge::selection::PENDING_KEY)?);
-        assert!(state
+        assert!(!state
             .db
             .get_bool_flag(trae_bridge::selection::ROUTE_PENDING_KEY)?);
         let bridge = state.proxy_service.agent_connections.bridge_status()?;

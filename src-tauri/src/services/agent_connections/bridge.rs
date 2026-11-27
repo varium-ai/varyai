@@ -211,9 +211,24 @@ impl TraeBridge<'_> {
         origin: &str,
         suspend: bool,
     ) -> Result<Option<Receipt>, String> {
-        let replace = self
-            .bridge_load()?
-            .is_some_and(|outbox| outbox.replace_pending);
+        let mut outbox = self.bridge_load()?;
+        if let Some(saved) = outbox.as_mut().filter(|saved| {
+            !suspend
+                && menu.is_some()
+                && saved.enabled
+                && saved.delivered
+                && !saved.selection_pending
+        }) {
+            if saved
+                .model
+                .as_deref()
+                .is_some_and(|model| self.client().selection_pending(ID, model) == Some(true))
+            {
+                saved.selection_pending = true;
+                self.bridge_save(saved)?;
+            }
+        }
+        let replace = outbox.is_some_and(|saved| saved.replace_pending);
         self.bridge_sync_with(
             menu,
             origin,
@@ -272,12 +287,6 @@ impl TraeBridge<'_> {
             }
             return Ok(None);
         }
-        let config = super::projections::client_config(
-            &catalog,
-            &format!("{origin}/connections/{}", self.edition.app()),
-            &outbox.token,
-            &catalog[0].id,
-        );
         if outbox
             .model
             .as_ref()
@@ -285,7 +294,24 @@ impl TraeBridge<'_> {
         {
             outbox.model = Some(catalog[0].id.clone());
             outbox.selection_pending = true;
+            self.bridge_save(&outbox)?;
         }
+        // Keep an acknowledged ordering when only the starting model changes.
+        let published_first = outbox
+            .provider
+            .as_ref()
+            .filter(|_| outbox.delivered && !outbox.replace_pending)
+            .and_then(|provider| provider.settings_config["models"][0]["model"].as_str())
+            .filter(|id| catalog.iter().any(|model| model.id == *id));
+        let first = published_first
+            .or(outbox.model.as_deref())
+            .unwrap_or(&catalog[0].id);
+        let config = super::projections::client_config(
+            &catalog,
+            &format!("{origin}/connections/{}", self.edition.app()),
+            &outbox.token,
+            first,
+        );
         let provider = Provider::with_id(ID.into(), "VaryAI".into(), config, None);
         let unchanged = !outbox.replace_pending
             && outbox.delivered
@@ -311,48 +337,33 @@ impl TraeBridge<'_> {
                 // An offline bridge is not evidence of an externally changed configuration.
                 None => return Err(FAILED.into()),
             }
-            if outbox.selection_pending {
-                self.bridge_save(&outbox)?;
-                outbox.selection_pending = outbox
-                    .model
-                    .as_ref()
-                    .is_some_and(|model| select(model).is_err());
-                self.bridge_save(&outbox)?;
+        } else {
+            if outbox.configuration_changed {
+                return Err(CONFLICT.into());
             }
-            return Ok(Some(Receipt {
-                app: self.edition.app().into(),
-                token: outbox.token,
-                model: outbox.model.unwrap_or_else(|| catalog[0].id.clone()),
-                model_map: Default::default(),
-                visible_models: None,
-                files: vec![],
-                suspended: false,
-                applied_at_ms: None,
-            }));
-        }
-        if outbox.configuration_changed {
-            return Err(CONFLICT.into());
-        }
-        outbox.provider = Some(provider.clone());
-        outbox.delivered = false;
-        self.bridge_save(&outbox)?;
-        if let Err(error) = apply(&provider) {
-            outbox.model_write_failed = error == MODEL_REJECTED;
+            outbox.provider = Some(provider.clone());
+            outbox.delivered = false;
             self.bridge_save(&outbox)?;
-            return Err(error);
+            if let Err(error) = apply(&provider) {
+                outbox.model_write_failed = error == MODEL_REJECTED;
+                self.bridge_save(&outbox)?;
+                return Err(error);
+            }
+            outbox.model_write_failed = false;
+            outbox.replace_pending = false;
+            // The catalog is usable even while the preferred model awaits acknowledgement.
+            outbox.delivered = true;
+            self.bridge_save(&outbox)?;
         }
-        outbox.model_write_failed = false;
-        outbox.replace_pending = false;
-        // Catalog delivery remains usable when a native chat window cannot yet save its default.
-        outbox.delivered = true;
-        self.bridge_save(&outbox)?;
-        if outbox.selection_pending {
-            outbox.selection_pending = outbox
+        if outbox.selection_pending
+            && outbox
                 .model
-                .as_ref()
-                .is_some_and(|model| select(model).is_err());
+                .as_deref()
+                .is_none_or(|model| select(model).is_ok())
+        {
+            outbox.selection_pending = false;
+            self.bridge_save(&outbox)?;
         }
-        self.bridge_save(&outbox)?;
         Ok(Some(Receipt {
             app: self.edition.app().into(),
             token: outbox.token,
@@ -368,6 +379,64 @@ impl TraeBridge<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trae_first_catalog_prefers_the_saved_model_and_later_switches_only_select(
+    ) -> Result<(), String> {
+        use crate::services::trae_bridge::shared::Edition;
+        let directory = tempfile::tempdir().map_err(|_| FAILED)?;
+        let owner = Manager {
+            root: directory.path().into(),
+        };
+        let mut menu = super::super::tests::fixture_menu();
+        let first = menu.default_model.clone().ok_or(FAILED)?;
+        let selected = "vary-auto/second";
+        let mut second = menu.models[&first].clone();
+        second.alias = selected.into();
+        second.order = 1;
+        menu.models.insert(selected.into(), second);
+        menu.groups
+            .insert(selected.into(), menu.groups[&first].clone());
+        for edition in [Edition::China, Edition::International] {
+            let manager = owner.bridge_for(edition);
+            manager.bridge_select_model(true, Some(selected.into()))?;
+            let origin = "http://127.0.0.1:1";
+            manager.bridge_sync_with(
+                Some(&menu),
+                origin,
+                false,
+                |provider| {
+                    let rows = provider.settings_config["models"]
+                        .as_array()
+                        .ok_or(FAILED)?;
+                    assert_eq!(rows.len(), 2);
+                    assert_eq!(rows[0]["model"], selected);
+                    assert_eq!(rows[1]["model"], first);
+                    Ok(())
+                },
+                || panic!("catalog is available"),
+                |model| {
+                    assert_eq!(model, selected);
+                    Err(FAILED.into())
+                },
+                |_| None,
+            )?;
+            manager.bridge_select_model(true, Some(first.clone()))?;
+            manager.bridge_sync_with(
+                Some(&menu),
+                origin,
+                false,
+                |_| panic!("a model switch must not rewrite the catalog"),
+                || panic!("catalog is available"),
+                |model| {
+                    assert_eq!(model, first);
+                    Ok(())
+                },
+                |_| Some(true),
+            )?;
+            assert!(!manager.bridge_load()?.ok_or(FAILED)?.selection_pending);
+        }
+        Ok(())
+    }
     #[test]
     fn both_trae_editions_persist_explicit_replacement_without_forcing_model_selection(
     ) -> Result<(), Box<dyn std::error::Error>> {
