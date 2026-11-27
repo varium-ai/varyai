@@ -79,7 +79,7 @@ export function DoubaoWorkCheckinPanel({
   const canClaim =
     query.data?.connected &&
     selected &&
-    !["claimed", "already_checked"].includes(selected.outcome);
+    !["claimed", "already_checked", "inactive"].includes(selected.outcome);
   const hasReward =
     selected && ["claimed", "already_checked"].includes(selected.outcome);
 
@@ -214,7 +214,10 @@ export function DoubaoWorkCheckinPanel({
             {t("common.loading")}
           </p>
         )}
-        <CheckinProgress streak={selected?.streak} />
+        <CheckinProgress
+          streak={selected?.streak}
+          current={{ complete: !!hasReward, label: "dailyCheckin.today" }}
+        />
         <div className="mp-checkin-auto">
           <div>
             <label htmlFor={autoId}>{t("doubaowork.checkin.autoLabel")}</label>

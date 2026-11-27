@@ -1731,6 +1731,34 @@ impl ProxyService {
     }
 
     pub(crate) async fn refresh_trae_takeover(&self) {
+        use super::trae_bridge::shared::Edition;
+        tokio::join!(
+            self.refresh_shared_trae(Edition::China),
+            self.refresh_shared_trae(Edition::International),
+            self.refresh_trae_native_features(),
+        );
+    }
+
+    pub(crate) async fn refresh_shared_trae(&self, edition: super::trae_bridge::shared::Edition) {
+        if !self.agent_connections.bridge_for(edition).bridge_owned() {
+            return;
+        }
+        // Reconnect outside the switch lock so each edition can deliver independently.
+        if self.is_running().await
+            && self
+                .db
+                .get_bool_flag(edition.consent_key())
+                .unwrap_or(false)
+        {
+            let _ = tokio::task::spawn_blocking(move || {
+                super::trae_bridge::shared::Client(edition).reconnect()
+            })
+            .await;
+        }
+        self.sync_shared_trae_edition(edition, false).await;
+    }
+
+    pub(crate) async fn refresh_trae_native_features(&self) {
         // Native pre-execution observation is independent of text DLP and model routing.
         // Automatic native configuration never touches real clients during unit tests.
         if !cfg!(test) {
@@ -1753,27 +1781,7 @@ impl ProxyService {
                 .await;
             }
         }
-        use super::trae_bridge::shared::{Client, Edition};
-        let refresh = |edition: Edition| async move {
-            if !self.agent_connections.bridge_for(edition).bridge_owned() {
-                return;
-            }
-            // Reconnect outside the switch lock so each edition can deliver independently.
-            if self.is_running().await
-                && self
-                    .db
-                    .get_bool_flag(edition.consent_key())
-                    .unwrap_or(false)
-            {
-                let _ = tokio::task::spawn_blocking(move || Client(edition).reconnect()).await;
-            }
-            self.sync_shared_trae_edition(edition, false).await;
-        };
-        tokio::join!(
-            refresh(Edition::China),
-            refresh(Edition::International),
-            self.refresh_trae_responses()
-        );
+        self.refresh_trae_responses().await;
         {
             let _guard = self.lock_trae_audit().await;
             if self.is_running().await
@@ -6853,6 +6861,56 @@ mod tests {
             })
             .await??;
             assert!(!service.intent_runtime.connections.active(edition.app()));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn trae_disconnected_edition_refreshes_while_the_other_is_busy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::trae_bridge::shared::Edition;
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory()?);
+        let service = ProxyService::new(db.clone());
+        for (busy, disconnected) in [
+            (Edition::China, Edition::International),
+            (Edition::International, Edition::China),
+        ] {
+            service
+                .agent_connections
+                .bridge_for(busy)
+                .bridge_select(true)?;
+            let bridge = service.agent_connections.bridge_for(disconnected);
+            bridge.bridge_select(true)?;
+            bridge.bridge_select(false)?;
+            db.set_setting(disconnected.consent_key(), "true")?;
+            service.intent_runtime.connections.install(
+                &super::super::agent_connections::Receipt {
+                    app: disconnected.app().into(),
+                    token: "synthetic".into(),
+                    model: "synthetic".into(),
+                    model_map: Default::default(),
+                    visible_models: None,
+                    files: vec![],
+                    suspended: false,
+                    applied_at_ms: None,
+                },
+            )?;
+            let _busy_delivery = service.lock_switch_for_app(busy.app()).await;
+            let busy_refresh = service.refresh_shared_trae(busy);
+            tokio::pin!(busy_refresh);
+            assert!(futures::poll!(busy_refresh.as_mut()).is_pending());
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                service.refresh_shared_trae(disconnected),
+            )
+            .await?;
+            assert!(!service
+                .intent_runtime
+                .connections
+                .active(disconnected.app()));
+            assert!(bridge.bridge_owned(), "offline cleanup must remain queued");
         }
         Ok(())
     }

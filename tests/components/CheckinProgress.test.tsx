@@ -121,7 +121,7 @@ it("summarizes only Qoder confirmations within the displayed reward windows", ()
       confirmedDates={["2026-11-01", "2026-11-16", "2026-11-16"]}
     />,
   );
-  expect(screen.getByText("agentRewards.qoderConfirmed")).toBeVisible();
+  expect(screen.getByText("agentRewards.confirmedLastSevenDays")).toBeVisible();
   expect(screen.getByText("dailyCheckin.days 1")).toBeVisible();
   expect(
     screen.getByRole("list", { name: "dailyCheckin.calendar" }),

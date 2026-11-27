@@ -22,15 +22,21 @@ const queryKey = ["workbuddyCheckin", "accounts"];
 
 export function WorkBuddyCheckinPanel({
   embedded = false,
+  selectedAccountId,
+  onSelectedAccountChange,
 }: {
   embedded?: boolean;
+  selectedAccountId?: string | null;
+  onSelectedAccountChange?: (id: string | null) => void;
 }) {
   const { t } = useTranslation();
   const toggleId = useId();
   const accountSelectId = useId();
   const detailsId = useId();
   const [expanded, setExpanded] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
+  const selectedId = selectedAccountId ?? localSelectedId;
+  const setSelectedId = onSelectedAccountChange ?? setLocalSelectedId;
   const [loginId, setLoginId] = useState<string | null>(null);
   const client = useQueryClient();
   const status = useQuery({
@@ -93,7 +99,7 @@ export function WorkBuddyCheckinPanel({
       setLoginId(null);
       void client.invalidateQueries({ queryKey });
     }
-  }, [login.data, client]);
+  }, [login.data, client, setSelectedId]);
   const cancel = useMutation({
     mutationFn: () => workbuddyCheckinApi.cancelLogin(loginId!),
     onSuccess: () => setLoginId(null),
@@ -114,6 +120,7 @@ export function WorkBuddyCheckinPanel({
     ![
       "claimed",
       "already_checked",
+      "inactive",
       "credentials_protected",
       "credentials_unavailable",
     ].includes(data.outcome);
@@ -290,6 +297,7 @@ export function WorkBuddyCheckinPanel({
           totalDays={data?.streak}
           day={data?.day}
           checkinDates={data?.checkinDates}
+          todayConfirmed={!!hasReward}
         />
         <div className="mp-checkin-auto">
           <div>

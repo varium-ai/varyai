@@ -88,6 +88,17 @@ function createBridge(
       row.base_url,
       row.ak,
     ]);
+  async function credentialMatches(config, model, row, proof) {
+    return (
+      typeof row.ak === "string" &&
+      !!row.ak &&
+      !/^[*•]+$/.test(row.ak) &&
+      (row.ak === config.apiKey ||
+        (!!proof &&
+          proof.expected === (await expectedProof(config, model)) &&
+          proof.native === (await nativeProof(row))))
+    );
+  }
   const verificationKey = (id) => `varyai.trae.verification.${id}`;
   const loadVerification = (id) => {
     try {
@@ -161,11 +172,14 @@ function createBridge(
     used.add(value);
     return value;
   };
-  async function list() {
+  async function readModels() {
     const result = await service.getModelList();
     if (!Array.isArray(result.model_list))
       throw Error("model_list_unavailable");
-    return result.model_list.map((m) => ({
+    return result.model_list;
+  }
+  function summarizeModels(models) {
+    return models.map((m) => ({
       id: m.custom_model_id,
       name: modelName(m),
       displayName: m.display_name,
@@ -173,23 +187,25 @@ function createBridge(
       provider: m.provider,
     }));
   }
+  async function list() {
+    return summarizeModels(await readModels());
+  }
   async function remove(id) {
-    let owned = loadOwned(id);
+    const owned = loadOwned(id);
     await refreshModels();
-    const models = await list();
-    for (const m of models.filter((m) => m.id && isOwned(id, owned, m))) {
+    const managed = (model) => model.id && isOwned(id, owned, model);
+    for (const m of (await list()).filter(managed)) {
       const result = await service.updateCustomModel({
         action: "delete",
         id: m.id,
       });
       if (result.code !== 0) throw modelFailure("remove", result.code);
-      owned = owned.filter((row) => row.id !== m.id);
-      saveOwned(id, owned);
     }
+    await refreshModels();
+    if ((await list()).some(managed)) throw modelFailure("remove");
     saveOwned(id, []);
     storage.setItem(verificationKey(id), "[]");
     storage.setItem(legacyVerificationKey(id), "{}");
-    await refreshModels();
   }
   function endpoint(config) {
     const suffix = {
@@ -239,17 +255,12 @@ function createBridge(
               /^[*•]+$/.test(row.ak)
             )
               return false;
-            if (row.ak === config.apiKey) return true;
             // TRAE returns sealed keys. Verify the result of our successful write,
             // without persisting either the local credential or the sealed value.
             const proof = verification.find(
               (entry) => entry.id === row.custom_model_id,
             );
-            if (
-              proof &&
-              proof.expected === (await expectedProof(config, wanted.model)) &&
-              proof.native === (await nativeProof(row))
-            )
+            if (await credentialMatches(config, wanted.model, row, proof))
               return true;
             return (
               typeof legacyVerification?.[row.custom_model_id] === "string" &&
@@ -268,7 +279,13 @@ function createBridge(
     let owned = loadOwned(id);
     // Native writes do not invalidate TRAE's model-list cache automatically.
     await refreshModels();
-    const existing = await list();
+    const nativeRows = await readModels();
+    const existing = summarizeModels(nativeRows);
+    const shared = id === "shared_catalog_connection";
+    const nativeById = new Map(nativeRows.map((row) => [row.custom_model_id, row]));
+    const proofById = new Map(
+      loadVerification(id).map((proof) => [proof.id, proof]),
+    );
     owned = owned.filter((row) =>
       existing.some((model) => model.id === row.id),
     );
@@ -391,7 +408,20 @@ function createBridge(
           !modelNameMatches(match.name, model.model)
         )
           throw Error("model_identity_changed");
-        if (!(id === "shared_catalog_connection" && addedIds.has(match.id))) {
+        const row = nativeById.get(match.id);
+        const unchanged =
+          shared &&
+          row?.display_name === fields.display_name &&
+          row.base_url === fields.base_url &&
+          (row.auth_type ?? 0) === fields.auth_type &&
+          (row.custom_model_type || "chat_model") === fields.custom_model_type &&
+          (await credentialMatches(
+            config,
+            model.model,
+            row,
+            proofById.get(match.id),
+          ));
+        if (!(shared && addedIds.has(match.id)) && !unchanged) {
           const result = await service.updateCustomModel({
             action: "update",
             id: match.id,

@@ -13,6 +13,7 @@ Open **Plans / Routing** from the sidebar. Manage independent global connections
 - Group members reference global upstream IDs. The persisted JSON key remains `providerId` for compatibility. Older `client:"codex"` documents remain readable; saving normalizes them to `client:"global"`. The field no longer determines ownership.
 - The group editor uses the saved-group validator to list selectable provider models. Imported VaryAI route aliases do not appear as model members, which prevents automatic selection from adding an invalid group reference.
 - Choose the default and explicitly approved fallbacks. The planner deduplicates candidates and retains each exact upstream model ID. Classifiers support API-key upstreams using Chat Completions, OpenAI Responses, Anthropic Messages or Gemini Native. They also support selected models from a bound WorkBuddy China or WorkBuddy AI subscription.
+- An upstream HTTP 520 can advance an unpinned request to the next eligible member before any model output is sent. The route graph keeps the original 520 on that attempt.
 - **Publish to gateway**, followed by **Save**, adds an executable group to connected Agent model pickers and makes it available through authenticated external access. Turning this off withdraws the group from both, including the Codex picker in the ChatGPT app. Existing key allowlists still apply. Automatically discovered groups are published when discovery creates them. Publication leaves disconnected Agents and a stopped listener in their current state.
 
 API-key task upstreams support explicit `openai_responses`, `openai_chat`, `anthropic` and `gemini_native` formats. Native official and managed Codex accounts retain their identity-frozen executor and account discovery; static API upstream creation does not convert them into ordinary keys. Unavailable sources remain visible in the registry but are omitted from executable snapshots. Drafts retain existing unavailable upstream identities so they can be edited without losing references; execution requires repairing or replacing unavailable selected targets. Offline validation remains API-key-only. None of these checks proves tools, images, reasoning capability or inference permission.
@@ -469,6 +470,11 @@ the same gateway endpoint. An explicit disconnect revokes the gateway credential
 immediately and queues removal of the managed native models. If a native catalog
 check confirms that the configuration changed, the route is revoked and the
 Agent row offers recovery.
+Each edition processes its pending delivery independently. The Agent row shows
+when model synchronization or cleanup is pending. Cleanup finishes after TRAE
+confirms the managed entries are absent. A shared catalog refresh writes new or
+changed entries and verifies existing endpoint and credential proofs before
+reusing any row.
 
 Reload Codex configuration after enabling routing. Changing a conversation's model alone does not change its stored provider. A standalone connection migrates the previous provider's quiet conversations to `varyai` only when their saved model is executable in the current menu: paginated history changes only its SQLite provider row, while legacy history also updates rollout metadata. Unavailable, inconsistent or unreadable saved models stay with their original provider; model names are never guessed or replaced with a default. Already migrated conversations with an unavailable historical model require explicit model reselection, or a new conversation if automatic compaction blocks that choice. Busy compatible conversations wait for writer locks to be released and retry in the background. Native compatibility instead handles eligible built-in OpenAI conversations without changing their provider. Profiles, environment/CLI overrides, cached configuration and unknown historical opaque state remain separate constraints. Actual desktop acceptance must be verified with the user's client version.
 

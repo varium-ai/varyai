@@ -4272,7 +4272,7 @@ fn sibling_native_target(
 }
 
 fn failover_status(status: u16) -> bool {
-    matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504)
+    matches!(status, 401 | 402 | 403 | 429 | 500 | 502 | 503 | 504 | 520)
 }
 
 fn retry_converted_rejection(

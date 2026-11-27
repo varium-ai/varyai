@@ -418,6 +418,10 @@ it.each(["claimed", "already_checked"] as const)(
       name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
     });
     expect(completed).toBeDisabled();
+    const days = screen.getAllByRole("listitem");
+    expect(days[6]).toHaveAttribute("data-date", initial.day);
+    expect(days[6]).toHaveAttribute("data-state", "complete");
+    expect(days[5]).toHaveAttribute("data-state", "unknown");
     fireEvent.click(completed);
     expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
     vi.mocked(workbuddyCheckinApi.status).mockResolvedValue({
@@ -431,6 +435,10 @@ it.each(["claimed", "already_checked"] as const)(
       expect(
         screen.getByRole("button", { name: "workbuddy.checkin.checkNow" }),
       ).toBeEnabled(),
+    );
+    expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+      "data-state",
+      "unknown",
     );
     expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
   },

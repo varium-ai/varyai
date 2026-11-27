@@ -16,6 +16,7 @@ import {
   CheckinNotice,
   CheckinProgress,
   QoderCheckinProgress,
+  TraeCheckinProgress,
 } from "./CheckinProgress";
 import "./daily-checkin.css";
 
@@ -336,8 +337,17 @@ export function AgentRewardsPanel({
             day={data?.rewardDay}
             confirmedDates={data?.confirmedDates}
           />
+        ) : app === "trae" ? (
+          <TraeCheckinProgress
+            confirmedUntil={complete ? data?.nextCheckAt : null}
+          />
         ) : (
-          <CheckinProgress streak={null} />
+          <CheckinProgress
+            current={{
+              complete: !!complete,
+              label: "agentRewards.currentWindow",
+            }}
+          />
         )}
         <div className="mp-checkin-auto">
           <div>

@@ -47,6 +47,77 @@ fn receipt(app: &str) -> crate::services::agent_connections::Receipt {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn trae_chat_falls_back_after_upstream_http_520() -> Result<(), Box<dyn std::error::Error>> {
+    let _security = super::global_tests::RoutingOnlySecurity::install();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = tokio::spawn(async move {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|axum::Json(body): axum::Json<Value>| async move {
+                if body["model"] == "exact-model" {
+                    return StatusCode::from_u16(520).expect("synthetic status").into_response();
+                }
+                assert_eq!(body["model"], "other-exact-model");
+                ([(header::CONTENT_TYPE, "text/event-stream")], "data: {\"id\":\"synthetic-fallback\",\"choices\":[{\"delta\":{\"content\":\"synthetic answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").into_response()
+            }),
+        );
+        axum::serve(listener, app).await
+    });
+    let mut menu = catalog(address)?;
+    let alias = super::global_tests::group().alias();
+    let session = Arc::make_mut(menu.groups.get_mut(&alias).ok_or("missing fixture")?);
+    session.targets[1].scheduling = Arc::default();
+    let primary = session.targets[0].scheduling.clone();
+    let runtime = Arc::new(Runtime::default());
+    runtime.set_global(menu, 0)?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for app in ["trae", "trae-intl"] {
+        let connection = receipt(app);
+        runtime.connections.install(&connection)?;
+        let response = client.post(format!("http://127.0.0.1:{}/connections/{app}/v1/chat/completions", info.port))
+            .bearer_auth(&connection.token)
+            .json(&json!({"model":alias,"stream":true,"messages":[{"role":"user","content":"synthetic fallback test"}]}))
+            .send().await?;
+        assert_eq!(response.status(), StatusCode::OK, "{app}");
+        assert!(response.text().await?.contains("synthetic answer"));
+        let route = runtime
+            .traces
+            .snapshot()
+            .into_iter()
+            .find(|route| route.agent == app)
+            .ok_or("missing route trace")?;
+        assert!(route
+            .steps
+            .iter()
+            .any(|step| step.kind == trace::Kind::Rejected
+                && step.candidate == Some(0)
+                && step.status == Some(520)));
+        assert!(route
+            .steps
+            .iter()
+            .any(|step| step.kind == trace::Kind::Connected
+                && step.candidate == Some(1)
+                && step.status == Some(200)));
+        primary.succeeded();
+    }
+    server.stop().await?;
+    upstream.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn trae_stream_opens_before_slow_upstream_headers_and_keeps_wire_chunks(
 ) -> Result<(), Box<dyn std::error::Error>> {
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);

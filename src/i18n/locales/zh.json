@@ -5295,6 +5295,7 @@
       "inactive": "接入连接待恢复",
       "orphaned": "接入恢复记录缺失",
       "bridgePending": "等待 {{app}} 连接 · 模型同步或清理尚未完成",
+      "bridgeCleanupPending": "已断开 · {{app}} 模型清理待完成",
       "bridgeModelRejected": "{{app}} 模型配置未完成 · 点击重新接入重试",
       "bridgeSelectionPending": "{{app}} 已连接 · 客户端尚未确认首选模型",
       "auditConnected": "官方会话审计已接入",
@@ -6231,7 +6232,7 @@
   },
   "agentRewards": {
     "currentWindow": "本轮",
-    "qoderConfirmed": "最近 7 天已确认",
+    "confirmedLastSevenDays": "最近 7 天已确认",
     "qoderCalendarHint": "日期按北京时间每天 10:00 开始的领取周期标注。仅标记本账号已由服务确认并保存在本地的领取记录；其余日期为未知，不代表未签到。",
     "noActivity": "暂无活动",
     "nativeAccountManagement": "此处仅显示官方客户端的当前账号。请在官方客户端添加或切换账号，再回来刷新。暂不支持在 VaryAI 内独立添加多个账号。",

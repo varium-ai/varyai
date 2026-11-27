@@ -34,6 +34,7 @@ import {
   ChevronDown,
   PackageCheck,
   PackagePlus,
+  Loader2,
   X,
 } from "lucide-react";
 import {
@@ -213,6 +214,14 @@ export function AgentConnectionsPage({
     staleTime: 60_000,
     refetchInterval: 60_000,
   });
+  const [workbuddyAccountId, setWorkbuddyAccountId] = useState<string | null>(
+    null,
+  );
+  const workbuddyAccount = workbuddyCheckin.data?.accounts.find(
+    (account) =>
+      account.id ===
+      (workbuddyAccountId ?? workbuddyCheckin.data.accounts[0]?.id),
+  );
   const doubaoCheckin = useQuery({
     queryKey: ["doubaoCheckin"],
     queryFn: doubaoCheckinApi.accounts,
@@ -900,7 +909,9 @@ export function AgentConnectionsPage({
                 : state.recoveryReason === "bridge_model_rejected"
                   ? "bridgeModelRejected"
                   : state.recoveryReason === "bridge_pending"
-                    ? "bridgePending"
+                    ? enabled
+                      ? "bridgePending"
+                      : "bridgeCleanupPending"
                     : state.recoveryReason === "connection_inactive"
                       ? gateway.data?.running
                         ? "inactive"
@@ -934,6 +945,14 @@ export function AgentConnectionsPage({
                         ? "off"
                         : "unavailable";
     const restartNotice = restartFeedback.messages[app];
+    const traeLoading =
+      isTrae(app) &&
+      (operation === "connecting" ||
+        operation === "reapplying" ||
+        (!operation &&
+          (status === "bridgePending" ||
+            status === "bridgeSelectionPending" ||
+            status === "bridgeCleanupPending")));
     const bypassed = status === "recovery";
     const ready =
       !compact &&
@@ -1018,6 +1037,10 @@ export function AgentConnectionsPage({
         </ModelPickerPopoverContent>
       </Popover>
     ) : null;
+    const rewardQuery = hasAgentRewards(app)
+      ? rewards[rewardApps.indexOf(app)]
+      : undefined;
+    const rewardStatus = rewardQuery?.data;
     const checkinStatuses =
       app === "workbuddy"
         ? workbuddyCheckin.data?.accounts.length
@@ -1029,16 +1052,25 @@ export function AgentConnectionsPage({
           ? doubaoAccount
             ? [doubaoAccount]
             : []
-          : hasAgentRewards(app) && rewards[rewardApps.indexOf(app)]?.data
-            ? [rewards[rewardApps.indexOf(app)].data!]
+          : rewardStatus
+            ? [rewardStatus]
             : [];
-    const rewardsQuery = hasAgentRewards(app)
-      ? rewards[rewardApps.indexOf(app)]
-      : undefined;
+    const activityQuery =
+      app === "workbuddy"
+        ? workbuddyCheckin
+        : app === "doubaowork"
+          ? doubaoCheckin
+          : rewardQuery;
+    const activityStatus =
+      app === "workbuddy"
+        ? (workbuddyAccount?.status ?? workbuddyCheckin.data?.nativeStatus)
+        : app === "doubaowork"
+          ? (doubaoAccount ?? doubaoCheckin.data)
+          : rewardStatus;
     const checkinInactive =
-      app === "zcode" &&
-      !rewardsQuery?.isError &&
-      rewardsQuery?.data?.outcome === "inactive";
+      !activityQuery?.isError &&
+      activityStatus?.outcome === "inactive" &&
+      !("savedOutcome" in activityStatus && activityStatus.savedOutcome);
     const checkinComplete =
       checkinStatuses.length > 0 &&
       checkinStatuses.every((status) =>
@@ -1229,7 +1261,13 @@ export function AgentConnectionsPage({
               <span className="agent-feedback">{restartNotice}</span>
             ) : (
               <>
-                {bypassed ? (
+                {traeLoading ? (
+                  <Loader2
+                    size={11}
+                    className="shrink-0 motion-safe:animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : bypassed ? (
                   <X size={13} strokeWidth={3} aria-hidden="true" />
                 ) : (
                   <span className="mp-agent-dot" aria-hidden="true" />
@@ -1564,7 +1602,11 @@ export function AgentConnectionsPage({
             hidden={checkinApp !== app || (compact && expanded !== app)}
           >
             {app === "workbuddy" ? (
-              <WorkBuddyCheckinPanel embedded />
+              <WorkBuddyCheckinPanel
+                embedded
+                selectedAccountId={workbuddyAccountId}
+                onSelectedAccountChange={setWorkbuddyAccountId}
+              />
             ) : app === "doubaowork" ? (
               <DoubaoWorkCheckinPanel
                 embedded

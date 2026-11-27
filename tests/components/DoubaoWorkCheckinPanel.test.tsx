@@ -169,6 +169,10 @@ it("claims only the selected account and displays a confirmed result", async () 
       .getAllByRole("listitem")
       .filter((day) => day.dataset.state === "complete"),
   ).toHaveLength(4);
+  expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+    "data-state",
+    "complete",
+  );
 });
 
 it("refreshes a previously completed reward without claiming or switching accounts", async () => {
@@ -214,6 +218,10 @@ it.each(["claimed", "already_checked"] as const)(
       name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
     });
     expect(completed).toBeDisabled();
+    const days = screen.getAllByRole("listitem");
+    expect(days[6]).toHaveAttribute("data-state", "complete");
+    expect(days[6]).toHaveTextContent("dailyCheckin.today");
+    expect(days[5]).toHaveAttribute("data-state", "unknown");
     fireEvent.click(completed);
     expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
     vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
@@ -227,6 +235,10 @@ it.each(["claimed", "already_checked"] as const)(
       expect(
         screen.getByRole("button", { name: "doubaowork.checkin.checkNow" }),
       ).toBeEnabled(),
+    );
+    expect(screen.getAllByRole("listitem")[6]).toHaveAttribute(
+      "data-state",
+      "unknown",
     );
     expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
   },

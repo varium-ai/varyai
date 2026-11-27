@@ -5297,6 +5297,7 @@
       "inactive": "Connection needs to be resumed",
       "orphaned": "Connection recovery record is missing",
       "bridgePending": "Waiting for {{app}} connection · delivery or cleanup pending",
+      "bridgeCleanupPending": "Disconnected · {{app}} model cleanup pending",
       "bridgeModelRejected": "{{app}} model configuration is incomplete · Reconnect to retry",
       "bridgeSelectionPending": "{{app}} connected · the client has yet to confirm the starting model",
       "auditConnected": "Official session inspection active",
@@ -6239,7 +6240,7 @@
   },
   "agentRewards": {
     "currentWindow": "Current window",
-    "qoderConfirmed": "Confirmed in the last 7 days",
+    "confirmedLastSevenDays": "Confirmed in the last 7 days",
     "qoderCalendarHint": "Dates identify daily reward windows starting at 10:00 (UTC+8). Only service-confirmed windows saved for this account are marked; other dates are unknown, not missed check-ins.",
     "noActivity": "No active campaign",
     "nativeAccountManagement": "Only the current official client account is available here. Add or switch accounts in the official client, then refresh. Adding separate accounts in VaryAI is not supported yet.",
