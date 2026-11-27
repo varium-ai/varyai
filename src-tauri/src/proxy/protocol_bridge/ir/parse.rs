@@ -730,23 +730,39 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
             }
             "reasoning" => {
                 let mut value = String::new();
-                if let Some(summary) = field(item, "summary") {
-                    for part in array(summary)? {
+                if let Some(content) = field(item, "content") {
+                    for part in array(content)? {
                         object(part)?;
-                        if let Some(text) = string(part, "text")? {
-                            value.push_str(&text);
+                        if string(part, "type")?.as_deref() == Some("reasoning_text") {
+                            if let Some(text) = string(part, "text")? {
+                                value.push_str(&text);
+                            }
                         }
                     }
                 }
-                request.messages.push(Message {
-                    role: "assistant".into(),
-                    parts: vec![thinking(
-                        value,
-                        None,
-                        Protocol::Responses,
-                        Some(item.clone()),
-                    )],
-                });
+                if value.is_empty() {
+                    if let Some(summary) = field(item, "summary") {
+                        for part in array(summary)? {
+                            object(part)?;
+                            if let Some(text) = string(part, "text")? {
+                                value.push_str(&text);
+                            }
+                        }
+                    }
+                }
+                let has_encrypted =
+                    string(item, "encrypted_content")?.is_some_and(|text| !text.is_empty());
+                if !value.is_empty() || has_encrypted {
+                    request.messages.push(Message {
+                        role: "assistant".into(),
+                        parts: vec![thinking(
+                            value,
+                            None,
+                            Protocol::Responses,
+                            has_encrypted.then(|| item.clone()),
+                        )],
+                    });
+                }
             }
             "web_search_call" => {
                 let action = item.get("action").unwrap_or(item);

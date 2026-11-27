@@ -12,8 +12,64 @@ const FAILED: &str = "routingUpstreams.failed";
 const CONFLICT: &str = "routingUpstreams.conflict";
 const LIMIT: &str = "routingUpstreams.limit";
 const NAME_EXISTS: &str = "routingUpstreams.nameExists";
+const PROBES_PREFERENCE_KEY: &str = "upstream_protocol_probes";
 #[path = "routing_upstreams_identity.rs"]
 mod identity;
+
+fn upstream_protocol_probe_fingerprint(
+    base_url: &str,
+    api_format: &str,
+    auth_type: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let normalized_url = base_url.trim().trim_end_matches('/');
+    let auth = auth_type.unwrap_or("bearer");
+    let mut hasher = Sha256::new();
+    for part in [normalized_url, api_format, auth] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn read_probe_map(conn: &Connection) -> Result<std::collections::BTreeMap<String, String>, String> {
+    use rusqlite::OptionalExtension;
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT value FROM intent_routing_preferences WHERE key=?1",
+            [PROBES_PREFERENCE_KEY],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| FAILED)?;
+    let map: std::collections::BTreeMap<String, String> = text
+        .map(|raw| {
+            if raw.len() > 2 * 1024 * 1024 {
+                return Err(FAILED.to_owned());
+            }
+            serde_json::from_str(&raw).map_err(|_| FAILED.to_owned())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(map)
+}
+
+fn store_probe_map(
+    conn: &Connection,
+    map: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let value = serde_json::to_string(map).map_err(|_| FAILED)?;
+    if value.len() > 2 * 1024 * 1024 {
+        return Err(INVALID.into());
+    }
+    conn.execute(
+        "INSERT INTO intent_routing_preferences(key,value) VALUES (?1,?2)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![PROBES_PREFERENCE_KEY, value],
+    )
+    .map_err(|_| FAILED)?;
+    Ok(())
+}
 
 fn check_provider_name(
     records: &[RoutingUpstream],
@@ -562,6 +618,10 @@ impl Database {
         }
         drop(stmt);
         identity::retire(&tx, &current)?;
+        let mut probes = read_probe_map(&tx)?;
+        if probes.remove(id).is_some() {
+            store_probe_map(&tx, &probes)?;
+        }
         tx.execute(
             "DELETE FROM routing_upstreams WHERE id=?1 AND revision=?2",
             params![id, revision],
@@ -723,6 +783,239 @@ impl Database {
             self.invalidate_routing_resources();
         }
         Ok(changed)
+    }
+
+    pub(crate) fn upstream_protocol_probe_fingerprint(
+        base_url: &str,
+        api_format: &str,
+        auth_type: Option<&str>,
+    ) -> String {
+        upstream_protocol_probe_fingerprint(base_url, api_format, auth_type)
+    }
+
+    pub(crate) fn list_upstream_protocol_probes(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        read_probe_map(&conn)
+    }
+
+    pub(crate) fn record_probed_routing_upstream_endpoints(
+        &self,
+        id: &str,
+        expected_revision: u32,
+        fingerprint: &str,
+        verified_endpoints: &[(&str, String)],
+    ) -> Result<bool, String> {
+        use crate::services::routing_upstreams::{valid_format, valid_url, ImportedTransport};
+        let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let tx = conn.transaction().map_err(|_| FAILED)?;
+        let records = read_records(&tx)?;
+        let Some(mut record) = records.iter().find(|r| r.id == id).cloned() else {
+            return Ok(false);
+        };
+        if record.revision != expected_revision || !record.enabled || !record.has_enabled_key() {
+            return Ok(false);
+        }
+        if record
+            .transport
+            .as_ref()
+            .is_some_and(|t| t.full_url || t.primary_protocol.is_some())
+        {
+            return Ok(false);
+        }
+        let UpstreamSource::Api {
+            base_url,
+            api_format,
+            ..
+        } = &record.source
+        else {
+            return Ok(false);
+        };
+        let base_url = base_url.clone();
+        let api_format = api_format.clone();
+        let live_ids: HashSet<&str> = records.iter().map(|r| r.id.as_str()).collect();
+        let mut probes = read_probe_map(&tx)?;
+        probes.retain(|existing_id, _| live_ids.contains(existing_id.as_str()));
+        probes.insert(id.to_owned(), fingerprint.to_owned());
+        store_probe_map(&tx, &probes)?;
+
+        let existing_endpoints = record.transport.as_ref().map(|t| &t.endpoints);
+        let new_endpoints: Vec<(&str, &str)> = verified_endpoints
+            .iter()
+            .filter_map(|(fmt, url)| {
+                (*fmt != api_format
+                    && valid_format(fmt)
+                    && valid_url(url)
+                    && existing_endpoints.is_none_or(|map| !map.contains_key(*fmt)))
+                .then_some((*fmt, url.as_str()))
+            })
+            .collect();
+        if new_endpoints.is_empty() {
+            tx.commit().map_err(|_| FAILED)?;
+            return Ok(false);
+        }
+        let transport = record
+            .transport
+            .get_or_insert_with(ImportedTransport::default);
+        transport.endpoints.entry(api_format).or_insert(base_url);
+        for (fmt, url) in new_endpoints {
+            transport
+                .endpoints
+                .entry(fmt.to_owned())
+                .or_insert_with(|| url.to_owned());
+        }
+        record.validate()?;
+        record.revision = record.revision.checked_add(1).ok_or(CONFLICT)?;
+        write_record(&tx, &record)?;
+        tx.commit().map_err(|_| FAILED)?;
+        drop(conn);
+        self.invalidate_routing_resources();
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod protocol_probe_tests {
+    use super::*;
+    use crate::services::codex_provider::ModelMode;
+    use crate::services::routing_upstreams::{ImportedTransport, RoutingUpstream, UpstreamSource};
+    use serde_json::json;
+
+    fn sample_api_upstream(id: &str) -> RoutingUpstream {
+        RoutingUpstream {
+            schema_version: 1,
+            id: id.into(),
+            name: format!("Upstream {id}"),
+            notes: None,
+            icon: None,
+            revision: 0,
+            source: UpstreamSource::Api {
+                base_url: "https://relay.example/v1".into(),
+                api_key: Some("synthetic-key".into()),
+                api_format: "openai_chat".into(),
+                models: vec![json!({"model": "gpt-6.2-sol"})],
+                catalog: vec![],
+                mode: ModelMode::Picked,
+                groups_only: false,
+                auth_type: None,
+            },
+            has_api_key: false,
+            enabled: true,
+            preset_id: None,
+            region: None,
+            codex_settings: None,
+            transport: None,
+        }
+    }
+
+    #[test]
+    fn merges_verified_endpoints_preserves_primary_and_bumps_revision() -> Result<(), String> {
+        let db = Database::memory().map_err(|_| FAILED)?;
+        let saved = db.save_routing_upstream(sample_api_upstream("legacy-chat"))?;
+        let fp =
+            upstream_protocol_probe_fingerprint("https://relay.example/v1", "openai_chat", None);
+        let updated = db.record_probed_routing_upstream_endpoints(
+            &saved.id,
+            saved.revision,
+            &fp,
+            &[("openai_responses", "https://relay.example/v1".into())],
+        )?;
+        assert!(updated);
+        let reloaded = db
+            .list_routing_upstreams()?
+            .into_iter()
+            .find(|r| r.id == saved.id)
+            .ok_or(FAILED)?;
+        assert_eq!(reloaded.revision, saved.revision + 1);
+        let endpoints = reloaded
+            .transport
+            .as_ref()
+            .map(|t| &t.endpoints)
+            .ok_or(FAILED)?;
+        assert_eq!(
+            endpoints.get("openai_chat").map(String::as_str),
+            Some("https://relay.example/v1")
+        );
+        assert_eq!(
+            endpoints.get("openai_responses").map(String::as_str),
+            Some("https://relay.example/v1")
+        );
+        assert_eq!(
+            db.list_upstream_protocol_probes()?
+                .get(&saved.id)
+                .map(String::as_str),
+            Some(fp.as_str())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_revision_and_locked_transports_are_not_overwritten() -> Result<(), String> {
+        let db = Database::memory().map_err(|_| FAILED)?;
+        let saved = db.save_routing_upstream(sample_api_upstream("stale-check"))?;
+        let fp =
+            upstream_protocol_probe_fingerprint("https://relay.example/v1", "openai_chat", None);
+        let stale = db.record_probed_routing_upstream_endpoints(
+            &saved.id,
+            saved.revision + 99,
+            &fp,
+            &[("openai_responses", "https://relay.example/v1".into())],
+        )?;
+        assert!(!stale);
+        assert!(db.list_upstream_protocol_probes()?.is_empty());
+
+        let mut locked = sample_api_upstream("locked-full-url");
+        locked.transport = Some(ImportedTransport {
+            full_url: true,
+            ..Default::default()
+        });
+        let saved_locked = db.save_routing_upstream(locked)?;
+        assert!(!db.record_probed_routing_upstream_endpoints(
+            &saved_locked.id,
+            saved_locked.revision,
+            &fp,
+            &[("openai_responses", "https://relay.example/v1".into())],
+        )?);
+
+        let mut locked_proto = sample_api_upstream("locked-proto");
+        locked_proto.transport = Some(ImportedTransport {
+            primary_protocol: Some("openai_chat".into()),
+            ..Default::default()
+        });
+        let saved_proto = db.save_routing_upstream(locked_proto)?;
+        assert!(!db.record_probed_routing_upstream_endpoints(
+            &saved_proto.id,
+            saved_proto.revision,
+            &fp,
+            &[("openai_responses", "https://relay.example/v1".into())],
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn no_new_endpoints_records_fingerprint_without_bumping_revision() -> Result<(), String> {
+        let db = Database::memory().map_err(|_| FAILED)?;
+        let saved = db.save_routing_upstream(sample_api_upstream("chat-only"))?;
+        let fp =
+            upstream_protocol_probe_fingerprint("https://relay.example/v1", "openai_chat", None);
+        let changed =
+            db.record_probed_routing_upstream_endpoints(&saved.id, saved.revision, &fp, &[])?;
+        assert!(!changed);
+        let reloaded = db
+            .list_routing_upstreams()?
+            .into_iter()
+            .find(|r| r.id == saved.id)
+            .ok_or(FAILED)?;
+        assert_eq!(reloaded.revision, saved.revision);
+        assert!(reloaded.transport.is_none());
+        assert_eq!(
+            db.list_upstream_protocol_probes()?
+                .get(&saved.id)
+                .map(String::as_str),
+            Some(fp.as_str())
+        );
+        Ok(())
     }
 }
 

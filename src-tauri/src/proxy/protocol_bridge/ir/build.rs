@@ -1,13 +1,89 @@
 //! Build each upstream wire format directly from the shared conversation IR.
 use super::*;
 use crate::proxy::ProxyError;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 fn invalid() -> ProxyError {
     ProxyError::InvalidRequest("Content cannot be represented in the selected protocol".into())
 }
 
+const ANTHROPIC_ID_MARK: &str = "vary_id_";
+const INTERRUPTED_TOOL_MESSAGE: &str =
+    "[The result of this tool call is unavailable: the turn was interrupted.]";
+
+fn bound_call_id(id: &str) -> String {
+    if id.len() <= 64 {
+        return id.to_owned();
+    }
+    format!("{:x}", Sha256::digest(id.trim().as_bytes()))
+}
+
+fn anthropic_out_id(id: &str) -> String {
+    if id.is_empty()
+        || (id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            && !id.starts_with(ANTHROPIC_ID_MARK))
+    {
+        return id.to_owned();
+    }
+    format!(
+        "{ANTHROPIC_ID_MARK}{}",
+        URL_SAFE_NO_PAD.encode(id.as_bytes())
+    )
+}
+
+fn is_openai_host(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    host == "api.openai.com" || host.ends_with(".openai.azure.com")
+}
+
+fn is_openai_model(model: &str) -> bool {
+    let bare = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    bare.starts_with("gpt-")
+        || bare.starts_with("chatgpt-")
+        || bare.starts_with("codex-")
+        || (bare.len() > 1 && bare.starts_with('o') && bare.as_bytes()[1].is_ascii_digit())
+}
+
+fn responses_replays_unsigned_reasoning(host: Option<&str>, model: &str) -> bool {
+    if is_openai_host(host) || is_openai_model(model) {
+        return false;
+    }
+    chat_replays_reasoning(host, model)
+        || model.to_ascii_lowercase().contains("grok")
+        || host.is_some_and(|h| h.to_ascii_lowercase().contains("x.ai"))
+}
+
+fn attachment_text(media_type: &str, name: Option<&str>) -> String {
+    if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
+        format!("[Attached file: {name}]")
+    } else if !media_type.trim().is_empty() {
+        format!("[Attached file ({})]", media_type.trim())
+    } else {
+        "[Attached file]".to_owned()
+    }
+}
+
 pub(crate) fn request(r: &Request, target: Protocol) -> Result<Value, ProxyError> {
+    request_for_host(r, target, None)
+}
+
+pub(crate) fn request_for_host(
+    r: &Request,
+    target: Protocol,
+    host: Option<&str>,
+) -> Result<Value, ProxyError> {
     let needs_portable = r
         .tools
         .iter()
@@ -35,8 +111,8 @@ pub(crate) fn request(r: &Request, target: Protocol) -> Result<Value, ProxyError
     };
     let r = portable.as_ref().unwrap_or(r);
     let mut body = match target {
-        Protocol::Chat => chat(r)?,
-        Protocol::Responses => responses(r)?,
+        Protocol::Chat => chat(r, host)?,
+        Protocol::Responses => responses(r, host)?,
         Protocol::Anthropic => anthropic(r)?,
         Protocol::Gemini => gemini(r)?,
     };
@@ -50,7 +126,9 @@ pub(crate) fn request(r: &Request, target: Protocol) -> Result<Value, ProxyError
             body["top_p"] = value.clone();
         }
         if let Some(value) = &r.native.service_tier {
-            body["service_tier"] = json!(value);
+            if target != Protocol::Anthropic || r.source == Protocol::Anthropic {
+                body["service_tier"] = json!(value);
+            }
         }
     }
     Ok(body)
@@ -493,6 +571,7 @@ fn openai_parts(
     parts: &[Part],
     responses: bool,
     assistant: bool,
+    allow_native_file: bool,
 ) -> Result<Vec<Value>, ProxyError> {
     let mut out = Vec::new();
     for p in parts {
@@ -505,13 +584,43 @@ fn openai_parts(
                 out.push(image);
             }
             Part::File { media_type, data, url, id, name } => {
-                let mut file = json!({});
-                if let Some(id) = id { file["file_id"] = json!(id); }
-                else if let Some(url) = url { file["file_url"] = json!(url); }
-                else if data.is_some() { file["file_data"] = json!(source(media_type,data,url)?); }
-                else { return Err(invalid()); }
-                if let Some(name) = name { file["filename"] = json!(name); }
-                out.push(if responses { file["type"] = json!("input_file");file } else { json!({"type":"file","file":file}) });
+                if responses {
+                    let supports_native = !assistant
+                        && (allow_native_file
+                            || (media_type.eq_ignore_ascii_case("application/pdf")
+                                && data.is_some()))
+                        && (id.is_some() || url.is_some() || data.is_some());
+                    if supports_native {
+                        let mut file = json!({"type": "input_file"});
+                        if let Some(id) = id {
+                            file["file_id"] = json!(id);
+                        } else if let Some(url) = url {
+                            file["file_url"] = json!(url);
+                        } else if data.is_some() {
+                            file["file_data"] = json!(source(media_type, data, url)?);
+                        }
+                        if let Some(name) = name {
+                            file["filename"] = json!(name);
+                        }
+                        out.push(file);
+                    } else {
+                        out.push(json!({
+                            "type": if assistant { "output_text" } else { "input_text" },
+                            "text": attachment_text(media_type, name.as_deref())
+                        }));
+                    }
+                } else if media_type.eq_ignore_ascii_case("application/pdf") && data.is_some() {
+                    let mut file = json!({"file_data": source(media_type, data, url)?});
+                    if let Some(name) = name {
+                        file["filename"] = json!(name);
+                    }
+                    out.push(json!({"type": "file", "file": file}));
+                } else {
+                    out.push(json!({
+                        "type": "text",
+                        "text": attachment_text(media_type, name.as_deref())
+                    }));
+                }
             }
             Part::Search { query, hits, .. } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("{query}\n{}",json!(hits))})),
             Part::ToolReference { name } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("Tool available: {name}")})),
@@ -542,15 +651,64 @@ fn tool_result_chat_content(
         })
         .collect();
     if !media_ir.is_empty() {
-        let media_parts = openai_parts(&media_ir, false, false)?;
-        text_chunks.push(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER.into());
-        crate::proxy::tool_media::queue_chat_tool_output_media(pending_media, call_id, media_parts);
+        let mut media_parts = Vec::new();
+        for part in media_ir {
+            match part {
+                Part::Image { .. } => {
+                    media_parts.extend(openai_parts(&[part], false, false, false)?);
+                }
+                Part::File {
+                    media_type,
+                    data,
+                    url,
+                    id,
+                    name,
+                } => {
+                    if media_type.eq_ignore_ascii_case("application/pdf") && data.is_some() {
+                        media_parts.extend(openai_parts(
+                            &[Part::File {
+                                media_type,
+                                data,
+                                url,
+                                id,
+                                name,
+                            }],
+                            false,
+                            false,
+                            false,
+                        )?);
+                    } else {
+                        text_chunks.push(attachment_text(&media_type, name.as_deref()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !media_parts.is_empty() {
+            text_chunks.push(crate::proxy::tool_media::TOOL_RESULT_MEDIA_MOVED_MARKER.into());
+            crate::proxy::tool_media::queue_chat_tool_output_media(
+                pending_media,
+                &bound_call_id(call_id),
+                media_parts,
+            );
+        }
     }
     Ok(text_chunks.join("\n"))
 }
 
+fn chat_wants_reasoning(host: Option<&str>, model: &str) -> bool {
+    let host = host.unwrap_or_default().to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    host.contains("deepseek") || model.contains("deepseek") || host == "qoder" || host == "qoder-cn"
+}
+
+fn chat_replays_reasoning(host: Option<&str>, model: &str) -> bool {
+    chat_wants_reasoning(host, model) || host.is_some_and(|h| h.eq_ignore_ascii_case("devin"))
+}
+
 // Responses emits text, reasoning, and each call as separate items. Chat
-// expects one assistant tool-call batch immediately before its tool results.
+// expects one assistant turn per step so reasoning, text, and tool calls
+// stay together for both plain replies and tool-call batches.
 fn responses_chat_messages(mut tail: &[Message]) -> Vec<std::borrow::Cow<'_, Message>> {
     use std::borrow::Cow;
     let mut messages = Vec::with_capacity(tail.len());
@@ -562,37 +720,277 @@ fn responses_chat_messages(mut tail: &[Message]) -> Vec<std::borrow::Cow<'_, Mes
         }
         let count = 1 + rest.iter().take_while(|m| m.role == "assistant").count();
         let (assistants, next) = tail.split_at(count);
-        let first_result = next
-            .first()
-            .and_then(|message| match message.parts.first() {
-                Some(Part::ToolResult { call_id, .. }) if message.role == "tool" => Some(call_id),
-                _ => None,
-            });
-        let parts = assistants.iter().flat_map(|m| &m.parts);
-        if count > 1
-            && first_result.is_some_and(|call_id| {
-                parts
-                    .clone()
-                    .any(|part| matches!(part, Part::ToolCall { id, .. } if id == call_id))
-            })
-        {
+        if count > 1 {
             messages.push(Cow::Owned(Message {
                 role: message.role.clone(),
-                parts: parts.cloned().collect(),
+                parts: assistants.iter().flat_map(|m| &m.parts).cloned().collect(),
             }));
         } else {
-            messages.extend(assistants.iter().map(Cow::Borrowed));
+            messages.push(Cow::Borrowed(message));
         }
         tail = next;
     }
     messages
 }
 
-fn chat(r: &Request) -> Result<Value, ProxyError> {
-    let mut messages = Vec::new();
-    let mut system = openai_parts(&r.system, false, false)?;
+fn silent_chat_assistant(m: &Value) -> bool {
+    if m["role"] != "assistant" {
+        return false;
+    }
+    if m["prefix"] == true
+        || m["partial"] == true
+        || m.get("function_call").is_some_and(|v| !v.is_null())
+        || m.get("audio").is_some_and(|v| !v.is_null())
+        || m["refusal"].as_str().is_some_and(|s| !s.is_empty())
+    {
+        return false;
+    }
+    if m["tool_calls"].as_array().is_some_and(|c| !c.is_empty()) {
+        return false;
+    }
+    match &m["content"] {
+        Value::Null => true,
+        Value::String(s) => s.trim().is_empty(),
+        Value::Array(parts) => parts.iter().all(|p| {
+            p["type"] == "text" && p["text"].as_str().is_some_and(|t| t.trim().is_empty())
+        }),
+        _ => false,
+    }
+}
+
+fn joined_user_content(a: &Value, b: &Value) -> Option<Value> {
+    if let (Some(as_str), Some(bs_str)) = (a.as_str(), b.as_str()) {
+        return Some(json!(format!("{as_str}\n\n{bs_str}")));
+    }
+    let to_parts = |c: &Value| -> Option<Vec<Value>> {
+        match c {
+            Value::String(s) => {
+                if s.trim().is_empty() {
+                    Some(Vec::new())
+                } else {
+                    Some(vec![json!({"type": "text", "text": s})])
+                }
+            }
+            Value::Array(parts) => Some(parts.clone()),
+            _ => None,
+        }
+    };
+    let mut parts = to_parts(a)?;
+    parts.extend(to_parts(b)?);
+    Some(Value::Array(parts))
+}
+
+fn without_silent_assistants(msgs: Vec<(Value, bool)>) -> Vec<(Value, bool)> {
+    if !msgs.iter().any(|(m, _)| silent_chat_assistant(m)) {
+        return msgs;
+    }
+    let mut out: Vec<(Value, bool)> = Vec::with_capacity(msgs.len());
+    let mut dropped = false;
+    for (m, is_reminder) in msgs {
+        if silent_chat_assistant(&m) {
+            dropped = true;
+            continue;
+        }
+        if dropped
+            && out
+                .last()
+                .is_some_and(|(prev, _)| prev["role"] == "user" && m["role"] == "user")
+        {
+            if let Some(last) = out.last_mut() {
+                if let Some(joined) = joined_user_content(&last.0["content"], &m["content"]) {
+                    last.0["content"] = joined;
+                    last.1 &= is_reminder;
+                    continue;
+                }
+            }
+        }
+        dropped = false;
+        out.push((m, is_reminder));
+    }
+    out
+}
+
+fn empty_chat_assistant(m: &Value) -> bool {
+    if m["tool_calls"].as_array().is_some_and(|c| !c.is_empty()) {
+        return false;
+    }
+    if m["reasoning_content"]
+        .as_str()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        return false;
+    }
+    m["content"].as_str().is_none_or(|s| s.trim().is_empty())
+}
+
+fn chat_content_text(c: &Value) -> String {
+    match c {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn pair_chat_tool_messages(msgs: Vec<(Value, bool)>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::with_capacity(msgs.len());
+    let mut pending: Vec<String> = Vec::new();
+    let mut order: HashMap<String, usize> = HashMap::new();
+    let mut answered: HashSet<String> = HashSet::new();
+    let mut tools: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+
+    let flush_pending = |out: &mut Vec<Value>,
+                         pending: &mut Vec<String>,
+                         order: &mut HashMap<String, usize>,
+                         answered: &mut HashSet<String>,
+                         tools: &mut Vec<Value>,
+                         held: &mut Vec<Value>| {
+        if !tools.is_empty() {
+            tools.sort_by_key(|t| {
+                t["tool_call_id"]
+                    .as_str()
+                    .and_then(|id| order.get(id).copied())
+                    .unwrap_or(usize::MAX)
+            });
+            out.append(tools);
+        }
+        for id in pending.iter() {
+            if !answered.contains(id) {
+                out.push(json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": INTERRUPTED_TOOL_MESSAGE
+                }));
+            }
+        }
+        pending.clear();
+        order.clear();
+        answered.clear();
+        out.append(held);
+    };
+
+    let tool_as_user = |out: &mut Vec<Value>, m: &Value| {
+        let mut text = chat_content_text(&m["content"]);
+        if text.trim().is_empty() {
+            text = "Tool result received.".to_owned();
+        }
+        if let Some(last) = out.last_mut().filter(|prev| prev["role"] == "user") {
+            if let Some(s) = last["content"].as_str() {
+                last["content"] = json!(format!("{s}\n\n{text}"));
+                return;
+            }
+        }
+        out.push(json!({"role": "user", "content": text}));
+    };
+
+    for (m, is_reminder) in msgs {
+        let role = m["role"].as_str().unwrap_or_default();
+        match role {
+            "assistant" => {
+                let calls = m["tool_calls"]
+                    .as_array()
+                    .filter(|calls| !calls.is_empty())
+                    .cloned();
+                if let Some(calls) = calls {
+                    flush_pending(
+                        &mut out,
+                        &mut pending,
+                        &mut order,
+                        &mut answered,
+                        &mut tools,
+                        &mut held,
+                    );
+                    out.push(m);
+                    for (i, call) in calls.iter().enumerate() {
+                        let id = call["id"].as_str().unwrap_or_default().to_owned();
+                        order.insert(id.clone(), i);
+                        pending.push(id);
+                    }
+                } else {
+                    if !pending.is_empty() && empty_chat_assistant(&m) {
+                        continue;
+                    }
+                    flush_pending(
+                        &mut out,
+                        &mut pending,
+                        &mut order,
+                        &mut answered,
+                        &mut tools,
+                        &mut held,
+                    );
+                    out.push(m);
+                }
+            }
+            "tool" => {
+                let id = m["tool_call_id"].as_str().unwrap_or_default();
+                if !order.contains_key(id) {
+                    flush_pending(
+                        &mut out,
+                        &mut pending,
+                        &mut order,
+                        &mut answered,
+                        &mut tools,
+                        &mut held,
+                    );
+                    tool_as_user(&mut out, &m);
+                    continue;
+                }
+                if !answered.insert(id.to_owned()) {
+                    continue;
+                }
+                tools.push(m);
+            }
+            _ if is_reminder || matches!(role, "system" | "developer") => {
+                if !pending.is_empty() {
+                    held.push(m);
+                } else {
+                    out.push(m);
+                }
+            }
+            _ => {
+                flush_pending(
+                    &mut out,
+                    &mut pending,
+                    &mut order,
+                    &mut answered,
+                    &mut tools,
+                    &mut held,
+                );
+                out.push(m);
+            }
+        }
+    }
+    flush_pending(
+        &mut out,
+        &mut pending,
+        &mut order,
+        &mut answered,
+        &mut tools,
+        &mut held,
+    );
+    out
+}
+
+fn chat(r: &Request, host: Option<&str>) -> Result<Value, ProxyError> {
+    let mut tagged_messages: Vec<(Value, bool)> = Vec::new();
+    let mut system = openai_parts(&r.system, false, false, false)?;
     let mut replied = false;
+    let mut after_tool = false;
+    let replay = chat_replays_reasoning(host, &r.model);
+    let wants = chat_wants_reasoning(host, &r.model);
     let mut pending_tool_media: Vec<Value> = Vec::new();
+    let flush_media = |tagged: &mut Vec<(Value, bool)>, pending: &mut Vec<Value>| {
+        if pending.is_empty() {
+            return;
+        }
+        let mut flushed = Vec::new();
+        crate::proxy::tool_media::flush_pending_chat_tool_media(&mut flushed, pending);
+        tagged.extend(flushed.into_iter().map(|msg| (msg, false)));
+    };
     let responses_messages;
     let history: Box<dyn Iterator<Item = &Message>> = if r.source == Protocol::Responses {
         responses_messages = responses_chat_messages(&r.messages);
@@ -609,14 +1007,11 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
                 )
             });
         if matches!(m.role.as_str(), "system" | "developer") {
-            let mut content = openai_parts(&m.parts, false, false)?;
+            let mut content = openai_parts(&m.parts, false, false, false)?;
             if !replied {
                 system.extend(content);
             } else if !content.is_empty() {
-                crate::proxy::tool_media::flush_pending_chat_tool_media(
-                    &mut messages,
-                    &mut pending_tool_media,
-                );
+                flush_media(&mut tagged_messages, &mut pending_tool_media);
                 // Chat gateways may reject developer roles and later system
                 // messages. Keep updates in place using Magpie's reminder form.
                 let content = if content.iter().all(|part| part["type"] == "text") {
@@ -629,58 +1024,117 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
                     content.push(json!({"type":"text","text":"\n</system-reminder>"}));
                     json!(content)
                 };
-                messages.push(json!({"role":"user","content":content}));
+                after_tool = false;
+                tagged_messages.push((json!({"role":"user","content":content}), true));
+            }
+            continue;
+        }
+        if m.role == "assistant" {
+            let calls: Vec<_> = m
+                .parts
+                .iter()
+                .filter_map(|p| {
+                    if let Part::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        signature,
+                    } = p
+                    {
+                        let mut call = json!({
+                            "id": bound_call_id(id),
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments.to_string()}
+                        });
+                        if let Some(signature) = signature {
+                            call["extra_content"] =
+                                json!({"google":{"thought_signature":signature}});
+                        }
+                        Some(call)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let content = openai_parts(&m.parts, false, true, false)?;
+            let all_text = content.iter().all(|part| part["type"] == "text");
+            let plain_text = if all_text {
+                content
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                String::new()
+            };
+            let thoughts: Vec<_> = m
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Thinking { text, .. } if !text.is_empty() => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let has_tool_results = m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. }));
+            if !calls.is_empty() || !content.is_empty() || !thoughts.is_empty() || !has_tool_results
+            {
+                let mut message = json!({"role": "assistant"});
+                if !calls.is_empty() {
+                    message["tool_calls"] = json!(calls);
+                }
+                if !thoughts.is_empty() && replay {
+                    message["reasoning_content"] = json!(thoughts.join("\n"));
+                } else if wants && (!calls.is_empty() || after_tool) {
+                    message["reasoning_content"] = json!(" ");
+                }
+                if !content.is_empty() && !all_text {
+                    message["content"] = json!(content);
+                } else if !plain_text.trim().is_empty() {
+                    message["content"] = json!(plain_text);
+                } else if calls.is_empty() {
+                    message["content"] = json!("");
+                }
+                flush_media(&mut tagged_messages, &mut pending_tool_media);
+                after_tool = false;
+                tagged_messages.push((message, false));
+            }
+            for p in &m.parts {
+                if let Part::ToolResult { call_id, parts, .. } = p {
+                    let content =
+                        tool_result_chat_content(call_id, parts, &mut pending_tool_media)?;
+                    tagged_messages.push((
+                        json!({"role":"tool","tool_call_id":bound_call_id(call_id),"content":content}),
+                        false,
+                    ));
+                    after_tool = true;
+                }
             }
             continue;
         }
         for p in &m.parts {
             if let Part::ToolResult { call_id, parts, .. } = p {
                 let content = tool_result_chat_content(call_id, parts, &mut pending_tool_media)?;
-                messages.push(json!({"role":"tool","tool_call_id":call_id,"content":content}));
+                tagged_messages.push((
+                    json!({"role":"tool","tool_call_id":bound_call_id(call_id),"content":content}),
+                    false,
+                ));
+                after_tool = true;
             }
         }
-        let content = openai_parts(&m.parts, false, m.role == "assistant")?;
-        let wire_content = match content.as_slice() {
-            [] => Value::Null,
-            [part] if part["type"] == "text" => part["text"].clone(),
-            _ => json!(content),
-        };
-        let mut message = json!({"role":m.role,"content":wire_content});
-        let calls: Vec<_> = m.parts.iter().filter_map(|p| if let Part::ToolCall {id,name,arguments,signature} = p {
-            let mut call = json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments.to_string()}});
-            if let Some(signature)=signature {call["extra_content"] = json!({"google":{"thought_signature":signature}});}
-            Some(call)
-        } else {None}).collect();
-        if !calls.is_empty() {
-            message["tool_calls"] = json!(calls);
-        }
-        let thoughts: Vec<_> = m
-            .parts
-            .iter()
-            .filter_map(|p| {
-                if let Part::Thinking { text, .. } = p {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !thoughts.is_empty() {
-            message["reasoning_content"] = json!(thoughts.join("\n"));
-        }
-        if !content.is_empty()
-            || message.get("tool_calls").is_some()
-            || !thoughts.is_empty()
-            || m.parts.is_empty()
-        {
-            crate::proxy::tool_media::flush_pending_chat_tool_media(
-                &mut messages,
-                &mut pending_tool_media,
-            );
-            messages.push(message);
+        let content = openai_parts(&m.parts, false, false, false)?;
+        if !content.is_empty() {
+            let wire_content = match content.as_slice() {
+                [part] if part["type"] == "text" => part["text"].clone(),
+                _ => json!(content),
+            };
+            flush_media(&mut tagged_messages, &mut pending_tool_media);
+            after_tool = false;
+            tagged_messages.push((json!({"role": m.role, "content": wire_content}), false));
         }
     }
-    crate::proxy::tool_media::flush_pending_chat_tool_media(&mut messages, &mut pending_tool_media);
+    flush_media(&mut tagged_messages, &mut pending_tool_media);
+    let tagged_messages = without_silent_assistants(tagged_messages);
+    let mut messages = pair_chat_tool_messages(tagged_messages);
     if !system.is_empty() {
         let content = if system.iter().all(|part| part["type"] == "text") {
             json!(system
@@ -695,7 +1149,11 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
     }
     let mut body = json!({"messages":messages});
     if let Some(n) = r.max_tokens {
-        body["max_completion_tokens"] = json!(n);
+        if is_openai_host(host) {
+            body["max_completion_tokens"] = json!(n);
+        } else {
+            body["max_tokens"] = json!(n);
+        }
     }
     if !r.stop.is_empty() {
         body["stop"] = json!(r.stop);
@@ -759,69 +1217,207 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
     Ok(body)
 }
 
-fn responses(r: &Request) -> Result<Value, ProxyError> {
-    let mut input = Vec::new();
-    if !r.system.is_empty() {
-        input.push(json!({"role":"system","content":openai_parts(&r.system,true,false)?}));
+fn responses_output_text(output: &Value) -> String {
+    match output {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
     }
+}
+
+fn pair_responses_tool_items(items: Vec<Value>) -> Vec<Value> {
+    let mut seen_calls = HashSet::new();
+    let mut answered = HashSet::new();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let kind = item["type"].as_str().unwrap_or_default();
+        match kind {
+            "function_call" | "custom_tool_call" | "tool_search_call" => {
+                if let Some(id) = item["call_id"].as_str().filter(|id| !id.is_empty()) {
+                    seen_calls.insert(id.to_owned());
+                }
+                out.push(item);
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                let id = item["call_id"].as_str().unwrap_or_default();
+                if !seen_calls.contains(id) {
+                    let mut text = responses_output_text(&item["output"]);
+                    if text.trim().is_empty() {
+                        text = "Tool result received.".to_owned();
+                    }
+                    out.push(json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}]
+                    }));
+                } else if answered.insert(id.to_owned()) {
+                    out.push(item);
+                }
+            }
+            "tool_search_output" => {
+                let id = item["call_id"].as_str().unwrap_or_default();
+                if seen_calls.contains(id) && answered.insert(id.to_owned()) {
+                    out.push(item);
+                }
+            }
+            _ => out.push(item),
+        }
+    }
+    out
+}
+
+fn responses(r: &Request, host: Option<&str>) -> Result<Value, ProxyError> {
+    let mut input = Vec::new();
+    let mut instructions_parts = Vec::new();
+    let native_responses = r.source == Protocol::Responses;
+    if !r.system.is_empty() {
+        if r.system
+            .iter()
+            .all(|part| matches!(part, Part::Text { .. } | Part::ToolReference { .. }))
+        {
+            let text = text(&r.system);
+            if !text.is_empty() {
+                instructions_parts.push(text);
+            }
+        } else {
+            let parts = openai_parts(&r.system, true, false, native_responses)?;
+            if !parts.is_empty() {
+                input.push(json!({"type":"message","role":"developer","content":parts}));
+            }
+        }
+    }
+    let replay_reasoning = responses_replays_unsigned_reasoning(host, &r.model);
+    let mut replied = false;
     for m in &r.messages {
+        replied |= m.role == "assistant"
+            || m.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    Part::ToolCall { .. } | Part::ToolResult { .. } | Part::Thinking { .. }
+                )
+            });
+        if !native_responses && matches!(m.role.as_str(), "system" | "developer") {
+            let all_text = m
+                .parts
+                .iter()
+                .all(|part| matches!(part, Part::Text { .. } | Part::ToolReference { .. }));
+            if !replied && all_text {
+                let text = text(&m.parts);
+                if !text.is_empty() {
+                    instructions_parts.push(text);
+                }
+            } else {
+                let content = openai_parts(&m.parts, true, false, native_responses)?;
+                if !content.is_empty() {
+                    input.push(json!({"type":"message","role":"developer","content":content}));
+                }
+            }
+            continue;
+        }
         let mut pending = Vec::new();
         for p in &m.parts {
             let item = match p {
                 Part::ToolSearchCall { native, .. } | Part::ToolSearchResult { native, .. } => {
-                    Some(native.clone())
+                    let mut item = native.clone();
+                    if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                        item["call_id"] = json!(bound_call_id(id));
+                    }
+                    Some(item)
                 }
                 Part::ToolCall {
                     id,
                     name,
                     arguments,
                     ..
-                } => Some(
-                    json!({"type":"function_call","call_id":id,"name":name,"arguments":arguments.to_string()}),
-                ),
+                } => Some(json!({
+                    "type":"function_call",
+                    "call_id":bound_call_id(id),
+                    "name":name,
+                    "arguments":arguments.to_string()
+                })),
                 Part::NamespacedToolCall {
                     id,
                     namespace,
                     name,
                     arguments,
                     ..
-                } => Some(
-                    json!({"type":"function_call","call_id":id,"namespace":namespace,"name":name,"arguments":arguments.to_string()}),
-                ),
+                } => Some(json!({
+                    "type":"function_call",
+                    "call_id":bound_call_id(id),
+                    "namespace":namespace,
+                    "name":name,
+                    "arguments":arguments.to_string()
+                })),
                 Part::CustomToolCall {
                     id,
                     name,
                     input,
                     namespace,
                 } => {
-                    let mut call =
-                        json!({"type":"custom_tool_call","call_id":id,"name":name,"input":input});
+                    let mut call = json!({
+                        "type":"custom_tool_call",
+                        "call_id":bound_call_id(id),
+                        "name":name,
+                        "input":input
+                    });
                     if let Some(ns) = namespace {
                         call["namespace"] = json!(ns);
                     }
                     Some(call)
                 }
-                Part::CustomToolResult { call_id, parts } => Some(
-                    json!({"type":"custom_tool_call_output","call_id":call_id,"output":if parts.iter().all(|p|matches!(p,Part::Text{..})) {json!(text(parts))} else {json!(openai_parts(parts,true,false)?)}}),
-                ),
-                Part::ToolResult { call_id, parts, .. } => Some(
-                    json!({"type":"function_call_output","call_id":call_id,"output":if parts.iter().all(|p|matches!(p,Part::Text{..})) {json!(text(parts))} else {json!(openai_parts(parts,true,false)?)}}),
-                ),
+                Part::CustomToolResult { call_id, parts } => {
+                    let output = if parts.iter().all(|p| matches!(p, Part::Text { .. })) {
+                        json!(text(parts))
+                    } else {
+                        json!(openai_parts(parts, true, false, native_responses)?)
+                    };
+                    Some(json!({
+                        "type":"custom_tool_call_output",
+                        "call_id":bound_call_id(call_id),
+                        "output":output
+                    }))
+                }
+                Part::ToolResult { call_id, parts, .. } => {
+                    let output = if parts.iter().all(|p| matches!(p, Part::Text { .. })) {
+                        json!(text(parts))
+                    } else {
+                        json!(openai_parts(parts, true, false, native_responses)?)
+                    };
+                    Some(json!({
+                        "type":"function_call_output",
+                        "call_id":bound_call_id(call_id),
+                        "output":output
+                    }))
+                }
                 Part::Thinking {
                     text,
                     source,
                     sealed,
                     ..
-                } => Some(if *source == Protocol::Responses && sealed.is_some() {
-                    sealed.clone().ok_or_else(invalid)?
-                } else {
-                    json!({"type":"reasoning","summary":[{"type":"summary_text","text":text}]})
-                }),
+                } => {
+                    if *source == Protocol::Responses && sealed.is_some() {
+                        Some(sealed.clone().ok_or_else(invalid)?)
+                    } else if replay_reasoning && !text.is_empty() {
+                        Some(
+                            json!({"type":"reasoning","summary":[{"type":"summary_text","text":text}]}),
+                        )
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             };
             if let Some(item) = item {
                 if !pending.is_empty() {
-                    input.push(json!({"role":m.role,"content":openai_parts(&pending,true,m.role=="assistant")?}));
+                    let content =
+                        openai_parts(&pending, true, m.role == "assistant", native_responses)?;
+                    if !content.is_empty() {
+                        input.push(json!({"role":m.role,"content":content}));
+                    }
                     pending.clear();
                 }
                 input.push(item);
@@ -830,12 +1426,17 @@ fn responses(r: &Request) -> Result<Value, ProxyError> {
             }
         }
         if !pending.is_empty() {
-            input.push(
-                json!({"role":m.role,"content":openai_parts(&pending,true,m.role=="assistant")?}),
-            );
+            let content = openai_parts(&pending, true, m.role == "assistant", native_responses)?;
+            if !content.is_empty() {
+                input.push(json!({"role":m.role,"content":content}));
+            }
         }
     }
+    let input = pair_responses_tool_items(input);
     let mut body = json!({"input":input});
+    if !instructions_parts.is_empty() {
+        body["instructions"] = json!(instructions_parts.join("\n\n"));
+    }
     if let Some(n) = r.max_tokens {
         body["max_output_tokens"] = json!(n);
     }
@@ -923,39 +1524,240 @@ fn responses(r: &Request) -> Result<Value, ProxyError> {
     Ok(body)
 }
 
-fn anthropic_parts(parts: &[Part]) -> Result<Vec<Value>, ProxyError> {
+fn anthropic_parts(parts: &[Part], native_anthropic: bool) -> Result<Vec<Value>, ProxyError> {
     let mut out = Vec::new();
     for p in parts {
         match p {
-            Part::Text{text,..}=>out.push(json!({"type":"text","text":text})),
-            Part::Image{media_type,data,url,..}|Part::File{media_type,data,url,..}=>{
-                let source=if let Some(data)=data {json!({"type":"base64","media_type":media_type,"data":data})} else if let Some(url)=url {json!({"type":"url","url":url})} else {return Err(invalid());};
-                out.push(json!({"type":if matches!(p,Part::Image{..}) {"image"} else {"document"},"source":source}));
+            Part::Text { text, .. } => {
+                if !text.trim().is_empty() {
+                    out.push(json!({"type":"text","text":text}));
+                }
             }
-            Part::ToolCall{id,name,arguments,..}=>out.push(json!({"type":"tool_use","id":id,"name":name,"input":arguments})),
-            Part::ToolResult{call_id,parts,is_error,..}=>out.push(json!({"type":"tool_result","tool_use_id":call_id,"content":anthropic_parts(parts)?,"is_error":is_error})),
-            Part::Thinking{text,signature,source,sealed}=>{
-                if *source==Protocol::Anthropic {
-                    if let Some(sealed)=sealed {out.push(sealed.clone());continue;}
-                    let mut block=json!({"type":"thinking","thinking":text});
-                    if let Some(signature)=signature {block["signature"]=json!(signature);}
+            Part::Image {
+                media_type,
+                data,
+                url,
+                ..
+            } => {
+                let source = if let Some(data) = data {
+                    json!({"type":"base64","media_type":media_type,"data":data})
+                } else if let Some(url) = url {
+                    json!({"type":"url","url":url})
+                } else {
+                    return Err(invalid());
+                };
+                out.push(json!({"type":"image","source":source}));
+            }
+            Part::File {
+                media_type,
+                data,
+                url,
+                name,
+                ..
+            } => {
+                if (media_type.eq_ignore_ascii_case("application/pdf") || native_anthropic)
+                    && (data.is_some() || url.is_some())
+                {
+                    let source = if let Some(data) = data {
+                        json!({"type":"base64","media_type":media_type,"data":data})
+                    } else if let Some(url) = url {
+                        json!({"type":"url","url":url})
+                    } else {
+                        return Err(invalid());
+                    };
+                    out.push(json!({"type":"document","source":source}));
+                } else {
+                    out.push(json!({
+                        "type": "text",
+                        "text": attachment_text(media_type, name.as_deref())
+                    }));
+                }
+            }
+            Part::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => out.push(
+                json!({"type":"tool_use","id":anthropic_out_id(id),"name":name,"input":arguments}),
+            ),
+            Part::ToolResult {
+                call_id,
+                parts,
+                is_error,
+                ..
+            } => out.push(json!({
+                "type":"tool_result",
+                "tool_use_id":anthropic_out_id(call_id),
+                "content":anthropic_parts(parts, native_anthropic)?,
+                "is_error":is_error
+            })),
+            Part::Thinking {
+                text,
+                signature,
+                source,
+                sealed,
+            } => {
+                if *source == Protocol::Anthropic {
+                    if let Some(sealed) = sealed {
+                        out.push(sealed.clone());
+                        continue;
+                    }
+                    let mut block = json!({"type":"thinking","thinking":text});
+                    if let Some(signature) = signature {
+                        block["signature"] = json!(signature);
+                    }
                     out.push(block);
-                } else if !text.is_empty() {out.push(json!({"type":"text","text":text}));}
+                }
             }
-            Part::ToolReference{name}=>out.push(json!({"type":"tool_reference","tool_name":name})),
-            Part::Search{query,hits,..}=>out.push(json!({"type":"text","text":format!("{query}\n{}",json!(hits))})),
-            Part::NamespacedToolCall{..}|Part::CustomToolCall{..}|Part::CustomToolResult{..}
-            |Part::ToolSearchCall{..}|Part::ToolSearchResult{..}=>return Err(invalid()),
+            Part::ToolReference { name } => {
+                out.push(json!({"type":"tool_reference","tool_name":name}));
+            }
+            Part::Search { query, hits, .. } => {
+                out.push(json!({"type":"text","text":format!("{query}\n{}",json!(hits))}));
+            }
+            Part::NamespacedToolCall { .. }
+            | Part::CustomToolCall { .. }
+            | Part::CustomToolResult { .. }
+            | Part::ToolSearchCall { .. }
+            | Part::ToolSearchResult { .. } => return Err(invalid()),
         }
     }
     Ok(out)
 }
+
+fn blocks_calls_last(blocks: Vec<Value>) -> Vec<Value> {
+    let mut head = Vec::new();
+    let mut calls = Vec::new();
+    let mut called = false;
+    let mut moved = false;
+    for block in &blocks {
+        let kind = block["type"].as_str().unwrap_or_default();
+        if kind == "tool_use" {
+            called = true;
+            calls.push(block.clone());
+        } else if !called {
+            head.push(block.clone());
+        } else if matches!(kind, "thinking" | "redacted_thinking") {
+            calls.push(block.clone());
+        } else {
+            moved = true;
+            if kind == "text" && block["text"].as_str().is_some_and(|t| t.trim().is_empty()) {
+                continue;
+            }
+            head.push(block.clone());
+        }
+    }
+    if !moved {
+        return blocks;
+    }
+    head.extend(calls);
+    head
+}
+
+fn anthropic_result_said(block: &Value) -> Vec<Value> {
+    match &block["content"] {
+        Value::String(s) => {
+            let text = if s.trim().is_empty() {
+                "Tool result received."
+            } else {
+                s.as_str()
+            };
+            vec![json!({"type": "text", "text": text})]
+        }
+        Value::Array(blocks) if !blocks.is_empty() => blocks.clone(),
+        _ => vec![json!({"type": "text", "text": "Tool result received."})],
+    }
+}
+
+fn pair_anthropic_tool_blocks(msgs: Vec<Value>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::with_capacity(msgs.len());
+    let mut pending: Vec<String> = Vec::new();
+    let mut open: HashSet<String> = HashSet::new();
+    let mut answered: HashSet<String> = HashSet::new();
+
+    let synthetic = |id: &str| {
+        json!({
+            "type": "tool_result",
+            "tool_use_id": id,
+            "content": INTERRUPTED_TOOL_MESSAGE,
+            "is_error": true
+        })
+    };
+
+    let close_exchange = |out: &mut Vec<Value>,
+                          pending: &mut Vec<String>,
+                          open: &mut HashSet<String>,
+                          answered: &mut HashSet<String>| {
+        let blocks: Vec<Value> = pending
+            .iter()
+            .filter(|id| !answered.contains(*id))
+            .map(|id| synthetic(id))
+            .collect();
+        if !blocks.is_empty() {
+            out.push(json!({"role": "user", "content": blocks}));
+        }
+        pending.clear();
+        open.clear();
+        answered.clear();
+    };
+
+    for mut m in msgs {
+        if m["role"] == "assistant" {
+            close_exchange(&mut out, &mut pending, &mut open, &mut answered);
+            let blocks = m["content"].as_array().cloned().unwrap_or_default();
+            for b in &blocks {
+                if b["type"] == "tool_use" {
+                    if let Some(id) = b["id"].as_str().filter(|id| !id.is_empty()) {
+                        pending.push(id.to_owned());
+                        open.insert(id.to_owned());
+                    }
+                }
+            }
+            m["content"] = Value::Array(blocks_calls_last(blocks));
+            out.push(m);
+            continue;
+        }
+        let blocks = m["content"].as_array().cloned().unwrap_or_default();
+        let mut kept = Vec::new();
+        let mut rest = Vec::new();
+        for b in blocks {
+            if b["type"] != "tool_result" {
+                rest.push(b);
+                continue;
+            }
+            let id = b["tool_use_id"].as_str().unwrap_or_default();
+            if !open.contains(id) {
+                rest.extend(anthropic_result_said(&b));
+                continue;
+            }
+            if !answered.insert(id.to_owned()) {
+                continue;
+            }
+            kept.push(b);
+        }
+        for id in &pending {
+            if !answered.contains(id) {
+                kept.push(synthetic(id));
+            }
+        }
+        kept.extend(rest);
+        out.push(json!({"role": "user", "content": kept}));
+        pending.clear();
+        open.clear();
+        answered.clear();
+    }
+    close_exchange(&mut out, &mut pending, &mut open, &mut answered);
+    out
+}
+
 fn anthropic(r: &Request) -> Result<Value, ProxyError> {
-    let mut system = anthropic_parts(&r.system)?;
+    let native_anthropic = r.source == Protocol::Anthropic;
+    let mut system = anthropic_parts(&r.system, native_anthropic)?;
     let mut messages: Vec<Value> = Vec::new();
     for m in &r.messages {
         if matches!(m.role.as_str(), "system" | "developer") {
-            system.extend(anthropic_parts(&m.parts)?);
+            system.extend(anthropic_parts(&m.parts, native_anthropic)?);
             continue;
         }
         let mut parts = m
@@ -970,7 +1772,10 @@ fn anthropic(r: &Request) -> Result<Value, ProxyError> {
                 .filter(|p| !matches!(p, Part::ToolResult { .. }))
                 .cloned(),
         );
-        let content = anthropic_parts(&parts)?;
+        let content = anthropic_parts(&parts, native_anthropic)?;
+        if content.is_empty() {
+            continue;
+        }
         let role = if m.role == "assistant" {
             "assistant"
         } else {
@@ -982,6 +1787,26 @@ fn anthropic(r: &Request) -> Result<Value, ProxyError> {
             }
         } else {
             messages.push(json!({"role":role,"content":content}));
+        }
+    }
+    let mut messages = pair_anthropic_tool_blocks(messages);
+    if !native_anthropic {
+        let ephemeral = json!({"type": "ephemeral"});
+        if let Some(last_sys) = system.last_mut() {
+            last_sys["cache_control"] = ephemeral.clone();
+        }
+        if let Some(last_msg) = messages.last_mut() {
+            if let Some(blocks) = last_msg["content"].as_array_mut() {
+                for block in blocks.iter_mut().rev() {
+                    if !matches!(
+                        block["type"].as_str(),
+                        Some("thinking" | "redacted_thinking")
+                    ) {
+                        block["cache_control"] = ephemeral;
+                        break;
+                    }
+                }
+            }
         }
     }
     let mut body = json!({"messages":messages,"max_tokens":r.max_tokens.unwrap_or(8192)});
@@ -1385,8 +2210,9 @@ mod tests {
             "Chat conversion must not mutate the shared IR"
         );
         let native = request(&parsed, Protocol::Responses)?;
-        assert_eq!(native["input"][1]["role"], "developer");
-        assert_eq!(native["input"][5]["role"], "developer");
+        assert_eq!(native["instructions"], "Synthetic root instruction");
+        assert_eq!(native["input"][0]["role"], "developer");
+        assert_eq!(native["input"][4]["role"], "developer");
         Ok(())
     }
 
@@ -1429,7 +2255,7 @@ mod tests {
     #[test]
     fn responses_chat_keeps_parallel_tool_calls_and_reasoning_before_their_results(
     ) -> Result<(), ProxyError> {
-        let body = json!({"model":"synthetic", "input":[
+        let body = json!({"model":"deepseek-reasoner", "input":[
             {"role":"user","content":"Synthetic question"},
             {"type":"function_call","call_id":"call-a","name":"lookup","arguments":"{}"},
             {"type":"function_call","call_id":"call-b","name":"lookup","arguments":"{}"},
@@ -2216,5 +3042,378 @@ mod tests {
         let chat = request(&ir, Protocol::Chat).unwrap();
         assert_eq!(chat["reasoning_effort"], "high");
         assert!(chat.get("reasoning_summary").is_none());
+    }
+    #[test]
+    fn responses_chat_merges_reasoning_with_assistant_text_and_omits_reasoning_for_gpt(
+    ) -> Result<(), ProxyError> {
+        let body = json!({
+            "model": "gpt-6.2-sol",
+            "input": [
+                {"role": "user", "content": "First question"},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Hidden thought"}]},
+                {"role": "assistant", "content": "First answer"},
+                {"role": "user", "content": "Second question"},
+                {"type": "reasoning", "summary": [], "encrypted_content": "synthetic-seal"},
+                {"type": "reasoning", "summary": []},
+                {"role": "assistant", "content": [
+                    {"type": "output_text", "text": "Part one"},
+                    {"type": "output_text", "text": "Part two"}
+                ]},
+                {"role": "user", "content": "Third question"},
+                {"type": "reasoning", "summary": [], "encrypted_content": "synthetic-seal-alone"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Chat)?;
+        let messages = wire["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 5);
+        for message in messages {
+            assert!(
+                message.get("reasoning_content").is_none(),
+                "non-deepseek Chat message must omit reasoning_content: {message}"
+            );
+            if message.get("tool_calls").is_none() {
+                assert!(
+                    !message["content"].is_null(),
+                    "non-tool Chat message must not send content: null: {message}"
+                );
+            }
+        }
+        assert_eq!(
+            messages[0],
+            json!({"role": "user", "content": "First question"})
+        );
+        assert_eq!(
+            messages[1],
+            json!({"role": "assistant", "content": "First answer"})
+        );
+        assert_eq!(
+            messages[2],
+            json!({"role": "user", "content": "Second question"})
+        );
+        assert_eq!(
+            messages[3],
+            json!({"role": "assistant", "content": "Part one\nPart two"})
+        );
+        assert_eq!(
+            messages[4],
+            json!({"role": "user", "content": "Third question"})
+        );
+        Ok(())
+    }
+    #[test]
+    fn responses_chat_deepseek_replays_reasoning_and_fills_missing_tool_turn_reasoning(
+    ) -> Result<(), ProxyError> {
+        let input = json!([
+            {"role": "user", "content": "Check files"},
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "Thinking via content"}]},
+            {"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-1", "output": "ok"},
+            {"type": "function_call", "call_id": "call-2", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-2", "output": "done"},
+            {"role": "assistant", "content": "All set"}
+        ]);
+        let deepseek_ir = super::super::parse::request(
+            Protocol::Responses,
+            &json!({"model": "custom-reasoner", "input": input}),
+            "/v1/responses",
+        )?;
+        let deepseek_wire =
+            request_for_host(&deepseek_ir, Protocol::Chat, Some("api.deepseek.com"))?;
+        let ds_msgs = deepseek_wire["messages"].as_array().expect("messages");
+        assert_eq!(ds_msgs[1]["reasoning_content"], "Thinking via content");
+        assert_eq!(ds_msgs[3]["reasoning_content"], " ");
+        assert_eq!(ds_msgs[5]["reasoning_content"], " ");
+        assert_eq!(ds_msgs[5]["content"], "All set");
+
+        let gpt_wire = request_for_host(&deepseek_ir, Protocol::Chat, Some("api.openai.com"))?;
+        let gpt_msgs = gpt_wire["messages"].as_array().expect("messages");
+        for message in gpt_msgs {
+            assert!(message.get("reasoning_content").is_none());
+        }
+        Ok(())
+    }
+    #[test]
+    fn responses_anthropic_skips_empty_reasoning_messages() -> Result<(), ProxyError> {
+        let body = json!({
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {"role": "user", "content": "Hello"},
+                {"type": "reasoning", "summary": [], "encrypted_content": "synthetic-seal"},
+                {"type": "reasoning", "summary": []},
+                {"role": "assistant", "content": "Hi there"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Anthropic)?;
+        let messages = wire["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(
+            messages[1]["content"],
+            json!([{"type": "text", "text": "Hi there", "cache_control": {"type": "ephemeral"}}])
+        );
+        Ok(())
+    }
+    #[test]
+    fn chat_drops_silent_reasoning_only_assistant_even_for_deepseek_and_merges_adjacent_users(
+    ) -> Result<(), ProxyError> {
+        let body = json!({
+            "model": "deepseek-reasoner",
+            "input": [
+                {"role": "user", "content": "First ask"},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Interrupted thought"}]},
+                {"role": "assistant", "content": "   "},
+                {"role": "user", "content": "Retry ask"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Chat)?;
+        let messages = wire["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "First ask\n\nRetry ask");
+        Ok(())
+    }
+    #[test]
+    fn chat_pairs_out_of_order_orphaned_duplicate_unanswered_and_mid_tool_developer_messages(
+    ) -> Result<(), ProxyError> {
+        let body = json!({
+            "model": "gpt-6.2-sol",
+            "input": [
+                {"type": "function_call_output", "call_id": "orphan-1", "output": "Prior orphaned result"},
+                {"role": "user", "content": "Continue"},
+                {"type": "function_call", "call_id": "call-1", "name": "first", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call-2", "name": "second", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call-3", "name": "third", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-2", "output": "second-first"},
+                {"type": "function_call_output", "call_id": "call-2", "output": "second-duplicate"},
+                {"role": "developer", "content": "Mid-tool reminder"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "first-ok"},
+                {"role": "user", "content": "Next turn"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Chat)?;
+        let messages = wire["messages"].as_array().expect("messages");
+        assert_eq!(
+            messages[0],
+            json!({"role": "user", "content": "Prior orphaned result"})
+        );
+        assert_eq!(messages[1], json!({"role": "user", "content": "Continue"}));
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(
+            messages[3],
+            json!({"role": "tool", "tool_call_id": "call-1", "content": "first-ok"})
+        );
+        assert_eq!(
+            messages[4],
+            json!({"role": "tool", "tool_call_id": "call-2", "content": "second-first"})
+        );
+        assert_eq!(
+            messages[5],
+            json!({"role": "tool", "tool_call_id": "call-3", "content": INTERRUPTED_TOOL_MESSAGE})
+        );
+        assert_eq!(
+            messages[6],
+            json!({"role": "user", "content": "<system-reminder>\nMid-tool reminder\n</system-reminder>"})
+        );
+        assert_eq!(messages[7], json!({"role": "user", "content": "Next turn"}));
+        assert_eq!(messages.len(), 8);
+        Ok(())
+    }
+    #[test]
+    fn chat_uses_max_completion_tokens_only_for_openai_hosts_and_bounds_long_call_ids(
+    ) -> Result<(), ProxyError> {
+        let long_id = format!("call-{}-suffix", "x".repeat(80));
+        assert!(long_id.len() > 64);
+        let body = json!({
+            "model": "gpt-6.2-sol",
+            "max_output_tokens": 512,
+            "input": [
+                {"role": "user", "content": "Go"},
+                {"type": "function_call", "call_id": long_id, "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": long_id, "output": "done"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let relay = request_for_host(&parsed, Protocol::Chat, Some("relay.example"))?;
+        assert_eq!(relay["max_tokens"], 512);
+        assert!(relay.get("max_completion_tokens").is_none());
+        let openai = request_for_host(&parsed, Protocol::Chat, Some("api.openai.com"))?;
+        assert_eq!(openai["max_completion_tokens"], 512);
+        assert!(openai.get("max_tokens").is_none());
+        let call_id = openai["messages"][1]["tool_calls"][0]["id"]
+            .as_str()
+            .expect("call id");
+        assert_eq!(call_id.len(), 64);
+        assert_eq!(openai["messages"][2]["tool_call_id"], call_id);
+        Ok(())
+    }
+    #[test]
+    fn chat_and_responses_and_anthropic_degrade_unsupported_files_safely() -> Result<(), ProxyError>
+    {
+        let body = json!({
+            "model": "gpt-6.2-sol",
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Read this"},
+                    {"type": "input_file", "filename": "notes.txt", "file_data": "data:text/plain;base64,aGk="}
+                ]
+            }]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let chat_wire = request(&parsed, Protocol::Chat)?;
+        assert_eq!(
+            chat_wire["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "Read this"},
+                {"type": "text", "text": "[Attached file: notes.txt]"}
+            ])
+        );
+        let anthropic_wire = request(&parsed, Protocol::Anthropic)?;
+        assert_eq!(
+            anthropic_wire["messages"][0]["content"][1],
+            json!({
+                "type": "text",
+                "text": "[Attached file: notes.txt]",
+                "cache_control": {"type": "ephemeral"}
+            })
+        );
+        let chat_source = json!({
+            "model": "gpt-6.2-sol",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "file",
+                    "file": {"file_id": "file_remote_123", "filename": "report.csv", "mime_type": "text/csv"}
+                }]
+            }]
+        });
+        let chat_parsed =
+            super::super::parse::request(Protocol::Chat, &chat_source, "/v1/chat/completions")?;
+        let responses_wire = request(&chat_parsed, Protocol::Responses)?;
+        assert_eq!(
+            responses_wire["input"][0]["content"][0],
+            json!({"type": "input_text", "text": "[Attached file: report.csv]"})
+        );
+        Ok(())
+    }
+    #[test]
+    fn responses_folds_cross_protocol_system_into_instructions_drops_unsigned_thinking_and_pairs_orphaned_outputs(
+    ) -> Result<(), ProxyError> {
+        let body = json!({
+            "model": "gpt-6.2-sol",
+            "messages": [
+                {"role": "system", "content": "Top system rule"},
+                {"role": "tool", "tool_call_id": "orphan-call", "content": "Orphan output"},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi", "reasoning_content": "Unsigned chat thought"},
+                {"role": "system", "content": "Late rule"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Chat, &body, "/v1/chat/completions")?;
+        let wire = request(&parsed, Protocol::Responses)?;
+        assert_eq!(wire["instructions"], "Top system rule");
+        let input = wire["input"].as_array().expect("input");
+        assert!(input.iter().all(|item| item["role"] != "system"));
+        assert!(input.iter().all(|item| item["type"] != "reasoning"));
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["text"], "Orphan output");
+        assert_eq!(input.last().expect("last")["role"], "developer");
+        Ok(())
+    }
+    #[test]
+    fn anthropic_pairs_tool_blocks_sanitizes_ids_skips_blank_text_drops_cross_model_thinking_omits_service_tier_and_adds_cache_control(
+    ) -> Result<(), ProxyError> {
+        let body = json!({
+            "model": "claude-sonnet-4-5",
+            "instructions": "Base instructions",
+            "service_tier": "priority",
+            "input": [
+                {"type": "function_call_output", "call_id": "orphan:0#1", "output": "Orphan text"},
+                {"role": "user", "content": [{"type": "input_text", "text": "   "}, {"type": "input_text", "text": "Real ask"}]},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Cross-model thought"}]},
+                {"type": "function_call", "call_id": "Bash:0#1", "name": "run", "arguments": "{}"},
+                {"role": "assistant", "content": "Running now"}
+            ]
+        });
+        let parsed = super::super::parse::request(Protocol::Responses, &body, "/v1/responses")?;
+        let wire = request(&parsed, Protocol::Anthropic)?;
+        assert!(wire.get("service_tier").is_none());
+        assert_eq!(
+            wire["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        let messages = wire["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(
+            messages[0]["content"],
+            json!([
+                {"type": "text", "text": "Orphan text"},
+                {"type": "text", "text": "Real ask"}
+            ])
+        );
+        assert_eq!(messages[1]["role"], "assistant");
+        let assistant_blocks = messages[1]["content"].as_array().expect("assistant blocks");
+        assert_eq!(assistant_blocks.len(), 2);
+        assert_eq!(
+            assistant_blocks[0],
+            json!({"type": "text", "text": "Running now"})
+        );
+        assert_eq!(assistant_blocks[1]["type"], "tool_use");
+        let safe_id = assistant_blocks[1]["id"].as_str().expect("id");
+        assert!(safe_id.starts_with(ANTHROPIC_ID_MARK));
+        assert!(safe_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')));
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], safe_id);
+        assert_eq!(messages[2]["content"][0]["is_error"], true);
+        assert_eq!(
+            messages[2]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        Ok(())
+    }
+    #[test]
+    fn gemini_model_function_response_preserves_tool_result_and_media_in_chat(
+    ) -> Result<(), ProxyError> {
+        let body = json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "Read it"}]},
+                {"role": "model", "parts": [{"functionCall": {"id": "history-call", "name": "read", "args": {"path": "history"}}}]},
+                {"role": "model", "parts": [{"functionResponse": {
+                    "id": "history-call",
+                    "name": "read",
+                    "response": {"result": "history-result"},
+                    "parts": [{"inlineData": {"mimeType": "image/png", "data": "dG9vbA=="}}]
+                }}]}
+            ]
+        });
+        let parsed = super::super::parse::request(
+            Protocol::Gemini,
+            &body,
+            "/v1beta/models/fixture:generateContent",
+        )?;
+        let chat_wire = request(&parsed, Protocol::Chat)?;
+        let messages = chat_wire["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["tool_calls"][0]["id"], "history-call");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "history-call");
+        assert!(messages[2]["content"]
+            .as_str()
+            .is_some_and(|s| s.contains("history-result")));
+        assert_eq!(messages[3]["role"], "user");
+        assert!(messages[3]["content"].to_string().contains("dG9vbA=="));
+        Ok(())
     }
 }

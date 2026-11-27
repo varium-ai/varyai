@@ -3494,10 +3494,16 @@ async fn execute(
                             .ok()
                             .filter(|r| r.status().is_success())
                         } else {
+                            let mut native_headers = headers.clone();
+                            super::protocol_bridge::copy_caller_headers(
+                                protocol,
+                                &parts.headers,
+                                &mut native_headers,
+                            );
                             let mut req = session
                                 .resolve_client()
                                 .post(native_url)
-                                .headers(headers.clone())
+                                .headers(native_headers)
                                 .body(payload.clone());
                             if !streaming {
                                 req = req.timeout(super::http_client::UPSTREAM_HEADER_WAIT);
