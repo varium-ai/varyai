@@ -260,8 +260,11 @@ fn extract_responses_input<'a>(val: &'a Value, path: &str, nodes: &mut Vec<Extra
                                 | "function_call_output"
                                 | "custom_tool_call"
                                 | "custom_tool_call_output"
+                                | "compaction"
+                                | "compact"
                         )
-                    ) {
+                    ) || is_excluded_media_type(obj.get("type").and_then(Value::as_str))
+                    {
                         continue;
                     }
                     if matches!(
@@ -294,6 +297,9 @@ fn extract_recursive_strings_with_context<'a>(
 ) {
     match val {
         Value::String(s) => {
+            if is_media_data_uri(s) {
+                return;
+            }
             nodes.push(ExtractedTextNode {
                 location: path.to_string(),
                 text: s.as_str(),
@@ -311,7 +317,14 @@ fn extract_recursive_strings_with_context<'a>(
             }
         }
         Value::Object(map) => {
+            let kind = map.get("type").and_then(Value::as_str);
+            if is_excluded_media_type(kind) {
+                return;
+            }
             for (field, value) in map {
+                if is_excluded_field(field, kind) {
+                    continue;
+                }
                 let child_is_password_field =
                     is_password_field || (is_password_field_name(field) && value.is_string());
                 extract_recursive_strings_with_context(
@@ -326,6 +339,48 @@ fn extract_recursive_strings_with_context<'a>(
     }
 }
 
+fn is_excluded_media_type(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some(
+            "input_image"
+                | "image"
+                | "image_url"
+                | "input_audio"
+                | "output_audio"
+                | "audio"
+                | "input_file"
+                | "file"
+                | "input_video"
+                | "video"
+        )
+    )
+}
+
+fn is_excluded_field(key: &str, kind: Option<&str>) -> bool {
+    matches!(
+        key,
+        "encrypted_content"
+            | "signature"
+            | "compact_blob"
+            | "compaction_blob"
+            | "image_url"
+            | "file_data"
+            | "file_id"
+            | "input_audio"
+            | "audio_url"
+            | "video_url"
+    ) || (matches!(kind, Some("compaction" | "compact"))
+        && matches!(key, "content" | "data" | "blob"))
+}
+
+fn is_media_data_uri(value: &str) -> bool {
+    (value.starts_with("data:image/")
+        || value.starts_with("data:audio/")
+        || value.starts_with("data:video/"))
+        && value.contains(";base64,")
+}
+
 fn is_password_field_name(field: &str) -> bool {
     matches!(
         field.to_ascii_lowercase().as_str(),
@@ -336,6 +391,9 @@ fn is_password_field_name(field: &str) -> bool {
 fn extract_any_text<'a>(val: &'a Value, path: &str, nodes: &mut Vec<ExtractedTextNode<'a>>) {
     match val {
         Value::String(s) => {
+            if is_media_data_uri(s) {
+                return;
+            }
             nodes.push(ExtractedTextNode {
                 location: path.to_string(),
                 text: s.as_str(),

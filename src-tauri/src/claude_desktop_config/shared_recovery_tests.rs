@@ -253,11 +253,11 @@ fn desktop_sealed_key_does_not_hide_real_gateway_changes_or_malformed_metadata(
         f.install()?;
         f.seal()?;
         f.edit_profile(|v| v[field] = json!("synthetic-external"))?;
-        let before = fs::read(&f.paths.profile_path).map_err(|_| "fixture")?;
         assert!(!f.manager.status("claude-desktop")?.configured);
-        assert!(f.manager.disconnect("claude-desktop").is_err());
-        assert!(fs::read(&f.paths.profile_path).map_err(|_| "fixture")? == before);
-        assert!(f.manager.load("claude-desktop")?.is_some());
+        f.manager.disconnect("claude-desktop")?;
+        let after: Value = read_json_file(&f.paths.profile_path).map_err(|_| "fixture")?;
+        assert_eq!(after[field], json!("synthetic-external"));
+        assert!(f.manager.load("claude-desktop")?.is_none());
     }
     let f = Fixture::new(false)?;
     f.install()?;
@@ -320,7 +320,8 @@ fn sealed_keys_are_not_a_global_field_ownership_exception() -> Result<(), String
     f.manager.install(receipt)?;
     f.seal()?;
     assert!(!f.manager.status("claude")?.configured);
-    assert!(f.manager.disconnect("claude").is_err());
+    f.manager.disconnect("claude")?;
+    assert!(f.manager.load("claude")?.is_none());
     Ok(())
 }
 

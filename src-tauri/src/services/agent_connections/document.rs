@@ -1,4 +1,4 @@
-use super::{parse, FAILED};
+use super::{parse, FAILED, INVALID_CONFIG};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -25,28 +25,28 @@ impl Format {
             // Accept legacy receipts for recovery; Jsonc encoding validates the
             // emitted document against OpenCode's stricter syntax.
             Self::Jsonc | Self::Json5 => {
-                json5::from_str(text.unwrap_or("{}")).map_err(|_| FAILED)?
+                json5::from_str(text.unwrap_or("{}")).map_err(|_| INVALID_CONFIG)?
             }
             Self::Toml => serde_json::to_value(
                 text.unwrap_or("")
                     .parse::<toml::Value>()
-                    .map_err(|_| FAILED)?,
+                    .map_err(|_| INVALID_CONFIG)?,
             )
-            .map_err(|_| FAILED)?,
+            .map_err(|_| INVALID_CONFIG)?,
             Self::Yaml => {
                 serde_yaml::from_str(text.filter(|text| !text.trim().is_empty()).unwrap_or("{}"))
-                    .map_err(|_| FAILED)?
+                    .map_err(|_| INVALID_CONFIG)?
             }
             Self::Env => {
                 let mut value = json!({});
                 for line in text.unwrap_or("").lines() {
                     if let Some((key, raw)) = env_line(line)? {
                         if value.get(key).is_some() {
-                            return Err(FAILED.into());
+                            return Err(INVALID_CONFIG.into());
                         }
                         let raw = raw.trim();
                         let decoded = if raw.starts_with('"') {
-                            serde_json::from_str::<String>(raw).map_err(|_| FAILED)?
+                            serde_json::from_str::<String>(raw).map_err(|_| INVALID_CONFIG)?
                         } else if raw.starts_with('\'') && raw.ends_with('\'') && raw.len() >= 2 {
                             raw[1..raw.len() - 1].to_owned()
                         } else {
@@ -59,7 +59,7 @@ impl Format {
             }
         };
         if !value.is_object() {
-            return Err(FAILED.into());
+            return Err(INVALID_CONFIG.into());
         }
         Ok(value)
     }

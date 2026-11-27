@@ -256,7 +256,12 @@ describe("Agent installation shortcuts", () => {
           name: "agentConnections.website",
         }),
       ).toBeEnabled();
-      expect(within(missing).getAllByRole("button")).toHaveLength(2);
+      expect(
+        within(missing).getByRole("button", {
+          name: "agentConnections.connect",
+        }),
+      ).toBeEnabled();
+      expect(within(missing).getAllByRole("button")).toHaveLength(3);
       expect(within(missing).queryByRole("switch")).not.toBeInTheDocument();
       expect(within(missing).queryByRole("combobox")).not.toBeInTheDocument();
       expect(
@@ -266,15 +271,15 @@ describe("Agent installation shortcuts", () => {
       expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
     },
   );
-  it("offers installation for missing agents, hides meaningless Connect actions, and never installs on mount", async () => {
+  it("offers installation and manual connect for missing agents, and never installs on mount", async () => {
     mount();
     const open = await row("opencode");
     expect(
       within(open).getByRole("button", { name: "agentInstall.install" }),
     ).toBeEnabled();
     expect(
-      within(open).queryByRole("button", { name: "agentConnections.connect" }),
-    ).not.toBeInTheDocument();
+      within(open).getByRole("button", { name: "agentConnections.connect" }),
+    ).toBeEnabled();
     for (const app of MANAGED_APP_IDS) {
       const agent = within(
         screen.getByRole("group", {
